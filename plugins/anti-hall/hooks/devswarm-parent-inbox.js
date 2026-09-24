@@ -1903,7 +1903,12 @@ function main() {
       });
       if (visible.length) {
         const seg = buildStaleRegistrySegment(visible);
-        if (seg) segments.push(seg);
+        // D3-style on-change dedupe (rule b): unlike orphans/table above, this
+        // banner had no cooldown/dedupe of its own and repeated unchanged
+        // every turn.
+        if (seg && dedupeEmit(home, sessionId, 'parent-inbox-stale-registry', seg, { transcriptPath, keepaliveTurns: 10 })) {
+          segments.push(seg);
+        }
       }
     }
   } catch (e) { logSegmentError(home, 'stale-registry', e); }
@@ -1950,7 +1955,16 @@ function main() {
   if (attention.length) {
     const urgentList = attention.filter((w) => tierOf(w) === 'urgent');
     const normalList = attention.filter((w) => tierOf(w) === 'normal');
-    if (urgentList.length) segments.push(buildUrgentUnreadSegment(urgentList, home));
+    if (urgentList.length) {
+      // D3-style on-change dedupe (rule b): this segment used to repeat
+      // unchanged on every turn (no cooldown/dedupe of its own, unlike the
+      // archive-ready reminder below). A changed unread count/trend/status
+      // still hashes differently and is emitted immediately.
+      const urgentSeg = buildUrgentUnreadSegment(urgentList, home);
+      if (dedupeEmit(home, sessionId, 'parent-inbox-urgent', urgentSeg, { transcriptPath, keepaliveTurns: 10 })) {
+        segments.push(urgentSeg);
+      }
+    }
     if (normalList.length) {
       // Burst collapse only (rule a, no on-change): a changed unread set always
       // hashes differently and is emitted.
@@ -1965,9 +1979,16 @@ function main() {
     if (totalUnread > 0) logInjection(home, attention.filter((w) => w.unread > 0));
   }
   if (archiveList.length) {
-    segments.push(buildArchiveSegment(archiveList));
-    // Record the nudge only once it is actually being surfaced this turn.
-    for (const id of archiveList) markArchiveNudged(home, id, now);
+    // The per-workspace ARCHIVE_NUDGE_COOLDOWN_MS (10 min, above) already
+    // spaces out repeats ACROSS turns; this on-change dedupe additionally
+    // collapses the SAME copy repeating within one queued-prompt burst (rule
+    // a) and across still-inside-cooldown turns whose list hasn't changed.
+    const archiveSeg = buildArchiveSegment(archiveList);
+    if (dedupeEmit(home, sessionId, 'parent-inbox-archive', archiveSeg, { transcriptPath, keepaliveTurns: 10 })) {
+      segments.push(archiveSeg);
+      // Record the nudge only once it is actually being surfaced this turn.
+      for (const id of archiveList) markArchiveNudged(home, id, now);
+    }
   }
 
   const additionalContext = segments.join('\n\n');
@@ -2007,4 +2028,5 @@ module.exports = {
   broadcastSeenPath, visibleBroadcastRows, buildBroadcastSegment,
   // emit-dedupe normalizers + segment builders (tests/hooks/emit-dedupe.test.js):
   normalizeTableAges, normalizeInboxVolatile, buildUnreadSegment, buildOrphansSegment, logSegmentError,
+  buildUrgentUnreadSegment, buildArchiveSegment, buildStaleRegistrySegment,
 };

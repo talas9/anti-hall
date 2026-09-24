@@ -299,6 +299,51 @@ test('ORPHANED MESH banner: unchanged next delivered turn -> suppressed; changed
   } finally { rm(home); }
 });
 
+test('URGENT INBOX segment: unchanged next delivered turn -> suppressed; changed unread -> emitted', () => {
+  const home = tmpHome();
+  try {
+    const tp = mkTranscript(home);
+    const s1 = inbox.buildUrgentUnreadSegment([{ id: 'ws-a', unread: 2, urgencyMax: 'urgent' }]);
+    const s2 = inbox.buildUrgentUnreadSegment([{ id: 'ws-a', unread: 3, urgencyMax: 'urgent' }]);
+    const b = { home, sessionId: 's1', key: 'parent-inbox-urgent', keepaliveTurns: 10, transcriptPath: tp, env: ON };
+    assert.strictEqual(emit({ ...b, content: s1, now: T0 }), true);
+    deliver(tp, T0 + 20, s1);
+    assert.strictEqual(emit({ ...b, content: s1, now: T0 + MIN }), false, 'unchanged -> suppressed');
+    deliver(tp, T0 + MIN + 20, 'OVERRIDE');
+    assert.strictEqual(emit({ ...b, content: s2, now: T0 + 2 * MIN }), true, 'unread change -> emitted');
+  } finally { rm(home); }
+});
+
+test('ARCHIVE-READY segment: unchanged next delivered turn -> suppressed; changed list -> emitted', () => {
+  const home = tmpHome();
+  try {
+    const tp = mkTranscript(home);
+    const s1 = inbox.buildArchiveSegment(['ws-a']);
+    const s2 = inbox.buildArchiveSegment(['ws-a', 'ws-b']);
+    const b = { home, sessionId: 's1', key: 'parent-inbox-archive', keepaliveTurns: 10, transcriptPath: tp, env: ON };
+    assert.strictEqual(emit({ ...b, content: s1, now: T0 }), true);
+    deliver(tp, T0 + 20, s1);
+    assert.strictEqual(emit({ ...b, content: s1, now: T0 + MIN }), false, 'unchanged -> suppressed');
+    deliver(tp, T0 + MIN + 20, 'OVERRIDE');
+    assert.strictEqual(emit({ ...b, content: s2, now: T0 + 2 * MIN }), true, 'list change -> emitted');
+  } finally { rm(home); }
+});
+
+test('STALE WORKSPACE(S) segment: unchanged next delivered turn -> suppressed; changed unread -> emitted', () => {
+  const home = tmpHome();
+  try {
+    const tp = mkTranscript(home);
+    const s1 = inbox.buildStaleRegistrySegment([{ id: 'gone-ws', unread: 3 }]);
+    const s2 = inbox.buildStaleRegistrySegment([{ id: 'gone-ws', unread: 4 }]);
+    const b = { home, sessionId: 's1', key: 'parent-inbox-stale-registry', keepaliveTurns: 10, transcriptPath: tp, env: ON };
+    assert.strictEqual(emit({ ...b, content: s1, now: T0 }), true);
+    deliver(tp, T0 + 20, s1);
+    assert.strictEqual(emit({ ...b, content: s1, now: T0 + MIN }), false, 'unchanged -> suppressed');
+    deliver(tp, T0 + MIN + 20, 'OVERRIDE');
+    assert.strictEqual(emit({ ...b, content: s2, now: T0 + 2 * MIN }), true, 'unread change -> emitted');
+  } finally { rm(home); }
+});
+
 // ---------------- fallbacks + fail-open ----------------
 
 test('transcript missing -> 15s window fallback (burst inside the window collapses, 60s apart emits)', () => {

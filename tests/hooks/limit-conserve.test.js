@@ -353,6 +353,46 @@ test('INJECTOR FAIL-OPEN: malformed stdin -> exit 0, no crash', () => {
   } finally { h.cleanup(); }
 });
 
+// ── emit-dedupe: LIMIT CONSERVATION + downshift block, identical every turn ──
+// The directive was previously re-sent on EVERY UserPromptSubmit turn while
+// conserving (same reason/resetsAt), unlike the DevSwarm roster table's own
+// on-change dedupe. Same session_id + no transcript_path -> unusable transcript
+// -> the 15s window fallback: an immediate repeat (same hash) is suppressed,
+// a changed reason (different bucket over threshold) still emits.
+test('INJECTOR emit-dedupe: identical directive repeated immediately -> suppressed; changed reason -> emitted', () => {
+  const h = makeHome();
+  try {
+    writeCacheFile(h.home, makeCache({ weekly: 90 }));
+    const r1 = testHook(INJECT_HOOK, promptPayload(), { home: h.home, expectJson: true });
+    assert.strictEqual(r1.status, 0);
+    const ctx1 = additionalContext(r1);
+    assert.ok(ctx1.includes('LIMIT CONSERVATION ACTIVE'), `first call must emit; got: ${ctx1}`);
+
+    const r2 = testHook(INJECT_HOOK, promptPayload(), { home: h.home, expectJson: true });
+    assert.strictEqual(r2.status, 0);
+    assert.strictEqual(additionalContext(r2), '', 'identical directive repeated immediately must be suppressed');
+
+    writeCacheFile(h.home, makeCache({ fiveHour: 90 })); // different reason -> different hash
+    const r3 = testHook(INJECT_HOOK, promptPayload(), { home: h.home, expectJson: true });
+    assert.strictEqual(r3.status, 0);
+    const ctx3 = additionalContext(r3);
+    assert.ok(ctx3.includes('LIMIT CONSERVATION ACTIVE'), `changed reason must still emit; got: ${ctx3}`);
+    assert.ok(/5h|five.?hour/i.test(ctx3), `expected the changed (5h) reason; got: ${ctx3}`);
+  } finally { h.cleanup(); }
+});
+
+test('INJECTOR emit-dedupe: different session_id is not suppressed by another session\'s emit', () => {
+  const h = makeHome();
+  try {
+    writeCacheFile(h.home, makeCache({ weekly: 90 }));
+    const r1 = testHook(INJECT_HOOK, promptPayload(), { home: h.home, expectJson: true });
+    assert.ok(additionalContext(r1).includes('LIMIT CONSERVATION ACTIVE'));
+
+    const r2 = testHook(INJECT_HOOK, { ...promptPayload(), session_id: 'other' }, { home: h.home, expectJson: true });
+    assert.ok(additionalContext(r2).includes('LIMIT CONSERVATION ACTIVE'), 'a different session must still see the directive');
+  } finally { h.cleanup(); }
+});
+
 // ── Main-model downshift directive tests ─────────────────────────────────────
 
 test('INJECTOR DOWNSHIFT: conserving -> directive contains MAIN-MODEL DOWNSHIFT', () => {

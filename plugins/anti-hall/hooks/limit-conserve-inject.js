@@ -52,9 +52,12 @@ function buildDirective(state) {
 }
 
 function main() {
-  // stdin read — only for completeness (payload currently unused; skip-guard
-  // needs no fields from it, and isConserving reads env + fs directly).
-  try { fs.readFileSync(0, 'utf8'); } catch (_) { /* ignore */ }
+  // stdin read — skip-guard needs no fields from it and isConserving reads
+  // env + fs directly, but session_id/transcript_path feed emit-dedupe below
+  // (the LIMIT CONSERVATION + downshift block is identical turn-to-turn while
+  // the reason/resetsAt don't change, so it was re-sent on every single turn).
+  let payload = null;
+  try { payload = JSON.parse(fs.readFileSync(0, 'utf8')); } catch (_) { payload = null; }
 
   let text = '';
 
@@ -62,7 +65,16 @@ function main() {
     if (!isSkipped('limit-conserve')) {
       const state = isConserving();
       if (state.active) {
-        text = buildDirective(state);
+        const built = buildDirective(state);
+        const sessionId = (payload && typeof payload.session_id === 'string') ? payload.session_id : null;
+        const transcriptPath = (payload && typeof payload.transcript_path === 'string') ? payload.transcript_path : null;
+        let emit = true;
+        try {
+          emit = require('./lib/emit-dedupe.js').shouldEmit({
+            sessionId, transcriptPath, key: 'limit-conserve', content: built, keepaliveTurns: 10,
+          });
+        } catch (_) { emit = true; }
+        if (emit) text = built;
       }
     }
   } catch (_) {
