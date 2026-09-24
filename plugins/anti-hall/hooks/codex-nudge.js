@@ -162,6 +162,39 @@ function main() {
   if (scan.codeEdits < min) process.exit(0);
   if (scan.codexReview) process.exit(0);
 
+  // JEV SHADOW (codexNudgeSubstantial, default mode "shadow" — see
+  // hooks/lib/jev-assist.js): a file-edit COUNT treats every edit as equally
+  // "substantial", but three edits that only touch comments/strings/log lines
+  // are not review-worthy. baseline = true (this nudge is about to fire);
+  // trust 'relax-block' means an eventual "on" promotion could let a confident
+  // Jev disagreement suppress a low-value nudge — but askDetached is
+  // fire-and-forget (spawns a detached worker and returns immediately), so
+  // even at "on" this call cannot itself change the nudge that is about to be
+  // written below; it only logs to jev-assist.ndjson so `jev report` can show
+  // the would-be relax rate before this is ever wired to actually suppress.
+  // Zero latency added to this Stop hook's own budget.
+  try {
+    require('./lib/jev-assist.js').askDetached({
+      id: 'codexNudgeSubstantial',
+      question: {
+        type: 'noul',
+        instructions: 'This session is about to be nudged to get an independent Codex ' +
+          'review because it made several "substantial" code-file edits. Judge the edit ' +
+          'summary below: are these edits genuinely substantial (logic/behavior changes ' +
+          'worth a second-opinion review), as opposed to only comments/strings/log lines ' +
+          '/formatting?',
+        criteria: {
+          true: 'genuinely substantial — logic/behavior changed',
+          false: 'trivial — only comments/strings/log lines/formatting changed',
+        },
+      },
+      state: 'files: ' + Array.from(scan.codeFiles).slice(0, 20).join(', ') +
+        '\nedits: ' + scan.codeEdits,
+      trust: 'relax-block',
+      baseline: true,
+    });
+  } catch (_) { /* best-effort — never affects the nudge below */ }
+
   // Session key (mirror speculation-guard).
   const sessionId = (payload && payload.session_id && String(payload.session_id)) ||
     crypto.createHash('sha1').update(transcriptPath).digest('hex').slice(0, 16);

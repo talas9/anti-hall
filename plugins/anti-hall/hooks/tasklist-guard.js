@@ -383,6 +383,40 @@ function main() {
     process.exit(0);
   }
 
+  // JEV SHADOW (tasklistTrivial, default mode "shadow" — see
+  // hooks/lib/jev-assist.js): WORK_COUNT counts every Edit/Write/commit-ish
+  // Bash the same way, so a session of a handful of mechanical edits to one
+  // file under an explicit, bounded user ask reads as "non-trivial" to the
+  // counter exactly like a genuinely sprawling session would. baseline = true
+  // (this nudge is about to fire); trust 'relax-block' means an eventual "on"
+  // promotion could let a confident Jev disagreement suppress the nudge — but
+  // askDetached is fire-and-forget (spawns a detached worker and returns
+  // immediately), so even at "on" this call cannot itself change the block
+  // about to be written below; it only logs to jev-assist.ndjson so
+  // `jev report` can show the would-be relax rate before this is ever wired to
+  // actually suppress. Zero latency added to this Stop hook's own budget.
+  try {
+    require('./lib/jev-assist.js').askDetached({
+      id: 'tasklistTrivial',
+      question: {
+        type: 'noul',
+        instructions: 'This session is about to be nudged to track its work as tasks / ' +
+          'refresh its progress file. Judge the session summary below: does this look like ' +
+          'a genuinely non-trivial, multi-part effort that benefits from task tracking, as ' +
+          'opposed to a small, bounded, single-purpose chore?',
+        criteria: {
+          true: 'genuinely non-trivial — multi-part, benefits from task tracking',
+          false: 'a small bounded chore — task tracking would be overhead, not help',
+        },
+      },
+      state: 'workCount=' + workCount + ' threshold=' + threshold +
+        ' sawTaskActivity=' + sawTaskActivity + ' hasStaleInProgress=' + hasStaleInProgress +
+        ' progressFresh=' + progressFresh + ' openTaskCount=' + openTaskIds.length,
+      trust: 'relax-block',
+      baseline: true,
+    });
+  } catch (_) { /* best-effort — never affects the nudge below */ }
+
   // --- loop-safety state -----------------------------------------------------
   const sessionId =
     rawSessionId ||

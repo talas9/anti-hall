@@ -787,3 +787,93 @@ test('ask()/askSync() shadow-log row: claimLedger and mergeGateHedge default to 
     });
   } finally { h.cleanup(); }
 });
+
+// ---------------------------------------------------------------------------
+// codexNudgeSubstantial (hooks/codex-nudge.js) / tasklistTrivial
+// (hooks/tasklist-guard.js) — both askDetached, relax-block, default shadow.
+// Neither hook can EVER change its own synchronous output from these calls
+// (askDetached is fire-and-forget and returns before the network call even
+// starts — see its own header in hooks/lib/jev-assist.js), so the meaningful
+// per-integration proof is exactly what claimLedger/mergeGateHedge/newRequest
+// above already established for this same shape: default mode is "shadow",
+// a decision row lands (eventually, via the detached worker) with `final`
+// always equal to `base`, and mode "on" holds the SAME relax-block trust math
+// (never actually reaching the hook's own decision — that would require the
+// hook itself to switch from askDetached to askSync, which none of these do).
+// ---------------------------------------------------------------------------
+
+test('getMode: codexNudgeSubstantial and tasklistTrivial default to "shadow" once enabled', () => {
+  const { getMode } = freshLib();
+  assert.strictEqual(getMode('codexNudgeSubstantial', { enabled: true }), 'shadow');
+  assert.strictEqual(getMode('tasklistTrivial', { enabled: true }), 'shadow');
+});
+
+test('askDetached(): codexNudgeSubstantial in shadow logs a relax-block row that never changes baseline', async () => {
+  const h = makeHome();
+  try {
+    h.writeState('jev.json', { enabled: true, integrations: { codexNudgeSubstantial: 'shadow' } });
+    await withMockServer(noulHandler(0.05), async (endpoint) => {
+      await withEnv({ HOME: h.home, AI_GATEWAY_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
+        const { askDetached } = freshLib();
+        askDetached({
+          id: 'codexNudgeSubstantial', question: NOUL_Q, state: 'files: a.js, b.js\nedits: 3',
+          trust: 'relax-block', baseline: true,
+        });
+        const p = path.join(h.home, '.anti-hall', 'logs', 'jev-assist.ndjson');
+        const hit = await waitForLog(p, (r) => r.id === 'codexNudgeSubstantial');
+        assert.ok(hit, 'expected a decision row from the detached worker');
+        assert.strictEqual(hit.mode, 'shadow');
+        assert.strictEqual(hit.final, true, 'shadow must never relax the nudge, even though Jev said false confidently');
+        assert.strictEqual(hit.final, hit.base);
+      });
+    });
+  } finally { h.cleanup(); }
+});
+
+test('askDetached(): tasklistTrivial in mode "on" still cannot change the CALLER — trust math relaxes, hook wiring does not', async () => {
+  const h = makeHome();
+  try {
+    h.writeState('jev.json', { enabled: true, integrations: { tasklistTrivial: 'on' } });
+    await withMockServer(noulHandler(0.05), async (endpoint) => {
+      await withEnv({ HOME: h.home, AI_GATEWAY_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
+        const { askDetached } = freshLib();
+        askDetached({
+          id: 'tasklistTrivial', question: NOUL_Q, state: 'workCount=4 threshold=4',
+          trust: 'relax-block', baseline: true,
+        });
+        const p = path.join(h.home, '.anti-hall', 'logs', 'jev-assist.ndjson');
+        const hit = await waitForLog(p, (r) => r.id === 'tasklistTrivial');
+        assert.ok(hit, 'expected a decision row from the detached worker');
+        assert.strictEqual(hit.mode, 'on');
+        // The TRUST MATH itself relaxes (final=false) once promoted to "on" —
+        // proving the math is wired correctly — but hooks/tasklist-guard.js
+        // never reads this return value (askDetached returns nothing), so its
+        // own Stop-hook nudge is unaffected regardless of this row's `final`.
+        assert.strictEqual(hit.final, false, 'on: confident false relaxes the trust-math baseline');
+        assert.strictEqual(hit.changed, 'relaxed');
+      });
+    });
+  } finally { h.cleanup(); }
+});
+
+test('askDetached(): codexNudgeSubstantial fails open to baseline when Jev is unreachable', async () => {
+  const h = makeHome();
+  try {
+    h.writeState('jev.json', { enabled: true, timeoutMs: 150, integrations: { codexNudgeSubstantial: 'on' } });
+    await withMockServer(() => { /* never respond */ }, async (endpoint) => {
+      await withEnv({ HOME: h.home, AI_GATEWAY_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
+        const { askDetached } = freshLib();
+        askDetached({
+          id: 'codexNudgeSubstantial', question: NOUL_Q, state: 'files: a.js\nedits: 3',
+          trust: 'relax-block', baseline: true,
+        });
+        const p = path.join(h.home, '.anti-hall', 'logs', 'jev-assist.ndjson');
+        const hit = await waitForLog(p, (r) => r.id === 'codexNudgeSubstantial');
+        assert.ok(hit, 'expected a decision row even on timeout');
+        assert.strictEqual(hit.final, true, 'timeout -> fails open to baseline');
+        assert.strictEqual(hit.backend, 'baseline-only');
+        assert.strictEqual(hit.reason, 'timeout');
+      });
+    });
+  } finally { h.cleanup(); }
+});
