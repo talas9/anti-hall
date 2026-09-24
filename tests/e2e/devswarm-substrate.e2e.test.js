@@ -182,9 +182,13 @@ test('2 PARENT-INBOX: injects the exact unread count for a dummy inbox with N un
     // cursor, not a raw durable NDJSON file — seed 3 real store messages.
     seedStoreUnread(home, 'wsA', ['{"m":1}', '{"m":2}', '{"m":3}']);
 
+    // v0.108.0 inbox grace: freshly seeded unread is held back for
+    // devswarm.inboxGraceSec (120 s) unless the child heartbeats; this test is
+    // about the exact count, so the grace window is switched off here (the
+    // grace itself is covered by devswarm-parent-inbox-grace-window.test.js).
     const r = testHook('devswarm-parent-inbox.js',
       { hook_event_name: 'UserPromptSubmit', session_id: 't', prompt: 'hi', cwd: MESH_CWD },
-      { home, env: PRIMARY_ENV, expectJson: true });
+      { home, env: Object.assign({}, PRIMARY_ENV, { ANTIHALL_DEVSWARM_INBOX_GRACE_SEC: '0' }), expectJson: true });
     assert.strictEqual(r.status, 0);
     const c = ctxOf(r);
     assert.match(c, /DEVSWARM PARENT INBOX/);
