@@ -2,9 +2,9 @@
 // trigger (hooks/auto-handover.js, hooks/auto-handover-pause-nag.js), backed
 // by the CANONICAL shared settings store (hooks/lib/settings.js +
 // settings-schema.js) — section "autoHandover":
-//   { enabled, pct (1-99), nag, nagStepPct, nagQuietMin }
+//   { enabled, pct (1-99), maxTokens (>=0, 0 = no ceiling), nag, nagStepPct, nagQuietMin }
 // declared in settings-schema.js's SECTIONS, with `pct` wired to env
-// ANTIHALL_AUTO_HANDOVER_PCT there. This file calls ONLY settings.js's public
+// ANTIHALL_AUTO_HANDOVER_PCT and `maxTokens` to ANTIHALL_AUTO_HANDOVER_MAX_TOKENS there. This file calls ONLY settings.js's public
 // surface (load/get/set/path) — it owns no file I/O or schema logic of its
 // own.
 //
@@ -37,6 +37,17 @@ const DEFAULT_PCT = 85;
 const DEFAULT_NAG = true;
 const DEFAULT_NAG_STEP_PCT = 5;
 const DEFAULT_NAG_QUIET_MIN = 15;
+// Absolute token ceiling, fired on whichever of pct / maxTokens comes first.
+// 170000 = the default 85% threshold on a standard 200K window, so 200K
+// sessions behave exactly as before, while a 1M session hands over at ~170K
+// instead of ~850K. Sources (docs/KB-handover-research.md): Claude Code
+// model-config — models without extended context compact at the 200K
+// boundary, native-1M models at ~967K
+// (https://code.claude.com/docs/en/model-config); Chroma "Context Rot"
+// (https://www.trychroma.com/research/context-rot) — 18 models degrade at
+// every input-length increment tested, i.e. quality tracks absolute length,
+// not the percentage of a larger window.
+const DEFAULT_MAX_TOKENS = 170000;
 
 // readConfig(home) -> the RAW settings.json section (NOT the resolved
 // values) — {} when nothing has ever been written. Used by the CLI's `get`
@@ -58,6 +69,7 @@ function writeConfig(home, mutator) {
     nag: settings.get(SECTION, 'nag', DEFAULT_NAG, { home }),
     nagStepPct: settings.get(SECTION, 'nagStepPct', DEFAULT_NAG_STEP_PCT, { home }),
     nagQuietMin: settings.get(SECTION, 'nagQuietMin', DEFAULT_NAG_QUIET_MIN, { home }),
+    maxTokens: settings.get(SECTION, 'maxTokens', DEFAULT_MAX_TOKENS, { home }),
   };
   const next = mutator(Object.assign({}, current)) || current;
   for (const key of Object.keys(next)) {
@@ -74,7 +86,28 @@ function isPositiveInt(n) {
   return Number.isInteger(n) && n > 0;
 }
 
-// resolveEffective({home, env}) -> { enabled, pct, nag, nagStepPct, nagQuietMin, source }
+function isValidMaxTokens(n) {
+  return Number.isInteger(n) && n >= 0;
+}
+
+// overThreshold(result, cfg) -> 'pct' | 'tokens' | 'pct-unknown-window' | null.
+// result is hooks/lib/context-pct.js's reading; cfg is resolveEffective()'s
+// output. 'tokens' uses result.used, a REAL token count on every source (only
+// the window size can be a guess), so it may fire the mandatory directive
+// even when result.windowKnown === false; a pct crossing measured against an
+// unknown (guessed 200K) window only reports 'pct-unknown-window' — callers
+// give that the soft advisory, never the mandatory directive.
+function overThreshold(result, cfg) {
+  if (!result || !cfg || !cfg.enabled) return null;
+  const byPct = Number.isFinite(result.pct) && result.pct >= cfg.pct;
+  const byTokens = cfg.maxTokens > 0 && Number.isFinite(result.used) && result.used >= cfg.maxTokens;
+  if (byPct && result.windowKnown !== false) return 'pct';
+  if (byTokens) return 'tokens';
+  if (byPct) return 'pct-unknown-window';
+  return null;
+}
+
+// resolveEffective({home, env}) -> { enabled, pct, maxTokens, nag, nagStepPct, nagQuietMin, source }
 //   source: 'env' | 'file' | 'default' — where `pct` came from (tests only;
 //   a plugin-option/legacy hit from settings.js also reports as 'file' here,
 //   since this feature has neither wired).
@@ -89,7 +122,7 @@ function resolveEffective(opts) {
   if (envRaw !== undefined && envRaw !== null && String(envRaw).trim() !== '') {
     const envN = parseInt(envRaw, 10);
     if (envN === 0) {
-      return { enabled: false, pct: 0, nag: false, nagStepPct: DEFAULT_NAG_STEP_PCT, nagQuietMin: DEFAULT_NAG_QUIET_MIN, source: 'env' };
+      return { enabled: false, pct: 0, maxTokens: 0, nag: false, nagStepPct: DEFAULT_NAG_STEP_PCT, nagQuietMin: DEFAULT_NAG_QUIET_MIN, source: 'env' };
     }
     // A valid 1-99 env value flows through settings.get() below normally
     // (the schema's own `pct` entry declares this same env var), so no
@@ -103,10 +136,11 @@ function resolveEffective(opts) {
   const nagQuietMin = settings.get(SECTION, 'nagQuietMin', DEFAULT_NAG_QUIET_MIN, { home, env });
 
   if (!enabled) {
-    return { enabled: false, pct: 0, nag: false, nagStepPct, nagQuietMin, source: 'file' };
+    return { enabled: false, pct: 0, maxTokens: 0, nag: false, nagStepPct, nagQuietMin, source: 'file' };
   }
 
   const pct = settings.get(SECTION, 'pct', DEFAULT_PCT, { home, env });
+  const maxTokens = Math.floor(settings.get(SECTION, 'maxTokens', DEFAULT_MAX_TOKENS, { home, env }));
 
   let source = 'default';
   if (envRaw !== undefined && envRaw !== null && String(envRaw).trim() !== '' && isValidPct(parseInt(envRaw, 10))) {
@@ -116,7 +150,7 @@ function resolveEffective(opts) {
     if (Object.prototype.hasOwnProperty.call(raw, 'pct')) source = 'file';
   }
 
-  return { enabled: true, pct, nag, nagStepPct, nagQuietMin, source };
+  return { enabled: true, pct, maxTokens, nag, nagStepPct, nagQuietMin, source };
 }
 
 module.exports = {
@@ -125,7 +159,10 @@ module.exports = {
   resolveEffective,
   isValidPct,
   isPositiveInt,
+  isValidMaxTokens,
+  overThreshold,
   DEFAULT_PCT,
+  DEFAULT_MAX_TOKENS,
   DEFAULT_NAG,
   DEFAULT_NAG_STEP_PCT,
   DEFAULT_NAG_QUIET_MIN,

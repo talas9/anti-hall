@@ -121,11 +121,13 @@ test('disabled by autoHandover.nag=false, even though the latch already fired', 
   }
 });
 
-test('never nags before the fire directive has gone out (latch not fired)', () => {
+test('never nags before the fire directive has gone out (latch not fired; unknown-window pct crossing never fires at Stop)', () => {
   const h = makeHome();
   try {
     const tp = writeUsage(h, 95);
-    const r = testHook(HOOK, payload({ transcript_path: tp }), { home: h.home, expectJson: true });
+    // Token ceiling off: 95% of the guessed 200k is 190000 REAL tokens, which
+    // the default maxTokens ceiling would (correctly) fire on at Stop.
+    const r = testHook(HOOK, payload({ transcript_path: tp }), { home: h.home, env: { ANTIHALL_AUTO_HANDOVER_MAX_TOKENS: '0' }, expectJson: true });
     assert.strictEqual(decision(r), null);
   } finally {
     h.cleanup();
@@ -277,7 +279,7 @@ test('Stop-side fire: over threshold and never fired -> fire directive once, lat
     assert.match(decision(r1) || '', /AUTO-HANDOVER REQUIRED/);
     const latch = JSON.parse(fs.readFileSync(path.join(h.home, '.anti-hall', 'auto-handover', 's1.json'), 'utf8'));
     assert.strictEqual(latch.fired, true);
-    assert.strictEqual(latch.firedVia, 'stop');
+    assert.strictEqual(latch.firedVia, 'stop-pct');
     const r2 = testHook(HOOK, payload({ transcript_path: tp }), { home: h.home, env: KNOWN_WINDOW, expectJson: true });
     assert.doesNotMatch(decision(r2) || '', /AUTO-HANDOVER REQUIRED/, 'fires once per arm');
     const r3 = testHook('auto-handover.js', { hook_event_name: 'UserPromptSubmit', session_id: SESSION, prompt: 'hi', cwd: process.cwd(), transcript_path: tp },

@@ -8,6 +8,9 @@
 
 'use strict';
 
+const path = require('path');
+const find = require('./handover-find.js');
+
 // One short, non-alarmist sentence shared by every message this feature
 // emits (fire directive, milestone nag, and the Stop-time pause nag) — the
 // reason to compact/clear isn't only "you'll hit the limit soon".
@@ -15,22 +18,54 @@ const BLOAT_SENTENCE =
   'As context grows the model gets less efficient and more prone to hallucination, ' +
   'so compacting/clearing keeps answers accurate, not just under the limit.';
 
-function buildFireDirective(pct, estimated, windowLabel) {
+// expectedHandoverPath(payload) -> the repo-relative path the handover skill
+// will write next for this session ('.anti-hall/handovers/<today>/<sid>/
+// HANDOVER[-N].md'), by the skill's own date + sequencing rules; null
+// without a cwd.
+function expectedHandoverPath(payload) {
+  const cwd = payload && typeof payload.cwd === 'string' && payload.cwd ? payload.cwd : null;
+  if (!cwd) return null;
+  const date = find.localDate();
+  const sid = find.sanitizeSessionId(payload.session_id);
+  const name = find.nextHandoverName(path.join(find.handoversRoot(cwd), date, sid));
+  return ['.anti-hall', 'handovers', date, sid, name].join('/');
+}
+
+// compactCommand(handoverPath) -> the exact /compact line for the user.
+// Claude Code documents free-text focus after /compact ("/compact focus on
+// the API changes" — https://code.claude.com/docs/en/how-claude-code-works).
+function compactCommand(handoverPath) {
+  return '/compact focus: continuation state is in ' + (handoverPath || '<the HANDOVER*.md path you wrote>') +
+    '; keep pending tasks, the user\'s session rules, and unverified items';
+}
+
+// buildFireDirective(result, via, payload)
+//   result : hooks/lib/context-pct.js's reading ({ pct, used, estimated, windowLabel })
+//   via    : 'pct' | 'tokens' (hooks/lib/auto-handover-config.js overThreshold())
+//   payload: the hook payload (cwd + session_id -> the expected handover path)
+function buildFireDirective(result, via, payload) {
+  const pct = result.pct;
   let label = '';
-  if (estimated) {
-    label = windowLabel === 'inferred-1m'
+  if (via === 'tokens') {
+    label = ' (~' + Math.round((result.used || 0) / 1000) + 'K tokens — over the absolute autoHandover.maxTokens ' +
+      'ceiling; long contexts degrade with length, not just near the window limit)';
+  } else if (result.estimated) {
+    label = result.windowLabel === 'inferred-1m'
       ? ' (inferred 1M window — observed usage already exceeded the standard 200k, so this session is estimated against a 1,000,000-token window)'
       : ' (ESTIMATED — assuming a standard 200k context window; if this is a 1M-context session, set ANTIHALL_CONTEXT_WINDOW_TOKENS or install the anti-hall statusline for an exact reading)';
   }
+  const hp = expectedHandoverPath(payload);
   return (
     'CONTEXT AT ~' + Math.round(pct) + '%' + label + ' — AUTO-HANDOVER REQUIRED. Without asking the user first: ' +
     '(1) immediately WRITE an anti-hall session handover YOURSELF, following the /anti-hall:handover ' +
     'skill contract exactly (self-write mandate — never delegate this to a subagent; it never lived ' +
-    'this session and would lose decision/trial fidelity); ' +
+    'this session and would lose decision/trial fidelity)' +
+    (hp ? '; by the skill\'s own date/sequence rules its main file is ' + hp : '') + '; ' +
     '(2) then TELL the user this was done, to preserve the session\'s work against auto-compact (or ' +
     'anything they might otherwise forget), and LIST every path you just saved under .anti-hall/handovers/**; ' +
-    '(3) URGE them to run /compact (or /clear) soon, and ASK whether they would like to reach a good ' +
-    'stopping point first before they do. ' + BLOAT_SENTENCE + ' ' +
+    '(3) URGE them to compact (or /clear) soon and give them this exact command to paste: `' +
+    compactCommand(hp) + '` (substitute the real path if you wrote the handover elsewhere), and ASK ' +
+    'whether they would like to reach a good stopping point first before they do. ' + BLOAT_SENTENCE + ' ' +
     'This fires once per session at this threshold; you will get brief follow-up reminders as context ' +
     'keeps growing, not a repeat of this whole message.'
   );
@@ -67,6 +102,8 @@ function buildPauseNag(pct) {
 module.exports = {
   BLOAT_SENTENCE,
   buildFireDirective,
+  expectedHandoverPath,
+  compactCommand,
   buildMilestoneNag,
   buildSoftAdvisory,
   buildPauseNag,

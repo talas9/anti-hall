@@ -21,6 +21,7 @@
 //   node auto-handover-config.js nag on|off
 //   node auto-handover-config.js nag-step <n>
 //   node auto-handover-config.js nag-quiet <n>
+//   node auto-handover-config.js max-tokens <n>   (absolute token ceiling; 0 = off)
 
 const path = require('path');
 const {
@@ -29,6 +30,7 @@ const {
   resolveEffective,
   isValidPct,
   isPositiveInt,
+  isValidMaxTokens,
   DEFAULT_PCT,
 } = require(path.join(__dirname, '..', 'hooks', 'lib', 'auto-handover-config.js'));
 
@@ -46,6 +48,7 @@ function cmdGet(opts) {
   }
   console.log(`enabled: ${effective.enabled}`);
   console.log(`pct: ${effective.pct} (source: ${effective.source})`);
+  console.log(`maxTokens: ${effective.maxTokens}${effective.maxTokens === 0 ? ' (ceiling off)' : ''}`);
   console.log(`nag: ${effective.nag}`);
   console.log(`nagStepPct: ${effective.nagStepPct}`);
   console.log(`nagQuietMin: ${effective.nagQuietMin}`);
@@ -120,6 +123,19 @@ function cmdNagQuiet(nArg) {
   console.log(`auto-handover nag-quiet set to ${n} minutes`);
 }
 
+function cmdMaxTokens(nArg) {
+  const n = parseInt(nArg, 10);
+  if (!isValidMaxTokens(n) || String(n) !== String(nArg).trim()) {
+    fail(`max-tokens: invalid value "${nArg}" — expected an integer >= 0 (0 turns the ceiling off)`);
+    return;
+  }
+  writeConfig(undefined, (cfg) => {
+    cfg.maxTokens = n;
+    return cfg;
+  });
+  console.log(n === 0 ? 'auto-handover token ceiling off' : `auto-handover token ceiling set to ${n} tokens`);
+}
+
 function main() {
   const argv = process.argv.slice(2);
   const verb = argv[0];
@@ -133,13 +149,14 @@ function main() {
     case 'nag': return cmdNag(argv[1]);
     case 'nag-step': return cmdNagStep(argv[1]);
     case 'nag-quiet': return cmdNagQuiet(argv[1]);
+    case 'max-tokens': return cmdMaxTokens(argv[1]);
     default:
-      console.error('usage: auto-handover-config.js get [--json] | set <1-99> | off | on | nag on|off | nag-step <n> | nag-quiet <n>');
+      console.error('usage: auto-handover-config.js get [--json] | set <1-99> | off | on | nag on|off | nag-step <n> | nag-quiet <n> | max-tokens <n>');
       process.exitCode = 1;
   }
 }
 
-module.exports = { cmdGet, cmdSet, cmdOff, cmdOn, cmdNag, cmdNagStep, cmdNagQuiet };
+module.exports = { cmdGet, cmdSet, cmdOff, cmdOn, cmdNag, cmdNagStep, cmdNagQuiet, cmdMaxTokens };
 
 if (require.main === module) {
   main();

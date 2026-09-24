@@ -210,7 +210,11 @@ test('nag:false in settings silences the milestone nag but the initial fire stil
 // --- window-known gating (P1 hardening: never fire the mandatory directive
 // from an estimate whose window is genuinely unknown) --------------------
 
-const DEDUPE_ONLY = { ANTIHALL_EMIT_DEDUPE: '0' }; // deliberately WITHOUT ANTIHALL_CONTEXT_WINDOW_TOKENS
+// Deliberately WITHOUT ANTIHALL_CONTEXT_WINDOW_TOKENS. The absolute token
+// ceiling is turned OFF here: 85%+ of a guessed 200k window is >= 170000 REAL
+// tokens, which the default maxTokens ceiling (a real count) fires on by
+// design — these tests isolate the pct-against-unknown-window path.
+const DEDUPE_ONLY = { ANTIHALL_EMIT_DEDUPE: '0', ANTIHALL_AUTO_HANDOVER_MAX_TOKENS: '0' };
 
 test('unknown window (no statusline, no env, usage never exceeded 200k) -> soft advisory, NOT the mandatory directive', () => {
   const h = makeHome();
@@ -270,5 +274,90 @@ test('a KNOWN window (ANTIHALL_CONTEXT_WINDOW_TOKENS) fires the mandatory direct
     assert.ok(!/soft heads-up/.test(ctx(r)));
   } finally {
     h.cleanup();
+  }
+});
+
+// --- absolute token ceiling (autoHandover.maxTokens, default 170000) -------
+
+test('token ceiling: 1M window at 20% (200K tokens) -> mandatory directive via maxTokens, even though pct < 85', () => {
+  const h = makeHome();
+  try {
+    const p = h.writeTranscript([]);
+    fs.writeFileSync(p, assistantUsageLine(200000) + '\n', 'utf8');
+    const r = testHook(HOOK, payload({ transcript_path: p }), { home: h.home, env: { ANTIHALL_EMIT_DEDUPE: '0', ANTIHALL_CONTEXT_WINDOW_TOKENS: '1000000' }, expectJson: true });
+    assert.match(ctx(r), /AUTO-HANDOVER REQUIRED/);
+    assert.match(ctx(r), /maxTokens/);
+    const latch = JSON.parse(fs.readFileSync(path.join(h.home, '.anti-hall', 'auto-handover', 's1.json'), 'utf8'));
+    assert.strictEqual(latch.firedVia, 'tokens');
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('token ceiling: unknown window, 172K real tokens -> mandatory directive (a real count, not a guess)', () => {
+  const h = makeHome();
+  try {
+    const p = h.writeTranscript([]);
+    fs.writeFileSync(p, assistantUsageLine(172000) + '\n', 'utf8');
+    const r = testHook(HOOK, payload({ transcript_path: p }), { home: h.home, env: { ANTIHALL_EMIT_DEDUPE: '0' }, expectJson: true });
+    assert.match(ctx(r), /AUTO-HANDOVER REQUIRED/);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('token ceiling: below both thresholds -> silent; env override raises the ceiling; 0 disables it', () => {
+  const h = makeHome();
+  try {
+    const p = h.writeTranscript([]);
+    fs.writeFileSync(p, assistantUsageLine(300000) + '\n', 'utf8');
+    const base = { ANTIHALL_EMIT_DEDUPE: '0', ANTIHALL_CONTEXT_WINDOW_TOKENS: '1000000' };
+    const r1 = testHook(HOOK, payload({ transcript_path: p }), { home: h.home, env: Object.assign({ ANTIHALL_AUTO_HANDOVER_MAX_TOKENS: '400000' }, base), expectJson: true });
+    assert.strictEqual(ctx(r1), '');
+    const r2 = testHook(HOOK, payload({ transcript_path: p }), { home: h.home, env: Object.assign({ ANTIHALL_AUTO_HANDOVER_MAX_TOKENS: '0' }, base), expectJson: true });
+    assert.strictEqual(ctx(r2), '');
+    const r3 = testHook(HOOK, payload({ transcript_path: p }), { home: h.home, env: base, expectJson: true });
+    assert.match(ctx(r3), /AUTO-HANDOVER REQUIRED/);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('token ceiling: settings.json maxTokens is honored; latch re-arms only once BOTH pct and tokens are back under', () => {
+  const h = makeHome();
+  try {
+    const settings = require('../../plugins/anti-hall/hooks/lib/settings.js');
+    settings.set('autoHandover', 'maxTokens', 250000, { home: h.home });
+    const env = { ANTIHALL_EMIT_DEDUPE: '0', ANTIHALL_CONTEXT_WINDOW_TOKENS: '1000000' };
+    const p = h.writeTranscript([]);
+    fs.writeFileSync(p, assistantUsageLine(200000) + '\n', 'utf8');
+    assert.strictEqual(ctx(testHook(HOOK, payload({ transcript_path: p }), { home: h.home, env, expectJson: true })), '');
+    fs.writeFileSync(p, assistantUsageLine(260000) + '\n', 'utf8');
+    assert.match(ctx(testHook(HOOK, payload({ transcript_path: p }), { home: h.home, env, expectJson: true })), /AUTO-HANDOVER REQUIRED/);
+    const latchPath = path.join(h.home, '.anti-hall', 'auto-handover', 's1.json');
+    fs.writeFileSync(p, assistantUsageLine(240000) + '\n', 'utf8');
+    testHook(HOOK, payload({ transcript_path: p }), { home: h.home, env, expectJson: true });
+    assert.strictEqual(JSON.parse(fs.readFileSync(latchPath, 'utf8')).fired, false, 're-armed once under the ceiling');
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('fire directive prints the exact /compact focus command with the expected handover path', () => {
+  const h = makeHome();
+  const os = require('node:os');
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'antihall-autohandover-cwd-'));
+  try {
+    const find = require('../../plugins/anti-hall/hooks/lib/handover-find.js');
+    const dir = path.join(cwd, '.anti-hall', 'handovers', find.localDate(), 'sess-x');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'HANDOVER.md'), '# h\n');
+    const tp = writeUsage(h, 90);
+    const r = testHook(HOOK, payload({ transcript_path: tp, session_id: 'sess-x', cwd }), { home: h.home, env: NO_DEDUPE, expectJson: true });
+    const expected = '.anti-hall/handovers/' + find.localDate() + '/sess-x/HANDOVER-2.md';
+    assert.ok(ctx(r).includes('`/compact focus: continuation state is in ' + expected + '; keep pending tasks'), ctx(r));
+  } finally {
+    h.cleanup();
+    fs.rmSync(cwd, { recursive: true, force: true });
   }
 });

@@ -267,6 +267,23 @@ write), never a substitute for this skill, and never blocks compaction. The
 resume hook names it — as NEWER than the handover when work happened after the
 handover, or as the only pointer when no handover exists for the session.
 
+**Compact Instructions (optional, recommended).** Claude Code lets a
+"Compact Instructions" section in `CLAUDE.md` steer every compaction summary,
+automatic ones included (https://code.claude.com/docs/en/how-claude-code-works).
+Paste this into the project's `CLAUDE.md` so even an unplanned auto-compact
+points at the handover:
+
+```markdown
+## Compact Instructions
+Continuation state lives in the newest .anti-hall/handovers/<date>/<session>/HANDOVER*.md
+(and any newer PRECOMPACT-<n>.md beside it). In the summary, name that path, keep every
+pending/in-progress task, quote the user's session rules verbatim, and keep the
+"NOT verified" items. Do not restate work as verified unless the handover says so.
+```
+
+The auto-handover directive also hands the user the exact
+`/compact focus: continuation state is in <handover path>; ...` line to paste.
+
 **Write proactively** — at task boundaries or when compaction risk is rising, not
 only when explicitly asked and not at the context ceiling (`/compact` itself can
 fail once the ceiling is hit — docs/KB-session-handover.md, F4). If you notice a

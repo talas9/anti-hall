@@ -198,3 +198,44 @@ test('CLI nag/nag-step/nag-quiet: persist their values', () => {
     h.cleanup();
   }
 });
+
+test('maxTokens: default 170000, env override, 0 disables; overThreshold picks pct / tokens / pct-unknown-window', () => {
+  const { overThreshold, DEFAULT_MAX_TOKENS } = require('../../plugins/anti-hall/hooks/lib/auto-handover-config.js');
+  const h = makeHome();
+  try {
+    const d = resolveEffective({ home: h.home, env: {} });
+    assert.strictEqual(DEFAULT_MAX_TOKENS, 170000);
+    assert.strictEqual(d.maxTokens, 170000);
+    assert.strictEqual(resolveEffective({ home: h.home, env: { ANTIHALL_AUTO_HANDOVER_MAX_TOKENS: '0' } }).maxTokens, 0);
+    assert.strictEqual(resolveEffective({ home: h.home, env: { ANTIHALL_AUTO_HANDOVER_MAX_TOKENS: '300000' } }).maxTokens, 300000);
+    assert.strictEqual(overThreshold({ pct: 90, used: 180000, windowKnown: true }, d), 'pct');
+    assert.strictEqual(overThreshold({ pct: 20, used: 200000, windowKnown: true }, d), 'tokens');
+    assert.strictEqual(overThreshold({ pct: 90, used: 180000, windowKnown: false }, d), 'tokens');
+    assert.strictEqual(overThreshold({ pct: 90, used: 180000, windowKnown: false }, Object.assign({}, d, { maxTokens: 0 })), 'pct-unknown-window');
+    assert.strictEqual(overThreshold({ pct: 10, used: 20000, windowKnown: true }, d), null);
+    assert.strictEqual(overThreshold({ pct: 99, used: 999999, windowKnown: true }, resolveEffective({ home: h.home, env: { ANTIHALL_AUTO_HANDOVER_PCT: '0' } })), null);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('CLI max-tokens: persists a valid ceiling (0 = off), rejects junk without writing', () => {
+  const h = makeHome();
+  try {
+    let code;
+    withHomeEnv(h.home, () => {
+      const prevExit = process.exitCode;
+      CLI.cmdMaxTokens('-5');
+      code = process.exitCode;
+      process.exitCode = prevExit;
+    });
+    assert.strictEqual(code, 1);
+    assert.deepStrictEqual(readConfig(h.home), {});
+    withHomeEnv(h.home, () => CLI.cmdMaxTokens('250000'));
+    assert.strictEqual(resolveEffective({ home: h.home, env: {} }).maxTokens, 250000);
+    withHomeEnv(h.home, () => CLI.cmdMaxTokens('0'));
+    assert.strictEqual(resolveEffective({ home: h.home, env: {} }).maxTokens, 0);
+  } finally {
+    h.cleanup();
+  }
+});

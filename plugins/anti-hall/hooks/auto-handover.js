@@ -49,7 +49,7 @@ const os = require('os');
 const { isSubagentByPayload } = require('./coordinator-detect.js');
 const { isSkipped } = require('./skip-guard.js');
 const { getContextPct } = require('./lib/context-pct.js');
-const { resolveEffective } = require('./lib/auto-handover-config.js');
+const { resolveEffective, overThreshold } = require('./lib/auto-handover-config.js');
 const { sessionTag, readLatch, writeLatch } = require('./lib/auto-handover-state.js');
 const { buildFireDirective, buildMilestoneNag, buildSoftAdvisory } = require('./lib/auto-handover-text.js');
 
@@ -76,10 +76,11 @@ function main() {
           const result = getContextPct(transcriptPath, env, { home, sessionId: payload.session_id });
           if (result && Number.isFinite(result.pct)) {
             const now = Date.now();
-            if (result.pct < settings.pct) {
+            const over = overThreshold(result, settings);
+            if (!over) {
               if (fired || latch.softFired) writeLatch(home, tag, { fired: false, softFired: false });
             } else if (!fired) {
-              if (result.windowKnown === false) {
+              if (over === 'pct-unknown-window') {
                 // Unknown window -> never the mandatory directive; a single
                 // soft advisory per arm instead (never repeated every turn).
                 if (latch.softFired !== true) {
@@ -87,9 +88,9 @@ function main() {
                   writeLatch(home, tag, Object.assign({}, latch, { softFired: true, lastNagAt: now }));
                 }
               } else {
-                text = buildFireDirective(result.pct, result.estimated === true, result.windowLabel);
+                text = buildFireDirective(result, over, payload);
                 writeLatch(home, tag, {
-                  fired: true, firedAt: now, firedPct: result.pct,
+                  fired: true, firedAt: now, firedPct: result.pct, firedVia: over,
                   lastNagPct: result.pct, lastNagAt: now, softFired: false,
                 });
               }

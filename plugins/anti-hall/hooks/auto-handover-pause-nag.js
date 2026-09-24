@@ -54,7 +54,7 @@ const { isSubagentByPayload } = require('./coordinator-detect.js');
 const { isSkipped } = require('./skip-guard.js');
 const { stopHookActive } = require('./lib/stop-policy.js');
 const { getContextPct } = require('./lib/context-pct.js');
-const { resolveEffective } = require('./lib/auto-handover-config.js');
+const { resolveEffective, overThreshold } = require('./lib/auto-handover-config.js');
 const { sessionTag, readLatch, writeLatch } = require('./lib/auto-handover-state.js');
 const { readTail } = require('./lib/transcript-tail.js');
 const { buildFireDirective, buildPauseNag } = require('./lib/auto-handover-text.js');
@@ -188,16 +188,18 @@ function main() {
       // threshold and reach auto-compact without ever passing
       // UserPromptSubmit, where hooks/auto-handover.js fires. Same latch, so
       // whichever hook sees the crossing first fires and the other stays
-      // quiet. Never for an unknown-window estimate (no mandatory directive
-      // from a guess — the UserPromptSubmit hook's soft advisory covers it).
+      // quiet. Never for a pct crossing against an unknown (guessed) window
+      // — the UserPromptSubmit hook's soft advisory covers that; an absolute
+      // maxTokens crossing is a real count and does fire.
       const result = getContextPct(transcriptPath, env, { home, sessionId: payload.session_id });
-      if (result && Number.isFinite(result.pct) && result.pct >= settings.pct && result.windowKnown !== false) {
+      const over = overThreshold(result, settings);
+      if (over === 'pct' || over === 'tokens') {
         const now = Date.now();
         writeLatch(home, tag, {
-          fired: true, firedAt: now, firedPct: result.pct, firedVia: 'stop',
+          fired: true, firedAt: now, firedPct: result.pct, firedVia: 'stop-' + over,
           lastNagPct: result.pct, lastNagAt: now, softFired: latch.softFired === true,
         });
-        emit(buildFireDirective(result.pct, result.estimated === true, result.windowLabel));
+        emit(buildFireDirective(result, over, payload));
         return;
       }
       emit();
@@ -211,7 +213,7 @@ function main() {
     if (!result || !Number.isFinite(result.pct)) { emit(); return; }
 
     const now = Date.now();
-    if (result.pct < settings.pct) {
+    if (!overThreshold(result, settings)) {
       writeLatch(home, tag, { fired: false }); // dropped back below -> re-arm
       emit();
       return;
