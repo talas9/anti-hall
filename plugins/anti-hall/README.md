@@ -369,6 +369,14 @@ any Jev failure (no key, timeout, HTTP error, bad response) falls back to the re
 unchanged. Disabled (the default), the guard behaves exactly as the regex-only hook.
 Details: **[docs/KB-jev-classifier.md](../../docs/KB-jev-classifier.md)**.
 
+Two more integrations share the same opt-in switch via `hooks/lib/jev-assist.js`, each
+with its own on/shadow/off mode and trust rule: `speculation-judge.js` skips its paid
+Haiku call when `speculation` is fully trusted (`"on"`, not `"shadow"`), and
+`model-routing-guard.js` (default mode **shadow**) can let a confident non-mechanical
+classification downgrade a mechanical-flagship block to an advisory. Run
+`node plugins/anti-hall/scripts/jev-report.js` for a per-integration KEEP/REVIEW/REMOVE
+read on whether any of this is worth trusting. Details: **[docs/KB-jev-classifier.md §10](../../docs/KB-jev-classifier.md)**.
+
 ## Skills
 
 **Always-on vs conditional.** The **root-cause** and **orchestration** disciplines are

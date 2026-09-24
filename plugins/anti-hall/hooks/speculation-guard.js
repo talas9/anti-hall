@@ -340,9 +340,7 @@ async function main() {
     process.exit(0);
   }
 
-  // Escape hatch: honor an explicit, user-consented skip (~/.anti-hall/skip.json).
   const { isSkipped } = require('./skip-guard.js');
-  if (isSkipped('speculation-guard')) process.exit(0);
 
   let payload;
   try {
@@ -378,9 +376,13 @@ async function main() {
   // Compute a hash of the last message text for loop-safety.
   const msgHash = crypto.createHash('sha1').update(lastText).digest('hex');
 
-  // Load prior state: { hash, blocks }. Tolerate a legacy bare-hash string.
+  // Load prior state: { hash, blocks, pending }. Tolerate a legacy bare-hash string.
+  // `pending` ({h, source}), when present, is the outcome-capture record left
+  // by the PREVIOUS Stop's block (see below) — set only when this hook itself
+  // blocked, never by an external writer.
   let lastBlockedHash = '';
   let blocks = 0;
+  let pending = null;
   try {
     const stateRaw = fs.readFileSync(stateFile, 'utf8').trim();
     if (stateRaw) {
@@ -388,6 +390,9 @@ async function main() {
       if (parsed && typeof parsed === 'object') {
         lastBlockedHash = typeof parsed.hash === 'string' ? parsed.hash : '';
         blocks = Number.isFinite(parsed.blocks) ? parsed.blocks : 0;
+        pending = (parsed.pending && typeof parsed.pending === 'object' &&
+          typeof parsed.pending.h === 'string' && typeof parsed.pending.source === 'string')
+          ? parsed.pending : null;
       } else {
         lastBlockedHash = stateRaw; // legacy bare-hash file
       }
@@ -395,6 +400,51 @@ async function main() {
   } catch (_) {
     // No prior state — first time.
   }
+
+  // ---------------------------------------------------------------------
+  // OUTCOME CAPTURE: if the PREVIOUS Stop in this session produced a block
+  // (Jev-added or regex), classify THIS reply against it and record the
+  // outcome via jev-assist's shared metrics log — so `jev report` can compare
+  // Jev-sourced vs regex-sourced block outcomes. Runs BEFORE the skip-hatch
+  // short-circuit below (a skip itself is one of the three outcomes) and
+  // independently of whatever this turn's own verdict ends up being.
+  // Evidence detection reuses the SAME acknowledgment/marker regexes the
+  // block decision itself uses — this does not attempt to detect "a tool
+  // call happened in between" from the transcript; the acknowledgment
+  // patterns (file:line refs, "running", "per the data", etc.) already cover
+  // the common real case of a tool having run since the block.
+  // ---------------------------------------------------------------------
+  if (pending) {
+    try {
+      let outcome = null;
+      if (isSkipped('speculation-guard')) {
+        outcome = 'user-override';
+      } else if (hasAcknowledgment(lastText)) {
+        outcome = 'evidence-added';
+      } else if (findSpeculationMarker(lastText)) {
+        outcome = 'repeat-speculation';
+      }
+      if (outcome) {
+        const { recordOutcome } = require('./lib/jev-assist.js');
+        recordOutcome({ id: 'speculation', h: pending.h, outcome, source: pending.source });
+      }
+    } catch (_) {
+      // Outcome capture is best-effort only — must never affect the decision.
+    }
+    // Clear the pending record now so it is evaluated exactly once. A fresh
+    // block later in THIS turn (see the write near the bottom) overwrites
+    // this with its own {hash, blocks, pending}.
+    try {
+      fs.mkdirSync(stateDir, { recursive: true });
+      fs.writeFileSync(stateFile, JSON.stringify({ hash: lastBlockedHash, blocks, pending: null }), 'utf8');
+    } catch (_) {
+      // Can't persist the clear -> harmless; worst case this pending record
+      // is re-evaluated once more on the next Stop.
+    }
+  }
+
+  // Escape hatch: honor an explicit, user-consented skip (~/.anti-hall/skip.json).
+  if (isSkipped('speculation-guard')) process.exit(0);
 
   // Loop-safe: if we already blocked on this exact message, allow (nudged once).
   // Loop-safety 2: hard cap on total blocks this session. The message text
@@ -404,30 +454,61 @@ async function main() {
   const MAX_BLOCKS = 3;
   const loopSafe = msgHash === lastBlockedHash || blocks >= MAX_BLOCKS;
 
-  // Jev first (opt-in). logEntry stays null when Jev is disabled, so nothing
-  // is logged and the regex path below behaves exactly as without Jev.
+  // Regex verdict, computed up front (independent of Jev) purely so it can be
+  // logged alongside Jev's own decision below — it does NOT change the
+  // asymmetric-trust contract: Jev only ever ADDS a block via jev-assist's
+  // 'add-block' trust (baseline false), the regex/acknowledgment check below
+  // still runs on its own and is what actually blocks when Jev doesn't.
+  const regexMarkerPreview = findSpeculationMarker(lastText);
+  const regexWouldBlock = !!regexMarkerPreview &&
+    !(regexMarkerPreview && hasAcknowledgment(lastText));
+
+  // Jev first (opt-in, via lib/jev-assist.js's shared trust/mode layer).
+  // logEntry stays null when Jev is disabled, so nothing is logged and the
+  // regex path below behaves exactly as without Jev.
   let logEntry = null;
   let jevBlock = false;
+  let jevResultHash = null;
   try {
-    const { jevDecide, loadJevConfig } = require('./lib/jev-client.js');
+    const { loadJevConfig } = require('./lib/jev-client.js');
     const jevCfg = loadJevConfig();
     if (jevCfg.enabled && loopSafe) {
       // Outcome is already "allow" — don't spend a Jev call on it.
-      logEntry = { backend: 'none', reason: 'loop-safe', ms: null, confidence: null };
+      logEntry = { backend: 'none', reason: 'loop-safe', ms: null, confidence: null, regexVerdict: regexWouldBlock };
     } else if (jevCfg.enabled) {
+      const { ask } = require('./lib/jev-assist.js');
       // Dedup text only for Jev's input — see extractLastAssistantTextWith comment.
       const jevText = extractLastAssistantTextDedup(transcriptPath) || lastText;
-      const r = await jevDecide({ question: JEV_QUESTION, state: jevText.slice(0, 8000) });
-      const confident = r.ok && r.confidence >= jevCfg.confidenceThreshold;
-      if (confident && r.answer === true) {
+      const result = await ask({
+        id: 'speculation',
+        question: JEV_QUESTION,
+        state: jevText.slice(0, 8000),
+        trust: 'add-block',
+        baseline: false,
+      });
+      if (result.jev === null) {
+        // Either the 'speculation' integration is switched off via jev.json's
+        // integrations map (Jev overall enabled, this one specifically not),
+        // or the ask() call itself never ran — nothing new to log unless a
+        // real jevDecide failure produced a reason.
+        if (result.reason) {
+          logEntry = {
+            backend: 'jev→regex', reason: result.reason,
+            ms: result.ms != null ? result.ms : null, confidence: null,
+            regexVerdict: regexWouldBlock,
+          };
+        }
+      } else if (result.final === true) {
         jevBlock = true;
-        logEntry = { backend: 'jev', reason: 'confident', ms: r.ms, confidence: r.confidence };
+        jevResultHash = result.h;
+        logEntry = { backend: 'jev', reason: 'confident', ms: result.ms, confidence: result.confidence, regexVerdict: regexWouldBlock };
       } else {
         logEntry = {
           backend: 'jev→regex',
-          reason: !r.ok ? r.reason : (confident ? 'confident-allow-untrusted' : 'low-confidence'),
-          ms: r.ms != null ? r.ms : null,
-          confidence: r.ok ? r.confidence : null,
+          reason: result.confident ? 'confident-allow-untrusted' : 'low-confidence',
+          ms: result.ms != null ? result.ms : null,
+          confidence: result.confidence,
+          regexVerdict: regexWouldBlock,
         };
       }
     }
@@ -452,10 +533,17 @@ async function main() {
 
   if (loopSafe) finish('allow');
 
-  // Persist the blocked hash + incremented count before outputting the decision.
+  // Persist the blocked hash + incremented count + a pending outcome-capture
+  // record (source + a hash to join back to later) before outputting the
+  // decision. Regex-sourced blocks never call ask(), so they have no
+  // jev-assist decision hash to join to — msgHash still uniquely identifies
+  // the outcome row for `jev report`'s per-source comparison.
   try {
     fs.mkdirSync(stateDir, { recursive: true });
-    fs.writeFileSync(stateFile, JSON.stringify({ hash: msgHash, blocks: blocks + 1 }), 'utf8');
+    const pendingRecord = jevBlock
+      ? { h: jevResultHash || msgHash, source: 'jev' }
+      : { h: msgHash, source: 'regex' };
+    fs.writeFileSync(stateFile, JSON.stringify({ hash: msgHash, blocks: blocks + 1, pending: pendingRecord }), 'utf8');
   } catch (_) {
     // Can't persist -> fail-open to avoid loops.
     finish('allow');

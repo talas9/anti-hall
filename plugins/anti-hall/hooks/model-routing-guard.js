@@ -176,6 +176,50 @@ function handoverDelegationAdvisory(payload, corpus) {
   );
 }
 
+// JEV (opt-in, default mode SHADOW — see lib/jev-assist.js). Consulted ONLY on
+// the two "block a flagship/omitted-model mechanical spawn" paths below (Rows
+// 1-2), via the 'relax-block' trust rule: Jev may only turn a block that was
+// about to fire into an advisory, never the reverse, and it is never
+// consulted on an allow/advisory-only row. In SHADOW mode (the default for
+// this integration — jev.json must set integrations.modelRouting:"on" to let
+// it actually relax a block) Jev is still called and logged for `jev report`,
+// but the block always proceeds unchanged.
+const JEV_ROUTING_QUESTION = {
+  type: 'choice',
+  instructions:
+    'Classify the SHAPE of this agent-spawn task from its description/prompt.',
+  criteria: {
+    mechanical: 'Execution-only: running commands, fetching/building/testing/' +
+      'deploying, no authoring or judgment calls required.',
+    authoring: 'Writing or editing substantial code/content that requires judgment.',
+    research: 'Investigation, research, or audit work — read-only or reporting.',
+    'plan-review': 'Planning, architecture, review, critique, or debate work.',
+  },
+};
+
+// consultModelRoutingJev(corpus) -> true when Jev confidently relaxed this
+// block to an advisory (mode "on" + non-mechanical answer above threshold).
+// Fully synchronous (askSync spawns the Jev call in a subprocess with its own
+// hard timeout) since this hook's main() cannot await. Any failure -> false
+// (block proceeds), matching jev-assist's own fail-open contract.
+function consultModelRoutingJev(corpus) {
+  try {
+    const { askSync } = require('./lib/jev-assist.js');
+    const result = askSync({
+      id: 'modelRouting',
+      question: JEV_ROUTING_QUESTION,
+      state: String(corpus).slice(0, 4000),
+      trust: 'relax-block',
+      baseline: true,
+      judge: (answer) => answer === 'mechanical',
+      budgetMs: 1200,
+    });
+    return result.final === false;
+  } catch (_) {
+    return false;
+  }
+}
+
 // Advisory: nested hookSpecificOutput schema (KB §1.4, verify-first.js pattern).
 // fs.writeSync(1, …) is synchronous so exit cannot race an async pipe flush.
 function advise(additionalContext) {
@@ -295,6 +339,14 @@ function main() {
         "model:'haiku' (or 'sonnet' if it authors code)."
       );
     }
+    if (consultModelRoutingJev(corpus)) {
+      advise(
+        'MODEL-ROUTING (advisory, Jev-relaxed): this spawn looks execution-shaped ' +
+        "on a flagship model ('" + model + "') by keyword, but Jev classified it as " +
+        'non-mechanical with high confidence, so the block is downgraded to this ' +
+        "advisory. If this is genuinely mechanical work, prefer model:'haiku'."
+      );
+    }
     block(blockReason);
   }
 
@@ -304,6 +356,14 @@ function main() {
   //   advisory opt-out : set ANTIHALL_MODEL_ROUTING=advisory to downgrade to advisory.
   if (isMechanicalOnly && modelOmitted && isGenericAgent) {
     if (strict) {
+      if (consultModelRoutingJev(corpus)) {
+        advise(
+          'MODEL-ROUTING (advisory, Jev-relaxed): this omitted-model spawn looks ' +
+          'execution-shaped by keyword, but Jev classified it as non-mechanical ' +
+          "with high confidence, so the strict block is downgraded to this " +
+          "advisory. If this is genuinely mechanical work, prefer model:'haiku'."
+        );
+      }
       block(
         'anti-hall model-routing-guard (strict, default): execution-shaped spawn ' +
         "with no explicit model. Set model:'haiku' (or 'sonnet' for code). Strict " +

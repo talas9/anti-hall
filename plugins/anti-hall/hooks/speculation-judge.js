@@ -289,6 +289,29 @@ async function main() {
   const { isSkipped } = require('./skip-guard.js');
   if (isSkipped('speculation-judge')) process.exit(0);
 
+  // Avoid double-paying: when Jev's own speculation classifier is fully
+  // trusted (jev.json integrations.speculation === "on", or legacy
+  // {"enabled":true} with no override), speculation-guard.js already covers
+  // this same "unverified assertion" gap for free (it runs first, on every
+  // Stop, via the fast lexical/Jev path below in this file's sibling hook).
+  // Paying for a second, slower, billed Haiku call on top of that adds cost
+  // without meaningfully improving coverage. "shadow"/"off" modes still run
+  // the Haiku judge as before (Jev isn't trusted yet or is disabled).
+  try {
+    const { getMode } = require('./lib/jev-assist.js');
+    const { loadJevConfig } = require('./lib/jev-client.js');
+    const jevCfg = loadJevConfig();
+    if (jevCfg.enabled) {
+      let fileCfg = {};
+      try {
+        fileCfg = JSON.parse(fs.readFileSync(path.join(os.homedir(), '.anti-hall', 'jev.json'), 'utf8'));
+      } catch (_) { fileCfg = {}; }
+      if (getMode('speculation', fileCfg) === 'on') process.exit(0);
+    }
+  } catch (_) {
+    // Can't determine Jev's mode -> fall through and run the Haiku judge as before.
+  }
+
   let payload;
   try {
     payload = JSON.parse(raw);

@@ -362,3 +362,125 @@ read (or worse, act on) a real developer machine's `~/.anti-hall/jev.json`.
 has no Codex-port mirror to wire (confirmed: `plugins/anti-hall/codex/` has no
 `devswarm*`/`jev*` implementation files, only a reference skill doc). No Codex work is
 needed for this feature.
+
+## 10. Integrations, metrics, and `jev report`
+
+**`hooks/lib/jev-assist.js`** is the shared layer every NEW Jev integration should go
+through instead of calling `jev-client.js` directly: one per-integration on/shadow/off
+mode, one of three trust rules bounding how far Jev may move a caller's own baseline
+verdict, one content-hash cache, and one metrics line per decision. `jev-client.js`
+itself (§1-§8 above) and `jev-triage.js` (§9) are unchanged — jev-assist wraps the
+former, it does not replace it.
+
+**Per-integration modes** live under a new `integrations` map in `~/.anti-hall/jev.json`:
+
+```json
+{
+  "enabled": true,
+  "integrations": {
+    "speculation": "on",
+    "triage": "on",
+    "modelRouting": "shadow"
+  },
+  "confidenceThreshold": 0.85,
+  "costPerCall": 0.0004
+}
+```
+
+Each value is `"on"` (Jev may change the outcome per its trust rule), `"shadow"` (Jev is
+still called and logged, but the outcome is always the baseline — use this to observe a
+new integration before trusting it), or `"off"`. An **existing** `{"enabled":true}`
+config with no `integrations` map keeps its CURRENT behavior with zero migration:
+`speculation` and `triage` (the two pre-existing integrations, §3-§9) default to `"on"`;
+every OTHER integration (e.g. `modelRouting`) defaults to `"shadow"` until an owner
+explicitly promotes it. The legacy `{"triage": false}` switch (§9) still works when
+`integrations.triage` is absent. `ANTIHALL_JEV=0` still force-disables everything;
+`ANTIHALL_JEV_<ID>=0` (e.g. `ANTIHALL_JEV_MODEL_ROUTING=0`) force-disables one
+integration only.
+
+**Trust rules** — the only three shapes any integration needs:
+
+| Trust | Effect | Used by |
+|---|---|---|
+| `add-block` | Jev may only turn a non-blocking baseline INTO a block; never relaxes an existing block. | speculation-guard |
+| `relax-block` | Jev may only turn an already-blocking baseline into a non-block; consulted ONLY when the baseline would block. | model-routing-guard |
+| `advisory` | No boolean to protect; final is Jev's answer when confident, else the baseline. | future label-only integrations |
+
+Any Jev failure (disabled, no key, timeout, bad response), low confidence, or
+`mode !== "on"` always resolves to the baseline — jev-assist never overrides a caller on
+its own authority.
+
+**Two APIs:** `ask(...)` (async, for callers that can `await`, e.g.
+speculation-guard's Stop hook) and `askSync(...)` (fully synchronous — the network call
+runs in a subprocess, `jev-assist-worker.js`, spawned via `execFileSync` with its own
+hard timeout, the same pattern §9's `jev-triage-worker.js` uses — for callers like
+model-routing-guard's PreToolUse `main()` that cannot await).
+
+**Wired integrations (2026-09):**
+
+- **`speculation`** (speculation-guard.js, `add-block`): unchanged decision contract —
+  Jev can only ADD a block the regex would have missed; the regex/acknowledgment check
+  still runs independently and is what blocks when Jev doesn't. `jev-judge.ndjson`
+  (§6) is kept for one release for compatibility and now also carries the regex's own
+  verdict (`regexVerdict`) alongside Jev's, so a `jev-judge.ndjson` line shows both
+  signals even when they disagree.
+- **`speculation`** (speculation-judge.js): when `integrations.speculation` is `"on"`
+  (fully trusted, not `"shadow"`/`"off"`), the paid Haiku semantic judge SKIPS its own
+  API call for that turn — speculation-guard's Jev path already covers the same
+  "unverified assertion" gap for free, so paying for both is pure waste. `"shadow"`/
+  `"off"` still run Haiku as before.
+- **`modelRouting`** (model-routing-guard.js, `relax-block`, **default mode: shadow**):
+  consulted ONLY on the two paths that are about to BLOCK a mechanical-looking flagship
+  or omitted-model spawn (Rows 1-2, §comments in the hook). Jev classifies the spawn's
+  shape as one of `mechanical`/`authoring`/`research`/`plan-review`; a confident
+  non-`mechanical` answer downgrades the block to an advisory. In the default `shadow`
+  mode the block always proceeds unchanged but the would-have-relaxed verdict is still
+  logged, so `jev report` can show whether promoting it to `"on"` is worth it before an
+  owner does so. `command-guard`, `git-guard`, and `edit-guard` are NEVER wired to Jev —
+  those stay pure, unconditional guards.
+- **Not yet wired (left `shadow`-only/future work, by design):** claim-ledger,
+  merge-gate, new-request capture. Do not wire these without a fresh owner sign-off.
+
+**Cache:** `~/.anti-hall/cache/jev-assist.json`, keyed by
+`sha256(integrationId + questionVersion + (cacheKey ?? state))`, bounded to 500 entries
+(oldest evicted first), atomic tmp+rename write — same shape as §9's triage cache.
+
+**Metrics log:** `~/.anti-hall/logs/jev-assist.ndjson`, rotated at 1 MB (keeps one `.1`
+backup). One line per `ask()`/`askSync()` call:
+
+```json
+{"ts":"2026-09-24T12:00:00.000Z","id":"speculation","h":"7ec9db0d18c23962","base":false,"jev":true,"conf":0.9,"ms":26,"backend":"jev","final":true,"changed":"added","cached":false,"mode":"on"}
+```
+
+`backend` is `jev` (a fresh call), `cache` (a cache hit), or `baseline-only` (disabled,
+off, not-applicable, or a jevDecide failure — see `reason`). `changed` is
+`"added"`/`"relaxed"`/`"changed"`/`null`. Never a message body, never a credential —
+same hygiene contract as `jev-judge.ndjson`/`jev-triage.ndjson`.
+
+`recordOutcome({id, h, outcome})` appends a second line shape —
+`{"ts":...,"type":"outcome","id":"speculation","h":"7ec9db0d18c23962","outcome":"evidence-added"}`
+— so a later-observed result can be joined back to the decision that produced it, by
+hash, when a caller chooses to wire outcome capture (not yet wired for any integration
+in this release — the log format supports it for when it is).
+
+**`jev report`** (`scripts/jev-report.js`, read-only):
+
+```
+node plugins/anti-hall/scripts/jev-report.js [--days 7] [--json]
+```
+
+Per integration: calls, jev-answered %, cache hits, agreement % (Jev vs baseline, only
+where both exist), decisions changed (by direction), outcome rates (joined by hash),
+latency p50/p95, an ESTIMATED cost (`calls × jev.json "costPerCall"`, an owner-supplied
+constant — shows `n/a` if unset; this is a rough estimate, not a bill), and a
+KEEP/REVIEW/REMOVE suggestion. Thresholds (documented in the script's header, tune by
+editing them there): below 50 calls always `REVIEW (not enough data)`; `REMOVE` at ≥200
+calls when changed-rate <1%, or good-outcome-rate <60%, or failure-rate >20%; `KEEP`
+when changed-rate ≥5% AND good-outcome-rate ≥80%; `REVIEW` otherwise (including p95
+latency over the integration's configured budget).
+
+**Codex parity:** speculation-guard.js, speculation-judge.js, and model-routing-guard.js
+are all shared files under `plugins/anti-hall/hooks/` (§ codex/README.md) — the Codex
+port gets this integration for free with no separate implementation. `jev-assist.js`/
+`jev-assist-worker.js`/`jev-report.js` live under the same shared `hooks/lib/` and
+`scripts/` directories.
