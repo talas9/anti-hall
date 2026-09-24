@@ -10407,7 +10407,7 @@ function refreshAnchorSession(ctx) {
     if (!sid || !ctx.home) return null;
     const ic = identityContext(ctx.cwd || process.cwd(), CALLER_CWD);
     if (!ic.worktreeRoot || !isPrimaryCheckout(ic.worktreeRoot, ic.mainWorktree, ctx.home, env)) return null;
-    const id = inst.primaryWorkspaceId(ic.worktreeRoot);
+    const id = ic.meshId;
     const desc = readDescriptorFile(ctx.home, id);
     if (!desc || !desc.sessionId || String(desc.sessionId) === sid) return null;
     if (!isSessionAliveRow({ sessionId: sid }, ctx.home)) return null;
@@ -10416,6 +10416,77 @@ function refreshAnchorSession(ctx) {
     const r = cmdRegisterPrimary(flags, Object.assign({}, ctx, { cwd: ic.worktreeRoot }));
     return r && r.ok ? { refreshed: true, id, from: String(desc.sessionId), to: sid } : { refreshed: false, reason: (r && (r.reason || r.error)) || 'unknown' };
   } catch (_) { return null; }
+}
+
+// ---- Primary seat (v0.108.0) ------------------------------------------------
+// seatSessionId(ctx) -> the caller's Claude session id ('' when unknown).
+function seatSessionId(ctx, flags) {
+  const f = flags ? one(flags, 'session') : undefined;
+  if (f) return String(f);
+  return ctx && ctx.env && ctx.env.CLAUDE_CODE_SESSION_ID ? String(ctx.env.CLAUDE_CODE_SESSION_ID) : '';
+}
+// seatRefusal(ctx) -> null | refusal. Mesh send/ack/spawn/merge from a session
+// that does NOT hold the Primary seat while the holder is LIVE are refused, so
+// two sessions never act as one Primary. Only on the Primary checkout, only
+// with a known caller session; unknown liveness does not block (it warns at
+// SessionStart instead). `primary takeover` is the explicit way through.
+function seatRefusal(ctx) {
+  try {
+    const sid = seatSessionId(ctx);
+    if (!sid) return null;
+    const v = require('../companion/lib/primary-seat.js').seatVerdict({ home: ctx.home, env: ctx.env, cwd: ctx.cwd || process.cwd(), sessionId: sid, light: true });
+    if (v.state !== 'conflict') return null;
+    // A session with its OWN registered identity on this worktree (a declared
+    // DEVSWARM_BUILDER_ID row recording this very session) acts as itself, not
+    // as the Primary — never blocked by the seat.
+    try {
+      const rk = repokey.repoKeyForWorktree(ctx.cwd || process.cwd());
+      const reg = rk ? registrySnapshot(ctx, rk) : [];
+      const self = declaredSelfId(ctx.env, ctx.cwd || process.cwd(), reg);
+      const row = self ? reg.find((r) => r && String(r.id) === self) : null;
+      if (row && row.sessionId != null && String(row.sessionId) === sid) return null;
+    } catch (_) { /* no exemption */ }
+    return {
+      ok: false, reason: 'primary-seat-conflict', holder: v.holder, id: v.id,
+      error: require('../companion/lib/primary-seat.js').conflictText(v, path.join(__dirname, 'devswarm.js')),
+    };
+  } catch (_) { return null; }
+}
+// adoptPrimarySeat(ctx) -> { verdict, adopted, register? }. SessionStart: when
+// the recorded holder is CLOSED, this session takes the SAME Primary id (same
+// partitions and cursors; only the anchor's sessionId changes) through
+// cmdRegisterPrimary, whose live-primary-conflict guard still refuses a live
+// holder. Never mints a new identity. 'unknown'/'conflict' -> no write.
+function adoptPrimarySeat(ctx, flags) {
+  const seat = require('../companion/lib/primary-seat.js');
+  const sid = seatSessionId(ctx, flags);
+  const v = seat.seatVerdict({ home: ctx.home, env: ctx.env, cwd: ctx.cwd || process.cwd(), sessionId: sid });
+  if (v.state !== 'adopt') return { verdict: v, adopted: false };
+  const desc = readDescriptorFile(ctx.home, v.id);
+  const regFlags = { worktree: [v.worktree], session: [sid] };
+  if (desc && desc.cursorPath) regFlags.cursor = [String(desc.cursorPath)];
+  const r = cmdRegisterPrimary(regFlags, Object.assign({}, ctx, { cwd: v.worktree }));
+  return { verdict: v, adopted: !!(r && r.ok), register: r };
+}
+// cmdPrimary(sub, flags, ctx) — `primary status` (read-only seat verdict) and
+// `primary takeover` (the explicit "continue here": re-register the anchor to
+// this session with --force, demoting the other session, which from then on is
+// refused by seatRefusal).
+function cmdPrimary(sub, flags, ctx) {
+  const seat = require('../companion/lib/primary-seat.js');
+  const sid = seatSessionId(ctx, flags);
+  const v = seat.seatVerdict({ home: ctx.home, env: ctx.env, cwd: ctx.cwd || process.cwd(), sessionId: sid });
+  if (sub === 'status' || sub === undefined) return Object.assign({ ok: true, action: 'primary-status', session: sid || null }, v);
+  if (sub !== 'takeover') return { ok: false, error: 'primary: unknown subcommand ' + JSON.stringify(sub) + ' (status|takeover)' };
+  if (v.state === 'n/a') return { ok: false, action: 'primary-takeover', reason: 'not-primary-checkout', error: 'primary takeover must run in the project\'s Primary checkout' };
+  if (!sid) return { ok: false, action: 'primary-takeover', reason: 'no-session', error: 'primary takeover needs this session\'s id (CLAUDE_CODE_SESSION_ID or --session)' };
+  if (v.state === 'own') return { ok: true, action: 'primary-takeover', id: v.id, already: true, session: sid };
+  const desc = readDescriptorFile(ctx.home, v.id);
+  const regFlags = { worktree: [v.worktree], session: [sid], force: [true] };
+  if (desc && desc.cursorPath) regFlags.cursor = [String(desc.cursorPath)];
+  const r = cmdRegisterPrimary(regFlags, Object.assign({}, ctx, { cwd: v.worktree }));
+  if (!r || !r.ok) return Object.assign({ action: 'primary-takeover' }, r || { ok: false });
+  return { ok: true, action: 'primary-takeover', id: v.id, from: v.holder, to: sid, demoted: v.state === 'conflict' ? v.holder : null };
 }
 
 function cmdInboxTick(id, flags, ctx) {
@@ -17043,8 +17114,19 @@ function run(argv, ctx0) {
     const verb = cmd === 'help' ? positionals[1] : (cmd === '-h' ? undefined : cmd);
     return { code: 0, result: buildHelpResult(verb) };
   }
+  // v0.108.0 Primary seat: a session that does not hold a LIVE-held seat may
+  // not send, ack, spawn or merge-broadcast as the Primary.
+  if (cmd === 'send' || cmd === 'spawn' || cmd === 'merge'
+      || (cmd === 'inbox' && (positionals[1] === 'ack' || positionals[1] === 'ack-primary'))) {
+    const refusal = seatRefusal(ctx);
+    if (refusal) return { code: 2, result: Object.assign({ action: cmd }, refusal) };
+  }
   try {
     switch (cmd) {
+      case 'primary': {
+        const r = cmdPrimary(positionals[1], flags, ctx);
+        return { code: r.ok ? 0 : 2, result: r };
+      }
       case 'register': {
         const id = positionals[1];
         if (!isSafeId(id)) return { code: 2, result: { ok: false, error: 'invalid or missing workspace id' } };
@@ -17536,6 +17618,7 @@ module.exports = {
   senderIdentityDetailed, childSenderId, isPrimaryCheckout,
   refreshAnchorSession,
   childLabelRefusal,
+  seatRefusal, adoptPrimarySeat, cmdPrimary,
   reconcileDualPartitionAcksAllStores, declaredSelfId,
   mergeSplitBackendStoresAllStores,
   // instanceNonce CONSUMERS (defect d3d571495bf6, items a/b/c — exported for

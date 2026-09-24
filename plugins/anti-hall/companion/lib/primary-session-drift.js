@@ -19,6 +19,7 @@ const fs = require('fs');
 const path = require('path');
 
 const HEAD_BYTES = 64 * 1024;
+const MAX_SCAN = 25;
 const SID_RE = /^[A-Za-z0-9._-]+$/;
 
 function projectDirFor(worktree, home) {
@@ -58,11 +59,19 @@ function sessionsForWorktree(worktree, opts) {
   let names = [];
   try { names = F.readdirSync(dir); } catch (_) { return []; }
   const wt = String(worktree);
-  const out = [];
+  // Bounded: only the MAX_SCAN most recently written transcripts are opened.
+  const files = [];
   for (const n of names) {
     if (!n.endsWith('.jsonl')) continue;
     const sessionId = n.slice(0, -'.jsonl'.length);
     if (!SID_RE.test(sessionId)) continue;
+    let m = 0;
+    try { m = F.statSync(path.join(dir, n)).mtimeMs; } catch (_) { continue; }
+    files.push({ n, sessionId, m });
+  }
+  files.sort((a, b) => b.m - a.m);
+  const out = [];
+  for (const { n, sessionId } of files.slice(0, MAX_SCAN)) {
     const info = transcriptInfo(path.join(dir, n), F);
     if (!info.cwd || !(info.cwd === wt || info.cwd.startsWith(wt + path.sep))) continue;
     if (info.startMs == null) continue;

@@ -555,8 +555,25 @@ function builderForWorktree(opts) {
   } catch (_) { return null; }
 }
 
+// activeTerminalSessions({ home, env, builderId }) -> string[] | null. The
+// Claude session ids of the builder's ACTIVE terminals (builder_terminals.
+// ai_session_config.sessionId, isActive = 1) — the session the app shows and
+// resumes (v0.108.0 Primary seat). Read through a FRESH snapshot (called once
+// per SessionStart), so it goes through the same capability gate as every
+// other app-DB read. Fail-open null (no DB / snapshot); [] when the builder
+// is unknown or has no active session.
+function activeTerminalSessions(opts) {
+  const o = opts || {};
+  if (!o.builderId) return null;
+  const snap = snapshot(Object.assign({}, o, { fresh: true }));
+  if (!snap) return null;
+  const w = snap.workspaces.find((x) => x.id === String(o.builderId));
+  if (!w) return [];
+  return w.terminals.filter((t) => t.isActive === true && t.sessionId).map((t) => t.sessionId);
+}
+
 module.exports = {
-  appDbPath, readSnapshot, snapshot, builderStates, appArchivedVerdict, builderForWorktree, workspaceFor, sessionOwner, sessionMap,
+  appDbPath, readSnapshot, snapshot, builderStates, appArchivedVerdict, builderForWorktree, activeTerminalSessions, workspaceFor, sessionOwner, sessionMap,
   briefDelivery, finishSignal, branchTipMtimeMs, transcriptCwdMatches, lastSelected, focusedWorkspaceId, repositoryForWorktree, messageTimestamps, scheduledForDeletion,
   resetCache, SCHEMA, DEFAULT_CACHE_MS, BRIEF_DELIVERY_GRACE_MS, FOCUS_WINDOW_MS,
 };

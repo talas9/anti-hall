@@ -129,14 +129,51 @@ function buildAdditionalContext(isChild, env) {
     wakeLine(env, isChild);
 }
 
+// seatMarkerPath(home, sid) — per-session "seat conflict shown" counter; the
+// Primary's first UserPromptSubmit (devswarm-parent-inbox.js) repeats the
+// conflict warning once while it persists.
+function seatMarkerPath(home, sid) {
+  return path.join(home, '.anti-hall', 'devswarm', 'primary-seat', String(sid).replace(/[^A-Za-z0-9_-]/g, '') + '.json');
+}
+
+// primarySeatLines(payload) -> string[] (v0.108.0 Primary seat). In the
+// Primary checkout: adopt the SAME Primary id when its recorded session is
+// closed, warn (and let devswarm.js refuse send/ack/spawn) when another LIVE
+// session holds it, warn without adopting when liveness is unknown, and flag a
+// stale resume. Fail-open: any error -> no lines.
+function primarySeatLines(payload) {
+  try {
+    const sid = payload && typeof payload.session_id === 'string' ? payload.session_id : '';
+    const cwd = payload && typeof payload.cwd === 'string' && payload.cwd ? payload.cwd : process.cwd();
+    if (!sid) return [];
+    const home = require('os').homedir();
+    const env = Object.assign({}, process.env, { CLAUDE_CODE_SESSION_ID: sid });
+    const res = require(CLI).adoptPrimarySeat({ home, env, cwd });
+    const v = res && res.verdict;
+    if (!v || v.state === 'n/a') return [];
+    if (v.state === 'conflict') {
+      try {
+        const p = seatMarkerPath(home, sid);
+        fs.mkdirSync(path.dirname(p), { recursive: true });
+        fs.writeFileSync(p, JSON.stringify({ holder: v.holder, id: v.id, shown: 1, at: Date.now() }));
+      } catch (_) { /* marker is best-effort */ }
+    }
+    return require('../companion/lib/primary-seat.js').seatNotices(v, { cli: CLI, adopted: !!res.adopted, currentSessionId: sid });
+  } catch (_) { return []; }
+}
+
 function main() {
-  // Read stdin only to stay consistent with the SessionStart contract; the
-  // payload itself carries nothing this hook needs (role/liveness come from env).
-  try { fs.readFileSync(0, 'utf8'); } catch (_) { /* empty/absent stdin is fine */ }
+  let payload = null;
+  try { payload = JSON.parse(fs.readFileSync(0, 'utf8')); } catch (_) { payload = null; }
 
   if (!isDevswarmActive(process.env)) return;
 
-  const additionalContext = buildAdditionalContext(isChildWorkspace(process.env), process.env);
+  const isChild = isChildWorkspace(process.env);
+  let additionalContext = buildAdditionalContext(isChild, process.env);
+  if (!isChild) {
+    const seat = primarySeatLines(payload);
+    if (seat.length) additionalContext = seat.join('\n\n') + '\n\n' + additionalContext;
+  }
 
   const out = {
     hookSpecificOutput: {

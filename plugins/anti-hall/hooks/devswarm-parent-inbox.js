@@ -2139,6 +2139,22 @@ function main() {
   // scenario that path exists for).
   if (staleBanner) segments.push(staleBanner);
 
+  // v0.108.0 PRIMARY SEAT CONFLICT: SessionStart (devswarm-child-role.js)
+  // warned that another LIVE session holds this Primary seat; repeat it on the
+  // first prompt while it still holds (then stop — the verbs keep refusing).
+  try {
+    if (sessionId) {
+      const mp = path.join(home, '.anti-hall', 'devswarm', 'primary-seat', String(sessionId).replace(/[^A-Za-z0-9_-]/g, '') + '.json');
+      const mark = JSON.parse(fs.readFileSync(mp, 'utf8'));
+      if (mark && Number(mark.shown) < 2) {
+        const seat = require('../companion/lib/primary-seat.js');
+        const v = seat.seatVerdict({ home, env: Object.assign({}, process.env, { CLAUDE_CODE_SESSION_ID: sessionId }), cwd: cwd || process.cwd(), sessionId, light: true });
+        if (v.state === 'conflict') segments.push(seat.conflictText(v, path.join(__dirname, '..', 'scripts', 'devswarm.js')));
+        fs.writeFileSync(mp, JSON.stringify(Object.assign({}, mark, { shown: 2 })));
+      }
+    }
+  } catch (_) { /* no marker: nothing to repeat */ }
+
   // v0.108.0 PRIMARY SESSION DRIFT (read-only): the anchor records a session
   // id; after a /clear the live session is a newer transcript, and a DevSwarm
   // restart resumes the anchor's OLD session. Name the newer one so the user
