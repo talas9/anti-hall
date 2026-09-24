@@ -1054,12 +1054,31 @@ function visibleBroadcastRows(rows, home, sessionId, now, env) {
 // not change the advisory framing or gate anything. `rows` is assumed already
 // filtered (age-capped + deduped, see visibleBroadcastRows) — this function
 // only caps to MAX_LISTED and truncates each body (D2).
-function buildBroadcastSegment(rows) {
-  const shown = rows.slice(-MAX_LISTED).map((r) => {
-    const tag = isHighUrgency(r.urgency) ? '[URGENT] ' : '';
+//
+// Mesh message triage (Jev, part 2, ADVISORY ONLY): each shown row optionally
+// gains a bracketed `[kind]`/`[URGENT]` tag ahead of the existing `[URGENT]`
+// urgency tag — purely cosmetic prefix text, never a reorder/suppress/delay
+// and never a second `[URGENT]` when Jev's own urgency label agrees with the
+// pre-existing `isHighUrgency` axis. `home` is optional (tests omit it); any
+// triage failure/timeout/disabled state leaves every row exactly as before
+// this feature existed. See hooks/lib/jev-triage.js.
+function buildBroadcastSegment(rows, home) {
+  const capped = rows.slice(-MAX_LISTED);
+  let labels = new Map();
+  try {
+    const { triageMessagesSync } = require('./lib/jev-triage.js');
+    const items = capped.map((r, i) => ({ key: i, text: r && r.summary != null ? String(r.summary) : '' }));
+    labels = triageMessagesSync(items, { home });
+  } catch (_) {
+    labels = new Map(); // advisory-only: any failure -> no tags, unchanged rendering
+  }
+  const shown = capped.map((r, i) => {
+    const label = labels.get(i);
+    const urgentTag = isHighUrgency(r.urgency) || (label && label.urgency === 'urgent') ? '[URGENT] ' : '';
+    const kindTag = label && label.kind ? '[' + label.kind + '] ' : '';
     const who = r.from != null ? r.from : '?';
     const body = r.summary != null && r.summary !== '' ? truncateBroadcastBody(r.summary) : '(no summary)';
-    return '- ' + tag + who + ': ' + body;
+    return '- ' + urgentTag + kindTag + who + ': ' + body;
   });
   return (
     'DEVSWARM BROADCAST (advisory roster/FYI feed — react ONLY if you judge it '
@@ -1849,7 +1868,7 @@ function main() {
       const sessionId = payload && payload.session_id;
       toShow = visibleBroadcastRows(summary.recent, home, sessionId, now, process.env);
     } catch (_) { toShow = summary.recent; } // fail-open: never let this feed crash the hook
-    if (toShow.length) segments.push(buildBroadcastSegment(toShow));
+    if (toShow.length) segments.push(buildBroadcastSegment(toShow, home));
   }
 
   // The Primary's OWN unread is its own top-priority item — surfaced ahead of

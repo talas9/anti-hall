@@ -252,8 +252,137 @@ async function jevDecide({ question, state, timeoutMs } = {}) {
   }
 }
 
+// parseAnswerFor(question, ans) -> {ok, answer, confidence, reason?} — the SAME
+// per-type parsing jevDecide applies to json.answers.decision, generalized so
+// jevDecideMulti can apply it independently to each key of a multi-question
+// response. Never throws.
+function parseAnswerFor(question, ans) {
+  if (!ans || typeof ans !== 'object') {
+    return { ok: false, reason: 'bad-response' };
+  }
+  if (question.type === 'choice') {
+    if (typeof ans.choice !== 'string' || !ans.choice) {
+      return { ok: false, reason: 'bad-response' };
+    }
+    const confidence = Number.isFinite(ans.confidence) ? ans.confidence : 0;
+    return { ok: true, answer: ans.choice, confidence };
+  }
+  // noul: a probability-like value in [0,1]; >=0.5 is "true".
+  if (!Number.isFinite(ans.noul)) {
+    return { ok: false, reason: 'bad-response' };
+  }
+  const noul = ans.noul;
+  const answer = noul >= 0.5;
+  const confidence = Math.abs(noul - 0.5) * 2;
+  return { ok: true, answer, confidence };
+}
+
+// jevDecideMulti({questions, state, timeoutMs}) -> Promise<Result>
+//   questions: {key: question, ...} — MULTIPLE native Jev questions sharing ONE
+//     `state`, sent in a SINGLE HTTP round-trip (Jev's `questions` field already
+//     accepts multiple keys; jevDecide above just only ever used one, "decision").
+//     Built for callers (e.g. mesh message triage) that need more than one
+//     judgment on the SAME text without paying for more than one call.
+//   state, timeoutMs: same contract as jevDecide.
+//
+// Result (request-level failure, always fail-open, never throws):
+//   {ok:false, reason: 'disabled'|'no-key'|'timeout'|'network-error'|
+//                       'http-<status>'|'parse-error'|'bad-response'|
+//                       'bad-question'|'bad-state', ms?}
+// Result (request-level success):
+//   {ok:true, ms, answers: {key: {ok, answer, confidence}|{ok:false, reason}}}
+//     — the HTTP call itself succeeded; each key is parsed and reported
+//     independently, so one malformed answer never hides the others.
+async function jevDecideMulti({ questions, state, timeoutMs } = {}) {
+  if (!questions || typeof questions !== 'object' || Array.isArray(questions) ||
+    Object.keys(questions).length === 0) {
+    return { ok: false, reason: 'bad-question' };
+  }
+  for (const key of Object.keys(questions)) {
+    const q = questions[key];
+    if (!q || typeof q !== 'object' || (q.type !== 'choice' && q.type !== 'noul')) {
+      return { ok: false, reason: 'bad-question' };
+    }
+  }
+  if (typeof state !== 'string' || !state.trim()) {
+    return { ok: false, reason: 'bad-state' };
+  }
+
+  const cfg = loadJevConfig();
+  if (!cfg.enabled) {
+    return { ok: false, reason: 'disabled' };
+  }
+
+  const apiKey = resolveCredential(cfg);
+  if (!apiKey) {
+    return { ok: false, reason: 'no-key' };
+  }
+
+  const transportInfo = cfg.transport === 'typesafe' ? TYPESAFE : GATEWAY;
+  const endpoint = cfg.endpointOverride || transportInfo.endpoint;
+  const model = transportInfo.model;
+  const effectiveTimeout = (Number.isFinite(timeoutMs) && timeoutMs > 0) ? timeoutMs : cfg.timeoutMs;
+
+  const body = JSON.stringify({ state, model, questions });
+
+  const start = Date.now();
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), effectiveTimeout);
+
+  let res;
+  try {
+    res = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body,
+      signal: controller.signal,
+    });
+  } catch (err) {
+    clearTimeout(timer);
+    const ms = Date.now() - start;
+    if (err && (err.name === 'AbortError' || /aborted/i.test(String(err.message || '')))) {
+      return { ok: false, reason: 'timeout', ms };
+    }
+    return { ok: false, reason: 'network-error', ms };
+  }
+  clearTimeout(timer);
+  const ms = Date.now() - start;
+
+  if (!res.ok) {
+    return { ok: false, reason: `http-${res.status}`, ms };
+  }
+
+  let text;
+  try {
+    text = await res.text();
+  } catch (_) {
+    return { ok: false, reason: 'parse-error', ms };
+  }
+
+  let json;
+  try {
+    json = JSON.parse(text);
+  } catch (_) {
+    return { ok: false, reason: 'parse-error', ms };
+  }
+
+  if (!json || typeof json.answers !== 'object' || !json.answers) {
+    return { ok: false, reason: 'bad-response', ms };
+  }
+
+  const answers = {};
+  for (const key of Object.keys(questions)) {
+    answers[key] = parseAnswerFor(questions[key], json.answers[key]);
+  }
+  return { ok: true, ms, answers };
+}
+
 module.exports = {
   jevDecide,
+  jevDecideMulti,
   loadJevConfig,
   DEFAULT_TIMEOUT_MS,
   DEFAULT_CONFIDENCE_THRESHOLD,

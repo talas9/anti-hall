@@ -37,9 +37,8 @@ the hook source; `true` = speculative). Only a confident `true` blocks on Jev's 
 other outcome runs the regex hedge-word check exactly as before. `speculation-judge.js`
 (Tier 3, Haiku via `ANTHROPIC_API_KEY`) no longer consults Jev.
 
-**Planned, not yet built:** DevSwarm mesh message triage (urgent / needs-reply / FYI) —
-the same "typed decision on a rubric" shape Jev is suited for. Not implemented as of
-this doc.
+**Also:** `plugins/anti-hall/hooks/lib/jev-triage.js` + `jev-triage-worker.js` — DevSwarm
+mesh message triage. See §9 below.
 
 **Why the other ~48 hooks stay plain code.** Every other hook in this plugin
 (`command-guard`, `git-guard`, `edit-guard`, `speculation-guard`, `task-guard`, the
@@ -259,3 +258,107 @@ exists to cover.
   not publicly documented and may tighten or loosen without notice. `jev-client.js`'s
   hard `timeoutMs` (default 1500 ms) and full fail-open behavior (§4) mean a rate-limit
   regression degrades to "falls back to the regex," not to a hung or broken hook.
+
+
+## 9. Mesh message triage (DevSwarm)
+
+**Status: opt-in, default OFF** (rides the same `~/.anti-hall/jev.json` switch as §3,
+plus a per-feature key). Attaches an **advisory-only** label — `urgency`
+(`urgent`/`normal`) and `kind` (`question-needs-answer`/`blocker`/`status-report`/
+`done-report`/`fyi`) — to a mesh message wherever anti-hall renders one for the agent:
+
+- `plugins/anti-hall/scripts/devswarm.js` (`cmdInboxMessagesInner`, the shared engine
+  behind `inbox messages`, `inbox read-primary`, and `inbox peek-primary`): each
+  message row gains an additive `triage: {urgency?, kind?}` field. A row triage
+  couldn't confidently classify simply omits the field — byte-identical to before this
+  feature existed.
+- `plugins/anti-hall/hooks/devswarm-parent-inbox.js` (`buildBroadcastSegment`, the
+  `DEVSWARM BROADCAST` roster/FYI feed injected every Primary turn): a classified row's
+  rendered line gains a bracketed `[kind]` tag, and an urgency-labeled row can gain the
+  SAME `[URGENT]` tag the feed already renders for `isHighUrgency(r.urgency)` — never a
+  second one.
+
+**Hard contract — advisory ONLY, never enforced:** a label never suppresses, hides,
+reorders, delays, or acks a message, and never changes a Stop-gate block decision or
+any unread count. This is structural, not a convention to remember: the triage step
+runs strictly AFTER every gate/count/cursor computation and only ever adds a field or a
+cosmetic text prefix to an already-decided render.
+
+**Gating:** `~/.anti-hall/jev.json`'s existing `enabled` flag, plus a new `"triage"` key
+(default `true` once `enabled` is `true`; `"triage": false` turns triage off while
+leaving every other Jev consumer, e.g. speculation-judge, untouched). Two more optional
+fields, both triage-specific: `"triageUrgentThreshold"` (default `0.9`) and
+`"triageBudgetMs"` (default `2000`, the hard TOTAL wall-clock budget for one render
+call across every message it triages that turn).
+
+```json
+{
+  "enabled": false,
+  "triage": true,
+  "triageUrgentThreshold": 0.9,
+  "triageBudgetMs": 2000
+}
+```
+
+**Fallback order, per message:**
+
+1. **Jev, batched.** Both questions (`kind`: a Choice; `urgency`: a Noul) are sent in
+   ONE HTTP round-trip via `jev-client.js`'s new `jevDecideMulti` (Jev's `questions`
+   field already accepted multiple keys sharing one `state`; `jevDecide` just never
+   used more than one). `kind` is accepted at the ordinary `confidenceThreshold`
+   (default `0.85`, same field jev-client.js already reads).
+2. **Urgency uses a STRICTER threshold** (`triageUrgentThreshold`, default `0.9`, NOT
+   `confidenceThreshold`) before a row is called `urgent` — only "not urgent" uses the
+   ordinary threshold. This is a direct response to §7/§8's measured Jev weakness:
+   **67.6% urgent-label precision on the easy benchmark set** (roughly 2x Haiku 4.5's
+   false-positive rate on that specific label, even though Jev's overall category
+   accuracy there was comparable or better). A stricter bar for the one label Jev is
+   measurably over-eager on is cheaper and simpler than a second model call just to
+   cross-check urgency.
+3. **Haiku fallback**, ONLY for whichever field(s) Jev left unresolved (disabled, any
+   failure, or below its threshold) — reusing the SAME `ANTHROPIC_API_KEY` path
+   `speculation-judge.js` already established; no key -> that field stays unlabeled.
+4. **Neither available -> no label at all.** A message with no label renders EXACTLY
+   as it did before this feature existed.
+
+**Budget / never-block:** both `scripts/devswarm.js` (a long-established, fully
+synchronous ~16k-line CLI) and `devswarm-parent-inbox.js` (a synchronous
+UserPromptSubmit hook) call triage SYNCHRONOUSLY. Since `jevDecideMulti`/the Haiku
+fallback are `fetch`-based (async), the actual network I/O runs in a separate
+subprocess, `jev-triage-worker.js`, spawned via Node's `execFileSync` with an explicit
+`timeout` (`triageBudgetMs` + a small fixed backstop) — that timeout IS the "never
+block a hook" guarantee: if the worker hangs, it is killed and the caller gets back
+whatever it already had (cache hits only), never throwing. This was deliberately kept
+out of `jev-client.js`/`jevDecide` itself (still purely async, unchanged) rather than
+making either 16k-line/hook call chain async, which would have been a far larger and
+riskier diff for an advisory feature.
+
+**Cache:** `~/.anti-hall/cache/jev-triage.json`, keyed by a content hash of each
+message's text (a message is classified once, not every render). Bounded to 500
+entries, oldest evicted first. A "no label" verdict is cached too, so a message that
+neither backend could classify isn't re-sent every turn.
+
+**Logging:** `~/.anti-hall/logs/jev-triage.ndjson`, rotated at ~1 MB, one line per
+NEWLY-classified message (a cache hit logs nothing):
+
+```json
+{"ts":"2026-09-24T12:00:00.000Z","hash":"048f5682a65d4ed27e795af8279ba374","urgency":"urgent","kind":"question-needs-answer","backend":"jev","ms":18}
+```
+
+Only the content hash, the resolved labels, which backend produced them, and latency —
+**never** the message body and **never** a credential (same hygiene contract as
+`jev-judge.ndjson`, §5/§6).
+
+**Safety note (home isolation):** `triageMessagesSync` requires an EXPLICIT `home`
+from its caller and returns immediately (zero fs/network/subprocess) if one isn't
+supplied — it never silently falls back to `os.homedir()`. Every real call site
+already passes one explicitly (`ctx.home` in the CLI, `os.homedir()` computed once in
+the hook's `main()`); the guard exists so a test exercising an unrelated code path that
+happens to reach `buildBroadcastSegment`/`cmdInboxMessagesInner` can never accidentally
+read (or worse, act on) a real developer machine's `~/.anti-hall/jev.json`.
+
+**Codex parity:** DevSwarm mesh coordination (`scripts/devswarm.js`,
+`devswarm-parent-inbox.js`, and the rest of the `v0.57 mesh`) is Claude-side only — it
+has no Codex-port mirror to wire (confirmed: `plugins/anti-hall/codex/` has no
+`devswarm*`/`jev*` implementation files, only a reference skill doc). No Codex work is
+needed for this feature.

@@ -9094,6 +9094,27 @@ function cmdInboxMessagesInner(id, flags, ctx, opts) {
     out2 = Object.assign({}, out2, { bodyLength: Buffer.byteLength(out2 && out2.body != null ? String(out2.body) : '', 'utf8') });
     return out2;
   }) : messages;
+  // Mesh message triage (Jev, part 2) — ADVISORY ONLY, purely additive. Every
+  // row above is UNCHANGED by this step; a row this call could not confidently
+  // classify (disabled, low confidence, or any failure) simply never gains a
+  // `triage` key — byte-identical to before this feature existed. Never
+  // suppresses/reorders/delays a row and never touches `unreadCount`/`cursor`/
+  // `total` above, all already computed. See hooks/lib/jev-triage.js.
+  if (Array.isArray(messages) && messages.length) {
+    try {
+      const { triageMessagesSync } = require('../hooks/lib/jev-triage.js');
+      const items = messages.map((m, i) => ({ key: i, text: m && m.body != null ? String(m.body) : '' }));
+      const labels = triageMessagesSync(items, { home });
+      if (labels.size) {
+        messages = messages.map((m, i) => {
+          const label = labels.get(i);
+          return label ? Object.assign({}, m, { triage: label }) : m;
+        });
+      }
+    } catch (_) {
+      // triage is advisory-only: any failure here must never affect the read.
+    }
+  }
   // B1 (defects 902d3c5e7531/1932b53a3ace): repoKey/storePath/cwd + the
   // withheld-state fields, same shared shape `inbox count`/`read` report —
   // `messages`/`read-primary`/`peek-primary` used to omit all of these.
