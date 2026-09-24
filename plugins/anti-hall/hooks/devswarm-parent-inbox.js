@@ -1101,7 +1101,10 @@ function unreadIsGraced(opts) {
 // together match exactly what a human reading the rendered line would judge
 // "the same broadcast I already saw".
 function broadcastKey(r) {
-  return (r && r.from != null ? r.from : '?') + ' ' + (r && r.ts != null ? r.ts : '')
+  // fromLabel (v0.108.0): an aliased entry keys on its ORIGINAL label so a
+  // broadcast already seen before the alias existed is not re-shown.
+  const who = r && r.fromLabel != null ? r.fromLabel : (r && r.from != null ? r.from : '?');
+  return who + ' ' + (r && r.ts != null ? r.ts : '')
     + ' ' + (r && r.summary != null ? r.summary : '');
 }
 

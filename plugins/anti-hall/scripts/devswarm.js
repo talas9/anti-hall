@@ -870,6 +870,67 @@ function callerIdentity(env, cwd) {
   if (bid) return bid;
   return inst.primaryWorkspaceId(c);
 }
+// isPrimaryCheckout(worktreeRoot, mainWorktree, home, env) -> bool (v0.108.0).
+// The project's real Primary checkout is the one the DevSwarm app records as
+// `builderType = 'primary'`; with no app record (no app DB, no row, ambiguous)
+// it is the repo's MAIN worktree. Every other worktree is a child.
+function isPrimaryCheckout(worktreeRoot, mainWorktree, home, env) {
+  if (!worktreeRoot) return false;
+  let b = null;
+  try { b = require('../companion/lib/devswarm-app-db.js').builderForWorktree({ home, env, worktreePath: worktreeRoot }); } catch (_) { b = null; }
+  if (b && b.builderType) return b.builderType === 'primary';
+  let main = mainWorktree || null;
+  try { if (main) main = fs.realpathSync(main); } catch (_) { /* keep as-is */ }
+  return !!main && main === worktreeRoot;
+}
+// childSenderId(env, cwd, registry, home) -> the caller's registered child id,
+// or null (v0.108.0 identity fix). Before this, EVERY caller's `from` was the
+// worktree meshId `primary-<hash>` — children included — so a child's sends
+// and broadcasts read as "another Primary" and a resumed Primary stood down.
+// null for the Primary checkout. For a child, the id must be a REGISTRY row
+// on the caller's own worktree (so a reply to it routes): the declared
+// DEVSWARM_BUILDER_ID row (declaredSelfId), else the app's builder id for this
+// worktree when registered, else the ONE non-`primary-` row on the worktree.
+// Anything ambiguous -> null (the caller keeps the meshId; never invented).
+function childSenderId(env, cwd, registry, home) {
+  try {
+    const c = cwd || process.cwd();
+    const ctx = identityContext(c, CALLER_CWD);
+    const wt = ctx.worktreeRoot;
+    if (!wt || isPrimaryCheckout(wt, ctx.mainWorktree, home, env)) return null;
+    const rows = registry || [];
+    const declared = declaredSelfId(env, c, rows);
+    if (declared) return declared;
+    const onWt = rows.filter((r) => r && r.id != null && r.worktreePath
+      && canonicalWorktreeRealPath(String(r.worktreePath)) === wt && !/^primary-/.test(String(r.id)));
+    let app = null;
+    try { app = require('../companion/lib/devswarm-app-db.js').builderForWorktree({ home, env, worktreePath: wt }); } catch (_) { app = null; }
+    if (app && rows.some((r) => r && String(r.id) === String(app.id))) return String(app.id);
+    const ids = Array.from(new Set(onWt.map((r) => String(r.id))));
+    return ids.length === 1 ? ids[0] : null;
+  } catch (_) { return null; }
+}
+// senderIdentityDetailed(env, cwd, registry, home) -> { identity, kind, meshId? }.
+// The SENDER LABEL (`from`) for send / archive-request / merge broadcasts. Same
+// as callerIdentityDetailed, except a resolved CHILD worktree answers with its
+// registered child id (kind 'child', meshId = the worktree label it replaces).
+// Ack ownership / partition identity still use callerIdentity — unchanged.
+function senderIdentityDetailed(env, cwd, registry, home) {
+  const d = callerIdentityDetailed(env, cwd);
+  if (d.kind !== 'resolved') return d;
+  const child = childSenderId(env, cwd, registry, home);
+  if (!child || child === d.identity) return d;
+  try { require('../companion/lib/devswarm-sender-alias.js').writeAlias(home, d.identity, child, resolveCallerWorktree(cwd)); } catch (_) { /* display alias is best-effort */ }
+  return { identity: child, kind: 'child', meshId: d.identity };
+}
+// registrySnapshot(ctx, repoKey) -> registry rows for the sender label (fail-open []).
+function registrySnapshot(ctx, repoKey) {
+  let s = null;
+  try {
+    s = store.openStore({ home: ctx.home, hash: repoKey, backend: ctx.backend, env: ctx.env });
+    return s.listRegistry() || [];
+  } catch (_) { return []; } finally { try { if (s) s.close(); } catch (_) {} }
+}
 // declaredSelfId(env, cwd, registry) -> the caller's DECLARED id
 // (DEVSWARM_BUILDER_ID) when it names a registry row on the caller's OWN
 // worktree, else null (dual-partition defect, 0.106.0 field report).
@@ -3626,6 +3687,13 @@ function foldGroupIntoSurvivor(s, home, survivorId, candidates, opts) {
   // caller moving archived-origin rows (see appendIntoPartition).
   const allowArchivedDest = !!(opts && opts.allowArchivedDest);
   const lockCandidates = !!(opts && opts.lockCandidates) && !dryRun;
+  // childLabel (v0.108.0, repairChildSenderLabels only): every candidate is a
+  // CHILD worktree's own `primary-<hash>` label and the survivor is that same
+  // child's registry row on the same worktree — one identity, not a distinct
+  // child. Only LIVENESS protects such a row; its descriptor (written by the
+  // old register-primary) and a stale read frontier do not, because its unread
+  // is forwarded to the child's own partition before any cursor moves.
+  const childLabel = !!(opts && opts.childLabel);
   // P0-B fix, CORRECTED (see below): an EARLIER version of this fix bypassed the
   // descriptor gate outright on the theory that every caller already proves
   // canonicalWorktreeRealPath equality, so "could be a distinct live child" was
@@ -3885,6 +3953,7 @@ function foldGroupIntoSurvivor(s, home, survivorId, candidates, opts) {
             beating = hasFreshHeartbeat(d.id, home, { now: opts && opts.now });
           } catch (_) { beating = false; } // unreadable heartbeat is NOT positive proof of a live reader
           isMeshAnchor = readerEvidence || beating;
+          if (childLabel) isMeshAnchor = beating; // one identity: only a live heartbeat protects
         } else {
           let live = false;
           try {
@@ -3894,6 +3963,7 @@ function foldGroupIntoSurvivor(s, home, survivorId, candidates, opts) {
             );
           } catch (_) { live = true; } // undetermined -> fail toward attended (loss-free), matching isSiblingPartitionLive's own posture
           isMeshAnchor = live || !!readDescriptorFile(home, d.id) || readerEvidence;
+          if (childLabel) isMeshAnchor = live; // one identity: only liveness protects
         }
       }
     } catch (_) { isMeshAnchor = false; }
@@ -3904,7 +3974,7 @@ function foldGroupIntoSurvivor(s, home, survivorId, candidates, opts) {
       // sessionId is a proven stale cross-reference (see isStaleCrossReference
       // above), in which case it WOULD be tombstoned too (subject to the same
       // CAS the apply path uses).
-      if (!isStaleCrossReference(d) && readDescriptorFile(home, d.id)) { left.push(d.id); leftRows.set(String(d.id), d); continue; }
+      if (!childLabel && !isStaleCrossReference(d) && readDescriptorFile(home, d.id)) { left.push(d.id); leftRows.set(String(d.id), d); continue; }
       retired.push(d.id);
       continue;
     }
@@ -4072,7 +4142,7 @@ function foldGroupIntoSurvivor(s, home, survivorId, candidates, opts) {
       // when locked, the pre-lock candidate `d` when not — so a caller keying its
       // reported reason off this row (leftRows, below) reports what THIS pass
       // actually judged, not a possibly-stale pre-lock snapshot.
-      if (!isStaleCrossReference(row) && readDescriptorFile(home, row.id)) return { outcome: 'left', row };
+      if (!childLabel && !isStaleCrossReference(row) && readDescriptorFile(home, row.id)) return { outcome: 'left', row };
       // P1a/P2/P3 race close: ATOMIC conditional tombstone. removeRegistryIf deletes
       // ONLY if the row is STILL EXACTLY the one we classified — its session_id AND
       // updatedAt AND writeSeq all still equal our snapshot (NULL-safe, so a null
@@ -5877,6 +5947,107 @@ function reconcileDualPartitionAcksAllStores(home, ctx) {
       out.results.push({ repoKey, error: String((e && e.message) || e) });
     } finally { if (s) { try { s.close(); } catch (_) {} } }
   }
+  return out;
+}
+
+// repairChildSenderLabelsAllStores(home, ctx) -> { ok, dryRun, stores, labels,
+//   pending, aliased, retired, forwarded, left[], errors, results[] }.
+// v0.108.0 forward-migration 'repair-child-sender-labels'. Before the fix a
+// CHILD worktree's sends carried `from: primary-<sha(worktree)>` and its
+// register-primary minted a phantom `primary-<childhash>` registry row that
+// collected replies nobody read. For every registry row that is a CHILD
+// worktree's own label (id === that worktree's meshId, worktree is not the
+// Primary checkout — DevSwarm app builderType when known, else not the main
+// worktree) with exactly ONE non-`primary-` registry row on the same worktree
+// (the child's real id; the app's builder id preferred):
+//   1. sender-aliases.json maps label -> child id (display: recent[] / gate),
+//      history bodies and stored `from` values are never rewritten;
+//   2. foldGroupIntoSurvivor(childLabel) forwards the label partition's unread
+//      direct mail into the child's partition, THEN tombstones the label row and
+//      writes the retired-redirect (routing). A LIVE label row is left
+//      (retryable) — never retired under a running session.
+// Idempotent, fail-open (errors counted), no message/file delete. dryRun (or
+// ANTIHALL_INGEST_DRY_RUN=1) classifies only. Unprovable rows (deleted worktree
+// with no app record, zero or 2+ child rows) are reported, never guessed.
+function repairChildSenderLabelsAllStores(home, ctx) {
+  const c = ctx || {};
+  const env = c.env || process.env;
+  const dryRun = !!c.dryRun || String((env && env.ANTIHALL_INGEST_DRY_RUN) || '') === '1';
+  const out = { ok: true, dryRun, stores: 0, labels: 0, pending: 0, aliased: 0, retired: 0, forwarded: 0, left: [], errors: 0, results: [] };
+  const aliasLib = require('../companion/lib/devswarm-sender-alias.js');
+  let appDb = null;
+  try { appDb = require('../companion/lib/devswarm-app-db.js'); } catch (_) { appDb = null; }
+  const aliases = aliasLib.readAliases(home);
+  let hashes = [];
+  try { hashes = store.listStoreHashes(home) || []; } catch (_) { hashes = []; }
+  for (const repoKey of hashes) {
+    let s = null;
+    try {
+      s = store.openStore({ home, hash: repoKey, backend: c.backend, env, readOnly: dryRun });
+      if (!s) continue;
+      out.stores++;
+      const registry = s.listRegistry() || [];
+      for (const r of registry) {
+        if (!r || r.id == null || !/^primary-/.test(String(r.id)) || !r.worktreePath) continue;
+        const id = String(r.id);
+        const canon = canonicalWorktreeRealPath(String(r.worktreePath));
+        const label = canon ? canonicalMeshId(String(r.worktreePath)) : rawPathMeshId(String(r.worktreePath));
+        if (label !== id) continue; // not this worktree's own label
+        let app = null;
+        try { app = appDb ? appDb.builderForWorktree({ home, env, worktreePath: canon || String(r.worktreePath) }) : null; } catch (_) { app = null; }
+        let isChild = null;
+        if (app && app.builderType) isChild = app.builderType !== 'primary';
+        else if (canon) {
+          const ic = identityContext(canon);
+          isChild = !isPrimaryCheckout(ic.worktreeRoot, ic.mainWorktree, home, env);
+        }
+        if (isChild !== true) continue; // Primary checkout, or unprovable -> untouched
+        out.labels++;
+        const same = (d) => d && d.worktreePath && (canon
+          ? canonicalWorktreeRealPath(String(d.worktreePath)) === canon
+          : path.resolve(String(d.worktreePath)) === path.resolve(String(r.worktreePath)));
+        const kids = Array.from(new Set(registry.filter((d) => d && d.id != null && !/^primary-/.test(String(d.id)) && same(d)).map((d) => String(d.id))));
+        const childId = app && kids.includes(String(app.id)) ? String(app.id) : (kids.length === 1 ? kids[0] : null);
+        if (!childId) { out.results.push({ repoKey, id, action: 'skipped', reason: kids.length ? 'ambiguous-child-row' : 'no-child-row' }); continue; }
+        const needAlias = !(aliases[id] && aliases[id].to === childId);
+        const cls = foldGroupIntoSurvivor(s, home, childId, [r], { dryRun: true, childLabel: true, repoKey });
+        const wouldRetire = cls.retired.includes(id);
+        if (needAlias || wouldRetire) out.pending++;
+        if (!wouldRetire) out.left.push({ id, childId, reason: 'child-label-live' });
+        if (dryRun) { out.results.push({ repoKey, id, childId, action: 'would-repair', alias: needAlias, retire: wouldRetire }); continue; }
+        if (needAlias && aliasLib.writeAlias(home, id, childId, canon || String(r.worktreePath))) { out.aliased++; aliases[id] = { to: childId }; }
+        if (!wouldRetire) { out.results.push({ repoKey, id, childId, action: 'aliased-left-live' }); continue; }
+        const res = foldGroupIntoSurvivor(s, home, childId, [r], { lockCandidates: true, childLabel: true, repoKey });
+        out.forwarded += res.forwarded || 0;
+        if (res.retired.includes(id)) {
+          out.retired++;
+          out.results.push({ repoKey, id, childId, action: 'retired', forwarded: res.forwarded || 0 });
+          // The label's descriptor (old register-primary) stays on disk (no
+          // delete); an archived/<label>.json marker (never-clobber) keeps
+          // heal-orphan-partitions from re-adopting the retired row from it.
+          const desc = readDescriptorFile(home, id);
+          if (desc) {
+            try {
+              const dir = checkedArchivedDir(home, { create: true });
+              if (dir.ok) {
+                const body = JSON.stringify(Object.assign({}, desc, { archivedBy: 'child-sender-label-repair', archivedAt: Date.now(), retiredTo: childId }));
+                fs.writeFileSync(path.join(archivedDir(home), id + '.json'), body, { flag: 'wx' });
+              }
+            } catch (e) { if (!e || e.code !== 'EEXIST') { out.errors++; out.results.push({ repoKey, id, error: 'archived marker: ' + String((e && e.message) || e) }); } }
+          }
+        }
+        else {
+          out.left.push({ id, childId, reason: (res.skipped && res.skipped.length) ? 'lock-busy' : (res.forwardFailed.length ? 'forward-failed' : 'raced-re-register') });
+          if (res.forwardFailed.length) out.errors++;
+        }
+      }
+      if (!dryRun && out.retired) { try { store.deriveSummary(s, { home, env }); } catch (_) { /* projection refresh is best-effort */ } }
+    } catch (e) {
+      out.errors++;
+      out.results.push({ repoKey, error: String((e && e.message) || e) });
+    } finally { if (s) { try { s.close(); } catch (_) {} } }
+  }
+  if (!dryRun) out.pending = 0; // applied: remaining work is reported via left[]
   return out;
 }
 
@@ -11474,6 +11645,29 @@ function cmdRegisterPrimary(flags, ctx) {
   }
   const id = inst.primaryWorkspaceId(worktree);
   if (!isSafeId(id)) return { ok: false, error: 'derived primary workspace id is unsafe: ' + JSON.stringify(id) };
+  // v0.108.0: a DevSwarm CHILD worktree is not a Primary. Registering its
+  // `primary-<hash>` label minted a phantom row whose replies nobody read.
+  // Refused when the app records the worktree as a child builder, or the
+  // session is a corroborated child (env + on-disk evidence); --force overrides.
+  const forceRegister = !!(flags && flags.force && flags.force.length);
+  if (!forceRegister) {
+    let childBuilder = false;
+    try {
+      const wtReal = resolveCallerWorktree(worktree);
+      const b = require('../companion/lib/devswarm-app-db.js').builderForWorktree({ home, env: ctx.env, worktreePath: wtReal || worktree });
+      childBuilder = !!(b && b.builderType && b.builderType !== 'primary');
+    } catch (_) { childBuilder = false; }
+    let corroborated = false;
+    try { corroborated = !one(flags, 'worktree') && isChildWorkspaceCorroborated(ctx.env || {}, home, cwd); } catch (_) { corroborated = false; }
+    if (childBuilder || corroborated) {
+      return {
+        ok: false, reason: 'not-primary-checkout', id, worktree,
+        error: 'register-primary refused: ' + JSON.stringify(worktree) + ' is a DevSwarm CHILD workspace, not the '
+          + 'project\'s Primary checkout. A child is addressed by its own workspace id; pass --force only if this '
+          + 'worktree really hosts the Primary.',
+      };
+    }
+  }
   // Task #10 (session_id realness): prefer the REAL Claude Code session id when the
   // caller didn't pass --session explicitly. CLAUDE_CODE_SESSION_ID is a genuine
   // env var Claude Code sets on every process it spawns (verified present on a live
@@ -12692,7 +12886,7 @@ function cmdArchiveRequest(id, flags, ctx) {
 
   const reason = one(flags, 'reason');
   const message = buildArchiveRequestMessage(reason);
-  const from = callerIdentity(ctx.env, cwd);
+  const from = senderIdentityDetailed(ctx.env, cwd, registrySnapshot(ctx, repoKey), home).identity;
   const now = Number.isFinite(ctx.now) ? ctx.now : Date.now();
 
   // A3 (partial fix, v0.66 review): serialize against a concurrent rehome/
@@ -13468,10 +13662,13 @@ function cmdSend(flags, ctx) {
   // raw-cwd-hash fallback order) plus the `kind` this send's success/refusal
   // JSON now surfaces additively — computed once here instead of calling
   // callerIdentity separately.
-  const fromDetailed = callerIdentityDetailed(ctx.env, cwd);
+  // v0.108.0: a CHILD worktree's label is its registered child id, never the
+  // `primary-<hash>` worktree meshId (senderIdentityDetailed). --from may name
+  // either derived value (both are ground-truth, neither is a spoof).
+  const fromDetailed = senderIdentityDetailed(ctx.env, cwd, registrySnapshot(ctx, repoKey), home);
   const from = fromDetailed.identity;
   const fromFlag = one(flags, 'from');
-  if (fromFlag !== undefined && fromFlag !== from) {
+  if (fromFlag !== undefined && fromFlag !== from && fromFlag !== fromDetailed.meshId) {
     return {
       ok: false,
       error: 'send --from ' + JSON.stringify(fromFlag) + ' does not match the '
@@ -13579,7 +13776,7 @@ function cmdSend(flags, ctx) {
 
   if (type === 'direct') {
     const selfTarget = toPrimaryFlag ? primaryMeshId : toFlag;
-    if (selfTarget === from) {
+    if (selfTarget === from || (fromDetailed.meshId && selfTarget === fromDetailed.meshId)) {
       return { ok: false, error: 'send --to' + (toPrimaryFlag ? '-primary' : '') + ' cannot address the sender itself' };
     }
   }
@@ -16498,7 +16695,7 @@ function cmdMergeVerb(rest, ctx) {
     if (!repoKey) {
       broadcast = { ok: false, reason: 'no-project' };
     } else {
-      const from = callerIdentity(ctx.env, cwd);
+      const from = senderIdentityDetailed(ctx.env, cwd, registrySnapshot(ctx, repoKey), ctx.home).identity;
       const now = Number.isFinite(ctx.now) ? ctx.now : Date.now();
       const summary = merged
         ? 'merge-into-source completed'
@@ -17248,7 +17445,8 @@ module.exports = {
   deriveInstanceNonce,
   // mesh redesign B5 / Phase 3 — THE nonce every production site uses, plus the
   // reader_cursors adapters:
-  deriveReaderNonce, callerReaderKey, commitNdAck, floorCursor, importReaderCursorsAllStores, repairReaderFloorsAllStores, markAppArchivedDescriptors, deriveTitleFromBrief, appSessionOnWorktree, refreshNamesFromApp, syncAppState, messageGaps, appStatePath, cmdAppState, cmdSyncUi,
+  deriveReaderNonce, callerReaderKey, commitNdAck, floorCursor, importReaderCursorsAllStores, repairReaderFloorsAllStores, markAppArchivedDescriptors, deriveTitleFromBrief, appSessionOnWorktree, refreshNamesFromApp, syncAppState, messageGaps, appStatePath, cmdAppState, cmdSyncUi, repairChildSenderLabelsAllStores,
+  senderIdentityDetailed, childSenderId, isPrimaryCheckout,
   reconcileDualPartitionAcksAllStores, declaredSelfId,
   mergeSplitBackendStoresAllStores,
   // instanceNonce CONSUMERS (defect d3d571495bf6, items a/b/c — exported for

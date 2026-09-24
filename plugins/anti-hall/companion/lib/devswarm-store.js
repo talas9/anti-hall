@@ -2882,15 +2882,21 @@ function computeSummary(store, opts) {
   // collapsed run (occurrences > 1), so a projection with no duplicate runs is
   // byte-identical to the pre-collapse output for every existing reader.
   const broadcastRuns = [];
+  // v0.108.0: a pre-fix CHILD broadcast carries its worktree label
+  // `primary-<hash>`; sender-aliases.json maps it to the child's real id so
+  // recent[] never shows a child as a Primary. The stored row is unchanged.
+  let senderAliases = {};
+  try { if (home) senderAliases = require('./devswarm-sender-alias.js').readAliases(home); } catch (_) { senderAliases = {}; }
   for (const r of broadcastAll) {
-    const from = r.sender != null ? r.sender : null;
+    const rawFrom = r.sender != null ? r.sender : null;
+    const from = rawFrom != null && senderAliases[String(rawFrom)] ? senderAliases[String(rawFrom)].to : rawFrom;
     const summary = r.body != null ? r.body : '';
     const urgency = r.urgency != null ? r.urgency : null;
     const last = broadcastRuns.length > 0 ? broadcastRuns[broadcastRuns.length - 1] : null;
     // Identity = the PROJECTED fields (from/summary/urgency). Two rows that
     // would render as the same recent[] entry apart from `ts` ARE duplicates;
     // any difference in urgency breaks the run rather than silently dropping it.
-    if (last !== null && last.from === from && last.summary === summary && last.urgency === urgency) {
+    if (last !== null && last.from === from && last.rawFrom === rawFrom && last.summary === summary && last.urgency === urgency) {
       last.count += 1;
       if (Number.isFinite(r.ts)) {
         last.maxTs = Number.isFinite(last.maxTs) ? Math.max(last.maxTs, r.ts) : r.ts;
@@ -2899,7 +2905,7 @@ function computeSummary(store, opts) {
       continue;
     }
     broadcastRuns.push({
-      from, summary, urgency, count: 1,
+      from, rawFrom, summary, urgency, count: 1,
       rawTs: r.ts, // the row's ts VERBATIM — used as-is for an uncollapsed entry
       maxTs: Number.isFinite(r.ts) ? r.ts : null,
       minTs: Number.isFinite(r.ts) ? r.ts : null,
@@ -2912,6 +2918,7 @@ function computeSummary(store, opts) {
     // back to rawTs if no row in the run carried a finite ts.
     const ts = run.count > 1 && Number.isFinite(run.maxTs) ? run.maxTs : run.rawTs;
     const entry = { from: run.from, summary: run.summary, ts, urgency: run.urgency };
+    if (run.rawFrom !== run.from) entry.fromLabel = run.rawFrom; // aliased: the label the row was written under
     if (run.count > 1) {
       entry.occurrences = run.count;
       entry.firstTs = run.minTs;

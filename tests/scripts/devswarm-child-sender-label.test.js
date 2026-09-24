@@ -1,0 +1,211 @@
+'use strict';
+// CHILD SENDER LABEL (v0.108.0 P0). Before the fix every caller's `from` was
+// `primary-<sha256(worktree)[0:8]>`, CHILDREN INCLUDED, so a child's sends and
+// broadcasts read as "another Primary" (a resumed Primary stood down), and a
+// child's register-primary minted a phantom `primary-<childhash>` row whose
+// replies nobody read. Pins: the child label, the Primary label, the fail-open
+// fallback, the display alias, and the seeded-bad-state repair migration.
+
+const { test } = require('node:test');
+const assert = require('node:assert');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const cp = require('node:child_process');
+
+process.env.ANTI_HALL_LOG_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'ah-childlabel-log-'));
+const ROOT = path.join(__dirname, '..', '..', 'plugins', 'anti-hall');
+const cli = require(path.join(ROOT, 'scripts', 'devswarm.js'));
+const storeLib = require(path.join(ROOT, 'companion', 'lib', 'devswarm-store.js'));
+const repokey = require(path.join(ROOT, 'companion', 'lib', 'devswarm-repokey.js'));
+const inst = require(path.join(ROOT, 'companion', 'install-devswarm-ingest.js'));
+const liveness = require(path.join(ROOT, 'companion', 'lib', 'liveness.js'));
+const aliasLib = require(path.join(ROOT, 'companion', 'lib', 'devswarm-sender-alias.js'));
+const migrations = require(path.join(ROOT, 'companion', 'lib', 'migrations.js'));
+
+const CHILD = 'c0ffee00-1111-4222-8333-444455556666';
+
+function rm(p) { try { fs.rmSync(p, { recursive: true, force: true }); } catch (_) {} }
+
+function fixture() {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ah-childlabel-home-'));
+  fs.mkdirSync(path.join(home, '.anti-hall'), { recursive: true });
+  const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ah-childlabel-repo-')));
+  const repo = path.join(base, 'main');
+  cp.spawnSync('git', ['init', '-q', repo]);
+  cp.spawnSync('git', ['-C', repo, '-c', 'user.email=a@b.c', '-c', 'user.name=T', 'commit', '-q', '--allow-empty', '-m', 'init']);
+  const child = path.join(base, 'fix-child');
+  cp.spawnSync('git', ['-C', repo, 'worktree', 'add', '-q', child, '-b', 'fix-child']);
+  const repoKey = repokey.repoKeyForWorktree(repo);
+  const env = { ANTIHALL_DEVSWARM_APP_DB: 'off' };
+  const PRIMARY = inst.primaryWorkspaceId(repo);
+  const LABEL = inst.primaryWorkspaceId(child);
+  return { home, base, repo, child, repoKey, env, PRIMARY, LABEL };
+}
+function cleanup(f) { rm(f.home); rm(f.base); }
+function withStore(f, fn) {
+  const s = storeLib.openStore({ home: f.home, hash: f.repoKey });
+  try { return fn(s); } finally { s.close(); }
+}
+function registerChildRow(f) {
+  withStore(f, (s) => s.upsertRegistry({ id: CHILD, worktreePath: f.child, sessionId: 'sess-child' }));
+}
+function registerPrimary(f) {
+  const r = cli.run(['register-primary'], { home: f.home, env: Object.assign({ CLAUDE_CODE_SESSION_ID: 'sess-primary' }, f.env), cwd: f.repo });
+  assert.equal(r.result.ok, true, JSON.stringify(r.result));
+}
+
+test('child worktree: send carries the registered child id, never primary-<childhash>', () => {
+  const f = fixture();
+  try {
+    assert.notEqual(f.LABEL, f.PRIMARY);
+    registerPrimary(f);
+    registerChildRow(f);
+    const env = Object.assign({ DEVSWARM_BUILDER_ID: CHILD }, f.env);
+    const r = cli.run(['send', '--to-primary', '--message', 'status: done'], { home: f.home, env, cwd: f.child });
+    assert.equal(r.result.ok, true, JSON.stringify(r.result));
+    assert.equal(r.result.from, CHILD);
+    assert.deepEqual(r.result.identity, { id: CHILD, kind: 'child' });
+    const rows = withStore(f, (s) => s.listMessages(f.PRIMARY) || []);
+    assert.equal(rows[rows.length - 1].sender, CHILD, 'the stored row carries the child id');
+    const b = cli.run(['send', '--broadcast', '--message', 'merged'], { home: f.home, env, cwd: f.child });
+    assert.equal(b.result.from, CHILD, 'broadcasts too');
+    // Declared id not registered: the ONE non-primary row on the worktree wins.
+    const r2 = cli.run(['send', '--to-primary', '--message', 'x'], { home: f.home, env: f.env, cwd: f.child });
+    assert.equal(r2.result.from, CHILD);
+    // The worktree label is still accepted as a redundant --from, and is still "self".
+    const r3 = cli.run(['send', '--to-primary', '--from', f.LABEL, '--message', 'y'], { home: f.home, env, cwd: f.child });
+    assert.equal(r3.result.ok, true, JSON.stringify(r3.result));
+    const self = cli.run(['send', '--to', f.LABEL, '--message', 'z'], { home: f.home, env, cwd: f.child });
+    assert.equal(self.result.ok, false);
+    assert.match(self.result.error, /cannot address the sender itself/);
+    // Display alias recorded for the old label.
+    assert.equal(aliasLib.resolveAlias(f.home, f.LABEL), CHILD);
+  } finally { cleanup(f); }
+});
+
+test('primary checkout keeps primary-<hash>; an unregistered child falls back to its label (never invented)', () => {
+  const f = fixture();
+  try {
+    registerPrimary(f);
+    const env = Object.assign({ DEVSWARM_BUILDER_ID: 'hive-primary-uuid' }, f.env);
+    withStore(f, (s) => s.upsertRegistry({ id: 'hive-primary-uuid', worktreePath: f.repo, sessionId: null }));
+    registerChildRow(f);
+    const p = cli.run(['send', '--to', CHILD, '--message', 'go'], { home: f.home, env, cwd: f.repo });
+    assert.equal(p.result.ok, true, JSON.stringify(p.result));
+    assert.equal(p.result.from, f.PRIMARY, 'the Primary checkout is the only primary-<hash> sender');
+    assert.equal(p.result.identity.kind, 'resolved');
+  } finally { cleanup(f); }
+  const g = fixture();
+  try {
+    registerPrimary(g);
+    const r = cli.run(['send', '--to-primary', '--message', 'x'], { home: g.home, env: g.env, cwd: g.child });
+    assert.equal(r.result.ok, true, JSON.stringify(r.result));
+    assert.equal(r.result.from, g.LABEL, 'no child row to name: fail-open to the worktree label');
+  } finally { cleanup(g); }
+});
+
+test('projection: a pre-fix child broadcast under primary-<childhash> renders as the child (alias), stored row untouched', () => {
+  const f = fixture();
+  try {
+    registerChildRow(f);
+    withStore(f, (s) => {
+      const fields = { from: f.LABEL, to: null, type: 'broadcast', message: 'old broadcast', timestamp: 1790000000000, urgency: 'normal' };
+      storeLib.appendMeshMessage(s, Object.assign({}, fields, { hash: storeLib.meshMessageHash(fields) }));
+    });
+    const before = withStore(f, (s) => storeLib.computeSummary(s, { home: f.home }));
+    assert.equal(before.recent[0].from, f.LABEL, 'no alias yet: raw label');
+    aliasLib.writeAlias(f.home, f.LABEL, CHILD, f.child);
+    const after = withStore(f, (s) => storeLib.computeSummary(s, { home: f.home }));
+    assert.equal(after.recent[0].from, CHILD);
+    assert.equal(after.recent[0].fromLabel, f.LABEL);
+    const raw = withStore(f, (s) => s.listMessages(storeLib.BROADCAST_PARTITION_ID));
+    assert.equal(raw[0].sender, f.LABEL, 'history is never rewritten');
+  } finally { cleanup(f); }
+});
+
+function seedPhantom(f, opts) {
+  const o = opts || {};
+  withStore(f, (s) => s.upsertRegistry({ id: f.LABEL, worktreePath: f.child, sessionId: null }));
+  const d = path.join(f.home, '.anti-hall', 'devswarm', 'workspaces');
+  fs.mkdirSync(d, { recursive: true });
+  fs.writeFileSync(path.join(d, f.LABEL + '.json'), JSON.stringify({ id: f.LABEL, worktreePath: f.child, sessionId: null }));
+  withStore(f, (s) => {
+    const fields = { from: f.PRIMARY, to: f.LABEL, type: 'direct', message: 'reply nobody read', timestamp: 1790000000001, urgency: 'normal' };
+    storeLib.appendMeshMessage(s, Object.assign({}, fields, { hash: storeLib.meshMessageHash(fields) }));
+  });
+  if (o.live) {
+    const p = liveness.heartbeatPathFor(f.LABEL, f.home);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, JSON.stringify({ id: f.LABEL, ts: Date.now(), state_ts: Date.now(), source: 'inbox-tick', sessionId: null }));
+  }
+}
+
+test('repair (seeded bad state): phantom primary-<childhash> -> alias + unread forwarded + tombstone; idempotent; Primary untouched', () => {
+  const f = fixture();
+  try {
+    registerPrimary(f);
+    registerChildRow(f);
+    seedPhantom(f);
+    const dry = cli.repairChildSenderLabelsAllStores(f.home, { env: f.env, dryRun: true });
+    assert.equal(dry.labels, 1, JSON.stringify(dry));
+    assert.equal(dry.pending, 1);
+    assert.ok(withStore(f, (s) => s.listRegistry().some((r) => r.id === f.LABEL)), 'dry run writes nothing');
+
+    const res = cli.repairChildSenderLabelsAllStores(f.home, { env: f.env });
+    assert.equal(res.errors, 0, JSON.stringify(res));
+    assert.equal(res.retired, 1, JSON.stringify(res));
+    assert.equal(res.forwarded, 1);
+    const reg = withStore(f, (s) => s.listRegistry().map((r) => r.id));
+    assert.ok(!reg.includes(f.LABEL), 'phantom row tombstoned');
+    assert.ok(reg.includes(f.PRIMARY) && reg.includes(CHILD), 'Primary anchor and child row untouched');
+    const childMail = withStore(f, (s) => s.listMessages(CHILD).map((m) => m.body));
+    assert.deepEqual(childMail, ['reply nobody read'], 'unread forwarded to the child partition');
+    const phantomMail = withStore(f, (s) => s.listMessages(f.LABEL).map((m) => m.body));
+    assert.deepEqual(phantomMail, ['reply nobody read'], 'no delete: the original row stays');
+    assert.equal(aliasLib.resolveAlias(f.home, f.LABEL), CHILD);
+    const redirect = JSON.parse(fs.readFileSync(path.join(f.home, '.anti-hall', 'devswarm', 'retired', f.LABEL + '.json'), 'utf8'));
+    assert.equal(redirect.retiredTo, CHILD, 'routing redirect to the child');
+
+    const again = cli.repairChildSenderLabelsAllStores(f.home, { env: f.env, dryRun: true });
+    assert.equal(again.pending, 0, 'idempotent: nothing left');
+    const rows = migrations.runMigrations({ home: f.home, env: f.env, version: '0.108.0-test', devswarm: cli });
+    const row = rows.find((x) => x.id === 'repair-child-sender-labels');
+    assert.equal(row.status, 'skipped', JSON.stringify(row));
+    assert.match(row.msg, /nothing to migrate/);
+  } finally { cleanup(f); }
+});
+
+test('repair: a LIVE phantom label is aliased but never retired (retryable, unstamped)', () => {
+  const f = fixture();
+  try {
+    registerPrimary(f);
+    registerChildRow(f);
+    seedPhantom(f, { live: true });
+    const res = cli.repairChildSenderLabelsAllStores(f.home, { env: f.env });
+    assert.equal(res.retired, 0, JSON.stringify(res));
+    assert.deepEqual(res.left.map((x) => x.reason), ['child-label-live']);
+    assert.ok(withStore(f, (s) => s.listRegistry().some((r) => r.id === f.LABEL)));
+    assert.equal(aliasLib.resolveAlias(f.home, f.LABEL), CHILD);
+    assert.equal(migrations.recordRun(f.home, 'repairChildSenderLabels', '9.9.9', { errors: 0, left: res.left }), false, 'a live row blocks the stamp');
+  } finally { cleanup(f); }
+});
+
+test('register-primary from a corroborated DevSwarm CHILD worktree is refused (no new phantom label); --force overrides', () => {
+  const f = fixture();
+  try {
+    registerChildRow(f);
+    const d = path.join(f.home, '.anti-hall', 'devswarm', 'workspaces');
+    fs.mkdirSync(d, { recursive: true });
+    fs.writeFileSync(path.join(d, CHILD + '.json'), JSON.stringify({ id: CHILD, worktreePath: f.child }));
+    const env = Object.assign({ DEVSWARM_BUILDER_ID: CHILD, DEVSWARM_SOURCE_BRANCH: 'main' }, f.env);
+    const r = cli.run(['register-primary'], { home: f.home, env, cwd: f.child });
+    assert.equal(r.result.ok, false, JSON.stringify(r.result));
+    assert.equal(r.result.reason, 'not-primary-checkout');
+    assert.ok(!withStore(f, (s) => s.listRegistry().some((x) => x.id === f.LABEL)), 'no phantom row minted');
+    const forced = cli.run(['register-primary', '--force'], { home: f.home, env, cwd: f.child });
+    assert.equal(forced.result.ok, true, JSON.stringify(forced.result));
+    // The Primary checkout itself is never refused.
+    registerPrimary(f);
+  } finally { cleanup(f); }
+});

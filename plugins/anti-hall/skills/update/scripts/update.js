@@ -1804,6 +1804,55 @@ function markAppArchivedPostUpdate(opts) {
 }
 
 /**
+ * childSenderLabelsPostUpdate({ paths, env, cwd, home, devswarm, version }) ->
+ * { attempted, labels, aliased, retired, forwarded, errors, detail }. v0.108.0:
+ * a CHILD worktree's old `primary-<hash>` sender label is aliased to the
+ * child's registry id and (when not live) its unread direct mail is forwarded
+ * to the child's partition before the label row is tombstoned
+ * (devswarm.js repairChildSenderLabelsAllStores). NOT gated on
+ * isDevswarmActive (a store repair). IDEMPOTENT, FAIL-OPEN, NO-DELETE.
+ * Registry key 'repairChildSenderLabels' (migrations.js
+ * 'repair-child-sender-labels' — doctor --repair runs the same pass); stamped
+ * only when nothing errored and no retryable row was left.
+ */
+function childSenderLabelsPostUpdate(opts) {
+  const o = opts || {};
+  const env = o.env || process.env;
+  const cwd = o.cwd || process.cwd();
+  const home = o.home || os.homedir();
+  const paths = o.paths;
+  try {
+    const devswarmPath = path.join(paths.pluginSrcDir, 'scripts', 'devswarm.js');
+    if (!fs.existsSync(devswarmPath)) {
+      return { attempted: false, detail: 'child-sender-labels skipped: expected plugin files not found under ' + paths.pluginSrcDir };
+    }
+    const devswarm = o.devswarm || require(devswarmPath);
+    if (typeof devswarm.repairChildSenderLabelsAllStores !== 'function') {
+      return { attempted: false, detail: 'child-sender-labels skipped: this devswarm.js build has no repairChildSenderLabelsAllStores' };
+    }
+    const version = o.version || null;
+    const sweepState = readSweepState(home);
+    if (version && sweepState.repairChildSenderLabels && sweepState.repairChildSenderLabels.completedVersion === version) {
+      return { attempted: true, labels: 0, aliased: 0, retired: 0, forwarded: 0, errors: 0, skippedAlreadyDone: true,
+        detail: 'child-sender-labels: already completed for ' + version + ' - skipped (one-time per-version migration)' };
+    }
+    const r = devswarm.repairChildSenderLabelsAllStores(home, { env, cwd }) || {};
+    const errCount = r.errors || 0;
+    try { migrationsLib().recordRun(home, 'repairChildSenderLabels', version, { errors: errCount, pendingRows: r.dryRun ? (r.pending || 0) : 0, left: r.left || [] }); } catch (_) { /* fail-open */ }
+    return {
+      attempted: true, labels: r.labels || 0, aliased: r.aliased || 0, retired: r.retired || 0, forwarded: r.forwarded || 0, errors: errCount,
+      detail: 'child-sender-labels: ' + (r.dryRun ? 'dry run, would repair ' + (r.pending || 0)
+        : 'aliased ' + (r.aliased || 0) + ', retired ' + (r.retired || 0) + ' (forwarded ' + (r.forwarded || 0) + ' unread)')
+        + ' of ' + (r.labels || 0) + ' child label(s)'
+        + ((r.left && r.left.length) ? ', ' + r.left.length + ' live label(s) left for next run' : '')
+        + (errCount ? ' (' + errCount + ' error(s), fail-open - retried next run)' : ''),
+    };
+  } catch (e) {
+    return { attempted: false, detail: 'child-sender-labels raised: ' + (e && e.message ? e.message : String(e)) };
+  }
+}
+
+/**
  * dualPartitionAcksPostUpdate({ paths, env, cwd, home, devswarm, version }) ->
  *   { attempted, stores, raised, rows, errors, detail }
  * Forward-migration for the dual-partition defect (devswarm.js
@@ -3125,6 +3174,8 @@ function runUpdate(opts) {
   const appArchivedMarkers = runPostPullStage('app-archived-markers', () => markAppArchivedPostUpdate({ paths, env: opts.env, cwd: opts.cwd, home: opts.home, devswarm: opts.devswarm, version: latest }));
   // Dual-partition defect: raise a twin partition past sends already acked in
   // its anchor/partner partition. Same gate + fail-open posture.
+  // v0.108.0: alias/retire a child worktree's old `primary-<hash>` sender label.
+  const childSenderLabels = runPostPullStage('child-sender-labels', () => childSenderLabelsPostUpdate({ paths, env: opts.env, cwd: opts.cwd, home: opts.home, devswarm: opts.devswarm, version: latest }));
   const dualPartitionAcks = runPostPullStage('dual-partition-acks', () => dualPartitionAcksPostUpdate({ paths, env: opts.env, cwd: opts.cwd, home: opts.home, devswarm: opts.devswarm, version: latest }));
   // devswarm-parent-gate.js stated-intent shape: normalize every gate-loop-
   // state file to carry intents/intentAcks. Same gate + fail-open posture;
@@ -3177,6 +3228,7 @@ function runUpdate(opts) {
         readerCursorsImport,
         readerFloorRepair,
         appArchivedMarkers,
+        childSenderLabels,
         dualPartitionAcks,
         replyStateMigrate,
         gateIntentsMigrate,
@@ -3231,6 +3283,7 @@ function runUpdate(opts) {
       readerCursorsImport,
       readerFloorRepair,
       appArchivedMarkers,
+      childSenderLabels,
       dualPartitionAcks,
       replyStateMigrate,
       gateIntentsMigrate,
@@ -3421,6 +3474,9 @@ function renderHuman(status, changelog) {
   if (status.appArchivedMarkers && status.appArchivedMarkers.attempted) {
     lines.push('  app-archived-markers: ' + status.appArchivedMarkers.detail);
   }
+  if (status.childSenderLabels && status.childSenderLabels.attempted) {
+    lines.push('  child-sender-labels: ' + status.childSenderLabels.detail);
+  }
   if (status.dualPartitionAcks && status.dualPartitionAcks.attempted) {
     lines.push('  dual-partition-acks: ' + status.dualPartitionAcks.detail);
   }
@@ -3512,6 +3568,7 @@ module.exports = {
   readerCursorsImportPostUpdate,
   readerFloorRepairPostUpdate,
   markAppArchivedPostUpdate,
+  childSenderLabelsPostUpdate,
   dualPartitionAcksPostUpdate,
   mergeSplitBackendStoresPostUpdate,
   healRegistryPostUpdate,

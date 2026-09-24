@@ -311,7 +311,7 @@ function builderStates(opts) {
   const snap = snapshot(opts);
   if (!snap) return null;
   const map = new Map();
-  for (const w of snap.workspaces) map.set(w.id, { active: w.active, archived: w.archived, worktreePath: w.worktreePath });
+  for (const w of snap.workspaces) map.set(w.id, { active: w.active, archived: w.archived, worktreePath: w.worktreePath, builderType: w.builderType });
   return map;
 }
 
@@ -536,8 +536,27 @@ function scheduledForDeletion(home, env) {
 
 function resetCache() { memo = null; }
 
+// builderForWorktree({ home, env, worktreePath, now }) -> { id, builderType, active } | null.
+// The app's own builder record for a worktree (v0.108.0 identity fix): the
+// Primary's checkout is `builderType = 'primary'`, a child workspace is
+// `'standard'`. Prefers the ACTIVE builder; exactly one candidate required
+// (two active builders on one path is ambiguous -> null). Fail-open null.
+function builderForWorktree(opts) {
+  const o = opts || {};
+  try {
+    const map = builderStates(o);
+    const wt = normPath(o.worktreePath);
+    if (!map || !wt) return null;
+    const all = [];
+    for (const [id, b] of map.entries()) if (b.worktreePath === wt) all.push({ id, builderType: b.builderType, active: b.active });
+    const act = all.filter((b) => b.active);
+    const pool = act.length ? act : all;
+    return pool.length === 1 ? pool[0] : null;
+  } catch (_) { return null; }
+}
+
 module.exports = {
-  appDbPath, readSnapshot, snapshot, builderStates, appArchivedVerdict, workspaceFor, sessionOwner, sessionMap,
+  appDbPath, readSnapshot, snapshot, builderStates, appArchivedVerdict, builderForWorktree, workspaceFor, sessionOwner, sessionMap,
   briefDelivery, finishSignal, branchTipMtimeMs, transcriptCwdMatches, lastSelected, focusedWorkspaceId, repositoryForWorktree, messageTimestamps, scheduledForDeletion,
   resetCache, SCHEMA, DEFAULT_CACHE_MS, BRIEF_DELIVERY_GRACE_MS, FOCUS_WINDOW_MS,
 };

@@ -341,6 +341,25 @@ const MIGRATIONS = [
     },
   },
   {
+    // v0.108.0: a CHILD worktree's old `primary-<hash>` sender label. Aliases it
+    // to the child's registry id (sender-aliases.json — display) and, when the
+    // label row is not live, forwards its unread direct mail into the child's
+    // partition THEN tombstones it with a retired-redirect (routing). No
+    // message/file delete; history `from` values are never rewritten.
+    id: 'repair-child-sender-labels',
+    key: 'repairChildSenderLabels',
+    fn: 'repairChildSenderLabelsAllStores',
+    detect(dw, home, ctx) {
+      const r = dw.repairChildSenderLabelsAllStores(home, Object.assign({}, ctx, { dryRun: true })) || {};
+      return {
+        pending: (r.pending || 0) > 0,
+        raw: Object.assign({}, r, { pending: 0 }),
+        detail: (r.pending || 0) + ' child sender label(s) to alias/retire of ' + (r.labels || 0) + ' across ' + (r.stores || 0) + ' store(s)'
+          + (r.errors ? ' (' + r.errors + ' error(s), fail-open)' : ''),
+      };
+    },
+  },
+  {
     // DELETION-CLASS: removes registry rows (forwarding first where it can).
     // Opt-in ONLY via `doctor --repair-resurrected [--apply]`; update reports it
     // (dry-run) once per version. Never run by runMigrations().
