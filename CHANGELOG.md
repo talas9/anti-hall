@@ -133,6 +133,12 @@ the update.
   else is kept and listed in `keptNotArchivedInApp`, and an unreadable app DB archives
   nothing. The skill docs no longer suggest a roster screenshot as the source.
 
+- **Changed: `update.js`'s split-store-merge summary now explains re-delivery.**
+  The v0.107.0 split-store merge re-delivers already-handled messages as unread
+  by design (cursors are never copied across the two backends' independent
+  sequence spaces). The human summary and JSON state (`reDeliveredUnread`) now
+  say how many rows were re-delivered and why, instead of leaving it silent.
+  No behavior change.
 - **Fixed: edit-guard's handover-location redirect didn't say where to write
   instead.** The deny message now explicitly says "write handovers under
   .anti-hall/handovers/** (exempt); copy elsewhere afterwards if the project

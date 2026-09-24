@@ -1561,6 +1561,74 @@ test('healRegistryPostUpdate: gate open + a synthetic mis-keyed row -> REHOMED w
   }
 });
 
+// --- item B (v0.107.1): the split-store merge (v0.107.0) re-delivers already-
+// handled messages as unread by design (cursors are deliberately never copied
+// across the two backends' independent sequence spaces — see
+// mergeSplitBackendStore's own header comment in devswarm-store.js). This is
+// NOT a behavior change; it makes update.js's human summary + JSON state HOW
+// MANY rows were re-delivered and WHY, instead of leaving that silent.
+(devswarmStore.sqliteAvailable() ? test : test.skip)(
+  'mergeSplitBackendStoresPostUpdate: reports reDeliveredUnread + explains the re-delivery in the human detail (real devswarm.js + devswarm-store.js, no mock)',
+  () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'update-mergesplit-'));
+    const repo = makeGitRepoForUpdate('mergesplit');
+    try {
+      const repoKey = devswarmRepokey.repoKeyForWorktree(repo);
+      const dir = devswarmStore.storeDirForHash(home, repoKey);
+
+      const sq = devswarmStore.openSqlite(home, null, { hash: repoKey });
+      sq.appendMeshRow({ workspaceId: 'w1', ts: 100, hash: 'sq-1', body: 'sqlite native', sender: 'primary-a', mtype: 'direct' });
+      sq.setCursor('w1', 0);
+      sq.close();
+      devswarmStore.writeBackendMarker(dir, 'sqlite');
+
+      // The journal ("other") side holds a message that a reader already saw
+      // there BEFORE the merge — it is not tracked as read on the chosen
+      // (sqlite) side, so after merge it lands there as fresh unread.
+      const jn = devswarmStore.openJournal(home, null, null, null, { hash: repoKey });
+      jn.appendMeshRow({ workspaceId: 'w1', ts: 200, hash: 'jn-1', body: 'already read on the journal side', sender: 'primary-b', mtype: 'direct' });
+      jn.close();
+
+      const result = U.mergeSplitBackendStoresPostUpdate({
+        paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+        env: { DEVSWARM_REPO_ID: 'r1' },
+        cwd: repo,
+        home,
+        version: '0.107.1',
+      });
+
+      assert.strictEqual(result.attempted, true, JSON.stringify(result));
+      assert.strictEqual(result.messagesMerged, 1, JSON.stringify(result));
+      assert.strictEqual(result.reDeliveredUnread, 1, 'reDeliveredUnread must mirror messagesMerged — every merged row lands unread by design');
+      assert.match(result.detail, /1 already-handled message\(s\) may reappear as unread once/);
+      assert.match(result.detail, /cursors are not copied across split-store backends by design/);
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  }
+);
+
+test('mergeSplitBackendStoresPostUpdate: dry-run-shaped zero-merge result never claims a re-delivery note', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'update-mergesplit-none-'));
+  const repo = makeGitRepoForUpdate('mergesplit-none');
+  try {
+    const result = U.mergeSplitBackendStoresPostUpdate({
+      paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+      env: { DEVSWARM_REPO_ID: 'r1' },
+      cwd: repo,
+      home,
+      version: '0.107.1',
+    });
+    assert.strictEqual(result.attempted, true, JSON.stringify(result));
+    assert.strictEqual(result.reDeliveredUnread, 0);
+    assert.ok(!/may reappear as unread/.test(result.detail), result.detail);
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+});
+
 test('healRegistryPostUpdate: a per-store throw is fail-open — never propagates, that store just contributes 0, attempted stays true', () => {
   // Isolated home with ONE real per-project store (via the real devswarm.js +
   // devswarm-store.js) so listStoreHashes finds a real repoKey to iterate, and

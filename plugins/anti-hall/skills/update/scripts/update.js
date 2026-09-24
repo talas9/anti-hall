@@ -1816,13 +1816,27 @@ function mergeSplitBackendStoresPostUpdate(opts) {
     const r = devswarm.mergeSplitBackendStoresAllStores(home, { env, cwd }) || {};
     const errCount = r.errors || 0;
     try { migrationsLib().recordRun(home, 'mergeSplitBackendStores', version, { errors: errCount, pendingRows: r.dryRun ? (r.pending || 0) : 0 }); } catch (_) { /* fail-open */ }
+    // reDeliveredUnread (item B, v0.107.1): every merged row lands as UNREAD on
+    // the chosen side by design (mergeSplitBackendStore's own header comment —
+    // cursors are deliberately NEVER copied across the two backends' independent
+    // sequence spaces, since a naive value-copy could hide real unread on the
+    // chosen side). A row already read on the OTHER (non-chosen) side before the
+    // merge therefore reappears as unread once here — this is NOT a behavior
+    // change, just naming the SAME messagesMerged count for what it is so the
+    // summary/JSON explain the re-delivery instead of leaving it silent.
+    const reDelivered = r.messagesMerged || 0;
     return {
       attempted: true, stores: r.stores || 0, splitStores: r.splitStores || 0,
       messagesMerged: r.messagesMerged || 0, registryMerged: r.registryMerged || 0, errors: errCount,
+      reDeliveredUnread: reDelivered,
       detail: 'split-store merge: ' + (r.dryRun ? 'dry run, found ' + (r.splitStores || 0) : 'merged ' + (r.splitStores || 0))
         + ' split store(s) (' + (r.messagesMerged || 0) + ' message(s), ' + (r.registryMerged || 0) + ' registry row(s) only on the other side)'
         + ' across ' + (r.stores || 0) + ' store(s)'
-        + (errCount ? ' (' + errCount + ' error(s), fail-open - retried next run)' : ''),
+        + (errCount ? ' (' + errCount + ' error(s), fail-open - retried next run)' : '')
+        + (!r.dryRun && reDelivered > 0
+          ? ' — ' + reDelivered + ' already-handled message(s) may reappear as unread once (cursors are '
+            + 'not copied across split-store backends by design; see the merge-split-backend-stores note)'
+          : ''),
     };
   } catch (e) {
     return { attempted: false, detail: 'split-store merge raised: ' + (e && e.message ? e.message : String(e)) };
