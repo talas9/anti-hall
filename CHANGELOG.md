@@ -6,6 +6,18 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.105.2 (2026-09-24)
+
+- **Changed: command-guard and git-guard share one shell-scanning library**
+  (`hooks/lib/shell-scan.js`) for heredoc and substitution parsing. Duplicated parsing
+  had produced repeated guard defects; behaviour is unchanged, proven by a 138-command
+  differential against the previous release plus an independent 65-command adversarial
+  check (0 differences).
+- **Fixed: the Codex port was missing the progress-prune SessionStart hook.** It is now
+  registered.
+- **Added: a hygiene test** that fails when the Claude and Codex manifest versions
+  differ, or a platform-neutral hook is missing from the Codex hook list.
+
 ## 0.105.1 (2026-09-24)
 
 - **Fixed: the orphaned-mesh warning no longer lists archived, closed workspaces with no
