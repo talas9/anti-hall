@@ -22,8 +22,10 @@ the update.
   ignore list; spawn titles are applied to new workspaces.
 - **Fixed: an app-archived workspace stops reading as active**; a dead archive-ready
   workspace is now archived directly instead of nagged forever.
-- **Changed: per-turn hook blocks (urgent/archive-ready/stale/limit-conservation) are
-  re-emitted only when their content changes**, not every turn.
+- **Changed: per-turn hook blocks (urgent/stale/limit-conservation) are re-emitted only
+  when their content changes**, not every turn. The archive-ready reminder keeps its own
+  cooldown instead (it must re-surface identical text once that cooldown elapses, which
+  content-change dedupe would otherwise suppress).
 - **Fixed: tasklist-guard no longer re-nags after a real progress update** — a scratchpad
   write never counts as project work, but a transcript-observed progress write always does,
   regardless of file mtime.
