@@ -431,7 +431,7 @@ function pullOnce(opts) {
         // landed in the repoKey store.
         const s = store.openStore({ home, workspaceId: id, hash: repoKey || undefined, backend, env });
         try {
-          ingestPayload(s, raw, { workspaceId: id, now });
+          ingestPayload(s, raw, { workspaceId: id, home, now });
           store.deriveSummary(s, { home, env, now });
         } finally { s.close(); }
       } catch (_) { /* durable inbox already persisted; store parity is best-effort */ }

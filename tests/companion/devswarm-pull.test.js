@@ -201,6 +201,12 @@ test('idempotent re-append: the same batch twice -> no duplicate line or store r
   const home = tmpHome();
   try {
     const { inboxPath } = seedDescriptor(home, 'child-1');
+    // Registered in its store, as cmdInboxPull's ensure-register guarantees
+    // before it pulls: the store parity feed goes through the partition door,
+    // which refuses an id not registered in that store.
+    const reg = storeLib.openStore({ home, workspaceId: 'child-1', backend: 'journal' });
+    try { reg.upsertRegistry({ id: 'child-1', worktreePath: '/wt/child-1', sessionId: 's', inboxPath, cursorPath: null, nudgeCommand: null }); }
+    finally { reg.close(); }
     const R = makeRun({ count: 2, batch: TWO });
     // cwd: home (a plain tmpdir, NOT a git repo) pins the v0.57 mesh repoKey
     // resolution to null so the store parity feed falls back to its PRE-MESH

@@ -2080,7 +2080,7 @@ function healOrphanPartitionsPostUpdate(opts) {
       };
     }
 
-    let adopted = 0, forwarded = 0, unhealable = 0, skipped = 0, pendingRows = 0, errors = 0;
+    let adopted = 0, forwarded = 0, unhealable = 0, skipped = 0, deadlineSkipped = 0, pendingRows = 0, errors = 0;
     // UNHEALABLE VISIBILITY (defect fix): the count alone gives a user no way
     // to know WHICH store/id is stuck or what to do about it. Collect a
     // BOUNDED sample of {repoKey, id} pairs from each store's own r.detail
@@ -2121,6 +2121,7 @@ function healOrphanPartitionsPostUpdate(opts) {
         forwarded += r.forwarded || 0;
         unhealable += r.unhealable || 0;
         skipped += r.skipped || 0;
+        deadlineSkipped += r.deadlineSkipped || 0;
         pendingRows += r.pending || 0;
         errors += r.errors || 0;
         if (unhealableSample.length < UNHEALABLE_SAMPLE_CAP && Array.isArray(r.detail)) {
@@ -2137,8 +2138,10 @@ function healOrphanPartitionsPostUpdate(opts) {
     // clean:false on any per-store error — a drained-but-errored pass must NOT
     // stamp completion (the errored store's one-time migration would be skipped
     // forever at this version); next run re-enumerates in full instead.
-    // pendingRows: rows NOT moved (lock busy / survivor gone) — not clean, retried next run.
-    recordSweepResult(home, sweepState, 'healOrphanPartitions', version, sweep, { clean: errors === 0, pendingRows });
+    // pendingRows: rows NOT moved (lock busy / survivor gone) plus orphans a
+    // store deadline deferred — either keeps the registry's completeness
+    // predicate from stamping; the next run retries (mirrors foldAllStores).
+    recordSweepResult(home, sweepState, 'healOrphanPartitions', version, sweep, { clean: errors === 0, pendingRows: pendingRows + deadlineSkipped });
 
     return {
       attempted: true,

@@ -778,6 +778,15 @@ function rawIsSubstantive(raw) {
 // a payload that is UNPARSEABLE or matches NONE of the known shapes
 // (`parseMonitorPayload(...).recognized === false`) is flagged lossy — that
 // is the case that actually indicates lost/corrupted bytes, not a quiet poll.
+//
+// ONE DOOR: the rows go through scripts/devswarm.js appendIntoPartition (via
+// 'message') — the workspace's per-id lock plus a "still registered in this
+// store" recheck, the same door every other partition writer uses. opts.home
+// is REQUIRED whenever the batch has messages (the lock lives under it). When
+// the door refuses (lock busy / id no longer registered here) NOTHING is
+// written and this THROWS { code: 'EPARTITIONBUSY' | 'EPARTITIONGONE' }: the
+// caller keeps the batch pending in its delivery WAL and replays it later
+// (idempotent by hash) — a refused batch is never dropped.
 function ingestPayload(s, raw, opts) {
   const o = opts || {};
   const workspaceId = String(o.workspaceId);
@@ -786,18 +795,37 @@ function ingestPayload(s, raw, opts) {
   const messages = parsed.messages;
   let inserted = 0;
   let duplicate = 0;
-  for (const m of messages) {
-    const r = s.appendMessage({
+  if (messages.length) {
+    if (!o.home) throw new Error('ingestPayload: opts.home is required to take the partition lock');
+    const rows = messages.map((m) => ({
       workspaceId,
       body: (m && m.message != null) ? String(m.message) : stableJson(m),
       hash: messageHash(workspaceId, m),
       ts: (m && Number.isFinite(Date.parse(m.createdAt))) ? Date.parse(m.createdAt) : now,
-    });
-    if (r && r.inserted) inserted++; else duplicate++;
+    }));
+    // Lazy: scripts/devswarm.js requires lib/devswarm-pull.js, which requires
+    // THIS module — never a top-level require here.
+    const { appendIntoPartition } = require('../scripts/devswarm.js');
+    const r = appendIntoPartition(s, o.home, workspaceId, rows, { via: 'message' });
+    if (!r || r.status !== 'ok') {
+      const status = (r && r.status) || 'busy';
+      const err = new Error('ingestPayload: partition ' + JSON.stringify(workspaceId) + ' refused the batch (' + status
+        + (status === 'gone' ? ' — not registered in this store' : ' — its lock is held by another writer') + '); nothing written');
+      err.code = status === 'gone' ? 'EPARTITIONGONE' : 'EPARTITIONBUSY';
+      throw err;
+    }
+    inserted = r.inserted;
+    duplicate = rows.length - r.inserted;
   }
   const lossy = messages.length === 0 && rawIsSubstantive(raw) && !parsed.recognized;
   return { total: messages.length, inserted, duplicate, lossy };
 }
+
+// RETRYABLE_INGEST_CODES — ingestPayload failures that leave the batch pending
+// in the delivery WAL (replayed before the next destructive read) instead of
+// crashing the daemon: the store's own lock signals plus the partition door's
+// busy/gone refusals.
+const RETRYABLE_INGEST_CODES = new Set(['ELOCKFS', 'ELOCKUNAVAIL', 'EPARTITIONBUSY', 'EPARTITIONGONE']);
 
 // quarantineDir(home) — where a lossy batch's raw bytes are preserved (B1).
 function quarantineDir(home) {
@@ -1378,27 +1406,35 @@ function runIngestLoop(opts) {
     // out. Read the existing row first and carry its projected fields forward instead
     // of clobbering them; fail-open to null (the prior, harmless behavior) if the read
     // itself errors.
-    try {
-      let existing = null;
+    //
+    // Re-run (same idempotent upsert) whenever the partition door refuses a batch
+    // as EPARTITIONGONE — this daemon's own id is not registered here — so a
+    // transient startup failure self-heals in-loop; the batch stays pending in
+    // the delivery WAL meanwhile.
+    function selfRegister() {
       try {
-        const rows = typeof s.listRegistry === 'function' ? s.listRegistry() : [];
-        existing = (rows || []).find((r) => r && String(r.id) === String(workspaceId)) || null;
-      } catch (_) { existing = null; }
-      s.upsertRegistry({
-        id: workspaceId,
-        worktreePath: worktree || null,
-        sessionId: (o.env && o.env.DEVSWARM_BUILDER_ID) || workspaceId || null,
-        inboxPath: existing ? existing.inboxPath : null,
-        cursorPath: existing ? existing.cursorPath : null,
-        nudgeCommand: existing ? existing.nudgeCommand : null,
-      });
-    } catch (e) {
-      // FAIL-OPEN: a registry-write error must NEVER crash or block the daemon's
-      // core drain — messages still get ingested even if self-registration hiccups
-      // (retried every startup, so a transient failure self-heals).
-      appendLog(home, 'WARN: self-registration failed (workspaceId=' + workspaceId + '): '
-        + (e && e.message ? e.message : String(e)), logFs);
+        let existing = null;
+        try {
+          const rows = typeof s.listRegistry === 'function' ? s.listRegistry() : [];
+          existing = (rows || []).find((r) => r && String(r.id) === String(workspaceId)) || null;
+        } catch (_) { existing = null; }
+        s.upsertRegistry({
+          id: workspaceId,
+          worktreePath: worktree || null,
+          sessionId: (o.env && o.env.DEVSWARM_BUILDER_ID) || workspaceId || null,
+          inboxPath: existing ? existing.inboxPath : null,
+          cursorPath: existing ? existing.cursorPath : null,
+          nudgeCommand: existing ? existing.nudgeCommand : null,
+        });
+      } catch (e) {
+        // FAIL-OPEN: a registry-write error must NEVER crash the daemon. Until the
+        // row lands, the partition door refuses the batch (EPARTITIONGONE) and it
+        // stays pending in the delivery WAL — never dropped; retried in-loop.
+        appendLog(home, 'WARN: self-registration failed (workspaceId=' + workspaceId + '): '
+          + (e && e.message ? e.message : String(e)), logFs);
+      }
     }
+    selfRegister();
 
     // backoffWithHeartbeat(totalMs) — sleep the (possibly LONG) monitor backoff in
     // slices, refreshing BOTH liveness signals before each slice.
@@ -1500,8 +1536,12 @@ function runIngestLoop(opts) {
       }
       for (const entry of open) {
         let ing;
-        try { ing = ingestPayload(s, entry.raw, { workspaceId, now: o.now }); } catch (e) {
-          if (e && (e.code === 'ELOCKFS' || e.code === 'ELOCKUNAVAIL')) return false; // stays pending
+        try { ing = ingestPayload(s, entry.raw, { workspaceId, home, now: o.now }); } catch (e) {
+          if (e && RETRYABLE_INGEST_CODES.has(e.code)) { // stays pending
+            appendLog(home, 'WARN: delivery WAL replay deferred (' + e.code + '): ' + (e.message || e) + ' — batch kept pending', logFs);
+            if (e.code === 'EPARTITIONGONE') selfRegister();
+            return false;
+          }
           throw e;
         }
         stats.inserted += ing.inserted;
@@ -1606,21 +1646,23 @@ function runIngestLoop(opts) {
         }
         let ing;
         try {
-          ing = ingestPayload(s, res.raw, { workspaceId, now: o.now });
+          ing = ingestPayload(s, res.raw, { workspaceId, home, now: o.now });
         } catch (e) {
           // STORE-LOCK FAIL-CLOSED errors must not CRASH-LOOP the daemon. appendMessage
           // fails closed on ELOCKFS (a genuine fs/EPERM error on the messages lock) and
           // ELOCKUNAVAIL (contention budget exhausted) — correct, but if that throw
           // propagates out of the loop the daemon exits and is re-exec'd every RESTART_SEC,
           // hammering the same wedged lock. The native queue BUFFERS until the next monitor
-          // poll and replay is idempotent by hash, so on these two known-retryable lock
-          // signals we LOG and CONTINUE to the next poll instead of crashing. Any OTHER
-          // error still propagates (fail-open is only for the lock signals, not arbitrary bugs).
-          if (e && (e.code === 'ELOCKFS' || e.code === 'ELOCKUNAVAIL')) {
+          // poll and replay is idempotent by hash, so on these known-retryable lock
+          // signals (plus the partition door's EPARTITIONBUSY/EPARTITIONGONE refusals)
+          // we LOG and CONTINUE to the next poll instead of crashing. Any OTHER error
+          // still propagates (fail-open is only for the lock signals, not arbitrary bugs).
+          if (e && RETRYABLE_INGEST_CODES.has(e.code)) {
             stats.errors++;
             // The native queue already POPPED this batch, so "replay next poll"
             // is only true because the batch sits (pending) in the WAL.
             if (walEntry) walReplayNeeded = true;
+            if (e.code === 'EPARTITIONGONE') selfRegister();
             try {
               fs.writeSync(2, 'devswarm-ingest: store lock ' + e.code + ' — batch '
                 + (walEntry ? 'kept pending in the delivery WAL, replayed before the next monitor read (idempotent by hash)\n'
@@ -2153,10 +2195,6 @@ function main() {
   process.exit(0);
 }
 
-if (require.main === module) {
-  main();
-}
-
 module.exports = {
   ingestLockPath, ingestHeartbeatPath, acquireIngestLock,
   messageHash, stableJson, normalizeMonitorPayload,
@@ -2184,3 +2222,10 @@ module.exports = {
   // success-path pacing ceiling (P2 hardening — clamp absurd/overflowing intervalSec):
   MAX_PACE_MS,
 };
+
+// After module.exports: main() runs the daemon loop synchronously, and
+// ingestPayload's lazy require of scripts/devswarm.js re-enters this module
+// (via lib/devswarm-pull.js) — it must see the full exports, not a partial {}.
+if (require.main === module) {
+  main();
+}

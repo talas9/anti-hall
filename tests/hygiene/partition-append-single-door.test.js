@@ -19,7 +19,7 @@ const REPO = path.join(__dirname, '..', '..');
 const PLUGIN = 'plugins/anti-hall/';
 const PROOFS = 'tests/scripts/devswarm-partition-lock-proofs.test.js';
 
-// file -> { function (or '*'): { claim, proof: [test files] } | { claim, owner } }
+// file -> { function (or '*'): { claim, proof: [test files] } }
 const ALLOWED = {
   'plugins/anti-hall/scripts/devswarm.js': {
     appendIntoPartition: { claim: 'THE door itself', proof: ['tests/scripts/devswarm-partition-append.test.js', PROOFS] },
@@ -33,9 +33,6 @@ const ALLOWED = {
   },
   'plugins/anti-hall/companion/devswarm-migrate.js': {
     '*': { claim: 'one-time migration: same-id copy — rows land in the partition they came from', proof: ['tests/companion/devswarm-migrate.test.js', 'tests/companion/devswarm-migrate-repokey.test.js'] },
-  },
-  'plugins/anti-hall/companion/devswarm-ingest.js': {
-    ingestPayload: { claim: 'native mail into the drained workspace partition', owner: 'owned by Phase 5 delivery WAL' },
   },
 };
 const CALL = /\b(appendMeshMessage|appendMeshRow|appendMessage)\s*\(/;
@@ -64,11 +61,10 @@ test('no direct partition write outside appendIntoPartition or a PROVEN allowlis
   assert.deepStrictEqual(v, [], 'route these through appendIntoPartition (or add an allowlist entry WITH a proof test)');
 });
 
-test('every allowlist entry is PROVEN by a named test carrying its `proves:` marker (or is an explicitly owned exception)', () => {
+test('every allowlist entry is PROVEN by a named test carrying its `proves:` marker', () => {
   const missing = [];
   for (const [file, fns] of Object.entries(ALLOWED)) {
     for (const [fn, e] of Object.entries(fns)) {
-      if (e.owner) { assert.match(e.owner, /Phase 5/, file + '#' + fn + ': the only unproven exception is the Phase 5-owned ingest writer'); continue; }
       assert.ok(Array.isArray(e.proof) && e.proof.length, file + '#' + fn + ' names no proof test');
       const marker = 'proves: ' + file + '#' + fn;
       for (const p of e.proof) {
@@ -79,11 +75,9 @@ test('every allowlist entry is PROVEN by a named test carrying its `proves:` mar
     }
   }
   assert.deepStrictEqual(missing, []);
-  const owned = [];
-  for (const fns of Object.values(ALLOWED)) for (const e of Object.values(fns)) if (e.owner) owned.push(e.owner);
-  assert.deepStrictEqual(owned, ['owned by Phase 5 delivery WAL']);
-  // The owner is real, not a forward reference: the ingest writer runs behind
-  // the delivery WAL (fsynced before ingestPayload, replayed until closed).
+  // The ingest writer goes through the door (see below) AND runs behind the
+  // delivery WAL (fsynced before ingestPayload, replayed until closed), so a
+  // door refusal (busy/gone) leaves the batch pending instead of dropping it.
   const ingest = fs.readFileSync(path.join(REPO, 'plugins/anti-hall/companion/devswarm-ingest.js'), 'utf8');
   assert.match(ingest, /require\('\.\/lib\/devswarm-read-wal\.js'\)/, 'ingest must load the delivery WAL');
   assert.match(ingest, /readWal\.closeBatch\(/, 'ingest must close WAL batches only after ingestPayload');
@@ -105,6 +99,7 @@ test('appendIntoPartition: verified lock (never a caller claim), registration re
     ['plugins/anti-hall/scripts/devswarm.js', 'foldGroupIntoSurvivor'],
     ['plugins/anti-hall/scripts/devswarm.js', 'rehomeAcrossStores'],
     ['plugins/anti-hall/companion/lib/recovery.js', 'deliverEscalation'],
+    ['plugins/anti-hall/companion/devswarm-ingest.js', 'ingestPayload'],
   ]) {
     const s = fs.readFileSync(path.join(REPO, file), 'utf8');
     const i = s.indexOf('function ' + fn + '(');

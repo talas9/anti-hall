@@ -97,9 +97,11 @@ test('ingestPayload: "{\\"messages\\":[]}" and "{\\"data\\":[]}" are also NOT fl
 
 test('ingestPayload: a real batch with messages is NOT lossy', () => {
   const inserted = [];
-  const store = { appendMessage: (m) => { inserted.push(m); return { inserted: true }; } };
+  const store = { listRegistry: () => [{ id: 'p' }], appendMessage: (m) => { inserted.push(m); return { inserted: true }; } };
   const raw = JSON.stringify([{ message: 'hello', fromBranch: 'a', toBranch: 'b' }]);
-  const r = ingest.ingestPayload(store, raw, { workspaceId: 'p' });
+  const home = tmpHome();
+  let r;
+  try { r = ingest.ingestPayload(store, raw, { workspaceId: 'p', home }); } finally { rm(home); }
   assert.equal(r.total, 1);
   assert.equal(r.inserted, 1);
   assert.equal(r.lossy, false);
@@ -129,9 +131,11 @@ test('ingestPayload: lossy is computed from raw, independent of appendMessage fa
   // Sanity: lossy is about normalization finding ZERO messages, not about
   // store-level dedupe/failure — a batch that DOES normalize to messages is
   // never lossy even if every one of them turns out to be a duplicate.
-  const store = { appendMessage: () => ({ inserted: false }) }; // every message a duplicate
+  const store = { listRegistry: () => [{ id: 'p' }], appendMessage: () => ({ inserted: false }) }; // every message a duplicate
   const raw = JSON.stringify([{ message: 'dup', createdAt: '2024-01-01T00:00:00Z' }]);
-  const r = ingest.ingestPayload(store, raw, { workspaceId: 'p' });
+  const home = tmpHome();
+  let r;
+  try { r = ingest.ingestPayload(store, raw, { workspaceId: 'p', home }); } finally { rm(home); }
   assert.equal(r.total, 1);
   assert.equal(r.duplicate, 1);
   assert.equal(r.lossy, false, 'a batch that normalized to real messages is never lossy, regardless of dedupe outcome');

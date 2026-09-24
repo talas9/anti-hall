@@ -102,3 +102,59 @@ test('healOrphanPartitions: no ctx.deadline set still adopts every descriptor-ba
     assert.strictEqual(r.skipped, 0);
   } finally { rm(home); rm(W1); }
 });
+
+// Deadline-deferred ids are unfinished work: healOrphanPartitions reports them
+// as `deadlineSkipped` and update.js feeds that into the migration registry's
+// pendingRows, so a pass that ran out of time is never stamped done for the
+// version (it previously summed `skipped` for display only, and a drained
+// sweep stamped completion with the deferred orphan still unadopted).
+test('healOrphanPartitions: deadline-deferred ids are reported as deadlineSkipped', () => {
+  const home = tmpHome();
+  const W1 = makeGitRepo('healdlcount');
+  const repoKey = repokey.repoKeyForWorktree(W1);
+  try {
+    descFile(home, 'orphan-dc-a', { id: 'orphan-dc-a', worktreePath: topOf(W1) + '/a', sessionId: null });
+    seedDirect(home, repoKey, 'orphan-dc-a', 'msg-a');
+    descFile(home, 'orphan-dc-b', { id: 'orphan-dc-b', worktreePath: topOf(W1) + '/b', sessionId: null });
+    seedDirect(home, repoKey, 'orphan-dc-b', 'msg-b');
+    seedDirect(home, repoKey, 'orphan-dc-nodesc', 'msg-c'); // no descriptor anywhere
+    const r = cli.healOrphanPartitions(home, { cwd: W1, env: {}, backend: 'journal', deadline: Date.now() - 1 });
+    assert.strictEqual(r.ok, true);
+    assert.strictEqual(r.deadlineSkipped, 2, 'one with-descriptor + one no-descriptor id deferred by the deadline');
+    const r2 = cli.healOrphanPartitions(home, { cwd: W1, env: {}, backend: 'journal' });
+    assert.strictEqual(r2.deadlineSkipped, 0, 'no deadline -> nothing deferred');
+  } finally { rm(home); rm(W1); }
+});
+
+test('healOrphanPartitionsPostUpdate: a deadline that expires mid-heal is NOT stamped; the next run completes and IS stamped', () => {
+  const U = require('../../plugins/anti-hall/skills/update/scripts/update.js');
+  const pluginSrcDir = path.join(__dirname, '..', '..', 'plugins', 'anti-hall');
+  const home = tmpHome();
+  const W1 = makeGitRepo('healdlstamp');
+  const repoKey = repokey.repoKeyForWorktree(W1);
+  const env = { DEVSWARM_REPO_ID: 'r1', ANTIHALL_DEVSWARM_STORE_BACKEND: 'journal' };
+  try {
+    descFile(home, 'orphan-st-a', { id: 'orphan-st-a', worktreePath: topOf(W1) + '/a', sessionId: null });
+    seedDirect(home, repoKey, 'orphan-st-a', 'msg-a');
+    descFile(home, 'orphan-st-b', { id: 'orphan-st-b', worktreePath: topOf(W1) + '/b', sessionId: null });
+    seedDirect(home, repoKey, 'orphan-st-b', 'msg-b');
+    const run = (extra) => U.healOrphanPartitionsPostUpdate(Object.assign({
+      paths: { pluginSrcDir }, env, cwd: W1, home, devswarm: cli, hashes: [repoKey], version: '9.9.9',
+    }, extra || {}));
+
+    const r1 = run({ postPullDeadline: Date.now() - 1 });
+    assert.strictEqual(r1.attempted, true);
+    assert.strictEqual(r1.adopted, 1, 'the first orphan adopts, the second is deadline-deferred');
+    assert.strictEqual(r1.budgetExhausted, false, 'the single-store sweep itself drained');
+    const s1 = U.readSweepState(home);
+    assert.ok(!s1.healOrphanPartitions || s1.healOrphanPartitions.completedVersion !== '9.9.9',
+      'a pass with deadline-deferred orphans must NOT stamp the version done');
+    assert.ok(!regIds(home, repoKey).includes('orphan-st-b'));
+
+    const r2 = run({ hashes: undefined });
+    assert.strictEqual(r2.skippedAlreadyDone, undefined, 'the unstamped version re-runs');
+    assert.strictEqual(r2.adopted, 1, 'the deferred orphan adopts on the next run');
+    assert.ok(regIds(home, repoKey).includes('orphan-st-b'));
+    assert.strictEqual(U.readSweepState(home).healOrphanPartitions.completedVersion, '9.9.9', 'the finished run IS stamped');
+  } finally { rm(home); rm(W1); }
+});

@@ -789,13 +789,14 @@ test('ingestPayload is idempotent on replay (dedupe hash)', () => {
   const home = tmpHome();
   const s = storeLib.openStore({ home, backend: 'journal' });
   try {
+    s.upsertRegistry({ id: 'p', worktreePath: '/wt/p', sessionId: 's', inboxPath: null, cursorPath: null, nudgeCommand: null });
     const batch = JSON.stringify([
       { fromBranch: 'c', toBranch: 'p', message: 'one', createdAt: '2026-01-01T00:00:00Z' },
       { fromBranch: 'c', toBranch: 'p', message: 'two', createdAt: '2026-01-01T00:00:01Z' },
     ]);
-    const r1 = ingest.ingestPayload(s, batch, { workspaceId: 'p' });
+    const r1 = ingest.ingestPayload(s, batch, { workspaceId: 'p', home });
     assert.equal(r1.inserted, 2);
-    const r2 = ingest.ingestPayload(s, batch, { workspaceId: 'p' }); // replay
+    const r2 = ingest.ingestPayload(s, batch, { workspaceId: 'p', home }); // replay
     assert.equal(r2.inserted, 0);
     assert.equal(r2.duplicate, 2);
     assert.equal(s.messageCount('p'), 2);
@@ -990,7 +991,7 @@ test('runIngestLoop self-registration MERGE-PRESERVES an existing fuller registr
   } finally { rm(home); }
 });
 
-test('runIngestLoop self-registration is FAIL-OPEN — a registry-write error never blocks message ingestion', () => {
+test('runIngestLoop self-registration is FAIL-OPEN — a registry-write error never crashes the daemon or drops the batch (kept in the WAL, ingested once registration lands)', () => {
   const home = tmpHome();
   try {
     const io = {
@@ -1007,11 +1008,17 @@ test('runIngestLoop self-registration is FAIL-OPEN — a registry-write error ne
         home, backend: 'journal', workspaceId: 'p', maxIterations: 1,
         run: () => ({ ok: true, raw: batch }), sleep: () => {}, io,
       });
-    }, 'a self-registration failure must never crash or block the daemon\'s core drain');
+    }, 'a self-registration failure must never crash the daemon');
     assert.equal(summary.started, true);
-    assert.equal(summary.stats.inserted, 1, 'the message was still ingested despite the registry-write error');
+    assert.equal(summary.stats.inserted, 0, 'the unregistered partition refuses the write (partition door)');
     const logContent = fs.readFileSync(ingest.logFilePath(home), 'utf8');
     assert.match(logContent, /WARN: self-registration failed \(workspaceId=p\): registry write boom/);
+    // Registration works again: the next run replays the pending WAL batch.
+    const s2 = ingest.runIngestLoop({
+      home, backend: 'journal', workspaceId: 'p', maxIterations: 1,
+      run: () => ({ ok: true, raw: '' }), sleep: () => {},
+    });
+    assert.equal(s2.stats.inserted, 1, 'the batch was kept pending in the WAL and lands once registered');
   } finally { rm(home); }
 });
 

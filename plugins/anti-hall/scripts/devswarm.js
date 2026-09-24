@@ -4785,7 +4785,9 @@ function foldMeshDuplicatesAllStores(home, ctx) {
 // the same meshMessageHash and appendMeshRow dedups it (inserted:false); a MIN
 // reconcile of already-equal cursors is a no-op.
 // Returns { ok, scope:'store', repoKey, adopted, forwarded, unhealable,
-//   archivedDrained, archivedStale, skipped, errors, detail }.
+//   archivedDrained, archivedStale, skipped, deadlineSkipped, pending, errors,
+//   detail }. deadlineSkipped (a subset of skipped) is unfinished work: callers
+//   count it as pending so a deadline-cut pass is never stamped done.
 function healOrphanPartitions(home, ctx) {
   const c = ctx || {};
   const dryRun = !!c.dryRun;
@@ -4797,7 +4799,7 @@ function healOrphanPartitions(home, ctx) {
     ok: true, scope: 'store', adopted: 0, forwarded: 0, unhealable: 0,
     // pending: rows NOT moved this pass because a lock was busy or the survivor
     // vanished (appendIntoPartition) — the pass must not be recorded clean.
-    archivedDrained: 0, archivedStale: 0, skipped: 0, pending: 0, errors: 0, detail: [],
+    archivedDrained: 0, archivedStale: 0, skipped: 0, deadlineSkipped: 0, pending: 0, errors: 0, detail: [],
   };
   try {
     const repoKey = typeof c.repoKey === 'string' && c.repoKey ? c.repoKey : repoKeyForCwd(c);
@@ -4876,6 +4878,7 @@ function healOrphanPartitions(home, ctx) {
         if (wi > 0 && Number.isFinite(c.deadline) && Date.now() >= c.deadline) {
           const deferred = withDescriptorIds.length - wi;
           out.skipped += deferred;
+          out.deadlineSkipped += deferred;
           out.detail.push({ action: 'deadline-skip', reason: 'with-descriptor bucket deferred to next pass', count: deferred });
           break;
         }
@@ -5046,6 +5049,7 @@ function healOrphanPartitions(home, ctx) {
       const deadlineHit = Number.isFinite(c.deadline) && Date.now() >= c.deadline;
       if (deadlineHit) {
         out.skipped += noDescriptorIds.length;
+        out.deadlineSkipped += noDescriptorIds.length;
         if (noDescriptorIds.length) {
           out.detail.push({ action: 'deadline-skip', reason: 'no-descriptor bucket deferred to next pass', count: noDescriptorIds.length });
         }
@@ -5092,7 +5096,7 @@ function healOrphanPartitionsAllStores(home, ctx) {
   const c = ctx || {};
   let hashes = [];
   try { hashes = store.listStoreHashes(home) || []; } catch (_) { hashes = []; }
-  let adopted = 0, forwarded = 0, unhealable = 0, archivedDrained = 0, archivedStale = 0, skipped = 0, pending = 0, errors = 0;
+  let adopted = 0, forwarded = 0, unhealable = 0, archivedDrained = 0, archivedStale = 0, skipped = 0, deadlineSkipped = 0, pending = 0, errors = 0;
   const results = [];
   for (const repoKey of hashes) {
     let r = null;
@@ -5112,6 +5116,7 @@ function healOrphanPartitionsAllStores(home, ctx) {
     archivedDrained += r.archivedDrained || 0;
     archivedStale += r.archivedStale || 0;
     skipped += r.skipped || 0;
+    deadlineSkipped += r.deadlineSkipped || 0;
     pending += r.pending || 0;
     errors += r.errors || 0;
     if (r.adopted || r.forwarded || r.unhealable || r.archivedDrained || r.archivedStale || r.skipped || r.pending || r.errors) {
@@ -5124,7 +5129,7 @@ function healOrphanPartitionsAllStores(home, ctx) {
   }
   return {
     ok: true, scope: 'all-stores', stores: hashes.length, adopted, forwarded, unhealable,
-    archivedDrained, archivedStale, skipped, pending, errors, results,
+    archivedDrained, archivedStale, skipped, deadlineSkipped, pending, errors, results,
   };
 }
 
