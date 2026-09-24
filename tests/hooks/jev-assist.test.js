@@ -312,7 +312,7 @@ test('scrubSecrets: redacts Bearer tokens, known key prefixes, key= assignments,
   assert.strictEqual(scrubSecrets('Authorization: Bearer abc.def-123'), 'Authorization: Bearer [REDACTED]');
   assert.strictEqual(scrubSecrets('key is sk-FAKEFAKEFAKEFAKE1234'), 'key is [REDACTED_KEY]');
   assert.strictEqual(scrubSecrets('ghp_FAKEFAKEFAKEFAKE1234567890'), '[REDACTED_KEY]');
-  assert.strictEqual(scrubSecrets('api_key: "abcd1234efgh"'), 'api_key=[REDACTED]');
+  assert.strictEqual(scrubSecrets('api_key: "abcd1234efgh"'), 'api_key: [REDACTED]'); // separator kept (v0.108.0 redactor)
   assert.strictEqual(scrubSecrets('contact mohammed@example.com for help'), 'contact [REDACTED_EMAIL] for help');
   assert.strictEqual(scrubSecrets('token was ' + 'a'.repeat(40)), 'token was [REDACTED_TOKEN]');
 });
@@ -876,4 +876,29 @@ test('askDetached(): codexNudgeSubstantial fails open to baseline when Jev is un
       });
     });
   } finally { h.cleanup(); }
+});
+
+// ---- audit redactor hardening (v0.108.0 review, HIGH). All values below are
+// FAKE shapes built for the test — never real credentials.
+test('scrubSecrets: AWS key ids, KEY=/PASSWORD= identifiers, JWTs, URL credentials, PEM blocks', () => {
+  const { scrubSecrets } = require('../../plugins/anti-hall/hooks/lib/jev-assist.js');
+  const fakeAkia = 'AKIA' + 'FAKEFAKEFAKEFAKE';
+  const fakeAsia = 'ASIA' + 'TESTTESTTESTTEST';
+  const cases = [
+    [fakeAkia + ' and ' + fakeAsia, (o) => !o.includes(fakeAkia) && !o.includes(fakeAsia)],
+    ['AWS_SECRET_ACCESS_KEY=fake/Secret+Value1', (o) => /AWS_SECRET_ACCESS_KEY=\[REDACTED\]/.test(o) && !o.includes('fake/Secret')],
+    ['DB_PASSWORD=short', (o) => o === 'DB_PASSWORD=[REDACTED]'],
+    ['my_passwd: x1', (o) => !o.includes('x1')],
+    ['{"apiKey": "fakeapikey"}', (o) => !o.includes('fakeapikey')],
+    ['GITHUB_TOKEN = abc', (o) => !o.includes('abc')],
+    ['eyJmYWtlIjoiand0In0.eyJzdWIiOiJmYWtlIn0.ZmFrZXNpZw', (o) => o === '[REDACTED_JWT]'],
+    ['see https://fakeuser:fakepass@example.invalid/repo', (o) => !o.includes('fakepass') && !o.includes('fakeuser') && o.includes('example.invalid')],
+    ['-----BEGIN FAKE PRIVATE KEY-----\nZmFrZQ==\nZmFrZQ==\n-----END FAKE PRIVATE KEY-----\nrest', (o) => o === '[REDACTED_PEM]\nrest'],
+    ['-----BEGIN CERTIFICATE-----\nZmFrZQ== (truncated, no END)', (o) => o === '[REDACTED_PEM]'],
+  ];
+  for (const [input, ok] of cases) {
+    const out = scrubSecrets(input);
+    assert.ok(ok(out), JSON.stringify(input) + ' -> ' + JSON.stringify(out));
+  }
+  assert.strictEqual(scrubSecrets('a plain sentence stays as it is'), 'a plain sentence stays as it is');
 });

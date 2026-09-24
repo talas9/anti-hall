@@ -329,12 +329,23 @@ function readAuditConfig(home) {
 function scrubSecrets(text) {
   if (typeof text !== 'string') return '';
   let s = text;
+  // PEM blocks first (multi-line): header, body and footer all go.
+  s = s.replace(/-----BEGIN [A-Z0-9 ]+-----[\s\S]*?(?:-----END [A-Z0-9 ]+-----|$)/g, '[REDACTED_PEM]');
+  // URL credentials: scheme://user:pass@host -> scheme://[REDACTED]@host
+  s = s.replace(/\b([a-z][a-z0-9+.-]*:\/\/)[^\s/:@]+:[^\s/@]+@/gi, '$1[REDACTED]@');
+  // JWTs (three base64url segments, first starts with eyJ).
+  s = s.replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g, '[REDACTED_JWT]');
   s = s.replace(/\bBearer\s+[A-Za-z0-9\-_.=]+/gi, 'Bearer [REDACTED]');
   s = s.replace(/\b(sk|pk)-[A-Za-z0-9]{10,}\b/g, '[REDACTED_KEY]');
   s = s.replace(/\bAIza[0-9A-Za-z_-]{10,}\b/g, '[REDACTED_KEY]');
   s = s.replace(/\bgh[pousr]_[A-Za-z0-9]{10,}\b/g, '[REDACTED_KEY]');
   s = s.replace(/\bxox[baprs]-[A-Za-z0-9-]{10,}\b/g, '[REDACTED_KEY]');
-  s = s.replace(/\b(api[_-]?key|access[_-]?key|secret|password|token)\s*[:=]\s*["']?[^\s"',}]{4,}["']?/gi, '$1=[REDACTED]');
+  // AWS access key ids (long-term AKIA, temporary ASIA).
+  s = s.replace(/\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/g, '[REDACTED_AWS_KEY]');
+  // Any identifier CONTAINING secret/password/passwd/token/apikey/api_key/key,
+  // then optional spaces and ':' or '=' — AWS_SECRET_ACCESS_KEY=…,
+  // DB_PASSWORD=short, "apiKey": "…". Values of any length (>=1 char).
+  s = s.replace(/\b([A-Za-z0-9_.-]*(?:secret|password|passwd|token|apikey|api_key|key)[A-Za-z0-9_.-]*)(["']?\s*[:=]\s*)(["']?)[^\s"',}]+\3/gi, '$1$2[REDACTED]');
   s = s.replace(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, '[REDACTED_EMAIL]');
   // Generic catch-all: any remaining long base64/hex-ish run (>=32 chars) is
   // treated as a likely token/credential fragment, whatever it actually is.
