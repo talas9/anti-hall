@@ -97,7 +97,7 @@ function main() {
             } else if (settings.nag) {
               const lastNagPct = Number.isFinite(latch.lastNagPct) ? latch.lastNagPct : (latch.firedPct || settings.pct);
               if (result.pct >= lastNagPct + settings.nagStepPct) {
-                text = buildMilestoneNag(result.pct);
+                text = buildMilestoneNag(result.pct, payload);
                 writeLatch(home, tag, Object.assign({}, latch, { lastNagPct: result.pct, lastNagAt: now }));
               }
             }

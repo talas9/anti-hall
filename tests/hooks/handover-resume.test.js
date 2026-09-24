@@ -402,3 +402,58 @@ test("(k) another session's snapshot is ignored -> negative report as before", (
     fs.rmSync(cwd, { recursive: true, force: true });
   }
 });
+
+// Freshness facts + platform-aware wording.
+const { execFileSync } = require('node:child_process');
+
+test('(l) freshness: HEAD, commits since the handover mtime, dirty-file count', () => {
+  const h = makeHome();
+  const cwd = makeProjectCwd();
+  try {
+    const g = (...a) => execFileSync('git', a, { cwd, stdio: 'ignore' });
+    g('init', '-q');
+    const hp = writeHandover(cwd, '2026-09-24', 'sess-l', 1, { ageMs: 60 * 60 * 1000 });
+    // Two commits made AFTER the handover's (back-dated) mtime.
+    g('-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '--allow-empty', '-m', 'a');
+    g('-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '--allow-empty', '-m', 'b');
+    fs.writeFileSync(path.join(cwd, 'dirty.txt'), 'x');
+    const c = resumeCtx(h, cwd, 'sess-l', 'compact');
+    assert.match(c, /FRESHNESS \(measured now\): HEAD [0-9a-f]+; 2 commit\(s\) since this handover was written/);
+    // .anti-hall/ (the handover itself) is untracked too, so dirty counts it + dirty.txt.
+    assert.match(c, /; 2 dirty file\(s\) in the working tree/);
+    assert.ok(c.includes(hp));
+  } finally {
+    h.cleanup();
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test('(m) freshness line omitted outside a git repo', () => {
+  const h = makeHome();
+  const cwd = makeProjectCwd();
+  try {
+    writeHandover(cwd, '2026-09-24', 'sess-m', 1);
+    const c = resumeCtx(h, cwd, 'sess-m', 'compact');
+    assert.doesNotMatch(c, /FRESHNESS/);
+    assert.match(c, /CLAUDE\.md re-read/);
+  } finally {
+    h.cleanup();
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test('(n) Codex payload (rollout transcript) -> AGENTS.md re-read wording', () => {
+  const h = makeHome();
+  const cwd = makeProjectCwd();
+  try {
+    writeHandover(cwd, '2026-09-24', 'sess-n', 1);
+    const r = testHook(HOOK, { session_id: 'sess-n', cwd, source: 'compact', hook_event_name: 'SessionStart',
+      transcript_path: '/home/u/.codex/sessions/2026/09/24/rollout-2026-09-24T10-00-00-abc.jsonl' }, { home: h.home, expectJson: true });
+    const c = r.json.hookSpecificOutput.additionalContext;
+    assert.match(c, /AGENTS\.md re-read/);
+    assert.doesNotMatch(c, /CLAUDE\.md re-read/);
+  } finally {
+    h.cleanup();
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
+});

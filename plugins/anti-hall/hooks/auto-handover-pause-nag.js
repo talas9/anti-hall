@@ -228,7 +228,7 @@ function main() {
     if (hasRecentSpawn(tag, now)) { emit(); return; } // a subagent spawned recently
 
     writeLatch(home, tag, Object.assign({}, latch, { lastNagAt: now }));
-    emit(buildPauseNag(result.pct));
+    emit(buildPauseNag(result.pct, payload));
   } catch (_) {
     emit(); // fail-open
   }

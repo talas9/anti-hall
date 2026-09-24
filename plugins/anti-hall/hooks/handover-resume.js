@@ -21,6 +21,12 @@
 //   incoming payload.session_id (same-session continuation across clear/compact)
 //   over a purely newer file from a different session.
 //
+// Freshness facts: the pointer line is followed by git facts measured at
+// injection time -- HEAD, commits since the handover's mtime, dirty-file
+// count (each git call capped at 1.5 s; omitted outside a git repo).
+// Platform-aware: a Codex payload (hooks/lib/auto-handover-text.js
+// detectPlatform) is told to re-read AGENTS.md instead of CLAUDE.md.
+//
 // PreCompact snapshot awareness: hooks/precompact-snapshot.js writes a
 // mechanical PRECOMPACT-<n>.md into THIS session's dir right before every
 // compaction. When one exists (same session, <= 7 days), the injection names
@@ -42,6 +48,8 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const { execFileSync } = require('child_process');
+const { detectPlatform } = require('./lib/auto-handover-text.js');
 
 const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
 // Discovery + session-id sanitize live in hooks/lib/handover-find.js (shared
@@ -81,7 +89,30 @@ function readIndexOutcome(handoversRoot, date, sessionId, seq) {
   return fallback;
 }
 
-function buildContext(candidate, outcome, prefix) {
+// freshnessLine(cwd, sinceMs) -> one line of git facts measured NOW against
+// the handover's mtime, or '' when cwd is not a git repo / git fails. Each git
+// call is capped at GIT_TIMEOUT_MS so SessionStart never stalls on it.
+const GIT_TIMEOUT_MS = 1500;
+function freshnessLine(cwd, sinceMs) {
+  const git = (args) => {
+    try {
+      return execFileSync('git', args, { cwd, encoding: 'utf8', timeout: GIT_TIMEOUT_MS, stdio: ['ignore', 'pipe', 'ignore'] });
+    } catch (_) {
+      return null;
+    }
+  };
+  const head = git(['rev-parse', '--short', 'HEAD']);
+  if (head === null) return '';
+  const since = git(['rev-list', '--count', '--since=@' + Math.floor(sinceMs / 1000), 'HEAD']);
+  const status = git(['status', '--porcelain']);
+  const commits = since === null ? '?' : String(parseInt(since, 10) || 0);
+  const dirty = status === null ? '?' : String(status.split('\n').filter(Boolean).length);
+  return 'FRESHNESS (measured now): HEAD ' + head.trim() + '; ' + commits + ' commit(s) since this handover was ' +
+    'written (committer date after its mtime); ' + dirty + ' dirty file(s) in the working tree. Any non-zero ' +
+    'count means the handover\'s git/state claims may be stale -- re-verify them before trusting them.';
+}
+
+function buildContext(candidate, outcome, prefix, freshness, platform) {
   const seqLabel = candidate.seq > 1 ? 'HANDOVER-' + candidate.seq + '.md' : 'HANDOVER.md';
   const predecessor = candidate.seq > 1
     ? (candidate.seq === 2 ? 'HANDOVER.md' : 'HANDOVER-' + (candidate.seq - 1) + '.md')
@@ -94,10 +125,11 @@ function buildContext(candidate, outcome, prefix) {
     ' | date ' + candidate.date + ' | session ' + candidate.sessionId + ')' +
     (outcome ? ' -- INDEX.md outcome: ' + outcome : '')
   );
+  if (freshness) lines.push(freshness);
   lines.push('');
   lines.push('GUIDED RESUME PATH:');
   lines.push('1. Read ' + candidate.filePath + ' FULLY -- front matter (first ~15 lines) carries Situation + Next Action.');
-  lines.push('2. Run its section-10 resume-verification checklist (git status, pwd, CLAUDE.md re-read, smoke command) BEFORE trusting any written state, THEN append a line to ' + candidate.filePath + ': `resume-verified: <ISO timestamp> -- <one-line git-status/pwd/smoke summary>`.');
+  lines.push('2. Run its section-10 resume-verification checklist (git status, pwd, ' + (platform === 'codex' ? 'AGENTS.md' : 'CLAUDE.md') + ' re-read, smoke command) BEFORE trusting any written state, THEN append a line to ' + candidate.filePath + ': `resume-verified: <ISO timestamp> -- <one-line git-status/pwd/smoke summary>`.');
   lines.push('3. Load detail files ONLY as needed via the pointer table (state.md / decisions.md / trials.md / knowledge.md).');
   lines.push('4. Check trials.md do-not-repeat list before re-attempting anything.');
   lines.push('5. READ-BACK: before any new work, tell the user in your own words (not a paste) the goal, the single Next Action and every active rule from its "Session rules (verbatim)" section, and invite corrections.');
@@ -250,7 +282,7 @@ function main() {
     : 'A previous session left a handover';
 
   const outcome = readIndexOutcome(handoversRoot, candidate.date, candidate.sessionId, candidate.seq);
-  let additionalContext = buildContext(candidate, outcome, prefix);
+  let additionalContext = buildContext(candidate, outcome, prefix, freshnessLine(cwd, candidate.mtimeMs), detectPlatform(payload));
   if (snap) additionalContext += '\n\n' + buildSnapshotLine(snap, candidate);
 
   // Record that a resume injection happened THIS session, pointing at the

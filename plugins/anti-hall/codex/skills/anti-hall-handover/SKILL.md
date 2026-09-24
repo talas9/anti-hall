@@ -288,6 +288,13 @@ content — stating it SUPERSEDES the auto-compact summary and any legacy
 `CONTINUE-HERE`-style file. Writing a handover is not just documentation — it
 is what the next context actually resumes from.
 
+**Codex compaction resume.** Codex runs `SessionStart` hooks with
+`source: "compact"` after it compacts a root session — also when automatic
+compaction happens mid-turn, delivering the hook's context to the immediate
+continuation (official Codex hooks reference, learn.chatgpt.com/docs/hooks).
+`handover-resume.js` is registered on `SessionStart` with no matcher, so it
+fires there too.
+
 **PreCompact safety net.** `hooks/precompact-snapshot.js` (registered on Codex's
 own `PreCompact` event) writes `PRECOMPACT-<n>.md` into this session's handover
 dir right before every compaction: `pwd`, git branch/HEAD/dirty files, a

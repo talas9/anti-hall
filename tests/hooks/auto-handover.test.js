@@ -361,3 +361,46 @@ test('fire directive prints the exact /compact focus command with the expected h
     fs.rmSync(cwd, { recursive: true, force: true });
   }
 });
+
+// --- platform-aware directive text ------------------------------------------
+
+test('Claude payload: names /anti-hall:handover and the /compact focus line', () => {
+  const h = makeHome();
+  try {
+    const tp = writeUsage(h, 90);
+    const c = ctx(testHook(HOOK, payload({ transcript_path: tp }), { home: h.home, env: NO_DEDUPE, expectJson: true }));
+    assert.match(c, /\/anti-hall:handover skill/);
+    assert.match(c, /\/compact focus: /);
+    assert.doesNotMatch(c, /anti-hall-handover skill/);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('Codex payload (turn_id): names the anti-hall-handover skill and /compact or /new, no focus line', () => {
+  const h = makeHome();
+  try {
+    const tp = writeUsage(h, 90);
+    const c = ctx(testHook(HOOK, payload({ transcript_path: tp, turn_id: 'turn-1' }), { home: h.home, env: NO_DEDUPE, expectJson: true }));
+    assert.match(c, /AUTO-HANDOVER REQUIRED/);
+    assert.match(c, /anti-hall-handover skill \(pick it with \/skills/);
+    assert.match(c, /\/compact \(or \/new for a fresh chat\)/);
+    assert.doesNotMatch(c, /\/anti-hall:handover/);
+    assert.doesNotMatch(c, /\/compact focus:/);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('Codex milestone nag says /compact or /new', () => {
+  const h = makeHome();
+  try {
+    const tp1 = writeUsage(h, 86);
+    testHook(HOOK, payload({ transcript_path: tp1, turn_id: 't' }), { home: h.home, env: NO_DEDUPE, expectJson: true });
+    const tp2 = writeUsage(h, 92);
+    const c = ctx(testHook(HOOK, payload({ transcript_path: tp2, turn_id: 't' }), { home: h.home, env: NO_DEDUPE, expectJson: true }));
+    assert.match(c, /Mention \/compact or \/new/);
+  } finally {
+    h.cleanup();
+  }
+});
