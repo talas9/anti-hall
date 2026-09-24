@@ -38,7 +38,7 @@ test('(a) schema pin: fixture columns == SCHEMA; full fixture reads missing: []'
 test('(b) joins per workspace; brief text never enters the snapshot', { skip }, () => {
   const f = buildAppDb();
   try {
-    const s = appDb.readSnapshot(f.dbFile);
+    const s = appDb.readSnapshot(f.dbFile, { env: f.env, home: f.home });
     const a = s.workspaces.find((w) => w.id === 'b-a');
     assert.strictEqual(a.repoPath, f.repoPath);
     assert.strictEqual(a.label.length > 60, true, 'full label kept');
@@ -61,7 +61,7 @@ test('(b) joins per workspace; brief text never enters the snapshot', { skip }, 
 test('(c) fail-open: dropped columns/tables degrade and are listed; core column -> null', { skip }, () => {
   const f = buildAppDb({ drop: ['builders.label', 'builder_terminals.ai_session_config', 'pull_requests (table)', 'workspace_messages.toBranch'] });
   try {
-    const s = appDb.readSnapshot(f.dbFile);
+    const s = appDb.readSnapshot(f.dbFile, { env: f.env, home: f.home });
     assert.ok(s && s.ok);
     for (const m of ['builders.label', 'builder_terminals.ai_session_config', 'pull_requests (table)', 'workspace_messages.toBranch']) {
       assert.ok(s.missing.includes(m), 'missing lists ' + m + ' (got ' + s.missing.join(',') + ')');
@@ -74,7 +74,7 @@ test('(c) fail-open: dropped columns/tables degrade and are listed; core column 
   } finally { rmFixture(f); }
   const g = buildAppDb({ drop: ['builders.isActive'] });
   try {
-    assert.strictEqual(appDb.readSnapshot(g.dbFile), null);
+    assert.strictEqual(appDb.readSnapshot(g.dbFile, { env: g.env, home: g.home }), null);
   } finally { rmFixture(g); }
   assert.strictEqual(appDb.snapshot({ home: null, env: {} }), null, 'no home -> never the real home');
   assert.strictEqual(appDb.snapshot({ home: '/x', env: { ANTIHALL_DEVSWARM_APP_DB: 'off' } }), null);
@@ -84,7 +84,7 @@ test('(c) fail-open: dropped columns/tables degrade and are listed; core column 
 test('(d) session owner, brief delivery, finish signal, last selected', { skip }, () => {
   const f = buildAppDb();
   try {
-    const s = appDb.readSnapshot(f.dbFile);
+    const s = appDb.readSnapshot(f.dbFile, { env: f.env, home: f.home });
     const own = appDb.sessionOwner(s, 'sess-primary-old');
     assert.strictEqual(own.builderId, 'b-primary', 'an older terminal session still maps to its worktree');
     assert.strictEqual(own.terminalActive, false);
@@ -98,6 +98,11 @@ test('(d) session owner, brief delivery, finish signal, last selected', { skip }
     assert.strictEqual(appDb.briefDelivery(s, ws('b-arch'), f.now), null, 'archived never judged');
     assert.strictEqual(appDb.finishSignal(ws('b-a')), 'PR #12 merged, checks failed');
     assert.strictEqual(appDb.finishSignal(ws('b-b')), null);
+    const fsx = require('node:fs');
+    fsx.utimesSync(f.ref, new Date(), new Date());
+    assert.strictEqual(appDb.finishSignal(ws('b-a')), null, 'branch moved after the last PR sync -> not trusted (git fallback)');
+    fsx.rmSync(f.ref);
+    assert.strictEqual(appDb.finishSignal(ws('b-a')), null, 'unknown tip time -> not trusted');
     assert.strictEqual(appDb.lastSelected(s, 'repo-1').id, 'b-primary');
     assert.strictEqual(appDb.focusedWorkspaceId(s, f.now), 'b-primary', 'selected 60 s ago -> focused');
     assert.strictEqual(appDb.focusedWorkspaceId(s, f.now + 120e3), null, 'a selection older than 2 min is not focus');
@@ -110,7 +115,7 @@ test('(d) session owner, brief delivery, finish signal, last selected', { skip }
 test('(d2) brief delivery: rows older than the first recorded delivery are never judged', { skip }, () => {
   const f = buildAppDb();
   try {
-    const s = appDb.readSnapshot(f.dbFile);
+    const s = appDb.readSnapshot(f.dbFile, { env: f.env, home: f.home });
     const b = s.workspaces.find((w) => w.id === 'b-b');
     const s2 = Object.assign({}, s, { deliveryTrackedSince: b.terminals[0].createdAt + 1 });
     assert.strictEqual(appDb.briefDelivery(s2, b, f.now), null);
@@ -128,17 +133,23 @@ test('(e) messageTimestamps: window-bounded, no bodies', { skip }, () => {
   } finally { rmFixture(f); }
 });
 
-test('(f) capability gate: a gated column/table sleeps (null + listed), a gated core column -> null', { skip }, () => {
+test('(f) capability gate: a gated column/table sleeps (null + listed), a gated core column -> null; unknown names pass', { skip }, () => {
+  const caps = require(path.join(ROOT, 'companion', 'lib', 'devswarm-capabilities.js'));
+  const realCan = caps.can;
   const f = buildAppDb();
+  const gateOff = (off) => { caps.can = (name) => (off.includes(name) ? { ok: false, reason: 'test-gated' } : { ok: false, reason: 'unknown-capability' }); };
   try {
-    const env = Object.assign({}, f.env, { ANTIHALL_DEVSWARM_CAPS_OFF: 'appdb.pull_requests,appdb.builder_terminals.ai_session_config' });
-    const s = appDb.readSnapshot(f.dbFile, { env });
-    assert.ok(s && s.ok);
+    gateOff(['appdb.pull_requests', 'appdb.builder_terminals.ai_session_config']);
+    const s = appDb.readSnapshot(f.dbFile, { env: f.env, home: f.home });
+    assert.ok(s && s.ok, 'unknown-capability names are not a verdict');
     assert.deepStrictEqual(s.gated.sort(), ['appdb.builder_terminals.ai_session_config', 'appdb.pull_requests']);
     assert.strictEqual(s.workspaces.find((w) => w.id === 'b-a').pullRequest, null);
     assert.strictEqual(appDb.sessionOwner(s, 'sess-a'), null);
-    assert.strictEqual(appDb.readSnapshot(f.dbFile, { env: Object.assign({}, f.env, { ANTIHALL_DEVSWARM_CAPS_OFF: 'appdb.builders.isActive' }) }), null);
-    assert.strictEqual(appDb.readSnapshot(f.dbFile, { env: Object.assign({}, f.env, { ANTIHALL_DEVSWARM_CAPS_OFF: 'appdb' }) }), null);
-    assert.strictEqual(appDb.messageTimestamps({ home: f.home, env: Object.assign({}, f.env, { ANTIHALL_DEVSWARM_CAPS_OFF: 'appdb.workspace_messages' }) }), null);
-  } finally { rmFixture(f); }
+    gateOff(['appdb.builders.isActive']);
+    assert.strictEqual(appDb.readSnapshot(f.dbFile, { env: f.env, home: f.home }), null);
+    gateOff(['appdb.workspace_messages']);
+    assert.strictEqual(appDb.messageTimestamps({ home: f.home, env: f.env }), null);
+    caps.can = () => { throw new Error('boom'); };
+    assert.strictEqual(appDb.readSnapshot(f.dbFile, { env: f.env, home: f.home }), null, 'a throwing gate never throws out');
+  } finally { caps.can = realCan; rmFixture(f); }
 });

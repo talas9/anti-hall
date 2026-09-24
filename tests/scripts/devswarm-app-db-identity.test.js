@@ -10,6 +10,8 @@
 //       terminal takes over from a live stale-session row; an inactive
 //       (closed-tab) terminal mapping keeps the refusal
 //   (4) no app DB -> byte-identical v0.107.1 behaviour (refusal stands)
+//   (5) a mapping with no corroborating transcript (missing, or cwd elsewhere)
+//       is informational only -> the fallback decides
 
 const { test } = require('node:test');
 const assert = require('node:assert');
@@ -108,6 +110,14 @@ const skip = sqlite ? false : 'node:sqlite unavailable';
 
 // appDb(dir, terminals) -> env override pointing at a fixture app DB whose
 // builders own `terminals` [{ sid, wt, active }].
+// transcript(home, wt, sid, cwd) — Claude's own transcript for `sid`, filed under
+// `wt`'s project dir and recording `cwd` (the app-map corroboration).
+const { projectDirFor } = require(path.join(ROOT, 'companion', 'lib', 'target-session.js'));
+function transcript(home, wt, sid, cwd) {
+  const d = projectDirFor(wt, home);
+  fs.mkdirSync(d, { recursive: true });
+  fs.writeFileSync(path.join(d, sid + '.jsonl'), JSON.stringify({ type: 'user', cwd: cwd || wt, sessionId: sid }) + '\n');
+}
 function appDbEnv(dir, terminals) {
   const file = path.join(dir, 'app-' + Math.random().toString(16).slice(2) + '.db');
   const db = new sqlite.DatabaseSync(file);
@@ -127,6 +137,7 @@ test('(1) app DB maps the caller to the anchor worktree -> own builder partition
   try {
     // No liveSession(): the v0.107.1 fallback alone would NOT ack (see resumed-anchor test 2).
     Object.assign(f.env, appDbEnv(f.home, [{ sid: 'sess-after-resume', wt: f.repo }]));
+    transcript(f.home, f.repo, 'sess-after-resume');
     send(f, UUID, 'to the builder id');
     assert.deepEqual(readAndAck(f, f.PID), ['to the builder id']);
     assert.equal(count(f, UUID), 0, 'acked on the app-DB identity');
@@ -139,6 +150,7 @@ test('(2) app DB maps the caller to another worktree -> never acks the anchor', 
     liveSession(f.home, 'sess-after-resume', f.repo); // the fallback alone WOULD ack
     const other = fs.mkdtempSync(path.join(os.tmpdir(), 'anti-hall-other-wt-'));
     Object.assign(f.env, appDbEnv(f.home, [{ sid: 'sess-after-resume', wt: other }]));
+    transcript(f.home, other, 'sess-after-resume');
     send(f, UUID, 'to the builder id');
     readAndAck(f, f.PID);
     assert.equal(count(f, UUID), 1, 'the app says this session is not the anchor\'s -> not acked');
@@ -155,9 +167,14 @@ test('(3)(4) register-primary takeover: app-named active terminal wins; closed t
     const r0 = reg(base);
     assert.equal(r0.ok, false, 'no app DB -> v0.107.1 refusal');
     assert.equal(r0.reason, 'live-primary-conflict');
+    const withActive = Object.assign({}, base, appDbEnv(f.home, [{ sid: 'sess-new', wt: f.repo, active: true }]));
+    assert.equal(reg(withActive).ok, false, '(5) no transcript for the caller -> informational, refusal stands');
+    transcript(f.home, f.repo, 'sess-new', path.join(f.repo, 'elsewhere'));
+    assert.equal(reg(withActive).ok, false, '(5) transcript cwd elsewhere -> informational, refusal stands');
+    transcript(f.home, f.repo, 'sess-new');
     const r1 = reg(Object.assign({}, base, appDbEnv(f.home, [{ sid: 'sess-new', wt: f.repo, active: false }])));
     assert.equal(r1.ok, false, 'a closed-tab terminal mapping is not authority');
-    const r2 = reg(Object.assign({}, base, appDbEnv(f.home, [{ sid: 'sess-new', wt: f.repo, active: true }])));
+    const r2 = reg(withActive);
     assert.equal(r2.ok, true, JSON.stringify(r2));
   } finally { rm(f.home); rm(f.repo); }
 });

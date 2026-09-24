@@ -663,6 +663,33 @@ test('spawn: an explicit -t/--title runs the update-title follow-up with that EX
   } finally { rm(home); rm(repo); }
 });
 
+// v0.108.0 owner decision: a title derived from -p is the FULL first line — no
+// 60-char cap, no stored "…" (the sidebar truncates by width by itself).
+test('spawn: a -p-derived title keeps the full first line (no 60-char cap, no ellipsis)', () => {
+  const home = tmpHome();
+  const repo = makeGitRepo('spawn-derived-full-title');
+  try {
+    const newWt = path.join(os.tmpdir(), 'never-exists-spawned-full-' + Date.now());
+    const calls = [];
+    const io = {
+      run: (spec) => {
+        calls.push(spec);
+        if (spec.args[1] === 'create') return { ok: true, raw: JSON.stringify({ branch: 'feature/full', path: newWt }) };
+        return { ok: true, raw: '{}' };
+      },
+    };
+    const line = 'Fix the parent-decide-gate so a resumed Primary acks its own builder partition after every session resume';
+    assert.ok(line.length > 60);
+    const r = cli.run(['spawn', 'feature/full', '-p', '# ' + line + '\n\nmore detail'], ctx(home, { cwd: repo, io }));
+    assert.equal(r.result.titled, true);
+    assert.deepEqual(calls[1].args, ['workspace', 'update-title', '-b', 'feature/full', line]);
+    const names = require('../../plugins/anti-hall/companion/lib/devswarm-names.js');
+    assert.equal(names.readName(home, r.result.meshId), line);
+    assert.equal(cli.deriveTitleFromBrief('  \n- ' + line), line);
+    assert.equal(cli.deriveTitleFromBrief('   '), null);
+  } finally { rm(home); rm(repo); }
+});
+
 test('spawn: --title= (equals form) is likewise extracted and applied via update-title', () => {
   const home = tmpHome();
   const repo = makeGitRepo('spawn-explicit-title-eq');

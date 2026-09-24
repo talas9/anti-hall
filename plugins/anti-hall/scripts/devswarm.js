@@ -585,10 +585,12 @@ function isRoutingLiveRow(row, home, opts) {
 // appSessionOnWorktree(home, env, sessionId, worktree) -> null | { verdict,
 // builderId, builderType, terminalActive }. v0.108.0: the DevSwarm app DB maps a
 // Claude session id to the worktree it runs in (builder_terminals.ai_session_config
-// -> builders.worktreePath; proven 129/130 on a live DB). ONE-WAY: verdict true =
-// the session runs on `worktree`, false = it runs on a DIFFERENT worktree; null
-// (no app DB, session unknown, unresolvable path) = no opinion — callers keep
-// their existing logic. Never throws.
+// -> builders.worktreePath). AUTHORITATIVE ONLY WHEN CORROBORATED by Claude's own
+// transcript (measured: only ~55% of mapped sessions still have a transcript;
+// where one exists its cwd matched 11/11 and 129/130): verdict true = the
+// session's transcript under `worktree` records that cwd; false = its transcript
+// under the app's OTHER worktree records that one. Anything unproven -> null (no
+// opinion) and callers keep their existing logic. Never throws.
 function appSessionOnWorktree(home, env, sessionId, worktree) {
   try {
     if (!sessionId || !worktree) return null;
@@ -598,7 +600,12 @@ function appSessionOnWorktree(home, env, sessionId, worktree) {
     if (!own || !own.worktreePath) return null;
     const a = canonicalWorktreeRealPath(String(own.worktreePath)) || String(own.worktreePath);
     const b = canonicalWorktreeRealPath(String(worktree)) || String(worktree);
-    return { verdict: a === b, builderId: own.builderId, builderType: own.builderType, terminalActive: own.terminalActive };
+    const same = a === b;
+    // Claude files the transcript under the cwd AS LAUNCHED: try the app's own
+    // spelling, then the caller's (same) / canonical one.
+    const spellings = [own.worktreePathRaw, same ? String(worktree) : null, same ? b : a].filter(Boolean);
+    if (!spellings.some((p) => appDb.transcriptCwdMatches(home, String(sessionId), p) === true)) return null;
+    return { verdict: same, builderId: own.builderId, builderType: own.builderType, terminalActive: own.terminalActive };
   } catch (_) { return null; }
 }
 
@@ -5355,6 +5362,31 @@ function repairReaderFloorsAllStores(home, ctx) {
         }
       }
     } finally { try { s.close(); } catch (_) {} }
+  }
+  return out;
+}
+
+// refreshNamesFromApp(home, env, rows, now) -> { appDb, checked, refreshed }.
+// v0.108.0: for each { id, worktreePath }, the DevSwarm app's own title for that
+// builder (by id; else the ACTIVE builder on that worktree) is written to the
+// names cache when it differs from the cached name. Full label, never
+// truncated. Fail-open: no app DB -> nothing checked.
+function refreshNamesFromApp(home, env, rows, now) {
+  const out = { appDb: false, checked: 0, refreshed: 0 };
+  let appDb;
+  try { appDb = require('../companion/lib/devswarm-app-db.js'); } catch (_) { return out; }
+  const snap = appDb.snapshot({ home, env: env || process.env, now });
+  if (!snap) return out;
+  out.appDb = true;
+  for (const d of rows || []) {
+    try {
+      if (!d || d.id == null || !isSafeId(String(d.id))) continue;
+      const ws = appDb.workspaceFor(snap, { id: d.id, worktreePath: d.worktreePath || null });
+      if (!ws || typeof ws.label !== 'string' || !ws.label) continue;
+      out.checked++;
+      if (names.readName(home, String(d.id)) === ws.label) continue;
+      if (names.writeName(home, String(d.id), ws.label, now)) out.refreshed++;
+    } catch (_) { /* one bad row never stops the rest */ }
   }
   return out;
 }
@@ -15111,6 +15143,11 @@ function cmdReconcile(flags, ctx) {
   // backfill this sweep, NEVER fails reconcile itself (same fail-open posture
   // as `healed` above).
   let namesBackfilled = 0;
+  // v0.108.0: the DevSwarm app DB's builders.label IS the UI title — refresh the
+  // cache whenever it DIFFERS (renames used to never propagate), with no spawn.
+  // Only ids the app has no label for fall through to the hivecontrol backfill.
+  let namesRefreshed = 0;
+  try { namesRefreshed = refreshNamesFromApp(home, ctx.env, targets, ctx.now).refreshed; } catch (_) { namesRefreshed = 0; }
   try {
     const missingNames = targets.filter((d) => !names.readName(home, d.id));
     if (missingNames.length > 0) {
@@ -15137,6 +15174,7 @@ function cmdReconcile(flags, ctx) {
     ok: allRowsOkOrBenign, action: 'reconcile', repoKey,
     count: results.length, imported, lost, rejected, results,
     budgetMs, processed, skippedMissingWorktree, skippedNotGitRoot, deferred: deferredIds.length,
+    namesRefreshed,
     elapsedMs: clockNow() - startedAt,
   };
   if (healed) out.healed = healed;
@@ -15395,9 +15433,11 @@ function extractFlagValue(rest, shortFlag, longFlag) {
 // deriveTitleFromBrief(brief) -> string | null. Owner-approved derivation
 // rule: take the first non-empty line of the brief, strip ONE leading
 // markdown marker (heading/bullet/quote) so a line like "# own the API layer"
-// titles as "own the API layer" rather than carrying the marker, collapse
-// internal whitespace, then truncate to 60 chars on a WORD boundary with a
-// trailing ellipsis if cut. Returns null for a non-string/empty/blank brief.
+// titles as "own the API layer" rather than carrying the marker, and collapse
+// internal whitespace. The FULL line is kept (owner decision 2026-09-24, v0.108.0:
+// no length cap — the DevSwarm sidebar truncates by width on its own, and a
+// stored "…" title can never be matched or restored). Returns null for a
+// non-string/empty/blank brief.
 function deriveTitleFromBrief(brief) {
   if (typeof brief !== 'string') return null;
   let line = null;
@@ -15407,12 +15447,7 @@ function deriveTitleFromBrief(brief) {
   }
   if (!line) return null;
   line = line.replace(/^(#{1,6}|[-*>])\s+/, '').trim().replace(/\s+/g, ' ');
-  if (!line) return null;
-  if (line.length <= 60) return line;
-  const cut = line.slice(0, 60);
-  const lastSpace = cut.lastIndexOf(' ');
-  const boundary = (lastSpace > 0 ? cut.slice(0, lastSpace) : cut).trimEnd();
-  return boundary + '…';
+  return line || null;
 }
 
 // cmdSpawn(rest, ctx) — PLAN.md "spawn": THIN pass-through wrap of
@@ -16795,7 +16830,7 @@ module.exports = {
   deriveInstanceNonce,
   // mesh redesign B5 / Phase 3 — THE nonce every production site uses, plus the
   // reader_cursors adapters:
-  deriveReaderNonce, callerReaderKey, commitNdAck, floorCursor, importReaderCursorsAllStores, repairReaderFloorsAllStores, markAppArchivedDescriptors,
+  deriveReaderNonce, callerReaderKey, commitNdAck, floorCursor, importReaderCursorsAllStores, repairReaderFloorsAllStores, markAppArchivedDescriptors, deriveTitleFromBrief, appSessionOnWorktree, refreshNamesFromApp,
   reconcileDualPartitionAcksAllStores, declaredSelfId,
   mergeSplitBackendStoresAllStores,
   // instanceNonce CONSUMERS (defect d3d571495bf6, items a/b/c — exported for

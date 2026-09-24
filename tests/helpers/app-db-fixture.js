@@ -73,8 +73,14 @@ function buildAppDb(opts) {
   fs.writeFileSync(path.join(appDir, 'sentry', 'session.json'), JSON.stringify({ release: 'DevSwarm@9.9.9', sid: 'x' }));
   fs.mkdirSync(path.join(appDir, 'terminal-scrollback'));
   fs.writeFileSync(path.join(appDir, 'terminal-scrollback', '0_ta.log'), 'x'.repeat(10));
+  // wt-a is a checkout whose branch tip (loose ref) last moved 1 h ago — before
+  // the PR's lastSyncedAt (60 s ago), so the app's PR record is trusted.
+  const ref = path.join(wt.a, '.git', 'refs', 'heads', 'feat', 'a');
+  fs.mkdirSync(path.dirname(ref), { recursive: true });
+  fs.writeFileSync(ref, '0'.repeat(40) + '\n');
+  fs.utimesSync(ref, new Date(now - 3600e3), new Date(now - 3600e3));
   const env = { ANTIHALL_DEVSWARM_APP_DB: dbFile, ANTIHALL_DEVSWARM_APP_DB_CACHE_MS: '0' };
-  return { base, home, env, dbFile, repoPath, wt, now, iso };
+  return { base, home, env, dbFile, repoPath, wt, now, iso, ref };
 }
 
 function rmFixture(f) { try { fs.rmSync(f.base, { recursive: true, force: true }); } catch (_) {} }

@@ -58,14 +58,24 @@
 const fs = require('fs');
 const path = require('path');
 
-// Capability gate (DevSwarm version + runtime detection). Every table and column
-// read below asks can('appdb.<table>') / can('appdb.<table>.<column>'); a gated
-// read degrades exactly like a missing column (fail-open, listed in `gated`).
+// Capability gate (companion/lib/devswarm-capabilities.js: DevSwarm version +
+// runtime detection). Every table and column read below asks
+// can('appdb.<table>') / can('appdb.<table>.<column>'); a gated read degrades
+// exactly like a missing column (fail-open, listed in `gated`). A name the
+// registry does not carry ('unknown-capability') or a gate that cannot locate
+// the DB ('app-db-unavailable') is not a verdict — this module's own PRAGMA
+// detection still gates it. Absent module -> ungated.
 let caps = null;
 try { caps = require('./devswarm-capabilities.js'); } catch (_) { caps = null; }
-function capOk(name, env) {
+function capOk(name, env, home) {
   if (!caps || typeof caps.can !== 'function') return true;
-  try { const r = caps.can(name, { env }); return !!(r && r.ok); } catch (_) { return false; }
+  try {
+    const r = caps.can(name, { env, home });
+    if (r && r.ok) return true;
+    // Not verdicts: a name outside the registry, or the gate failing to locate
+    // the DB this module already has open.
+    return !!(r && (r.reason === 'unknown-capability' || r.reason === 'app-db-unavailable'));
+  } catch (_) { return false; }
 }
 
 const DEFAULT_CACHE_MS = 10 * 1000;
@@ -126,15 +136,15 @@ function tableColumns(db, table) {
 // selectPresent(db, table, missing, gated, env) -> rows[] with every SCHEMA column
 // as a key (null when absent or capability-gated). `initialPrompt` is read as
 // presence + length only.
-function selectPresent(db, table, missing, gated, env) {
-  if (!capOk('appdb.' + table, env)) { gated.push('appdb.' + table); return []; }
+function selectPresent(db, table, missing, gated, env, home) {
   const cols = tableColumns(db, table);
   if (!cols) { missing.push(table + ' (table)'); return []; }
+  if (!capOk('appdb.' + table, env, home)) { gated.push('appdb.' + table); return []; }
   const exprs = [];
   const nulls = [];
   for (const c of SCHEMA[table]) {
     if (!cols.has(c)) { missing.push(table + '.' + c); nulls.push(c); continue; }
-    if (!capOk('appdb.' + table + '.' + c, env)) { gated.push('appdb.' + table + '.' + c); nulls.push(c); continue; }
+    if (!capOk('appdb.' + table + '.' + c, env, home)) { gated.push('appdb.' + table + '.' + c); nulls.push(c); continue; }
     if (c === 'initialPrompt') exprs.push('length(initialPrompt) AS initialPromptLen');
     else exprs.push('"' + c + '"');
   }
@@ -176,7 +186,7 @@ function scrollbackStat(dbFile, terminalId) {
 // the capability gate.
 function readSnapshot(file, opts) {
   const env = (opts && opts.env) || process.env;
-  if (!capOk('appdb', env)) return null;
+  const home = (opts && opts.home) || null;
   let sqlite;
   try { sqlite = require('node:sqlite'); } catch (_) { return null; }
   try { if (!fs.statSync(file).isFile()) return null; } catch (_) { return null; }
@@ -185,13 +195,13 @@ function readSnapshot(file, opts) {
     db = new sqlite.DatabaseSync(file, { readOnly: true });
     const bcols = tableColumns(db, 'builders');
     if (!bcols) return null;
-    for (const c of CORE.builders) if (!bcols.has(c) || !capOk('appdb.builders.' + c, env)) return null;
+    for (const c of CORE.builders) if (!bcols.has(c) || !capOk('appdb.builders.' + c, env, home)) return null;
     const missing = [];
     const gated = [];
-    const builders = selectPresent(db, 'builders', missing, gated, env);
-    const terminals = selectPresent(db, 'builder_terminals', missing, gated, env);
-    const prs = selectPresent(db, 'pull_requests', missing, gated, env);
-    const repos = selectPresent(db, 'repositories', missing, gated, env);
+    const builders = selectPresent(db, 'builders', missing, gated, env, home);
+    const terminals = selectPresent(db, 'builder_terminals', missing, gated, env, home);
+    const prs = selectPresent(db, 'pull_requests', missing, gated, env, home);
+    const repos = selectPresent(db, 'repositories', missing, gated, env, home);
     // workspace_messages is only schema-checked here (counts are a separate read).
     const wm = tableColumns(db, 'workspace_messages');
     if (!wm) missing.push('workspace_messages (table)');
@@ -235,7 +245,7 @@ function readSnapshot(file, opts) {
       if (!termsByBuilder.has(k)) termsByBuilder.set(k, []);
       termsByBuilder.get(k).push(v);
     }
-    const hasHidden = bcols.has('isHidden') && capOk('appdb.builders.isHidden', env);
+    const hasHidden = bcols.has('isHidden') && capOk('appdb.builders.isHidden', env, home);
     const workspaces = [];
     for (const b of builders) {
       if (!b || b.id == null) continue;
@@ -246,23 +256,32 @@ function readSnapshot(file, opts) {
       const pr = (b.pullRequestId != null && prById.get(String(b.pullRequestId)))
         || (b.repositoryId != null && b.branchName != null && prByBranch.get(String(b.repositoryId) + '\u0000' + String(b.branchName))) || null;
       const terms = termsByBuilder.get(id) || [];
-      const aiActive = terms.find((t) => t.terminalType === 'ai' && t.isActive === true) || null;
+      // CURRENT AI terminal: the open (isActive) one created last — a builder
+      // can carry several open AI terminals at once (measured: 9% of builders).
+      let aiActive = null;
+      for (const t of terms) {
+        if (t.terminalType !== 'ai' || t.isActive !== true) continue;
+        if (!aiActive || (t.createdAt || 0) > (aiActive.createdAt || 0)) aiActive = t;
+      }
       workspaces.push({
         id, repositoryId: b.repositoryId == null ? null : String(b.repositoryId),
         repoPath: repo ? repo.path : null, repoName: repo ? repo.name : null,
         label: b.label == null ? null : String(b.label), branchName: b.branchName == null ? null : String(b.branchName),
         sourceBranch: b.sourceBranch == null ? null : String(b.sourceBranch), worktreePath: normPath(b.worktreePath),
+        // as the app stored it (= the cwd Claude was launched with; its transcript
+        // project dir is keyed on this spelling, not the realpath)
+        worktreePathRaw: b.worktreePath == null ? null : String(b.worktreePath),
         builderType: b.builderType == null ? null : String(b.builderType),
         rank: b.rank == null ? null : Number(b.rank), isPinned: b.isPinned == null ? null : Number(b.isPinned) === 1,
         isHidden: b.isHidden == null ? null : Number(b.isHidden) === 1, active, archived,
         createdAt: tsMs(b.createdAt), lastAccessed: tsMs(b.lastAccessed), lastSelectedAt: tsMs(b.lastSelectedAt),
         pullRequest: pr, terminals: terms,
         sessionId: aiActive ? aiActive.sessionId : null,
-        scrollback: active && aiActive && capOk('appfs.terminal-scrollback', env) ? scrollbackStat(file, aiActive.terminalId) : null,
+        scrollback: active && aiActive && capOk('appfs.terminal-scrollback', env, home) ? scrollbackStat(file, aiActive.terminalId) : null,
       });
     }
     return {
-      ok: true, file, appVersion: capOk('appfs.sentry-session', env) ? appVersion(file) : null, missing, gated, deliveryTrackedSince,
+      ok: true, file, appVersion: capOk('appfs.sentry-session', env, home) ? appVersion(file) : null, missing, gated, deliveryTrackedSince,
       repositories, workspaces,
     };
   } catch (_) {
@@ -285,7 +304,7 @@ function snapshot(opts) {
   const now = Number.isFinite(o.now) ? o.now : Date.now();
   const ttl = cacheTtl(o.env || process.env);
   if (!o.fresh && memo && memo.file === file && now - memo.at >= 0 && now - memo.at < ttl) return memo.snap;
-  const snap = readSnapshot(file, { env: o.env || process.env });
+  const snap = readSnapshot(file, { env: o.env || process.env, home: o.home || null });
   memo = { file, at: now, snap };
   return snap;
 }
@@ -334,6 +353,32 @@ function workspaceFor(snap, q) {
   return snap.workspaces.find((x) => x.active && x.worktreePath === wt) || null;
 }
 
+// transcriptCwdMatches(home, sessionId, worktreePath) -> true | false | null.
+// Verifies a session-map entry against Claude's own transcript: the file
+// <home>/.claude/projects/<encoded worktree>/<sessionId>.jsonl must exist and
+// its first recorded `cwd` (within the first 64 KiB) must be the worktree.
+// null = no transcript / no cwd found (unverified). Reads a bounded prefix only.
+function transcriptCwdMatches(home, sessionId, worktreePath) {
+  if (!home || typeof sessionId !== 'string' || !/^[A-Za-z0-9-]+$/.test(sessionId) || !worktreePath) return null;
+  let fd = null;
+  try {
+    const { projectDirFor } = require('./target-session.js');
+    const file = path.join(projectDirFor(worktreePath, home), sessionId + '.jsonl');
+    fd = fs.openSync(file, 'r');
+    const buf = Buffer.alloc(64 * 1024);
+    const n = fs.readSync(fd, buf, 0, buf.length, 0);
+    const m = /"cwd"\s*:\s*("(?:[^"\\]|\\.)*")/.exec(buf.subarray(0, n).toString('utf8'));
+    if (!m) return null;
+    let cwd;
+    try { cwd = JSON.parse(m[1]); } catch (_) { return null; }
+    return normPath(cwd) === normPath(worktreePath);
+  } catch (_) {
+    return null;
+  } finally {
+    try { if (fd != null) fs.closeSync(fd); } catch (_) {}
+  }
+}
+
 // sessionOwner(snap, sessionId) -> { builderId, worktreePath, builderType, repositoryId,
 // active, terminalActive } | null. One-way (see header): a hit is authoritative for
 // WHICH worktree the session belongs to; a miss proves nothing.
@@ -342,7 +387,7 @@ function sessionOwner(snap, sessionId) {
   for (const w of snap.workspaces) {
     for (const t of w.terminals) {
       if (t.sessionId === sessionId) {
-        return { builderId: w.id, worktreePath: w.worktreePath, builderType: w.builderType, repositoryId: w.repositoryId, active: w.active, terminalActive: t.isActive === true };
+        return { builderId: w.id, worktreePath: w.worktreePath, worktreePathRaw: w.worktreePathRaw, builderType: w.builderType, repositoryId: w.repositoryId, active: w.active, terminalActive: t.isActive === true };
       }
     }
   }
@@ -379,12 +424,36 @@ function briefDelivery(snap, ws, now) {
   return null;
 }
 
+// branchTipMtimeMs(worktreePath, branchName) -> ms | null: mtime of the branch's
+// loose ref file (the last time the branch moved). Pure fs, no git spawn; a
+// packed/unresolvable ref -> null.
+function branchTipMtimeMs(worktreePath, branchName) {
+  if (!worktreePath || typeof branchName !== 'string' || !branchName || branchName.includes('..')) return null;
+  try {
+    let gitDir = path.join(worktreePath, '.git');
+    const st = fs.statSync(gitDir);
+    if (st.isFile()) {
+      const m = /^gitdir:\s*(.+)\s*$/m.exec(fs.readFileSync(gitDir, 'utf8'));
+      if (!m) return null;
+      gitDir = path.resolve(worktreePath, m[1].trim());
+    }
+    let common = gitDir;
+    try { common = path.resolve(gitDir, fs.readFileSync(path.join(gitDir, 'commondir'), 'utf8').trim()); } catch (_) { common = gitDir; }
+    return fs.statSync(path.join(common, 'refs', 'heads', ...branchName.split('/'))).mtimeMs;
+  } catch (_) { return null; }
+}
+
 // finishSignal(ws) -> string | null. The app's pull-request record for this
 // workspace, e.g. "PR #12 merged" / "PR #12 merged, checks failed". Extra signal
-// only — never overrides the explicit completion gates.
+// only — never overrides the explicit completion gates. TRUSTED ONLY when the
+// app synced the PR after the branch last moved (lastSyncedAt > branch tip
+// mtime); otherwise (stale sync, or the tip time is unknown) -> null and the
+// git ground truth already in the roster stands. checkStatus is Title Case.
 function finishSignal(ws) {
   const pr = ws && ws.pullRequest;
   if (!pr || !pr.state) return null;
+  const tip = branchTipMtimeMs(ws.worktreePath, ws.branchName);
+  if (tip == null || pr.lastSyncedAt == null || pr.lastSyncedAt <= tip) return null;
   let s = 'PR' + (pr.number != null ? ' #' + pr.number : '') + ' ' + pr.state + (pr.isDraft ? ' (draft)' : '');
   if (pr.checkStatus && /fail/i.test(pr.checkStatus)) s += ', checks failed';
   return s;
@@ -441,9 +510,9 @@ function messageTimestamps(opts) {
     if (!fs.statSync(file).isFile()) return null;
     db = new sqlite.DatabaseSync(file, { readOnly: true });
     const env = o.env || process.env;
-    if (!capOk('appdb', env) || !capOk('appdb.workspace_messages', env)) return null;
+    if (!capOk('appdb.workspace_messages', env, o.home)) return null;
     const cols = tableColumns(db, 'workspace_messages');
-    if (!cols || !SCHEMA.workspace_messages.every((c) => cols.has(c) && capOk('appdb.workspace_messages.' + c, env))) return null;
+    if (!cols || !SCHEMA.workspace_messages.every((c) => cols.has(c) && capOk('appdb.workspace_messages.' + c, env, o.home))) return null;
     const since = new Date(Number.isFinite(o.sinceMs) ? o.sinceMs : 0).toISOString();
     const until = new Date(Number.isFinite(o.untilMs) ? o.untilMs : Date.now()).toISOString();
     const rows = db.prepare('SELECT repositoryId, toBranch, createdAt FROM workspace_messages WHERE createdAt >= ? AND createdAt < ?').all(since, until);
@@ -464,7 +533,7 @@ function messageTimestamps(opts) {
 // scheduledForDeletion(home) -> string[] | null: entry NAMES under the app's
 // ~/.devswarm/scheduled-for-deletion/ (report only, never acted on).
 function scheduledForDeletion(home, env) {
-  if (!home || !capOk('appfs.scheduled-for-deletion', env || process.env)) return null;
+  if (!home || !capOk('appfs.scheduled-for-deletion', env || process.env, home)) return null;
   try { return fs.readdirSync(path.join(String(home), '.devswarm', 'scheduled-for-deletion')).filter((n) => !n.startsWith('.')); } catch (_) { return null; }
 }
 
@@ -472,6 +541,6 @@ function resetCache() { memo = null; }
 
 module.exports = {
   appDbPath, readSnapshot, snapshot, builderStates, appArchivedVerdict, workspaceFor, sessionOwner, sessionMap,
-  briefDelivery, finishSignal, lastSelected, focusedWorkspaceId, repositoryForWorktree, messageTimestamps, scheduledForDeletion,
+  briefDelivery, finishSignal, branchTipMtimeMs, transcriptCwdMatches, lastSelected, focusedWorkspaceId, repositoryForWorktree, messageTimestamps, scheduledForDeletion,
   resetCache, SCHEMA, DEFAULT_CACHE_MS, BRIEF_DELIVERY_GRACE_MS, FOCUS_WINDOW_MS,
 };

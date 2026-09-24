@@ -103,6 +103,31 @@ const { ownReaderUnread } = require('../companion/lib/devswarm-own-reader.js');
 // {"ids":[...]} list — suppresses the urgent/not-draining nag for a listed
 // id without hiding it from the roster/table. See that module's header.
 const { isNagIgnored } = require('../companion/lib/devswarm-ignore.js');
+// v0.108.0: the DevSwarm app DB snapshot (read-only, fail-open, 10 s cache) —
+// UI title, pull-request finish signal, brief delivery, sidebar rank/pin, and
+// the owner's on-screen workspace. Guarded: a load failure leaves every surface
+// exactly as before.
+let appDbLib = null;
+try { appDbLib = require('../companion/lib/devswarm-app-db.js'); } catch (_) { appDbLib = null; }
+
+// focusWindowMs(env) -> ms a UI selection counts as "the owner is looking at it"
+// (ANTIHALL_DEVSWARM_FOCUS_MS, default 2 min; 0 disables focus suppression).
+function focusWindowMs(env) {
+  const raw = Number(env && env.ANTIHALL_DEVSWARM_FOCUS_MS);
+  if (Number.isFinite(raw) && raw >= 0) return raw;
+  return appDbLib ? appDbLib.FOCUS_WINDOW_MS : 0;
+}
+
+// appRowMarkers(ws, brief) -> string: REPORT-ONLY title-cell markers from the app
+// DB (pinned, owner on screen, brief not delivered / withheld).
+function appRowMarkers(ws, brief, focused) {
+  const parts = [];
+  if (ws && ws.isPinned) parts.push('pinned');
+  if (focused) parts.push('on screen');
+  if (brief && brief.status === 'not-delivered') parts.push('⚠ brief not delivered');
+  if (brief && brief.status === 'withheld') parts.push('⚠ brief withheld');
+  return parts.length ? ' [' + parts.join(', ') + ']' : '';
+}
 
 // B1 self-heal hardening (H4): structured logging via the shared C0 logger
 // when present, falling back to a console.error-only shim so this hook never
@@ -515,7 +540,7 @@ function buildWorkspaceTable(rows, now, capped, hidden, hiddenRows, archivedHidd
     // (names.displayName's own fallback). Escape a literal `|` in the name
     // (free-text from a brief/hivecontrol title) so it can never break this
     // markdown table's column structure.
-    const workspaceCol = names.displayName(r.id, r.wsName).replace(/\|/g, '\\|') + riskMarker(r);
+    const workspaceCol = names.displayName(r.id, r.wsName).replace(/\|/g, '\\|') + riskMarker(r) + (r.appMarks || '');
     lines.push(
       '| ' + workspaceCol + ' | ' + r.label + ' | ' + r.finish + ' | ' + r.unread
       + ' | ' + formatRelative(r.lastActivityTs, now) + ' |'
@@ -1219,6 +1244,25 @@ function main() {
     }
     return appArchivedCacheMemo;
   }
+  // appSnap() / appWs() — ONE app-DB snapshot per invocation (v0.108.0).
+  let appSnapMemo;
+  function appSnap() {
+    if (appSnapMemo === undefined) {
+      try { appSnapMemo = appDbLib ? appDbLib.snapshot({ home, env: process.env, now }) : null; }
+      catch (_) { appSnapMemo = null; }
+    }
+    return appSnapMemo;
+  }
+  function appWs(id, worktreePath) {
+    try { return appDbLib ? appDbLib.workspaceFor(appSnap(), { id, worktreePath }) : null; } catch (_) { return null; }
+  }
+  // The builder the owner has on screen right now (UI focus within the window):
+  // nags about THAT workspace are suppressed (it still shows in the table).
+  let focusedId = null;
+  try {
+    const w = focusWindowMs(process.env);
+    focusedId = (appDbLib && w > 0) ? appDbLib.focusedWorkspaceId(appSnap(), now, w) : null;
+  } catch (_) { focusedId = null; }
 
   // H4 fallback (daemon-down parent-inbox freeze): readSummary() below only
   // reads the store's MATERIALIZED cache (summaries/<repoKey>.json). That cache
@@ -1433,12 +1477,15 @@ function main() {
       appArchivedRow = st.appArchived;
     } catch (_) { archivedRow = false; appArchivedRow = false; }
     // (Still listed in the table below, labelled archived — just never nagged.)
-    if ((unread > 0 || stuck || notDraining) && !archiveReadyQuiet && !nagIgnored && !appArchivedRow) {
+    // v0.108.0: nor while the owner has this very workspace on screen in the app.
+    const rowWs = appWs(id, entry.worktreePath);
+    const ownerFocused = !!(focusedId && rowWs && rowWs.id === focusedId);
+    if ((unread > 0 || stuck || notDraining) && !archiveReadyQuiet && !nagIgnored && !appArchivedRow && !ownerFocused) {
       // wsName/oldestUnreadTs (item 5/6): human title + age for the reworded
       // "CHILD NOT DRAINING" segment below — read-only, zero extra store
       // reads (oldestDirectUnreadTs is already a zero-extra-read projection
       // field, see companion/lib/devswarm-store.js computeSummary).
-      const wsName = names.readName(home, id);
+      const wsName = (rowWs && rowWs.label) || names.readName(home, id);
       const oldestUnreadTs = Number.isFinite(entry.oldestDirectUnreadTs) ? entry.oldestDirectUnreadTs : null;
       attention.push({ id, unread, cursor, total, status, urgencyMax, wsName, oldestUnreadTs, notDraining });
     }
@@ -1447,7 +1494,7 @@ function main() {
       // v0.108.0: with auto-archive mode "on" (and the archive verb available)
       // the supervisor archives this workspace itself — no user nag for the
       // rows its last sweep owns (companion/lib/devswarm-lifecycle.js).
-      if (archiveReady && !appArchivedRow && !isArchiveIgnored(home, id)
+      if (archiveReady && !appArchivedRow && !ownerFocused && !isArchiveIgnored(home, id)
           && archiveCooldownElapsed(home, id, now) && !autoArchiveOwnsRow(home, id, now)) {
         archiveList.push(id);
       }
@@ -1594,18 +1641,31 @@ function main() {
       const dsFinal = (archiveReadyQuiet && !archivedRow && !archivedSuperseded && ds.label === 'not-draining')
         ? displayStatus(archiveReady, status, activityTs, now, dormant, false, idleAlive)
         : ds;
+      // v0.108.0 app-DB extras (all report-only): the app's PR record as an
+      // extra finish signal (never overrides the gates), the UI title, sidebar
+      // rank as a tiebreak, and pinned / on-screen / brief-delivery markers.
+      let finishCell = finishingRate(summary, id, heartbeat);
+      let appMarks = '';
+      try {
+        const sig = appDbLib ? appDbLib.finishSignal(rowWs) : null;
+        if (sig) finishCell = finishCell === '—' ? sig : finishCell + ' · ' + sig;
+        const brief = appDbLib ? appDbLib.briefDelivery(appSnap(), rowWs, now) : null;
+        appMarks = appRowMarkers(rowWs, brief, !!(focusedId && rowWs && rowWs.id === focusedId));
+      } catch (_) { appMarks = ''; }
       rows.push({
         id,
         label: dsFinal.label,
         rank: dsFinal.rank,
-        finish: finishingRate(summary, id, heartbeat),
+        finish: finishCell,
+        appRank: rowWs && Number.isFinite(rowWs.rank) ? rowWs.rank : null,
+        appMarks,
         unread,
         lastActivityTs: activityTs,
         // wsName (task #6): cached human display name, read-only fs
         // projection lookup ONLY — never a hivecontrol spawn on this
         // every-turn hot path. null when not yet cached (buildWorkspaceTable
         // falls back to the bare id via names.displayName).
-        wsName: names.readName(home, id),
+        wsName: (rowWs && rowWs.label) || names.readName(home, id),
         // unpushed/noUpstream/mergedVerified (git ground-truth report-only
         // markers, threaded from computeSummary — see devswarm-store.js /
         // devswarm-git-truth.js): absent-vs-present is significant, so these
@@ -1848,7 +1908,10 @@ function main() {
   // every turn. Attention-needed rows (escalated/stale) sort to the top; ties by
   // unread desc, then id. Capped at MAX_TABLE_ROWS with a logged "+N more".
   if (rows.length) {
-    rows.sort((a, b) => (a.rank - b.rank) || (b.unread - a.unread) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    const appRankOf = (r) => (Number.isFinite(r.appRank) ? r.appRank : Infinity);
+    rows.sort((a, b) => (a.rank - b.rank) || (b.unread - a.unread)
+      || ((appRankOf(a) - appRankOf(b)) || 0) // v0.108.0: sidebar order breaks ties
+      || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
     // D1 fix: drop archived rows BEFORE sort/cap so they can never consume a
     // MAX_TABLE_ROWS slot a live row needed (see rosterHideArchived's header).
     let archivedHidden = 0;
