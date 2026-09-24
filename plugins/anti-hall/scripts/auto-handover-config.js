@@ -6,7 +6,7 @@
 //
 // The agent runs this on the user's behalf when they ask to change/disable/
 // show the auto-handover threshold or its nags — see
-// skills/auto-handover-config/SKILL.md. It never edits settings.json by
+// skills/settings/SKILL.md (the auto-handover section; this CLI is its alias). It never edits settings.json by
 // hand: settings.js's set() is the only writer, atomic and read-modify-write,
 // so this stays safe alongside any other feature sharing the same file (a
 // future settings page included). Deliberately thin — a stable get/set

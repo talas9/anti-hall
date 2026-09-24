@@ -1,6 +1,6 @@
 ---
 name: anti-hall-settings
-description: Show or change any anti-hall setting for Codex. Use when the user says "anti-hall settings", "show/change anti-hall settings", "turn off X", "turn on X", "set auto-handover to 80%", or similar for any guard, Jev, statusline, limit-conservation, or DevSwarm knob.
+description: Show or change any anti-hall setting for Codex. Use when the user says "anti-hall settings", "show/change anti-hall settings", "turn off X", "turn on X", "set auto-handover to 80%", "turn off auto-handover", "stop nagging me to compact", "what's the auto-handover threshold", or similar for any guard, Jev, statusline, limit-conservation, or DevSwarm knob.
 ---
 
 # anti-hall settings for Codex
@@ -69,6 +69,34 @@ re-running `get` on that one key afterward.
    ```bash
    node "$ANTI_HALL_ROOT/scripts/settings.js" get <section.key>
    ```
+
+## Auto-handover (`autoHandover` section)
+
+The auto-handover trigger (`hooks/auto-handover.js` + the Stop-time
+`hooks/auto-handover-pause-nag.js`) is **on by default at 85%** context. When the
+main agent first crosses the threshold it self-writes a handover, tells the user,
+and suggests `/compact` or `/clear`. Follow-up reminders fire every `nagStepPct`
+further points and at a quiet pause (at most once per `nagQuietMin` minutes)
+unless `nag` is off.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `autoHandover.enabled` | `true` | the whole trigger |
+| `autoHandover.pct` | `85` | threshold, 1-99 (env `ANTIHALL_AUTO_HANDOVER_PCT`; env `0` = off for that process) |
+| `autoHandover.nag` | `true` | follow-up reminders |
+| `autoHandover.nagStepPct` | `5` | milestone step, in points |
+| `autoHandover.nagQuietMin` | `15` | minutes between pause reminders |
+
+"Turn off auto-handover" = `set autoHandover.enabled false`; "set auto-handover to
+80%" = `set autoHandover.pct 80`. The older one-purpose CLI still works as an alias
+over the same keys:
+`node "$ANTI_HALL_ROOT/scripts/auto-handover-config.js" get [--json] | set <1-99> | off | on | nag on|off | nag-step <n> | nag-quiet <n>`.
+
+Context % comes from the best source available: the statusline's real
+`context_window` figure (Claude), the rollout's `model_context_window` (Codex), else
+a transcript estimate (`ANTIHALL_CONTEXT_WINDOW_TOKENS` overrides the window size). An
+estimate with an unknown window only ever produces a soft advisory, never the
+mandatory handover directive.
 
 ## Resetting a setting
 
