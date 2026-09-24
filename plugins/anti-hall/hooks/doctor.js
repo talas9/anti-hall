@@ -166,6 +166,30 @@ let version = '(unknown)';
 try { version = require(path.join(ROOT, '.claude-plugin', 'plugin.json')).version; } catch (e) {}
 ok(`anti-hall plugin version ${version}`);
 
+// installed_plugins.json is HARNESS-OWNED (see skills/update/scripts/update.js's
+// own header) — this only ever READS it, never writes it. When its own recorded
+// version is older than the newest version actually mirrored into the cache/
+// marketplace, every session (including after a restart) keeps loading a STALE
+// build until the harness itself re-registers it — `update.js`'s
+// harnessRegisterPostUpdate now attempts that automatically on a version bump,
+// but this check surfaces the gap plainly for a machine where that auto-heal
+// hasn't run yet (or failed / needs a manual confirmation). Read-only — never
+// part of the repair pass.
+try {
+  const upd = require(path.join(ROOT, 'skills', 'update', 'scripts', 'update.js'));
+  const home = os.homedir();
+  const updPaths = upd.resolvePaths(process.env, home);
+  const harnessVersion = upd.versionFromInstalledJson(updPaths.installedJson);
+  const newest = upd.newestCacheVersion(updPaths.cacheRoot) || upd.versionFromMarketplace(updPaths.pluginJson);
+  if (upd.isSemver(harnessVersion) && upd.isSemver(newest) && upd.compareVersions(harnessVersion, newest) < 0) {
+    warnl(`installed_plugins.json reports ${harnessVersion}, but ${newest} is available in cache/marketplace — the harness has not re-registered this build. Fix: claude plugin update anti-hall@anti-hall (then restart Claude Code, or try /reload-plugins first).`);
+  } else if (upd.isSemver(harnessVersion)) {
+    ok(`installed_plugins.json harness registration is current (${harnessVersion})`);
+  }
+} catch (e) {
+  infol(`harness registration check skipped: ${e.message}`);
+}
+
 // --- 2. Hooks present + syntax-valid ----------------------------------------
 head('Hooks (present + syntax)');
 let registered = [];

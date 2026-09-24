@@ -467,6 +467,77 @@ function remotePluginVersion(marketplaceDir, exec) {
 }
 
 // ---------------------------------------------------------------------------
+// Harness re-registration (P0 fix): the Claude Code harness itself loads this
+// plugin from ~/.claude/plugins/installed_plugins.json's
+// plugins["anti-hall@anti-hall"][].installPath — a version-pinned cache dir
+// this module NEVER writes (harness-owned, see the file header). Pulling +
+// mirroring a new version into cache/anti-hall/anti-hall/<version>/ does
+// NOTHING to that pointer: every session, including after a full app/Claude
+// restart, keeps loading whatever version installed_plugins.json still
+// names until the harness itself re-registers it — so a fix landed by
+// `update` never actually takes effect post-restart. The official
+// re-registration path is `claude plugin update anti-hall@anti-hall` (see
+// `claude plugin update --help`; command-source installs may require an
+// explicit --accept-command <sha256> confirmation).
+// ---------------------------------------------------------------------------
+
+/**
+ * harnessRegisterPostUpdate({ installedVersion, latest, execFn }) →
+ *   { attempted, ok, detail }
+ *
+ * Runs the harness's own `claude plugin update anti-hall@anti-hall` ONLY
+ * when `installedVersion` (installed_plugins.json's OWN recorded version —
+ * NOT the resolveInstalledVersion() fallback chain, which would mask exactly
+ * this staleness by falling through to the cache dir) is older than
+ * `latest`. Never writes installed_plugins.json directly (unchanged
+ * contract) — the harness CLI is the only writer.
+ *
+ * NEVER interactive: if the harness reports it needs a confirmation/
+ * acceptance (command-source installs' --accept-command <sha256> gate) or
+ * the command fails for ANY reason, this does NOT retry with
+ * --accept-command — it reports the exact command for a human to run.
+ * Fully fail-open (any error is reported in `detail`, never thrown) and
+ * bounded by a short timeout so a hung `claude` CLI cannot hang the update.
+ */
+function harnessRegisterPostUpdate(opts) {
+  const o = opts || {};
+  const installedVersion = o.installedVersion;
+  const latest = o.latest;
+  const cmdArgs = ['plugin', 'update', 'anti-hall@anti-hall'];
+  const cmdStr = 'claude ' + cmdArgs.join(' ');
+  if (!isSemver(installedVersion) || !isSemver(latest) || compareVersions(installedVersion, latest) >= 0) {
+    return { attempted: false, ok: false, detail: 'harness already registered at latest (or version unknown) — nothing to do' };
+  }
+  const run = o.execFn || ((args) => execFileSync('claude', args, {
+    encoding: 'utf8', timeout: 20000, stdio: ['ignore', 'pipe', 'pipe'],
+  }));
+  try {
+    const out = run(cmdArgs);
+    const text = String(out || '');
+    // Command-source installs may require an explicit --accept-command
+    // <sha256> confirmation. Never supply it automatically — surface it.
+    if (/accept-command|sha256/i.test(text)) {
+      return {
+        attempted: true, ok: false,
+        detail: 'harness update requires confirmation — run manually: ' + cmdStr
+          + ' (see: ' + text.trim().slice(0, 300) + ')',
+      };
+    }
+    return {
+      attempted: true, ok: true,
+      detail: 'harness re-registered to ' + latest + ' — restart Claude Code (or /reload-plugins) to load it',
+    };
+  } catch (e) {
+    const stderr = e && (e.stderr || (e.output && e.output[2]));
+    const msg = (stderr ? String(stderr) : (e && e.message) || String(e)).trim();
+    return {
+      attempted: true, ok: false,
+      detail: 'harness update failed — run manually: ' + cmdStr + ' (' + (msg.split('\n')[0] || 'unknown error') + ')',
+    };
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Sweep throttling + resume/stamp state (post-update heavy scans) — Step 5.4.
 // ---------------------------------------------------------------------------
 //
@@ -3111,6 +3182,15 @@ function runUpdate(opts) {
 
   const updated = !!(latest && compareVersions(installed, latest) < 0);
 
+  // Harness re-registration (see harnessRegisterPostUpdate's doc comment):
+  // compares installed_plugins.json's OWN version, not the resolved
+  // `installed` (which may already be falling back to the cache dir/
+  // marketplace and would mask exactly the staleness this fixes).
+  const harnessInstalledVersion = versionFromInstalledJson(paths.installedJson);
+  const harnessRegistered = stageProgress(env, 'harness-register', () => harnessRegisterPostUpdate({
+    installedVersion: harnessInstalledVersion, latest, execFn: opts.harnessExecFn,
+  }));
+
   // CHANGELOG delta (installed exclusive → latest inclusive).
   let changelog = '';
   try {
@@ -3147,6 +3227,7 @@ function runUpdate(opts) {
       healRegistryRows,
       wakeMonitor,
       codexGraphifyHooksMigrate,
+      harnessRegistered,
       action: updated ? 'run /reload-plugins' : 'already up to date',
     },
     changelog,
@@ -3339,6 +3420,9 @@ function renderHuman(status, changelog) {
   if (status.wakeMonitor && status.wakeMonitor.attempted) {
     lines.push('  wake-monitor: ' + status.wakeMonitor.detail);
   }
+  if (status.harnessRegistered && status.harnessRegistered.attempted) {
+    lines.push('  harness-register: ' + status.harnessRegistered.detail);
+  }
   if (changelog) {
     lines.push('');
     lines.push('Changelog delta:');
@@ -3385,6 +3469,7 @@ module.exports = {
   healIngestDaemon,
   inspectInstalledIngest,
   ingestUnitNeedsHeal,
+  harnessRegisterPostUpdate,
   reconcilePostUpdate,
   foldMeshPostUpdate,
   foldAllStoresPostUpdate,

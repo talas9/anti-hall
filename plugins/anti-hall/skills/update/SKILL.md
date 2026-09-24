@@ -81,6 +81,28 @@ its own purposes).
      or an internal error are all reported and NEVER fatal to the update. This is
      independent of — and does not replace — step 7's broader, always-refresh install/
      refresh instruction below (which also covers a FIRST install and the supervisor).
+   - **Harness re-registration (auto, fail-open — `harnessRegisterPostUpdate`,
+     P0 — proven live):** Claude Code itself loads this plugin from
+     `~/.claude/plugins/installed_plugins.json`'s
+     `plugins["anti-hall@anti-hall"][].installPath` — a **HARNESS-OWNED** file
+     this helper only ever reads. Every step above (pull + cache mirror)
+     changes the marketplace clone and the cache dir, but does **nothing** to
+     that pointer, so a session — including after a full app/Claude restart —
+     keeps loading whatever version `installed_plugins.json` still names until
+     the harness re-registers it itself. Whenever `installed_plugins.json`'s
+     own recorded version is older than the newly-pulled version, the helper
+     runs the harness's own `claude plugin update anti-hall@anti-hall`
+     (`execFileSync`, ~20s timeout) to trigger that re-registration. **Never
+     interactive**: if the harness reports it needs an `--accept-command
+     <sha256>` confirmation (command-source installs) or the command fails for
+     any reason, the helper does **not** retry with `--accept-command` — it
+     reports the exact command for a human to run. Reported as
+     `harnessRegistered: {attempted, ok, detail}` on the JSON status line and
+     in the human summary. On success, tell the user to **restart Claude Code
+     (or run `/reload-plugins`)** to load it — restart is the harness's own
+     stated requirement for this path, `/reload-plugins` is the lighter-weight
+     thing to try first. `installed_plugins.json` itself is still never
+     written directly by this helper.
    - **Reconcile (auto, DevSwarm-session-only, fail-open — `reconcilePostUpdate`,
      v0.58.1):** every update run ALSO drains `node scripts/devswarm.js reconcile`
      in-process — no separate agent step needed for this part. `reconcile` (v0.58.0)
@@ -126,11 +148,13 @@ its own purposes).
 6. Extract the `CHANGELOG.md` sections strictly between installed (exclusive) and new
    (inclusive) and print them.
 7. Emit a JSON status line + a human summary:
-   `{installed, latest, updated, cacheSynced, ingestHeal, reconcile, action}` where
-   `action` is `run /reload-plugins` | `already up to date` | an error/STOP detail,
-   `ingestHeal` is `{attempted, healed, detail}` from step 5's auto-heal, and `reconcile`
-   is `{attempted, count, imported, results, detail}` from step 5's reconcile auto-heal
-   (both absent on a STOP/offline report — those paths never reach cache sync).
+   `{installed, latest, updated, cacheSynced, ingestHeal, reconcile, harnessRegistered,
+   action}` where `action` is `run /reload-plugins` | `already up to date` | an
+   error/STOP detail, `ingestHeal` is `{attempted, healed, detail}` from step 5's
+   auto-heal, `reconcile` is `{attempted, count, imported, results, detail}` from step
+   5's reconcile auto-heal, and `harnessRegistered` is `{attempted, ok, detail}` from
+   step 5's harness re-registration (all absent on a STOP/offline report — those paths
+   never reach cache sync).
 
 Modes:
 - `node "${CLAUDE_PLUGIN_ROOT}/skills/update/scripts/update.js" --check` — `git fetch` + compare local vs remote
