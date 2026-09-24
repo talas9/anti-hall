@@ -176,7 +176,9 @@ const devswarmUnread = require('../companion/lib/devswarm-unread.js');
 // Phase 3: ONE read-position model (reader_cursors table) + ONE reader identity.
 const readerCursors = require('../companion/lib/reader-cursors.js');
 const readerIdentity = require('../companion/lib/reader-identity.js');
-const { isArchivedWorkspace } = require('../companion/lib/devswarm-archived.js');
+// Phase 4: THE one row-state derivation (archived / app-archived / active /
+// unknown). Every read-side "is this row archived?" question goes through it.
+const rowStateLib = require('../companion/lib/row-state.js');
 // SHARED archive-resurrection gate (defect df54edf54804 item 4) — the same
 // bulk-reregistration decision companion/devswarm-migrate.js's one-time store
 // migration uses, reused here by healOrphanPartitions so a worktree-group
@@ -497,43 +499,23 @@ function computeRowLive(row, home, opts) {
 // so a stale ORPHANED daemon still beating for an archived row read as
 // genuinely live for REAL routing decisions (pickSurvivor/resolveMeshTarget
 // target selection, and groupRegistryByMeshId's split/kind classification that
-// `diagnose`/`reap-orphans` act on) — not just cosmetic display. Uses the SAME
-// archived predicate rosterHints/cmdDiagnose already share (local
-// isArchivedWorkspace() first — cheap, no I/O beyond one stat — then the
-// app-side archived-set cache via the row's own registered repoKey) so a row
-// can never be "archived" on one surface and "live enough to route to" on
-// another. Fail-open: any throw -> not archived (never wrongly suppress a row
-// this check cannot prove is archived).
+// `diagnose`/`reap-orphans` act on) — not just cosmetic display. Uses THE
+// row-state derivation (companion/lib/row-state.js — anti-hall's archived
+// marker first, then the app-side archived-set cache via the row's own
+// registered repoKey) that rosterHints/cmdDiagnose/the parent gate also use,
+// so a row can never be "archived" on one surface and "live enough to route
+// to" on another. Fail-open: any throw -> not archived (never wrongly
+// suppress a row this check cannot prove is archived).
 function isArchivedForRouting(row, home) {
   if (!row || row.id == null) return false;
-  try {
-    // D fix: pass { sessionId, log } exactly like the two careful callers
-    // (hooks/devswarm-parent-gate.js:1078 and this file's own diagnose
-    // archived-check, ~:10909) so the v0.97.0 reused-id discriminator
-    // (7e1ae67) still fires on this ROUTING path. An empty opts object here
-    // silently disabled that discriminator: isArchivedWorkspace could not
-    // tell whether an archive marker on disk belonged to this row's CURRENT
-    // occupant or a PRIOR one that reused the same id, so a marker written
-    // for a long-gone prior occupant made a live, freshly-registered row
-    // read as archived (and therefore non-routable) here.
-    if (isArchivedWorkspace(home, row.id, row.worktreePath, {
-      sessionId: row.sessionId || null,
-      log(event, details) {
-        try { alog.logEvent('devswarm-cli', event, 'info', Object.assign({ row: row.id }, details || {})); } catch (_) {}
-      },
-    })) return true;
-  } catch (_) { /* fall through to the app-side check */ }
-  try {
-    let desc = null;
-    try { desc = readDescriptorFile(home, row.id); } catch (_) { desc = null; }
-    const registeredRepoKey = descriptorRegisteredRepoKey(desc, row.id);
-    if (registeredRepoKey) {
-      return !!archivedCacheLib.isAppArchived({
-        home, repoKey: registeredRepoKey, id: row.id, worktreePath: row.worktreePath,
-      });
-    }
-  } catch (_) { /* fail-open: not archived */ }
-  return false;
+  let repoKey = null;
+  try { repoKey = descriptorRegisteredRepoKey(readDescriptorFile(home, row.id), row.id); } catch (_) { repoKey = null; }
+  return rowStateLib.isRowArchived({
+    home, id: row.id, worktreePath: row.worktreePath, sessionId: row.sessionId || null, repoKey,
+    log(event, details) {
+      try { alog.logEvent('devswarm-cli', event, 'info', Object.assign({ row: row.id }, details || {})); } catch (_) {}
+    },
+  });
 }
 
 // isRoutingLiveRowStrict(row, home, opts) -> bool. D11-A (f56dcc08f048): the
@@ -13178,30 +13160,18 @@ function rosterHints(home, id, worktreePath, now, sessionId, opts) {
   // away — it is still listed, but it is labelled `archived` and never carries
   // the dormant/idle-alive liveness annotation (see companion/lib/
   // devswarm-archived.js for why archived/<id>.json alone is not the test).
+  // One derivation (row-state.js): anti-hall's own archived marker first, then
+  // the app-side archived-set cache when the row's repoKey is known.
   let archived = false;
   try {
-    archived = isArchivedWorkspace(home, id, worktreePath, {
+    archived = rowStateLib.isRowArchived({
+      home, id, worktreePath, repoKey: (opts && opts.repoKey) || null,
+      env: opts && opts.env, cache: opts && opts.cache, now,
       log(event, details) {
         try { alog.logEvent('devswarm-cli', event, 'info', Object.assign({ row: id }, details || {})); } catch (_) {}
       },
     });
   } catch (_) { archived = false; }
-  // APP-SIDE archive (field): the owner archived the workspace in the DevSwarm
-  // app, which never writes anti-hall's own archived/<id>.json. Read-only, from
-  // the supervisor-written ACTIVE-set cache, and app-archived only when all four
-  // of that lib's absence conjuncts hold (fresh cache, worktree under the
-  // DevSwarm repos root, absent from the active set by BOTH id and worktreePath,
-  // and older than the snapshot by the grace). `worktreePath` is passed because
-  // conjuncts 2 and 3 are both defined on it. Same liveness-axis-only effect as
-  // the local check: the row is still listed in full, it just stops carrying
-  // dormant/idle-alive.
-  if (!archived && opts && opts.repoKey) {
-    try {
-      archived = archivedCacheLib.isAppArchived({
-        home, repoKey: opts.repoKey, id, worktreePath, env: opts.env, cache: opts.cache, now,
-      });
-    } catch (_) { archived = false; }
-  }
   if (archived) { hints.push('archived'); return hints; }
   // `dormant` / `idle (alive)` — rowLivenessState (companion/lib/liveness.js),
   // THE ONE read-side dormancy rule, shared with devswarm-parent-inbox.js's
@@ -13281,13 +13251,7 @@ function rosterMeshId(worktreePath) {
 // FAIL-OPEN: any unreadable/ambiguous state returns false, i.e. the row projects
 // exactly as it does today.
 function isArchivedOnlyWorkspace(home, id) {
-  try {
-    if (id == null || !isSafeId(String(id))) return false;
-    if (fs.existsSync(descriptorPath(home, String(id)))) return false; // still live
-    const ad = checkedArchivedDir(home);
-    if (!ad.ok || !ad.exists) return false;
-    return fs.existsSync(path.join(ad.path, String(id) + '.json'));
-  } catch (_) { return false; }
+  return rowStateLib.isArchiveComplete(home, id, fs);
 }
 
 // cmdWakeDirective(id, ctx) -> reprints the SAME SessionStart MAILBOX WAKE
@@ -13725,24 +13689,16 @@ function computeDiagnosis(s, ctx) {
     // "was this put away", so it must never suppress the archived label.
     let archivedInApp = false;
     try {
-      archivedInApp = isArchivedWorkspace(c.home, d.id, d.worktreePath, {
+      archivedInApp = rowStateLib.isRowArchived({
+        home: c.home, id: d.id, worktreePath: d.worktreePath,
         sessionId: isRealSid(sid, d.id) ? sid : null,
+        repoKey: (() => { try { return descriptorRegisteredRepoKey(desc, d.id) || null; } catch (_) { return null; } })(),
+        env: c.env, cache: appArchivedCache, now: c.now,
         log(event, details) {
           try { alog.logEvent('devswarm-cli', event, 'info', Object.assign({ row: d.id }, details || {})); } catch (_) {}
         },
       });
     } catch (_) { archivedInApp = false; }
-    if (!archivedInApp) {
-      try {
-        const registeredRepoKey = descriptorRegisteredRepoKey(desc, d.id);
-        if (registeredRepoKey) {
-          archivedInApp = archivedCacheLib.isAppArchived({
-            home: c.home, repoKey: registeredRepoKey, id: d.id, worktreePath: d.worktreePath,
-            env: c.env, cache: appArchivedCache, now: c.now,
-          });
-        }
-      } catch (_) { archivedInApp = false; }
-    }
     let live = false;
     if (!archivedInApp) {
       // computeRowLive (defect 298b79969409): the ONE display-liveness

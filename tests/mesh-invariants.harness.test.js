@@ -14,7 +14,7 @@
 // explicit `now`, never Date.now()/Math.random(). Isolation: every fixture gets
 // its own tmp HOME (never the real one); ANTIHALL_INGEST_DRY_RUN=1 always set.
 //
-// ANTIHALL_HARNESS_STRICT=1 flips the I2/I3/I4/I5 todos' assertion code to a
+// ANTIHALL_HARNESS_STRICT=1 flips the remaining (I3) todos' assertion code to a
 // REAL assertion (still inside test.todo's callback is not how node:test works,
 // so strict mode runs them as a SEPARATE, additional real `test()` per
 // invariant — the todo declarations themselves always stay 0-work per spec §6).
@@ -237,11 +237,28 @@ test.todo('I3 delivered+unread==total per reader, no loss — devswarm-pull.js:2
 test.todo('I3 read-primary acks in the same call as the read (re-delivery-vs-loss '
   + 'undercounted) — cmdInbox sub="read-primary"');
 
-test.todo('I4 descriptor fields == registry fields for shared keys, including '
-  + 'submodule-in-linked-worktree identity desync — devswarm-repokey.js');
+// Phase 4 flipped I4 and I5 from todo to REAL tests. I4: every live descriptor
+// has a registry row and the shared fields agree. I5: every archive source and
+// THE row-state reducer (companion/lib/row-state.js) agree — over the seeded
+// sweep AND a targeted archive transition (the sweep rarely archives).
+test('I4 descriptor fields == registry fields for shared keys, across a seeded run', () => {
+  for (const seed of SEEDS) {
+    const failures = runOneSeed(seed, { checkTodos: true });
+    assert.equal(failures.I4.length, 0, 'seed=' + seed + ' ' + JSON.stringify(failures.I4[0]));
+  }
+});
 
-test.todo('I5 all archive sources agree (registry tombstone + on-disk archived/<id>.json '
-  + '+ isArchivedWorkspace + isAppArchived) — no single reducer, plan §Evidence "Row state"');
+test('I5 all archive sources agree with the one row-state reducer, across a seeded run', () => {
+  for (const seed of SEEDS) {
+    const failures = runOneSeed(seed, { checkTodos: true });
+    assert.equal(failures.I5.length, 0, 'seed=' + seed + ' ' + JSON.stringify(failures.I5[0]));
+  }
+});
+
+test('I5 archive transition: archived reader reads archived on every surface, sibling stays active', () => {
+  const r = scenarios.scenarioI5ArchiveAgreement(inv);
+  assert.ok(r.ok, 'I5 archive agreement: ' + JSON.stringify(r.detail));
+});
 
 // ---- targeted, defect-naming scenarios (coordinator follow-up: the seeded
 // sweep alone is vacuous — I2/I3/I4 pass on it and I5 only failed on a checker
@@ -322,20 +339,6 @@ if (STRICT) {
       assert.notDeepStrictEqual(r1.result, r2.result, 'read-primary should distinguish first-read from a re-read, but acks same-call');
     } finally {
       fixture.cleanup();
-    }
-  });
-
-  test('[STRICT] I4 descriptor fields == registry fields for shared keys', () => {
-    for (const seed of SEEDS) {
-      const failures = runOneSeed(seed, { checkTodos: true });
-      assert.equal(failures.I4.length, 0, 'seed=' + seed + ' ' + JSON.stringify(failures.I4[0]));
-    }
-  });
-
-  test('[STRICT] I5 all archive sources agree', () => {
-    for (const seed of SEEDS) {
-      const failures = runOneSeed(seed, { checkTodos: true });
-      assert.equal(failures.I5.length, 0, 'seed=' + seed + ' ' + JSON.stringify(failures.I5[0]));
     }
   });
 

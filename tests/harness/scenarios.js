@@ -280,7 +280,54 @@ function scenarioI2I3CursorConvergence() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Scenario — I5 row state (mesh redesign Phase 4). The seeded sweep rarely
+// archives (archive is terminal and weighted late), so this drives the one
+// transition I5 exists for: register two readers, send, archive ONE through the
+// real `archive` verb. Every archive source and the row-state reducer must
+// agree for BOTH readers at every step — the archived reader reads archived on
+// every surface, its sibling reads active on every surface. A vacuity guard
+// asserts the tracker actually scored the archived reader as tombstoned.
+// ---------------------------------------------------------------------------
+function scenarioI5ArchiveAgreement(inv) {
+  const fixture = ops.makeMeshFixture(['r1', 'r2'], 'i5-archive');
+  const env = { ANTIHALL_INGEST_DRY_RUN: '1' };
+  try {
+    let t = 1_700_000_000_000;
+    const i5 = inv.createI5Tracker();
+    const failures = [];
+    const checkAll = (step) => {
+      for (const id of ['r1', 'r2']) {
+        const r = i5.check(fixture, id, env);
+        if (!r.ok) failures.push({ step, id, detail: r.detail });
+      }
+    };
+    ops.opRegister(fixture, 'r1', t++);
+    ops.opRegister(fixture, 'r2', t++);
+    checkAll('registered');
+    ops.opSend(fixture, 'r2', 'r1', 'before-archive', t++);
+    checkAll('sent');
+    const arch = ops.opArchive(fixture, 'r1', t++);
+    if (!(arch && arch.result && arch.result.ok && arch.result.descriptorArchived)) {
+      return { ok: false, detail: { reason: 'archive op did not complete', result: arch && arch.result } };
+    }
+    checkAll('archived');
+    const after = i5.check(fixture, 'r1', env);
+    if (!(after.detail && after.detail.registryTombstoned && after.detail.status === 'archived')) {
+      return { ok: false, detail: { reason: 'vacuity: the archived reader was not scored archived', after } };
+    }
+    const sibling = i5.check(fixture, 'r2', env);
+    if (!(sibling.detail && sibling.detail.status === 'active')) {
+      return { ok: false, detail: { reason: 'the un-archived sibling must stay active', sibling } };
+    }
+    return failures.length ? { ok: false, detail: failures } : { ok: true };
+  } finally {
+    fixture.cleanup();
+  }
+}
+
 module.exports = {
+  scenarioI5ArchiveAgreement,
   buildSubmoduleLinkedWorktreeFixture,
   scenarioI4SubmoduleInLinkedWorktree,
   scenarioI3PullCrash,

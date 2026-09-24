@@ -1,15 +1,16 @@
 ---
 name: doctor
-description: Health-check AND repair anti-hall — confirm Node is found, every hook is present + syntax-valid, the guards actually fire (live behavioral self-tests on git-guard / command-guard / edit-guard / swarm-guard / model-routing-guard), the statusline is installed, and (in repair mode) auto-apply safe fixes. Use when the user asks "is anti-hall working / active / running", "check the hooks", "anti-hall doctor", "repair anti-hall", "fix the daemon", "are the guards on", or after install/update to verify everything is live.
+description: Health-check AND repair anti-hall — confirm Node is found, every hook is present + syntax-valid, the guards actually fire (live behavioral self-tests on git-guard / command-guard / edit-guard / swarm-guard / model-routing-guard), the statusline is installed, and (with --repair) apply safe fixes. Plain doctor is read-only. Use when the user asks "is anti-hall working / active / running", "check the hooks", "anti-hall doctor", "repair anti-hall", "fix the daemon", "are the guards on", or after install/update to verify everything is live.
 ---
 
 # Doctor
 
 Answers the only question that matters for a guardrail plugin: **is it actually running,
 and do the guards actually fire?** It checks presence AND behavior — not just that files
-exist, but that the guards block what they should and allow what they should. As of
-v0.55.0 it also **repairs**: plain `doctor` diagnoses everything AND auto-applies the safe
-fixes (see [Repair mode](#repair-mode) below).
+exist, but that the guards block what they should and allow what they should. It can also
+**repair**: `doctor --repair` diagnoses everything AND applies the safe fixes (see
+[Repair mode](#repair-mode) below). A plain `doctor` is **read-only** — it reports and
+changes nothing.
 
 ## What it reports
 - **Environment:** Node version (and whether it's ≥ 18 — below that the hooks silently
@@ -111,15 +112,18 @@ username/path) or file contents.
 
 ## Repair mode
 
-Plain `doctor` now runs the full diagnosis AND then a **repair pass** that fixes what it
-safely can. It writes files/units, so the same Haiku-delegation rule applies (below).
+Plain `doctor` is **read-only**: full diagnosis, no repair pass, nothing changed. Repairs
+are **opt-in**: `doctor --repair` (alias `--fix`) runs the diagnosis AND then a **repair pass**
+that fixes what it safely can. The repair pass writes files/units, so the same
+Haiku-delegation rule applies (below). When the user asks to "repair" / "fix" anti-hall,
+pass `--repair`; for "is it working?" run it plain.
 
 Flags:
 
 | Invocation | Behavior |
 |---|---|
-| `node hooks/doctor.js` (no flags) | FULL detection + auto-apply AUTO-SAFE fixes + GATED daemon fixes only when the DevSwarm gate is open. This is the default. |
-| `--fix` / `--repair` | Explicit aliases for the default auto-apply path (discoverability). |
+| `node hooks/doctor.js` (no flags) | FULL detection, **read-only** — no repair pass. This is the default. |
+| `--repair` / `--fix` | FULL detection + apply AUTO-SAFE fixes + GATED daemon fixes only when the DevSwarm gate is open. |
 | `--dry-run` | Detection + print exactly what WOULD be fixed. **Writes nothing** (threads each installer's own `--dry-run`, migrate-state `dryRun:true`). |
 | `--check` | **PURE read-only** — detects + reports everything, mutates NOTHING. The CI / scripting path. |
 | `--quiet` | One-line verdict only (combines with any of the above). |
@@ -144,6 +148,20 @@ Flags:
 - **REPORT-ONLY:** the MCP orphan reaper is never auto-installed (it kills orphans on a
   timer) — doctor only prints how to enable it.
 
+**One migration registry.** The all-store DevSwarm forward-migrations (fold-all-stores,
+heal-orphan-partitions, fold-archived-rows, fold-archived-family-descriptors) are listed
+once in `companion/lib/migrations.js` and shared by `doctor --repair`, `update` and the
+supervisor. Each is stamped done per plugin version in `~/.anti-hall/update-sweep-state.json`
+after one clean pass, so a repeat `--repair` skips it with a single marker read instead of
+re-scanning every store. Deletion-class repairs (`--repair-resurrected`) are never in that
+set — opting into `--repair` is not opting into row removal.
+
+**Leaked scheduler units (always on, report-only).** Every run (including plain `doctor`
+and `--check`) scans each anti-hall launchd/systemd unit file — ingest, supervisor, reaper —
+and flags one whose `WorkingDirectory` is under a temp root or gone, or whose script is
+gone. Nothing is unloaded or moved; the report prints the exact bootout + quarantine
+(rename, never delete) commands for a human to run.
+
 After each fix, doctor **re-runs the relevant detection** to confirm it actually took
 before reporting `FIXED` (a spawned installer's exit code is not trusted — `launchctl load`
 can warn). A `FAILED` repair keeps the exit code non-zero.
@@ -165,9 +183,10 @@ subagent** (`model:"haiku"` — an execution-shaped spawn with no explicit model
 model-routing-guard's strict-mode block) and relay the report:
 
 ```
-node "${CLAUDE_PLUGIN_ROOT}/hooks/doctor.js"           # diagnose + repair (default)
-node "${CLAUDE_PLUGIN_ROOT}/hooks/doctor.js" --dry-run # show what it would fix
-node "${CLAUDE_PLUGIN_ROOT}/hooks/doctor.js" --check   # pure read-only (CI)
+node "${CLAUDE_PLUGIN_ROOT}/hooks/doctor.js"           # diagnose only (default, read-only)
+node "${CLAUDE_PLUGIN_ROOT}/hooks/doctor.js" --repair  # diagnose + apply the safe repairs
+node "${CLAUDE_PLUGIN_ROOT}/hooks/doctor.js" --dry-run # show what --repair would fix
+node "${CLAUDE_PLUGIN_ROOT}/hooks/doctor.js" --check   # read-only (CI)
 ```
 
 Add `--quiet` for just the one-line verdict. Exit code is non-zero if any critical check

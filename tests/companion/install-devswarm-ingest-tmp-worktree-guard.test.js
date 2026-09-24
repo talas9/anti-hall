@@ -25,7 +25,17 @@ const REPO_ROOT = path.join(__dirname, '..', '..');
 const INGEST_MOD_PATH = path.join(REPO_ROOT, 'plugins', 'anti-hall', 'companion', 'install-devswarm-ingest.js');
 const REPAIR_MOD_PATH = path.join(REPO_ROOT, 'plugins', 'anti-hall', 'hooks', 'lib', 'doctor-repair.js');
 
-const ingest = require(INGEST_MOD_PATH);
+// The installer reads ANTIHALL_INGEST_DRY_RUN ONCE at load (EXPLICIT_DRYRUN),
+// and an explicit dry-run short-circuits applyTmpWorktreeGuard before the tmp
+// check — so a runner that exports it (the safe default for isolated-HOME
+// sessions) would make case (a) fail for a reason unrelated to the guard. Load
+// the module with the var scrubbed, then restore it for everything else. Every
+// subprocess below already deletes it from its own env explicitly.
+const savedDryRun = process.env.ANTIHALL_INGEST_DRY_RUN;
+delete process.env.ANTIHALL_INGEST_DRY_RUN;
+let ingest;
+try { ingest = require(INGEST_MOD_PATH); }
+finally { if (savedDryRun !== undefined) process.env.ANTIHALL_INGEST_DRY_RUN = savedDryRun; }
 const repair = require(REPAIR_MOD_PATH);
 
 function mkTmp(tag) { return fs.mkdtempSync(path.join(os.tmpdir(), 'ah-tmpwt-' + tag + '-')); }

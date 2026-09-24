@@ -637,6 +637,14 @@ same-project` are always report-only — a plist exists on disk for both).
 `--repair-ingest-orphans` runs ONLY this section, never doctor's unrelated full
 auto-repair pass. `doctor.js`/`install-devswarm-ingest.js` are shared, unforked files,
 so this applies identically to Codex sessions.
+**(mesh redesign Phase 4)** A plain `doctor` is READ-ONLY (no repair pass — use
+`doctor --repair` / `--fix` to apply repairs), and every run ALSO prints a report-only
+"Leaked scheduler units" section: an anti-hall launchd/systemd unit FILE (ingest,
+supervisor or reaper, loaded or not) whose `WorkingDirectory` is under a temp root or gone,
+or whose script is gone — with the bootout + `mv … .quarantined` commands; nothing is
+unloaded, renamed or deleted. Every "is this row archived?" surface (routing, `roster`,
+`diagnose`, the parent Stop gate, the parent-inbox table) now reads ONE reducer,
+`companion/lib/row-state.js`, so they can no longer disagree.
 
 ## Idle-wake: Monitor (Claude-only) vs. cron-equivalent polling (Codex)
 

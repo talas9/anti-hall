@@ -70,7 +70,7 @@ const {
   DEFAULT_COOLDOWN_MS,
 } = require('../companion/lib/liveness.js');
 const livenessLib = require('../companion/lib/liveness.js');
-const { isArchivedWorkspace } = require('../companion/lib/devswarm-archived.js');
+const { rowState } = require('../companion/lib/row-state.js');
 // SHARED archive-resurrection gate (defect df54edf54804, item 3) — the SAME
 // worktree-discriminated predicate companion/devswarm-migrate.js and
 // scripts/devswarm.js's healOrphanPartitions use, reused here so this view's
@@ -78,7 +78,7 @@ const { isArchivedWorkspace } = require('../companion/lib/devswarm-archived.js')
 const archiveGateLib = require('../companion/lib/devswarm-archive-gate.js');
 // APP-SIDE archive detection — READ-ONLY, from the supervisor-written cache
 // (never a hivecontrol spawn on this every-turn path). See that module's header.
-const { readActiveCache, isAppArchived } = require('../companion/lib/devswarm-archived-cache.js');
+const { readActiveCache } = require('../companion/lib/devswarm-archived-cache.js');
 // worktreeHash: the SAME per-worktree identity install-devswarm-ingest.js baked
 // into the daemon's unit (and devswarm-ingest.js keys its heartbeat file by).
 // ingestHeartbeatPath: the per-worktree daemon LIVENESS file (rewritten every
@@ -1225,8 +1225,12 @@ function main() {
           let storeMod = null;
           try { storeMod = require('../companion/lib/devswarm-store.js'); } catch (_) { storeMod = null; }
           if (storeMod) {
-            const s = storeMod.openStore({ home, workspaceId: primaryId || repoKey, hash: repoKey });
-            try {
+            // readOnly (Phase 4, #12): this refresh only READS the store (the
+            // write is summaries/<repoKey>.json), so a project with no store yet
+            // must not get an empty store dir provisioned by looking at it —
+            // openStore returns null instead, and there is nothing to derive.
+            const s = storeMod.openStore({ home, workspaceId: primaryId || repoKey, hash: repoKey, readOnly: true });
+            if (s) try {
               // NON-DESTRUCTIVE GUARD: deriveSummary computes its projection
               // PURELY from this store's own registry/message rows (devswarm-
               // store.js's computeSummary) — it has no knowledge of, and cannot
@@ -1383,8 +1387,19 @@ function main() {
       // unaffected — same reads, same order relative to each other, just
       // after this (cheap, already-memoized-per-turn for the app-side half)
       // check instead of before it.
+      // THE one row-state derivation (companion/lib/row-state.js): anti-hall's
+      // own archived marker, then the app-side archived-set cache (see the
+      // APP-SIDE note below) — the same answer the roster/diagnose/routing and
+      // the parent Stop gate use.
       let archivedRow = false;
-      try { archivedRow = isArchivedWorkspace(home, id, entry.worktreePath); } catch (_) { archivedRow = false; }
+      let appArchivedRow = false;
+      try {
+        const st = rowState({
+          home, id, worktreePath: entry.worktreePath, repoKey, env: process.env, now, cache: appArchivedCache(),
+        });
+        archivedRow = st.archived;
+        appArchivedRow = st.appArchived;
+      } catch (_) { archivedRow = false; appArchivedRow = false; }
       // ARCHIVED-BUT-SUPERSEDED (defect df54edf54804 hardening): isArchivedWorkspace
       // returning false does not always mean "never archived" — a marker can exist
       // for THIS id but be superseded by a genuinely different (later) sessionId,
@@ -1425,13 +1440,7 @@ function main() {
       // under the DevSwarm repos root, absent by BOTH id and worktreePath, and
       // older than the snapshot by the grace. `worktreePath` is passed because
       // two of those conjuncts are defined on it.
-      if (!archivedRow) {
-        try {
-          archivedRow = isAppArchived({
-            home, repoKey, id, worktreePath: entry.worktreePath, env: process.env, now, cache: appArchivedCache(),
-          });
-        } catch (_) { /* fail-open: leave archivedRow false */ }
-      }
+      if (!archivedRow && appArchivedRow) archivedRow = true;
 
       const row = { id, worktreePath: entry.worktreePath, sessionId: entry.sessionId };
       // The heartbeat read itself stays UNCONDITIONAL (defect bf965e5729c5,
@@ -1817,9 +1826,9 @@ function main() {
       const visible = summary.staleRegistryPartitions.filter((row) => {
         if (!row || row.id == null) return true;
         try {
-          return !isAppArchived({
-            home, repoKey, id: row.id, worktreePath: row.worktreePath, env: process.env, now, cache,
-          });
+          return !rowState({
+            home, id: row.id, worktreePath: row.worktreePath, repoKey, env: process.env, now, cache,
+          }).appArchived;
         } catch (_) { return true; }
       });
       if (visible.length) {

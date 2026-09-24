@@ -2075,10 +2075,9 @@ function collapsePendingQuestionsBySender(list) {
 
 // archivedOnlyIds(home, F) -> Set<string>. The READ-SIDE half of the archive
 // fold: the ids whose workspace is GENUINELY archived right now — archived/<id>.json
-// present AND workspaces/<id>.json absent. Byte-for-byte the same test
-// devswarm.js's isArchivedOnlyWorkspace/foldArchivedRegistryRows classify with,
-// deliberately duplicated here rather than imported: devswarm-store.js is required
-// BY scripts/devswarm.js, so importing it back would close a require cycle.
+// present AND workspaces/<id>.json absent. Delegates to row-state.js's
+// archiveCompleteIds — the SAME rule devswarm.js's isArchivedOnlyWorkspace uses
+// (mesh redesign Phase 4: one row-state derivation, no per-surface copies).
 //
 // WHY A READ FILTER AT ALL: foldArchivedRegistryRows is a WRITE migration that runs
 // only from doctor (hooks/lib/doctor-repair.js) and update (skills/update/scripts/
@@ -2100,23 +2099,8 @@ function collapsePendingQuestionsBySender(list) {
 // projection degrades to exactly the pre-filter behaviour. An unreadable
 // registry/archived dir must never throw into a UserPromptSubmit turn.
 function archivedOnlyIds(home, F) {
-  const out = new Set();
-  try {
-    const root = devswarmRoot(home);
-    const adir = path.join(root, 'archived');
-    let names = [];
-    try { names = F.readdirSync(adir); } catch (_) { return out; } // no archived/ -> nothing archived
-    for (const n of names) {
-      if (typeof n !== 'string' || !/\.json$/.test(n)) continue;
-      const id = n.slice(0, -'.json'.length);
-      if (!isSafeId(id)) continue;
-      let live = false;
-      try { live = F.existsSync(path.join(root, 'workspaces', id + '.json')); }
-      catch (_) { live = true; } // fail-open per id: unreadable -> assume LIVE, never hide it
-      if (!live) out.add(id);
-    }
-  } catch (_) { return new Set(); }
-  return out;
+  try { return require('./row-state.js').archiveCompleteIds(home, F); }
+  catch (_) { return new Set(); }
 }
 
 // unionUnreadFor(d, store, F) — the ONE bridge from a registry descriptor to

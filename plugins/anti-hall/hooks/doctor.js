@@ -5,8 +5,9 @@
 // running, and do the guards actually fire?" Prints a readable report and exits
 // non-zero if anything critical fails (so it is scriptable too).
 //
-//   node hooks/doctor.js          full report
-//   node hooks/doctor.js --quiet  summary line only
+//   node hooks/doctor.js           full report — no repair pass (read-only default)
+//   node hooks/doctor.js --repair  report, then apply the safe repairs (alias --fix)
+//   node hooks/doctor.js --quiet   summary line only
 //
 // Pure Node, cross-platform. Behavioral tests spawn the real guards with crafted
 // payloads and assert their exit codes — this is the test suite AND the live status.
@@ -21,15 +22,19 @@ const cp   = require('child_process');
 const ROOT  = path.resolve(__dirname, '..');     // plugin root
 const HOOKS = __dirname;                           // hooks/
 const QUIET = process.argv.includes('--quiet');
-// Repair mode. Plain `doctor` (and --fix/--repair/--dry-run) run the repair pass
-// after the diagnostics; --check skips repair entirely and is read-only except
-// for the self-tests below, which create/write/remove their OWN throwaway temp
-// dirs under os.tmpdir() (never touching the target repo or ~/.anti-hall) to
-// exercise guards like speculation-guard.js end-to-end. --dry-run prints what
-// WOULD be fixed, writes nothing. --fix/--repair are explicit aliases for the
-// default auto-apply path.
+// Repair mode is OPT-IN (mesh redesign Phase 4). Plain `doctor` and `--check`
+// run NO repair: diagnostics only. The live self-tests below still exercise the
+// real guards end-to-end, so they create their own throwaway temp dirs under
+// os.tmpdir() and the guards they spawn write their usual per-session state
+// files (e.g. ~/.anti-hall/speculation-guard-state-doctor-*.json) — that is
+// the guards' normal behavior, not a repair. `--repair` (alias `--fix`) runs the repair
+// pass after the diagnostics; `--dry-run` runs it as a preview that writes
+// nothing. Before this, a bare `doctor` repaired by default, so every caller
+// that only wanted a health report (activate, CI, a curious operator) mutated
+// state as a side effect.
 const CHECK   = process.argv.includes('--check');
 const DRYRUN  = process.argv.includes('--dry-run');
+const REPAIR  = process.argv.includes('--repair') || process.argv.includes('--fix');
 // --repair-ingest-orphans [--apply] (v0.98, ec33954162ef): EXPLICIT, OPT-IN,
 // human-invoked ONLY — mirrors --reclaim-ingest-lock's posture exactly.
 // Declared here (ahead of DO_REPAIR) because DO_REPAIR itself is gated on it
@@ -53,7 +58,7 @@ const REPAIR_TEST_STORES = process.argv.includes('--repair-test-stores');
 // initiated only" documentation. Scoped to run ONLY its own detect+plan/apply
 // section below, never folded into the default/--fix/--dry-run repair pass.
 const REPAIR_RESURRECTED = process.argv.includes('--repair-resurrected');
-const DO_REPAIR = !CHECK && !REPAIR_INGEST_ORPHANS && !REPAIR_TEST_STORES && !REPAIR_RESURRECTED; // default, --fix, --repair, --dry-run repair; --check/--repair-ingest-orphans/--repair-test-stores/--repair-resurrected do not
+const DO_REPAIR = (REPAIR || DRYRUN) && !CHECK && !REPAIR_INGEST_ORPHANS && !REPAIR_TEST_STORES && !REPAIR_RESURRECTED; // --repair/--fix (apply) or --dry-run (preview) only; bare doctor, --check and the narrow --repair-* flags do not
 // --logs: opt-in section that reads + summarizes recent warn/error entries from the
 // CENTRAL anti-hall-log (companion/lib/anti-hall-log.js, C0) so a Primary orchestrator
 // can see a child project's failures from one place without tailing the raw JSONL
@@ -992,8 +997,8 @@ if (LOGS) {
   })();
 }
 
-// --- 5h. Repair pass (default / --fix / --repair / --dry-run; SKIPPED on --check) ---
-// doctor now DIAGNOSES then REPAIRS. runRepairs applies AUTO-SAFE fixes always
+// --- 5h. Repair pass (--repair / --fix / --dry-run only; a bare doctor and --check skip it) ---
+// With --repair doctor DIAGNOSES then REPAIRS. runRepairs applies AUTO-SAFE fixes always
 // (honoring --dry-run) and GATED daemon fixes only under the DevSwarm gate
 // (isDevswarmActive + a git-worktree cwd); a closed gate REPORTS the exact manual
 // command instead of mutating. Each 'failed' repair is a real failure and drives
@@ -1005,6 +1010,7 @@ if (DO_REPAIR) {
   try {
     repairs = require('./lib/doctor-repair.js').runRepairs({
       cwd: process.cwd(), env: process.env, home: os.homedir(), dryRun: DRYRUN,
+      version: version !== '(unknown)' ? version : undefined,
     });
   } catch (e) {
     bad('repair pass raised (fail-open): ' + (e && e.message));
@@ -1017,6 +1023,9 @@ if (DO_REPAIR) {
     else if (r.status === 'gated') warnl('GATED ' + label);
     else infol('skipped ' + label);
   }
+} else if (!CHECK && !REPAIR_INGEST_ORPHANS && !REPAIR_TEST_STORES && !REPAIR_RESURRECTED) {
+  head('Repair');
+  infol('read-only run — nothing was changed. Run with --repair to apply the safe repairs (--dry-run previews them).');
 }
 
 // --- 5i. --reclaim-ingest-lock (EXPLICIT, OPT-IN ONLY; see the flag's own doc
@@ -1072,6 +1081,22 @@ if (RECLAIM_INGEST_LOCK) {
   if (flagged.length > DETECT_TABLE_CAP) {
     infol(`+${flagged.length - DETECT_TABLE_CAP} more (run doctor --repair-ingest-orphans for the full plan)`);
   }
+})();
+
+// --- 5i-units. Leaked scheduler unit FILES (ALWAYS-ON REPORT-ONLY, check mode
+// included; mesh redesign Phase 4, #12) ---------------------------------------
+// See doctor-repair.js's checkLeakedDaemonUnits: every anti-hall launchd/systemd
+// unit file (ingest, supervisor, reaper) whose WorkingDirectory is under a temp
+// root or gone, or whose script is gone. Pure fs reads; never unloads or
+// renames anything — prints the exact bootout + quarantine commands instead.
+// Silent when nothing is flagged; never touches pass/fail (warnl only).
+(function leakedDaemonUnitsSection() {
+  let result = null;
+  try { result = require('./lib/doctor-repair.js').checkLeakedDaemonUnits({ home: os.homedir() }); } catch (_) { result = null; }
+  if (!result) return;
+  head('Leaked scheduler units (report-only)');
+  warnl(result.message);
+  for (const line of result.lines) infol(line);
 })();
 
 // --- 5i-repair. --repair-ingest-orphans [--apply] (EXPLICIT, OPT-IN ONLY;

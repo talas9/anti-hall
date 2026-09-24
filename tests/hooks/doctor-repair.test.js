@@ -312,7 +312,7 @@ test('doctor --fix: legacy migration runs once, second run is a no-op (skipped)'
 // `after.pending` stayed true forever and the migrationFix re-verify loop
 // reported 'failed' on every default doctor run with an active DevSwarm
 // workspace — even immediately after a fully successful migration.
-test('doctor (default): migrate-devswarm-store FIXES a pending descriptor, then a re-run is a clean no-op (never FAILED)', () => {
+test('doctor --repair: migrate-devswarm-store FIXES a pending descriptor, then a re-run is a clean no-op (never FAILED)', () => {
   const home = mkTmp('devswarm-mig-home');
   const cwd = mkTmp('devswarm-mig-cwd');
   try {
@@ -327,15 +327,15 @@ test('doctor (default): migrate-devswarm-store FIXES a pending descriptor, then 
     }));
     const env = { HOME: home, USERPROFILE: home };
 
-    // Default doctor.js invocation (no --fix flag needed — repair runs by default).
-    const r1 = runDoctor({ cwd, args: [], env });
+    // Repair is opt-in since mesh redesign Phase 4 (a bare doctor is read-only).
+    const r1 = runDoctor({ cwd, args: ['--repair'], env });
     assert.strictEqual(r1.code, 0, 'first run must exit 0 on an otherwise-healthy machine:\n' + r1.out);
     assert.match(r1.out, /FIXED \[migrate-devswarm-store\] migrated: 1 workspace/, 'first run migrates the descriptor:\n' + r1.out);
     assert.doesNotMatch(r1.out, /FAILED \[migrate-devswarm-store\]/);
 
     // The descriptor is NEVER deleted (non-destructive) — a re-run must see
     // `pending` correctly flip to false and report a clean skip, NOT 'failed'.
-    const r2 = runDoctor({ cwd, args: [], env });
+    const r2 = runDoctor({ cwd, args: ['--repair'], env });
     assert.strictEqual(r2.code, 0, 'second run must still exit 0:\n' + r2.out);
     assert.match(r2.out, /skipped \[migrate-devswarm-store\] nothing to migrate/, 'second run is a clean idempotent no-op:\n' + r2.out);
     assert.doesNotMatch(r2.out, /FAILED \[migrate-devswarm-store\]/, 'must never report FAILED once the descriptor is actually migrated');
@@ -346,7 +346,7 @@ test('doctor (default): migrate-devswarm-store FIXES a pending descriptor, then 
 // normalizes an existing gate-loop-state file to carry intents/intentAcks —
 // same NEVER-FAILED-on-re-run posture as migrate-devswarm-store above (a
 // PURE additive per-file rewrite, so a re-run always finds nothing pending).
-test('doctor (default): migrate-gate-intents FIXES a pre-feature gate-state file, then a re-run is a clean no-op', () => {
+test('doctor --repair: migrate-gate-intents FIXES a pre-feature gate-state file, then a re-run is a clean no-op', () => {
   const home = mkTmp('gate-intents-home');
   const cwd = mkTmp('gate-intents-cwd');
   try {
@@ -356,7 +356,7 @@ test('doctor (default): migrate-gate-intents FIXES a pre-feature gate-state file
     fs.writeFileSync(path.join(gateDir, 'sess-1.json'), JSON.stringify({ sig: 'abc', blocks: 1, escalated: false }));
     const env = { HOME: home, USERPROFILE: home };
 
-    const r1 = runDoctor({ cwd, args: [], env });
+    const r1 = runDoctor({ cwd, args: ['--repair'], env });
     assert.strictEqual(r1.code, 0, 'first run must exit 0:\n' + r1.out);
     assert.match(r1.out, /FIXED \[migrate-gate-intents\] migrated: 1 gate-state file/, 'first run migrates the file:\n' + r1.out);
     assert.doesNotMatch(r1.out, /FAILED \[migrate-gate-intents\]/);
@@ -366,7 +366,7 @@ test('doctor (default): migrate-gate-intents FIXES a pre-feature gate-state file
     assert.equal(data.intentAcks, 0);
     assert.equal(data.sig, 'abc', 'pre-existing fields preserved');
 
-    const r2 = runDoctor({ cwd, args: [], env });
+    const r2 = runDoctor({ cwd, args: ['--repair'], env });
     assert.strictEqual(r2.code, 0, 'second run must still exit 0:\n' + r2.out);
     assert.match(r2.out, /skipped \[migrate-gate-intents\] nothing to migrate/, 'second run is a clean idempotent no-op:\n' + r2.out);
     assert.doesNotMatch(r2.out, /FAILED \[migrate-gate-intents\]/);

@@ -1105,6 +1105,14 @@ supervisor", "what DevSwarm addons does anti-hall have", "tune the liveness supe
   (`orphan-path-gone`/`duplicate-label-same-project` are always report-only — a plist
   exists on disk for both). `--repair-ingest-orphans` runs ONLY this section, never
   doctor's unrelated full auto-repair pass.
+  **(mesh redesign Phase 4)** A plain `doctor` is READ-ONLY (no repair pass — use
+  `doctor --repair` / `--fix` to apply repairs), and every run also prints a report-only
+  "Leaked scheduler units" section: an anti-hall launchd/systemd unit FILE (ingest,
+  supervisor or reaper, loaded or not) whose `WorkingDirectory` is under a temp root or
+  gone, or whose script is gone — with the bootout + `mv … .quarantined` commands; nothing
+  is unloaded, renamed or deleted. Every "is this row archived?" surface (routing,
+  `roster`, `diagnose`, the parent Stop gate, the parent-inbox table) now reads ONE
+  reducer, `companion/lib/row-state.js`, so they can no longer disagree.
 - **update** — autonomously installs/refreshes the automatic supervisor AND (as of
   0.54.1) the ingest daemon when running inside an active DevSwarm session (see the
   activation checklist above).

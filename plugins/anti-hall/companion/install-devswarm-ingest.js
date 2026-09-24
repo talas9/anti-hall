@@ -2163,6 +2163,9 @@ module.exports = {
   // v0.66 — hivecontrol discovery + baked unit environment:
   HIVECONTROL_BIN_NAME, HIVECONTROL_ENV_VAR, MINIMAL_UNIT_PATH,
   resolveHivecontrolPath, unitEnvFor, firstBinLine, sdEnvValue, parseCronCommand,
+  // Phase 4 (#12) — doctor's read-only leaked-unit scan parses EVERY anti-hall
+  // unit file (ingest, supervisor, reaper) with the same readers:
+  parsePlistUnit, parseServiceUnit,
   // v0.72 — persisted last-known-good hivecontrol resolution cache + known-location
   // probe (fixes minimal-env installs baking a PATH-less daemon on every run):
   hivecontrolCachePath, readHivecontrolCache, writeHivecontrolCache,

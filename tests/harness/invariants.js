@@ -13,7 +13,8 @@ const REPO_ROOT = path.join(__dirname, '..', '..');
 const storeLib = require(path.join(REPO_ROOT, 'plugins', 'anti-hall', 'companion', 'lib', 'devswarm-store.js'));
 const cursorLib = require(path.join(REPO_ROOT, 'plugins', 'anti-hall', 'companion', 'lib', 'devswarm-inbox-cursor.js'));
 const readerCursors = require(path.join(REPO_ROOT, 'plugins', 'anti-hall', 'companion', 'lib', 'reader-cursors.js'));
-const archivedLib = require(path.join(REPO_ROOT, 'plugins', 'anti-hall', 'companion', 'lib', 'devswarm-archived.js'));
+const rowStateLib = require(path.join(REPO_ROOT, 'plugins', 'anti-hall', 'companion', 'lib', 'row-state.js'));
+const cliLib = require(path.join(REPO_ROOT, 'plugins', 'anti-hall', 'scripts', 'devswarm.js'));
 const archivedCacheLib = require(path.join(REPO_ROOT, 'plugins', 'anti-hall', 'companion', 'lib', 'devswarm-archived-cache.js'));
 const livenessSelect = require(path.join(REPO_ROOT, 'plugins', 'anti-hall', 'companion', 'lib', 'devswarm-liveness-select.js'));
 
@@ -155,18 +156,24 @@ function checkI4RegistryRowForDescriptor(fixture, readerId, env) {
 }
 
 // ---- I5: all archive sources agree -------------------------------------------
-// createI5Tracker() — a STATEFUL tracker, not a one-shot snapshot. The earlier
-// (Phase 1 first-pass) checker treated "absent from store.listRegistry()" as
-// equivalent to "tombstoned by cmdArchive", which is a FALSE POSITIVE for any
-// reader that was simply never registered yet — that state is indistinguishable
-// from "never tombstoned" using JUST a snapshot. The REAL tombstone signal
-// (verified: cmdArchive, devswarm.js ~11177, calls `s.removeRegistry(id)` —
-// the ONLY registry-row-removal call this harness's op vocabulary ever
-// exercises) is a TRANSITION: a row that was PRESENT at an earlier check and is
-// ABSENT now. The tracker remembers, per readerId, whether a registry row has
-// ever been observed; only a seen-then-vanished readerId is scored as
-// "tombstoned" against the other archive sources — a readerId never seen in
-// the registry at all is skipped (ok:true, not a finding either way).
+// createI5Tracker() — a STATEFUL tracker, not a one-shot snapshot. "Absent from
+// store.listRegistry()" alone is NOT "tombstoned" (a never-registered reader is
+// absent too), so the tracker remembers, per readerId, whether a registry row
+// has ever been observed; only a seen-then-vanished readerId is scored as
+// tombstoned (cmdArchive's `s.removeRegistry(id)` is the only row removal this
+// harness's op vocabulary exercises). A readerId never seen is skipped.
+//
+// Phase 4 (one row-state derivation): the anti-hall archive sources must ALL
+// agree with each other AND with THE reducer, companion/lib/row-state.js:
+//   registryTombstoned  seen-then-vanished registry row
+//   onDiskArchived      archived/<id>.json exists
+//   rowStateArchived    rowState(...).status === 'archived'
+//   archiveComplete     rowState.isArchiveComplete (marker + active descriptor gone)
+//   routingArchived     devswarm.js isArchivedForRouting (routing/roster/diagnose)
+// App-side archive is a DIFFERENT status ('app-archived', the DevSwarm app put
+// the workspace away without anti-hall's archive verb), so it is not in the
+// agreement set; instead the reducer's app-archived answer must equal the raw
+// cache predicate whenever anti-hall itself has not archived the row.
 function createI5Tracker() {
   const everSeenInRegistry = new Set();
   return {
@@ -176,29 +183,31 @@ function createI5Tracker() {
       const onDiskArchived = fs.existsSync(descPath);
 
       const store = storeLib.openStore({ home, hash: fixture.repoKey, backend: 'journal', env });
-      let rowPresent;
+      let row;
       let worktreePath = null;
       try {
-        const row = store.listRegistry().find((r) => r && String(r.id) === String(readerId));
-        rowPresent = !!row;
-        if (rowPresent) everSeenInRegistry.add(readerId);
+        row = store.listRegistry().find((r) => r && String(r.id) === String(readerId)) || null;
+        if (row) everSeenInRegistry.add(readerId);
         worktreePath = row ? row.worktreePath : (fixture.readers[readerId] || null);
       } finally {
         store.close();
       }
 
       if (!everSeenInRegistry.has(readerId)) return { ok: true }; // never registered — not a tombstone question yet
-      const registryTombstoned = !rowPresent; // seen before, gone now == the real transition cmdArchive's removeRegistry produces
+      const registryTombstoned = !row;
 
-      const isArchivedWorkspace = archivedLib.isArchivedWorkspace(home, readerId, worktreePath, {});
-      const isAppArchived = archivedCacheLib.isAppArchived({
-        id: readerId, worktreePath, home, fsi: fs, env,
-      });
+      const st = rowStateLib.rowState({ home, id: readerId, worktreePath, registryRow: row, env, repoKey: fixture.repoKey });
+      const rowStateArchived = st.status === 'archived';
+      const archiveComplete = rowStateLib.isArchiveComplete(home, readerId);
+      const routingArchived = cliLib.isArchivedForRouting({ id: readerId, worktreePath, sessionId: row ? row.sessionId : null }, home);
 
-      const sources = { onDiskArchived, registryTombstoned, isArchivedWorkspace, isAppArchived };
+      const sources = { registryTombstoned, onDiskArchived, rowStateArchived, archiveComplete, routingArchived };
       const values = Object.values(sources);
       const allAgree = values.every((v) => v === values[0]);
-      return allAgree ? { ok: true, detail: sources } : { ok: false, detail: sources };
+      const rawAppArchived = !!archivedCacheLib.isAppArchived({ id: readerId, worktreePath, home, fsi: fs, env, repoKey: fixture.repoKey });
+      const appAgrees = rowStateArchived || (st.status === 'app-archived') === rawAppArchived;
+      const detail = Object.assign({ status: st.status, rawAppArchived }, sources);
+      return allAgree && appAgrees ? { ok: true, detail } : { ok: false, detail };
     },
   };
 }

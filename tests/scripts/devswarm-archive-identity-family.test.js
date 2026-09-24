@@ -327,9 +327,15 @@ test('DOCTOR WIRING: fold-archived-family-descriptors detects (dry-run) and reti
     assert.strictEqual(liveDesc(home, UUID), false, 'the orphaned twin is retired');
     assert.strictEqual(tombstoned(home, UUID), true, 'NO-DELETE');
 
+    // Phase 4 migration registry: the clean apply stamped a per-version marker,
+    // so the same version skips without a scan; a new version re-scans and
+    // finds nothing (idempotent) — never FAILED either way.
     const again = find(doctorRepair.runRepairs({ cwd: W, env, home, dryRun: false }));
     assert.strictEqual(again.status, 'skipped', 'a second run is a clean no-op, never FAILED');
-    assert.match(again.msg, /nothing to migrate/);
+    assert.match(again.msg, /already applied for .* \(marker\)/);
+    const rescan = find(doctorRepair.runRepairs({ cwd: W, env, home, dryRun: false, version: '999.0.0-rescan' }));
+    assert.strictEqual(rescan.status, 'skipped', 'a re-scan is a clean no-op, never FAILED');
+    assert.match(rescan.msg, /nothing to migrate/);
   } finally { rm(W); rm(home); }
 });
 

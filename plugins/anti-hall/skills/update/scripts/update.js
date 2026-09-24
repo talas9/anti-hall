@@ -490,8 +490,11 @@ function sweepBudgetMs(env) {
 // sweep) versus which rely SOLELY on the next update/doctor run.
 // ANTIHALL_UPDATE_POSTPULL_BUDGET_MS-overridable; 0 = unlimited (opt-out,
 // mirrors ANTIHALL_RECONCILE_BUDGET_MS's own 0-means-unlimited convention).
+// Shared with the migration registry (companion/lib/migrations.js runBudgetMs),
+// which bounds `doctor --repair`'s migration run with the SAME budget/env.
 const DEFAULT_POSTPULL_BUDGET_MS = 90000;
 function postPullBudgetMs(env) {
+  try { return migrationsLib().runBudgetMs(env); } catch (_) { /* fall through: lib missing */ }
   const raw = (env || process.env || {}).ANTIHALL_UPDATE_POSTPULL_BUDGET_MS;
   const n = Number(raw);
   return Number.isFinite(n) && n >= 0 ? n : DEFAULT_POSTPULL_BUDGET_MS;
@@ -610,31 +613,28 @@ function orderStoreHashesBySize(devstore, home, hashes, fsi) {
   return sized.map((x) => x.h);
 }
 
+// The marker store (~/.anti-hall/update-sweep-state.json) is owned by the ONE
+// migration registry, companion/lib/migrations.js (mesh redesign Phase 4), so
+// update, the supervisor and `doctor --repair` share one definition of "done
+// for this version". These wrappers keep update.js's exported names (the
+// supervisor and tests call them) and stay fail-open if the lib is missing.
+function migrationsLib() { return require(path.join(__dirname, '..', '..', '..', 'companion', 'lib', 'migrations.js')); }
+
 /** sweepStatePath(home) -> ~/.anti-hall/update-sweep-state.json (home-injectable). */
-function sweepStatePath(home) { return path.join(home, '.anti-hall', 'update-sweep-state.json'); }
+function sweepStatePath(home) {
+  try { return migrationsLib().markerPath(home); } catch (_) { return path.join(home, '.anti-hall', 'update-sweep-state.json'); }
+}
 
 /** readSweepState(home) -> plain object, fail-open (missing/corrupt/non-object -> {}). */
 function readSweepState(home) {
-  try {
-    const raw = fs.readFileSync(sweepStatePath(home), 'utf8');
-    const data = JSON.parse(raw);
-    return (data && typeof data === 'object' && !Array.isArray(data)) ? data : {};
-  } catch (_) { return {}; }
+  try { return migrationsLib().readMarkers(home); } catch (_) { return {}; }
 }
 
 /** writeSweepState(home, state) -> bool ok. Fail-open — a write failure is
  * swallowed; the next run simply re-sweeps instead of trusting a stale/absent
  * stamp. Atomic (tmp + rename) so a crash mid-write never corrupts the file. */
 function writeSweepState(home, state) {
-  try {
-    const dir = path.join(home, '.anti-hall');
-    fs.mkdirSync(dir, { recursive: true });
-    const file = sweepStatePath(home);
-    const tmp = file + '.' + process.pid + '.' + Date.now() + '.tmp';
-    fs.writeFileSync(tmp, JSON.stringify(state));
-    fs.renameSync(tmp, file);
-    return true;
-  } catch (_) { return false; }
+  try { return migrationsLib().writeMarkers(home, state); } catch (_) { return false; }
 }
 
 /**
@@ -692,15 +692,27 @@ function recordSweepResult(home, state, key, version, sweep, opts) {
       lastCompletedHash: sweep.processedItems.length ? sweep.processedItems[sweep.processedItems.length - 1] : null,
       completedVersion: (state[key] && state[key].completedVersion) || null,
     };
-  } else if (clean) {
-    next[key] = { completedVersion: version, completedTs: Date.now(), pendingVersion: null, pendingHashes: [], lastCompletedHash: null };
   } else {
+    // Drained: clear the resume list. Whether the version is DONE is decided
+    // only by the migration registry's one completeness predicate
+    // (migrations.recordRun / isRunComplete) — never stamped here directly.
     next[key] = {
       completedVersion: (state[key] && state[key].completedVersion) || null,
       pendingVersion: null, pendingHashes: [], lastCompletedHash: null,
     };
   }
   writeSweepState(home, next);
+  if (!sweep.budgetExhausted) {
+    const result = {
+      errors: clean ? 0 : 1,
+      pendingRows: (opts && opts.pendingRows) || 0,
+      forwardFailed: (opts && opts.forwardFailed) || 0,
+      left: (opts && opts.left) || [],
+    };
+    try {
+      if (migrationsLib().recordRun(home, key, version, result)) return readSweepState(home);
+    } catch (_) { /* fail-open: no stamp, the next run re-sweeps */ }
+  }
   return next;
 }
 
@@ -1201,7 +1213,36 @@ function foldArchivedRowsPostUpdate(opts) {
     const deadline = Number.isFinite(o.deadline)
       ? o.deadline
       : (Number.isFinite(o.postPullDeadline) ? Math.min(ownDefaultDeadline, o.postPullDeadline) : ownDefaultDeadline);
-    const r = devswarm.foldArchivedRegistryRows(home, { cwd, env, deadline }) || {};
+    // ONE-TIME-PER-VERSION markers (mesh redesign Phase 4): the SAME keys the
+    // migration registry (companion/lib/migrations.js) and `doctor --repair`
+    // use, so a pass completed by any of them is not re-run by the others at
+    // this version. No version (a supervisor deferred-sweep call) -> no skip,
+    // no stamp — the resume markers drive that path, exactly as before.
+    const version = o.version || null;
+    const markers = readSweepState(home);
+    const rowsDone = !!(version && markers.foldArchivedRows && markers.foldArchivedRows.completedVersion === version);
+    const famDone = !!(version && markers.foldArchivedFamilyDescriptors && markers.foldArchivedFamilyDescriptors.completedVersion === version);
+    if (rowsDone && famDone) {
+      return {
+        attempted: true, retired: 0, forwarded: 0, left: 0, errors: 0, skippedAlreadyDone: true,
+        detail: 'fold-archived-rows: already completed for ' + version + ' — skipped (one-time per-version migration)',
+      };
+    }
+    const r = rowsDone ? {} : (devswarm.foldArchivedRegistryRows(home, { cwd, env, deadline }) || {});
+    // Why a pass was NOT stamped (retryable left[] reasons + counts, budget,
+    // errors) — always reported in this stage's detail, never invisible.
+    const notStamped = [];
+    const whyNot = (label, res) => {
+      let why = [];
+      try { why = migrationsLib().incompleteReasons(res); } catch (_) { why = []; }
+      if (why.length) notStamped.push(label + ': ' + why.join('; '));
+    };
+    if (!rowsDone) {
+      // The registry's one predicate decides "done" (errors, budget, retryable
+      // left[] such as lock-busy); this stage only hands over its result.
+      try { migrationsLib().recordRun(home, 'foldArchivedRows', version, r); } catch (_) { /* fail-open: next run re-scans */ }
+      whyNot('rows', r);
+    }
     // Descriptor half of the SAME defect (see devswarm.js
     // foldArchivedFamilyDescriptors): an archived workspace's cross-linked twin
     // DESCRIPTOR stayed live in `workspaces/` and kept the parent gate nagging
@@ -1223,13 +1264,17 @@ function foldArchivedRowsPostUpdate(opts) {
     let famLeft = 0;
     let famErrors = 0;
     let famOk = true;
-    if (typeof devswarm.foldArchivedFamilyDescriptors === 'function') {
+    if (!famDone && typeof devswarm.foldArchivedFamilyDescriptors === 'function') {
       try {
         const fr = devswarm.foldArchivedFamilyDescriptors(home, { cwd, env, deadline }) || {};
         famRetired = Array.isArray(fr.retired) ? fr.retired.length : 0;
         famLeft = Array.isArray(fr.left) ? fr.left.length : 0;
         famErrors = fr.errors || 0;
         famOk = fr.ok !== false;
+        // budgetExhausted leaves a resume list (fold-archived-family-resume.json)
+        // — isRunComplete refuses to stamp it, so the next run resumes it.
+        try { migrationsLib().recordRun(home, 'foldArchivedFamilyDescriptors', version, fr); } catch (_) { /* fail-open */ }
+        whyNot('twin descriptors', fr);
       } catch (_) {
         // fail-open for the update's own success, but NEVER silent: a raise is an
         // error the caller must see.
@@ -1253,6 +1298,7 @@ function foldArchivedRowsPostUpdate(opts) {
       familyDescriptorsOk: famOk,
       budgetExhausted,
       skipped,
+      notStamped,
       detail: 'fold-archived-rows: retired ' + retired + ' registry row(s) of archived workspace(s)'
         + (famRetired ? ' + ' + famRetired + ' orphaned twin descriptor(s)' : '')
         + (r.forwarded ? ' (forwarded ' + r.forwarded + ' message(s))' : '')
@@ -1261,7 +1307,8 @@ function foldArchivedRowsPostUpdate(opts) {
         + (r.errors ? ' (' + r.errors + ' error(s), fail-open)' : '')
         + (famErrors ? ' (' + famErrors + ' twin-descriptor error(s), fail-open)' : '')
         + (famOk ? '' : ' (twin-descriptor pass did NOT complete cleanly)')
-        + (budgetExhausted ? ' (budget hit — ' + skipped + ' pending next run)' : ''),
+        + (budgetExhausted ? ' (budget hit — ' + skipped + ' pending next run)' : '')
+        + (notStamped.length ? ' — not stamped, retries next run: ' + notStamped.join(' | ') : ''),
     };
   } catch (e) {
     return { attempted: false, detail: 'fold-archived-rows raised: ' + (e && e.message ? e.message : String(e)) };
@@ -1330,11 +1377,9 @@ function reRetireResurrectedPostUpdate(opts) {
     // applies here so the report prints once per version, not every update.
     const r = devswarm.reRetireResurrectedRowsAllStores(home, { cwd, env, dryRun: true }) || {};
     const errCount = r.errors || 0;
-    if (version && !errCount) {
-      writeSweepState(home, Object.assign({}, sweepState, {
-        reRetireResurrected: { completedVersion: version, completedTs: Date.now() },
-      }));
-    }
+    // One-time-per-version REPORT stamp, decided by the registry's one
+    // predicate (a detection with errors is not complete -> reports again).
+    try { migrationsLib().recordRun(home, 'reRetireResurrected', version, { errors: errCount }); } catch (_) { /* fail-open */ }
     const n = r.candidates || 0;
     return {
       attempted: true,
@@ -1406,11 +1451,7 @@ function ownerKeyMigratePostUpdate(opts) {
     // skipped real work, and stamping it would skip those descriptors' one-time
     // migration forever at this version — leave it unstamped so the next run
     // (or doctor) retries; that is exactly the pre-stamp behavior.
-    if (version && !(r.errors > 0)) {
-      writeSweepState(home, Object.assign({}, sweepState, {
-        ownerKeyMigrate: { completedVersion: version, completedTs: Date.now() },
-      }));
-    }
+    try { migrationsLib().recordRun(home, 'ownerKeyMigrate', version, { errors: r.errors || 0 }); } catch (_) { /* fail-open */ }
     return {
       attempted: true,
       scanned: r.scanned || 0,
@@ -1477,11 +1518,7 @@ function cursorHygienePostUpdate(opts) {
     }
     const r = devswarm.gcInstanceCursors(null, home, { env, cwd }) || {};
     const errCount = Array.isArray(r.errors) ? r.errors.length : (r.errors || 0);
-    if (version && !errCount) {
-      writeSweepState(home, Object.assign({}, sweepState, {
-        cursorHygiene: { completedVersion: version, completedTs: Date.now() },
-      }));
-    }
+    try { migrationsLib().recordRun(home, 'cursorHygiene', version, { errors: errCount }); } catch (_) { /* fail-open */ }
     return {
       attempted: true,
       scanned: r.scanned || 0, deleted: r.deleted || 0, evicted: r.evicted || 0,
@@ -1540,11 +1577,8 @@ function readerCursorsImportPostUpdate(opts) {
     }
     const r = devswarm.importReaderCursorsAllStores(home, { env, cwd }) || {};
     const errCount = r.errors || 0;
-    if (version && !errCount && !r.dryRun) {
-      writeSweepState(home, Object.assign({}, readSweepState(home), {
-        readerCursorsImport: { completedVersion: version, completedTs: Date.now() },
-      }));
-    }
+    // A dry-run import imported nothing: the import itself is still pending.
+    try { migrationsLib().recordRun(home, 'readerCursorsImport', version, { errors: errCount, pendingRows: r.dryRun ? 1 : 0 }); } catch (_) { /* fail-open */ }
     return {
       attempted: true, stores: r.stores || 0, partitions: r.partitions || 0,
       imported: r.imported || 0, errors: errCount,
@@ -1926,7 +1960,7 @@ function foldAllStoresPostUpdate(opts) {
       };
     }
 
-    let retired = 0, forwarded = 0, folded = 0, errors = 0, pendingRows = 0;
+    let retired = 0, forwarded = 0, folded = 0, errors = 0, pendingRows = 0, partialGroups = 0, forwardFailedN = 0;
     // Per-repoKey deadline for devswarm.foldMeshDuplicates' own mesh-id group
     // loop (D11-C, defect e7307778b614: that loop previously had NO budget of
     // its own and could run to full completion regardless of THIS sweep's
@@ -1948,6 +1982,11 @@ function foldAllStoresPostUpdate(opts) {
         try { r = devswarm.foldMeshDuplicates(home, { cwd, env, repoKey, deadline }); }
         catch (e) { r = { ok: false, error: String(e && e.message || e) }; }
         if (!r || r.ok === false) { errors++; return r; }
+        // A store whose own group loop hit the deadline, or whose unread could
+        // not be forwarded, is NOT finished — both feed the registry's one
+        // completeness predicate below so the version is not stamped early.
+        if (r.budgetExhausted) partialGroups += Number.isFinite(r.skipped) && r.skipped > 0 ? r.skipped : 1;
+        if (Array.isArray(r.forwardFailed)) forwardFailedN += r.forwardFailed.length;
         retired += Array.isArray(r.retired) ? r.retired.length : 0;
         forwarded += r.forwarded || 0;
         folded += r.folded || 0;
@@ -1959,8 +1998,9 @@ function foldAllStoresPostUpdate(opts) {
     // stamp completion (the errored store's one-time migration would be skipped
     // forever at this version); next run re-enumerates in full instead.
     // pendingRows: candidates a fold could NOT act on (lock busy / survivor
-    // gone). Not clean -> the per-version stamp is NOT written; the next run retries.
-    recordSweepResult(home, sweepState, 'foldAllStores', version, sweep, { clean: errors === 0 && pendingRows === 0 });
+    // gone) plus mesh groups a store deadline deferred — either one keeps the
+    // registry's completeness predicate from stamping; the next run retries.
+    recordSweepResult(home, sweepState, 'foldAllStores', version, sweep, { clean: errors === 0, pendingRows: pendingRows + partialGroups, forwardFailed: forwardFailedN });
 
     return {
       attempted: true,
@@ -1973,6 +2013,8 @@ function foldAllStoresPostUpdate(opts) {
         + (forwarded ? ' (forwarded ' + forwarded + ' message(s))' : '')
         + (pendingRows ? ' (' + pendingRows + ' row(s) pending — lock busy or survivor gone, retried next run)' : '')
         + (errors ? ' (' + errors + ' store error(s), fail-open)' : '')
+        + (partialGroups ? ' (' + partialGroups + ' mesh group(s) deferred by a store deadline — not stamped, retries next run)' : '')
+        + (forwardFailedN ? ' (' + forwardFailedN + ' forward failure(s) — not stamped, retries next run)' : '')
         + (sweep.budgetExhausted ? ' (budget hit — ' + sweep.remaining.length + ' store(s) pending next run)' : ''),
     };
   } catch (e) {
@@ -2096,7 +2138,7 @@ function healOrphanPartitionsPostUpdate(opts) {
     // stamp completion (the errored store's one-time migration would be skipped
     // forever at this version); next run re-enumerates in full instead.
     // pendingRows: rows NOT moved (lock busy / survivor gone) — not clean, retried next run.
-    recordSweepResult(home, sweepState, 'healOrphanPartitions', version, sweep, { clean: errors === 0 && pendingRows === 0 });
+    recordSweepResult(home, sweepState, 'healOrphanPartitions', version, sweep, { clean: errors === 0, pendingRows });
 
     return {
       attempted: true,
@@ -2646,7 +2688,7 @@ function runUpdate(opts) {
   // same rows from the other direction. Both are idempotent, so the ordering is a
   // work-reduction, not a correctness requirement. Same gate + fail-open posture.
   const foldArchivedRows = runPostPullStage('fold-archived-rows', () => foldArchivedRowsPostUpdate({
-    paths, env: opts.env, cwd: opts.cwd, home: opts.home, devswarm: opts.devswarm, postPullDeadline,
+    paths, env: opts.env, cwd: opts.cwd, home: opts.home, devswarm: opts.devswarm, postPullDeadline, version: latest,
   }));
   // Item 6, defect df54edf54804 field aftermath: re-retire registry rows an
   // ALREADY-RUN (pre-fix) migration resurrected — restoring pre-migration

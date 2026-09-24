@@ -62,8 +62,9 @@ test('item 1: every pre-existing caller shape is byte-identical (idleAlive defau
 test('items 1+3: the injection surface is actually WIRED to both new signals', () => {
   assert.ok(src.includes('rowLivenessState('),
     'the per-turn table must consult the session-aware state, not the bare timestamp rule');
-  assert.ok(src.includes("require('../companion/lib/devswarm-archived.js')"),
-    'the per-turn table must consult the archived predicate');
+  // Phase 4: the archived predicate is reached through THE one row-state reducer.
+  assert.ok(src.includes("require('../companion/lib/row-state.js')"),
+    'the per-turn table must consult the archived predicate (via the row-state reducer)');
   assert.ok(/label: 'archived'/.test(src), 'an archived row must get its own label, not escalated');
   assert.ok(src.includes("idleAlive = state === 'idle-alive'"),
     'idle-alive must be carried into the row classification');

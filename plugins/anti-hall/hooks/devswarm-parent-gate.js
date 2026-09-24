@@ -135,11 +135,11 @@ const { readDescriptors } = require('../companion/devswarm-supervisor.js');
 const { readUnreadMessages } = require('../companion/lib/devswarm-inbox-cursor.js');
 const devswarmUnread = require('../companion/lib/devswarm-unread.js');
 const { livenessPathFor, devswarmRoot, hasFreshHeartbeat, isSessionAliveRow } = require('../companion/lib/liveness.js');
-const { isArchivedWorkspace } = require('../companion/lib/devswarm-archived.js');
+const { rowState } = require('../companion/lib/row-state.js');
 // APP-SIDE archive detection (field: the owner archived children in the DevSwarm
 // app, which never writes anti-hall's own archived/<id>.json). READ-ONLY, from a
 // cache the supervisor writes — never a hivecontrol spawn on this hot path.
-const { readActiveCache, isAppArchived } = require('../companion/lib/devswarm-archived-cache.js');
+const { readActiveCache } = require('../companion/lib/devswarm-archived-cache.js');
 // POKE_PREFIX text check (companion/lib/devswarm-noise.js isNoiseText) —
 // applied HERE to descriptor durable-inbox NDJSON rows' `.message` (a shape
 // with no mtype/sender/recipient at all — see that module's header for why
@@ -1189,28 +1189,30 @@ function main() {
     // which by construction only yields ids whose active descriptor still
     // exists). See that module's header for why archived/<id>.json alone
     // (without the worktreePath match) is not proof either.
+    // Both archive kinds come from THE one row-state derivation
+    // (companion/lib/row-state.js), so this gate can never disagree with the
+    // roster/diagnose/routing about which rows are archived.
+    //   archived     — anti-hall's own archived/<id>.json, worktree + session
+    //                  discriminated (it does NOT require the active descriptor
+    //                  gone: this caller classifies rows FROM readDescriptors).
+    //   appArchived  — FIELD: the owner archived the child in the DevSwarm APP,
+    //                  which never writes archived/<id>.json. Read from the
+    //                  supervisor's cache ONLY (never a hivecontrol spawn on this
+    //                  every-turn Stop path) and believed only while FRESH.
+    // Liveness axis ONLY, same scoping as every suppressor above:
+    // realUnread/unreadUnknown are untouched, so an archived row with REAL
+    // unread still gates.
     let archived = false;
-    try { archived = isArchivedWorkspace(home, d.id, d.worktreePath, { sessionId: d.sessionId || null }); } catch (_) { archived = false; }
-    if (archived) staleOrEscalated = false;
-    // FIELD (owner archived children in the DevSwarm APP): the app never calls
-    // anti-hall's `archive` verb, so `archived/<id>.json` is never written and
-    // the check above stays false forever — those rows kept escalating. The
-    // supervisor's reconcile sweep caches the app's own view; this reads that
-    // cache ONLY (never a hivecontrol spawn on this every-turn Stop path) and
-    // believes it ONLY while it is FRESH (a stale cache suppresses nothing —
-    // see devswarm-archived-cache.js). Liveness axis ONLY, same scoping as every
-    // suppressor above: realUnread/unreadUnknown are untouched, so an
-    // app-archived row with REAL unread still gates.
     let appArchived = false;
-    // `worktreePath` is REQUIRED by the absence rule: two of its four conjuncts
-    // (under the DevSwarm repos root; absent from the active set by path as well
-    // as by id) are defined on it. Omitting it makes every row un-archivable.
     try {
-      appArchived = isAppArchived({
-        home, repoKey: dKey, id: d.id, worktreePath: d.worktreePath, env: process.env, now: appArchiveNow, cache: appArchivedCache(),
+      const st = rowState({
+        home, id: d.id, worktreePath: d.worktreePath, sessionId: d.sessionId || null,
+        repoKey: dKey, env: process.env, now: appArchiveNow, cache: appArchivedCache(),
       });
-    }
-    catch (_) { appArchived = false; }
+      archived = st.archived;
+      appArchived = st.appArchived;
+    } catch (_) { archived = false; appArchived = false; }
+    if (archived) staleOrEscalated = false;
     if (appArchived) staleOrEscalated = false;
 
     // Pushed UNCONDITIONALLY (not gated on unreadUnknown/realUnread/

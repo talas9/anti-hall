@@ -847,10 +847,16 @@ test('doctor repair: fold-archived-rows detects (dry-run) and retires (apply)', 
     assert.strictEqual(a.status, 'fixed', JSON.stringify(a));
     assert.deepStrictEqual(regIds(home, repoKey), [], 'both rows retired');
 
-    // Re-verify: a second doctor run is a clean idempotent no-op, never FAILED.
+    // Re-verify: a second doctor run is a clean no-op, never FAILED. Since the
+    // Phase 4 migration registry the clean apply stamped a per-version marker,
+    // so the same version skips without a scan; a new version re-scans and
+    // finds nothing (idempotent).
     const again = find(doctorRepair.runRepairs({ cwd: W, env, home, dryRun: false }));
     assert.strictEqual(again.status, 'skipped');
-    assert.match(again.msg, /nothing to migrate/);
+    assert.match(again.msg, /already applied for .* \(marker\)/);
+    const rescan = find(doctorRepair.runRepairs({ cwd: W, env, home, dryRun: false, version: '999.0.0-rescan' }));
+    assert.strictEqual(rescan.status, 'skipped');
+    assert.match(rescan.msg, /nothing to migrate/);
   } finally { rm(W); rm(home); }
 });
 

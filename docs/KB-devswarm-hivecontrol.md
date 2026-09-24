@@ -4036,3 +4036,69 @@ min-floor is the CORRECT, conservative answer there and was left unchanged.
 files — this fix applies to Codex sessions identically; documented in both
 `plugins/anti-hall/skills/devswarm/SKILL.md` and
 `plugins/anti-hall/codex/skills/anti-hall-devswarm/SKILL.md`.
+
+## §46 — Row state, read-only doctor, one migration registry (mesh redesign Phase 4)
+
+**One row-state derivation.** "Is this workspace row archived?" used to be answered
+separately by the roster, `diagnose`, routing (`isRoutingLiveRow`), the parent Stop gate,
+the per-turn parent-inbox table, the roster's archived-only demotion and the store's
+`archivedOnlyIds` read filter — each combining anti-hall's own `archived/<id>.json`
+marker, the app-side archived-set cache and the active descriptor by hand, with small
+differences in which discriminators they passed. `companion/lib/row-state.js` is now the
+one reducer every such surface calls:
+
+| Precedence | Signal | Status |
+|---|---|---|
+| 1 | `archived/<id>.json` whose worktree matches and whose session is not superseded | `archived` |
+| 2 | absent from the supervisor's fresh app active-set cache (all four absence conjuncts, §37) | `app-archived` |
+| 3 | the caller holds a registry row, or `workspaces/<id>.json` exists | `active` |
+| 4 | none of the above | `unknown` (never guessed into `active`) |
+
+Both booleans (`archived`, `appArchived`) are always returned so surfaces that report
+provenance keep it. The stricter "archive finished" test (marker present AND active
+descriptor gone — `isArchiveComplete` / `archiveCompleteIds`) lives in the same module and
+backs the roster demotion and `computeSummary`'s registry filter. No persisted shape
+changed: the reducer reads the same files as before.
+
+Deliberately NOT folded in this phase: the repair-candidate classifiers (`ghostRegistryRows`,
+`reRetireResurrectedRows`) — they need liveness evidence (heartbeats, cursors, session
+processes) beyond the reducer's cheap-read budget, and a registry `status` column with
+descriptors as stamped exports — that changes `cmdArchive`'s tombstone (row removal) into a
+status write, which every `listRegistry()` consumer would have to be audited for.
+
+**Doctor is read-only by default.** A plain `doctor` (and `--check`) runs no repair pass.
+`--repair` (alias `--fix`) applies the AUTO-SAFE + GATED repairs; `--dry-run` previews them.
+Before this, every caller that only wanted a health report mutated state as a side effect.
+
+**One migration registry.** `companion/lib/migrations.js` lists the all-store forward-
+migrations once — `fold-all-stores`, `heal-orphan-partitions`, `fold-archived-rows`,
+`fold-archived-family-descriptors` — and owns their completion marker
+(`~/.anti-hall/update-sweep-state.json`, the file `update` and the supervisor already
+stamped). `doctor --repair` runs the registry: a marked entry is skipped with one marker
+read; an unmarked one gets one live scan and is stamped only on a clean finish (no errors,
+no budget stop). The bootstrap rule is explicit: "already migrated" is never inferred from
+data shape, only from a marker write. `update`'s throttled per-store stages stamp and
+honour the same keys, and the supervisor's deferred sweep calls those stages, so all three
+share one definition of "done for this version". The deletion-class `re-retire-resurrected`
+entry is registered `optIn: true` and never runs from the registry — only via
+`doctor --repair-resurrected [--apply]`.
+
+**Leaked scheduler units (report-only).** Every doctor run scans each anti-hall
+launchd/systemd unit FILE — ingest, supervisor, reaper; loaded or not — and flags
+`tmp-workdir` (WorkingDirectory under a temp root), `missing-workdir` and
+`missing-script`. This complements §44's loaded-label scan (a loaded label with no file):
+a unit file whose paths point at nothing is retried by the scheduler forever. Nothing is
+unloaded, renamed or deleted; the report prints `launchctl bootout …` /
+`systemctl --user disable --now …` plus a `mv … .quarantined` rename for a human to run.
+
+**Read-only store opens.** The parent-inbox summary refresh now opens the store with
+`readOnly: true`, so a project with no store yet is no longer provisioned an empty store
+directory just by being looked at (the other pure-read paths were converted in v0.104.0).
+
+**Harness.** I4 (descriptor == registry) and I5 (every archive source agrees with the
+row-state reducer) are real tests now; I5 adds a targeted archive transition because the
+seeded sweep rarely archives.
+
+**Codex parity:** `hooks/`, `companion/` and `scripts/` are shared, unforked files — the
+same behavior applies to Codex sessions; the Codex doctor skill documents the read-only
+default and `--repair`.

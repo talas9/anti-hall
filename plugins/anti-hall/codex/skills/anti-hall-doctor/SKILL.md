@@ -21,17 +21,26 @@ test -f "$ANTI_HALL_ROOT/.codex-plugin/plugin.json" || { echo "anti-hall plugin 
 ```
 
 Run the existing doctor first. `doctor.js` is the SHARED script (Codex wires the same
-hooks via `install-codex.js`), so its repair mode (v0.55.0) applies identically here:
+hooks via `install-codex.js`), so its read-only default and opt-in repair mode apply
+identically here:
 
 ```bash
-node "$ANTI_HALL_ROOT/hooks/doctor.js"           # diagnose + repair (default, auto-applies safe fixes)
-node "$ANTI_HALL_ROOT/hooks/doctor.js" --dry-run # print what it would fix; writes nothing
-node "$ANTI_HALL_ROOT/hooks/doctor.js" --check   # PURE read-only (mutates nothing) — the CI/scripting path
+node "$ANTI_HALL_ROOT/hooks/doctor.js"           # diagnose only (default, read-only — no repair pass)
+node "$ANTI_HALL_ROOT/hooks/doctor.js" --repair  # diagnose + apply the safe repairs (alias --fix)
+node "$ANTI_HALL_ROOT/hooks/doctor.js" --dry-run # print what --repair would fix; writes nothing
+node "$ANTI_HALL_ROOT/hooks/doctor.js" --check   # read-only — the CI/scripting path
 ```
 
-Repair flags (mirror the Claude `doctor` skill): plain / `--fix` / `--repair` auto-apply;
-`--dry-run` shows would-fix and writes nothing; `--check` is read-only; `--quiet` is the
-one-line verdict. Two classes: **AUTO-SAFE** (state migrations; statusline only when none
+Repair flags (mirror the Claude `doctor` skill): plain doctor is read-only; `--repair` /
+`--fix` apply; `--dry-run` shows would-fix and writes nothing; `--check` is read-only;
+`--quiet` is the one-line verdict. When the user asks to repair/fix anti-hall, pass
+`--repair`. The all-store DevSwarm migrations come from ONE registry
+(`companion/lib/migrations.js`) shared with `update` and the supervisor and are stamped
+done per plugin version (`~/.anti-hall/update-sweep-state.json`), so a repeat `--repair`
+skips them with one marker read; deletion-class repairs (`--repair-resurrected`) are never
+in that set. Every run also scans each anti-hall launchd/systemd unit file and REPORTS
+(never unloads or moves) one whose `WorkingDirectory` is under a temp root or gone, or whose
+script is gone, with the bootout + quarantine commands. Two classes: **AUTO-SAFE** (state migrations; statusline only when none
 is configured; idempotent supervisor relaunch; **Codex hook refresh when a
 `.codex/config.toml` exists but the hooks are unwired** — it never creates a new `.codex`)
 and **GATED** daemon fixes (ingest install / wrong-path rebind / stale-script / supervisor

@@ -2,9 +2,10 @@
 // anti-hall :: doctor-repair — the REPAIR half of doctor.js as a pure, testable
 // module (mirrors companion/lib/doctor-devswarm.js's require-and-call pattern).
 //
-// doctor.js diagnoses; this module FIXES. Plain `node doctor.js` (and --fix /
-// --repair / --dry-run) call runRepairs() after the diagnostic sections; --check
-// skips it entirely (pure read-only, the CI/test path).
+// doctor.js diagnoses; this module FIXES. Only `node doctor.js --repair` (alias
+// --fix) and --dry-run (a preview that writes nothing) call runRepairs() after the
+// diagnostic sections; a plain `doctor` and --check never call it (read-only
+// default since mesh redesign Phase 4).
 //
 // Two safety classes:
 //   AUTO-SAFE — always applied (honoring dryRun): legacy/GSD/DevSwarm-store
@@ -46,6 +47,7 @@ const CODEX_INSTALLER      = path.join(PLUGIN_ROOT, 'codex', 'install-codex.js')
 const MIGRATE_STATE        = path.join(PLUGIN_ROOT, 'scripts', 'migrate-state.js');
 const MCP_REAPER_MOD       = path.join(PLUGIN_ROOT, 'companion', 'mcp-reaper.js');
 const DEVSWARM_SCRIPT      = path.join(PLUGIN_ROOT, 'scripts', 'devswarm.js');
+const MIGRATIONS_LIB       = path.join(PLUGIN_ROOT, 'companion', 'lib', 'migrations.js');
 const DEVSWARM_STORE       = path.join(PLUGIN_ROOT, 'companion', 'lib', 'devswarm-store.js');
 
 // v0.57 mesh Phase 6 (D9/D25/D28) — belt-and-suspenders orphan sweep for LEGACY
@@ -778,6 +780,79 @@ function tmpWorkdirReportMessage(opts) {
     + '`mv ' + svc + ' ' + svc + '.quarantined`';
 }
 
+// ---------------------------------------------------------------------------
+// checkLeakedDaemonUnits({home, platform}) -> { units, lines, message } | null
+// REPORT-ONLY (mesh redesign Phase 4, #12). Scans every anti-hall scheduler
+// unit FILE on disk — ingest, supervisor and reaper; loaded or not — and flags:
+//   tmp-workdir      WorkingDirectory under a system temp root (installed from a
+//                    scratch/test worktree; crash-loops once that path is cleaned)
+//   missing-workdir  WorkingDirectory set but no longer a directory
+//   missing-script   the baked script path no longer exists
+// Complements the loaded-label scan (orphanReapPlan: a LOADED label with no
+// file) — this one catches a file whose contents point at nothing, which
+// launchd/systemd retries forever (field: one leaked unit logged 34,584
+// restarts). Pure fs reads: never spawns, never unloads, never renames. The
+// report carries the exact bootout + quarantine (rename, never rm) commands.
+// null when nothing is flagged or the platform has no unit directory.
+// ---------------------------------------------------------------------------
+function checkLeakedDaemonUnits(opts) {
+  const o = opts || {};
+  const home = o.home || os.homedir();
+  const platform = o.platform || process.platform;
+  const F = o.fs || fs;
+  let installer = {};
+  try { installer = ingestConst(); } catch (_) { installer = {}; }
+  const underTmp = (p) => {
+    try { return typeof installer.homeIsUnderTmpdir === 'function' && !!installer.homeIsUnderTmpdir(p); } catch (_) { return false; }
+  };
+  const isDir = (p) => { try { return F.statSync(p).isDirectory(); } catch (_) { return false; } };
+  const isFile = (p) => { try { return F.statSync(p).isFile(); } catch (_) { return false; } };
+  let dir; let match; let parse;
+  if (platform === 'darwin') {
+    dir = path.join(home, 'Library', 'LaunchAgents');
+    match = (n) => n.startsWith('com.anti-hall.') && n.endsWith('.plist');
+    parse = installer.parsePlistUnit;
+  } else if (platform === 'linux') {
+    dir = path.join(home, '.config', 'systemd', 'user');
+    match = (n) => n.startsWith('anti-hall-') && n.endsWith('.service');
+    parse = installer.parseServiceUnit;
+  } else {
+    return null;
+  }
+  if (typeof parse !== 'function') return null;
+  let names = [];
+  try { names = F.readdirSync(dir); } catch (_) { return null; }
+  const units = [];
+  for (const name of names.filter(match).sort()) {
+    const file = path.join(dir, name);
+    let parsed = null;
+    try { parsed = parse(String(F.readFileSync(file, 'utf8'))); } catch (_) { continue; }
+    const findings = [];
+    const wd = parsed && parsed.workingDir;
+    const sp = parsed && parsed.scriptPath;
+    if (wd && underTmp(wd)) findings.push('tmp-workdir');
+    else if (wd && !isDir(wd)) findings.push('missing-workdir');
+    if (sp && !isFile(sp)) findings.push('missing-script');
+    if (!findings.length) continue;
+    const label = name.replace(/\.(plist|service)$/, '');
+    const retire = platform === 'darwin'
+      ? '`launchctl bootout gui/$(id -u)/' + label + '` then `mv ' + file + ' ' + file + '.quarantined`'
+      : '`systemctl --user disable --now ' + label + '.service` then `mv ' + file + ' ' + file + '.quarantined`';
+    units.push({ label, file, workingDir: wd || null, scriptPath: sp || null, findings, retire });
+  }
+  if (!units.length) return null;
+  const lines = units.map((u) => u.label + ' [' + u.findings.join(', ') + ']'
+    + (u.workingDir ? ' WorkingDirectory=' + u.workingDir : '')
+    + (u.scriptPath ? ' script=' + u.scriptPath : '')
+    + ' — retire by hand: ' + u.retire);
+  return {
+    units,
+    lines,
+    message: units.length + ' anti-hall scheduler unit(s) point at a temp or missing path and will fail/crash-loop. '
+      + 'NOT auto-removed (report-only) — review each, then bootout + quarantine (rename, never delete):',
+  };
+}
+
 function compareSemverLite(a, b) {
   const parse = (v) => {
     if (typeof v !== 'string') return [0];
@@ -1138,144 +1213,29 @@ function runRepairs(opts) {
     };
   }, () => require(DEVSWARM_SCRIPT).foldMeshDuplicates(home, { cwd, env }));
 
-  // Spec item 5c / [E] UPDATE-TIME SELF-HEAL: fold-mesh-duplicates above only
-  // folds the ONE project store `cwd` resolves to right now — an already-split
-  // registry sitting in a DIFFERENT project's store on this same machine is
-  // never reached just because `doctor` happened to run from project A instead
-  // of B (the SkyCrew field report's split was found by direct store
-  // inspection, not by a repair run from that project). Sweeps EVERY store
-  // this machine has ever opened via devswarm.js's foldMeshDuplicatesAllStores
-  // (same store.listStoreHashes(home) enumeration heal-registry-rows below
-  // already uses), folding each directly by its stored hash. `foldMeshDuplicates`
-  // (and therefore this all-stores wrapper, which just calls it per hash) DOES
-  // support a real dry-run (ctx.dryRun), so this uses the same dual-detect
-  // migrationFix() helper as fold-mesh-duplicates above rather than the manual
-  // push()-based pattern heal-registry-rows uses (that one has no dry-run mode
-  // of its own). Pure store read+write (forward-then-tombstone; message rows
-  // NEVER deleted) -> AUTO-SAFE, same posture as fold-mesh-duplicates. Reuses
-  // ONE code path for both detect and apply — idempotent (a re-run tombstones
-  // nothing left in any store), fail-open (a single unreadable store is
-  // skipped, never wiped, never aborts the sweep).
-  migrationFix('fold-all-stores', 'fold-all-stores', () => {
-    const dw = require(DEVSWARM_SCRIPT);
-    if (typeof dw.foldMeshDuplicatesAllStores !== 'function') return { pending: false, detail: 'build has no foldMeshDuplicatesAllStores' };
-    const r = dw.foldMeshDuplicatesAllStores(home, { cwd, env, dryRun: true }) || {};
-    return {
-      pending: (r.retired || 0) > 0,
-      detail: (r.retired || 0) + ' duplicate mesh row(s) to fold across ' + (r.stores || 0) + ' store(s)'
-        + (r.errors ? ' (' + r.errors + ' store error(s), fail-open)' : ''),
-    };
-  }, () => require(DEVSWARM_SCRIPT).foldMeshDuplicatesAllStores(home, { cwd, env }));
-
-  // Orphan-partition self-heal: a partition with real messages but NO registry row
-  // is structurally invisible to every fold path above (they all group
-  // s.listRegistry() — an unregistered id is never a candidate). deriveSummary's
-  // `orphans[]` already DETECTS this shape read-only; this HEALS it — adopting a
-  // descriptor-backed orphan into the registry (purely additive, s.upsertRegistry)
-  // and, when a live family exists, forwarding its unread into that family's
-  // survivor. A descriptor-less orphan is left strictly alone (unhealable,
-  // detect-and-report only — no worktree/family/owner to adopt it under). Pure
-  // store read+write (no daemon/scheduler side effect) -> AUTO-SAFE, same posture
-  // as fold-mesh-duplicates/fold-all-stores above. Reuses devswarm.js's
-  // healOrphanPartitionsAllStores for BOTH the dry-run detect and the apply — one
-  // code path, idempotent (a re-run finds the adopted id already registered, no
-  // longer an orphan), fail-open. Guarded so an older devswarm.js build (missing
-  // this export) degrades to a clean no-op rather than throwing.
-  migrationFix('heal-orphan-partitions', 'heal-orphan-partitions', () => {
-    const dw = require(DEVSWARM_SCRIPT);
-    if (typeof dw.healOrphanPartitionsAllStores !== 'function') return { pending: false, detail: 'build has no healOrphanPartitionsAllStores' };
-    const r = dw.healOrphanPartitionsAllStores(home, { cwd, env, dryRun: true }) || {};
-    const n = (r.adopted || 0) + (r.forwarded || 0);
-    return {
-      pending: n > 0,
-      // archivedDrained/archivedStale are reported for visibility but never count
-      // toward `pending` — an archived-drained id has nothing to heal, and an
-      // archived-stale id is deliberately left un-forwarded (age cap), not a
-      // pending action. Both used to be folded into `unhealable`, which made a
-      // scary-looking "N unhealable" number mostly just "already fine" (measured:
-      // archived-drained was the single largest contributor on this machine).
-      detail: (r.adopted || 0) + ' orphan partition(s) to adopt'
-        + (r.forwarded ? ' + ' + r.forwarded + ' message(s) to forward' : '')
-        + ' across ' + (r.stores || 0) + ' store(s), scope: all-stores'
-        + (r.archivedDrained ? ' (' + r.archivedDrained + ' archived-drained, nothing to heal)' : '')
-        + (r.archivedStale ? ' (' + r.archivedStale + ' archived-stale — past the age cap, detect-only)' : '')
-        + (r.unhealable ? ' (' + r.unhealable + ' unhealable — no descriptor/family)' : '')
-        + (r.errors ? ' (' + r.errors + ' store error(s), fail-open)' : ''),
-    };
-  }, () => require(DEVSWARM_SCRIPT).healOrphanPartitionsAllStores(home, { cwd, env }));
-
-  // Archived-still-active forward-migration: cmdArchive used to tombstone exactly
-  // ONE registry row per archive, while up to four rows (hivecontrol builder UUID,
-  // `primary-<8hex>` spawn phantom, legacy ingested `<label>-<repoId8>`, subdir-
-  // derived) can exist for ONE worktree — and computeSummary projects any live row
-  // as an ACTIVE workspace, so an archived workspace kept reading active under a
-  // surviving duplicate. This retires the whole same-worktree group for every
-  // genuinely archived workspace, forwarding unread directs into the archived id's
-  // partition FIRST (message rows are NEVER deleted) and leaving any row backed by
-  // a DIFFERENT live descriptor untouched. Pure store read+write (no daemon or
-  // scheduler side effect) -> AUTO-SAFE, same posture as fold-mesh-duplicates
-  // above. Reuses devswarm.js's foldArchivedRegistryRows for BOTH the dry-run
-  // detect and the apply — one code path, idempotent, fail-open.
-  migrationFix('fold-archived-rows', 'fold-archived-rows', () => {
-    const dw = require(DEVSWARM_SCRIPT);
-    if (typeof dw.foldArchivedRegistryRows !== 'function') return { pending: false, detail: 'build has no foldArchivedRegistryRows' };
-    const r = dw.foldArchivedRegistryRows(home, { cwd, env, dryRun: true }) || {};
-    const n = r.pending || 0;
-    const leftN = Array.isArray(r.left) ? r.left.length : 0;
-    return {
-      pending: n > 0,
-      detail: n + ' registry row(s) of archived workspace(s) to retire'
-        + (leftN ? ' (' + leftN + ' safety-gated row(s) left in place)' : ''),
-    };
-  }, () => require(DEVSWARM_SCRIPT).foldArchivedRegistryRows(home, { cwd, env }));
-
-  // RE-RETIRE RESURRECTED ROWS is DELIBERATELY NOT wired here (R3 fix, defect
-  // df54edf54804): it used to run in this default AUTO-SAFE pass via
-  // migrationFix, but a bare `doctor` invocation — the exact command the
-  // anti-hall-activate skill runs — would then remove registry rows with NO
-  // operator intent, contrary to its own "human-initiated only" documentation.
-  // It is now EXPLICIT, OPT-IN ONLY: `doctor --repair-resurrected [--apply]`,
-  // same posture as --repair-ingest-orphans/--repair-test-stores below —
-  // see runResurrectedRepair/checkResurrectedRows further down this file, and
-  // doctor.js's own --repair-resurrected section (never folded into DO_REPAIR).
-
-  // Archived-family DESCRIPTOR forward-migration — the descriptor-file half of the
-  // same defect the pass above fixes for registry rows. cmdArchive used to tombstone
-  // exactly ONE descriptor per archive, so a workspace registered under TWO ids (a
-  // builder-UUID row and a slug row whose `sessionId` IS that UUID) kept its twin
-  // LIVE in `workspaces/` after being archived — and a live descriptor is what
-  // devswarm-parent-gate.js nags the Primary about, every turn, unclearably.
-  // Grouping is the id/sessionId cross-link ONLY (never bare worktree equality), so
-  // two legitimately-live tabs on one worktree are never retired. Pure descriptor
-  // file read+write, NO-DELETE (bytes are tombstoned into archived/ first, and a
-  // tombstone already holding different bytes is never clobbered) -> AUTO-SAFE, same
-  // posture as fold-archived-rows above. One code path for detect and apply.
-  migrationFix('fold-archived-family-descriptors', 'fold-archived-family-descriptors', () => {
-    const dw = require(DEVSWARM_SCRIPT);
-    if (typeof dw.foldArchivedFamilyDescriptors !== 'function') return { pending: false, detail: 'build has no foldArchivedFamilyDescriptors' };
-    const r = dw.foldArchivedFamilyDescriptors(home, { cwd, env, dryRun: true }) || {};
-    const n = r.pending || 0;
-    // SAFETY REFUSALS ARE NOT A CLEAN NO-OP (P2). `left` carries every twin this
-    // pass DECLINED to retire (worktree still live/unprovable, tombstone bytes
-    // differ, lock busy, descriptor changed since the scan) and `ok:false` marks a
-    // run that raised. Reporting only `pending` made all of those print as
-    // "nothing to migrate". They are surfaced via `notice`, which migrationFix
-    // renders on BOTH the pending and the not-pending path — a refusal must never
-    // be indistinguishable from having nothing to do. They do NOT set `pending`:
-    // apply cannot clear them, and claiming otherwise would make every run report
-    // "still pending after migrate".
-    const leftN = Array.isArray(r.left) ? r.left.length : 0;
-    const errN = r.errors || 0;
-    const notice = (leftN ? leftN + ' twin descriptor(s) left in place (safety-gated: '
-        + r.left.map((x) => (x && x.reason) || 'unknown').join(', ') + ')' : '')
-      + (errN ? (leftN ? '; ' : '') + errN + ' error(s)' : '')
-      + (r.ok === false ? ((leftN || errN) ? '; ' : '') + 'pass did NOT complete: ' + (r.error || 'unknown') : '');
-    return {
-      pending: n > 0,
-      detail: n + ' orphaned twin descriptor(s) of archived workspace(s) to retire',
-      notice: notice || null,
-    };
-  }, () => require(DEVSWARM_SCRIPT).foldArchivedFamilyDescriptors(home, { cwd, env }));
+  // ALL-STORE forward-migrations — ONE registry (companion/lib/migrations.js,
+  // mesh redesign Phase 4): fold-all-stores (every store's duplicate mesh rows,
+  // not only the cwd project's), heal-orphan-partitions (adopt a descriptor-
+  // backed partition that has messages but no registry row), fold-archived-rows
+  // (retire an archived workspace's surviving same-worktree registry rows) and
+  // fold-archived-family-descriptors (the descriptor-file twin of that defect).
+  // Each is a pure store/descriptor read+write, forward-then-tombstone, message
+  // rows NEVER deleted -> AUTO-SAFE. The registry owns the completion marker
+  // shared with update.js and the supervisor: an entry already applied for this
+  // plugin version is skipped with one marker read instead of a full scan of
+  // every store (the unmarked every-call cost the redesign measured); an
+  // unmarked one gets one live scan and is stamped only on a clean finish.
+  //
+  // RE-RETIRE RESURRECTED ROWS is DELIBERATELY NOT in this set (R3 fix, defect
+  // df54edf54804): it removes registry rows, so it is a registry entry with
+  // `optIn: true` and runs ONLY via `doctor --repair-resurrected [--apply]` —
+  // see runResurrectedRepair/checkResurrectedRows further down this file.
+  try {
+    const regRows = require(MIGRATIONS_LIB).runMigrations({ home, cwd, env, dryRun, version: o.version });
+    for (const r of regRows) push(r.id, r.action, r.status, r.msg);
+  } catch (e) {
+    push('migration-registry', 'migration-registry', 'failed', 'migration registry raised: ' + errMsg(e));
+  }
 
   // P1-8: backfill the new `ownerKey` descriptor field on every descriptor
   // (active AND archived) + heal prior hash-bucket split-brain via re-home. A
@@ -2931,6 +2891,7 @@ module.exports = {
   // tmp-worktree/WorkingDirectory report-only message (exported for direct test
   // coverage of the exact bootout + quarantine command text):
   tmpWorkdirReportMessage,
+  checkLeakedDaemonUnits,
   // Codex "is it wired" precise per-event detection (exported for direct unit
   // testing of the fixture-hooks.json upgrade scenario):
   scanCodex,
