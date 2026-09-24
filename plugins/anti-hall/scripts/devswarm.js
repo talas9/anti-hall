@@ -15189,8 +15189,11 @@ function deriveTitleFromBrief(brief) {
 // fabricate/apply a title to hivecontrol for a workspace with no brief on
 // record (no ungrounded write into a user-facing GUI label).
 //
-// Fires ONLY when the caller did NOT pass -t/--title AND DID pass
-// -p/--prompt (derivation: deriveTitleFromBrief). Gated on the SAME
+// Fires whenever a title is KNOWN: either the caller passed -t/--title
+// explicitly (its literal value is used verbatim — see the fix comment at
+// this function's `derivedTitle` assignment for why this branch exists at
+// all), or the caller passed -p/--prompt with no -t (derivation:
+// deriveTitleFromBrief). Gated on the SAME
 // worktreePath-resolved condition as registration below (a create response
 // we cannot resolve a path from is not confirmed enough to act further on —
 // same conservative posture registration already uses). FAIL-OPEN: an
@@ -15693,7 +15696,23 @@ function cmdSpawn(rest, ctx) {
   // update-title CALL only fires inside the worktreePath-resolved branch
   // below (see doc comment above for why).
   let derivedTitle = null;
-  if (!hasSpawnFlag(rest, '-t', '--title')) {
+  if (hasSpawnFlag(rest, '-t', '--title')) {
+    // Defect (field report v0.106.0): `spawn <branch> -t "<title>"` returned
+    // `titled:false` and the roster showed the raw meshId for every lane —
+    // TRACED to this branch: an explicit `-t`/`--title` is forwarded VERBATIM
+    // to `hivecontrol workspace create` (the THIN pass-through contract this
+    // file's own tests pin), but `create` does NOT itself apply a title —
+    // that is exactly why the SEPARATE `update-title` follow-up below exists
+    // at all (see the "CORRECTED design" comment above, and its own history:
+    // an earlier draft injected `-t` into `create`'s argv and that was
+    // reverted). Treating "the caller already passed -t" as "titling is
+    // someone else's problem" meant NEITHER side ever actually set it:
+    // hivecontrol's create silently dropped it, and this function skipped
+    // its own update-title call too. Extract the value the caller passed and
+    // run the SAME update-title follow-up with it — the native side and the
+    // local name cache (below) both end up titled either way.
+    derivedTitle = extractFlagValue(rest, '-t', '--title');
+  } else {
     derivedTitle = deriveTitleFromBrief(extractFlagValue(rest, '-p', '--prompt'));
   }
 

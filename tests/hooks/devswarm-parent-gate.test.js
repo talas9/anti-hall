@@ -281,6 +281,34 @@ test('BLOCK: unread backlog past cursor -> decision:block naming the workspace +
   } finally { h.cleanup(); }
 });
 
+test('IGNORE LIST: a listed id never blocks the Stop hook, even with real unread', () => {
+  const h = makeHome();
+  try {
+    const { ignoreFilePath } = require('../../plugins/anti-hall/companion/lib/devswarm-ignore.js');
+    const p = ignoreFilePath(h.home);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, JSON.stringify({ ids: ['ws1'] }));
+    seedWorkspace(h.home, 'ws1', { messages: ['a', 'b', 'c'], cursor: 1 }); // 2 unread, would normally block
+    const r = run(h.home);
+    assert.strictEqual(r.status, 0);
+    assert.ok(!r.json || r.json.decision !== 'block', `ignored id must never block; stdout=${r.stdout}`);
+  } finally { h.cleanup(); }
+});
+
+test('IGNORE LIST: a NON-ignored sibling workspace still blocks normally (scoping guard)', () => {
+  const h = makeHome();
+  try {
+    const { ignoreFilePath } = require('../../plugins/anti-hall/companion/lib/devswarm-ignore.js');
+    const p = ignoreFilePath(h.home);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, JSON.stringify({ ids: ['ws-other'] }));
+    seedWorkspace(h.home, 'ws1', { messages: ['a', 'b', 'c'], cursor: 1 }); // 2 unread, not ignored
+    const r = run(h.home);
+    assert.strictEqual(r.json.decision, 'block', 'a workspace not on the ignore list must still block');
+    assert.match(r.json.reason, /ws1/);
+  } finally { h.cleanup(); }
+});
+
 test('BLOCK: stale verdict with no unread -> blocks on the liveness axis', () => {
   const h = makeHome();
   try {

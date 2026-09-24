@@ -630,6 +630,90 @@ test('spawn auto-registers the new worktree in the store when create\'s own JSON
   } finally { rm(home); rm(repo); }
 });
 
+// Defect (field report v0.106.0): `spawn <branch> -t "<title>"` returned
+// `titled:false`, and the roster showed the raw meshId for every lane — the
+// caller's explicit `-t` was forwarded to `hivecontrol workspace create`
+// (which does not itself apply a title) and cmdSpawn treated "the caller
+// already passed -t" as "titling is already handled", so its OWN
+// update-title follow-up (the only thing that ever actually applies a
+// title) never fired either.
+test('spawn: an explicit -t/--title runs the update-title follow-up with that EXACT value and caches the name', () => {
+  const home = tmpHome();
+  const repo = makeGitRepo('spawn-explicit-title');
+  try {
+    const newWt = path.join(os.tmpdir(), 'never-exists-spawned-title-' + Date.now());
+    const calls = [];
+    const io = {
+      run: (spec) => {
+        calls.push(spec);
+        if (spec.args[1] === 'create') return { ok: true, raw: JSON.stringify({ branch: 'feature/z', path: newWt }) };
+        if (spec.args[1] === 'update-title') return { ok: true, raw: '{}' };
+        throw new Error('unexpected hivecontrol call: ' + JSON.stringify(spec.args));
+      },
+    };
+    const r = cli.run(['spawn', 'feature/z', '-t', 'my nice title'], ctx(home, { cwd: repo, io }));
+    assert.equal(r.result.ok, true);
+    assert.equal(r.result.titled, true, 'an explicit -t must result in titled:true when hivecontrol confirms it');
+    assert.equal(calls.length, 2, 'create THEN a separate update-title call');
+    assert.deepEqual(calls[1].args, ['workspace', 'update-title', '-b', 'feature/z', 'my nice title']);
+
+    const names = require('../../plugins/anti-hall/companion/lib/devswarm-names.js');
+    const cached = names.readName(home, r.result.meshId);
+    assert.equal(cached, 'my nice title', 'the explicit title must be cached locally so the roster shows it, not the raw meshId');
+  } finally { rm(home); rm(repo); }
+});
+
+test('spawn: --title= (equals form) is likewise extracted and applied via update-title', () => {
+  const home = tmpHome();
+  const repo = makeGitRepo('spawn-explicit-title-eq');
+  try {
+    const newWt = path.join(os.tmpdir(), 'never-exists-spawned-title-eq-' + Date.now());
+    const calls = [];
+    const io = {
+      run: (spec) => {
+        calls.push(spec);
+        if (spec.args[1] === 'create') return { ok: true, raw: JSON.stringify({ branch: 'feature/zz', path: newWt }) };
+        return { ok: true, raw: '{}' };
+      },
+    };
+    const r = cli.run(['spawn', 'feature/zz', '--title=equals form title'], ctx(home, { cwd: repo, io }));
+    assert.equal(r.result.titled, true);
+    assert.deepEqual(calls[1].args, ['workspace', 'update-title', '-b', 'feature/zz', 'equals form title']);
+  } finally { rm(home); rm(repo); }
+});
+
+test('spawn: -t whose update-title call FAILS still reports titled:false and never caches a name (never a hopeful guess)', () => {
+  const home = tmpHome();
+  const repo = makeGitRepo('spawn-explicit-title-fail');
+  try {
+    const newWt = path.join(os.tmpdir(), 'never-exists-spawned-title-fail-' + Date.now());
+    const io = {
+      run: (spec) => {
+        if (spec.args[1] === 'create') return { ok: true, raw: JSON.stringify({ branch: 'feature/zzz', path: newWt }) };
+        return { ok: false, error: 'update-title refused' };
+      },
+    };
+    const r = cli.run(['spawn', 'feature/zzz', '-t', 'will not stick'], ctx(home, { cwd: repo, io }));
+    assert.equal(r.result.ok, true, 'a failed title follow-up never fails the spawn verb itself');
+    assert.equal(r.result.titled, false);
+    const names = require('../../plugins/anti-hall/companion/lib/devswarm-names.js');
+    assert.equal(names.readName(home, r.result.meshId), null);
+  } finally { rm(home); rm(repo); }
+});
+
+test('spawn: -t is still forwarded VERBATIM to `create` (thin pass-through invariant unchanged by the title fix)', () => {
+  const home = tmpHome();
+  const repo = makeGitRepo('spawn-explicit-title-passthrough');
+  try {
+    const calls = [];
+    const io = { run: (spec) => { calls.push(spec); return { ok: true, raw: '{}' }; } };
+    const r = cli.run(['spawn', 'br', '-t', 'a title', '-p', 'a prompt'], ctx(home, { cwd: repo, io }));
+    assert.equal(r.result.ok, true);
+    assert.deepEqual(calls[0].args, ['workspace', 'create', 'br', '-t', 'a title', '-p', 'a prompt'],
+      'the create call must still receive -t untouched, exactly like every other forwarded flag');
+  } finally { rm(home); rm(repo); }
+});
+
 test('spawn best-effort-skips registration (never fails the verb) when create\'s output carries no resolvable path', () => {
   const home = tmpHome();
   const repo = makeGitRepo('spawn-noregister');

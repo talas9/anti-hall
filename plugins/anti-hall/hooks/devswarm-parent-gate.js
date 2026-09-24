@@ -141,6 +141,10 @@ const { readUnreadMessages } = require('../companion/lib/devswarm-inbox-cursor.j
 const devswarmUnread = require('../companion/lib/devswarm-unread.js');
 const { livenessPathFor, devswarmRoot, hasFreshHeartbeat, isSessionAliveRow } = require('../companion/lib/liveness.js');
 const { rowState } = require('../companion/lib/row-state.js');
+// devswarm-ignore.js: the user-editable ~/.anti-hall/devswarm/ignore.json
+// {"ids":[...]} list — see that module's header. Suppresses this gate's
+// neglect block for a listed id (never hides it anywhere else).
+const { isNagIgnored } = require('../companion/lib/devswarm-ignore.js');
 // APP-SIDE archive detection (field: the owner archived children in the DevSwarm
 // app, which never writes anti-hall's own archived/<id>.json). READ-ONLY, from a
 // cache the supervisor writes — never a hivecontrol spawn on this hot path.
@@ -898,6 +902,16 @@ function main() {
     const registeredKey = (selfKey && !freshKey) ? registeredRepoKeyOf(d) : freshKey;
     const foreignProject = !!(selfKey && !freshKey && registeredKey && registeredKey !== selfKey);
     const dKey = freshKey;
+
+    // IGNORE LIST (defect: URGENT/"not draining" nag with no live reader that
+    // can never clear it) — a user-listed id (companion/lib/devswarm-ignore.js)
+    // is dropped from this gate's neglect computation entirely: it is never a
+    // reason this Primary's turn blocks. It stays fully visible everywhere
+    // else (the roster/workspace table in hooks/devswarm-parent-inbox.js does
+    // NOT consult this list for what it shows, only for whether it nags) —
+    // this list changes only whether a turn gets interrupted, never what is
+    // tracked.
+    if (isNagIgnored(home, d.id)) continue;
 
     // realUnread (P0 fix): count only unread rows classified REAL — excludes
     // system-generated poke/mirror noise (isNoiseText — see the require

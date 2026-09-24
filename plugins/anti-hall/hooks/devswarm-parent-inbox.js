@@ -99,6 +99,10 @@ const freshness = require('./lib/devswarm-freshness.js');
 // scripts/devswarm.js, off this hot path.
 const names = require('../companion/lib/devswarm-names.js');
 const { ownReaderUnread } = require('../companion/lib/devswarm-own-reader.js');
+// devswarm-ignore.js: the user-editable ~/.anti-hall/devswarm/ignore.json
+// {"ids":[...]} list — suppresses the urgent/not-draining nag for a listed
+// id without hiding it from the roster/table. See that module's header.
+const { isNagIgnored } = require('../companion/lib/devswarm-ignore.js');
 
 // B1 self-heal hardening (H4): structured logging via the shared C0 logger
 // when present, falling back to a console.error-only shim so this hook never
@@ -1375,7 +1379,42 @@ function main() {
     // has aged past NOT_DRAINING_AGE_MS, independent of `status`. Surfaced here
     // (not folded into `stuck`) so it stays a distinct signal downstream.
     const notDraining = !!(verdict && verdict.notDraining);
-    if (unread > 0 || stuck || notDraining) {
+    // --- archive-ready recommendation (P1-E) — computed BEFORE the attention
+    // push below so the archive-ready-quiet check just below can use it.
+    const archiveReady = isArchiveReady(id, summary);
+    // ARCHIVE-READY-QUIET (fix: URGENT/"not draining" nag every turn for a
+    // row with no live reader that can never clear it): an archive-ready
+    // workspace whose ENTIRE unread backlog is the Primary's OWN
+    // archive-request send (companion/lib/devswarm-store.js computeSummary's
+    // archive_request_only_unread — zero extra store reads) and whose session
+    // is not actually running is not a coordination failure, it is a child
+    // that already finished and left; nobody is ever going to drain that
+    // mailbox. Such a row is EXCLUDED from the urgent/attention nag below
+    // (never Stop-blocking, never the loud per-turn paragraph) — it keeps
+    // getting surfaced exactly once via the EXISTING, cooldown'd
+    // archive-ready nudge (archiveList, just below) instead of every turn.
+    // Liveness axis ONLY, same scoping discipline as every other suppressor
+    // in this file/the parent gate: a row with real (non-self-sent) unread,
+    // or one whose session IS still running, is untouched.
+    let archiveReadyQuiet = false;
+    if (archiveReady && unread > 0 && entry.archive_request_only_unread === true) {
+      let liveSession = false;
+      try {
+        liveSession = entry.sessionId
+          ? livenessLib.isSessionAliveRow({ sessionId: entry.sessionId }, home)
+          : false;
+      } catch (_) { liveSession = false; }
+      archiveReadyQuiet = !liveSession;
+    }
+    // IGNORE LIST (~/.anti-hall/devswarm/ignore.json {"ids":[...]}, see
+    // companion/lib/devswarm-ignore.js): a user-listed id is suppressed from
+    // this same urgent/attention nag — still tracked/shown in the roster
+    // table below, just never nagged about. Never applied to a message that
+    // came FROM a child/peer by design of the ids the user lists here; this
+    // hook has no way to tell provenance beyond the caller's own judgement,
+    // so this is opt-in, per-id, user-controlled.
+    const nagIgnored = isNagIgnored(home, id);
+    if ((unread > 0 || stuck || notDraining) && !archiveReadyQuiet && !nagIgnored) {
       // wsName/oldestUnreadTs (item 5/6): human title + age for the reworded
       // "CHILD NOT DRAINING" segment below — read-only, zero extra store
       // reads (oldestDirectUnreadTs is already a zero-extra-read projection
@@ -1385,8 +1424,6 @@ function main() {
       attention.push({ id, unread, cursor, total, status, urgencyMax, wsName, oldestUnreadTs, notDraining });
     }
 
-    // --- archive-ready recommendation (P1-E) ---
-    const archiveReady = isArchiveReady(id, summary);
     try {
       if (archiveReady && !isArchiveIgnored(home, id)
           && archiveCooldownElapsed(home, id, now)) {
@@ -1529,10 +1566,24 @@ function main() {
         : archivedSuperseded
           ? (notDrainingFlag ? { label: 'not-draining', rank: 1.5 } : { label: 'archived-superseded (live child)', rank: 5.5 })
           : displayStatus(archiveReady, status, activityTs, now, dormant, notDrainingFlag, idleAlive);
+      // ARCHIVE-READY-QUIET override (see archiveReadyQuiet's own comment
+      // above) — applied AFTER `ds` above rather than by touching the pinned
+      // ternary itself (tests/hooks/devswarm-parent-inbox-archived-notdraining
+      // .test.js pins that exact literal text, including its mutation guard).
+      // A row whose `notDraining` verdict can NEVER clear on its own (nobody
+      // is left to drain it) must not sit labeled `not-draining` forever —
+      // recompute with notDraining forced off, which (since archiveReadyQuiet
+      // implies archiveReady, and never applies to the archived/superseded
+      // branches — a DIFFERENT axis) lands on the plain `archive-ready`
+      // label, still shown every turn in the roster ("IT DEMOTES, IT DOES
+      // NOT HIDE") — just not the loudest one.
+      const dsFinal = (archiveReadyQuiet && !archivedRow && !archivedSuperseded && ds.label === 'not-draining')
+        ? displayStatus(archiveReady, status, activityTs, now, dormant, false, idleAlive)
+        : ds;
       rows.push({
         id,
-        label: ds.label,
-        rank: ds.rank,
+        label: dsFinal.label,
+        rank: dsFinal.rank,
         finish: finishingRate(summary, id, heartbeat),
         unread,
         lastActivityTs: activityTs,

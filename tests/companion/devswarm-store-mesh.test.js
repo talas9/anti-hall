@@ -444,6 +444,51 @@ for (const B of backends) {
     } finally { s.close(); rm(home); }
   });
 
+  // ---- archive_request_only_unread (URGENT/"not draining" nag with no live
+  // reader that can never clear it) ------------------------------------------
+  test(`[${B.name}] archive_request_only_unread:true when the ENTIRE unread backlog is the archive-request marker send`, () => {
+    const home = tmpHome();
+    const s = open(home);
+    try {
+      s.upsertRegistry(descriptor('child-5'));
+      const f = { from: 'primary-abc', to: 'child-5', type: 'direct', message: store.ARCHIVE_REQUEST_MARKER + ' go', timestamp: 1, urgency: 'high' };
+      store.appendMeshMessage(s, Object.assign({}, f, { hash: store.meshMessageHash(f) }));
+      const sum = store.deriveSummary(s, { home });
+      assert.equal(sum.workspaces['child-5'].archive_requested, true);
+      assert.equal(sum.workspaces['child-5'].archive_request_only_unread, true);
+    } finally { s.close(); rm(home); }
+  });
+
+  test(`[${B.name}] archive_request_only_unread:false when the archive-request marker is unread ALONGSIDE a real message`, () => {
+    const home = tmpHome();
+    const s = open(home);
+    try {
+      s.upsertRegistry(descriptor('child-6'));
+      // Both rows addressed TO child-6 (its own partition) — a real, non-
+      // archive-request direct alongside the archive-request send.
+      const real = { from: 'primary-abc', to: 'child-6', type: 'direct', message: 'unrelated update for you', timestamp: 1, urgency: 'normal' };
+      store.appendMeshMessage(s, Object.assign({}, real, { hash: store.meshMessageHash(real) }));
+      const req = { from: 'primary-abc', to: 'child-6', type: 'direct', message: store.ARCHIVE_REQUEST_MARKER + ' go', timestamp: 2, urgency: 'high' };
+      store.appendMeshMessage(s, Object.assign({}, req, { hash: store.meshMessageHash(req) }));
+      const sum = store.deriveSummary(s, { home });
+      assert.equal(sum.workspaces['child-6'].archive_requested, true);
+      assert.equal(sum.workspaces['child-6'].archive_request_only_unread, false,
+        'a real (non-archive-request) unread row still in the mix must not read as "only the archive-request"');
+    } finally { s.close(); rm(home); }
+  });
+
+  test(`[${B.name}] archive_request_only_unread:false with no unread at all (vacuous-.every guard)`, () => {
+    const home = tmpHome();
+    const s = open(home);
+    try {
+      s.upsertRegistry(descriptor('child-7'));
+      const sum = store.deriveSummary(s, { home });
+      assert.equal(sum.workspaces['child-7'].unread, 0);
+      assert.equal(sum.workspaces['child-7'].archive_request_only_unread, false,
+        '.every on an empty unreadRows array is vacuously true — must be guarded to false, never read as "unread, all archive-request"');
+    } finally { s.close(); rm(home); }
+  });
+
   // ---- needsReply / pendingQuestions (devswarm parent decide+reply gate) ----
   test(`[${B.name}] needsReply threads through appendMeshMessage -> appendMeshRow -> listMessages`, () => {
     const home = tmpHome();

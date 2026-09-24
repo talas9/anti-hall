@@ -2353,6 +2353,26 @@ function computeSummary(store, opts) {
       (r) => r && r.mtype === 'direct' && typeof r.body === 'string' && r.body.indexOf(ARCHIVE_REQUEST_MARKER) !== -1
     );
 
+    // archive_request_only_unread (defect: URGENT/"not draining" nag every
+    // turn for an archive-ready row with no live reader): true when EVERY
+    // currently-unread row for this workspace is itself an archive-request
+    // marker send (same predicate as archive_requested above, just `.every`
+    // instead of `.some`, over the SAME already-fetched unreadRows — zero
+    // extra store reads). An archive-request is sent BY the Primary (cmdSend
+    // resolves `from` from the CALLER's own cwd/identity, and `archive-
+    // request <id>` is only ever run by the Primary against a child), so a
+    // row whose entire unread backlog is exactly that send is really "the
+    // Primary is waiting to hear back from itself" — the addressed child's
+    // own session has already ended and can never read/drain it. Consumed by
+    // hooks/devswarm-parent-inbox.js to keep such a row out of the per-turn
+    // urgent/attention nag (it still gets the existing, cooldown'd
+    // archive-ready recommendation). `false` when there is no unread row at
+    // all (`.every` on an empty array is vacuously true — guarded explicitly
+    // so "nothing unread" is never read as "unread, but all archive-request").
+    const archive_request_only_unread = unreadRows.length > 0 && unreadRows.every(
+      (r) => r && r.mtype === 'direct' && typeof r.body === 'string' && r.body.indexOf(ARCHIVE_REQUEST_MARKER) !== -1
+    );
+
     // pendingQuestions (Bug 1 / P0-A fix — structural, needs_reply-flagged):
     // computed from ALL of this workspace's messages ever marked needs_reply,
     // NOT scoped by the read cursor like unreadRows above. "Unread" and
@@ -2477,6 +2497,7 @@ function computeSummary(store, opts) {
       gates,
       archive_ready,
       archive_requested,
+      archive_request_only_unread,
       pendingQuestions,
     };
     // Additive: present only when the read position could not be read — the

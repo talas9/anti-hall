@@ -682,6 +682,20 @@ reminder), and `migrate`. `command-guard` carries a root-anchored `LIGHT_EXCEPTI
 > read**) and `monitor` (**consumes / blocking long-poll**) remain the two destructive
 > native reads the §8.5 redirect steers agents away from.
 
+> **v0.106.0 — the URGENT/"not-draining" nag ignore list.** `archive-ignore`/
+> `archive-unignore` (above) mutes only the archive-READY reminder. A SEPARATE, simpler
+> file — `~/.anti-hall/devswarm/ignore.json`, shape `{"ids": ["<id>", ...]}`
+> (`companion/lib/devswarm-ignore.js`) — mutes the LOUD urgent/`not-draining` nag itself
+> (both `devswarm-parent-inbox.js`'s per-turn segments and `devswarm-parent-gate.js`'s Stop
+> gate) for any listed id, while leaving it fully visible in the roster/table; there is no
+> CLI verb for it, the owner hand-edits the file. Fail-open: an absent/malformed file reads
+> as "nothing ignored", never as "ignore everything". Separately, an archive-ready
+> workspace from a PREVIOUS session whose ENTIRE unread backlog is the Primary's own
+> `archive-request` send (`computeSummary`'s `archive_request_only_unread` field) and whose
+> session is no longer running is now excluded from that same nag automatically — nobody is
+> left to ever drain it, so it can never clear on its own; it still gets the existing
+> cooldown'd archive-ready nudge and still shows in the table.
+
 **v0.54.1 follow-up (shipped).** Four refinements on top of the Phase-1 substrate above:
 - **Ingest daemon auto-install (`companion/install-devswarm-ingest.js`).** Until this
   release nothing auto-started `devswarm-ingest.js` — it existed in code but required a
