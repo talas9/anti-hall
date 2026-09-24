@@ -287,6 +287,16 @@ function normalizeState(state) {
     // lastTotal — they count two disjoint message sources. Primary snapshots
     // never carry a `total2`, so this field simply never moves for Primary.
     lastTotal2: Number.isFinite(s.lastTotal2) ? s.lastTotal2 : 0,
+    // lastBroadcastUnread — the THIRD, INDEPENDENT edge-trigger cursor (closes
+    // the v1 "broadcasts not covered" gap, defect #10 field report). Unlike
+    // lastTotal/lastTotal2 (both append-only, never decremented), the value it
+    // tracks (`workspaces[<id>].broadcastUnread`) can go DOWN — any other
+    // broadcast-cursor-advancing read elsewhere brings this workspace's own
+    // broadcast cursor forward. tickInner therefore always resyncs this cursor to the
+    // CURRENT observed value (not only on an increase, unlike the other two),
+    // so a later genuine new broadcast is still detected relative to wherever
+    // the count actually sits now, not a stale pre-ack high-water mark.
+    lastBroadcastUnread: Number.isFinite(s.lastBroadcastUnread) ? s.lastBroadcastUnread : 0,
     consecErrors: Number.isFinite(s.consecErrors) ? s.consecErrors : 0,
     errorBackoffIdx: Number.isFinite(s.errorBackoffIdx) ? s.errorBackoffIdx : 0,
     lastErrorEmitMs: Number.isFinite(s.lastErrorEmitMs) ? s.lastErrorEmitMs : null,
@@ -300,7 +310,7 @@ function formatArmLine(snapshot) {
   const r = (snapshot && snapshot.role) || 'unknown';
   const id = (snapshot && snapshot.id) || 'unknown';
   return '[wake-watch] armed: watching ' + r + ' ' + id
-    + ' for new direct mesh mail (read-only, poll-based; broadcasts not covered in v1).';
+    + ' for new direct mesh mail and new mesh broadcasts (read-only, poll-based).';
 }
 
 // REFUSAL_REASONS — closed vocabulary for formatRefusalLine. Every refusal
@@ -472,6 +482,26 @@ function tickInner(state, snapshot) {
 
   if (moved1) st.lastTotal = total;
   if (moved2) st.lastTotal2 = total2;
+
+  // BROADCAST CHANNEL (closes the v1 "broadcasts not covered" gap, defect #10
+  // field report) — a THIRD, fully independent observation, never merged into
+  // the single-emit dual-channel logic above. `total3` is
+  // `workspaces[<id>].broadcastUnread` — an ALREADY heartbeat-excluded (D22)
+  // count computeSummary/deriveSummary derive, so this channel is immune to
+  // heartbeat-flood noise by construction, the same guarantee the direct
+  // channels have (see this file's own header note on why a naive recent[]
+  // diff was rejected). A separate line (never folded into formatDualWakeLine,
+  // whose exact two-channel wording predates this fix) keeps every existing
+  // direct-channel emission byte-for-byte unchanged.
+  const hasChannel3 = !!(snapshot && Object.prototype.hasOwnProperty.call(snapshot, 'total3'));
+  const total3 = snapshot && Number.isFinite(snapshot.total3) ? snapshot.total3 : null;
+  const moved3 = total3 !== null && total3 > st.lastBroadcastUnread;
+  if (moved3) {
+    lines.push(formatWakeLine(snapshot, st.lastBroadcastUnread, total3, { channelLabel: 'broadcast' }));
+  }
+  // Not append-only (an ack anywhere else can lower it) — always resync to the
+  // CURRENT value, not only on an increase (see normalizeState's own note).
+  if (hasChannel3 && total3 !== null) st.lastBroadcastUnread = total3;
 
   return { state: st, lines };
 }
@@ -674,6 +704,56 @@ function readPrimarySnapshot(home, hashes, primaryId, io) {
   }
 }
 
+// readBroadcastSnapshot(home, hashes, id, io) -> { ok, error, broadcastUnread }.
+// THE broadcast channel: reads the SAME already-derived
+// `workspaces[<id>].broadcastUnread` field readPrimarySnapshot reads `.total`
+// from (same two-probe fold: repoKey bucket first, legacy hash-bucket
+// fallback). `broadcastUnread` is computeSummary/deriveSummary's own
+// heartbeat-EXCLUDED (D22) unread-broadcast count — exactly the "heartbeat-
+// excluding store projection change" this file's v1-scope header comment said
+// covering broadcasts correctly would need; it already existed for
+// `roster`/`diagnose`, this file simply had to start reading it too. A
+// missing summary/row reads as "no data yet" (null), never a fabricated zero,
+// same rule as every other read helper in this file.
+function readBroadcastSnapshot(home, hashes, id, io) {
+  const ioo = io || {};
+  const readSummaryForHash = ioo.readSummaryForHash || store.readSummaryForHash;
+  try {
+    if (!hashes || !id || (!hashes.repoKey && !hashes.fallbackHash)) {
+      return { ok: false, error: 'unresolvable-repo-identity', broadcastUnread: null };
+    }
+    const a = hashes.repoKey ? readSummaryForHash(home, hashes.repoKey, ioo.fs) : null;
+    const wa = a && a.workspaces && a.workspaces[id];
+    if (wa && Number.isFinite(wa.broadcastUnread)) return { ok: true, error: null, broadcastUnread: wa.broadcastUnread };
+
+    const b = hashes.fallbackHash ? readSummaryForHash(home, hashes.fallbackHash, ioo.fs) : null;
+    const wb = b && b.workspaces && b.workspaces[id];
+    if (wb && Number.isFinite(wb.broadcastUnread)) return { ok: true, error: null, broadcastUnread: wb.broadcastUnread };
+
+    return { ok: true, error: null, broadcastUnread: null }; // no data yet, never zero
+  } catch (e) {
+    return { ok: false, error: (e && e.message) || 'read-failed', broadcastUnread: null };
+  }
+}
+
+// attachBroadcastChannel(snapshot, home, hashes, id, io) -> snapshot with
+// `total3` (= broadcastUnread) folded in, AND-fail-closed with whatever
+// ok/error the direct-channel snapshot already carried (same pattern
+// readChildCombinedSnapshot uses to fold its own two channels together).
+// Applies to BOTH roles — a Primary watches its own project's broadcast feed
+// exactly like a child watches the same shared partition.
+function attachBroadcastChannel(snapshot, home, hashes, id, io) {
+  const base = snapshot && typeof snapshot === 'object' ? snapshot : {};
+  const b = readBroadcastSnapshot(home, hashes, id, io);
+  const out = Object.assign({}, base, { total3: b.broadcastUnread });
+  const baseOk = base.ok !== false;
+  out.ok = baseOk && b.ok !== false;
+  if (!baseOk && b.ok === false) out.error = String(base.error || '') + '; broadcast: ' + b.error;
+  else if (!baseOk) out.error = base.error;
+  else if (b.ok === false) out.error = 'broadcast: ' + b.error;
+  return out;
+}
+
 // readChildSnapshot(paths, io) -> { ok, error, total }. `paths` = { inboxPath,
 // cursorPath }. Uses readUnread() purely for its `.total` (a monotonic count
 // of non-empty NDJSON lines) — this watcher never advances the cursor itself,
@@ -734,10 +814,16 @@ function loadSeenState(home, id, fsi) {
       // falsely re-fire on every message the summary already reported before
       // the restart (the exact fabricated-delta-from-zero bug this file's
       // "missing key ≠ zero" rule elsewhere guards against).
-      return { lastTotal: obj.lastTotal, lastTotal2: Number.isFinite(obj.lastTotal2) ? obj.lastTotal2 : 0 };
+      // lastBroadcastUnread (broadcast channel) persists alongside the other
+      // two for the SAME restart-fabricated-delta reason.
+      return {
+        lastTotal: obj.lastTotal,
+        lastTotal2: Number.isFinite(obj.lastTotal2) ? obj.lastTotal2 : 0,
+        lastBroadcastUnread: Number.isFinite(obj.lastBroadcastUnread) ? obj.lastBroadcastUnread : 0,
+      };
     }
   } catch (_) { /* absent/corrupt -> fresh baseline below */ }
-  return { lastTotal: 0, lastTotal2: 0 };
+  return { lastTotal: 0, lastTotal2: 0, lastBroadcastUnread: 0 };
 }
 
 function saveSeenState(home, id, state, fsi) {
@@ -748,6 +834,7 @@ function saveSeenState(home, id, state, fsi) {
     const payload = JSON.stringify({
       lastTotal: Number.isFinite(state && state.lastTotal) ? state.lastTotal : 0,
       lastTotal2: Number.isFinite(state && state.lastTotal2) ? state.lastTotal2 : 0,
+      lastBroadcastUnread: Number.isFinite(state && state.lastBroadcastUnread) ? state.lastBroadcastUnread : 0,
     });
     const tmp = p + '.' + process.pid + '.tmp';
     F.writeFileSync(tmp, payload);
@@ -980,6 +1067,7 @@ function main() {
   // write leaves them stale and the next tick retries automatically.
   let savedTotal = st.lastTotal;
   let savedTotal2 = st.lastTotal2;
+  let savedBroadcast = st.lastBroadcastUnread;
 
   let cleaned = false;
   // fl-wave3 fix (item 7): `skipSave` — set true ONLY by the lock-lost exit
@@ -1046,17 +1134,19 @@ function main() {
     snapshot.role = watchedRole;
     snapshot.id = id;
     snapshot.nowMs = Date.now();
+    snapshot = attachBroadcastChannel(snapshot, home, hashes, id, {});
 
     const res = tick(st, snapshot);
     st = res.state;
     for (const line of res.lines) {
       try { emitLine(line); } catch (_) { /* never let an output error kill the loop */ }
     }
-    if (st.lastTotal !== savedTotal || st.lastTotal2 !== savedTotal2) {
+    if (st.lastTotal !== savedTotal || st.lastTotal2 !== savedTotal2 || st.lastBroadcastUnread !== savedBroadcast) {
       try {
         saveSeenState(home, id, st, fs);
         savedTotal = st.lastTotal;
         savedTotal2 = st.lastTotal2;
+        savedBroadcast = st.lastBroadcastUnread;
       } catch (_) {}
     }
 
@@ -1089,6 +1179,8 @@ module.exports = {
   readPrimarySnapshot,
   readChildSnapshot,
   readChildCombinedSnapshot,
+  readBroadcastSnapshot,
+  attachBroadcastChannel,
   seenPath,
   loadSeenState,
   saveSeenState,

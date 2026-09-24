@@ -236,6 +236,298 @@ function sqliteAvailable() {
   try { require('node:sqlite'); return true; } catch (_) { return false; }
 }
 
+// ---- backend consistency (defect #10 field report) ------------------------
+// selectBackend() above is a PURE PER-PROCESS feature-detect: it has no memory
+// of what a given store dir was already opened as. Two processes that ever
+// open the SAME project's store dir with DIFFERING `node:sqlite` availability
+// (e.g. a DevSwarm Primary session and a child workspace's terminal launched
+// under a different Node/bun runtime — `node:sqlite` needs Node >=22.5, and
+// this project's own CI matrix already spans node 22/24) silently diverge onto
+// TWO DISJOINT physical stores under the identical repoKey dir: `devswarm.db`
+// (sqlite) vs `journal/` (journal) — each backend only ever reads/writes its
+// own file(s), so the writer's messages are invisible to the other backend.
+// Confirmed repro: forcing one process to 'sqlite' and a sibling to 'journal'
+// against the same store dir reproduces the exact field symptom — `mesh read`
+// returns `ok:true, count:0` for a project a sibling workspace has actually
+// been broadcasting into.
+//
+// FIX: pin the backend PER STORE DIR via a persisted marker file (`BACKEND`,
+// plain lowercase text), consulted BEFORE per-process feature-detection.
+//   - An explicit `--backend`/`ANTIHALL_DEVSWARM_STORE_BACKEND` override still
+//     wins outright (unchanged contract — tests rely on this to exercise the
+//     journal path even where sqlite is available).
+//   - Otherwise: an existing marker is honored; a store with NO marker yet
+//     (created before this fix, or never opened before) is inferred from
+//     ON-DISK REALITY (which physical file already holds data), never from
+//     this process's own feature-detection alone — a pre-existing journal-
+//     backed store must never suddenly read as an empty fresh sqlite store
+//     just because THIS process happens to have `node:sqlite`.
+//   - A marker naming 'sqlite' when this process genuinely lacks `node:sqlite`
+//     falls back to 'journal' — the same safe-fallback semantics an explicit
+//     `--backend sqlite` override already has, never a crash.
+//   - Read-only callers (Phase 4c #12) never write the marker or mkdir the
+//     store dir — inference is best-effort and non-persistent for them.
+function backendMarkerFile(dir) { return path.join(dir, 'BACKEND'); }
+
+function readBackendMarker(dir) {
+  try {
+    const raw = String(fs.readFileSync(backendMarkerFile(dir), 'utf8') || '').trim().toLowerCase();
+    return (raw === 'sqlite' || raw === 'journal') ? raw : null;
+  } catch (_) { return null; }
+}
+
+function writeBackendMarker(dir, backend) {
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    const tmp = backendMarkerFile(dir) + '.' + process.pid + '.' + Date.now() + '.tmp';
+    fs.writeFileSync(tmp, String(backend));
+    fs.renameSync(tmp, backendMarkerFile(dir));
+    return true;
+  } catch (_) { return false; }
+}
+
+// inferBackendFromDisk(dir) -> 'sqlite' | 'journal' | null, from which
+// physical store already holds data. Read-only, no-delete, never guesses when
+// neither physical form is present (a genuinely fresh dir returns null and
+// the caller falls back to normal feature-detection).
+function inferBackendFromDisk(dir) {
+  try {
+    const st = fs.statSync(path.join(dir, 'devswarm.db'));
+    if (st && st.size > 0) return 'sqlite';
+  } catch (_) { /* no sqlite db here */ }
+  try {
+    const names = fs.readdirSync(path.join(dir, 'journal'));
+    if (names && names.length > 0) return 'journal';
+  } catch (_) { /* no journal dir here */ }
+  return null;
+}
+
+// resolveStoreBackend(dir, opts) -> 'sqlite' | 'journal', the backend
+// `openStore` actually dispatches to for `dir`. Wraps selectBackend() (kept
+// byte-identical for its own direct callers/tests) with the persisted-marker
+// consistency fix above. `dir` may be falsy (e.g. a bare workspaceId-only
+// open with no explicit/derivable dir at this call site) — resolveStoreBackend
+// then degrades to plain selectBackend(), matching pre-fix behavior exactly.
+function resolveStoreBackend(dir, opts) {
+  const o = opts || {};
+  const env = o.env || process.env;
+  const forced = String(o.backend || env.ANTIHALL_DEVSWARM_STORE_BACKEND || '').trim().toLowerCase();
+  if (forced === 'journal' || forced === 'sqlite') return selectBackend(o);
+  if (!dir) return selectBackend(o);
+  const marker = readBackendMarker(dir);
+  if (marker === 'journal') return 'journal';
+  if (marker === 'sqlite') return sqliteAvailable() ? 'sqlite' : 'journal';
+  const inferred = inferBackendFromDisk(dir);
+  const chosen = inferred || selectBackend(o);
+  if (!o.readOnly) writeBackendMarker(dir, chosen);
+  return chosen;
+}
+
+// hasBackendData(dir, backend) -> bool. Physical-presence check for ONE named
+// backend (never both/neither implied), unlike inferBackendFromDisk (which
+// PREFERS sqlite when both exist). Used to detect a genuinely SPLIT store —
+// both physical forms present with real data — the owner-reported repair
+// target (9 real machines observed: 053f0040, 2e126d49, 2faeb4df, 38770daf,
+// 63f9261d, 958e44cc, a51ee0be, ae2758cd, skycrew-a7a7a5).
+function hasBackendData(dir, backend) {
+  if (backend === 'sqlite') {
+    try { return fs.statSync(path.join(dir, 'devswarm.db')).size > 0; } catch (_) { return false; }
+  }
+  try { return fs.readdirSync(path.join(dir, 'journal')).some((n) => /\.ndjson$/.test(n)); } catch (_) { return false; }
+}
+
+// mergePath(dir) -> the no-delete completion marker this merge writes.
+function mergeMarkerFile(dir) { return path.join(dir, 'MERGE-STATE.json'); }
+function readMergeMarker(dir) {
+  try { return JSON.parse(fs.readFileSync(mergeMarkerFile(dir), 'utf8')); } catch (_) { return null; }
+}
+function writeMergeMarker(dir, rec) {
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    const tmp = mergeMarkerFile(dir) + '.' + process.pid + '.tmp';
+    fs.writeFileSync(tmp, JSON.stringify(rec));
+    fs.renameSync(tmp, mergeMarkerFile(dir));
+    return true;
+  } catch (_) { return false; }
+}
+
+// nullHashDedupeKey(row) -> a string identity for a hash-less row, used ONLY
+// as a fallback dedupe key (sqlite's UNIQUE(hash)/journal's dedupe both skip a
+// null hash — "a null-hash row is a distinct message" per listMessages'
+// header — so re-running this merge on such a row would otherwise duplicate
+// it every time, breaking the required "second run is a no-op" contract).
+function nullHashDedupeKey(row) {
+  return [row.workspaceId, row.ts, row.sender, row.recipient, row.mtype, row.body].join('\u0000');
+}
+
+// mergeSplitBackendStore(home, hash, opts) -> the result of MERGING the
+// non-chosen physical backend's data (defect #10 follow-up: the backend-
+// consistency marker above picks ONE side going forward for an ALREADY-split
+// store, but a store split before this fix shipped still has real rows sitting
+// invisible on the other side). READ-ONLY from the other side, WRITE-ONLY into
+// the chosen side, NEVER deletes/renames/truncates either physical form —
+// "no-delete" per the owner's persisted-shape-migration rule. Idempotent: a
+// message already present (by hash, or by nullHashDedupeKey for a hash-less
+// row) is skipped; registry/cursor/reader-cursor merges are all naturally
+// idempotent (upsert-if-newer / max-only). opts.dryRun never opens the chosen
+// side for writing and reports counts only.
+function mergeSplitBackendStore(home, hash, opts) {
+  const o = opts || {};
+  const env = o.env || process.env;
+  const now = Number.isFinite(o.now) ? o.now : Date.now();
+  const dryRun = !!o.dryRun;
+  const dir = storeDirForHash(home, hash);
+  const chosenBackend = resolveStoreBackend(dir, { env, readOnly: dryRun });
+  const otherBackend = chosenBackend === 'sqlite' ? 'journal' : 'sqlite';
+  const out = {
+    ok: true, hash: String(hash), dir, chosenBackend, otherBackend, dryRun,
+    split: false, pending: false,
+    messagesMerged: 0, messagesOnlyInOther: 0, registryMerged: 0, cursorsAdvanced: 0,
+    broadcastCursorsAdvanced: 0, readerCursorRowsMerged: 0, unreadOnlyInOther: 0,
+    error: null,
+  };
+  if (!hasBackendData(dir, otherBackend)) return out; // nothing split here
+  out.split = true;
+
+  const openFor = (backend, readOnly) => (backend === 'sqlite'
+    ? openSqlite(home, null, { hash, readOnly })
+    : openJournal(home, null, null, null, { hash, readOnly }));
+
+  let chosenHandle = null;
+  let otherHandle = null;
+  try {
+    otherHandle = openFor(otherBackend, true); // NEVER written to
+    if (!otherHandle) return out; // readOnly-null contract: no data after all
+    chosenHandle = dryRun ? openFor(chosenBackend, true) : openFor(chosenBackend, false);
+    if (!chosenHandle) { out.ok = false; out.error = 'chosen-backend-unopenable'; return out; }
+
+    const allIds = new Set([...(otherHandle.listWorkspaceIds() || []), ...(chosenHandle.listWorkspaceIds() || [])]);
+
+    for (const id of allIds) {
+      const otherRows = otherHandle.listMessages(id) || [];
+      if (!otherRows.length) continue;
+      const chosenRows = chosenHandle.listMessages(id) || [];
+      const seenHash = new Set();
+      const seenNullKey = new Set();
+      for (const r of chosenRows) {
+        if (r.hash != null) seenHash.add(r.hash);
+        else seenNullKey.add(nullHashDedupeKey(Object.assign({ workspaceId: id }, r)));
+      }
+      for (const row of otherRows) {
+        const withId = Object.assign({ workspaceId: id }, row);
+        const isDup = row.hash != null ? seenHash.has(row.hash) : seenNullKey.has(nullHashDedupeKey(withId));
+        if (isDup) continue;
+        out.messagesOnlyInOther += 1;
+        if (!dryRun) {
+          const r = chosenHandle.appendMeshRow(withId);
+          if (r.inserted) out.messagesMerged += 1;
+        }
+        if (row.hash != null) seenHash.add(row.hash); else seenNullKey.add(nullHashDedupeKey(withId));
+      }
+      // cursors — max-only, never regress a reader's own progress.
+      try {
+        const oc = otherHandle.cursorValue(id);
+        const cc = chosenHandle.cursorValue(id);
+        if (Number.isFinite(oc) && oc > cc) { if (!dryRun) chosenHandle.setCursor(id, oc); out.cursorsAdvanced += 1; }
+      } catch (_) { /* fail-open: a cursor read/write hiccup never blocks the merge */ }
+      try {
+        const ob = otherHandle.broadcastCursorValue(id);
+        const cb = chosenHandle.broadcastCursorValue(id);
+        if (Number.isFinite(ob) && ob > cb) { if (!dryRun) chosenHandle.setBroadcastCursor(id, ob); out.broadcastCursorsAdvanced += 1; }
+      } catch (_) { /* fail-open */ }
+      // reader_cursors — MAX-only at the SQL/journal-reduce level already
+      // (readerCursorTxn's own `put`), so re-applying the other side's rows
+      // is safe and idempotent by construction; only count rows that exist.
+      try {
+        const rows = otherHandle.readerCursorRows(id) || [];
+        if (rows.length) {
+          out.readerCursorRowsMerged += rows.length;
+          if (!dryRun) chosenHandle.readerCursorTxn((tx) => { for (const rec of rows) tx.put(rec); });
+        }
+      } catch (_) { /* fail-open: a pre-Phase-3 side has no such table — "no rows yet" */ }
+    }
+
+    // registry — union; a row missing on the chosen side is folded in as-is;
+    // a row present on both sides keeps the chosen side's unless the OTHER
+    // side is strictly newer (updatedAt, falling back to writeSeq), matching
+    // the store's own existing "freshest wins" convention elsewhere
+    // (pickFreshestLive/resolveSenderRegistryId) rather than inventing a new
+    // per-field merge rule this file does not otherwise have.
+    const chosenReg = new Map((chosenHandle.listRegistry() || []).map((d) => [String(d.id), d]));
+    for (const d of (otherHandle.listRegistry() || [])) {
+      const existing = chosenReg.get(String(d.id));
+      if (!existing) {
+        out.registryMerged += 1;
+        if (!dryRun) chosenHandle.upsertRegistry(d);
+        continue;
+      }
+      const otherNewer = (Number.isFinite(d.updatedAt) ? d.updatedAt : -1) > (Number.isFinite(existing.updatedAt) ? existing.updatedAt : -1)
+        || ((d.writeSeq != null && existing.writeSeq != null) && Number(d.writeSeq) > Number(existing.writeSeq));
+      if (otherNewer) {
+        out.registryMerged += 1;
+        if (!dryRun) chosenHandle.upsertRegistry(d, { allowPathChange: true });
+      }
+    }
+  } catch (e) {
+    out.ok = false;
+    out.error = (e && e.message) || String(e);
+  } finally {
+    try { if (chosenHandle) chosenHandle.close(); } catch (_) {}
+    try { if (otherHandle) otherHandle.close(); } catch (_) {}
+  }
+
+  out.pending = out.messagesOnlyInOther > 0 || out.registryMerged > 0 || out.cursorsAdvanced > 0
+    || out.broadcastCursorsAdvanced > 0 || out.readerCursorRowsMerged > 0;
+
+  if (!dryRun && out.ok) {
+    // Re-derive so unread/gates/broadcastUnread reflect the merged messages
+    // immediately, same as any other writer of this store.
+    try {
+      const forDerive = openStore({ home, hash, env });
+      try { deriveSummary(forDerive, { home, env, now }); } finally { forDerive.close(); }
+    } catch (_) { /* fail-open: the merge itself already succeeded and is durable */ }
+    // No-delete completion marker — records what happened, touches neither
+    // physical form. Left in place forever (harmless if stale/re-merged).
+    writeMergeMarker(dir, {
+      mergedAt: now, fromBackend: otherBackend, intoBackend: chosenBackend,
+      messagesMerged: out.messagesMerged, registryMerged: out.registryMerged,
+      cursorsAdvanced: out.cursorsAdvanced, broadcastCursorsAdvanced: out.broadcastCursorsAdvanced,
+      readerCursorRowsMerged: out.readerCursorRowsMerged,
+    });
+  }
+  return out;
+}
+
+// mergeSplitBackendStoresAllStores(home, opts) -> aggregate across every store
+// hash (doctor/update all-stores sweep shape, matching foldMeshDuplicatesAllStores
+// et al.). opts.dryRun -> READ-ONLY, no writes to either side.
+function mergeSplitBackendStoresAllStores(home, opts) {
+  const o = opts || {};
+  const hashes = listStoreHashes(home);
+  const out = {
+    ok: true, stores: hashes.length, splitStores: 0, pending: 0,
+    messagesMerged: 0, registryMerged: 0, cursorsAdvanced: 0, broadcastCursorsAdvanced: 0,
+    readerCursorRowsMerged: 0, errors: 0, details: [],
+  };
+  for (const hash of hashes) {
+    let r;
+    try { r = mergeSplitBackendStore(home, hash, o); } catch (e) { r = { ok: false, hash, error: (e && e.message) || String(e), split: true, pending: true }; }
+    if (!r) continue;
+    if (r.split) {
+      out.splitStores += 1;
+      out.details.push(r);
+    }
+    if (r.ok === false) out.errors += 1;
+    if (r.pending) out.pending += 1;
+    out.messagesMerged += r.messagesMerged || 0;
+    out.registryMerged += r.registryMerged || 0;
+    out.cursorsAdvanced += r.cursorsAdvanced || 0;
+    out.broadcastCursorsAdvanced += r.broadcastCursorsAdvanced || 0;
+    out.readerCursorRowsMerged += r.readerCursorRowsMerged || 0;
+  }
+  return out;
+}
+
 // ============================================================================
 // Mesh (v0.57) shared constants — PLAN-v0.57-mesh.md D3-D7, D22, D23.
 // ============================================================================
@@ -1870,7 +2162,13 @@ function deserializeCmd(raw) {
 function openStore(opts) {
   const o = opts || {};
   const home = resolveHomeGuarded(o);
-  const backend = selectBackend({ backend: o.backend, env: o.env });
+  // Resolve the physical dir the SAME way openSqlite/openJournal do (explicit
+  // `o.dir`, else the hash/workspaceId-derived per-project dir) so the
+  // backend-consistency marker (above) lives in the exact dir this call will
+  // actually read/write, for EVERY caller shape (hash-keyed mesh store,
+  // workspaceId-keyed legacy store, or an explicit migration `dir`).
+  const dir = o.dir || storeDirForHash(home, o.hash != null ? String(o.hash) : hashFromWorkspaceId(o.workspaceId));
+  const backend = resolveStoreBackend(dir, { backend: o.backend, env: o.env, readOnly: o.readOnly });
   const meta = { dir: o.dir, hash: o.hash, busyTimeoutMs: o.busyTimeoutMs, readOnly: !!o.readOnly };
   return backend === 'sqlite'
     ? openSqlite(home, o.workspaceId, meta)
@@ -2912,6 +3210,8 @@ module.exports = {
   storeDir, sqlitePath, journalDir, summaryPath,
   storeDirForHash, sqlitePathForHash, journalDirForHash, summaryPathForHash,
   requiredGatesFrom, selectBackend, sqliteAvailable,
+  resolveStoreBackend, readBackendMarker, writeBackendMarker, inferBackendFromDisk, backendMarkerFile,
+  hasBackendData, mergeMarkerFile, readMergeMarker, mergeSplitBackendStore, mergeSplitBackendStoresAllStores,
   openStore, openSqlite, openJournal,
   computeSummary, deriveSummary, writeSummaryAtomic, readSummary, readSummaryForHash,
   archivedOnlyIds, sameRegistryWorktree,

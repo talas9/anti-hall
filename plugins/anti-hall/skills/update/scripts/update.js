@@ -1698,6 +1698,63 @@ function dualPartitionAcksPostUpdate(opts) {
 }
 
 /**
+ * mergeSplitBackendStoresPostUpdate({ paths, env, cwd, home, devswarm, version }) ->
+ *   { attempted, stores, splitStores, messagesMerged, registryMerged, errors, detail }
+ * defect #10 follow-up (backend-consistency marker leaves PRE-EXISTING split
+ * stores' non-chosen side invisible, so children on it never see broadcasts).
+ * Delegates to devswarm.js mergeSplitBackendStoresAllStores (devswarm-store.js
+ * mergeSplitBackendStoresAllStores). IDEMPOTENT, FAIL-OPEN, NO-DELETE (neither
+ * physical backend form is ever removed/renamed; message dedupe by hash/
+ * content, registry union, cursors max-only). Registry key
+ * 'mergeSplitBackendStores' (migrations.js 'merge-split-backend-stores' —
+ * doctor --repair runs the same pass, and runs it FIRST so later repairs see
+ * one unified store); stamped via recordRun only when no store errored.
+ */
+function mergeSplitBackendStoresPostUpdate(opts) {
+  const o = opts || {};
+  const env = o.env || process.env;
+  const cwd = o.cwd || process.cwd();
+  const home = o.home || os.homedir();
+  const paths = o.paths;
+  try {
+    const detectPath = path.join(paths.pluginSrcDir, 'hooks', 'lib', 'devswarm-detect.js');
+    const devswarmPath = path.join(paths.pluginSrcDir, 'scripts', 'devswarm.js');
+    if (!fs.existsSync(detectPath) || !fs.existsSync(devswarmPath)) {
+      return { attempted: false, detail: 'split-store merge skipped: expected plugin files not found under ' + paths.pluginSrcDir };
+    }
+    const { isDevswarmActive } = require(detectPath);
+    if (typeof isDevswarmActive !== 'function' || !isDevswarmActive(env)) {
+      return { attempted: false, detail: 'not a DevSwarm session - split-store merge skipped (gate closed)' };
+    }
+    const devswarm = o.devswarm || require(devswarmPath);
+    if (typeof devswarm.mergeSplitBackendStoresAllStores !== 'function') {
+      return { attempted: false, detail: 'split-store merge skipped: this devswarm.js build has no mergeSplitBackendStoresAllStores' };
+    }
+    const version = o.version || null;
+    const sweepState = readSweepState(home);
+    if (version && sweepState.mergeSplitBackendStores && sweepState.mergeSplitBackendStores.completedVersion === version) {
+      return {
+        attempted: true, stores: 0, splitStores: 0, messagesMerged: 0, registryMerged: 0, errors: 0, skippedAlreadyDone: true,
+        detail: 'split-store merge: already completed for ' + version + ' - skipped (one-time per-version migration)',
+      };
+    }
+    const r = devswarm.mergeSplitBackendStoresAllStores(home, { env, cwd }) || {};
+    const errCount = r.errors || 0;
+    try { migrationsLib().recordRun(home, 'mergeSplitBackendStores', version, { errors: errCount, pendingRows: r.dryRun ? (r.pending || 0) : 0 }); } catch (_) { /* fail-open */ }
+    return {
+      attempted: true, stores: r.stores || 0, splitStores: r.splitStores || 0,
+      messagesMerged: r.messagesMerged || 0, registryMerged: r.registryMerged || 0, errors: errCount,
+      detail: 'split-store merge: ' + (r.dryRun ? 'dry run, found ' + (r.splitStores || 0) : 'merged ' + (r.splitStores || 0))
+        + ' split store(s) (' + (r.messagesMerged || 0) + ' message(s), ' + (r.registryMerged || 0) + ' registry row(s) only on the other side)'
+        + ' across ' + (r.stores || 0) + ' store(s)'
+        + (errCount ? ' (' + errCount + ' error(s), fail-open - retried next run)' : ''),
+    };
+  } catch (e) {
+    return { attempted: false, detail: 'split-store merge raised: ' + (e && e.message ? e.message : String(e)) };
+  }
+}
+
+/**
  * codexGraphifyHooksMigratePostUpdate({ paths, env, cwd, home }) →
  *   { attempted, targets, changed, removed, errors, detail }
  *
@@ -2822,6 +2879,11 @@ function runUpdate(opts) {
   // defect 8b211241bbe9: bounded hygiene for per-instance cursor files. Same
   // gate + fail-open posture; never affects the update's own success.
   const cursorHygiene = runPostPullStage('cursor-hygiene', () => cursorHygienePostUpdate({ paths, env: opts.env, cwd: opts.cwd, home: opts.home, devswarm: opts.devswarm, version: latest }));
+  // defect #10 follow-up: merge a PRE-EXISTING split store's non-chosen
+  // physical backend into the chosen one. Runs FIRST among the store repairs
+  // below so they all see one unified store, not a split one. Same gate +
+  // fail-open posture; never affects the update.
+  const mergeSplitBackendStores = runPostPullStage('merge-split-backend-stores', () => mergeSplitBackendStoresPostUpdate({ paths, env: opts.env, cwd: opts.cwd, home: opts.home, devswarm: opts.devswarm, version: latest }));
   // Mesh redesign Phase 3: one-time import of every legacy read position into
   // reader_cursors. Same gate + fail-open posture; never affects the update.
   const readerCursorsImport = runPostPullStage('reader-cursors-import', () => readerCursorsImportPostUpdate({ paths, env: opts.env, cwd: opts.cwd, home: opts.home, devswarm: opts.devswarm, version: latest }));
@@ -2874,6 +2936,7 @@ function runUpdate(opts) {
         promoteUnclaimed,
         ownerKeyMigrate,
         cursorHygiene,
+        mergeSplitBackendStores,
         readerCursorsImport,
         readerFloorRepair,
         dualPartitionAcks,
@@ -2916,6 +2979,7 @@ function runUpdate(opts) {
       promoteUnclaimed,
       ownerKeyMigrate,
       cursorHygiene,
+      mergeSplitBackendStores,
       readerCursorsImport,
       readerFloorRepair,
       dualPartitionAcks,
@@ -2991,6 +3055,9 @@ function renderHuman(status, changelog) {
   }
   if (status.readerCursorsImport && status.readerCursorsImport.attempted) {
     lines.push('  reader-cursors-import: ' + status.readerCursorsImport.detail);
+  }
+  if (status.mergeSplitBackendStores && status.mergeSplitBackendStores.attempted) {
+    lines.push('  merge-split-backend-stores: ' + status.mergeSplitBackendStores.detail);
   }
   if (status.readerFloorRepair && status.readerFloorRepair.attempted) {
     lines.push('  reader-floor-repair: ' + status.readerFloorRepair.detail);
@@ -3076,6 +3143,7 @@ module.exports = {
   readerCursorsImportPostUpdate,
   readerFloorRepairPostUpdate,
   dualPartitionAcksPostUpdate,
+  mergeSplitBackendStoresPostUpdate,
   healRegistryPostUpdate,
   wakeMonitorPostUpdate,
   codexGraphifyHooksMigratePostUpdate,

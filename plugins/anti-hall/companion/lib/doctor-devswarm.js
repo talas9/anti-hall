@@ -651,6 +651,18 @@ function cursorHygieneCheck(opts) {
         importNote += ' — reader floor check unavailable: ' + (e && e.message);
       }
     }
+    // defect #10 follow-up — REPORT only here (dry run, zero writes); doctor
+    // --repair applies it through the migration registry
+    // ('merge-split-backend-stores'), update.js through its matching stage.
+    if (typeof devswarm.mergeSplitBackendStoresAllStores === 'function') {
+      try {
+        const ms = devswarm.mergeSplitBackendStoresAllStores(home, { env: Object.assign({}, o.env || process.env), cwd: o.cwd, now: o.now, dryRun: true }) || {};
+        if (ms.splitStores) importNote += ' — split stores found: ' + ms.splitStores + ' (run doctor --repair / update)';
+        if (ms.errors) importNote += ' (split-store check: ' + ms.errors + ' error(s), fail-open)';
+      } catch (e) {
+        importNote += ' — split-store check unavailable: ' + (e && e.message);
+      }
+    }
     // Report-only: old-shape leftovers from a pre-release dev build.
     const legacyShapes = legacyCursorShapeLeftovers(home, o.fsi);
     const legacyNote = legacyShapes.length

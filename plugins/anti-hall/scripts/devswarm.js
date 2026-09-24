@@ -5400,6 +5400,19 @@ function reconcileDualPartitionAcksAllStores(home, ctx) {
   return out;
 }
 
+// mergeSplitBackendStoresAllStores(home, ctx) — thin all-stores wrapper (same
+// migrations.js shape as foldMeshDuplicatesAllStores/healOrphanPartitionsAllStores)
+// over devswarm-store.js's mergeSplitBackendStoresAllStores — the backend-
+// consistency-marker follow-up repair (defect #10 field report): a store that
+// was ALREADY split (both devswarm.db and a non-empty journal/ holding real
+// data) before the marker fix shipped keeps the non-chosen side's rows
+// invisible until this runs. NO-DELETE (neither physical form is ever
+// removed), idempotent (message dedupe by hash/content, registry union,
+// cursors/reader-cursors max-only). ctx.dryRun -> report only, zero writes.
+function mergeSplitBackendStoresAllStores(home, ctx) {
+  return store.mergeSplitBackendStoresAllStores(home, ctx || {});
+}
+
 // reRetireResurrectedRows(home, ctx) — item 6, defect df54edf54804 field
 // aftermath: SkyCrew's `roster --json` on 0.99.0 showed ~43 legacy-slug
 // registry rows the migration had resurrected (the four lost ids' twins plus
@@ -16591,6 +16604,7 @@ module.exports = {
   // reader_cursors adapters:
   deriveReaderNonce, callerReaderKey, commitNdAck, floorCursor, importReaderCursorsAllStores, repairReaderFloorsAllStores,
   reconcileDualPartitionAcksAllStores, declaredSelfId,
+  mergeSplitBackendStoresAllStores,
   // instanceNonce CONSUMERS (defect d3d571495bf6, items a/b/c — exported for
   // direct unit testing, same pattern as deriveInstanceNonce above):
   shortInstanceNonce, computeInstanceNonceCounts,

@@ -182,6 +182,28 @@ function pluginVersion() {
 // function the dry-run called — one code path for detect and apply).
 const MIGRATIONS = [
   {
+    // defect #10 follow-up (backend-consistency marker leaves PRE-EXISTING
+    // split stores' non-chosen side invisible). Merges the other physical
+    // backend's messages/registry/cursors into the chosen one; NO-DELETE
+    // (neither physical form is ever removed/renamed), idempotent (message
+    // dedupe by hash/content, registry union, cursors max-only). Runs FIRST
+    // so every later repair below sees one unified store, not a split one.
+    id: 'merge-split-backend-stores',
+    key: 'mergeSplitBackendStores',
+    fn: 'mergeSplitBackendStoresAllStores',
+    pendingIsUnfinished: true,
+    detect(dw, home, ctx) {
+      const r = dw.mergeSplitBackendStoresAllStores(home, Object.assign({}, ctx, { dryRun: true })) || {};
+      return {
+        pending: (r.pending || 0) > 0,
+        raw: r,
+        detail: (r.splitStores || 0) + ' split store(s) found across ' + (r.stores || 0) + ' store(s)'
+          + (r.messagesMerged || r.registryMerged ? ' (' + (r.messagesMerged || 0) + ' message(s), ' + (r.registryMerged || 0) + ' registry row(s) only on the other side)' : '')
+          + (r.errors ? ' (' + r.errors + ' store error(s), fail-open)' : ''),
+      };
+    },
+  },
+  {
     id: 'fold-all-stores',
     key: 'foldAllStores',
     fn: 'foldMeshDuplicatesAllStores',
