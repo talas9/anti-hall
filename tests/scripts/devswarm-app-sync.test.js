@@ -12,6 +12,7 @@
 //   (4) `app-state --json` is read-only and reports drift/conflicts
 //   (5) supervisor appDbSyncIfDue: runs the sync, env kill switch, never throws
 //   (6) no app DB -> app-state.json records ok:false, nothing else happens
+//   (7) roster: app title, sidebar-rank order, `app` fields; no app DB -> unchanged
 
 const { test } = require('node:test');
 const assert = require('node:assert');
@@ -187,5 +188,29 @@ test('(6) no app DB -> app-state.json ok:false, no markers', { skip }, () => {
     assert.strictEqual(r.appDb, false);
     assert.strictEqual(JSON.parse(fs.readFileSync(dw.appStatePath(f.home), 'utf8')).ok, false);
     assert.ok(!fs.existsSync(path.join(dsDir(f), 'archived')), 'no markers without evidence');
+  } finally { rmFixture(f); }
+});
+
+test('(7) roster: app title, sidebar-rank order, app fields; no app DB -> unchanged', { skip }, () => {
+  const f = setup();
+  try {
+    cp.spawnSync('git', ['init', '-q', f.repoPath]);
+    cp.spawnSync('git', ['-C', f.repoPath, '-c', 'user.email=a@b.c', '-c', 'user.name=T', 'commit', '-q', '--allow-empty', '-m', 'init']);
+    const key = repokey.repoKeyForWorktree(f.repoPath);
+    const s = storeLib.openStore({ home: f.home, hash: key });
+    try {
+      s.upsertRegistry({ id: 'b-a', worktreePath: f.wt.a, sessionId: null });
+      s.upsertRegistry({ id: 'b-b', worktreePath: f.wt.b, sessionId: null });
+    } finally { s.close(); }
+    const ids = (r) => r.result.workspaces.filter((w) => w.id === 'b-a' || w.id === 'b-b').map((w) => w.id);
+    const r = dw.run(['roster'], { home: f.home, env: f.env, cwd: f.repoPath });
+    assert.strictEqual(r.result.ok, true, JSON.stringify(r.result));
+    assert.deepStrictEqual(ids(r), ['b-b', 'b-a'], 'sidebar rank 1 before 2');
+    const a = r.result.workspaces.find((w) => w.id === 'b-a');
+    assert.strictEqual(a.wsName, 'Alpha task with a long full title that is well past sixty characters in length');
+    assert.deepStrictEqual(a.app, { rank: 2, pinned: true, focused: false, finish: 'PR #12 merged, checks failed', brief: null, builderType: 'standard' });
+    assert.strictEqual(r.result.workspaces.find((w) => w.id === 'b-b').app.brief, 'not-delivered');
+    const off = dw.run(['roster'], { home: f.home, env: { ANTIHALL_DEVSWARM_APP_DB: 'off' }, cwd: f.repoPath });
+    assert.ok(off.result.workspaces.every((w) => w.app === undefined), 'no app DB -> no app fields');
   } finally { rmFixture(f); }
 });

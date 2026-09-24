@@ -721,6 +721,80 @@ function escalationIntentsCheck(opts) {
   };
 }
 
+// appDbChecks({ home, env, now, fsi }) -> results[]. v0.108.0 REPORT-ONLY view of
+// the DevSwarm desktop app's database (companion/lib/devswarm-app-db.js) plus
+// the supervisor's last app sync (<devswarm>/app-state.json):
+//   - app version + snapshot health; "DevSwarm app schema changed: <col>" for
+//     every pinned column/table the live DB no longer has (the reader degrades
+//     fail-open, this line says which feature went quiet); capability-gated reads
+//   - a freshly spawned workspace whose brief was not delivered / was withheld
+//   - drift: open in the app but unknown to anti-hall; open in the app but
+//     archived in anti-hall (conflict — never auto-unarchived)
+//   - message-loss cross-check (counts only): gaps to live targets
+//   - entries the app has scheduled for deletion (names only)
+// Silent when there is no app DB at all. Never throws, never writes.
+const APP_STATE_STALE_MS = 15 * 60 * 1000;
+function appDbChecks(opts) {
+  const o = opts || {};
+  const home = o.home || os.homedir();
+  const env = o.env || process.env;
+  const now = Number.isFinite(o.now) ? o.now : Date.now();
+  const F = o.fsi || fs;
+  const out = [];
+  let appDb;
+  try { appDb = require('./devswarm-app-db.js'); } catch (_) { return out; }
+  const file = appDb.appDbPath({ home, env });
+  let exists = false;
+  try { exists = !!file && F.statSync(file).isFile(); } catch (_) { exists = false; }
+  if (!exists) return out; // no DevSwarm app here: app-DB features are simply dormant
+  const snap = appDb.snapshot({ home, env, now, fresh: true });
+  if (!snap) {
+    out.push({ status: WARN, message: 'DevSwarm app DB present but unreadable (builders.id/isActive missing, capability-gated, or locked) — app-DB features dormant; anti-hall falls back to hivecontrol/absence rules' });
+    return out;
+  }
+  const active = snap.workspaces.filter((w) => w.active);
+  out.push({ status: PASS, message: 'DevSwarm app DB ' + (snap.appVersion || '(version unknown)') + ': ' + snap.workspaces.length + ' builders, ' + active.length + ' open' });
+  if (snap.missing.length) out.push({ status: WARN, message: 'DevSwarm app schema changed: ' + snap.missing.join(', ') + ' — the dependent app-DB features are dormant until anti-hall is updated for it' });
+  if (snap.gated && snap.gated.length) out.push({ status: WARN, message: 'DevSwarm app-DB reads capability-gated (dormant): ' + snap.gated.join(', ') });
+  const briefs = [];
+  for (const w of active) {
+    const b = appDb.briefDelivery(snap, w, now);
+    if (b && (b.status === 'not-delivered' || b.status === 'withheld')) briefs.push((w.label || w.id) + ' (' + String(w.id).slice(0, 8) + '): brief ' + b.status);
+  }
+  if (briefs.length) out.push({ status: WARN, message: 'DevSwarm spawn delivery: ' + briefs.join('; ') + ' — the child never received its task; resend it (`devswarm.js send --to <id>`)' });
+  let st = null;
+  try { st = JSON.parse(F.readFileSync(path.join(devswarmRoot(home), 'app-state.json'), 'utf8')); } catch (_) { st = null; }
+  if (!st) {
+    out.push({ status: WARN, message: 'DevSwarm app sync: no app-state.json yet — the supervisor sweep has not run the app-DB sync (install/enable the supervisor, or run `devswarm.js app-sync`)' });
+    return out;
+  }
+  const age = now - Number(st.at);
+  if (!(age >= 0 && age <= APP_STATE_STALE_MS)) out.push({ status: WARN, message: 'DevSwarm app sync: last run ' + (Number.isFinite(age) ? Math.round(age / 60000) + 'm ago' : 'unknown') + ' — the supervisor sweep is not running it' });
+  if (Array.isArray(st.unknownToAntiHall) && st.unknownToAntiHall.length) {
+    out.push({ status: WARN, message: 'open in the DevSwarm app but unknown to anti-hall (no descriptor): ' + st.unknownToAntiHall.map((u) => (u.label || u.id) + ' (' + String(u.id).slice(0, 8) + ')').join('; ') });
+  }
+  if (Array.isArray(st.openButMarkedArchived) && st.openButMarkedArchived.length) {
+    out.push({ status: WARN, message: 'open in the DevSwarm app but archived in anti-hall (conflict, report only — `devswarm.js unarchive <id>` if it is live): ' + st.openButMarkedArchived.map((u) => (u.label || u.id) + ' (' + String(u.id).slice(0, 8) + ')').join('; ') });
+  }
+  if (st.gaps && Array.isArray(st.gaps.repos)) {
+    const gapRepos = st.gaps.repos.filter((r) => r.gap > 0);
+    if (gapRepos.length) {
+      out.push({
+        status: WARN,
+        message: 'DevSwarm message cross-check (report only): ' + gapRepos.map((r) => (r.name || r.repositoryId) + ' ' + r.gap + ' app message(s) to live targets never ingested ['
+          + Object.entries(r.byBranch || {}).map(([b, v]) => b + ': ' + v.n + (v.lt1d ? ', ' + v.lt1d + ' in the last day' : '')).join('; ') + ']').join('; ')
+          + ' — archived targets and pre-ingest history excluded',
+      });
+    } else {
+      out.push({ status: PASS, message: 'DevSwarm message cross-check: no gaps to live targets' });
+    }
+  }
+  if (Array.isArray(st.scheduledForDeletion) && st.scheduledForDeletion.length) {
+    out.push({ status: PASS, message: 'DevSwarm app has ' + st.scheduledForDeletion.length + ' entr' + (st.scheduledForDeletion.length === 1 ? 'y' : 'ies') + ' scheduled for deletion (report only): ' + st.scheduledForDeletion.slice(0, 10).join(', ') });
+  }
+  return out;
+}
+
 function runChecks(opts) {
   const o = opts || {};
   const home = o.home || os.homedir();
@@ -756,6 +830,13 @@ function runChecks(opts) {
     results.push(escalationIntentsCheck({ home, now, fsi: F }));
   } catch (e) {
     results.push({ status: WARN, message: 'escalation-pending check unavailable: ' + (e && e.message) });
+  }
+
+  // v0.108.0 DevSwarm app-DB view (report-only, silent without an app DB).
+  try {
+    for (const r of appDbChecks({ home, env, now, fsi: F })) results.push(r);
+  } catch (e) {
+    results.push({ status: WARN, message: 'DevSwarm app-DB check unavailable: ' + (e && e.message) });
   }
 
   // Phase 5 delivery WAL health (report-only): pending batches past the
@@ -821,6 +902,8 @@ module.exports = {
   cursorHygieneCheck, legacyCursorShapeLeftovers,
   // parked supervisor escalation notices (read-only).
   escalationIntentsCheck,
+  // v0.108.0 DevSwarm app-DB view (read-only).
+  appDbChecks,
   // install-vs-source integrity (CHECK 1/CHECK 2) — exported individually for tests.
   installDivergenceCheck, monitorsJsonPresenceCheck, resolveMarketplaceDir, resolveInstallScope,
   collectShippedFiles,

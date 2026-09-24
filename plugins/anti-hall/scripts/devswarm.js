@@ -14395,6 +14395,28 @@ function cmdRoster(flags, ctx) {
       worktreePath: null, source: 'archived', meshId: null, hints: ['archived'],
     });
   }
+  // v0.108.0: the DevSwarm app DB (read-only, fail-open) — the app's title wins
+  // over the names cache, each matched row gains `app` { rank, pinned, focused,
+  // finish, brief, builderType }, and rows are ordered by sidebar rank (stable:
+  // rows the app does not know keep their relative order, after the ranked ones).
+  try {
+    const appDb = require('../companion/lib/devswarm-app-db.js');
+    const snap = appDb.snapshot({ home, env: ctx.env, now });
+    if (snap) {
+      const focused = appDb.focusedWorkspaceId(snap, now);
+      for (const w of workspaces) {
+        const ws = appDb.workspaceFor(snap, { id: w.id, worktreePath: w.worktreePath });
+        if (!ws) continue;
+        if (ws.label) w.wsName = ws.label;
+        const brief = appDb.briefDelivery(snap, ws, now);
+        w.app = { rank: ws.rank, pinned: ws.isPinned, focused: ws.id === focused, finish: appDb.finishSignal(ws), brief: brief ? brief.status : null, builderType: ws.builderType };
+      }
+      const rk = (w) => (w.app && Number.isFinite(w.app.rank) ? w.app.rank : Infinity);
+      workspaces.forEach((w, i) => { w.__i = i; });
+      workspaces.sort((a, b) => (rk(a) - rk(b)) || (a.__i - b.__i));
+      workspaces.forEach((w) => { delete w.__i; });
+    }
+  } catch (_) { /* fail-open: the roster without app-DB enrichment */ }
   return {
     ok: true, action: 'roster', repoKey,
     known: !storeUnavailable, storeUnavailable, storeUnavailableReason, storeUnavailableScope,
