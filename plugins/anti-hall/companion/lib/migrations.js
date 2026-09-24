@@ -355,6 +355,60 @@ const MIGRATIONS = [
 function defaultMigrations() { return MIGRATIONS.filter((m) => !m.optIn); }
 function byId(id) { return MIGRATIONS.find((m) => m.id === id) || null; }
 
+// ---- settings.json forward-migration (v0.108.0) ---------------------------
+// Separate from the devswarm-store MIGRATIONS above (those dispatch through
+// scripts/devswarm.js; this one is a single-home JSON merge, not a store
+// scan), but sharing the SAME marker file/contract: idempotent, fail-open,
+// NO-DELETE of the legacy file (jev.json etc. are left in place forever —
+// settings.js keeps reading them as a fallback regardless of this migration).
+// A settings.json value the user (or a prior run of this migration) already
+// set for a key is NEVER overwritten — only genuinely-missing keys are filled
+// in from their legacy source.
+function migrateSettingsFromLegacy(home, opts) {
+  const o = opts || {};
+  const settingsLib = require('../../hooks/lib/settings.js');
+  const schemaLib = require('../../hooks/lib/settings-schema.js');
+  let migrated = 0;
+  let errors = 0;
+  try {
+    const store = settingsLib.load({ home });
+    for (const entry of schemaLib.allSettings()) {
+      if (!entry.legacy || !entry.legacy.file) continue;
+      const already = store[entry.section] && Object.prototype.hasOwnProperty.call(store[entry.section], entry.key);
+      if (already) continue;
+      try {
+        const legacyPath = path.join(home, '.anti-hall', entry.legacy.file);
+        if (!fs.existsSync(legacyPath)) continue;
+        const raw = JSON.parse(fs.readFileSync(legacyPath, 'utf8'));
+        if (!raw || typeof raw !== 'object' || !Object.prototype.hasOwnProperty.call(raw, entry.legacy.key)) continue;
+        const r = settingsLib.set(entry.section, entry.key, raw[entry.legacy.key], { home });
+        if (r.ok) migrated++; else errors++;
+      } catch (_) { errors++; }
+    }
+  } catch (_) { errors++; }
+  return { ok: errors === 0, migrated, errors };
+}
+
+// runSettingsMigration(home, {version}) -> one row, same {id, action, status,
+// msg} shape as runMigrations()'s rows, so doctor/update render it unchanged.
+// Marker key 'migrateSettingsFromLegacy' lives in the SAME update-sweep-state
+// file as every devswarm migration marker.
+function runSettingsMigration(home, opts) {
+  const o = opts || {};
+  const version = o.version !== undefined ? o.version : pluginVersion();
+  const state = readMarkers(home);
+  if (isApplied(state, 'migrateSettingsFromLegacy', version)) {
+    return { id: 'migrate-settings-from-legacy', action: 'migrate-settings-from-legacy', status: 'skipped', msg: 'already applied for ' + version + ' (marker)' };
+  }
+  const result = migrateSettingsFromLegacy(home, o);
+  const stamped = recordRun(home, 'migrateSettingsFromLegacy', version, { ok: result.ok, errors: result.errors });
+  const status = !result.ok ? 'failed' : (result.migrated ? 'fixed' : 'skipped');
+  const msg = result.migrated + ' legacy field(s) forward-migrated into settings.json'
+    + (result.errors ? '; ' + result.errors + ' error(s)' : '')
+    + (!stamped && result.ok ? (version ? ' — not stamped, retries next run' : '') : '');
+  return { id: 'migrate-settings-from-legacy', action: 'migrate-settings-from-legacy', status, msg };
+}
+
 // runMigrations({ home, cwd, env, version, dryRun, devswarm, deadline, now }) -> [{id, action, status, msg}]
 // BUDGET: one run is bounded by runBudgetMs(env) (or an explicit `deadline`).
 // An entry that would START past the deadline is deferred whole (reported,
@@ -435,4 +489,5 @@ module.exports = {
   MIGRATIONS, defaultMigrations, byId, runMigrations,
   isRunComplete, incompleteReasons, recordRun, TERMINAL_LEFT_REASONS, runBudgetMs, DEFAULT_RUN_BUDGET_MS,
   markerPath, readMarkers, writeMarkers, isApplied, markApplied, pluginVersion,
+  migrateSettingsFromLegacy, runSettingsMigration,
 };

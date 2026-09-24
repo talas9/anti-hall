@@ -1237,6 +1237,45 @@ directly: `node "<full-path>/anti-hall/statusline/install-statusline.js"`.
 
 See `statusline/STATUSLINE.md` for details and how to revert.
 
+## Settings (`/anti-hall:settings`)
+
+Every user-facing anti-hall setting lives in ONE place: `~/.anti-hall/settings.json`,
+organized into sections (`autoHandover`, `guards`, `jev`, `limitConserve`, `devswarm`,
+`statusline`, `codexNudge`, `versionAlerts`, `updates`, `defects`). The declarative
+registry of every setting (key, type, allowed values, default, env-var override, legacy
+source, description) is `hooks/lib/settings-schema.js`; the read/write API is
+`hooks/lib/settings.js`.
+
+- **Ask for it** — say "show my anti-hall settings", "turn off the merge gate", or
+  "set auto-handover to 80%" and the `settings` skill walks you through it (or applies a
+  direct request straight away).
+- **CLI directly**:
+  ```bash
+  node plugins/anti-hall/scripts/settings.js show                      # every section, headline settings
+  node plugins/anti-hall/scripts/settings.js show --section jev --all  # one section, including advanced/tuning knobs
+  node plugins/anti-hall/scripts/settings.js get autoHandover.pct
+  node plugins/anti-hall/scripts/settings.js set limitConserve.threshold 90
+  node plugins/anti-hall/scripts/settings.js reset limitConserve.threshold
+  ```
+  Every subcommand takes `--json` for scripting.
+- **Precedence** (highest to lowest): an `ANTIHALL_*` env var override → a value in
+  `~/.anti-hall/settings.json` → a value set via Claude Code's native `/config` panel
+  (a handful of the most-changed settings — auto-handover, the merge gate, Jev,
+  limit-conservation, DevSwarm supervisor mode, the statusline — are also declared in
+  `plugin.json`'s `userConfig` so they show up there) → a legacy per-feature config file
+  (e.g. `~/.anti-hall/jev.json`) → the schema default. `show`'s Source column tells you
+  which tier answered a given row.
+- **Legacy config is never deleted.** `~/.anti-hall/jev.json` (and any future
+  per-feature config file the schema maps) keeps working as a fallback forever;
+  `doctor --repair` and `/anti-hall:update` forward-migrate its values into
+  `settings.json` once (idempotent, fail-open) via `companion/lib/migrations.js`, but
+  the legacy file is left in place.
+- **Codex parity**: the mirrored skill lives at
+  `plugins/anti-hall/codex/skills/anti-hall-settings/SKILL.md` and drives the SAME CLI.
+  Codex has no `AskUserQuestion` (the menu flow falls back to a numbered-choice prompt)
+  and no `/config` panel — `~/.anti-hall/settings.json` via this CLI is the only front
+  door there, and it's the same file Claude Code's fallback path reads too.
+
 ## Configuration / tuning
 
 - **Verify-first wording** — edit `hooks/verify-first-full.js` (the full SessionStart

@@ -61,6 +61,7 @@ install, no native deps, no other config.
 | **Jev classifier** | Optional LLM-backed speculation classifier (`docs/KB-jev-classifier.md`) — per-integration on/shadow/off modes, metrics + `jev report` KEEP/REVIEW/REMOVE calls. |
 | **Statusline** | Live two-line statusline: git/model/context/cost on line 1, live orchestration/context gauge on line 2. Installable globally or per-repo, consolidates with an existing statusline (e.g. OMC HUD). |
 | **doctor / update** | `doctor` runs live behavioral self-tests on every guard and repairs safe drift; `update` pulls the latest release and shows the changelog delta. |
+| **Settings** | One place for every setting — `~/.anti-hall/settings.json`, browsable/editable via `/anti-hall:settings` or `scripts/settings.js`; a headline subset also shows in Claude Code's native `/config` panel. See [docs/GUIDE.md#settings-anti-hallsettings](docs/GUIDE.md#settings-anti-hallsettings). |
 
 Full per-hook reference (event, exact behavior, version history): [docs/GUIDE.md](docs/GUIDE.md#hook-reference-detailed).
 
@@ -87,6 +88,7 @@ Invoke any of these as `/anti-hall:<name>`:
 | `handover` | Writes a lossless session handover so a fresh session can resume cold. |
 | `defects` | File/list/show/rule on anti-hall's own defect reports. |
 | `jev` | Say "activate jev" — asks for your Vercel AI Gateway or TypeSafe key, installs it, enables and tests it. |
+| `settings` | Show or change any anti-hall setting — one unified `~/.anti-hall/settings.json`, browsable via `show`/`get`/`set`/`reset`. |
 
 Codex mirrors live under `plugins/anti-hall/codex/skills/anti-hall-*`; full descriptions
 and the DevSwarm/statusline/context-protection detail behind each skill are in

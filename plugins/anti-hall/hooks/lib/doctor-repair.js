@@ -1237,6 +1237,19 @@ function runRepairs(opts) {
     push('migration-registry', 'migration-registry', 'failed', 'migration registry raised: ' + errMsg(e));
   }
 
+  // v0.108.0: forward-migrate legacy per-feature config (jev.json, ...) into
+  // the unified ~/.anti-hall/settings.json — same registry file, same marker
+  // store, NO-DELETE of the legacy file. Skipped entirely on --dry-run (a
+  // single-home JSON merge, nothing to preview beyond "would migrate").
+  if (!dryRun) {
+    try {
+      const r = require(MIGRATIONS_LIB).runSettingsMigration(home, { version: o.version });
+      push(r.id, r.action, r.status, r.msg);
+    } catch (e) {
+      push('migrate-settings-from-legacy', 'migrate-settings-from-legacy', 'failed', 'settings migration raised: ' + errMsg(e));
+    }
+  }
+
   // P1-8: backfill the new `ownerKey` descriptor field on every descriptor
   // (active AND archived) + heal prior hash-bucket split-brain via re-home. A
   // pure descriptor/store forward-migration (idempotent, fail-open, NO-DELETE) —

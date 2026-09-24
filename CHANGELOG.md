@@ -305,6 +305,18 @@ the update.
   `output_tokens` field names (confirmed via https://docs.typesafe.ai/api, which the earlier
   commit had not checked) alongside the existing defensive Vercel/OpenAI-shaped fallbacks.
 
+- **Added: unified settings** — every user-facing anti-hall setting now has one home,
+  `~/.anti-hall/settings.json`, browsable and editable via the new `/anti-hall:settings`
+  skill or `node plugins/anti-hall/scripts/settings.js show|get|set|reset` (`--json`
+  everywhere). Backed by a declarative registry (`hooks/lib/settings-schema.js`) covering
+  auto-handover, guards, Jev, limit-conservation, DevSwarm, the statusline, and more, with
+  a precedence chain of env var → settings.json → Claude Code's native `/config` panel
+  (a headline subset is also declared in `plugin.json`'s `userConfig`) → legacy per-feature
+  config file (e.g. `~/.anti-hall/jev.json`) → default. `doctor --repair` and
+  `/anti-hall:update` forward-migrate legacy config into `settings.json` once, idempotently,
+  and never delete the legacy file. Codex gets a mirrored `anti-hall-settings` skill (numbered-
+  choice menu in place of `AskUserQuestion`; no `/config` equivalent) driving the same CLI.
+
 ## 0.107.0 (2026-09-24)
 
 - **Fixed: phantom unread.** The v0.106.0 reader-position import had declared every live

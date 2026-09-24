@@ -23,5 +23,20 @@
     "ship-it",
     "code-simplification",
     "technical-debt"
-  ]
+  ],
+  "userConfig": {
+    "auto_handover_enabled": { "type": "boolean", "title": "Auto handover", "description": "Write an automatic session handover before context runs out.", "default": true },
+    "auto_handover_pct": { "type": "number", "title": "Auto handover threshold %", "description": "Context-usage percent that triggers an automatic handover.", "default": 85, "min": 1, "max": 99 },
+    "auto_handover_nag": { "type": "boolean", "title": "Auto handover nag", "description": "Remind the user when a handover is due but not yet written.", "default": true },
+    "guards_merge_gate": { "type": "boolean", "title": "Merge-readiness gate", "description": "Enable merge-readiness gate checks before merging.", "default": false },
+    "limit_conserve_mode": { "type": "string", "title": "Limit conservation mode", "description": "Force usage-limit conservation on/off, or auto-detect.", "default": "auto", "options": ["auto", "on", "off"] },
+    "limit_conserve_threshold": { "type": "number", "title": "Limit conservation threshold %", "description": "Usage percent that triggers conservation mode.", "default": 85, "min": 1, "max": 99 },
+    "jev_enabled": { "type": "boolean", "title": "Jev classifier", "description": "Enable the opt-in Jev semantic decision engine.", "default": false },
+    "jev_transport": { "type": "string", "title": "Jev transport", "description": "Vercel AI Gateway passthrough (default) or a direct TypeSafe API call.", "default": "vercel", "options": ["vercel", "typesafe"] },
+    "jev_semantic_judge": { "type": "boolean", "title": "Semantic speculation judge", "description": "Enable the semantic speculation-judge hook.", "default": false },
+    "devswarm_hivecontrol": { "type": "string", "title": "DevSwarm hivecontrol path", "description": "Explicit path to the hivecontrol CLI binary (default: PATH lookup).", "default": "" },
+    "devswarm_supervisor_mode": { "type": "string", "title": "DevSwarm supervisor mode", "description": "Force the DevSwarm supervisor context on/off, or auto-detect.", "default": "auto", "options": ["auto", "on", "off"] },
+    "statusline_base": { "type": "string", "title": "Statusline base command", "description": "Shell command run as the line-1 base in consolidated statusline mode.", "default": "" },
+    "statusline_no_email": { "type": "boolean", "title": "Hide statusline email", "description": "Suppress the email segment in the statusline.", "default": false }
+  }
 }

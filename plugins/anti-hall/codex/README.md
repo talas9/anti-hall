@@ -82,6 +82,7 @@ The Codex port exposes first-pass equivalents for the anti-hall skill surface:
 - `anti-hall-context-conserve` — context/usage conservation and model routing
 - `anti-hall-model-policy` — Codex model routing table
 - `anti-hall-doctor`, `anti-hall-update`, `anti-hall-debt`, `anti-hall-simplify`, `anti-hall-flutter-debug`, `anti-hall-install-statusline`, `anti-hall-omx`, `anti-hall-omc`
+- `anti-hall-settings` — show/change any anti-hall setting; numbered-choice menu fallback (Codex has no `AskUserQuestion`) and no `/config` panel equivalent — `scripts/settings.js` is the only front door
 - `anti-hall-handover` — comprehensive session handoff (index + per-session HANDOVER.md + detail files) so a fresh session can resume without re-deriving or guessing anything
 
 Context conservation is also wired as a `UserPromptSubmit` hook via `limit-conserve-inject.js`.

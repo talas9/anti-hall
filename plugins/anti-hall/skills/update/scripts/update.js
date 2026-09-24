@@ -2006,6 +2006,25 @@ function replyStateMigratePostUpdate(opts) {
  * prerequisite: the hook itself already defaults a missing
  * `intents`/`intentAcks` to `{}`/`0` on read.
  */
+// v0.108.0: forward-migrate legacy per-feature config (jev.json, ...) into
+// the unified ~/.anti-hall/settings.json. Backed by companion/lib/migrations.js
+// migrateSettingsFromLegacy — a single-home JSON merge, idempotent, fail-open,
+// NO-DELETE of the legacy file. Runs on EVERY update (not DevSwarm-gated).
+function settingsMigratePostUpdate(opts) {
+  const o = opts || {};
+  const home = o.home || os.homedir();
+  try {
+    const lib = migrationsLib();
+    if (typeof lib.runSettingsMigration !== 'function') {
+      return { attempted: false, detail: 'settings migrate skipped: this build has no runSettingsMigration' };
+    }
+    const r = lib.runSettingsMigration(home, { version: o.version });
+    return { attempted: true, status: r.status, detail: r.msg };
+  } catch (e) {
+    return { attempted: false, error: (e && e.message) || String(e), detail: 'settings migrate raised: ' + ((e && e.message) || String(e)) };
+  }
+}
+
 function gateIntentsMigratePostUpdate(opts) {
   const o = opts || {};
   const env = o.env || process.env;
@@ -3022,6 +3041,10 @@ function runUpdate(opts) {
   // state file to carry intents/intentAcks. Same gate + fail-open posture;
   // never affects the update's own success.
   const gateIntentsMigrate = runPostPullStage('gate-intents-migrate', () => gateIntentsMigratePostUpdate({ paths, env: opts.env, cwd: opts.cwd, home: opts.home }));
+  // v0.108.0: forward-migrate legacy per-feature config into settings.json.
+  // Not DevSwarm-gated — every install has jev.json potential. Same gate +
+  // fail-open posture; never affects the update's own success.
+  const settingsMigrate = runPostPullStage('settings-migrate', () => settingsMigratePostUpdate({ home: opts.home, version: latest }));
   // Claim 3 self-heal: sweep every per-project store registry for a mis-keyed/
   // stale row via devswarm.js's healRegistry. Same gate + fail-open posture;
   // never affects the update's success. Throttled + resumable + one-time-per-
@@ -3068,6 +3091,7 @@ function runUpdate(opts) {
         dualPartitionAcks,
         replyStateMigrate,
         gateIntentsMigrate,
+        settingsMigrate,
         healRegistryRows,
         wakeMonitor,
         codexGraphifyHooksMigrate,
@@ -3112,6 +3136,7 @@ function runUpdate(opts) {
       dualPartitionAcks,
       replyStateMigrate,
       gateIntentsMigrate,
+      settingsMigrate,
       healRegistryRows,
       wakeMonitor,
       codexGraphifyHooksMigrate,
@@ -3289,6 +3314,9 @@ function renderHuman(status, changelog) {
   }
   if (status.gateIntentsMigrate && status.gateIntentsMigrate.attempted) {
     lines.push('  gate-intents-migrate: ' + status.gateIntentsMigrate.detail);
+  }
+  if (status.settingsMigrate && status.settingsMigrate.attempted) {
+    lines.push('  settings-migrate: ' + status.settingsMigrate.detail);
   }
   if (status.healRegistryRows && status.healRegistryRows.attempted) {
     lines.push('  heal-registry-rows: ' + status.healRegistryRows.detail);
