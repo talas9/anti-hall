@@ -72,6 +72,8 @@ else.**
      verbatim; it's informative and never sensitive.
 7. Show `status` again so the user sees the final state (enabled, transport, key
    present, integration modes, last-24h call count).
+   - Tip: if the owner knows their per-call rate, set `costPerCall` in
+     `~/.anti-hall/jev.json` now so `jev report` can estimate spend — see Costs below.
 
 ## "jev status"
 

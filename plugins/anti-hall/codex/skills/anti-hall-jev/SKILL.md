@@ -53,6 +53,8 @@ itself.
    `http-401`/`http-403`, tell the user the key was rejected and ask them to
    confirm BOTH the key and the provider choice, then re-run `set-key`.
 7. `status` again to show the final state.
+   - Tip: if the owner knows their per-call rate, set `costPerCall` in
+     `~/.anti-hall/jev.json` now so `jev-report.js` can estimate spend.
 
 ## Other verbs
 

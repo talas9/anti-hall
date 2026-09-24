@@ -233,6 +233,19 @@ the update.
   `anti-hall-update` skill) and reload step (restart Codex / start a fresh session) inline.
   19 tests.
 
+- **Fixed: `jev report`'s "agreement" metric was computing `jev === base`, and for
+  speculation-guard `base` is a hardcoded add-block trust constant (`false`), not a real
+  verdict — so "agreement" was silently reporting "rate Jev said not-speculative", never
+  actual agreement with the regex heuristic. `ask()`/`askSync()`/`askDetached()` now accept
+  an optional `compare` field (the caller's independent heuristic verdict, e.g.
+  speculation-guard's `regexWouldBlock`) that `jev-assist.ndjson` logs verbatim and that
+  `jev-report` uses for agreement instead of `base`; rows with no `compare` field are
+  excluded from the metric (reported separately as `excludedNoCompare`) rather than
+  silently folded in, and the table shows `n/a (no comparison signal)` when none exist. The
+  merged `agree%/label%` column is split into two columns (`agree%`, `label%`). `compare`
+  never affects trust math. Added a `costPerCall` quick-start pointer to `skills/jev/
+  SKILL.md` (and its Codex mirror).
+
 ## 0.107.0 (2026-09-24)
 
 - **Fixed: phantom unread.** The v0.106.0 reader-position import had declared every live

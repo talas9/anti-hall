@@ -7,8 +7,14 @@
 //
 // For each integration id seen in the log, reports: calls, jev-answered %
 // (backend 'jev' or 'cache' vs 'baseline-only'), cache hits, agreement %
-// (Jev's answer vs the caller's baseline, only counted where both a Jev
-// answer AND a baseline exist), decisions changed (split by direction:
+// (Jev's answer vs the caller-supplied `compare` field -- an INDEPENDENT
+// heuristic verdict, e.g. speculation-guard's regex check -- only counted
+// where both exist; rows with no `compare` field are excluded from this
+// metric and counted separately as `excludedNoCompare`, since `base` is
+// trust-rule math, not a real verdict, for some callers (e.g.
+// speculation-guard's baseline is a hardcoded `false`) and comparing jev
+// against it would silently measure something else, e.g. "rate Jev said
+// not-speculative"), decisions changed (split by direction:
 // 'added'/'relaxed'/'changed'), outcome rates (from recordOutcome lines,
 // joined back to a decision by hash — an outcome is counted as "good" unless
 // its name matches BAD_OUTCOME_RE below), latency p50/p95, an ESTIMATED cost
@@ -200,6 +206,7 @@ function buildReport(rows, opts = {}) {
     if (!byId.has(row.id)) {
       byId.set(row.id, {
         id: row.id, calls: 0, jevAnswered: 0, cacheHits: 0, agree: 0, agreeTotal: 0,
+        excludedNoCompare: 0,
         changed: { added: 0, relaxed: 0, changed: 0 }, failures: 0, latencies: [], hashes: [],
         labelCounts: new Map(), labeled: 0,
       });
@@ -209,9 +216,16 @@ function buildReport(rows, opts = {}) {
     if (row.backend === 'jev' || row.backend === 'cache') bucket.jevAnswered++;
     if (row.backend === 'cache') bucket.cacheHits++;
     if (row.backend === 'baseline-only' && isHttpFailure(row.reason)) bucket.failures++;
-    if (row.jev !== null && row.jev !== undefined && row.base !== null && row.base !== undefined) {
+    // Agreement is computed ONLY from the caller-supplied `compare` field
+    // (an independent heuristic verdict), never from `base` (trust-rule
+    // math, sometimes a hardcoded constant -- see the module comment above).
+    // A boolean `jev` answer with no `compare` field is excluded from the
+    // metric, not silently folded into it.
+    if (typeof row.jev === 'boolean' && typeof row.compare === 'boolean') {
       bucket.agreeTotal++;
-      if (row.jev === row.base) bucket.agree++;
+      if (row.jev === row.compare) bucket.agree++;
+    } else if (typeof row.jev === 'boolean' && (row.backend === 'jev' || row.backend === 'cache')) {
+      bucket.excludedNoCompare++;
     }
     // LABEL DISTRIBUTION: a non-boolean `jev` answer (a `choice` question,
     // e.g. newRequest's new-request/follow-up/correction/question) has no
@@ -303,6 +317,7 @@ function buildReport(rows, opts = {}) {
       jevAnsweredPct: bucket.calls > 0 ? bucket.jevAnswered / bucket.calls : 0,
       cacheHits: bucket.cacheHits,
       agreementPct,
+      excludedNoCompare: bucket.excludedNoCompare,
       topLabel,
       labelPct,
       labelDistribution,
@@ -339,10 +354,13 @@ function printTable(report) {
     console.log('No jev-assist.ndjson activity found for this window.');
     return;
   }
-  const header = ['integration', 'calls', 'jev%', 'cache', 'agree%/label%', 'added', 'relaxed', 'changed%', 'good-outcome%', 'outcome(jev/regex)', 'p50ms', 'p95ms', 'cost', 'suggestion'];
+  const header = ['integration', 'calls', 'jev%', 'cache', 'agree%', 'label%', 'added', 'relaxed', 'changed%', 'good-outcome%', 'outcome(jev/regex)', 'p50ms', 'p95ms', 'cost', 'suggestion'];
   const rows = report.integrations.map((r) => [
     r.id, String(r.calls), pct(r.jevAnsweredPct), String(r.cacheHits),
-    r.topLabel != null ? `${pct(r.labelPct)} (${r.topLabel})` : pct(r.agreementPct),
+    r.agreementPct == null
+      ? (r.excludedNoCompare > 0 ? 'n/a (no comparison signal)' : 'n/a')
+      : pct(r.agreementPct),
+    r.topLabel != null ? `${pct(r.labelPct)} (${r.topLabel})` : 'n/a',
     String(r.changed.added), String(r.changed.relaxed), pct(r.changedRate), pct(r.goodOutcomeRate),
     `${pct(r.outcomeRateBySource.jev)}/${pct(r.outcomeRateBySource.regex)}`,
     r.p50 == null ? 'n/a' : String(r.p50), r.p95 == null ? 'n/a' : String(r.p95),

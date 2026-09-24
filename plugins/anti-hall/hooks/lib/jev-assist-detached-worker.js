@@ -46,6 +46,7 @@ async function main() {
       cacheKey: input && input.cacheKey,
       budgetMs: input && input.budgetMs,
       home: input && input.home,
+      compare: input && input.compare,
     });
   } catch (_) {
     // nothing left to report to — this process's result is never observed.

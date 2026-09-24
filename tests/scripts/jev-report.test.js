@@ -71,15 +71,42 @@ test('buildReport: outcome join by hash', () => {
   assert.strictEqual(r.goodOutcomeRate, 1);
 });
 
-test('buildReport: agreement% only counted where both jev and base exist', () => {
+test('buildReport: agreement% is computed from `compare`, never from `base` (base is trust-rule math, sometimes a hardcoded constant)', () => {
   const rows = [
-    row({ id: 'x', jev: true, base: true }),
-    row({ id: 'x', jev: false, base: true }),
+    row({ id: 'x', jev: true, base: false, compare: true }),
+    row({ id: 'x', jev: false, base: false, compare: true }),
     row({ id: 'x', jev: null, base: false, backend: 'baseline-only' }),
   ];
   const report = buildReport(rows, {});
   const r = report.integrations.find((x) => x.id === 'x');
   assert.ok(Math.abs(r.agreementPct - 0.5) < 1e-9);
+});
+
+test('buildReport: rows with a boolean jev answer but no `compare` field are excluded from agreement, not folded into it', () => {
+  // Regression for the bug where jev-report computed agreement as
+  // row.jev === row.base, and base was a hardcoded add-block baseline
+  // (always false) -- silently reporting "rate Jev said not-speculative"
+  // as if it were agreement with an independent heuristic.
+  const rows = [
+    row({ id: 'speculation', jev: true, base: false }),
+    row({ id: 'speculation', jev: false, base: false }),
+  ];
+  const report = buildReport(rows, {});
+  const r = report.integrations.find((x) => x.id === 'speculation');
+  assert.strictEqual(r.agreementPct, null, 'no `compare` field anywhere -> agreementPct must be null, not derived from base');
+  assert.strictEqual(r.excludedNoCompare, 2);
+});
+
+test('buildReport: a mix of compare-bearing and compare-less rows only counts the compare-bearing ones', () => {
+  const rows = [
+    row({ id: 'mixed', jev: true, compare: true }),
+    row({ id: 'mixed', jev: false, compare: true }), // disagreement
+    row({ id: 'mixed', jev: true, base: false }), // no compare -> excluded
+  ];
+  const report = buildReport(rows, {});
+  const r = report.integrations.find((x) => x.id === 'mixed');
+  assert.ok(Math.abs(r.agreementPct - 0.5) < 1e-9);
+  assert.strictEqual(r.excludedNoCompare, 1);
 });
 
 test('buildReport: --days window excludes rows older than the cutoff', () => {

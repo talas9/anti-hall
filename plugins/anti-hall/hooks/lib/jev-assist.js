@@ -60,8 +60,14 @@
 // LOG: ~/.anti-hall/logs/jev-assist.ndjson, rotated at 1MB (keeps one .1
 // backup). One line per ask()/askSync() call:
 //   {ts, id, h, base, jev, conf, ms, backend, final, changed, cached, mode,
-//    reason?}
+//    reason?, compare?}
 //   changed is 'added' | 'relaxed' | null. No message bodies, no credentials.
+//   `compare` (optional, boolean) is a caller-supplied INDEPENDENT verdict
+//   (e.g. a regex/lexical heuristic evaluated alongside Jev) used ONLY by
+//   `jev report`'s agreement metric. It is separate from `base`, which is
+//   trust-rule math and, for some callers (e.g. speculation-guard's
+//   add-block baseline), a hardcoded constant rather than a real verdict --
+//   comparing `jev` against `base` there is NOT a measure of agreement.
 //
 // recordOutcome({id, h, outcome}) appends a second line shape
 //   {ts, type:'outcome', id, h, outcome} so `jev report` can join a later
@@ -251,7 +257,7 @@ function jevDecideSync({ question, state, timeoutMs, home }) {
 // finalize(...) — the shared post-decision path for ask()/askSync(): mode
 // gating (shadow never changes the outcome), trust math, cache write, and the
 // one metrics line. Never throws.
-function finalize({ id, home, hash, mode, trust, baseline, judge, threshold, r, cachedFlag }) {
+function finalize({ id, home, hash, mode, trust, baseline, judge, threshold, r, cachedFlag, compare }) {
   const confident = !!(r && r.ok && Number.isFinite(r.confidence) && r.confidence >= threshold);
   const jevBool = (r && r.ok)
     ? (typeof judge === 'function' ? !!judge(r.answer) : r.answer)
@@ -279,6 +285,14 @@ function finalize({ id, home, hash, mode, trust, baseline, judge, threshold, r, 
     mode,
   };
   if (r && !r.ok && r.reason) entry.reason = r.reason;
+  // `compare` is an OPTIONAL, caller-supplied independent verdict (e.g. a
+  // regex/lexical heuristic run alongside Jev) for jev-report's agreement
+  // metric -- distinct from `base`, which is trust-rule math (often a
+  // hardcoded constant, e.g. speculation-guard's add-block baseline of
+  // `false`) and must never be read as "the real baseline verdict". Only
+  // written when the caller actually passes a boolean; omitted otherwise so
+  // older/other callers' rows are unaffected.
+  if (typeof compare === 'boolean') entry.compare = compare;
   appendLog(home, entry);
 
   return {
@@ -320,11 +334,11 @@ function prepare({ id, home, trust, baseline, cacheKey, state }) {
 // ask({id, question, state, trust, baseline, judge, cacheKey, budgetMs, home})
 //   -> Promise<{final, jev, baseline, confidence, ms, backend, h}>
 async function ask(opts = {}) {
-  const { id, question, state, trust, baseline, judge, cacheKey, budgetMs, home } = opts;
+  const { id, question, state, trust, baseline, judge, cacheKey, budgetMs, home, compare } = opts;
   const { h, mode, hash, threshold, skip } = prepare({ id, home, trust, baseline, cacheKey, state });
 
   if (skip) {
-    return finalize({ id, home: h, hash, mode, trust, baseline, judge, threshold, r: null, cachedFlag: false });
+    return finalize({ id, home: h, hash, mode, trust, baseline, judge, threshold, r: null, cachedFlag: false, compare });
   }
 
   const cache = readCache(h);
@@ -346,7 +360,7 @@ async function ask(opts = {}) {
     }
   }
 
-  return finalize({ id, home: h, hash, mode, trust, baseline, judge, threshold, r, cachedFlag });
+  return finalize({ id, home: h, hash, mode, trust, baseline, judge, threshold, r, cachedFlag, compare });
 }
 
 // askSync(...) — same contract as ask(), but fully synchronous: the network
@@ -355,11 +369,11 @@ async function ask(opts = {}) {
 // uses. For callers (e.g. model-routing-guard) whose main() is synchronous
 // and cannot await.
 function askSync(opts = {}) {
-  const { id, question, state, trust, baseline, judge, cacheKey, budgetMs, home } = opts;
+  const { id, question, state, trust, baseline, judge, cacheKey, budgetMs, home, compare } = opts;
   const { h, mode, hash, threshold, skip } = prepare({ id, home, trust, baseline, cacheKey, state });
 
   if (skip) {
-    return finalize({ id, home: h, hash, mode, trust, baseline, judge, threshold, r: null, cachedFlag: false });
+    return finalize({ id, home: h, hash, mode, trust, baseline, judge, threshold, r: null, cachedFlag: false, compare });
   }
 
   const cache = readCache(h);
@@ -377,7 +391,7 @@ function askSync(opts = {}) {
     }
   }
 
-  return finalize({ id, home: h, hash, mode, trust, baseline, judge, threshold, r, cachedFlag });
+  return finalize({ id, home: h, hash, mode, trust, baseline, judge, threshold, r, cachedFlag, compare });
 }
 
 // askDetached(opts) — fire-and-forget variant for callers on the user's
@@ -399,7 +413,7 @@ function askSync(opts = {}) {
 // other I/O path in this file).
 function askDetached(opts = {}) {
   try {
-    const { id, question, state, trust, baseline, cacheKey, budgetMs, home } = opts;
+    const { id, question, state, trust, baseline, cacheKey, budgetMs, home, compare } = opts;
     // Check the integration mode BEFORE spawning — an 'off' integration (or
     // Jev disabled entirely, or a relax-block guard on a non-blocking
     // baseline) must cost this caller a single sync config read, never a
@@ -410,10 +424,10 @@ function askDetached(opts = {}) {
     // call to wait on either way, so a spawn would only add overhead.
     const { h, mode, hash, threshold, skip } = prepare({ id, home, trust, baseline, cacheKey, state });
     if (skip) {
-      finalize({ id, home: h, hash, mode, trust, baseline, judge: null, threshold, r: null, cachedFlag: false });
+      finalize({ id, home: h, hash, mode, trust, baseline, judge: null, threshold, r: null, cachedFlag: false, compare });
       return;
     }
-    const input = JSON.stringify({ id, question, state, trust, baseline, cacheKey, budgetMs, home });
+    const input = JSON.stringify({ id, question, state, trust, baseline, cacheKey, budgetMs, home, compare });
     const child = spawn(process.execPath, [DETACHED_WORKER_PATH], {
       detached: true,
       stdio: ['pipe', 'ignore', 'ignore'],

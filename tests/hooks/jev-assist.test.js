@@ -213,6 +213,45 @@ test('ask(): add-block, confident true -> block added, mode on', async () => {
   } finally { h.cleanup(); }
 });
 
+test('ask(): `compare` is logged verbatim and never affects trust math', async () => {
+  const h = makeHome();
+  try {
+    h.writeState('jev.json', { enabled: true, timeoutMs: 3000 });
+    await withMockServer(noulHandler(0.95), async (endpoint) => {
+      await withEnv({ HOME: h.home, AI_GATEWAY_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
+        const { ask } = freshLib();
+        // baseline stays the hardcoded add-block constant (false); compare
+        // carries the REAL independent heuristic verdict (true here) --
+        // final must still be computed from baseline/trust, not compare.
+        const r = await ask({
+          id: 'speculation', question: NOUL_Q, state: 'hello', trust: 'add-block',
+          baseline: false, compare: true,
+        });
+        assert.strictEqual(r.final, true, 'trust math unaffected by compare');
+        const log = readNdjson(path.join(h.home, '.anti-hall', 'logs', 'jev-assist.ndjson'));
+        assert.strictEqual(log[0].compare, true);
+        assert.strictEqual(log[0].base, false);
+      });
+    });
+  } finally { h.cleanup(); }
+});
+
+test('ask(): omitting `compare` writes no `compare` field (backward compatible)', async () => {
+  const h = makeHome();
+  try {
+    h.writeState('jev.json', { enabled: true, timeoutMs: 3000 });
+    await withMockServer(noulHandler(0.95), async (endpoint) => {
+      await withEnv({ HOME: h.home, AI_GATEWAY_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
+        const { ask } = freshLib();
+        const r = await ask({ id: 'speculation', question: NOUL_Q, state: 'hello', trust: 'add-block', baseline: false });
+        assert.strictEqual(r.final, true);
+        const log = readNdjson(path.join(h.home, '.anti-hall', 'logs', 'jev-assist.ndjson'));
+        assert.ok(!('compare' in log[0]));
+      });
+    });
+  } finally { h.cleanup(); }
+});
+
 test('ask(): shadow mode calls Jev + logs but NEVER changes the outcome', async () => {
   const h = makeHome();
   try {

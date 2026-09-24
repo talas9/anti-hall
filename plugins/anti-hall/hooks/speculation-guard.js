@@ -485,6 +485,16 @@ async function main() {
         state: jevText.slice(0, 8000),
         trust: 'add-block',
         baseline: false,
+        // `compare` is the REAL independent heuristic verdict (the regex/
+        // acknowledgment check, computed above), passed through PURELY for
+        // jev-report's agreement metric. It is NOT trust math -- `baseline`
+        // above stays the hardcoded `false` the add-block trust rule needs
+        // (see jev-assist.js computeFinal) and this field never influences
+        // the decision. Without it, jev-report's "agreement" column was
+        // silently computing jev===baseline, i.e. jev===false always --
+        // "rate Jev said not-speculative", not real agreement with the
+        // regex heuristic.
+        compare: regexWouldBlock,
       });
       if (result.jev === null) {
         // Either the 'speculation' integration is switched off via jev.json's
