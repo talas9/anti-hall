@@ -831,6 +831,13 @@ function runChecks(opts) {
   } catch (e) {
     results.push({ status: WARN, message: 'escalation-pending check unavailable: ' + (e && e.message) });
   }
+  // Message retention (devswarm-retention.js): store size vs limit, protected-
+  // over-limit stores, archive cap, first-run dry-run pending. Read-only.
+  try {
+    results.push(...require('./devswarm-retention.js').doctorCheck({ home, env }));
+  } catch (e) {
+    results.push({ status: WARN, message: 'message retention check unavailable: ' + (e && e.message) });
+  }
 
   // v0.108.0 DevSwarm app-DB view (report-only, silent without an app DB).
   try {

@@ -981,6 +981,13 @@ function main() {
     // proven-done children (dormant below DevSwarm 2.5.3); "dry-run" only reports.
     let autoArchive = null;
     try { autoArchive = require('./lib/devswarm-lifecycle.js').autoArchiveSweep({ home }); } catch (_) { autoArchive = null; }
+    // Message retention (devswarm-retention.js) — same sweep-lock hold, one
+    // store per pass, its own budget (ANTIHALL_DEVSWARM_RETENTION_BUDGET_MS)
+    // and its own retention.lock; the machine's first pass is a dry-run report.
+    let retention = { ran: false, reason: 'disabled' };
+    try {
+      if (supervisorEnabled(process.env)) retention = require('./lib/devswarm-retention.js').sweep({ home });
+    } catch (e) { retention = { ran: false, error: String((e && e.message) || e) }; }
     // `sweepFamilies` (identity-family collapsed) rides ALONGSIDE the existing
     // `sweep` field (raw per-descriptor count, unchanged — still what
     // sweepOnce actually iterated/wrote verdicts for) rather than replacing
@@ -990,7 +997,7 @@ function main() {
     // worktreePath through sweepOnce's per-result shape.
     let sweepFamilies = results.length;
     try { sweepFamilies = collapsedDescriptorFamilies(readDescriptors(home)).length; } catch (_) { /* fail-open: keep raw count */ }
-    process.stdout.write(JSON.stringify({ ts: new Date().toISOString(), sweep: results.length, sweepFamilies, reconcile, deferredSweep, appSync, autoArchive }) + '\n');
+    process.stdout.write(JSON.stringify({ ts: new Date().toISOString(), sweep: results.length, sweepFamilies, reconcile, deferredSweep, appSync, autoArchive, retention }) + '\n');
   } catch (_) {
     // absolute fail-safe: never throw out of the sweep
   } finally {

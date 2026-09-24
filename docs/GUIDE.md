@@ -1057,6 +1057,25 @@ longer reaps a unit as "confirmed running and healthy" from a weaker second heal
 that omitted the pid guard and the monitor-fault check — there is now one `daemonHealth`
 definition, used by every consumer including this reaper.
 
+**Message retention (v0.108.0).** Each supervisor sweep also runs message retention on
+one store, so the DevSwarm stores stop growing without limit. Retention archives old
+message bodies to `~/.anti-hall/devswarm/archive/<store>/<yyyy-mm>.ndjson.gz` and then
+clears them. Rows, read positions and hashes stay, so no unread count changes.
+
+- Only bodies that every reader has already read are pruned.
+- The newest 200 rows of each partition, open questions, and each workspace's latest
+  heartbeat are never pruned.
+- A store over 100 MB is pruned oldest first until it is under the limit. If the rest is
+  unread, `doctor` WARNs instead.
+- On a new machine, the first run is a dry-run report (`retention-dry-run.json`).
+- Settings: `devswarm.retention.days` (30, 0 = off), `maxStoreMB` (100),
+  `keepPerPartition` (200), `archive` (true) and `archiveMaxMB` (200). Set them in
+  `~/.anti-hall/settings.json` or with the `ANTIHALL_DEVSWARM_RETENTION_*` env vars.
+- Commands: `devswarm.js retention status | run [--dry-run] [--store X] | restore --store X
+  --month yyyy-mm`.
+
+Full rules: [KB §8.7, Message retention](KB-devswarm-hivecontrol.md#message-retention--bounded-store-growth-v01080).
+
 **On-demand kill: `companion/devswarm-recover.js <workspace-id>`** — the ONLY path in
 DevSwarm that ever kills a process, invoked explicitly per workspace (e.g. on an
 `escalated` verdict). Precise targeted kill: identity-bound (worktree + session uuid),

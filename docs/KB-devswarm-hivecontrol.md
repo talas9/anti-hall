@@ -1783,6 +1783,91 @@ decision `healOrphanPartitions` calls, never a re-implementation. It used to mir
 so the warning-suppression logic and the doctor repair can never silently disagree about which
 ids are archived.
 
+### Message retention — bounded store growth (v0.108.0)
+
+`companion/lib/devswarm-retention.js` stops the per-project stores
+(`~/.anti-hall/devswarm/store/<key>/devswarm.db`) from growing without limit. It archives
+old message bodies first, then prunes them.
+
+**Pruning clears the body and keeps the row.** Every read position is a consumed count over a
+partition's rows in insertion order (`reader_cursors`, the legacy `cursors` row and cursor
+files, `listMessages(id, { sinceCursor })`), and `messageCount` feeds the gate arithmetic. A
+deleted row would move every later row down one position, so a reader could see 0 unread
+while real unread mail remains. `UNIQUE(hash)` is also the dedupe key for every replay path
+(the delivery WAL, `mergeSplitBackendStore`, forwarding). A deleted row would come back as a
+new unread row the next time its source is replayed. So a pruned row keeps its id, hash, seq,
+sender, recipient, type, urgency and flags. Only `body` becomes `NULL`, which every reader
+already shows as `''`. Positions, counts and pending questions do not change. On a 60 MB live
+store, bodies were about 75% of the file.
+
+**A body is pruned only when every one of these holds:**
+
+| # | Rule |
+|---|---|
+| 1 | The row has a non-empty body. |
+| 2 | It is older than `devswarm.retention.days` (default 30). Size-limit mode skips only this rule. |
+| 3 | It is not one of the latest `keepPerPartition` rows of its partition (default 200). |
+| 4 | Direct partitions: its position is at or below **every** reader. That means the stored `#floor`, every non-retired declared reader, and the legacy floor when legacy cursor files or rows exist. This is checked again inside the write transaction. |
+| 5 | It is not a `needs_reply` question. |
+| 6 | Its body is not a line in that partition's NDJSON inbox, because the unread union dedupes on it. |
+| 7 | Broadcast partition: it is not any sender's latest heartbeat (`working_on`) and not in the last 51 collapsed runs (`recent[]`). A non-heartbeat broadcast also needs its seq at or below every workspace's broadcast cursor. |
+| 8 | It is not in an id range that `retention restore` put on hold (7 days). |
+
+**Size limit.** When `devswarm.db` plus its `-wal` file is over `maxStoreMB` (default 100),
+eligible rows go oldest first, ignoring rule 2 only, until the store is under the limit. If
+the rest is unread or otherwise protected, retention stops and `doctor` WARNs. It never prunes
+a protected row.
+
+**Archive first, then prune.** Each batch of up to 500 rows is written as one gzip member per
+month to `~/.anti-hall/devswarm/archive/<store>/<yyyy-mm>.ndjson.gz` and fsync'd. The
+`UPDATE … SET body = NULL` runs after that, in its own `BEGIN IMMEDIATE` transaction. If the
+process crashes between the two steps, the next run archives the same rows again, and
+`restore` dedupes by id. `archiveMaxMB` (default 200) caps the whole archive. Past it, the
+oldest month files are removed and each removal is logged. `devswarm.retention.archive=false`
+prunes without archiving.
+
+**Reclaiming space.** Clearing inline bodies leaves pages partly empty, and the freelist does
+not show that space. In one measurement 16 MB was pruned and the freelist was only 2.6%. So
+retention runs `VACUUM` when the pruned bytes or the freelist exceed 20% of the file, or
+whenever it is enforcing the size limit. Measured on that store: tombstoning 37k rows took
+1.3 s, and `VACUUM` took about 230 ms and shrank the file from 60 MB to 41 MB.
+
+**Legacy journals.** A split store has sqlite chosen, `MERGE-STATE.json` written, and a
+`mergeSplitBackendStore` dry-run reporting nothing pending. Its raw `journal/*.ndjson` is
+gzipped to `archive/<store>/legacy-journal/`, verified byte-equal, and only then removed.
+
+**When it runs.**
+- The supervisor sweep runs retention inside its sweep lock, holding its own
+  `locks/retention.lock`. Each pass handles one store: the largest one not visited in the
+  last 6 h. The pass is capped by `ANTIHALL_DEVSWARM_RETENTION_BUDGET_MS` (default 5000).
+- On a new machine, the first passes only report. They write
+  `~/.anti-hall/devswarm/retention-dry-run.json` and prune nothing. Once every store is in
+  the report, later sweeps prune.
+- Every batch, eviction, restore and warning is logged to
+  `~/.anti-hall/logs/devswarm-retention.ndjson`. The log holds counts and id ranges, never
+  bodies.
+
+```bash
+node scripts/devswarm.js retention status
+node scripts/devswarm.js retention run --dry-run [--store <key>]   # report only
+node scripts/devswarm.js retention run [--store <key>]             # act now (not gated by the first-run dry-run)
+node scripts/devswarm.js retention restore --store <key> --month 2026-08
+```
+
+**Settings.** These are read from `~/.anti-hall/settings.json` under `devswarm.retention.*`.
+An env var of the same name overrides the file.
+
+| Key | Default | Env override |
+|---|---|---|
+| `devswarm.retention.days` | 30 (0 = retention off) | `ANTIHALL_DEVSWARM_RETENTION_DAYS` |
+| `devswarm.retention.maxStoreMB` | 100 (0 = no size limit) | `ANTIHALL_DEVSWARM_RETENTION_MAX_STORE_MB` |
+| `devswarm.retention.keepPerPartition` | 200 | `ANTIHALL_DEVSWARM_RETENTION_KEEP_PER_PARTITION` |
+| `devswarm.retention.archive` | true | `ANTIHALL_DEVSWARM_RETENTION_ARCHIVE` |
+| `devswarm.retention.archiveMaxMB` | 200 | `ANTIHALL_DEVSWARM_RETENTION_ARCHIVE_MAX_MB` |
+
+Journal-backend stores are skipped. Retention only counts `devswarm.db` and its WAL. It
+never touches backup files (`*.bak-*`) or other directories.
+
 ## 8.8 Full CLI reference — `scripts/devswarm.js`
 
 THE structured interface (CLI over MCP — owner preference; every subcommand below is a

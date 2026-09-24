@@ -16630,6 +16630,7 @@ const VERB_HELP = {
   'gate-intent': { synopsis: 'record a stated-intent signal for the Stop-hook parent gate', mutates: 'writes a gate-intent record' },
   'auto-archive': { synopsis: 'show the auto-archive plan (done+merged+clean+no-unread+idle workspaces)', mutates: 'read-only' },
   'prune-archived': { synopsis: 'prune-archived --older-than <days> (dry run) | --confirm-ids <ids> --plan <nonce>', mutates: 'dry run writes a plan file; --confirm-ids DELETES the listed archived workspaces via hivecontrol (owner-approved only)' },
+  retention: { synopsis: 'message retention: status | run [--dry-run] [--store X] | restore --store X --month yyyy-mm', mutates: '`run` archives then prunes old message bodies (rows, positions and hashes stay) and VACUUMs; `restore` re-imports an archive month; `status`/`run --dry-run` are read-only' },
 };
 // verbListFromSwitch() — the verb names actually dispatched by run()'s own
 // switch statement, extracted from run's own source text. Deliberately NOT
@@ -16991,9 +16992,24 @@ function run(argv, ctx0) {
         const r = cmdGateIntent(flags, ctx);
         return { code: r.ok ? 0 : 2, result: r };
       }
+      case 'retention': {
+        // `retention status | run [--dry-run] [--store X] | restore --store X --month yyyy-mm`
+        // — message retention (companion/lib/devswarm-retention.js). `run` acts
+        // immediately (the supervisor's first-run dry-run gate is for the
+        // automatic sweep only); `--dry-run` reports without writing anything.
+        const ret = require('../companion/lib/devswarm-retention.js');
+        const sub = positionals[1];
+        const storeArg = one(flags, 'store');
+        let r;
+        if (sub === 'status') r = ret.status({ home: ctx.home, env: ctx.env });
+        else if (sub === 'run') r = ret.run({ home: ctx.home, env: ctx.env, now: ctx.now, dryRun: !!(flags['dry-run'] && flags['dry-run'].length), store: storeArg });
+        else if (sub === 'restore') r = ret.restore({ home: ctx.home, now: ctx.now, hash: storeArg, month: one(flags, 'month') });
+        else r = { ok: false, error: 'usage: retention status | run [--dry-run] [--store X] | restore --store X --month yyyy-mm' };
+        return { code: r && r.ok ? 0 : 2, result: r };
+      }
       default:
         return { code: 2, result: { ok: false, error: 'unknown command: ' + JSON.stringify(cmd || '') +
-          ' (register|register-primary|ensure|heartbeat|inbox|workspaces|gate|gate-intent|nudge|archive|unarchive|archive-ignore|archive-unignore|archive-request|migrate|migrate-owner-keys|logs|send|roster|app-state|app-sync|sync-ui|diagnose|healthcheck|mesh|reconcile|reap-stale|reconcile-active|spawn|merge|skip|auto-archive|prune-archived)' } };
+          ' (register|register-primary|ensure|heartbeat|inbox|workspaces|gate|gate-intent|nudge|archive|unarchive|archive-ignore|archive-unignore|archive-request|migrate|migrate-owner-keys|logs|send|roster|app-state|app-sync|sync-ui|diagnose|healthcheck|mesh|reconcile|reap-stale|reconcile-active|spawn|merge|skip|auto-archive|prune-archived|retention)' } };
     }
   } catch (e) {
     // Csh: an internal exception used to be swallowed silently into { ok:false }.

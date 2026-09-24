@@ -79,6 +79,30 @@ the update.
   table, a browser-profile store, or the app's unauthenticated internal HTTP, WebSocket
   or MCP endpoints.
 
+- **New: message retention, so DevSwarm stores stop growing without limit.** The supervisor
+  sweep now archives old message bodies to
+  `~/.anti-hall/devswarm/archive/<store>/<yyyy-mm>.ndjson.gz`, fsyncs the archive, then
+  clears the bodies. Rows, read positions, hashes and seq numbers stay, so unread counts,
+  gates and dedupe do not change.
+  - A body is pruned only when it is older than 30 days, every reader has read it, it is not
+    in the newest 200 rows of its partition, and it is not an open question. It also must
+    not be mirrored in the partition's NDJSON inbox, or be a heartbeat or broadcast the
+    roster still shows.
+  - A store over 100 MB is pruned oldest first until it is under the limit. Unread and
+    protected rows are never pruned; if they alone keep a store over the limit, `doctor`
+    WARNs.
+  - `VACUUM` then reclaims the space. On a 60 MB store: 37k bodies pruned in 1.3 s, VACUUM
+    in about 230 ms, file down to 41 MB.
+  - Already-merged legacy `journal/*.ndjson` files are compressed into the archive.
+  - The archive is capped at 200 MB; the oldest month files are removed first.
+  - On a new machine, the first run is a dry-run report only (`retention-dry-run.json`).
+  - Every batch is logged, with counts and id ranges but no bodies, to
+    `~/.anti-hall/logs/devswarm-retention.ndjson`.
+  - New commands: `devswarm.js retention status | run [--dry-run] [--store X] | restore
+    --store X --month yyyy-mm`. `restore` dedupes by id and holds restored rows for 7 days.
+  - Settings: `devswarm.retention.days` / `maxStoreMB` / `keepPerPartition` / `archive` /
+    `archiveMaxMB`, also settable as `ANTIHALL_DEVSWARM_RETENTION_*` env vars.
+
 ## 0.107.1 (2026-09-24)
 
 - **Fixed: phantom "N unread" on the Primary's own mailbox.** When a store's
