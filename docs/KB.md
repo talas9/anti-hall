@@ -183,7 +183,7 @@ docs are background; their actionable content is already in the synthesis.
 | **False task completion** (reward hacking / specification gaming, claimed-vs-verified benchmark gaps, verification-before-completion mitigations, the `STATE.json` enforcement gap) | **KB-false-completion** (21 sources: reward hacking/scheming research, claimed-vs-verified benchmark gap, mitigation patterns, anti-hall implications) |
 | **[APPENDED 2026-08-21] `Monitor` tool / event-driven wake** (background watcher registration, DevSwarm mailbox-delta wake-watch) | **KB-claude-monitor-tool** (855 ln); usage in `monitors/monitors.json` + `companion/lib/devswarm-wake-watch.js` |
 | **[NEW 0.78.0] Defect channel** (agent-filed bug reports against anti-hall itself, maintainer rulings, derived-state/no-index/write-verified design) | No dedicated KB doc yet — component reference in [Plugin README §Features](../plugins/anti-hall/README.md) (`defect-nudge.js`, `hooks/lib/defect-store.js`, `scripts/defect.js`); design rationale in the `feat(defects)` commit message (`604314d`) |
-| **[NEW] Jev classifier** (TypeSafe System One opt-in judge backend for `speculation-judge.js`, default OFF, benchmark evidence, fallback semantics, data/privacy, observability) | **[KB-jev-classifier.md](./KB-jev-classifier.md)** |
+| **[NEW] Jev classifier** (TypeSafe System One opt-in classifier backend for `speculation-guard.js`, regex fallback, default OFF, benchmark evidence, fallback semantics, data/privacy, observability) | **[KB-jev-classifier.md](./KB-jev-classifier.md)** |
 
 ---
 

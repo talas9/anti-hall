@@ -45,22 +45,6 @@
 //   and allows honest hedging, but some misfires will occur. See README for
 //   how to tune or disable per-session.
 //
-// JEV (OPT-IN, additionally gated on top of ANTIHALL_SEMANTIC_JUDGE=1)
-//   When lib/jev-client.js reports enabled (~/.anti-hall/jev.json
-//   {"enabled":true} or ANTIHALL_JEV=1; ANTIHALL_JEV=0 always force-disables),
-//   this hook asks TypeSafe's Jev "System One" model FIRST, using a Noul
-//   question built from the SAME rubric text as JUDGE_SYSTEM below (see
-//   JEV_QUESTION). If Jev answers with confidence >= the configured
-//   threshold (default 0.85), its verdict is used directly and Haiku is never
-//   called. Otherwise (low confidence, or any Jev failure — disabled, no key,
-//   timeout, HTTP error, malformed response) this falls back to the existing
-//   Haiku path UNCHANGED. When Jev is disabled (the default), behavior is
-//   byte-identical to before Jev existed — no extra call, no extra log write.
-//   Each decision reached while Jev is enabled appends one line to
-//   ~/.anti-hall/logs/jev-judge.ndjson (rotated at 1MB): backend used
-//   (jev|haiku|jev→haiku), reason, latency, confidence, verdict — never the
-//   reply text or any credential.
-//
 // Contract (Claude Code Stop hook):
 //   stdin  : JSON { transcript_path, session_id?, ... }
 //   stdout : JSON {"decision":"block","reason":"..."} to block, or nothing
@@ -117,64 +101,6 @@ Respond with ONLY valid JSON, no prose, no markdown code fences:
   {"decision":"block","claim":"<one short sentence naming the unverified claim>"}
   or
   {"decision":"allow"}`;
-
-// ---------------------------------------------------------------------------
-// Jev question — a Noul (yes/no + confidence) built from the SAME rubric
-// text as JUDGE_SYSTEM above, so the two backends are judged against one
-// rubric, not two independently-invented ones. "true" == the Haiku judge's
-// "block"; "false" == the Haiku judge's "allow".
-// ---------------------------------------------------------------------------
-const JEV_QUESTION = {
-  type: 'noul',
-  instructions:
-    'Does the assistant message below contain one or more UNVERIFIED FACTUAL ' +
-    'ASSERTIONS stated with confident, definitive language and NO acknowledgment ' +
-    'that the claim was unverified?',
-  criteria: {
-    true:
-      'The message asserts a factual claim, a cause, an attribution, or a ' +
-      'metric/log interpretation that: was NOT verified with a tool in that turn ' +
-      '(no tool output cited), AND is NOT explicitly flagged as unverified / ' +
-      'uncertain, AND is stated CONFIDENTLY (no hedge word like "probably", ' +
-      '"likely", "I think", "I suspect", "it seems", "it appears", "I\'m not ' +
-      'sure", "I\'d guess", etc.).',
-    false:
-      'The message is honest hedging ("I haven\'t verified this, but...", ' +
-      '"I\'m not sure, but...", "this might be..."); or quoted/paraphrased text ' +
-      'from the user\'s own input; or an explicit hypothetical ("if X were the ' +
-      'case...", "suppose..."); or a plan/proposal/next-step the assistant says ' +
-      'it will do; or a claim trivially verifiable by inspection of the message ' +
-      'itself (e.g. describing what a code snippet says); or a claim prefaced ' +
-      'with "I don\'t know", "I haven\'t checked", "unverified", "let me ' +
-      'verify", "I\'ll check", "need to confirm", or similar; or general ' +
-      'software/CS knowledge that doesn\'t depend on this project\'s state ' +
-      '(e.g. "HTTP 404 means not found"). Be conservative: when in doubt, false.',
-  },
-};
-
-// appendJevLog(entry) — bounded, best-effort append to
-// ~/.anti-hall/logs/jev-judge.ndjson. Rotates (truncates) the file once it
-// exceeds ~1MB instead of growing unbounded. Never throws; a logging failure
-// must never affect the hook's decision.
-const JEV_LOG_MAX_BYTES = 1024 * 1024;
-function appendJevLog(entry) {
-  try {
-    const logDir = path.join(os.homedir(), '.anti-hall', 'logs');
-    fs.mkdirSync(logDir, { recursive: true });
-    const logPath = path.join(logDir, 'jev-judge.ndjson');
-    try {
-      const st = fs.statSync(logPath);
-      if (st.size > JEV_LOG_MAX_BYTES) {
-        fs.writeFileSync(logPath, '', 'utf8');
-      }
-    } catch (_) {
-      // file doesn't exist yet — fine, will be created below.
-    }
-    fs.appendFileSync(logPath, JSON.stringify(entry) + '\n', 'utf8');
-  } catch (_) {
-    // best-effort only
-  }
-}
 
 // ---------------------------------------------------------------------------
 // Extract the last assistant message text from a transcript JSONL file.
@@ -375,6 +301,12 @@ async function main() {
     process.exit(0);
   }
 
+  // API key required — fail-open if absent.
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey || typeof apiKey !== 'string' || !apiKey.trim()) {
+    process.exit(0);
+  }
+
   // Derive session key for state file.
   const sessionId = (payload && payload.session_id && String(payload.session_id)) ||
     crypto.createHash('sha1').update(transcriptPath).digest('hex').slice(0, 16);
@@ -422,66 +354,12 @@ async function main() {
     process.exit(0);
   }
 
-  // Try Jev first (opt-in, additionally gated — see header comment). Any
-  // failure (disabled, no key, timeout, HTTP error, malformed response, or a
-  // require()/throw of any kind) falls through to the existing Haiku path
-  // unchanged. `logEntry` stays null (no log line) when Jev is disabled, so
-  // a user who never opted in gets byte-identical behavior — no extra call,
-  // no extra file write.
+  // Call the judge API (20 s timeout — hook budget is 30 s).
   let decision = null;
-  let logEntry = null;
   try {
-    const { jevDecide, loadJevConfig } = require('./lib/jev-client.js');
-    const jevCfg = loadJevConfig();
-    if (jevCfg.enabled) {
-      const jevResult = await jevDecide({ question: JEV_QUESTION, state: lastText.slice(0, 8000) });
-      if (jevResult.ok && jevResult.confidence >= jevCfg.confidenceThreshold) {
-        decision = jevResult.answer
-          ? { decision: 'block', claim: 'an unverified factual claim' }
-          : { decision: 'allow' };
-        logEntry = {
-          ts: new Date().toISOString(), backend: 'jev',
-          reason: 'confident', ms: jevResult.ms, confidence: jevResult.confidence,
-          verdict: decision.decision,
-        };
-      } else {
-        logEntry = {
-          ts: new Date().toISOString(), backend: 'jev→haiku',
-          reason: jevResult.ok ? 'low-confidence' : jevResult.reason,
-          ms: jevResult.ms != null ? jevResult.ms : null,
-          confidence: jevResult.ok ? jevResult.confidence : null,
-          verdict: null,
-        };
-      }
-    }
+    decision = await callAnthropicAPI(lastText, apiKey.trim(), 20000);
   } catch (_) {
-    // Jev path unavailable for any reason — fall through to Haiku.
-  }
-
-  // Fall back to the existing Haiku path when Jev didn't produce a decision
-  // (disabled, low confidence, or any failure). Requires ANTHROPIC_API_KEY —
-  // fail-open if absent, exactly as before Jev existed.
-  if (decision === null) {
-    const apiKey = process.env.ANTHROPIC_API_KEY;
-    if (!apiKey || typeof apiKey !== 'string' || !apiKey.trim()) {
-      process.exit(0);
-    }
-
-    // Call the judge API (20 s timeout — hook budget is 30 s).
-    let haikuDecision = null;
-    try {
-      haikuDecision = await callAnthropicAPI(lastText, apiKey.trim(), 20000);
-    } catch (_) {
-      process.exit(0);
-    }
-    decision = haikuDecision;
-
-    if (logEntry) {
-      logEntry.verdict = (decision && decision.decision === 'block') ? 'block' : 'allow';
-      appendJevLog(logEntry);
-    }
-  } else if (logEntry) {
-    appendJevLog(logEntry);
+    process.exit(0);
   }
 
   // Fail-open: null, non-object, missing decision field, or "allow" all exit 0.

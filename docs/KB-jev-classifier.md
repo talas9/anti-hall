@@ -1,6 +1,7 @@
 # KB-jev-classifier.md — Jev (TypeSafe System One) as an opt-in classifier backend
 
-> Status: opt-in, **default OFF**. Currently wired into `speculation-judge.js` only.
+> Status: opt-in, **default OFF**. Currently wired into `speculation-guard.js` only (Tier 2
+> Stop hook), with the existing regex check as the fallback.
 > Everything below is either **[measured]** (cite the source run/file) or **[design]**
 > (documented intent, not yet independently verified against a live call in every
 > environment). No number in this doc is invented.
@@ -30,12 +31,11 @@ single-turn classification call that a chat model would otherwise make.
 
 ## 2. Where anti-hall uses it
 
-**Today:** `plugins/anti-hall/hooks/speculation-judge.js` (Stop hook, Tier 3, itself
-opt-in behind `ANTIHALL_SEMANTIC_JUDGE=1`). When Jev is additionally enabled, it is
-asked FIRST — a Noul question built from the exact same rubric text as the hook's
-existing `JUDGE_SYSTEM` prompt (see `JEV_QUESTION` in the hook source; the rubric was
-not rewritten, just re-shaped into `criteria.true`/`criteria.false`). A confident Jev
-verdict is used directly; anything else falls back to the pre-existing Haiku path.
+**Today:** `plugins/anti-hall/hooks/speculation-guard.js` (Stop hook, Tier 2, always
+registered). When Jev is enabled it is asked FIRST with a Noul question (`JEV_QUESTION` in
+the hook source; `true` = speculative). Only a confident `true` blocks on Jev's word; every
+other outcome runs the regex hedge-word check exactly as before. `speculation-judge.js`
+(Tier 3, Haiku via `ANTHROPIC_API_KEY`) no longer consults Jev.
 
 **Planned, not yet built:** DevSwarm mesh message triage (urgent / needs-reply / FYI) —
 the same "typed decision on a rubric" shape Jev is suited for. Not implemented as of
@@ -54,8 +54,8 @@ free, instant, offline guard for a paid, slower, fallible one with no accuracy b
 
 ## 3. Default OFF — exact enable steps
 
-Jev is consulted only when **both** are true: `ANTIHALL_SEMANTIC_JUDGE=1` (the
-pre-existing Tier-3 gate) **and** Jev itself is enabled. Jev's own gate:
+Jev is consulted only when it is enabled (no other gate — `speculation-guard.js` is always
+registered):
 
 `~/.anti-hall/jev.json` (all fields optional; shown with every default):
 
@@ -75,7 +75,7 @@ pre-existing Tier-3 gate) **and** Jev itself is enabled. Jev's own gate:
 | `transport` | `"vercel"` | `"vercel"` (Vercel AI Gateway passthrough) or `"typesafe"` (TypeSafe's direct API). |
 | `keyFile` | `~/.config/vercel/ai-gateway-key` (vercel) / `~/.config/typesafe/key` (typesafe) | Fallback credential file, read only if the matching env var is unset. `~` expands to `$HOME`. |
 | `timeoutMs` | `1500` | Hard per-call timeout; any slower response is treated as a failure and falls back. |
-| `confidenceThreshold` | `0.85` | Minimum Jev confidence to use its verdict directly instead of falling back to Haiku. |
+| `confidenceThreshold` | `0.85` | Minimum Jev confidence for a "speculative" answer to block without the regex. |
 
 Env vars (checked before `keyFile`):
 
@@ -95,33 +95,45 @@ Env vars (checked before `keyFile`):
   the Gateway path is the practically reachable one.
 
 **To disable:** delete/omit `~/.anti-hall/jev.json` (or set `"enabled": false`), or set
-`ANTIHALL_JEV=0`. With Jev disabled, `speculation-judge.js` is **byte-identical** to its
-pre-Jev behavior — no extra network call, no extra file write, nothing observable
-changes.
+`ANTIHALL_JEV=0`. With Jev disabled, `speculation-guard.js` makes the same decisions as the regex-only
+hook — no network call, no log write.
 
-## 4. Fallback semantics
+## 4. Fallback semantics (asymmetric trust)
 
-Order of evaluation inside `speculation-judge.js` when `ANTIHALL_SEMANTIC_JUDGE=1`:
+Order inside `speculation-guard.js`:
 
-1. **Jev disabled** (the default) → go straight to the existing Haiku path, unchanged.
-2. **Jev enabled** → call Jev with `timeoutMs` from config.
-   - **Success AND `confidence >= confidenceThreshold`** → use Jev's verdict directly.
-     Haiku is never called.
-   - **Success but `confidence < confidenceThreshold`** → fall back to Haiku.
-   - **Any failure** (no credential, timeout, non-2xx HTTP status, unparsable body,
-     malformed answer shape, or any thrown error) → fall back to Haiku. Every failure
-     mode returns a `reason` string (`no-key`, `timeout`, `http-<status>`,
-     `parse-error`, `bad-response`, …) instead of throwing.
-3. **Haiku path** (reached in all fallback cases) is completely unchanged from before
-   Jev existed — same prompt, same model default (`claude-haiku-4-5`), same
-   `ANTHROPIC_API_KEY` requirement, same fail-open behavior if that key is absent.
+1. **Loop-safety first** — if this exact message was already blocked, or the session hit
+   its block cap (3), allow without calling Jev.
+2. **Jev disabled** (the default) → regex check only.
+3. **Jev enabled** → one call with `timeoutMs`.
+   - Answer `true` (speculative) **and** `confidence >= confidenceThreshold` → **block**.
+   - Anything else — a confident `false`, low confidence, or any failure (`no-key`,
+     `timeout`, `http-<status>`, `parse-error`, `bad-response`) → the regex check decides.
 
-Net effect: when Jev is confident (at or above `confidenceThreshold`), its verdict is used **instead of** Haiku's, in both directions. A confident Jev `block` can stop a reply Haiku would have allowed, and a confident Jev `allow` can pass a reply Haiku would have blocked. That is the trade enabling Jev makes: a faster, cheaper judge whose confident answers you accept. Below the threshold, and on every Jev failure, the hook falls through to exactly the Haiku decision it made before Jev existed. A Jev outage or misconfiguration therefore degrades to "as if Jev were never enabled", never to "the hook breaks". To compare the two judges on your own traffic, see the agreement one-liner in §6.
+Jev can add blocks the regex misses (unhedged, unsupported "Fixed." / "All done"); it
+can never remove a regex block. It is not trusted to allow on its own because a labelled
+probe (below) did not reach 7/8 confident-correct across both classes.
+
+**Why the question was rewritten (measured 2026-09-24, live gateway).** The earlier
+question reused the Tier-3 rubric, whose `true` criterion required *no hedge word*, so a
+hedged guess ("The crash is probably caused by the cache; it should work now, I think
+the tests pass.") was, by that rubric, correctly answered `false` — a confident allow.
+It was a rubric mismatch, not inverted polarity. Raw `noul` on 10 labelled messages
+(5 speculative, 5 grounded):
+
+| Question | Correct | Confident (≥0.85) and correct | Speculative noul | Grounded noul |
+|---|---|---|---|---|
+| old (Tier-3 rubric) | 7/10 | 1/10 | 0.10–0.87 | 0.05–0.57 |
+| current `JEV_QUESTION` | 10/10 | 8/10 | 0.94–0.98 | 0.06–0.20 |
+
+On 6 further neutral replies (a question, a plan, general knowledge, a code snippet, a
+hypothetical, small talk) the current question scored noul 0.03–0.38: all correct, none
+a confident block. Small sample, one run — directional, not a benchmark.
 
 ## 5. Data and privacy
 
 When Jev is enabled and consulted, the text of the **judged assistant reply** (capped at
-8000 characters, same cap the Haiku path already uses) is sent as the `state` field to
+8000 characters) is sent as the `state` field to
 whichever transport is configured — Vercel AI Gateway (`ai-gateway.vercel.sh`) or
 TypeSafe's own API (`api.typesafe.ai`), i.e. to Vercel and/or TypeSafe as third parties.
 No other transcript content, no tool output, no file contents, and no credentials are
@@ -142,21 +154,20 @@ hook's decision). The file is rotated (truncated) once it exceeds ~1 MB. Shape:
 
 ```json
 {"ts":"2026-09-24T12:00:00.000Z","backend":"jev","reason":"confident","ms":382,"confidence":0.94,"verdict":"block"}
-{"ts":"2026-09-24T12:05:00.000Z","backend":"jev→haiku","reason":"low-confidence","ms":401,"confidence":0.4,"verdict":"allow"}
+{"ts":"2026-09-24T12:05:00.000Z","backend":"jev→regex","reason":"low-confidence","ms":401,"confidence":0.4,"verdict":"allow"}
 ```
 
-- `backend`: `jev` (Jev's verdict was used directly), `haiku` (never applicable while
-  Jev is enabled and reachable — reserved for symmetry, not currently emitted), or
-  `jev→haiku` (Jev was tried and the hook fell back).
-- `reason`: `confident` | `low-confidence` | a Jev failure reason (`no-key`, `timeout`,
-  `http-<status>`, `parse-error`, `bad-response`, …).
+- `backend`: `jev` (a confident Jev block), `jev→regex` (Jev was asked, the regex
+  decided), or `none` (loop-safety allowed without calling Jev).
+- `reason`: `confident` | `confident-allow-untrusted` | `low-confidence` | `loop-safe` |
+  a Jev failure reason (`no-key`, `timeout`, `http-<status>`, `parse-error`,
+  `bad-response`, …).
 - `ms`: Jev's own call latency, when a call was made.
 - `confidence`: Jev's confidence, when available.
-- `verdict`: the final `block`/`allow` outcome of the whole decision (Jev's or Haiku's).
+- `verdict`: the final `block`/`allow` outcome the hook emitted.
 
 No reply text and no credential ever appears in this file. A one-liner to compute the
-Jev/Haiku agreement rate over the session log (fraction of Jev-confident decisions,
-i.e. how often Jev alone decided vs. falling through to Haiku):
+share of decisions Jev made alone (confident blocks) vs. handed to the regex:
 
 ```bash
 node -e '
@@ -168,7 +179,7 @@ console.log(`${jev}/${lines.length} decisions used Jev alone (${(100*jev/lines.l
 '
 ```
 
-(This measures how often Jev was confident enough to skip Haiku, not label-level
+(This measures how often Jev blocked without the regex, not label-level
 agreement between the two backends — the hook only calls one or the other per decision,
 never both, so there is no per-decision pair to compare live. Agreement/accuracy
 numbers below come from the offline benchmark instead.)
@@ -209,19 +220,19 @@ fraction of Jev's own high/low-confidence calls that were actually correct):
 
 This is the empirical basis for the default `confidenceThreshold: 0.85` — above roughly
 0.9 confidence Jev's calls were correct 97–100% of the time across all three sets; below
-that the hit rate drops sharply, which is exactly the regime the fallback-to-Haiku path
+that the hit rate drops sharply, which is exactly the regime the fallback path
 exists to cover.
 
 **Honest caveats [measured/design]:**
 
 - This is **synthetic data, one domain** (a synthetic airline-crew-app support-ticket
-  set), not anti-hall's own speculation-judge task. It is directional evidence for
+  set), not anti-hall's own speculation task. It is directional evidence for
   Jev's general accuracy/latency/cost profile, not a direct measurement of
-  speculation-judge accuracy — no equivalent benchmark exists yet for that exact task.
+  speculation accuracy — the only speculation-task data is the small probe in §4; no equivalent benchmark exists yet for that exact task.
 - **Jev over-flags "urgent"**: 67.6% precision on the easy set (vs. 85.1% for Haiku
   4.5) — i.e. Jev calls things urgent that a stricter rubric-follower would not, at
   roughly 2x Haiku's false-positive rate on that label, even though its overall category
-  accuracy is comparable or better. `speculation-judge`'s own use of Jev is a
+  accuracy is comparable or better. `speculation-guard`'s own use of Jev is a
   block/allow Noul, not this urgent/category task, so this specific bias does not
   transfer directly — it is reported here as a general characteristic of the model.
 - **No 429s up to concurrency 8** in the throughput probe run on 2026-09-24 (25
@@ -247,4 +258,4 @@ exists to cover.
   (§7) reflects one measurement window on one date; TypeSafe/Vercel's actual limits are
   not publicly documented and may tighten or loosen without notice. `jev-client.js`'s
   hard `timeoutMs` (default 1500 ms) and full fail-open behavior (§4) mean a rate-limit
-  regression degrades to "falls back to Haiku," not to a hung or broken hook.
+  regression degrades to "falls back to the regex," not to a hung or broken hook.

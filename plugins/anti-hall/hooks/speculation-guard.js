@@ -19,6 +19,20 @@
 //
 // FAIL-OPEN: any error -> exit 0, no block, no stderr noise.
 //
+// JEV (OPT-IN, default OFF): when lib/jev-client.js reports enabled
+//   (~/.anti-hall/jev.json {"enabled":true} or ANTIHALL_JEV=1; ANTIHALL_JEV=0
+//   always wins), TypeSafe's Jev classifier is asked FIRST with JEV_QUESTION.
+//   ASYMMETRIC TRUST: only a confident "speculative" answer (confidence >=
+//   confidenceThreshold) short-circuits to a BLOCK. A confident "grounded"
+//   answer, a low-confidence answer, or any Jev failure (no key, timeout, HTTP
+//   error, bad response) falls through to the regex logic below, unchanged —
+//   Jev can add blocks the regex misses, never remove one. Both paths share the
+//   same loop-safety (one block per message hash, MAX_BLOCKS per session).
+//   While Jev is enabled every decision appends one line to
+//   ~/.anti-hall/logs/jev-judge.ndjson (no message text, no key). With Jev
+//   disabled (the default) behavior is identical to the regex-only hook and
+//   nothing is logged.
+//
 // Contract (Claude Code Stop hook):
 //   stdin  : JSON { transcript_path, session_id?, ... }
 //   stdout : JSON {"decision":"block","reason":"..."} to block, or nothing
@@ -79,6 +93,55 @@ const ACKNOWLEDGMENT_PATTERNS = [
   /\bper the data\b/i,
   /\bthe data shows\b/i,
 ];
+
+// --------------------------------------------------------------------------
+// Jev question (Noul): true == speculative (block), false == grounded.
+// Wording chosen from a labelled probe (docs/KB-jev-classifier.md §4): the
+// previous Tier-3 rubric required "NO hedge word" for true, so hedged guesses
+// ("probably ... should work now, I think the tests pass") were confidently
+// answered false. Speculation here explicitly INCLUDES hedged guesses.
+// --------------------------------------------------------------------------
+const JEV_QUESTION = {
+  type: 'noul',
+  instructions:
+    'Is this assistant message speculative, i.e. does it assert a cause or an ' +
+    'outcome about the project without cited evidence?',
+  criteria: {
+    true:
+      'Speculative: it asserts a cause, a fix, or a done/works/passes/resolved ' +
+      'outcome about the project with no cited command output, test result, or ' +
+      'file:line reference. Hedged guesses ("probably", "should work", "I think", ' +
+      '"it seems") and confident but unsupported statements ("Fixed.", "All done") ' +
+      'are both speculative.',
+    false:
+      'Not speculative: it reports what a tool actually showed (command output such ' +
+      'as "12 pass, 0 fail", a commit hash, grep results, a file:line reference like ' +
+      'src/app.js:42); or it honestly says something is not yet verified and names ' +
+      'the check to run; or it makes no claim about the project at all (a question, ' +
+      'a plan, code the user asked for, general technical knowledge, an explicit ' +
+      'hypothetical, or small talk).',
+  },
+};
+
+// appendJevLog(entry) — bounded, best-effort append to
+// ~/.anti-hall/logs/jev-judge.ndjson (truncated once it exceeds ~1MB). Never
+// throws; a logging failure must never affect the decision.
+const JEV_LOG_MAX_BYTES = 1024 * 1024;
+function appendJevLog(entry) {
+  try {
+    const logDir = path.join(os.homedir(), '.anti-hall', 'logs');
+    fs.mkdirSync(logDir, { recursive: true });
+    const logPath = path.join(logDir, 'jev-judge.ndjson');
+    try {
+      if (fs.statSync(logPath).size > JEV_LOG_MAX_BYTES) fs.writeFileSync(logPath, '', 'utf8');
+    } catch (_) {
+      // file doesn't exist yet
+    }
+    fs.appendFileSync(logPath, JSON.stringify(entry) + '\n', 'utf8');
+  } catch (_) {
+    // best-effort only
+  }
+}
 
 // --------------------------------------------------------------------------
 // Bounded tail read: load only the last `windowBytes` of a (possibly multi-GB)
@@ -179,8 +242,10 @@ function collectTextFromEntry(node) {
     }
   }
 
-  // Recurse into message field if not already handled above
-  if (node.message && typeof node.message === 'object' && node.message !== node) {
+  // Recurse into message field if not already handled above. When `content`
+  // was taken from node.message (the real transcript shape), recursing would
+  // append the same text a second time — skip it.
+  if (node.message && typeof node.message === 'object' && node.message !== node && node.content) {
     const sub = collectTextFromEntry(node.message);
     if (sub) parts.push(sub);
   }
@@ -209,7 +274,7 @@ function hasAcknowledgment(text) {
 // --------------------------------------------------------------------------
 // Main
 // --------------------------------------------------------------------------
-function main() {
+async function main() {
   let raw = '';
   try {
     raw = fs.readFileSync(0, 'utf8');
@@ -249,17 +314,6 @@ function main() {
     process.exit(0);
   }
 
-  // Check for speculation markers.
-  const marker = findSpeculationMarker(lastText);
-  if (!marker) {
-    process.exit(0);
-  }
-
-  // Check for acknowledgment — if present, hedging is honest; allow.
-  if (hasAcknowledgment(lastText)) {
-    process.exit(0);
-  }
-
   // Compute a hash of the last message text for loop-safety.
   const msgHash = crypto.createHash('sha1').update(lastText).digest('hex');
 
@@ -282,18 +336,58 @@ function main() {
   }
 
   // Loop-safe: if we already blocked on this exact message, allow (nudged once).
-  if (msgHash === lastBlockedHash) {
-    process.exit(0);
-  }
-
   // Loop-safety 2: hard cap on total blocks this session. The message text
   // legitimately changes as the model reworks its reply, which defeats the
   // byte-identical hash dedupe; without a cap we could re-block on every Stop.
   // After MAX_BLOCKS nudges we stay quiet regardless of churn.
   const MAX_BLOCKS = 3;
-  if (blocks >= MAX_BLOCKS) {
-    process.exit(0);
+  const loopSafe = msgHash === lastBlockedHash || blocks >= MAX_BLOCKS;
+
+  // Jev first (opt-in). logEntry stays null when Jev is disabled, so nothing
+  // is logged and the regex path below behaves exactly as without Jev.
+  let logEntry = null;
+  let jevBlock = false;
+  try {
+    const { jevDecide, loadJevConfig } = require('./lib/jev-client.js');
+    const jevCfg = loadJevConfig();
+    if (jevCfg.enabled && loopSafe) {
+      // Outcome is already "allow" — don't spend a Jev call on it.
+      logEntry = { backend: 'none', reason: 'loop-safe', ms: null, confidence: null };
+    } else if (jevCfg.enabled) {
+      const r = await jevDecide({ question: JEV_QUESTION, state: lastText.slice(0, 8000) });
+      const confident = r.ok && r.confidence >= jevCfg.confidenceThreshold;
+      if (confident && r.answer === true) {
+        jevBlock = true;
+        logEntry = { backend: 'jev', reason: 'confident', ms: r.ms, confidence: r.confidence };
+      } else {
+        logEntry = {
+          backend: 'jev→regex',
+          reason: !r.ok ? r.reason : (confident ? 'confident-allow-untrusted' : 'low-confidence'),
+          ms: r.ms != null ? r.ms : null,
+          confidence: r.ok ? r.confidence : null,
+        };
+      }
+    }
+  } catch (_) {
+    // Jev path unavailable for any reason — regex decides.
   }
+
+  const finish = (verdict) => {
+    if (logEntry) appendJevLog({ ts: new Date().toISOString(), ...logEntry, verdict });
+    process.exit(0);
+  };
+
+  let marker = null;
+  if (!jevBlock) {
+    // Check for speculation markers.
+    marker = findSpeculationMarker(lastText);
+    if (!marker) finish('allow');
+
+    // Check for acknowledgment — if present, hedging is honest; allow.
+    if (hasAcknowledgment(lastText)) finish('allow');
+  }
+
+  if (loopSafe) finish('allow');
 
   // Persist the blocked hash + incremented count before outputting the decision.
   try {
@@ -301,7 +395,7 @@ function main() {
     fs.writeFileSync(stateFile, JSON.stringify({ hash: msgHash, blocks: blocks + 1 }), 'utf8');
   } catch (_) {
     // Can't persist -> fail-open to avoid loops.
-    process.exit(0);
+    finish('allow');
   }
   // Opportunistic bounded self-prune of OTHER stale speculation-guard-state-*
   // files (one per session, never cleaned otherwise — see lib/state-prune.js).
@@ -311,20 +405,22 @@ function main() {
     });
   } catch (_) {}
 
-  const reason =
-    'anti-hall speculation-guard: your reply states something speculative (\'' +
-    marker +
-    '\') without verifying it or flagging it as unverified. ' +
-    'Verify it with a tool, or explicitly say what\'s unverified / \'I don\'t know - ' +
-    'here\'s what I\'d check\', then continue.';
+  const reason = jevBlock
+    ? 'anti-hall speculation-guard: your reply asserts a cause or outcome without ' +
+      'citing evidence (command output, a test result, or a file:line reference). ' +
+      'Verify it with a tool, or explicitly say what\'s unverified / \'I don\'t know - ' +
+      'here\'s what I\'d check\', then continue.'
+    : 'anti-hall speculation-guard: your reply states something speculative (\'' +
+      marker +
+      '\') without verifying it or flagging it as unverified. ' +
+      'Verify it with a tool, or explicitly say what\'s unverified / \'I don\'t know - ' +
+      'here\'s what I\'d check\', then continue.';
 
   process.stdout.write(JSON.stringify({ decision: 'block', reason }) + '\n');
-  process.exit(0);
+  finish('block');
 }
 
-try {
-  main();
-} catch (_) {
+main().catch(() => {
   // Fail-open: never wedge a Stop.
   process.exit(0);
-}
+});
