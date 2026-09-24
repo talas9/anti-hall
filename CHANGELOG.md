@@ -188,6 +188,19 @@ the update.
 - Deleting DevSwarm workspaces is never automated: only `prune-archived` with an
   owner-approved exact list.
 
+- **Fixed: a stale-build child was misreported as "not-draining" instead of stale.**
+  A child auto-resumed before the harness re-registered a newer anti-hall build kept
+  running the old build (its wake-watch process had the old cache path baked in);
+  0.105.3 is NDJSON-only and cannot see store-side mesh mail, so the Primary saw it as
+  neglect rather than a version problem. `heartbeat`/`inbox tick` now stamp the calling
+  process's own running anti-hall version onto every heartbeat record; the roster
+  table, parent-inbox nag, and `doctor` now show `stale anti-hall <v>: restart this
+  session (or drain with <newest CLI path>)` instead of `not-draining` for a workspace
+  whose recorded version is older than the newest one registered/cached on this
+  machine. `devswarm-wake-watch.js` also now checks on every poll whether a newer
+  version is registered/cached and, if so, prints one line and exits cleanly instead of
+  running on as a silent stale watcher.
+
 ## 0.107.1 (2026-09-24)
 
 - **Fixed: phantom "N unread" on the Primary's own mailbox.** When a store's

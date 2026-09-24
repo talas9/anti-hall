@@ -70,6 +70,7 @@ const {
   DEFAULT_COOLDOWN_MS,
 } = require('../companion/lib/liveness.js');
 const livenessLib = require('../companion/lib/liveness.js');
+const versionCheck = require('../companion/lib/devswarm-version-check.js');
 const { rowState } = require('../companion/lib/row-state.js');
 // SHARED archive-resurrection gate (defect df54edf54804, item 3) — the SAME
 // worktree-discriminated predicate companion/devswarm-migrate.js and
@@ -770,7 +771,11 @@ function buildUnreadSegment(list, home) {
     const parts = [];
     if (w.unread > 0) parts.push(w.unread + ' unread');
     if (w.status && STUCK_STATUSES.has(w.status)) parts.push(w.status);
-    if (w.notDraining) parts.push('NOT DRAINING >20m'); // item 3: distinct from stale/escalated
+    // item 4b: a stale-anti-hall-build row replaces the not-draining tag
+    // entirely (w.notDraining is already false for such a row — see the
+    // attention-push gate — so these two are mutually exclusive per row).
+    if (w.staleAntiHallMessage) parts.push(w.staleAntiHallMessage);
+    else if (w.notDraining) parts.push('NOT DRAINING >20m'); // item 3: distinct from stale/escalated
     if (Number.isFinite(w.oldestUnreadTs)) parts.push('oldest ' + formatRelative(w.oldestUnreadTs, now));
     // item 6 (trend, vs the last persisted logInjection entry): fail-open to
     // omitting when unknown (no prior snapshot / log too large / read error).
@@ -826,7 +831,9 @@ function buildUrgentUnreadSegment(list, home) {
   const shown = list.slice(0, MAX_LISTED).map((w) => {
     const parts = [w.unread + ' unread'];
     if (w.status && STUCK_STATUSES.has(w.status)) parts.push(w.status);
-    if (w.notDraining) parts.push('NOT DRAINING >20m');
+    // item 4b: see buildUnreadSegment's matching comment — mutually exclusive.
+    if (w.staleAntiHallMessage) parts.push(w.staleAntiHallMessage);
+    else if (w.notDraining) parts.push('NOT DRAINING >20m');
     const trend = home ? trendLabel(home, w.id, w.unread) : null; // item 6, fail-open
     if (trend) parts.push(trend);
     return w.id + ' (' + parts.join(', ') + ')';
@@ -1433,6 +1440,16 @@ function main() {
   const summaryWorkspaces = (summary && summary.workspaces && typeof summary.workspaces === 'object')
     ? summary.workspaces : {};
 
+  // item 4b (P0, field-proven): resolved ONCE per hook invocation (pure fs
+  // reads, no git spawn — see devswarm-version-check.js's own header), not
+  // per workspace. A child heartbeating an OLDER anti-hall build than this
+  // machine's newest known one gets a distinct "stale anti-hall <v>" label
+  // INSTEAD of "not-draining" below — the real cause (an un-restarted build
+  // that literally cannot see store-side mesh mail on 0.105.3) is a build
+  // problem, not a coordination-neglect one, and the two need different
+  // remedies (restart, not poke/escalate).
+  const newestAntiHallVersion = versionCheck.newestKnownAntiHallVersion({ env: process.env, home });
+
   const attention = []; // { id, unread, cursor, total, status, urgencyMax }
   const archiveList = [];
   const rows = []; // live-table row per ACTIVE workspace: { id, label, rank, finish, unread, lastActivityTs }
@@ -1562,6 +1579,32 @@ function main() {
     // has aged past NOT_DRAINING_AGE_MS, independent of `status`. Surfaced here
     // (not folded into `stuck`) so it stays a distinct signal downstream.
     const notDraining = !!(verdict && verdict.notDraining);
+    // item 4b (P0, field-proven): a notDraining workspace running a STALE
+    // anti-hall build (item 4a's recorded heartbeat `version`, older than the
+    // newest known on this machine) gets a distinct "stale anti-hall <v>"
+    // label/message INSTEAD of "not-draining" everywhere below — see
+    // devswarm-version-check.js's header for why (0.105.3 is NDJSON-only and
+    // cannot see store-side mesh mail at all, so this "looks like" neglect
+    // but the actual remedy is a restart, not a poke/escalate). Computed only
+    // when notDraining is already true (the ONLY case this ever overrides) —
+    // a normal/draining row pays no extra heartbeat read.
+    let staleAntiHallVersion = null;
+    let staleAntiHallMessage = null;
+    if (notDraining && newestAntiHallVersion) {
+      let hbVersion = null;
+      try { hbVersion = livenessLib.heartbeatVersion(id, home); } catch (_) { hbVersion = null; }
+      if (versionCheck.isVersionStale(hbVersion, newestAntiHallVersion)) {
+        staleAntiHallVersion = hbVersion;
+        const cliPath = versionCheck.newestCliPath({
+          env: process.env, home, newestVersion: newestAntiHallVersion, segments: ['scripts', 'devswarm.js'],
+        });
+        staleAntiHallMessage = versionCheck.staleAntiHallMessage(hbVersion, newestAntiHallVersion, cliPath);
+      }
+    }
+    // The boolean fed to every existing not-draining branch below — false
+    // whenever staleAntiHallVersion applies, so this can only ever REPLACE
+    // the not-draining label, never coexist with it for the same row.
+    const notDrainingForLabel = notDraining && !staleAntiHallVersion;
     // --- archive-ready recommendation (P1-E) — computed BEFORE the attention
     // push below so the archive-ready-quiet check just below can use it.
     const archiveReady = isArchiveReady(id, summary);
@@ -1632,7 +1675,10 @@ function main() {
       // field, see companion/lib/devswarm-store.js computeSummary).
       const wsName = (rowWs && rowWs.label) || names.readName(home, id);
       const oldestUnreadTs = oldestUnreadTsForGate;
-      attention.push({ id, unread, cursor, total, status, urgencyMax, wsName, oldestUnreadTs, notDraining });
+      attention.push({
+        id, unread, cursor, total, status, urgencyMax, wsName, oldestUnreadTs,
+        notDraining: notDrainingForLabel, staleAntiHallMessage,
+      });
     }
 
     try {
@@ -1766,7 +1812,17 @@ function main() {
       // shape as `idleAlive` above — `not-draining` (rank 1.5) still wins over
       // it when present, exactly as it already wins over every other liveness
       // label in displayStatus's own rank order.
-      const notDrainingFlag = !!(verdict && verdict.notDraining);
+      // notDrainingFlag reuses the SAME per-iteration value computed above
+      // (already accounts for the item 4b stale-build override) — never
+      // re-derived from `verdict` independently, so this can never disagree
+      // with the attention-push gate's own notDraining/staleAntiHallVersion
+      // decision for the identical row.
+      const notDrainingFlag = notDrainingForLabel;
+      // item 4b: stale-anti-hall-build wins over EVERY branch below (archived/
+      // archived-superseded/plain displayStatus) — same "wins over everything"
+      // posture not-draining itself already has (see the comment above), for
+      // the same reason: a stale build cannot self-clear by archiving or by
+      // any liveness signal, and needs its own distinct, actionable label.
       // APP-ARCHIVED FIX (P0 field bug, follow-up to R15 P2 above): the "+N
       // archived" table-collapsing display elsewhere hides rows whose label
       // is exactly 'archived' — an app-archived row (archived via the
@@ -1779,11 +1835,17 @@ function main() {
       // not-draining backlog is real, actionable coordination-neglect signal
       // this hook must never hide. Only the app-archived case is forced
       // plain 'archived' regardless of notDrainingFlag.
-      const ds = archivedRow
-        ? (appArchivedRow ? { label: 'archived', rank: 6 } : (notDrainingFlag ? { label: 'not-draining', rank: 1.5 } : { label: 'archived', rank: 6 }))
-        : archivedSuperseded
-          ? (notDrainingFlag ? { label: 'not-draining', rank: 1.5 } : { label: 'archived-superseded (live child)', rank: 5.5 })
-          : displayStatus(archiveReady, status, activityTs, now, dormant, notDrainingFlag, idleAlive);
+      // Merge note (v0.108.0 integration): an APP-archived row stays plain
+      // 'archived' even when stale — the owner already put it away in the app,
+      // and a label that can never self-clear would keep it loud forever (the
+      // exact bug the app-archived fix above closed).
+      const ds = (staleAntiHallVersion && !appArchivedRow)
+        ? { label: 'stale anti-hall ' + staleAntiHallVersion, rank: 1.5 }
+        : archivedRow
+          ? (appArchivedRow ? { label: 'archived', rank: 6 } : (notDrainingFlag ? { label: 'not-draining', rank: 1.5 } : { label: 'archived', rank: 6 }))
+          : archivedSuperseded
+            ? (notDrainingFlag ? { label: 'not-draining', rank: 1.5 } : { label: 'archived-superseded (live child)', rank: 5.5 })
+            : displayStatus(archiveReady, status, activityTs, now, dormant, notDrainingFlag, idleAlive);
       // ARCHIVE-READY-QUIET override (see archiveReadyQuiet's own comment
       // above) — applied AFTER `ds` above rather than by touching the pinned
       // ternary itself (tests/hooks/devswarm-parent-inbox-archived-notdraining

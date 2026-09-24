@@ -12,10 +12,15 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { isDevswarmActive } = require('../../hooks/lib/devswarm-detect.js');
-const { computeLiveness, livenessPathFor, projectDirFor, devswarmRoot, isSafeId, unreadBacklog } = require('./liveness.js');
+const { computeLiveness, livenessPathFor, projectDirFor, devswarmRoot, isSafeId, unreadBacklog, heartbeatVersion } = require('./liveness.js');
 const { checkResults: descriptorChecks } = require('./doctor-descriptors.js');
 const { DEVSWARM_BASELINE } = require('../../hooks/lib/devswarm-baseline.js');
 const { classifyVersionDrift } = require('../../hooks/devswarm-version.js');
+// item 4b — stale-anti-hall-BUILD detection (distinct from classifyVersionDrift
+// above, which compares the DevSwarm CLI's OWN version against anti-hall's
+// integration baseline — this compares a workspace's RECORDED anti-hall
+// version, item 4a, against the newest anti-hall build known on THIS machine).
+const versionCheck = require('./devswarm-version-check.js');
 
 const PASS = 'PASS';
 const WARN = 'WARN';
@@ -874,6 +879,12 @@ function runChecks(opts) {
     results.push({ status: WARN, message: 'descriptor integrity scan unavailable: ' + (e && e.message) });
   }
 
+  // item 4b (P0, field-proven): resolved ONCE for the whole descriptor loop
+  // below (pure fs reads — see devswarm-version-check.js's own header), not
+  // once per workspace.
+  let newestAntiHallVersion = null;
+  try { newestAntiHallVersion = versionCheck.newestKnownAntiHallVersion({ env, home }); } catch (_) { newestAntiHallVersion = null; }
+
   // Per-real-workspace readout from persisted verdicts, plus a distinct
   // listener-presence line (evidence something is consuming the inbox — see
   // listenerPresenceFor above) so a combined-verdict PASS can't hide a wedged
@@ -929,6 +940,31 @@ function runChecks(opts) {
       results.push(listenerPresenceFor(d, now, F));
     } catch (e) {
       results.push({ status: WARN, message: 'workspace ' + d.id + ' listener: state unknown (check raised: ' + (e && e.message) + ')' });
+    }
+    // item 4b — stale anti-hall BUILD detection: a child heartbeating an
+    // OLDER anti-hall version (item 4a's recorded field) than the newest one
+    // known on this machine gets its own explicit line naming the fix
+    // (restart, or drain with the newest CLI path) — the real cause of a
+    // "not-draining"-looking workspace can be a stale build the roster/
+    // parent-inbox already relabel accordingly (see devswarm-parent-inbox.js).
+    // Silent (no line at all) when unknown/current — never a false positive
+    // over a legacy pre-item-4a heartbeat record (null version) or an
+    // unresolvable newest version.
+    try {
+      if (newestAntiHallVersion) {
+        const hbVersion = heartbeatVersion(d.id, home, F);
+        if (versionCheck.isVersionStale(hbVersion, newestAntiHallVersion)) {
+          const cliPath = versionCheck.newestCliPath({
+            env, home, newestVersion: newestAntiHallVersion, segments: ['scripts', 'devswarm.js'],
+          });
+          results.push({
+            status: WARN,
+            message: 'workspace ' + d.id + ': ' + versionCheck.staleAntiHallMessage(hbVersion, newestAntiHallVersion, cliPath),
+          });
+        }
+      }
+    } catch (e) {
+      results.push({ status: WARN, message: 'workspace ' + d.id + ' stale-build check unavailable: ' + (e && e.message) });
     }
   }
   return { active: true, results };

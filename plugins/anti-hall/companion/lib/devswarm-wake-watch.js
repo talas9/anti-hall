@@ -252,6 +252,57 @@ function readInstalledPluginVersion() {
   } catch (_) { return null; }
 }
 
+// checkStaleVersion(ownVersion, env) -> { newestVersion, scriptPath } | null.
+// P0 field root cause (item 4c): a child auto-resumed BEFORE the harness
+// re-registered a newer anti-hall build keeps this watcher (and everything
+// else in its process) running the OLD build's code indefinitely — nothing
+// ever told it a newer build exists, so it just sat there silently stale.
+// This reuses update.js's OWN version-resolution chain (installed_plugins.json
+// -> newest cache dir -> marketplace plugin.json — the same three sources
+// doctor.js's harness-registration check already reads) rather than
+// re-deriving version comparison logic here. Pure fs reads, no git spawn —
+// cheap enough to run on every poll tick (same order of cost as the
+// snapshot/summary reads this loop already does each tick). Returns null
+// (never flags) when `ownVersion` is unknown/non-semver, or the newest known
+// version is not strictly ahead of it — fail-open toward staying armed, never
+// toward a false "stale" exit that would leave a workspace with NO watcher at
+// all over a transient/unreadable version-resolution failure.
+function checkStaleVersion(ownVersion, env) {
+  try {
+    const upd = require(path.join(__dirname, '..', '..', 'skills', 'update', 'scripts', 'update.js'));
+    if (!upd.isSemver(ownVersion)) return null;
+    const home = os.homedir();
+    const paths = upd.resolvePaths(env || process.env, home);
+    const candidates = [
+      upd.versionFromInstalledJson(paths.installedJson),
+      upd.newestCacheVersion(paths.cacheRoot),
+      upd.versionFromMarketplace(paths.pluginJson),
+    ];
+    let newest = null;
+    for (const v of candidates) {
+      if (upd.isSemver(v) && (!newest || upd.compareVersions(v, newest) > 0)) newest = v;
+    }
+    if (!newest || upd.compareVersions(ownVersion, newest) >= 0) return null;
+    const scriptPath = path.join(paths.cacheRoot, newest, 'companion', 'lib', 'devswarm-wake-watch.js');
+    return { newestVersion: newest, scriptPath };
+  } catch (_) {
+    return null; // fail-open: a resolution failure must never falsely exit a healthy watcher
+  }
+}
+
+// formatStaleVersionLine(role, id, ownVersion, newestVersion, scriptPath) ->
+// the ONE line emitted when checkStaleVersion detects a newer build. Unlike
+// formatRefusalLine, this carries runtime-derived version/path text
+// DELIBERATELY (same posture as formatWakeLine/formatErrorLine above) — the
+// whole point is to name the exact re-arm command, not a closed-vocabulary
+// code.
+function formatStaleVersionLine(role, id, ownVersion, newestVersion, scriptPath) {
+  return '[wake-watch] STALE BUILD: this watcher for ' + (role || 'unknown') + ' ' + (id || 'unknown')
+    + ' is running anti-hall ' + (ownVersion || 'unknown') + ', but ' + newestVersion + ' is registered/cached. '
+    + 'Re-arm with `node ' + scriptPath + '` (Monitor tool, persistent: true) to pick it up. '
+    + 'Exiting now — never running on as a silent stale watcher.';
+}
+
 // resolveOwnSessionId() -> string | undefined. Best-effort identifier for the
 // Claude Code (or Codex-companion) session that armed THIS watcher, stamped
 // into the lock file so a refused sibling can name WHICH session's watcher
@@ -997,10 +1048,13 @@ function main() {
   const watchedRole = identity.role;
 
   const lockPath = lockPathFor(home, id);
+  // Read once, reused both for the lock's own `version` field (unchanged) and
+  // the per-poll stale-build check below (item 4c) — never re-derived twice.
+  const ownVersion = readInstalledPluginVersion();
   let refusalInfo = null;
   const release = pull.acquireExclLock(lockPath, {
     allowStaleLiveSteal: true,
-    version: readInstalledPluginVersion(),
+    version: ownVersion,
     sessionId: resolveOwnSessionId(),
     onRefused(info) { refusalInfo = info; },
   }, WATCH_LOCK_STALE_MS);
@@ -1137,6 +1191,25 @@ function main() {
       cleanup({ skipSave: true });
       return;
     }
+
+    // Stale-build check (item 4c) — every poll, so there is never a silent
+    // stale watcher: a child auto-resumed on an old cache path can otherwise
+    // run this exact code indefinitely with no signal that a newer build
+    // exists. One line, then exit cleanly (same clean-exit shape as the
+    // lock-lost path above — release()/cleanup(), no kill, nothing forced).
+    // The NEXT wake-watch arm (whenever the session next re-arms it, on this
+    // stale path or a fresh one) will simply resolve `checkStaleVersion`
+    // fresh again — this never leaves stale watcher-lock state behind either
+    // (cleanup() releases the lock normally, freeing a fresh arm to succeed).
+    const staleVersion = checkStaleVersion(ownVersion, env);
+    if (staleVersion) {
+      try {
+        emitLine(formatStaleVersionLine(watchedRole, id, ownVersion, staleVersion.newestVersion, staleVersion.scriptPath));
+      } catch (_) {}
+      cleanup();
+      return;
+    }
+
     let snapshot;
     try {
       snapshot = watchedRole === 'child'
@@ -1203,6 +1276,9 @@ module.exports = {
   POLL_ENV_VAR,
   readInstalledPluginVersion,
   WATCH_LOCK_STALE_MS,
+  // item 4c — stale-build per-poll check:
+  checkStaleVersion,
+  formatStaleVersionLine,
 };
 
 if (require.main === module) main();

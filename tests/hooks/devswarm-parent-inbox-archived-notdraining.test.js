@@ -32,8 +32,13 @@ const INBOX = path.join(__dirname, '..', '..', 'plugins', 'anti-hall', 'hooks', 
 const src = fs.readFileSync(INBOX, 'utf8');
 
 test('item 2: the archived branch now consults notDrainingFlag instead of an unconditional swap', () => {
-  assert.ok(/const notDrainingFlag = !!\(verdict && verdict\.notDraining\);/.test(src),
-    'notDrainingFlag must be computed once and reused for both branches');
+  // item 4b (P0, stale-anti-hall-build detection) folded notDrainingFlag into
+  // a single per-iteration value (notDrainingForLabel, already false whenever
+  // a stale-build override applies) rather than re-deriving it here from
+  // `verdict` a second time — same VALUE and reuse-once-per-row discipline
+  // this guard originally asserted, just sourced from the shared variable.
+  assert.ok(/const notDrainingFlag = notDrainingForLabel;/.test(src),
+    'notDrainingFlag must be computed once (reusing the shared notDrainingForLabel) and reused for both branches');
   assert.ok(
     /archivedRow\s*\n\s*\?\s*\(appArchivedRow \? \{ label: 'archived', rank: 6 \} : \(notDrainingFlag \? \{ label: 'not-draining', rank: 1\.5 \} : \{ label: 'archived', rank: 6 \}\)\)/.test(src),
     'a LOCALLY-archived row with a real not-draining backlog must render not-draining, not archived'
@@ -42,8 +47,8 @@ test('item 2: the archived branch now consults notDrainingFlag instead of an unc
 
 test('MUTATION: reverting the archived branch to an unconditional swap loses the not-draining backlog', () => {
   const buggy = src.replace(
-    "archivedRow\n        ? (appArchivedRow ? { label: 'archived', rank: 6 } : (notDrainingFlag ? { label: 'not-draining', rank: 1.5 } : { label: 'archived', rank: 6 }))\n        : archivedSuperseded\n          ? (notDrainingFlag ? { label: 'not-draining', rank: 1.5 } : { label: 'archived-superseded (live child)', rank: 5.5 })\n          : displayStatus(archiveReady, status, activityTs, now, dormant, notDrainingFlag, idleAlive);",
-    "archivedRow\n        ? { label: 'archived', rank: 6 }\n        : archivedSuperseded\n          ? { label: 'archived-superseded (live child)', rank: 5.5 }\n          : displayStatus(archiveReady, status, activityTs, now, dormant, notDrainingFlag, idleAlive);"
+    "archivedRow\n          ? (appArchivedRow ? { label: 'archived', rank: 6 } : (notDrainingFlag ? { label: 'not-draining', rank: 1.5 } : { label: 'archived', rank: 6 }))\n          : archivedSuperseded\n            ? (notDrainingFlag ? { label: 'not-draining', rank: 1.5 } : { label: 'archived-superseded (live child)', rank: 5.5 })",
+    "archivedRow\n          ? { label: 'archived', rank: 6 }\n          : archivedSuperseded\n            ? { label: 'archived-superseded (live child)', rank: 5.5 }",
   );
   assert.notStrictEqual(buggy, src, 'mutant target string not found verbatim in the live source');
   assert.ok(!/notDrainingFlag \? \{ label: 'not-draining'/.test(buggy),

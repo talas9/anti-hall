@@ -192,6 +192,24 @@ function heartbeatTs(id, home, fsi) {
   } catch (_) { /* torn/absent JSON -> fall back to mtime */ }
   try { return F.statSync(p).mtimeMs; } catch (_) { return null; }
 }
+
+// heartbeatVersion(id, home, fsi) -> semver string | null. Item 4b: the
+// CALLING process's own running anti-hall version, as stamped by
+// scripts/devswarm.js's runningAntiHallVersion() onto heartbeats/<id>.json
+// (item 4a — both `heartbeat` and `inbox tick` writes carry it, re-stamped on
+// every tick). A record predating item 4a (no `version` field at all) or an
+// unreadable/absent file reads as null — "unknown", never fabricated, and
+// callers must never treat null as "stale" (only a POSITIVELY older semver
+// counts — see item 4b's staleness check at the call site).
+function heartbeatVersion(id, home, fsi) {
+  const F = fsi || fs;
+  let p;
+  try { p = heartbeatPathFor(id, home); } catch (_) { return null; }
+  try {
+    const beat = JSON.parse(F.readFileSync(p, 'utf8'));
+    return (beat && typeof beat.version === 'string') ? beat.version : null;
+  } catch (_) { return null; }
+}
 // isFreshBeat(ts, now, freshMs) -> bool. The ONE freshness rule, shared by
 // hasFreshHeartbeat and computeLiveness's heartbeat short-circuit so both agree.
 // P1-7: require `0 < ts <= now` BEFORE applying the window — a FUTURE ts (clock
@@ -1020,7 +1038,7 @@ module.exports = {
   DEFAULT_ROSTER_IDLE_MS, NOT_DRAINING_AGE_MS, DEFAULT_NEVER_LAUNCHED_MS,
   isSafeId, devswarmRoot, livenessPathFor, heartbeatPathFor, descriptorPathFor, descriptorRegistrationTs, projectDirFor,
   transcriptMtime, worktreeActivityMtime, unreadBacklog, unionPendingFor, resolveSelfId, computeLiveness, writeVerdict,
-  heartbeatTs, hasFreshHeartbeat, isFreshBeat, dormantThresholdMs, isDormantActivity,
+  heartbeatTs, heartbeatVersion, hasFreshHeartbeat, isFreshBeat, dormantThresholdMs, isDormantActivity,
   idleThresholdMs, readActivityTs, isDormantRow, isSiblingPartitionLive,
   // session-sourced liveness axis (defect 699a236129c5)
   sessionsDirFor, pidIsAlive, processStartMs, sessionPidAlive, isSessionAliveRow, rowLivenessState,

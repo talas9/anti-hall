@@ -239,6 +239,34 @@ const identity = require('../companion/lib/identity.js');
 // CALLER_CWD (a deleted cwd resolves from its nearest existing ancestor).
 const CALLER_CWD = { missingPath: 'ancestor' };
 function identityContext(p, extra) { return identity.resolveContext(p, Object.assign({ memo: false, superCache: true }, extra)); }
+
+// runningAntiHallVersion() -> semver string | null. Item 4a (P0, field-proven):
+// a child auto-resumed BEFORE the harness re-registered a newer build keeps
+// running the OLD code with no signal anywhere that it is stale — 0.105.3
+// (NDJSON-only) cannot see store-side mesh mail, so the Primary saw it as
+// "not draining" when the real cause was a stale build. Stamping the CALLING
+// process's own version onto every heartbeat/tick record (see cmdHeartbeat /
+// cmdInboxTick below) lets a reader (roster/parent-inbox/doctor, item 4b) tell
+// "stale build" apart from "genuinely wedged" instead of guessing. Resolved
+// via __dirname (this file's OWN on-disk location), same pattern as
+// devswarm-wake-watch.js's readInstalledPluginVersion / devswarm-ingest.js's
+// helper of the same name — always names the build actually loaded into THIS
+// process, never a machine-wide "latest" (that comparison happens on the READ
+// side). Cached (computed once per process — this file's own location cannot
+// change mid-process) and fail-open to null (never throws, never blocks a
+// heartbeat/tick write).
+let _runningAntiHallVersionCache;
+function runningAntiHallVersion() {
+  if (_runningAntiHallVersionCache !== undefined) return _runningAntiHallVersionCache;
+  let v = null;
+  try {
+    const p = path.join(__dirname, '..', '.claude-plugin', 'plugin.json');
+    const json = JSON.parse(fs.readFileSync(p, 'utf8'));
+    v = (json && typeof json.version === 'string') ? json.version : null;
+  } catch (_) { v = null; }
+  _runningAntiHallVersionCache = v;
+  return v;
+}
 const ingestHealth = require('../companion/lib/ingest-health.js');
 const { isDevswarmActive } = require('../hooks/lib/devswarm-detect.js');
 const { isForwardableRow } = require('../companion/lib/devswarm-noise.js');
@@ -7771,6 +7799,11 @@ function cmdHeartbeat(id, flags, ctx) {
     wip: many(flags, 'wip'),
     blockers: many(flags, 'blockers'),
     sessionId: one(flags, 'session') !== undefined ? one(flags, 'session') : null,
+    // item 4a: the CALLING process's own running anti-hall version — see
+    // runningAntiHallVersion's header. Not caller-authored (unlike
+    // progress/phase/wip/blockers/sessionId above) — this is a fact about the
+    // process, always stamped, never left null just because a flag omitted it.
+    version: runningAntiHallVersion(),
   };
   // A1-INSTRUMENT (spec item 1b): attribute the field-observed unidentified
   // dead-row refresher — any --session-less caller gets one capped NDJSON line.
@@ -10204,10 +10237,16 @@ function cmdInboxTick(id, flags, ctx) {
       if (beat && typeof beat === 'object') {
         beat.ts = now;
         beat.state_ts = now;
+        // item 4a: re-stamp on EVERY tick, not only creation — the whole
+        // point is to reflect the CALLING process's CURRENT running build,
+        // which can change between ticks if this session restarts on a
+        // newer install without ever re-registering a fresh heartbeat file.
+        beat.version = runningAntiHallVersion();
       } else {
         beat = {
           id, ts: now, state_ts: now, source: 'inbox-tick',
           progress_pct: null, phase: null, wip: [], blockers: [], sessionId: null,
+          version: runningAntiHallVersion(),
         };
       }
       fs.mkdirSync(heartbeatsDir(home), { recursive: true });
@@ -17157,6 +17196,8 @@ function main() {
 }
 
 module.exports = {
+  // item 4a — running anti-hall version stamped onto heartbeat/tick records:
+  runningAntiHallVersion,
   appendIntoPartition, isIdLockHeld, withIdLockHeld,
   run, parseArgs, one, many, csvList,
   emitKnownWarning, resolveReadArgToId,
