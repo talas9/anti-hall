@@ -1,6 +1,6 @@
 ---
 name: anti-hall-jev
-description: Activate, configure, or check the opt-in Jev classifier for Codex. Use when the user says activate/enable/disable/turn on/set up jev, jev status, or jev report.
+description: Activate, configure, check, or read the tracking loop of the opt-in Jev classifier for Codex. Use when the user says activate/enable/disable/turn on/set up jev, jev status, jev report, how is jev doing, jev scorecard, label that decision, promote an integration, jev budget, or jev credit balance.
 ---
 
 # anti-hall jev for Codex
@@ -70,10 +70,32 @@ itself.
 - `mode <integration> on|shadow|off` — `on` lets Jev influence that
   integration's outcome; `shadow` consults+logs without changing anything (build
   up `jev report` data before trusting it); `off` skips it. `speculation`/`triage`
-  default `on` once Jev is enabled; everything else defaults `shadow`.
-  Integrations: `speculation`, `triage` (default `on`); `modelRouting`, `claimLedger`,
-  `mergeGateHedge`, `newRequest`, `outputVerifyGuard` (default `shadow`) — see
-  `docs/KB-jev-classifier.md` for each one's trust rule.
+  default `on` once Jev is enabled; everything else defaults `shadow`. Before
+  promoting `shadow` -> `on`, check that integration's `jev report` row for a
+  KEEP suggestion first — see the scorecard walkthrough below.
+- **All integrations**: `speculation`/`triage` (legacy, default `on`);
+  `modelRouting`, `claimLedger`, `mergeGateHedge`, `newRequest`,
+  `outputVerifyGuard`, `gitGuardSelfCredit` (add-block, never relaxes),
+  `parentGateQuestion` (cache-only, zero network), `tasklistTrivial`,
+  `supervisorBlockerLabel` (cache-only, zero network), `codexNudgeSubstantial` —
+  all default `shadow`. Full per-id trust/hook/API table:
+  `docs/KB-jev-classifier.md` §10.
+- "how is jev doing" / "jev scorecard": run `jev-report.js`, then for each row
+  explain KEEP (promote-worthy) / REMOVE (offer to set mode off) / REVIEW (not
+  enough data, or p95 latency over budget). Mention the headline one-liner per
+  integration for a quick summary.
+- **Two different "latency" numbers** — never conflate them. The table's
+  `p50ms`/`p95ms` are the Jev classifier CALL's own latency (`jev-assist.ndjson`
+  decision rows' `ms` field, typically hundreds of ms). The separate "triage
+  answer-time" section is agent REPLY TURNAROUND (`jev-triage.ndjson`'s
+  `{type:"answered", latencyMs}` rows from `recordAnswered` — typically minutes)
+  — a completely different quantity from a different log.
+- `--by project|session` splits the report into one table per distinct
+  project/session value instead of one combined table; `--project <name>`
+  filters to one project first. `project` is a cwd basename (agnostic, no
+  absolute paths); `sessionId` is present only when the calling hook had one to
+  thread through. A row missing either (including every row logged before this
+  feature existed) groups under `unknown`.
 - `node "$ANTI_HALL_ROOT/scripts/jev-report.js" [--window 24h|7d]` — read-only
   KEEP/REVIEW/REMOVE summary per integration. Two cost signals: `costPerCall` in
   `~/.anti-hall/jev.json` for a manual estimate (else `n/a`), and an automatic

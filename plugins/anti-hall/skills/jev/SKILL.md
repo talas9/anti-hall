@@ -1,6 +1,6 @@
 ---
 name: jev
-description: Activate, configure, or check the opt-in Jev classifier (TypeSafe's "System One" decision model, reached via the Vercel AI Gateway or TypeSafe's direct API). Use when the user says "activate jev", "activate jev please", "enable jev", "turn on jev", "set up jev", "jev status", "disable jev", "jev report", or "set jev key".
+description: Activate, configure, check, or read the tracking loop of the opt-in Jev classifier (TypeSafe's "System One" decision model, reached via the Vercel AI Gateway or TypeSafe's direct API). Use when the user says "activate jev", "activate jev please", "enable jev", "turn on jev", "set up jev", "jev status", "disable jev", "jev report", "set jev key", "how is jev doing", "jev scorecard", "show me the jev report", "label that decision right/wrong", "was jev right", "promote <integration>", "turn <integration> on/off", "jev budget", "jev credit balance", "jev cost", or "what does <integration> do".
 ---
 
 # Jev
@@ -137,6 +137,85 @@ time, never in the hook path (see "jev status" above). **Jev is never
 auto-disabled by a budget, in any mode** — a human decides whether to act on
 it.
 
+## "how is Jev doing" / "jev scorecard" / "show me the jev report"
+
+This is the full tracking loop, end to end — run it whenever the user asks how
+Jev is doing:
+
+1. Run `node "${CLAUDE_PLUGIN_ROOT}/scripts/jev-report.js"` (add `--window 24h|7d`
+   to narrow the cost window; default shows both).
+2. For EACH integration row, read its **suggestion** column and explain what it
+   means and what to do next:
+   - **KEEP** — changed-decision rate ≥5% AND good-outcome rate ≥80% with a real
+     outcome signal. Tell the user it's earning its keep; no action needed
+     (already `on`, or a good candidate to promote from `shadow` to `on` — see
+     "Per-integration modes" below).
+   - **REMOVE** — ≥200 calls with either <1% changed-decision rate, <60%
+     good-outcome rate, or >20% failure rate. Tell the user Jev is not adding
+     value here; offer to set its mode to `off`.
+   - **REVIEW (not enough data: N < 50 calls)** — too early to judge; explain
+     more calls are needed (or the owner can `label` some decisions manually to
+     seed outcome signal faster — see "labeling" below).
+   - **REVIEW (p95 latency exceeds budget)** — the classifier is slow relative
+     to its own hook's timeout budget; flag it, but this is a performance note,
+     not a correctness one.
+   - Any other REVIEW — summarize why (usually: some data exists but doesn't
+     yet clearly meet KEEP or REMOVE).
+3. Mention the **headline** one-liner for each integration (see below) if the
+   user wants a quick summary instead of the full table.
+4. If real cost or credit balance data is present, surface it (see Costs /
+   Budget watch below) — especially a LOW CREDIT warning, which the user should
+   see immediately.
+
+### "label that decision right/wrong"
+
+`node "${CLAUDE_PLUGIN_ROOT}/scripts/jev-report.js" label <hash> tp|fp` — see
+"jev report" below for the full mechanics. Mention that
+`~/.anti-hall/jev.json`'s `"audit": {"snippets": true}` must be turned on
+BEFORE the decision was made for `label <hash>` (no verdict) to show the actual
+judged text; without it, `label` still works (records tp/fp), it just can't
+show the snippet for context.
+
+### "turn <integration> on/off" / "promote <integration>"
+
+See "Per-integration modes" below — `jev-setup.js mode <id> on|shadow|off`.
+Before promoting `shadow` -> `on`, check that integration's row in `jev report`
+for a KEEP suggestion first; promoting on thin data just adds a live behavior
+change with no evidence behind it yet.
+
+### Splitting the report by project or session
+
+`--by project|session` runs the SAME report once per distinct value instead of
+one combined table:
+
+```
+node "${CLAUDE_PLUGIN_ROOT}/scripts/jev-report.js" --by project
+node "${CLAUDE_PLUGIN_ROOT}/scripts/jev-report.js" --by session
+```
+
+`--project <name>` filters to one project BEFORE reporting (combine with
+`--json` for machine-readable output). `project` is a cwd-basename, never an
+absolute path or repo URL (kept agnostic, same convention as everywhere else in
+this codebase); `sessionId` is the Claude session id when the calling hook had
+one to thread through (not every integration is session-scoped — e.g.
+`devswarm-supervisor.js`'s background sweep never has one). A row from BEFORE
+this feature existed, or from an integration that genuinely has no session,
+groups under `unknown` — not an error, not dropped.
+
+### Two DIFFERENT "latency" numbers — do not conflate them
+
+The per-integration table's `p50ms`/`p95ms` columns are the **Jev classifier
+call's own latency** (from `jev-assist.ndjson` decision rows' `ms` field — how
+long the actual `POST /v1/systemone` request took). The separate
+**"triage answer-time"** section underneath the table is a completely
+different thing: **agent reply turnaround** — how long it took a Primary/child
+to reply to a message jev-triage.js labelled, from `jev-triage.ndjson`'s
+`{type:"answered", latencyMs}` rows (`hooks/lib/jev-triage.js`'s
+`recordAnswered`). A real classifier call is typically hundreds of
+milliseconds; a reply-turnaround figure is typically minutes. If a p95 in
+seconds/minutes shows up anywhere next to something claiming to be "Jev
+latency", that is the wrong number attached to the wrong label — call it out.
+
 ## "jev report"
 
 `node "${CLAUDE_PLUGIN_ROOT}/scripts/jev-report.js" [--window 24h|7d]` — a
@@ -200,17 +279,34 @@ gather `jev report` data before trusting it), `off` skips it entirely. `speculat
 and `triage` default to `on` once Jev is enabled (pre-existing behavior); every
 other integration defaults to `shadow` until promoted.
 
-| Integration | Hook | What Jev may do when `on` |
-|---|---|---|
-| `speculation` | speculation-guard.js (Stop) | add a speculation block the regex missed; lets speculation-judge skip its paid call |
-| `triage` | jev-triage.js (inbox reads) | label messages (urgent/…); label-only |
-| `modelRouting` | model-routing-guard.js | downgrade a mechanical-flagship block to an advisory on a confident non-mechanical classification |
-| `claimLedger` | claim-ledger.js (Stop) | relax a flagged claim it judges supported |
-| `mergeGateHedge` | merge-gate.js (merge commands) | relax a hedge-based merge block |
-| `newRequest` | task-tracker.js | label the prompt new-request/follow-up/correction/question (advisory) |
-| `outputVerifyGuard` | output-verify-guard.js (test runners) | advisory label on runner output |
+### All integrations
 
-Details and trust rules: `docs/KB-jev-classifier.md` ("All wired integrations").
+| id | judges | trust | default mode |
+|---|---|---|---|
+| `speculation` | is this claim unsupported speculation | `add-block` | `on` (legacy) |
+| `triage` | mesh message urgency/kind label (own client, not this table's trust model) | n/a | `on` (legacy) |
+| `modelRouting` | is this agent-spawn task actually mechanical | `relax-block` | `shadow` |
+| `claimLedger` | is a flagged claim genuinely unsupported by evidence | `relax-block` | `shadow` |
+| `mergeGateHedge` | does this text hedge on merge-readiness | `relax-block` | `shadow` |
+| `newRequest` | classify a prompt: new-request/follow-up/correction/question | `advisory` | `shadow` |
+| `outputVerifyGuard` | does this test-runner output actually indicate a pass | `advisory` | `shadow` |
+| `gitGuardSelfCredit` | does this commit/PR message contain paraphrased AI self-credit | `add-block` **(never relaxes)** | `shadow` |
+| `parentGateQuestion` | is this unread child message really a question awaiting reply | `add-block` (cache-only, zero network) | `shadow` |
+| `tasklistTrivial` | is this session a genuinely non-trivial, multi-part effort | `relax-block` | `shadow` |
+| `supervisorBlockerLabel` | is a stale child waiting-on-parent or genuinely wedged | `advisory` (cache-only, zero network) | `shadow` |
+| `codexNudgeSubstantial` | are these file edits genuinely substantial (not just formatting) | `relax-block` | `shadow` |
+
+`gitGuardSelfCredit`/`modelRouting`/`claimLedger`/`mergeGateHedge`/`tasklistTrivial`/
+`codexNudgeSubstantial` use a real classifier call (`ask`/`askSync`/`askDetached`);
+`parentGateQuestion`/`supervisorBlockerLabel` never make a network call at all —
+both reuse an ALREADY-cached `hooks/lib/jev-triage.js` label populated by a
+different surface that classified the same message earlier, so promoting either
+to `on` is a config change only, no extra cost. `tasklistTrivial`/
+`codexNudgeSubstantial`/`mergeGateHedge` use `askDetached` (fire-and-forget):
+promoting them to `on` only changes what gets LOGGED for now — the calling hook
+doesn't yet read the answer back, so `jev report` can build confidence before
+that plumbing is added. See `docs/KB-jev-classifier.md` §10 for the full table
+with hook/event/API details.
 
 ## Never do this
 
