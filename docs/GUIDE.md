@@ -96,7 +96,7 @@ documented boundaries, not silent gaps.
   **per-session** progress file at `<cwd>/.anti-hall/progress/<date>/<session-id>.md`
   (`<date>` = UTC `YYYY-MM-DD`, `<session-id>` = the sanitized Claude Code session id) —
   collision-free across concurrent sessions on the same project, replacing the old
-  single shared `.anti-hall-progress.md`. It coexists with `task-guard` (which drains
+  single shared `.anti-hall-progress.md`. Writes that land only under the session's own scratchpad (inter-agent message files, temp scripts that write nowhere else) do not count as work, and a write to the progress file seen in the transcript counts as fresh even before its mtime is visible (v0.107.0). It coexists with `task-guard` (which drains
   declared tasks) and keeps an **independent block cap** (`MAX_BLOCKS=3` cumulative/session)
   so the two never compound. The progress file is gitignored, never created by the hook, and
   must be updated this session (default 30 min freshness window) to count. A running
