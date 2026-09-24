@@ -68,10 +68,17 @@ function devswarmDir(home) { return path.join(home, '.anti-hall', 'devswarm'); }
 function logsDir(home) { return path.join(home, '.anti-hall', 'logs'); }
 
 // ---------- settings ----------
-function readSettings(home, override) {
-  let raw = null;
-  try { raw = JSON.parse(fs.readFileSync(path.join(home, '.anti-hall', 'settings.json'), 'utf8')); } catch (_) { raw = null; }
-  const a = Object.assign({}, raw && raw.devswarm && raw.devswarm.autoArchive, override || {});
+// devswarm.autoArchive.{mode,idleMin,maxPerSweep} via the unified settings
+// store (hooks/lib/settings.js: env > settings.json > /config > default;
+// numbers clamp to the schema bounds). `override` (tests/CLI) wins.
+function readSettings(home, override, env) {
+  const settings = require('../../hooks/lib/settings.js');
+  const opts = { home, env: env || process.env };
+  const a = Object.assign({
+    mode: settings.get('devswarm', 'autoArchive.mode', DEFAULT_SETTINGS.mode, opts),
+    idleMin: settings.get('devswarm', 'autoArchive.idleMin', DEFAULT_SETTINGS.idleMin, opts),
+    maxPerSweep: settings.get('devswarm', 'autoArchive.maxPerSweep', DEFAULT_SETTINGS.maxPerSweep, opts),
+  }, override || {});
   const mode = ['on', 'off', 'dry-run'].includes(a.mode) ? a.mode : DEFAULT_SETTINGS.mode;
   const idle = Number(a.idleMin);
   const max = Number(a.maxPerSweep);
@@ -297,7 +304,7 @@ function planAutoArchive(opts) {
   const o = Object.assign({ home: os.homedir(), env: process.env }, opts || {});
   const deps = resolveDeps(o);
   const now = Number.isFinite(o.now) ? o.now : Date.now();
-  const settings = o.settings || readSettings(o.home);
+  const settings = o.settings || readSettings(o.home, null, o.env);
   const db = deps.appDb();
   if (!db) {
     return { ok: false, reason: 'app-db-unavailable', mode: settings.mode, settings, capability: { ok: false, reason: 'not probed', version: null }, candidates: [], toArchive: [] };
@@ -360,7 +367,7 @@ function defaultNotifyPrimary(home, cand, text, o) {
 // plan and writes NOTHING. on: archives toArchive (re-verified), logs, reports.
 function autoArchiveSweep(opts) {
   const o = Object.assign({ home: os.homedir(), env: process.env }, opts || {});
-  const settings = o.settings || readSettings(o.home);
+  const settings = o.settings || readSettings(o.home, null, o.env);
   if (settings.mode === 'off') return { mode: 'off', archived: [] };
   const plan = planAutoArchive(Object.assign({}, o, { settings }));
   const summary = {

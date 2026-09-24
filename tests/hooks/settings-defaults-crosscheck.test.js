@@ -95,19 +95,68 @@ test('jev.triage/triageUrgentThreshold match jev-triage.js source constant', () 
   assert.strictEqual(find('jev', 'triage').default, true); // triage !== false -> default true
 });
 
-test('jev.budget.* are new (0.108.0) settings with no legacy source, declared null-optional/enum-defaulted correctly', () => {
+test('jev.budget.* are declared null-optional/enum-defaulted correctly, with jev.json nested legacy keys', () => {
   const mode = find('jev', 'budget.mode');
   assert.strictEqual(mode.type, 'enum');
   assert.deepStrictEqual(mode.values, ['unlimited', 'watch']);
   assert.strictEqual(mode.default, 'unlimited');
 
-  for (const k of ['budget.usdPerDay', 'budget.usdPerWeek']) {
+  for (const k of ['budget.usdPerDay', 'budget.usdPerWeek', 'budget.minCreditUsd']) {
     const e = find('jev', k);
     assert.strictEqual(e.type, 'number');
     assert.strictEqual(e.optional, true);
     assert.strictEqual(e.default, null);
+    assert.strictEqual(e.exclusiveMin, 0, k + ': consumers treat <= 0 as unset');
     assert.match(e.description, /^optional:/);
   }
+  for (const k of ['budget.mode', 'budget.usdPerDay', 'budget.usdPerWeek', 'budget.minCreditUsd', 'audit.snippets', 'prices']) {
+    assert.deepStrictEqual(find('jev', k).legacy, { file: 'jev.json', key: k }, k + ' keeps reading the jev.json key jev-assist/jev-report used before');
+  }
+});
+
+test('jev.audit.snippets / prices / budget.* are read through settings.get by jev-assist.js and jev-report.js', () => {
+  assert.strictEqual(find('jev', 'audit.snippets').default, false);
+  assert.strictEqual(find('jev', 'prices').type, 'object');
+  const assist = fs.readFileSync(P('hooks', 'lib', 'jev-assist.js'), 'utf8');
+  for (const k of ['prices', 'budget.mode', 'budget.usdPerDay', 'budget.usdPerWeek', 'audit.snippets']) {
+    assert.ok(assist.includes("jevSetting(home, '" + k + "'"), 'jev-assist.js reads jev.' + k + ' via settings');
+  }
+  const report = fs.readFileSync(P('scripts', 'jev-report.js'), 'utf8');
+  for (const k of ['budget.mode', 'budget.usdPerDay', 'budget.usdPerWeek', 'budget.minCreditUsd']) {
+    assert.ok(report.includes("settings.get('jev', '" + k + "'"), 'jev-report.js reads jev.' + k + ' via settings');
+  }
+});
+
+test('devswarm.autoArchive.* defaults/bounds match devswarm-lifecycle.js DEFAULT_SETTINGS and its clamps', () => {
+  const src = fs.readFileSync(P('companion', 'lib', 'devswarm-lifecycle.js'), 'utf8');
+  const m = src.match(/const DEFAULT_SETTINGS = Object\.freeze\(\{ mode: '([\w-]+)', idleMin: (\d+), maxPerSweep: (\d+) \}\);/);
+  assert.ok(m, 'DEFAULT_SETTINGS literal found');
+  assert.strictEqual(find('devswarm', 'autoArchive.mode').default, m[1]);
+  assert.strictEqual(m[1], 'on', 'owner decision: auto-archive defaults to on');
+  assert.deepStrictEqual(find('devswarm', 'autoArchive.mode').values.slice().sort(), ['dry-run', 'off', 'on']);
+  assert.strictEqual(find('devswarm', 'autoArchive.idleMin').default, Number(m[2]));
+  assert.strictEqual(find('devswarm', 'autoArchive.idleMin').min, 5);
+  assert.strictEqual(find('devswarm', 'autoArchive.maxPerSweep').default, Number(m[3]));
+  assert.strictEqual(find('devswarm', 'autoArchive.maxPerSweep').max, 20);
+  assert.match(src, /settings\.get\('devswarm', 'autoArchive\.mode'/);
+});
+
+test('devswarm.retention.* defaults and env names match devswarm-retention.js DEFAULTS / ENV_KEYS', () => {
+  const R = require(P('companion', 'lib', 'devswarm-retention.js'));
+  // owner decision: 30 d / 100 MB / 200 per partition / archive on / 200 MB archive cap
+  assert.deepStrictEqual(Object.assign({}, R.DEFAULTS), { days: 30, maxStoreMB: 100, keepPerPartition: 200, archive: true, archiveMaxMB: 200 });
+  for (const k of Object.keys(R.DEFAULTS)) {
+    const e = find('devswarm', 'retention.' + k);
+    assert.strictEqual(e.default, R.DEFAULTS[k], k);
+    assert.strictEqual(e.env, R.ENV_KEYS[k], k + ' env');
+  }
+  const src = fs.readFileSync(P('companion', 'lib', 'devswarm-retention.js'), 'utf8');
+  assert.match(src, /settings\.get\('devswarm', 'retention\.' \+ k/);
+});
+
+test('no schema entry still carries an integration placeholder marker', () => {
+  const src = fs.readFileSync(P('hooks', 'lib', 'settings-schema.js'), 'utf8');
+  assert.ok(!/wired at integration/.test(src));
 });
 
 test('devswarm.activeFloorPct matches devswarm-archived-cache.js source constant', () => {

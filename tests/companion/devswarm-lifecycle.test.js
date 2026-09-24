@@ -194,7 +194,14 @@ test('settings: default ON; dry-run/off selectable; junk falls back to on', () =
   fs.writeFileSync(path.join(home, '.anti-hall', 'settings.json'), JSON.stringify({ devswarm: { autoArchive: { mode: 'on', idleMin: 45, maxPerSweep: 99 } } }));
   assert.deepStrictEqual(L.readSettings(home), { mode: 'on', idleMin: 45, maxPerSweep: 20 });
   fs.writeFileSync(path.join(home, '.anti-hall', 'settings.json'), JSON.stringify({ devswarm: { autoArchive: { mode: 'yes', idleMin: 1 } } }));
-  assert.deepStrictEqual(L.readSettings(home), { mode: 'on', idleMin: 30, maxPerSweep: 3 });
+  // v0.108.0 unified settings: out-of-range numbers CLAMP to the schema bound
+  // (idleMin min 5), junk enums fall back to the default.
+  assert.deepStrictEqual(L.readSettings(home), { mode: 'on', idleMin: 5, maxPerSweep: 3 });
+  // the flat form `settings.js set` writes is read too
+  fs.writeFileSync(path.join(home, '.anti-hall', 'settings.json'), JSON.stringify({ devswarm: { 'autoArchive.mode': 'dry-run', 'autoArchive.idleMin': 60 } }));
+  assert.deepStrictEqual(L.readSettings(home), { mode: 'dry-run', idleMin: 60, maxPerSweep: 3 });
+  // env beats the file
+  assert.strictEqual(L.readSettings(home, null, { ANTIHALL_DEVSWARM_AUTO_ARCHIVE_MODE: 'off' }).mode, 'off');
   fs.writeFileSync(path.join(home, '.anti-hall', 'settings.json'), JSON.stringify({ devswarm: { autoArchive: { mode: 'dry-run' } } }));
   assert.strictEqual(L.readSettings(home).mode, 'dry-run');
   fs.writeFileSync(path.join(home, '.anti-hall', 'settings.json'), JSON.stringify({ devswarm: { autoArchive: { mode: 'off' } } }));

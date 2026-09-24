@@ -87,7 +87,6 @@ function statePath(home) { return path.join(devswarmRoot(home), 'retention-state
 function dryRunReportPath(home) { return path.join(devswarmRoot(home), 'retention-dry-run.json'); }
 function lockPath(home) { return path.join(devswarmRoot(home), 'locks', 'retention.lock'); }
 function logPath(home) { return path.join(home, '.anti-hall', 'logs', 'devswarm-retention.ndjson'); }
-function settingsPath(home) { return path.join(home, '.anti-hall', 'settings.json'); }
 function safeStoreName(h) { return /^[A-Za-z0-9._-]{1,80}$/.test(String(h || '')) && !String(h).startsWith('.'); }
 
 function homeOf(o) {
@@ -97,30 +96,21 @@ function homeOf(o) {
 }
 
 // ---- settings -----------------------------------------------------------------
-// Precedence: env > ~/.anti-hall/settings.json (`devswarm.retention.<key>`, nested
-// or a flat dotted key) > defaults. Invalid values fall back to the default.
+// devswarm.retention.<key> via the unified settings store (hooks/lib/settings.js:
+// env > ~/.anti-hall/settings.json (flat "retention.days" or nested
+// {"retention": {"days": ...}} under "devswarm") > /config > default).
+// Numbers clamp to the schema's bounds (min 0).
 function resolveSettings(opts) {
   const o = opts || {};
   const env = o.env || process.env;
-  let file = {};
-  try {
-    const j = JSON.parse(fs.readFileSync(settingsPath(homeOf(o)), 'utf8'));
-    const nested = j && j.devswarm && j.devswarm.retention && typeof j.devswarm.retention === 'object' ? j.devswarm.retention : {};
-    for (const k of Object.keys(DEFAULTS)) {
-      if (Object.prototype.hasOwnProperty.call(nested, k)) file[k] = nested[k];
-      else if (j && Object.prototype.hasOwnProperty.call(j, 'devswarm.retention.' + k)) file[k] = j['devswarm.retention.' + k];
-    }
-  } catch (_) { file = {}; }
+  const settings = require('../../hooks/lib/settings.js');
+  const sOpts = { env, home: homeOf(o) };
   const out = {};
   for (const k of Object.keys(DEFAULTS)) {
-    const raw = env[ENV_KEYS[k]] != null && env[ENV_KEYS[k]] !== '' ? env[ENV_KEYS[k]] : file[k];
-    if (k === 'archive') {
-      if (raw === undefined || raw === null) out[k] = DEFAULTS[k];
-      else out[k] = !(raw === false || /^(0|false|off|no)$/i.test(String(raw)));
-      continue;
-    }
-    const n = Number(raw);
-    out[k] = raw !== undefined && raw !== null && raw !== '' && Number.isFinite(n) && n >= 0 ? n : DEFAULTS[k];
+    const v = settings.get('devswarm', 'retention.' + k, DEFAULTS[k], sOpts);
+    if (k === 'archive') { out[k] = typeof v === 'boolean' ? v : DEFAULTS[k]; continue; }
+    const n = Number(v);
+    out[k] = Number.isFinite(n) && n >= 0 ? n : DEFAULTS[k];
   }
   out.keepPerPartition = Math.floor(out.keepPerPartition);
   out.enabled = out.days > 0;

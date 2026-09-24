@@ -106,3 +106,45 @@ test('home-injection: companion/devswarm-supervisor.js resolvers(env with HOME) 
     fs.rmSync(home, { recursive: true, force: true });
   }
 });
+
+// v0.108.0 lifecycle / retention / Jev metrics consumers: each resolves its
+// settings with an explicit home, never os.homedir().
+test('home-injection: auto-archive, retention and Jev budget/audit/price readers never call os.homedir()', () => {
+  const lifecycle = require(P('companion', 'lib', 'devswarm-lifecycle.js'));
+  const retention = require(P('companion', 'lib', 'devswarm-retention.js'));
+  const assist = require(P('hooks', 'lib', 'jev-assist.js'));
+  const report = require(P('scripts', 'jev-report.js'));
+  const home = isolatedHome();
+  try {
+    fs.mkdirSync(path.join(home, '.anti-hall'), { recursive: true });
+    fs.writeFileSync(path.join(home, '.anti-hall', 'settings.json'), JSON.stringify({
+      devswarm: { 'autoArchive.mode': 'dry-run', retention: { days: 7 } },
+      jev: { 'budget.mode': 'watch', 'budget.usdPerDay': 2, 'budget.minCreditUsd': 5, 'audit.snippets': true, prices: { default: { inPerMTok: 1, outPerMTok: 2 } } },
+    }));
+    withPoisonedHomedir(() => {
+      assert.strictEqual(lifecycle.readSettings(home, null, { HOME: home }).mode, 'dry-run');
+      assert.strictEqual(retention.resolveSettings({ home, env: { HOME: home } }).days, 7);
+      assert.deepStrictEqual(assist.readBudgetConfig(home), { mode: 'watch', usdPerDay: 2, usdPerWeek: null });
+      assert.deepStrictEqual(assist.readAuditConfig(home), { snippets: true });
+      assert.strictEqual(assist.computeCostUsd({ r: { ok: true, tokensIn: 1e6, tokensOut: 1e6 }, cachedFlag: false, home }).costUsd, 3);
+      assert.strictEqual(report.readBudgetConfig(home).minCreditUsd, 5);
+    });
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('legacy jev.json nested keys still resolve when settings.json has none', () => {
+  const assist = require(P('hooks', 'lib', 'jev-assist.js'));
+  const home = isolatedHome();
+  try {
+    fs.mkdirSync(path.join(home, '.anti-hall'), { recursive: true });
+    fs.writeFileSync(path.join(home, '.anti-hall', 'jev.json'), JSON.stringify({ budget: { mode: 'watch', usdPerDay: 4 }, audit: { snippets: true } }));
+    withPoisonedHomedir(() => {
+      assert.deepStrictEqual(assist.readBudgetConfig(home), { mode: 'watch', usdPerDay: 4, usdPerWeek: null });
+      assert.deepStrictEqual(assist.readAuditConfig(home), { snippets: true });
+    });
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});

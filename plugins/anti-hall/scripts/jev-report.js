@@ -295,22 +295,22 @@ function readCostPerCall(home) {
   }
 }
 
-// readBudgetConfig(home) -> {mode, usdPerDay, usdPerWeek, minCreditUsd}. No
-// hooks/lib/settings.js get('jev', ...) accessor exists in this codebase
-// (checked) -- read directly from jev.json's `budget` key, mirroring
-// hooks/lib/jev-assist.js's own readBudgetConfig. mode defaults
-// "unlimited" (report shows no budget section at all). `minCreditUsd` is
-// optional and only meaningful in "watch" mode -- see maybeWarnLowCredit.
+// readBudgetConfig(home) -> {mode, usdPerDay, usdPerWeek, minCreditUsd} from
+// the unified settings store (jev.budget.*; legacy jev.json {"budget": {...}}
+// still read as a fallback). mode defaults "unlimited" (report shows no
+// budget section at all). `minCreditUsd` is optional and only meaningful in
+// "watch" mode -- see maybeWarnLowCredit.
 function readBudgetConfig(home) {
   try {
-    const raw = fs.readFileSync(jevConfigPath(home), 'utf8');
-    const parsed = JSON.parse(raw);
-    const b = (parsed && parsed.budget && typeof parsed.budget === 'object') ? parsed.budget : {};
-    const mode = b.mode === 'watch' ? 'watch' : 'unlimited';
-    const usdPerDay = (Number.isFinite(b.usdPerDay) && b.usdPerDay > 0) ? b.usdPerDay : null;
-    const usdPerWeek = (Number.isFinite(b.usdPerWeek) && b.usdPerWeek > 0) ? b.usdPerWeek : null;
-    const minCreditUsd = (Number.isFinite(b.minCreditUsd) && b.minCreditUsd > 0) ? b.minCreditUsd : null;
-    return { mode, usdPerDay, usdPerWeek, minCreditUsd };
+    const settings = require('../hooks/lib/settings.js');
+    const opts = { home: home || os.homedir() };
+    const pos = (v) => ((Number.isFinite(v) && v > 0) ? v : null);
+    return {
+      mode: settings.get('jev', 'budget.mode', 'unlimited', opts) === 'watch' ? 'watch' : 'unlimited',
+      usdPerDay: pos(settings.get('jev', 'budget.usdPerDay', null, opts)),
+      usdPerWeek: pos(settings.get('jev', 'budget.usdPerWeek', null, opts)),
+      minCreditUsd: pos(settings.get('jev', 'budget.minCreditUsd', null, opts)),
+    };
   } catch (_) {
     return { mode: 'unlimited', usdPerDay: null, usdPerWeek: null, minCreditUsd: null };
   }

@@ -7,7 +7,8 @@
 // PRECEDENCE (highest to lowest), matched exactly by get():
 //   1. env override      — the schema entry's own ANTIHALL_* var, when set to
 //                           a value the entry's type recognizes
-//   2. settings.json      — ~/.anti-hall/settings.json[section][key]
+//   2. settings.json      — ~/.anti-hall/settings.json[section][key] (a dotted
+//                           key may also be written nested: see lookup())
 //   3. plugin userConfig  — CLAUDE_PLUGIN_OPTION_<KEY> (hook processes) or a
 //                           read-only fallback scan of a Claude settings file's
 //                           pluginConfigs["anti-hall"].options (other
@@ -246,13 +247,29 @@ function settingsMigrationStamped(opts) {
   }
 }
 
+// lookup(obj, key) -> obj[key] (flat, e.g. "autoArchive.mode" as one key),
+// else — for a dotted key — the NESTED path (obj.autoArchive.mode). Both
+// shapes are accepted everywhere a value is read (settings.json sections and
+// legacy files like jev.json {"budget": {"mode": ...}}); set() writes flat.
+function lookup(obj, key) {
+  if (!obj || typeof obj !== 'object') return undefined;
+  if (Object.prototype.hasOwnProperty.call(obj, key)) return obj[key];
+  if (typeof key !== 'string' || !key.includes('.')) return undefined;
+  let cur = obj;
+  for (const part of key.split('.')) {
+    if (!cur || typeof cur !== 'object' || Array.isArray(cur) || !Object.prototype.hasOwnProperty.call(cur, part)) return undefined;
+    cur = cur[part];
+  }
+  return cur;
+}
+
 function readLegacy(entry, opts) {
   if (!entry.legacy || !entry.legacy.file) return undefined;
   try {
     const p = path.join(homeDir(opts), '.anti-hall', entry.legacy.file);
     const raw = JSON.parse(fs.readFileSync(p, 'utf8'));
     if (!raw || typeof raw !== 'object') return undefined;
-    return coerceValue(entry, raw[entry.legacy.key]);
+    return coerceValue(entry, lookup(raw, entry.legacy.key));
   } catch (_) {
     return undefined;
   }
@@ -271,7 +288,7 @@ function get(section, key, dflt, opts) {
   if (envVal !== undefined) return envVal;
 
   const store = load(opts);
-  const fileVal = store && store[section] && store[section][key];
+  const fileVal = store ? lookup(store[section], key) : undefined;
   const coercedFile = coerceValue(entry, fileVal);
   if (coercedFile !== undefined) return coercedFile;
 
@@ -394,7 +411,7 @@ function source(section, key, opts) {
   if (!entry) return 'default';
   if (readEnvOverride(entry, opts) !== undefined) return 'env';
   const store = load(opts);
-  const fileVal = store && store[section] && store[section][key];
+  const fileVal = store ? lookup(store[section], key) : undefined;
   if (coerceValue(entry, fileVal) !== undefined) return 'file';
 
   const legacyFirst = !!entry.legacy && !settingsMigrationStamped(opts);
@@ -404,4 +421,4 @@ function source(section, key, opts) {
   return 'default';
 }
 
-module.exports = { load, get, getWithEnv, set, reset, source, path: settingsPath, validate };
+module.exports = { load, get, getWithEnv, set, reset, source, path: settingsPath, validate, lookup };

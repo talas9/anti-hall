@@ -154,14 +154,25 @@ function getMode(id, fileCfg) {
   return LEGACY_ON_DEFAULT.has(id) ? 'on' : 'shadow';
 }
 
-// readPrices(home) -> jev.json `prices` map: {model: {inPerMTok, outPerMTok}}.
+// readPrices(home) -> jev.prices (settings.json, or legacy jev.json `prices`) map: {model: {inPerMTok, outPerMTok}}.
 // Optional, owner-supplied, consumed ONLY when a call's response includes
 // real token counts but no gateway-reported cost (see computeCostUsd below
 // and jev-client.js's extractCostAndUsage doc comment for why that is the
 // common case on this endpoint today). Never throws.
+// jevSetting(home, key, dflt) -> jev.<key> from the unified settings store
+// (hooks/lib/settings.js: env > ~/.anti-hall/settings.json > /config >
+// jev.json legacy (same nested key) > default). Never throws.
+function jevSetting(home, key, dflt) {
+  try {
+    return require('./settings.js').get('jev', key, dflt, { home: homeDir(home) });
+  } catch (_) {
+    return dflt;
+  }
+}
+
 function readPrices(home) {
-  const cfg = readJevJson(home);
-  return (cfg.prices && typeof cfg.prices === 'object' && !Array.isArray(cfg.prices)) ? cfg.prices : {};
+  const prices = jevSetting(home, 'prices', null);
+  return (prices && typeof prices === 'object' && !Array.isArray(prices)) ? prices : {};
 }
 
 // computeCostUsd({r, cachedFlag, home}) -> {costUsd, costSource}
@@ -192,15 +203,11 @@ function computeCostUsd({ r, cachedFlag, home }) {
 
 // --- Budget watch (opt-in, NEVER auto-disables Jev) -------------------------
 //
-// ~/.anti-hall/jev.json:
-//   {"budget": {"mode": "unlimited"|"watch", "usdPerDay": 5, "usdPerWeek": 25}}
+// Settings jev.budget.{mode,usdPerDay,usdPerWeek} (/anti-hall:settings, or
+// legacy ~/.anti-hall/jev.json {"budget": {"mode": "watch", "usdPerDay": 5}}).
 //   mode defaults to "unlimited" (no warnings at all). "watch" requires a
 //   positive `usdPerDay`; `usdPerWeek` is optional (jev-report can still show
 //   a 7d window without it -- see jev-report.js).
-//
-// NOTE: this codebase has no hooks/lib/settings.js get('jev', ...) accessor
-// (checked before writing this) -- budget config is read directly from
-// jev.json under a `budget` key, same as every other jev.json field.
 //
 // In watch mode, once the rolling DAY's real cost exceeds usdPerDay, the
 // assist layer logs ONE warning per calendar day (a `type:'budget-warning'`
@@ -214,11 +221,11 @@ function budgetStatePath(home) {
 }
 
 function readBudgetConfig(home) {
-  const cfg = readJevJson(home);
-  const b = (cfg.budget && typeof cfg.budget === 'object' && !Array.isArray(cfg.budget)) ? cfg.budget : {};
-  const mode = b.mode === 'watch' ? 'watch' : 'unlimited';
-  const usdPerDay = (Number.isFinite(b.usdPerDay) && b.usdPerDay > 0) ? b.usdPerDay : null;
-  const usdPerWeek = (Number.isFinite(b.usdPerWeek) && b.usdPerWeek > 0) ? b.usdPerWeek : null;
+  const mode = jevSetting(home, 'budget.mode', 'unlimited') === 'watch' ? 'watch' : 'unlimited';
+  const d = jevSetting(home, 'budget.usdPerDay', null);
+  const w = jevSetting(home, 'budget.usdPerWeek', null);
+  const usdPerDay = (Number.isFinite(d) && d > 0) ? d : null;
+  const usdPerWeek = (Number.isFinite(w) && w > 0) ? w : null;
   return { mode, usdPerDay, usdPerWeek };
 }
 
@@ -282,7 +289,7 @@ function contentHash(parts) {
 
 // --- Audit snippets (opt-in, OFF by default) --------------------------------
 //
-// ~/.anti-hall/jev.json: {"audit": {"snippets": true}}. When on, a REDACTED
+// Setting jev.audit.snippets (legacy jev.json {"audit": {"snippets": true}}). When on, a REDACTED
 // snippet (first ~200 chars of the judged `state`, after scrubbing) is
 // stored ONLY for a decision that actually CHANGED the outcome (added/
 // relaxed/changed -- never for an unchanged call), so this never accumulates
@@ -297,8 +304,7 @@ function auditLogPath(home) {
 }
 
 function readAuditConfig(home) {
-  const cfg = readJevJson(home);
-  return { snippets: !!(cfg.audit && cfg.audit.snippets === true) };
+  return { snippets: jevSetting(home, 'audit.snippets', false) === true };
 }
 
 // scrubSecrets(text) -> text with common secret shapes replaced by a
@@ -337,7 +343,7 @@ function rotateAuditIfNeeded(p) {
 }
 
 // maybeWriteAuditSnippet({home, id, hash, state, changed}) — best-effort,
-// never throws. Writes ONLY when jev.json audit.snippets is true AND this
+// never throws. Writes ONLY when jev.audit.snippets is true AND this
 // decision actually changed the outcome (`changed` is the direction string,
 // e.g. 'added'/'relaxed'/'changed', or falsy for no change).
 function maybeWriteAuditSnippet({ home, id, hash, state, changed }) {

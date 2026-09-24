@@ -139,3 +139,29 @@ test('runSettingsMigration: nothing to migrate is reported skipped and still sta
     home.cleanup();
   }
 });
+
+test('migrateSettingsFromLegacy: nested jev.json budget/audit keys forward-migrate; file-only prices stays legacy-read (no error)', () => {
+  const home = makeHome();
+  try {
+    const legacy = {
+      budget: { mode: 'watch', usdPerDay: 3, minCreditUsd: 10 },
+      audit: { snippets: true },
+      prices: { default: { inPerMTok: 1, outPerMTok: 4 } },
+    };
+    fs.writeFileSync(jevPath(home.home), JSON.stringify(legacy));
+    const r = M.migrateSettingsFromLegacy(home.home);
+    assert.deepStrictEqual(r, { ok: true, migrated: 4, errors: 0 });
+    const store = settings.load({ home: home.home });
+    assert.strictEqual(store.jev['budget.mode'], 'watch');
+    assert.strictEqual(store.jev['budget.usdPerDay'], 3);
+    assert.strictEqual(store.jev['budget.minCreditUsd'], 10);
+    assert.strictEqual(store.jev['audit.snippets'], true);
+    assert.ok(!('prices' in store.jev), 'object settings are file-only: never written by the migration');
+    assert.deepStrictEqual(settings.get('jev', 'prices', null, { home: home.home }), legacy.prices, 'still read from jev.json');
+    // idempotent
+    assert.deepStrictEqual(M.migrateSettingsFromLegacy(home.home), { ok: true, migrated: 0, errors: 0 });
+    assert.deepStrictEqual(JSON.parse(fs.readFileSync(jevPath(home.home), 'utf8')), legacy);
+  } finally {
+    home.cleanup();
+  }
+});

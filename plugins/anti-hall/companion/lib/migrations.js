@@ -374,14 +374,18 @@ function migrateSettingsFromLegacy(home, opts) {
     const store = settingsLib.load({ home });
     for (const entry of schemaLib.allSettings()) {
       if (!entry.legacy || !entry.legacy.file) continue;
-      const already = store[entry.section] && Object.prototype.hasOwnProperty.call(store[entry.section], entry.key);
+      // 'object' settings (jev.prices) are file-only — set() refuses them by
+      // design; they keep resolving from the legacy file via settings.get().
+      if (entry.type === 'object') continue;
+      const already = settingsLib.lookup(store[entry.section], entry.key) !== undefined;
       if (already) continue;
       try {
         const legacyPath = path.join(home, '.anti-hall', entry.legacy.file);
         if (!fs.existsSync(legacyPath)) continue;
         const raw = JSON.parse(fs.readFileSync(legacyPath, 'utf8'));
-        if (!raw || typeof raw !== 'object' || !Object.prototype.hasOwnProperty.call(raw, entry.legacy.key)) continue;
-        const r = settingsLib.set(entry.section, entry.key, raw[entry.legacy.key], { home });
+        const legacyVal = raw && typeof raw === 'object' ? settingsLib.lookup(raw, entry.legacy.key) : undefined;
+        if (legacyVal === undefined) continue;
+        const r = settingsLib.set(entry.section, entry.key, legacyVal, { home });
         if (r.ok) migrated++; else errors++;
       } catch (_) { errors++; }
     }
