@@ -13,27 +13,32 @@
 // joined per workspace, and every surface (parent-inbox, roster, identity,
 // doctor, the supervisor sync) reads that one snapshot.
 //
-// FIELD SEMANTICS — proven on a live DB (read-only) before any decision uses
-// them; the rest are exposed as INFORMATIONAL only (see docs/KB-devswarm-app-db.md):
-//   PROVEN  builders.isActive/isHidden        archived = isActive 0 AND isHidden 1
-//   PROVEN  builders.label                    == hivecontrol `label` (the UI title)
-//   PROVEN  builders.rank                     sidebar order (screenshot order == rank)
-//   PROVEN  builder_terminals.ai_session_config.sessionId -> the Claude session
-//           whose transcript cwd == builders.worktreePath (129/130). ONE-WAY: a
-//           session id found here belongs to that worktree; the row is NOT always
-//           the builder's CURRENT session (a newer session can run in the same
-//           terminal), so absence proves nothing.
-//   PROVEN  initialPrompt / initialPromptDeliveredAt: the app clears the prompt
-//           when it delivers it and stamps DeliveredAt (78/78 terminals since the
-//           app began recording delivery). Only rows created after the first
-//           recorded delivery are judged.
-//   PROVEN  pull_requests.state / checkStatus (6/6 state and 2/2 'Failed' match GitHub)
-//   INFO    panelStatus, lastViewedAt, lastSelectedAt, lastAccessed (bulk-touched
-//           heartbeat), isPinned, terminal scrollback mtime/size, initialPromptWithheldAt
-//   UNUSED  transcriptByteOffset/LineCount (always 0 on the live DB),
-//           builder_terminal_transcripts, builder_transcript_prompts (payload
-//           bodies), workspace_messages.message (bodies) and .status,
-//           pull_requests.title/authorLogin.
+// FIELD SEMANTICS — proven on a live DB (read-only) and against the app's own
+// source (2.5.2) before any decision uses them; the rest are INFORMATIONAL only
+// (docs/KB-devswarm-app-db.md):
+//   PROVEN  builders.isActive/isHidden   archive = isHidden 1 + isActive 0; close =
+//           isActive 0 only (NOT archived); pre-2.3.0 rows carry isActive 0 as
+//           "unknown" — hence archived requires isHidden 1. Delete removes the row.
+//   PROVEN  builders.label                == hivecontrol `label` (the UI title)
+//   PROVEN  builders.rank                 sidebar order within a repo (0 = top)
+//   PROVEN  builders.lastSelectedAt       UI focus: stamped on every active-tab change
+//   PROVEN  builder_terminals.ai_session_config.sessionId = the live Claude session
+//           id (rewritten on /clear, /compact fork when the app's hook reports).
+//           Used ONE-WAY: a session id found here runs on that worktree (129/130
+//           transcripts' cwd == worktreePath); absence proves nothing.
+//   PROVEN  initialPrompt / DeliveredAt / WithheldAt: delivery clears the prompt and
+//           stamps DeliveredAt in one write; WithheldAt + prompt = withheld, retried
+//           on the next healthy resume. Rows older than the first recorded delivery
+//           (pre-2.5.2) are never judged.
+//   PROVEN  pull_requests.state / checkStatus (Title Case; 6/6 state and 2/2
+//           'Failed' match GitHub; polled every 60 s)
+//   INFO    panelStatus (pending = no PTY yet), lastViewedAt (terminal tab
+//           switch), lastAccessed (bumped by background writes — NOT focus),
+//           isPinned, terminal scrollback mtime/size
+//   UNUSED  transcriptByteOffset/LineCount (0 on every live row: ingestion is the
+//           app's cloud-analytics pipeline), builder_terminal_transcripts,
+//           builder_transcript_prompts (payload bodies), workspace_messages.message
+//           (bodies) and .status, pull_requests.title/authorLogin.
 //
 // CONTRACT
 //   - READ-ONLY: node:sqlite `readOnly: true`, a few SELECTs, closed. Never
@@ -366,8 +371,8 @@ function briefDelivery(snap, ws, now) {
   for (const term of ws.terminals) {
     if (term.terminalType !== 'ai') continue;
     const ageMs = term.createdAt != null ? t - term.createdAt : null;
-    if (term.withheldAt != null && term.deliveredAt == null) return { status: 'withheld', ageMs };
     if (!term.briefPending || term.deliveredAt != null) continue;
+    if (term.withheldAt != null) return { status: 'withheld', ageMs };
     if (since == null || term.createdAt == null || term.createdAt < since) continue;
     return { status: ageMs != null && ageMs >= BRIEF_DELIVERY_GRACE_MS ? 'not-delivered' : 'pending', ageMs };
   }
@@ -385,9 +390,8 @@ function finishSignal(ws) {
   return s;
 }
 
-// lastSelected(snap, repositoryId) -> { id, at } | null. INFORMATIONAL only: the
-// builder the owner most recently selected in the app (not proven to be the one
-// currently on screen).
+// lastSelected(snap, repositoryId) -> { id, at } | null: the builder the owner
+// most recently selected in the app (optionally within one repository).
 function lastSelected(snap, repositoryId) {
   if (!snap) return null;
   let best = null;
@@ -396,6 +400,19 @@ function lastSelected(snap, repositoryId) {
     if (w.lastSelectedAt != null && (!best || w.lastSelectedAt > best.at)) best = { id: w.id, at: w.lastSelectedAt };
   }
   return best;
+}
+
+// focusedWorkspaceId(snap, now, windowMs) -> id | null. The builder the owner
+// has on screen in the app: the GLOBAL max lastSelectedAt (stamped on every
+// active-tab change), and only while that selection is recent (default 2 min —
+// a stale selection may mean the owner left the app).
+const FOCUS_WINDOW_MS = 2 * 60 * 1000;
+function focusedWorkspaceId(snap, now, windowMs) {
+  const best = lastSelected(snap, null);
+  if (!best) return null;
+  const t = Number.isFinite(now) ? now : Date.now();
+  const w = Number.isFinite(windowMs) && windowMs >= 0 ? windowMs : FOCUS_WINDOW_MS;
+  return t - best.at >= 0 && t - best.at <= w ? best.id : null;
 }
 
 // repositoryForWorktree(snap, worktreePath) -> repository | null: the repo whose
@@ -455,6 +472,6 @@ function resetCache() { memo = null; }
 
 module.exports = {
   appDbPath, readSnapshot, snapshot, builderStates, appArchivedVerdict, workspaceFor, sessionOwner, sessionMap,
-  briefDelivery, finishSignal, lastSelected, repositoryForWorktree, messageTimestamps, scheduledForDeletion,
-  resetCache, SCHEMA, DEFAULT_CACHE_MS, BRIEF_DELIVERY_GRACE_MS,
+  briefDelivery, finishSignal, lastSelected, focusedWorkspaceId, repositoryForWorktree, messageTimestamps, scheduledForDeletion,
+  resetCache, SCHEMA, DEFAULT_CACHE_MS, BRIEF_DELIVERY_GRACE_MS, FOCUS_WINDOW_MS,
 };

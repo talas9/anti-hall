@@ -99,6 +99,8 @@ test('(d) session owner, brief delivery, finish signal, last selected', { skip }
     assert.strictEqual(appDb.finishSignal(ws('b-a')), 'PR #12 merged, checks failed');
     assert.strictEqual(appDb.finishSignal(ws('b-b')), null);
     assert.strictEqual(appDb.lastSelected(s, 'repo-1').id, 'b-primary');
+    assert.strictEqual(appDb.focusedWorkspaceId(s, f.now), 'b-primary', 'selected 60 s ago -> focused');
+    assert.strictEqual(appDb.focusedWorkspaceId(s, f.now + 120e3), null, 'a selection older than 2 min is not focus');
     assert.strictEqual(appDb.workspaceFor(s, { worktreePath: f.wt.a }).id, 'b-a');
     assert.strictEqual(appDb.workspaceFor(s, { worktreePath: f.wt.arch }), null, 'never an archived builder by worktree');
     assert.strictEqual(appDb.repositoryForWorktree(s, f.wt.b).id, 'repo-1');

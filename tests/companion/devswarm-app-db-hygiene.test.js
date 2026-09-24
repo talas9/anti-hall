@@ -1,6 +1,8 @@
 'use strict';
 // v0.108.0 hygiene: anti-hall reads the DevSwarm app's database and data dir,
-// but NEVER its credential tables or browser-profile stores. This test greps
+// but NEVER its credential tables, browser-profile stores, or the app's
+// unauthenticated internal HTTP/WebSocket/MCP surface (port 47836: /api/*,
+// /ws, POST /mcp — some routes are destructive). This test greps
 // every shipped code file (and every test other than this one) for those names
 // and fails on any hit. Docs may mention them (the KB records what exists);
 // code may not.
@@ -15,6 +17,7 @@ const SELF = path.resolve(__filename);
 const DENY = [
   'github_auth', 'jira_auth', 'user_session',
   'Cookies', 'Session Storage', 'WebStorage', 'Trust Tokens', 'SingletonSocket',
+  '47836', '47837', '/api/workspace', '/api/builder', '/api/terminal', "'/mcp'", '"/mcp"', "'/ws'", '"/ws"',
 ];
 const CODE_EXT = new Set(['.js', '.cjs', '.mjs', '.sh', '.py', '.ts']);
 
