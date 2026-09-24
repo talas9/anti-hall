@@ -157,10 +157,23 @@ function writeOwnSummary(home, unread, urgencyMax, pendingQuestions, pendingQues
   if (urgencyMax !== undefined) entry.urgencyMax = urgencyMax;
   if (pendingQuestions !== undefined) entry.pendingQuestions = pendingQuestions;
   if (pendingQuestionsTruncated !== undefined) entry.pendingQuestionsTruncated = pendingQuestionsTruncated;
+  // jevQuestionCandidates (parentGateQuestion integration): SAME {from,ts,seq}
+  // shape as pendingQuestions, projected verbatim by readOwnUnread — see its
+  // own header. Fixture-only param; a real computeSummary would have derived
+  // this from the jev-triage cache (companion/lib/devswarm-store.js).
+  const jevQuestionCandidates = opts && opts.jevQuestionCandidates;
+  if (jevQuestionCandidates !== undefined) entry.jevQuestionCandidates = jevQuestionCandidates;
   const workspaces = { [OWN_ID]: entry };
   const excluded = new Set((opts && opts.excludeFromRegistry) || []);
   if (Array.isArray(pendingQuestions)) {
     for (const q of pendingQuestions) {
+      if (q && q.from != null && q.from !== OWN_ID && !excluded.has(String(q.from))) {
+        workspaces[String(q.from)] = {};
+      }
+    }
+  }
+  if (Array.isArray(jevQuestionCandidates)) {
+    for (const q of jevQuestionCandidates) {
       if (q && q.from != null && q.from !== OWN_ID && !excluded.has(String(q.from))) {
         workspaces[String(q.from)] = {};
       }
@@ -3222,3 +3235,107 @@ test('DRAIN MARKER PERSIST ORDERING: N consecutive drain-downgraded turns never 
 // this file's persist-then-check ordering and re-running this test file
 // reproduced exactly that failure (RED), then reverting back to the
 // check-before-persist ordering restored GREEN.
+
+// ---------------------------------------------------------------------------
+// JEV ADD-BLOCK (parentGateQuestion, default mode "shadow") — a child message
+// triage-labelled question-needs-answer (jevQuestionCandidates, projected from
+// computeSummary — see readOwnUnread's own header) is invisible to the gate
+// today because pendingQuestions is derived ONLY from needs_reply, set ONLY by
+// `send --question`. Folded into `unanswered` via jev-assist's add-block trust
+// math, entirely from an ALREADY-cached triage label — zero network, zero
+// subprocess (unlike gitGuardSelfCredit's askSync, this integration reuses
+// jev-assist.js's finalize()/prepare() directly, so these tests need no mock
+// Jev server at all).
+// ---------------------------------------------------------------------------
+
+function writeJevConfigGate(home, cfg) {
+  const dir = path.join(home, '.anti-hall');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'jev.json'), JSON.stringify(cfg));
+}
+
+test('parentGateQuestion: mode "off" (no jev.json) -> a jev candidate is IGNORED, byte-identical to pre-Jev behavior', () => {
+  const h = makeHome();
+  try {
+    const ts = Date.now() - 5 * 60000;
+    writeOwnSummary(h.home, 0, undefined, undefined, undefined, {
+      jevQuestionCandidates: [{ from: 'child-jev-1', ts, seq: 1 }],
+    });
+    const r = run(h.home, stopPayload('jev-off-sess', true));
+    assert.strictEqual(r.status, 0);
+    assert.strictEqual(r.stdout, '', 'no other blocking reason, and the jev candidate must never be consulted in mode off');
+  } finally { h.cleanup(); }
+});
+
+test('parentGateQuestion: mode "shadow" -> logs a decision row but STILL never blocks on the jev candidate alone', () => {
+  const h = makeHome();
+  try {
+    writeJevConfigGate(h.home, { enabled: true, integrations: { parentGateQuestion: 'shadow' } });
+    const ts = Date.now() - 5 * 60000;
+    writeOwnSummary(h.home, 0, undefined, undefined, undefined, {
+      jevQuestionCandidates: [{ from: 'child-jev-1', ts, seq: 1 }],
+    });
+    const r = run(h.home, stopPayload('jev-shadow-sess', true));
+    assert.strictEqual(r.status, 0);
+    assert.strictEqual(r.stdout, '', 'shadow must never change the blocking decision');
+    const log = fs.readFileSync(path.join(h.home, '.anti-hall', 'logs', 'jev-assist.ndjson'), 'utf8')
+      .trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
+    const row = log.find((rr) => rr.id === 'parentGateQuestion');
+    assert.ok(row, 'expected a logged decision row even in shadow');
+    assert.strictEqual(row.mode, 'shadow');
+    assert.strictEqual(row.final, false, 'shadow: final must equal baseline (false)');
+  } finally { h.cleanup(); }
+});
+
+test('parentGateQuestion: mode "on" -> an unflagged jev-labelled question BLOCKS, naming the sender', () => {
+  const h = makeHome();
+  try {
+    writeJevConfigGate(h.home, { enabled: true, integrations: { parentGateQuestion: 'on' } });
+    const ts = Date.now() - 5 * 60000;
+    writeOwnSummary(h.home, 0, undefined, undefined, undefined, {
+      jevQuestionCandidates: [{ from: 'child-jev-1', ts, seq: 1 }],
+    });
+    const r = run(h.home, stopPayload('jev-on-sess', true));
+    assert.strictEqual(r.status, 0);
+    assert.ok(r.json, `expected a JSON block decision; stdout=${r.stdout}`);
+    assert.strictEqual(r.json.decision, 'block');
+    assert.match(r.json.reason, /UNANSWERED QUESTION/);
+    assert.match(r.json.reason, /child-jev-1/);
+  } finally { h.cleanup(); }
+});
+
+test('parentGateQuestion: mode "on" -> a jev candidate ALREADY represented in real pendingQuestions is not double-counted', () => {
+  const h = makeHome();
+  try {
+    writeJevConfigGate(h.home, { enabled: true, integrations: { parentGateQuestion: 'on' } });
+    const ts = Date.now() - 5 * 60000;
+    writeOwnSummary(h.home, 0, undefined, [{ from: 'child-1', ts, seq: 1 }], undefined, {
+      jevQuestionCandidates: [{ from: 'child-1', ts, seq: 2 }],
+    });
+    const r = run(h.home, stopPayload('jev-dedupe-sess', true));
+    assert.strictEqual(r.status, 0);
+    assert.ok(r.json);
+    assert.strictEqual(r.json.decision, 'block');
+    const occurrences = (r.json.reason.match(/child-1/g) || []).length;
+    assert.strictEqual(occurrences, 1, 'the same sender must not be named twice in the unanswered segment');
+  } finally { h.cleanup(); }
+});
+
+test('parentGateQuestion: mode "on" -> a REPLIED-to jev candidate clears exactly like a real question would', () => {
+  const h = makeHome();
+  try {
+    writeJevConfigGate(h.home, { enabled: true, integrations: { parentGateQuestion: 'on' } });
+    const ts = Date.now() - 5 * 60000;
+    writeOwnSummary(h.home, 0, undefined, undefined, undefined, {
+      jevQuestionCandidates: [{ from: 'child-jev-1', ts, seq: 1 }],
+    });
+    const p = stopPayload('jev-reply-sess', true);
+    const before = run(h.home, p);
+    assert.strictEqual(before.json && before.json.decision, 'block');
+
+    replyStateLib.recordReply(REPO_KEY, h.home, 'child-jev-1', ts + 60000);
+    const after = run(h.home, p);
+    assert.strictEqual(after.status, 0);
+    assert.strictEqual(after.stdout, '', 'a real reply clears a jev-added question exactly like any other');
+  } finally { h.cleanup(); }
+});

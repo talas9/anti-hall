@@ -2774,6 +2774,51 @@ function computeSummary(store, opts) {
       : collapsedQuestions;
     const pendingQuestionsDropped = collapsedQuestions.length - pendingQuestions.length;
 
+    // jevQuestionCandidates (JEV ADVISORY CANDIDATES for the `parentGateQuestion`
+    // integration — see hooks/devswarm-parent-gate.js): a child message can ask
+    // a real question WITHOUT `send --question` ever setting needs_reply, in
+    // which case it is invisible to `pendingQuestions` above no matter how long
+    // it sits unread. `hooks/lib/jev-triage.js` may have ALREADY classified this
+    // exact message (kind: 'question-needs-answer') when it was rendered
+    // elsewhere (the broadcast feed or `inbox messages`/read-primary) — this is
+    // a PURE CACHE LOOKUP over that already-classified label, reusing the SAME
+    // `unreadRows` already fetched above for archive_requested (zero extra
+    // store reads) and the SAME resolveSenderRegistryId/collapse machinery
+    // pendingQuestions itself uses, so the two lists share one identity
+    // resolution. ZERO NETWORK: never spawns jev-triage-worker.js from this
+    // store-layer read path — only a small JSON file read, best-effort,
+    // fail-open to an empty list on any error. Rows already needs_reply-flagged
+    // are excluded (already represented in `pendingQuestions`). The gate itself
+    // (not this projection) applies jev-assist's add-block trust math and mode
+    // gating (default "shadow" — this candidate list is emitted regardless of
+    // Jev mode; the GATE decides whether to act on it), so this field is purely
+    // additive and never changes `unread`/`pendingQuestions`/anything existing.
+    let jevQuestionCandidates = [];
+    try {
+      const jevTriage = require('../../hooks/lib/jev-triage.js');
+      const needsReplySeqs = new Set(needsReplyRows.map((r) => r && r.storeSeq));
+      const candidateRows = unreadRows.filter((r) => (
+        r && r.mtype === 'direct' && !needsReplySeqs.has(r.storeSeq) &&
+        typeof r.body === 'string' && r.body
+      ));
+      if (candidateRows.length) {
+        let cache = {};
+        try { cache = JSON.parse(F.readFileSync(jevTriage.cachePath(home), 'utf8')) || {}; } catch (_) { cache = {}; }
+        const resolved = [];
+        for (const r of candidateRows) {
+          const hash = jevTriage.hashMessage(r.body);
+          const label = cache[hash];
+          if (!label || label.kind !== 'question-needs-answer') continue;
+          const resolvedFrom = resolveSenderRegistryId(store, registry, r.sender, home, d.id);
+          if (resolvedFrom == null) continue; // same structural-deadlock guard as pendingQuestions above
+          resolved.push({ from: resolvedFrom, ts: r.ts, seq: r.storeSeq });
+        }
+        jevQuestionCandidates = collapsePendingQuestionsBySender(resolved);
+      }
+    } catch (_) {
+      jevQuestionCandidates = []; // fail-open: never let this candidate list break the projection
+    }
+
     const bcCursor = typeof store.broadcastCursorValue === 'function' ? store.broadcastCursorValue(d.id) : 0;
     const unreadBroadcastRows = broadcastNonHeartbeat.filter(
       (r) => Number.isFinite(r.storeSeq) && r.storeSeq > bcCursor
@@ -2849,6 +2894,13 @@ function computeSummary(store, opts) {
         kept: pendingQuestions.length,
         dropped: pendingQuestionsDropped,
       };
+    }
+    // Additive-only, same convention as pendingQuestionsTruncated above: absent
+    // entirely (not even `[]`) when there is nothing to report, so a summary
+    // with no jev-triage-labelled unflagged question stays byte-identical to
+    // before this field existed.
+    if (jevQuestionCandidates.length > 0) {
+      workspaces[d.id].jevQuestionCandidates = jevQuestionCandidates;
     }
   }
 

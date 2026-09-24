@@ -470,16 +470,27 @@ the stdin JSON boundary) — a caller needing custom answer normalization uses
 | `speculation` | speculation-guard.js (`Stop`) | `add-block` | `ask` | `on` (legacy) | none wired |
 | `triage` | jev-triage.js (`UserPromptSubmit`/CLI reads) | n/a (label-only, §9) | own client, not jev-assist | `on` (legacy) | `recordAnswered` — time-to-answer (below) |
 | `modelRouting` | model-routing-guard.js (`PreToolUse`) | `relax-block` | `askSync` | `shadow` | none wired |
-| `claimLedger` | claim-ledger.js (`Stop`, per flagged claim) | `relax-block` | `askSync` | `shadow` | none wired |
+| `claimLedger` | claim-ledger.js (`Stop`, per flagged claim) | `relax-block` | `askDetached` (critical path — up to 40 flags per Stop, each with its own network round trip, would risk the Stop hook's own deadline) | `shadow` | none wired |
 | `mergeGateHedge` | merge-gate.js (`PreToolUse`, merge commands only) | `relax-block` | `askDetached` (critical-path — a Bash tool call is gating the user's turn) | `shadow` | none wired |
 | `newRequest` | task-tracker.js (`UserPromptSubmit`) | `advisory` (label-only: `new-request`/`follow-up`/`correction`/`question`) | `askDetached` (critical path) | `shadow`, baseline always `null` | none wired |
 | `outputVerifyGuard` | output-verify-guard.js (`PostToolUse`, test-runner commands only) | `advisory` | `askDetached` (critical path) | `shadow` | none wired |
+| `gitGuardSelfCredit` | git-guard.js (`PreToolUse`, commit messages / gh pr-issue-release bodies only) | `add-block` **only** (never relax) | `askSync`, 1.5s cap, hash-cached | `shadow` | none wired |
+| `parentGateQuestion` | devswarm-parent-gate.js (`Stop`) | `add-block` | none — cache-only decision via `jev-assist.js`'s `finalize()`/`prepare()`, reusing `hooks/lib/jev-triage.js`'s own already-populated cache (zero network) | `shadow` | none wired |
+| `tasklistTrivial` | tasklist-guard.js (`Stop`) | `relax-block` | `askDetached` (structurally shadow-forever until rewired to `askSync` — same limitation as `mergeGateHedge` below) | `shadow` | none wired |
+| `supervisorBlockerLabel` | devswarm-supervisor.js (periodic sweep, Claude-only) | `advisory` | none — cache-only decision via `jev-assist.js`'s `finalize()`/`prepare()`, reusing `hooks/lib/jev-triage.js`'s own pending-inbound cache (zero network) | `shadow` | none wired |
+| `codexNudgeSubstantial` | codex-nudge.js (`Stop`, Claude-only, no Codex mirror) | `relax-block` | `askDetached` (structurally shadow-forever until rewired to `askSync`) | `shadow` | none wired |
 
-`claimLedger`/`mergeGateHedge`/`newRequest`/`outputVerifyGuard` were shipped
-shadow-only in this release specifically so `jev report` can show agreement/label
-distribution before any owner promotes one to `"on"`. Promoting `mergeGateHedge` to
-`"on"` would need switching it from `askDetached` back to `askSync` (a fire-and-forget
-call can never feed its answer back into a decision the caller already returned from).
+`claimLedger`/`mergeGateHedge`/`newRequest`/`outputVerifyGuard`/`tasklistTrivial`/
+`codexNudgeSubstantial` were shipped shadow-only in this release specifically so
+`jev report` can show agreement/label distribution before any owner promotes one to
+`"on"`. Promoting `mergeGateHedge`/`tasklistTrivial`/`codexNudgeSubstantial` to `"on"`
+would need switching them from `askDetached` back to `askSync` (a fire-and-forget call
+can never feed its answer back into a decision the caller already returned from).
+`parentGateQuestion` and `supervisorBlockerLabel` never make a Jev network call at
+all — both reuse an ALREADY-cached `hooks/lib/jev-triage.js` label (populated by a
+different surface that rendered the same message earlier) via `jev-assist.js`'s
+`finalize()`/`prepare()` exports, so promoting either to `"on"` is a config change
+only, no code change.
 
 **Triage answer-time (`recordAnswered`, `hooks/lib/jev-triage.js`):** when a
 DevSwarm Primary/child reads a labeled inbound message (`noteLabeledInbound`, called

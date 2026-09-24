@@ -582,6 +582,15 @@ function readOwnUnread(home, cwd, repoKey) {
     // re-derives store state, it only projects it); an unexpected shape still
     // degrades safely since main() only checks truthiness, never reads into it.
     const pendingQuestionsTruncated = entry && entry.pendingQuestionsTruncated ? entry.pendingQuestionsTruncated : null;
+    // jevQuestionCandidates — JEV ADVISORY CANDIDATES (companion/lib/devswarm-
+    // store.js's computeSummary), projected verbatim: unread direct rows NOT
+    // already needs_reply-flagged whose jev-triage cache label already says
+    // `question-needs-answer` (see that field's own header for the full
+    // rationale — a pure cache lookup, never a fresh classification). Consumed
+    // below (~line 746) to fold confident candidates into the blocking set via
+    // jev-assist's add-block trust math, default mode "shadow" (never changes
+    // blocking on its own).
+    const jevQuestionCandidates = entry && Array.isArray(entry.jevQuestionCandidates) ? entry.jevQuestionCandidates : [];
     // registryRows — the STORE REGISTRY's id space, projected verbatim into the
     // summary this function just parsed (defect f3b8f326bfc3). The unanswered-
     // question cross-check needs it because a reply is recorded under whichever
@@ -610,7 +619,7 @@ function readOwnUnread(home, cwd, repoKey) {
         registryRows.push({ id: r.id, worktreePath: r.worktreePath || null, sessionId: r.sessionId || null });
       }
     }
-    return { unread, id, urgencyMax, unknown: staleOwnCache, staleOwnCache, ownSource, ownRawWasZero, pendingQuestions, pendingQuestionsTruncated, registryRows, archivedKnown };
+    return { unread, id, urgencyMax, unknown: staleOwnCache, staleOwnCache, ownSource, ownRawWasZero, pendingQuestions, pendingQuestionsTruncated, jevQuestionCandidates, registryRows, archivedKnown };
   } catch (_) {
     // Any unanticipated failure past the ENOENT-tolerant read above means a
     // summary WAS reachable enough to attempt reading/parsing and something
@@ -701,6 +710,47 @@ function main() {
   // UNANSWERED on any surprise here — matches the lib's own posture, but this
   // caller must independently never let an unexpected shape (e.g. a
   // non-array own.pendingQuestions) throw past this point.
+  // JEV ADD-BLOCK (parentGateQuestion, default mode "shadow" — see
+  // hooks/lib/jev-assist.js): fold each jev-triage-confirmed candidate
+  // (own.jevQuestionCandidates — see readOwnUnread's header above) into the
+  // SAME `pendingQuestions` array familyAwareUnanswered consumes below,
+  // BEFORE the reply-state cross-check runs — never after — so a real reply
+  // clears a jev-added question exactly like any other (added AFTER would
+  // permanently bypass that cross-check, since only familyAwareUnanswered
+  // ever reads reply-state). The "Jev answer" IS the already-cached triage
+  // label itself — jev-triage.js only ever caches a `kind` label when its OWN
+  // classifier was confident enough to attach one (see its own header) — so
+  // this is a pure cache-only decision (r/cachedFlag synthesized), never a
+  // fresh network call; jev-assist.js's finalize() still applies the usual
+  // add-block trust math + mode gating + `jev-assist.ndjson` logging so `jev
+  // report` can show what this integration WOULD add before it is trusted.
+  // Fail-open: any error here leaves `effectivePendingQuestions` exactly as
+  // `own.pendingQuestions` already was.
+  let effectivePendingQuestions = own.pendingQuestions || [];
+  try {
+    const jevAssist = require('./lib/jev-assist.js');
+    const existingFrom = new Set(effectivePendingQuestions.map((q) => (q && q.from != null ? String(q.from) : null)).filter(Boolean));
+    const added = [];
+    for (const cand of (own.jevQuestionCandidates || [])) {
+      if (!cand || cand.from == null || existingFrom.has(String(cand.from))) continue;
+      const cacheKey = String(cand.from) + '\u0001' + String(cand.seq != null ? cand.seq : cand.ts);
+      const p = jevAssist.prepare({
+        id: 'parentGateQuestion', home, trust: 'add-block', baseline: false, cacheKey, state: 'question-needs-answer',
+      });
+      if (p.skip) continue; // mode "off" -> no log line either, byte-identical to pre-Jev
+      const result = jevAssist.finalize({
+        id: 'parentGateQuestion', home: p.h, hash: p.hash, mode: p.mode,
+        trust: 'add-block', baseline: false, judge: () => true, threshold: p.threshold,
+        r: { ok: true, answer: true, confidence: 1, ms: 0 }, cachedFlag: true, state: 'question-needs-answer',
+      });
+      if (result.final === true) {
+        added.push(cand);
+        existingFrom.add(String(cand.from));
+      }
+    }
+    if (added.length) effectivePendingQuestions = effectivePendingQuestions.concat(added);
+  } catch (_) { /* fail-open: never let this candidate fold break the gate */ }
+
   let unanswered = [];
   try {
     const replyStateLib = require('../companion/lib/devswarm-reply-state.js');
@@ -729,7 +779,7 @@ function main() {
     // for its fail-open contract. `descriptors` is this hook's already-read
     // descriptor set; `resolveMeshId` is the memoized canonicalMeshId above.
     unanswered = replyStateLib.familyAwareUnanswered({
-      pendingQuestions: own.pendingQuestions || [],
+      pendingQuestions: effectivePendingQuestions,
       replyState, descriptors, resolveMeshId,
       // The second id space a reply can be recorded under — see the lib's own
       // header (defect f3b8f326bfc3).
@@ -743,7 +793,7 @@ function main() {
   } catch (_) {
     // The lib itself is fail-open-toward-unanswered; mirror that here too —
     // an unreadable reply-state module must never silently clear a question.
-    unanswered = Array.isArray(own.pendingQuestions) ? own.pendingQuestions.slice() : [];
+    unanswered = Array.isArray(effectivePendingQuestions) ? effectivePendingQuestions.slice() : [];
   }
 
   // RETIRED-SENDER PARTITION (R17 item 3): split `unanswered` into a question
