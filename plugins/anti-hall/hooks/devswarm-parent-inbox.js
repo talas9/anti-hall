@@ -256,6 +256,41 @@ function summaryPath(home, hash) {
   if (!hash) return null;
   return path.join(devswarmRoot(home), 'summaries', String(hash) + '.json');
 }
+// uiSyncAskPath(home, sessionId, ids) — once-per-session-per-set throttle file for
+// the "send a screenshot" ask (v0.108.0): sha1 of the session + sorted ids.
+function uiSyncAskPath(home, sessionId, ids) {
+  const h = require('crypto').createHash('sha1').update(String(sessionId || '') + '\u0000' + ids.slice().sort().join(',')).digest('hex').slice(0, 20);
+  return path.join(devswarmRoot(home), 'ui-sync-asks', h + '.json');
+}
+
+// uiSyncAsk(home, sessionId, appDbState, rowIds, now) -> string | null. ONE line
+// asking the owner for a screenshot of the DevSwarm sidebar, emitted at most once
+// per session per set, and ONLY when the app DB cannot settle it:
+//   - conflict: app-state.json (supervisor sync) lists workspaces open in the app
+//     but archived in anti-hall;
+//   - unreadable: an app DB file exists but no snapshot could be read.
+// The screenshot then goes through `devswarm.js sync-ui` (skills/devswarm).
+function uiSyncAsk(home, sessionId, appDbState, rowIds, now) {
+  try {
+    let ids = [];
+    let why = '';
+    if (appDbState.conflicts && appDbState.conflicts.length) {
+      ids = appDbState.conflicts.map((c) => String(c.id));
+      why = 'The DevSwarm app shows ' + appDbState.conflicts.map((c) => "'" + (c.label || c.id) + "'").join(', ')
+        + ' as open, but anti-hall has it archived. I can\'t tell which is right.';
+    } else if (appDbState.unreadable && rowIds.length) {
+      ids = rowIds.slice();
+      why = 'I can\'t read the DevSwarm app database, so I can\'t confirm which workspaces are archived.';
+    }
+    if (!ids.length) return null;
+    const p = uiSyncAskPath(home, sessionId, ids);
+    if (fs.existsSync(p)) return null;
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, JSON.stringify({ at: now, ids }));
+    return 'DEVSWARM SYNC: ' + why + ' Ask the owner (once) for a screenshot of the DevSwarm workspace list (left sidebar), then follow the devswarm skill\'s "screenshot sync" steps (`devswarm.js sync-ui`).';
+  } catch (_) { return null; }
+}
+
 function parentInboxLogPath(home) {
   return path.join(devswarmRoot(home), 'parent-inbox.log');
 }
@@ -1937,6 +1972,21 @@ function main() {
         segments.push(TITLE_INSTRUCTION);
       }
     }
+    // v0.108.0: ask for a sidebar screenshot only when the app DB cannot settle
+    // archive state (conflict or unreadable) — once per session per set.
+    try {
+      const st = { conflicts: [], unreadable: false };
+      try {
+        const as = JSON.parse(fs.readFileSync(path.join(devswarmRoot(home), 'app-state.json'), 'utf8'));
+        if (as && Array.isArray(as.openButMarkedArchived)) st.conflicts = as.openButMarkedArchived;
+      } catch (_) { /* no sync yet */ }
+      if (appDbLib && !appSnap()) {
+        const f = appDbLib.appDbPath({ home, env: process.env });
+        try { st.unreadable = !!f && fs.statSync(f).isFile(); } catch (_) { st.unreadable = false; }
+      }
+      const ask = uiSyncAsk(home, sessionId, st, rows.map((r) => String(r.id)), now);
+      if (ask) segments.push(ask);
+    } catch (_) { /* fail-open */ }
   }
 
   // Stuck-mesh surfacing (LEAN, read-only) — orphans[]/staleRegistryPartitions[]

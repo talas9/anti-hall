@@ -5630,6 +5630,77 @@ function formatAppState(r) {
   return L.join('\n');
 }
 
+// cmdSyncUi(flags, ctx) — `devswarm.js sync-ui --titles-json <file> | --stdin
+// [--yes] [--no-repair] [--accept-conflicts]` (v0.108.0, screenshot sync). The
+// owner's transcribed sidebar titles (top-to-bottom, "…" kept verbatim) are
+// planned against the app DB + anti-hall's records by companion/lib/
+// devswarm-ui-sync.js (all safety rules live there). DRY RUN by default: prints
+// the plan + a before table. --yes applies it: archived markers for `toArchive`
+// (app-DB-proven only; never a delete) and — unless --no-repair — the names
+// cache for `titleUpdates` (the app's FULL label). Conflicts refuse --yes unless
+// --accept-conflicts (the skill asks the owner first). Returns { plan, before,
+// after, diff }.
+function cmdSyncUi(flags, ctx) {
+  const home = ctx.home;
+  const env = ctx.env || process.env;
+  const now = Number.isFinite(ctx.now) ? ctx.now : Date.now();
+  let raw = null;
+  const file = one(flags, 'titles-json');
+  try {
+    if (file) raw = fs.readFileSync(String(file), 'utf8');
+    else if (hasFlag(flags, 'stdin')) raw = (ctx.io && typeof ctx.io.readStdin === 'function') ? ctx.io.readStdin() : fs.readFileSync(0, 'utf8');
+  } catch (e) { return { ok: false, action: 'sync-ui', error: 'cannot read titles: ' + String((e && e.message) || e) }; }
+  if (raw == null) return { ok: false, action: 'sync-ui', error: 'sync-ui needs --titles-json <file> or --stdin (a JSON array of sidebar titles, top-to-bottom)' };
+  let titles;
+  try {
+    const v = JSON.parse(raw);
+    titles = Array.isArray(v) ? v : (v && Array.isArray(v.titles) ? v.titles : null);
+  } catch (_) { titles = null; }
+  if (!titles || !titles.every((t) => typeof t === 'string')) return { ok: false, action: 'sync-ui', error: 'titles must be a JSON array of strings (or {"titles": [...]})' };
+  const uiSync = require('../companion/lib/devswarm-ui-sync.js');
+  const appDb = require('../companion/lib/devswarm-app-db.js');
+  const gather = () => {
+    const snap = appDb.snapshot({ home, env, now, fresh: true });
+    let repositoryId = null;
+    try {
+      const main = inst.resolveMainWorktree(ctx.cwd || process.cwd()) || ctx.cwd || process.cwd();
+      const repo = appDb.repositoryForWorktree(snap, main);
+      repositoryId = repo ? repo.id : null;
+    } catch (_) { repositoryId = null; }
+    const descriptors = readJsonDescriptors(workspacesDir(home));
+    const markers = readJsonDescriptors(archivedDir(home)).map((d) => String(d.id));
+    const nm = {};
+    if (snap) for (const w of snap.workspaces) { const n = names.readName(home, w.id); if (n) nm[w.id] = n; }
+    const plan = uiSync.planUiSync({ titles, snapshot: snap, repositoryId, descriptors, markers, names: nm });
+    const table = snap ? snap.workspaces.filter((w) => w.builderType !== 'primary' && (!repositoryId || w.repositoryId === repositoryId) && (w.active || descriptors.some((d) => String(d.id) === w.id)))
+      .sort((a, b) => ((a.rank == null ? Infinity : a.rank) - (b.rank == null ? Infinity : b.rank)))
+      .map((w) => ({ id: w.id, title: w.label, app: w.archived ? 'archived' : (w.active ? 'open' : 'closed'), antiHall: markers.includes(w.id) ? 'archived' : (descriptors.some((d) => String(d.id) === w.id) ? 'active' : '—'), cachedName: nm[w.id] || null })) : [];
+    return { snap, repositoryId, plan, table, descriptors };
+  };
+  const before = gather();
+  const out = { ok: true, action: 'sync-ui', dryRun: !hasFlag(flags, 'yes'), appDb: !!before.snap, repositoryId: before.repositoryId, plan: before.plan, before: before.table };
+  if (out.dryRun) return out;
+  if (before.plan.conflicts.length && !hasFlag(flags, 'accept-conflicts')) {
+    return Object.assign(out, { ok: false, reason: 'conflicts', error: before.plan.conflicts.length + ' conflict(s) — confirm with the owner, then re-run with --accept-conflicts' });
+  }
+  const diff = { archived: [], renamed: [], errors: [] };
+  for (const t of before.plan.toArchive) {
+    try {
+      const desc = before.descriptors.find((d) => String(d.id) === t.id);
+      if (!desc || !isSafeId(t.id)) continue;
+      const dir = checkedArchivedDir(home, { create: true });
+      if (!dir.ok) throw new Error(dir.error || 'archived dir unusable');
+      const body = JSON.stringify(Object.assign({}, desc, { archivedBy: 'devswarm-ui-sync', archivedAt: now }));
+      try { fs.writeFileSync(path.join(archivedDir(home), t.id + '.json'), body, { flag: 'wx' }); diff.archived.push(t.id); } catch (e) { if (!e || e.code !== 'EEXIST') throw e; }
+    } catch (e) { diff.errors.push({ id: t.id, error: String((e && e.message) || e) }); }
+  }
+  if (!hasFlag(flags, 'no-repair')) {
+    for (const u of before.plan.titleUpdates) if (isSafeId(u.id) && names.writeName(home, u.id, u.to, now)) diff.renamed.push(u.id);
+  }
+  const after = gather();
+  return Object.assign(out, { after: after.table, afterPlan: after.plan, diff });
+}
+
 // markAppArchivedDescriptors(home, ctx) -> { ok, dryRun, appDb, scanned,
 //   pending, marked, errors, results }. v0.107.1 repair for workspaces archived
 // in the DevSwarm APP: the app's builders table (companion/lib/devswarm-app-db.js)
@@ -16546,6 +16617,7 @@ const VERB_HELP = {
   'wake-directive': { synopsis: 'reprint the SessionStart mailbox wake directive', mutates: 'read-only' },
   diagnose: { synopsis: 'read-only mesh-health projection', mutates: 'read-only' },
   'app-state': { synopsis: 'DevSwarm app-DB summary: open workspaces by sidebar rank, PR/brief signals, session map, drift, message gaps (--json)', mutates: 'read-only' },
+  'sync-ui': { synopsis: 'reconcile a transcribed DevSwarm sidebar screenshot (--titles-json <file>|--stdin) against the app DB; dry run unless --yes', mutates: 'with --yes: archived markers (app-DB-proven only, never deletes) + names cache' },
   'app-sync': { synopsis: 'run the supervisor app-DB sync now (archived markers, names cache, app-state.json; --dry-run)', mutates: 'writes archived markers (never deletes), names cache, app-state.json' },
   healthcheck: { synopsis: 'pass/fail health gate over the same data as diagnose', mutates: 'read-only' },
   mesh: { synopsis: 'mesh subcommands: read', mutates: 'read-only' },
@@ -16820,6 +16892,11 @@ function run(argv, ctx0) {
         const r = cmdAppState(flags, ctx);
         return { code: r.ok ? 0 : 2, result: r };
       }
+      case 'sync-ui': {
+        // v0.108.0 screenshot sync (dry run unless --yes; see cmdSyncUi).
+        const r = cmdSyncUi(flags, ctx);
+        return { code: r.ok ? 0 : 2, result: r };
+      }
       case 'app-sync': {
         // v0.108.0: the supervisor's periodic app-DB sync step, on demand
         // (markers + names cache + app-state.json; --dry-run writes nothing).
@@ -16916,7 +16993,7 @@ function run(argv, ctx0) {
       }
       default:
         return { code: 2, result: { ok: false, error: 'unknown command: ' + JSON.stringify(cmd || '') +
-          ' (register|register-primary|ensure|heartbeat|inbox|workspaces|gate|gate-intent|nudge|archive|unarchive|archive-ignore|archive-unignore|archive-request|migrate|migrate-owner-keys|logs|send|roster|app-state|app-sync|diagnose|healthcheck|mesh|reconcile|reap-stale|reconcile-active|spawn|merge|skip|auto-archive|prune-archived)' } };
+          ' (register|register-primary|ensure|heartbeat|inbox|workspaces|gate|gate-intent|nudge|archive|unarchive|archive-ignore|archive-unignore|archive-request|migrate|migrate-owner-keys|logs|send|roster|app-state|app-sync|sync-ui|diagnose|healthcheck|mesh|reconcile|reap-stale|reconcile-active|spawn|merge|skip|auto-archive|prune-archived)' } };
     }
   } catch (e) {
     // Csh: an internal exception used to be swallowed silently into { ok:false }.
@@ -17114,7 +17191,7 @@ module.exports = {
   deriveInstanceNonce,
   // mesh redesign B5 / Phase 3 — THE nonce every production site uses, plus the
   // reader_cursors adapters:
-  deriveReaderNonce, callerReaderKey, commitNdAck, floorCursor, importReaderCursorsAllStores, repairReaderFloorsAllStores, markAppArchivedDescriptors, deriveTitleFromBrief, appSessionOnWorktree, refreshNamesFromApp, syncAppState, messageGaps, appStatePath, cmdAppState,
+  deriveReaderNonce, callerReaderKey, commitNdAck, floorCursor, importReaderCursorsAllStores, repairReaderFloorsAllStores, markAppArchivedDescriptors, deriveTitleFromBrief, appSessionOnWorktree, refreshNamesFromApp, syncAppState, messageGaps, appStatePath, cmdAppState, cmdSyncUi,
   reconcileDualPartitionAcksAllStores, declaredSelfId,
   mergeSplitBackendStoresAllStores,
   // instanceNonce CONSUMERS (defect d3d571495bf6, items a/b/c — exported for
