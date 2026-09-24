@@ -384,6 +384,8 @@ module.exports = {
   jevDecide,
   jevDecideMulti,
   loadJevConfig,
+  defaultKeyFilePath,
+  expandHome,
   DEFAULT_TIMEOUT_MS,
   DEFAULT_CONFIDENCE_THRESHOLD,
   MAX_TIMEOUT_MS,

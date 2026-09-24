@@ -97,6 +97,20 @@ Env vars (checked before `keyFile`):
 `ANTIHALL_JEV=0`. With Jev disabled, `speculation-guard.js` makes the same decisions as the regex-only
 hook — no network call, no log write.
 
+### 3a. Enabling Jev (the easy way)
+
+The steps above can be done by hand, but the `jev` skill (`/anti-hall:jev`; Codex
+mirror `anti-hall-jev`) is the supported front door: say "activate jev" (or
+"enable jev" / "jev status" / "disable jev" / "jev report"). It asks which
+provider your key is for (Vercel AI Gateway, the default and only
+live-verified transport, vs TypeSafe direct — supported but not independently
+verified), takes the key over stdin only (never as a chat message it repeats
+back, never as a CLI argument), writes it to the resolved key file with mode
+0600, enables Jev, runs one real test call, and reports status. It never
+prints, logs, or stores the key anywhere but that key file. Under the hood it
+drives `plugins/anti-hall/scripts/jev-setup.js` (`status`/`enable`/`disable`/
+`set-key`/`test`/`mode <integration> on|shadow|off`).
+
 ## 4. Fallback semantics (asymmetric trust)
 
 Order inside `speculation-guard.js`:
