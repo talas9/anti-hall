@@ -81,6 +81,15 @@ itself.
   `jev-assist.ndjson` -- no existing user-facing Jev notice path exists in this
   build, so it surfaces only via `jev-report.js`. Jev is NEVER auto-disabled by
   a budget.
+- `node "$ANTI_HALL_ROOT/scripts/jev-report.js" label <hash> tp|fp` -- the ONLY
+  write path this script has; appends to a separate, append-only
+  `~/.anti-hall/logs/jev-labels.ndjson` (the hash `h` is already the decision's
+  stable id), never touching `jev-assist.ndjson`. A human label wins over an
+  AUTO label for the same hash; AUTO labels come from the SAME mechanical
+  `recordOutcome()` signal already logged (never re-parsed transcripts, never
+  ground truth, always reported separately as "N TP (H human, A auto)"). The
+  report also prints a one-line headline per integration, e.g. `speculation: 6
+  changed/24h · 5 TP (3 human, 2 auto) · $0.02/TP · p50=120ms · KEEP`.
 
 ## Never
 

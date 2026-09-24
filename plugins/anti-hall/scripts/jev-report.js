@@ -3,7 +3,8 @@
 // anti-hall :: jev report — read-only summary of ~/.anti-hall/logs/jev-assist.ndjson.
 //
 // USAGE
-//   node plugins/anti-hall/scripts/jev-report.js [--days 7] [--json]
+//   node plugins/anti-hall/scripts/jev-report.js [--days 7] [--json] [--window 24h|7d]
+//   node plugins/anti-hall/scripts/jev-report.js label <hash> tp|fp
 //
 // For each integration id seen in the log, reports: calls, jev-answered %
 // (backend 'jev' or 'cache' vs 'baseline-only'), cache hits, agreement %
@@ -58,7 +59,42 @@
 // jev-triage.ndjson's {type:'answered', urgency, latencyMs} rows and reports
 // p50/p95 time-to-answer for urgent vs non-urgent labeled messages.
 //
-// This script only READS the log; it never mutates jev.json or any state.
+// PRECISION LABELS (tp/fp) -- `jev report label <id> tp|fp` is the ONE
+// command this script offers that writes: it appends {ts, h, label, source:
+// 'human'} to a SEPARATE, append-only ~/.anti-hall/logs/jev-labels.ndjson,
+// keyed by the decision's own content hash `h` (already a stable per-decision
+// id -- no new id scheme needed). AUTO labels are derived, at report time,
+// from the SAME already-logged `type:'outcome'` rows recordOutcome() writes
+// (see hooks/lib/jev-assist.js) using the existing BAD_OUTCOME_RE
+// classification: a good outcome (e.g. 'evidence-added', the mechanical
+// signal that the next main-thread turn cited a tool/file, per
+// speculation-guard.js's hasAcknowledgment check) auto-labels 'tp'; a bad one
+// (e.g. 'repeat-speculation', 'user-override') auto-labels 'fp'. This reuses
+// the mechanical signal the codebase ALREADY computes rather than re-parsing
+// transcripts here -- computing tp/fp FROM that logged text still happens
+// entirely offline, at report time, never in the hook path. A human label
+// always wins over an auto one for the same hash; auto labels are reported
+// SEPARATELY and are NEVER presented as ground truth. A changed decision
+// with neither stays unlabeled (excluded from tp/fp counts, not counted as
+// either).
+//
+// EFFICIENCY (per integration, per window via --window/buildCostWindows):
+//   yield        : changedPer100 = changedUnique/freshCalls*100,
+//                  tpPer100Human / tpPer100Auto = human/auto TP /freshCalls*100
+//   cost         : costPerTp = realCostTotal/(humanTP+autoTP), costPerChanged
+//                  (existing realCostPerChangedDecision) -- both null when
+//                  cost or the denominator is unknown/zero, never fabricated.
+//   overhead     : p50/p95 (existing), pctCallsOver1s, timeouts (reason
+//                  'timeout' count), fallbackCount (backend 'baseline-only'
+//                  while mode is 'on', i.e. Jev was consulted but a real
+//                  failure fell back to baseline).
+//   headline     : one line combining the above with the existing
+//                  KEEP/REVIEW/REMOVE suggestion, e.g. "speculation: 6
+//                  changed/window · 5 TP (3 human, 2 auto) · $0.0x/TP ·
+//                  p50=120ms · KEEP".
+//
+// This script only READS jev-assist.ndjson/jev.json; `label` is the sole
+// exception, and it only ever appends to the separate jev-labels.ndjson.
 
 const fs = require('fs');
 const os = require('os');
@@ -91,6 +127,60 @@ function logPath(home) {
 
 function triageLogPath(home) {
   return path.join((home || os.homedir()), '.anti-hall', 'logs', 'jev-triage.ndjson');
+}
+
+// labelsLogPath(home) -> ~/.anti-hall/logs/jev-labels.ndjson -- a SEPARATE,
+// append-only file for human tp/fp labels (`jev report label <h> tp|fp`),
+// kept apart from jev-assist.ndjson so decision rows stay untouched.
+function labelsLogPath(home) {
+  return path.join((home || os.homedir()), '.anti-hall', 'logs', 'jev-labels.ndjson');
+}
+
+function readLabels(home) {
+  const rows = [];
+  try {
+    const raw = fs.readFileSync(labelsLogPath(home), 'utf8');
+    for (const line of raw.split('\n')) {
+      const t = line.trim();
+      if (!t) continue;
+      try { rows.push(JSON.parse(t)); } catch (_) { /* skip a corrupt line */ }
+    }
+  } catch (_) {
+    // file doesn't exist yet -- fine, nothing labeled
+  }
+  return rows;
+}
+
+// latestHumanLabelByHash(labelRows) -> Map<hash, 'tp'|'fp'> — the LAST human
+// label wins if a hash was labeled more than once (a correction).
+function latestHumanLabelByHash(labelRows) {
+  const map = new Map();
+  for (const row of labelRows) {
+    if (!row || row.source !== 'human' || !row.h || (row.label !== 'tp' && row.label !== 'fp')) continue;
+    map.set(row.h, row.label);
+  }
+  return map;
+}
+
+// cmdLabel(hash, label, home) -> appends a human label. Never touches
+// jev-assist.ndjson. Validates the label value; does not require the hash to
+// already exist in the decision log (labeling ahead of a report run is
+// harmless -- it simply won't affect anything until that hash appears).
+function cmdLabel(hash, label, home) {
+  if (!hash || (label !== 'tp' && label !== 'fp')) {
+    console.error('label: usage is `jev-report label <hash> tp|fp`');
+    process.exitCode = 1;
+    return;
+  }
+  const p = labelsLogPath(home);
+  try {
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.appendFileSync(p, JSON.stringify({ ts: new Date().toISOString(), h: hash, label, source: 'human' }) + '\n', 'utf8');
+    console.log(`labeled ${hash} as ${label}`);
+  } catch (err) {
+    console.error(`label: failed to write ${p}: ${err && err.message}`);
+    process.exitCode = 1;
+  }
 }
 
 function jevConfigPath(home) {
@@ -246,12 +336,27 @@ function buildCostWindows(rows, opts = {}) {
   const windows = opts.windows || COST_WINDOWS;
   const out = {};
   for (const label of Object.keys(windows)) {
-    out[label] = buildReport(rows, { days: windows[label], costPerCall: opts.costPerCall });
+    out[label] = buildReport(rows, {
+      days: windows[label], costPerCall: opts.costPerCall,
+      humanLabelByHash: opts.humanLabelByHash, windowLabel: label,
+    });
   }
   return out;
 }
 
 // buildReport(rows, { days, costPerCall, budgetMsById }) -> { generatedAt, integrations: [...] }
+// buildHeadline(r, windowLabel) -> one-line summary (item 5), e.g.
+// "speculation: 6 changed/24h · 5 TP (3 human, 2 auto) · $0.0x/TP ·
+// p50=120ms · KEEP". Extends the existing KEEP/REVIEW/REMOVE suggestion --
+// see the module doc comment / the THRESHOLDS block above for the rule.
+function buildHeadline(r, windowLabel) {
+  const tpTotal = r.humanTP + r.autoTP;
+  const tpPart = `${tpTotal} TP (${r.humanTP} human, ${r.autoTP} auto)`;
+  const costPart = r.costPerTp == null ? 'cost n/a' : `$${r.costPerTp.toFixed(4)}/TP`;
+  const p50Part = r.p50 == null ? 'p50 n/a' : `p50=${r.p50}ms`;
+  return `${r.id}: ${r.changedUnique} changed/${windowLabel} · ${tpPart} · ${costPart} · ${p50Part} · ${r.suggestion}`;
+}
+
 function buildReport(rows, opts = {}) {
   const now = Date.now();
   const cutoff = Number.isFinite(opts.days) ? now - opts.days * 86400000 : null;
@@ -297,6 +402,7 @@ function buildReport(rows, opts = {}) {
         failures: 0, latencies: [],
         labelCounts: new Map(), labeled: 0,
         realCostSum: 0, realCostKnown: false,
+        timeouts: 0, fallbackCount: 0, overOneSecFresh: 0,
       });
     }
     const bucket = byId.get(row.id);
@@ -304,6 +410,12 @@ function buildReport(rows, opts = {}) {
     if (row.backend === 'jev' || row.backend === 'cache') bucket.jevAnswered++;
     if (row.backend === 'cache') bucket.cacheHits++;
     if (row.backend === 'baseline-only' && isHttpFailure(row.reason)) bucket.failures++;
+    // OVERHEAD (item 4): timeouts and fallbacks across every row (not just
+    // fresh -- a timeout still happened even if a later retry hit cache);
+    // "over 1s" is fresh-only since a cache hit has ms:0 by construction.
+    if (row.reason === 'timeout') bucket.timeouts++;
+    if (row.backend === 'baseline-only' && row.mode === 'on') bucket.fallbackCount++;
+    if (row.backend !== 'cache' && Number.isFinite(row.ms) && row.ms > 1000) bucket.overOneSecFresh++;
     // Real (gateway/price-table-reported) cost, summed across every FRESH
     // call in the window (never deduped -- two independent fresh calls for
     // the same content each cost real money). A cache hit's costUsd is
@@ -374,6 +486,23 @@ function buildReport(rows, opts = {}) {
     }
     const goodOutcomeRate = known > 0 ? good / known : null;
 
+    // PRECISION (item 1): tp/fp per changed decision, human labels win over
+    // auto. Auto is derived from the SAME outcome rows above (see the module
+    // doc comment) via BAD_OUTCOME_RE -- never re-parsed here, never treated
+    // as ground truth, and always reported separately from human labels.
+    let humanTP = 0; let humanFP = 0; let autoTP = 0; let autoFP = 0;
+    const humanLabelByHash = opts.humanLabelByHash || new Map();
+    for (const h of bucket.changedHashByFresh.keys()) {
+      const human = humanLabelByHash.get(h);
+      if (human === 'tp') { humanTP++; continue; }
+      if (human === 'fp') { humanFP++; continue; }
+      const outcomes = outcomesByHash.get(h);
+      if (!outcomes || outcomes.length === 0) continue; // unlabeled
+      const anyBad = outcomes.some((o) => BAD_OUTCOME_RE.test(String(o)));
+      if (anyBad) autoFP++; else autoTP++;
+    }
+    const tpTotal = humanTP + autoTP;
+
     const bySource = outcomesBySource.get(bucket.id) || {};
     const outcomeRateBySource = {};
     for (const src of Object.keys(bySource)) {
@@ -425,7 +554,7 @@ function buildReport(rows, opts = {}) {
       labelPct = bucket.labelCounts.get(topLabel) / bucket.labeled;
     }
 
-    integrations.push({
+    const integrationRow = {
       id: bucket.id,
       calls: bucket.calls,
       freshCalls,
@@ -454,8 +583,23 @@ function buildReport(rows, opts = {}) {
       realCostPerCall: (bucket.realCostKnown && freshCalls > 0) ? bucket.realCostSum / freshCalls : null,
       realCostPerChangedDecision: (bucket.realCostKnown && totalChangedUnique > 0)
         ? bucket.realCostSum / totalChangedUnique : null,
+      // PRECISION / YIELD (items 1-2): tp/fp per changed decision, human and
+      // auto reported separately -- auto is a heuristic, never ground truth.
+      humanTP, humanFP, autoTP, autoFP,
+      changedPer100: freshCalls > 0 ? (totalChangedUnique / freshCalls) * 100 : 0,
+      tpPer100Human: freshCalls > 0 ? (humanTP / freshCalls) * 100 : 0,
+      tpPer100Auto: freshCalls > 0 ? (autoTP / freshCalls) * 100 : 0,
+      // COST EFFICIENCY (item 3): null whenever cost or the denominator is
+      // unknown/zero -- never fabricated.
+      costPerTp: (bucket.realCostKnown && tpTotal > 0) ? bucket.realCostSum / tpTotal : null,
+      // OVERHEAD (item 4): from the existing ms/backend/reason fields only.
+      pctCallsOver1s: freshCalls > 0 ? bucket.overOneSecFresh / freshCalls : null,
+      timeouts: bucket.timeouts,
+      fallbackCount: bucket.fallbackCount,
       suggestion,
-    });
+    };
+    integrationRow.headline = buildHeadline(integrationRow, opts.windowLabel || 'window');
+    integrations.push(integrationRow);
   }
 
   integrations.sort((a, b) => b.calls - a.calls);
@@ -549,18 +693,35 @@ function printBudgetStatus(status) {
   for (const line of lines) console.log(line);
 }
 
+function printHeadlines(report) {
+  if (report.integrations.length === 0) return;
+  console.log('\nheadlines:');
+  for (const r of report.integrations) console.log(`  ${r.headline}`);
+}
+
 function main() {
-  const opts = parseArgs(process.argv.slice(2));
+  const argv = process.argv.slice(2);
+
+  // `label <hash> tp|fp [--home <dir>]` — the one write path. Dispatched
+  // before the read-only report so it never touches report state.
+  if (argv[0] === 'label') {
+    const opts = parseArgs(argv.slice(3));
+    cmdLabel(argv[1], argv[2], opts.home);
+    return;
+  }
+
+  const opts = parseArgs(argv);
   const home = opts.home;
   const rows = readLines(home);
   const triageRows = readTriageLines(home);
   const costPerCall = readCostPerCall(home);
-  const report = buildReport(rows, { days: opts.days, costPerCall, triageRows });
+  const humanLabelByHash = latestHumanLabelByHash(readLabels(home));
+  const report = buildReport(rows, { days: opts.days, costPerCall, triageRows, humanLabelByHash, windowLabel: 'window' });
 
   const windows = opts.window
     ? { [opts.window]: COST_WINDOWS[opts.window] != null ? COST_WINDOWS[opts.window] : Number(opts.window) }
     : COST_WINDOWS;
-  const costWindows = buildCostWindows(rows, { costPerCall, windows });
+  const costWindows = buildCostWindows(rows, { costPerCall, windows, humanLabelByHash });
   const budget = readBudgetConfig(home);
   const budgetStatus = computeBudgetStatus(rows, budget);
 
@@ -568,6 +729,7 @@ function main() {
     process.stdout.write(JSON.stringify(Object.assign({}, report, { costWindows, budget, budgetStatus }), null, 2) + '\n');
   } else {
     printTable(report);
+    printHeadlines(report);
     printCostWindows(costWindows);
     printBudgetStatus(budgetStatus);
   }
@@ -576,6 +738,7 @@ function main() {
 module.exports = {
   buildReport, readLines, readTriageLines, buildTriageAnswerReport, percentile,
   buildCostWindows, COST_WINDOWS, readBudgetConfig, computeBudgetStatus,
+  buildHeadline, labelsLogPath, readLabels, latestHumanLabelByHash, cmdLabel,
 };
 
 if (require.main === module) {

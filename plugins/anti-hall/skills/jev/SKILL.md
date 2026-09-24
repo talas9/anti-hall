@@ -132,6 +132,30 @@ read-only per-integration summary (call volume, agreement %, decisions changed,
 good-outcome rate, latency, estimated cost, real cost) with a KEEP/REVIEW/REMOVE
 suggestion per integration. Never mutates state.
 
+Each changed decision's content hash `h` doubles as its stable id. Label one as
+a confirmed true/false positive:
+
+```
+node "${CLAUDE_PLUGIN_ROOT}/scripts/jev-report.js" label <hash> tp|fp
+```
+
+This is the ONLY write path `jev-report.js` has — it appends to a separate,
+append-only `~/.anti-hall/logs/jev-labels.ndjson`, never touching
+`jev-assist.ndjson`. A human label always wins over an AUTO label for the same
+hash. AUTO labels are derived, at report time, from the SAME mechanical outcome
+signal `recordOutcome()` already logs (e.g. the next main-thread turn citing a
+file/tool after a Jev-added speculation block) — never re-parsing transcripts,
+never treated as ground truth, and always reported separately from human
+labels (`N TP (H human, A auto)`).
+
+The report also prints a one-line **headline** per integration combining
+changed decisions, TP breakdown, cost efficiency ($/TP), latency, and the
+KEEP/REVIEW/REMOVE suggestion, e.g.:
+
+```
+speculation: 6 changed/24h · 5 TP (3 human, 2 auto) · $0.02/TP · p50=120ms · KEEP
+```
+
 ## Per-integration modes
 
 `node "${CLAUDE_PLUGIN_ROOT}/scripts/jev-setup.js" mode <integration> on|shadow|off`

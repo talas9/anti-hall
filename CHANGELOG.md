@@ -271,6 +271,18 @@ the update.
   Jev user-facing notice path in this codebase, so the warning surfaces only through
   `jev report`, which also shows spend vs budget per window. Jev is NEVER auto-disabled by
   a budget, in any mode.
+- **Added: Jev precision labels (tp/fp) and an efficiency headline.** A changed decision's
+  content hash `h` doubles as its stable id. `jev report label <hash> tp|fp` is the ONE write
+  path `jev-report.js` has: it appends to a separate, append-only
+  `~/.anti-hall/logs/jev-labels.ndjson`, never touching `jev-assist.ndjson`. AUTO labels are
+  derived, at report time, from the SAME mechanical outcome signal `recordOutcome()` already
+  logs (offline, over already-logged data, never in the hook path, never re-parsed
+  transcripts, never treated as ground truth) and are always reported separately from human
+  labels, which win when both exist for a hash. `jev report` gains yield (changed/TP per 100
+  fresh calls), cost efficiency ($/TP, $/changed decision), overhead (% calls over 1s,
+  timeouts, fallback count), and a one-line headline per integration extending the existing
+  KEEP/REVIEW/REMOVE suggestion, e.g. `speculation: 6 changed/24h · 5 TP (3 human, 2 auto) ·
+  $0.02/TP · p50=120ms · KEEP`.
 
 ## 0.107.0 (2026-09-24)
 

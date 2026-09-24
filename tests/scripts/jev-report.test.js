@@ -4,8 +4,13 @@
 
 const { test } = require('node:test');
 const assert = require('node:assert');
+const fs = require('node:fs');
+const path = require('node:path');
+const { makeHome } = require('../helpers/fixtures.js');
 
-const { buildReport } = require('../../plugins/anti-hall/scripts/jev-report.js');
+const {
+  buildReport, buildHeadline, labelsLogPath, readLabels, latestHumanLabelByHash, cmdLabel,
+} = require('../../plugins/anti-hall/scripts/jev-report.js');
 
 function row(overrides) {
   return Object.assign({
@@ -268,6 +273,131 @@ test('buildCostWindows: default windows are 24h and 7d, each re-running buildRep
   const r7 = windows['7d'].integrations.find((i) => i.id === 'speculation');
   assert.ok(Math.abs(r24.realCostTotal - 0.02) < 1e-9, '24h window excludes the 3-day-old row');
   assert.ok(Math.abs(r7.realCostTotal - 0.03) < 1e-9, '7d window includes both rows');
+});
+
+// ---------------------------------------------------------------------------
+// Precision labels (tp/fp), yield, cost efficiency, overhead, headline
+// ---------------------------------------------------------------------------
+
+test('cmdLabel + readLabels + latestHumanLabelByHash: round-trip a human label', () => {
+  const h = makeHome();
+  try {
+    cmdLabel('abc123', 'tp', h.home);
+    const rows = readLabels(h.home);
+    assert.strictEqual(rows.length, 1);
+    assert.strictEqual(rows[0].h, 'abc123');
+    assert.strictEqual(rows[0].label, 'tp');
+    assert.strictEqual(rows[0].source, 'human');
+    const map = latestHumanLabelByHash(rows);
+    assert.strictEqual(map.get('abc123'), 'tp');
+  } finally { h.cleanup(); }
+});
+
+test('cmdLabel: rejects an invalid label value, writes nothing', () => {
+  const h = makeHome();
+  const savedExitCode = process.exitCode;
+  try {
+    cmdLabel('abc123', 'maybe', h.home);
+    assert.ok(!fs.existsSync(labelsLogPath(h.home)));
+  } finally {
+    process.exitCode = savedExitCode; // cmdLabel sets exitCode 1 for CLI usage; don't leak it into the test run
+    h.cleanup();
+  }
+});
+
+test('latestHumanLabelByHash: a later label for the same hash overrides an earlier one (a correction)', () => {
+  const rows = [
+    { h: 'x', label: 'fp', source: 'human' },
+    { h: 'x', label: 'tp', source: 'human' },
+  ];
+  const map = latestHumanLabelByHash(rows);
+  assert.strictEqual(map.get('x'), 'tp');
+});
+
+test('buildReport: a human label wins over the auto-derived label for the same hash', () => {
+  const rows = [
+    row({ h: 'h1', changed: 'added' }),
+    { ts: new Date().toISOString(), type: 'outcome', h: 'h1', id: 'speculation', outcome: 'repeat-speculation' }, // would auto-label fp
+  ];
+  const humanLabelByHash = new Map([['h1', 'tp']]);
+  const report = buildReport(rows, { humanLabelByHash });
+  const r = report.integrations.find((x) => x.id === 'speculation');
+  assert.strictEqual(r.humanTP, 1);
+  assert.strictEqual(r.humanFP, 0);
+  assert.strictEqual(r.autoTP, 0);
+  assert.strictEqual(r.autoFP, 0, 'the human label suppresses the auto derivation entirely for this hash');
+});
+
+test('buildReport: no human label -> auto tp/fp derived from the existing outcome/BAD_OUTCOME_RE signal', () => {
+  const rows = [
+    row({ h: 'good', changed: 'added' }),
+    { ts: new Date().toISOString(), type: 'outcome', h: 'good', id: 'speculation', outcome: 'evidence-added' },
+    row({ h: 'bad', changed: 'added' }),
+    { ts: new Date().toISOString(), type: 'outcome', h: 'bad', id: 'speculation', outcome: 'repeat-speculation' },
+    row({ h: 'unlabeled', changed: 'added' }), // no outcome row at all
+  ];
+  const report = buildReport(rows, {});
+  const r = report.integrations.find((x) => x.id === 'speculation');
+  assert.strictEqual(r.autoTP, 1);
+  assert.strictEqual(r.autoFP, 1);
+  assert.strictEqual(r.humanTP, 0);
+  assert.strictEqual(r.humanFP, 0);
+  assert.strictEqual(r.changedUnique, 3, 'the unlabeled hash still counts as a changed decision');
+});
+
+test('buildReport: yield (changedPer100/tpPer100) computed on fresh calls only', () => {
+  const rows = [];
+  for (let i = 0; i < 10; i++) rows.push(row({ h: 'h' + i, changed: i < 2 ? 'added' : null }));
+  rows.push({ ts: new Date().toISOString(), type: 'outcome', h: 'h0', id: 'speculation', outcome: 'evidence-added' });
+  const report = buildReport(rows, {});
+  const r = report.integrations.find((x) => x.id === 'speculation');
+  assert.ok(Math.abs(r.changedPer100 - 20) < 1e-9, '2 changed / 10 fresh calls * 100');
+  assert.ok(Math.abs(r.tpPer100Auto - 10) < 1e-9, '1 auto TP / 10 fresh calls * 100');
+  assert.strictEqual(r.tpPer100Human, 0);
+});
+
+test('buildReport: costPerTp is realCostTotal / (humanTP + autoTP), null when no TP', () => {
+  const rows = [
+    row({ h: 'h1', changed: 'added', costUsd: 0.01 }),
+    { ts: new Date().toISOString(), type: 'outcome', h: 'h1', id: 'speculation', outcome: 'evidence-added' },
+  ];
+  const report = buildReport(rows, {});
+  const r = report.integrations.find((x) => x.id === 'speculation');
+  assert.ok(Math.abs(r.costPerTp - 0.01) < 1e-9);
+
+  const rowsNoTp = [row({ h: 'h2', changed: 'added', costUsd: 0.01 })]; // no outcome -> unlabeled
+  const r2 = buildReport(rowsNoTp, {}).integrations.find((x) => x.id === 'speculation');
+  assert.strictEqual(r2.costPerTp, null);
+});
+
+test('buildReport: overhead fields (pctCallsOver1s, timeouts, fallbackCount)', () => {
+  const rows = [
+    row({ h: 'a', ms: 1500, changed: null }),
+    row({ h: 'b', ms: 200, changed: null }),
+    row({ h: 'c', backend: 'baseline-only', jev: null, reason: 'timeout', changed: null }),
+    row({ h: 'd', backend: 'baseline-only', jev: null, mode: 'on', reason: 'http-500', changed: null }),
+  ];
+  const report = buildReport(rows, {});
+  const r = report.integrations.find((x) => x.id === 'speculation');
+  assert.ok(Math.abs(r.pctCallsOver1s - 0.25) < 1e-9, '1 of 4 fresh calls over 1000ms');
+  assert.strictEqual(r.timeouts, 1);
+  assert.strictEqual(r.fallbackCount, 2, 'both baseline-only rows fell back while mode was on');
+});
+
+test('buildHeadline: combines changed/TP/cost/latency/suggestion into one line', () => {
+  const r = {
+    id: 'speculation', changedUnique: 6, humanTP: 3, autoTP: 2, autoFP: 1,
+    costPerTp: 0.05, p50: 600, suggestion: 'KEEP',
+  };
+  const line = buildHeadline(r, '24h');
+  assert.strictEqual(line, 'speculation: 6 changed/24h · 5 TP (3 human, 2 auto) · $0.0500/TP · p50=600ms · KEEP');
+});
+
+test('buildHeadline: cost/latency unknown -> "n/a" placeholders, never fabricated', () => {
+  const r = { id: 'x', changedUnique: 0, humanTP: 0, autoTP: 0, costPerTp: null, p50: null, suggestion: 'REVIEW' };
+  const line = buildHeadline(r, '7d');
+  assert.match(line, /cost n\/a/);
+  assert.match(line, /p50 n\/a/);
 });
 
 // ---------------------------------------------------------------------------
