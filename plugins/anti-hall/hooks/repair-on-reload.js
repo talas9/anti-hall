@@ -46,7 +46,13 @@
 //     file, unref'd) and return immediately — the hook itself never waits.
 //     doctor.js --repair --migrations-only runs ONLY the stamped data
 //     migrations + store repairs (runMigrations via lib/doctor-repair.js) and
-//     never touches config outside ~/.anti-hall: idempotent, fail-open, no-delete, and it
+//     never touches user config (~/.claude settings, ~/.codex, launchd/systemd).
+//     It is NOT confined to ~/.anti-hall: migrateLegacyState and
+//     migrateGsdPlanning write project state under
+//     <cwd>/.anti-hall/history/legacy/ (cwd = the session's), and
+//     migrateGsdPlanning DELETES each <cwd>/.planning/ source file once its copy
+//     is verified byte-identical (directories are never removed). Idempotent,
+//     fail-open, and it
 //     stamps each migration's own marker (migrations.js recordRun) ONLY once
 //     that migration's apply+re-scan both report complete — "stamp only after
 //     success" falls out of reusing that existing contract rather than this
@@ -239,7 +245,8 @@ function spawnDetachedRepair(home, runningVersion) {
     const doctorJs = resolveDoctorJs(home, runningVersion);
     // --migrations-only: the reload hook runs ONLY the stamped data
     // migrations (runMigrations, runSettingsMigration, store repairs under
-    // ~/.anti-hall). Everything that writes config OUTSIDE ~/.anti-hall —
+    // ~/.anti-hall, plus the legacy/GSD project-state migrations in cwd — see
+    // the header). Everything that writes user config —
     // statusLine into ~/.claude/settings.json, Codex hooks/[features] into
     // ~/.codex, supervisor/ingest units — stays behind a user-typed
     // `doctor --repair`; an unasked reload must never install those.

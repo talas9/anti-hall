@@ -1355,7 +1355,9 @@ function runRepairs(opts) {
   }
 
   // --migrations-only (repair-on-reload's automatic pass): ONLY the stamped
-  // data migrations above and the ~/.anti-hall sweeps below run. Everything in
+  // data migrations above and the ~/.anti-hall sweeps below run (the legacy /
+  // GSD migrations above also write <cwd>/.anti-hall/history/legacy/, and the
+  // GSD one deletes each verified-copied <cwd>/.planning/ file). Everything in
   // this block touches config OUTSIDE ~/.anti-hall (Claude statusLine, Codex
   // hooks/config.toml, launchd/systemd units, native hivecontrol queues) and
   // stays behind a user-typed `doctor --repair`.

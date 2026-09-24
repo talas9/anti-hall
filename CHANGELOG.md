@@ -65,8 +65,11 @@ the update.
   starts one detached `doctor.js --repair --migrations-only` whenever a repair is not yet
   stamped for the running version. It runs only the data migrations and store repairs;
   statusline, Codex hooks and the supervisor are never installed by a reload (that stays
-  behind a user-typed `doctor --repair`). A stamp at the running version or newer counts as
-  done (the newest cached doctor stamps its own version), runs are at most hourly, only the
+  behind a user-typed `doctor --repair`). The legacy-state and GSD migrations do write the
+  project's `.anti-hall/history/legacy/`, and GSD `.planning/` files are deleted once their
+  copy is verified. A stamp at the running version or newer counts as
+  done (the newest cached doctor stamps its own version), runs are at most hourly per running
+  version (a failed spawn never starts the wait), only the
   newest 5 logs are kept, and the child runs at nice 19. Lock-guarded, never blocks, no-op when nothing is pending.
   `ANTIHALL_REPAIR_ON_RELOAD=off` disables it.
 - **Version alerts say update or reload.** If the plugin-cache mirror already holds a

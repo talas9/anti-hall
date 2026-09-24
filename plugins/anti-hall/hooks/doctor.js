@@ -25,8 +25,14 @@ const QUIET = process.argv.includes('--quiet');
 // --migrations-only (with --repair): the automatic repair-on-reload pass —
 // stamped data migrations + ~/.anti-hall sweeps only, and it skips the
 // self-test diagnostics (see the early exit right after the repair pass).
-// Nothing outside ~/.anti-hall is touched (no statusLine, no Codex install, no
-// daemon install/restart); those stay behind a user-typed `doctor --repair`.
+// No user config is touched (no statusLine, no Codex install, no daemon
+// install/restart); those stay behind a user-typed `doctor --repair`.
+// Two of those migrations write PROJECT state in the session's cwd, not
+// user config: migrateLegacyState copies .anti-hall-progress.md /
+// .anti-hall-history.md into <cwd>/.anti-hall/history/legacy/ (originals kept),
+// and migrateGsdPlanning copies <cwd>/.planning/ files there and then DELETES
+// each source file once its copy is verified byte-identical (directories are
+// never removed).
 const MIGRATIONS_ONLY = process.argv.includes('--migrations-only');
 // Repair mode is OPT-IN (mesh redesign Phase 4). Plain `doctor` and `--check`
 // run NO repair: diagnostics only. The live self-tests below still exercise the
