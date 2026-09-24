@@ -165,3 +165,58 @@ test('registry covers every hivecontrol verb anti-hall calls plus archive/delete
   }
   assert.deepStrictEqual(caps.SIDE_EFFECTING_VERBS, ['check-merge']);
 });
+
+// ---- default-DENY (P1 review fix): every invocation maps to a registered capability ----
+test('gatedRun default-deny: an unregistered workspace verb or subcommand is refused without spawning, never thrown', () => {
+  const s = setup({ version: '2.5.3', workspaceHelp: HELP_253, verbHelp: { archive: ARCHIVE_253, delete: DELETE_253 } });
+  const seen = [];
+  const run = caps.gatedRun((spec) => { seen.push(spec.args.join(' ')); return { ok: true, raw: '' }; });
+  for (const args of [['workspace', 'teleport', 'x'], ['health'], ['repo', 'list'], [], undefined]) {
+    const r = run({ args, env: s.env });
+    assert.strictEqual(r.ok, false, JSON.stringify(args));
+    assert.strictEqual(r.dormant, true);
+    assert.strictEqual(r.unregistered, true);
+    assert.match(r.error, /unregistered hivecontrol invocation/);
+  }
+  assert.deepStrictEqual(seen, []);
+});
+
+test('gatedRun: a registered verb is gated (runs when present, refused when this build lacks it)', () => {
+  const s253 = setup({ version: '2.5.3', workspaceHelp: HELP_253, verbHelp: { archive: ARCHIVE_253, delete: DELETE_253 } });
+  const seen = [];
+  const run = caps.gatedRun((spec) => { seen.push(spec.args.join(' ')); return { ok: true, raw: '' }; });
+  assert.strictEqual(run({ args: ['workspace', 'archive', 'id-1'], env: s253.env }).ok, true);
+  const s252 = setup({ version: '2.5.2', workspaceHelp: HELP_252 });
+  const r = run({ args: ['workspace', 'archive', 'id-1'], env: s252.env });
+  assert.strictEqual(r.ok, false);
+  assert.strictEqual(r.dormant, true);
+  assert.ok(!r.unregistered);
+  assert.deepStrictEqual(seen, ['workspace archive id-1']);
+});
+
+test('gatedRun: --version / --help / workspace --help are explicit ungated registry entries and always run', () => {
+  const s = setup({ version: '2.5.2', workspaceHelp: HELP_252 });
+  const seen = [];
+  const run = caps.gatedRun((spec) => { seen.push(spec.args.join(' ')); return { ok: true, raw: '' }; });
+  for (const args of [['--version'], ['--help'], ['-h'], ['workspace', '--help'], ['workspace', '-h']]) {
+    assert.strictEqual(run({ args, env: s.env }).ok, true, args.join(' '));
+    assert.ok(caps.CAPABILITIES.find((c) => c.name === caps.capabilityForArgs(args)).ungated);
+  }
+  assert.strictEqual(seen.length, 5);
+});
+
+test('every hivecontrol invocation in the shipped code maps to a registered capability', () => {
+  const fsx = require('node:fs');
+  const ROOTP = path.join(__dirname, '..', '..', 'plugins', 'anti-hall');
+  const files = ['scripts/devswarm.js', 'companion/lib/devswarm-pull.js', 'companion/lib/devswarm-lifecycle.js'];
+  const shapes = new Set();
+  for (const f of files) {
+    const src = fsx.readFileSync(path.join(ROOTP, f), 'utf8');
+    src.replace(/\[\s*'workspace',\s*'([a-z-]+)'/g, (m, v) => { shapes.add(v); return m; });
+  }
+  assert.ok(shapes.size >= 6, [...shapes].join(','));
+  const missing = [...shapes].filter((v) => !caps.capabilityForArgs(['workspace', v]));
+  assert.deepStrictEqual(missing, [], 'unregistered verbs used in code: ' + missing.join(', '));
+  // lifecycle builds its argv via verbArgv('archive'|'delete', ...)
+  for (const v of ['archive', 'delete']) assert.ok(caps.capabilityForArgs(['workspace', v, 'id']));
+});

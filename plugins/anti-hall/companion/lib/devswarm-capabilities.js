@@ -33,7 +33,8 @@
 //
 // API: can(name, opts) -> { ok, reason, version, minVersion, detail }
 //      require(name, opts) -> same shape, never throws (alias: requireCap)
-//      gatedRun(run) -> a hivecontrol runner that refuses a dormant verb.
+//      gatedRun(run) -> a DEFAULT-DENY hivecontrol runner: refuses an unregistered
+//        invocation and a dormant verb; runs `ungated` entries (--version/--help).
 //
 // SIDE-EFFECTING — NEVER CALL from automation (documented, and asserted by
 // tests/hygiene/devswarm-lifecycle-no-auto-delete.test.js):
@@ -64,6 +65,12 @@ function columnCap(table, col) {
 function tableCap(table) {
   return { name: 'appdb.' + table, kind: 'table', table, minVersion: null };
 }
+// ungated(name, argv): a version-independent, read-only invocation (--version,
+// --help) that runs without a version/detection check. Everything else must
+// map to a registered capability: gatedRun is DEFAULT-DENY for an unknown one.
+function ungatedCap(name, argv) {
+  return { name: 'hivecontrol.' + name, kind: 'ungated', ungated: true, argv, minVersion: null };
+}
 // appfs.<name>: a file/dir the DevSwarm app keeps on disk (never its content
 // unless the reader documents otherwise). `base` = 'db' (next to the app DB)
 // or 'home' (under the caller's home); `rel` = path segments below it.
@@ -74,6 +81,8 @@ function appFsCap(name, base, rel) {
 // minVersion null = present in every build anti-hall has observed (verified in
 // 2.5.2); the floor is unknown, so detection alone gates it.
 const CAPABILITIES = Object.freeze([
+  ungatedCap('--version', ['--version']), ungatedCap('--help', ['--help']), ungatedCap('-h', ['-h']),
+  ungatedCap('workspace --help', ['workspace', '--help']), ungatedCap('workspace -h', ['workspace', '-h']),
   verbCap('list'), verbCap('info'), verbCap('create'), verbCap('update-title'),
   verbCap('check-merge', null, 'side-effecting: may create a source worktree — interactive merge verb only'),
   verbCap('merge-from-source'), verbCap('merge-into-source'),
@@ -326,6 +335,7 @@ function can(name, opts) {
   const o = opts || {};
   const cap = BY_NAME.get(String(name));
   if (!cap) return { ok: false, reason: 'unknown-capability', version: null, minVersion: null };
+  if (cap.ungated) return { ok: true, reason: null, version: null, minVersion: null, ungated: true };
   try {
     if (cap.kind === 'verb') {
       const p = o.probeResult || probe(o);
@@ -380,28 +390,44 @@ function requireCap(name, opts) {
 }
 
 // capabilityForArgs(args) -> capability name | null. `workspace <verb> ...`
-// maps to `workspace.<verb>`; anything else (health, repo, --help) is ungated.
+// maps to `workspace.<verb>` when registered; an exact `ungated` registry argv
+// (--version, --help, workspace --help) maps to its `hivecontrol.*` entry.
+// Anything else -> null = UNREGISTERED (gatedRun refuses it).
 function capabilityForArgs(args) {
-  const a = Array.isArray(args) ? args : [];
+  const a = Array.isArray(args) ? args.map(String) : [];
+  for (const c of CAPABILITIES) {
+    if (c.kind === 'ungated' && c.argv.length === a.length && c.argv.every((t, i) => t === a[i])) return c.name;
+  }
   if (a[0] !== 'workspace' || typeof a[1] !== 'string' || a[1].startsWith('-')) return null;
   const name = 'workspace.' + a[1];
   return BY_NAME.has(name) ? name : null;
 }
 
-// gatedRun(run) -> runner(spec). Refuses (without spawning) a verb this build
-// POSITIVELY lacks. Absent binary / ungated args / check failure -> passes the
-// call through unchanged, so every caller's existing error handling holds.
+// gatedRun(run) -> runner(spec). DEFAULT-DENY:
+//   - an invocation with no registered capability is refused (never spawned)
+//     with a dormant reason — a new call site must register its verb first;
+//   - an `ungated` entry (--version/--help) runs as-is;
+//   - a registered verb this build POSITIVELY lacks is refused; hivecontrol
+//     absent / a check failure pass through unchanged, so every caller's
+//     existing "hivecontrol unavailable" handling holds.
+// Never throws.
 function gatedRun(run, gateOpts) {
   const g = gateOpts || {};
   return function gated(spec) {
     const s = spec || {};
     const name = capabilityForArgs(s.args);
-    if (name) {
-      const env = s.env || process.env;
-      const r = can(name, Object.assign({}, g, { env, home: s.home || (env && env.HOME) || os.homedir() }));
-      if (!r.ok && !r.silent) {
-        return { ok: false, raw: '', error: 'capability dormant: ' + name + ' — ' + r.reason, dormant: true, status: null, signal: null, stderr: '' };
-      }
+    if (!name) {
+      const shown = (Array.isArray(s.args) ? s.args.slice(0, 2) : []).join(' ') || '(no args)';
+      return { ok: false, raw: '', error: 'capability dormant: unregistered hivecontrol invocation `' + shown + '` — every call must map to a registered capability (companion/lib/devswarm-capabilities.js)', dormant: true, unregistered: true, status: null, signal: null, stderr: '' };
+    }
+    const cap = BY_NAME.get(name);
+    if (cap && cap.ungated) return run(s);
+    const env = s.env || process.env;
+    let r;
+    try { r = can(name, Object.assign({}, g, { env, home: s.home || (env && env.HOME) || os.homedir() })); }
+    catch (_) { r = { ok: false, silent: true }; }
+    if (!r.ok && !r.silent) {
+      return { ok: false, raw: '', error: 'capability dormant: ' + name + ' — ' + r.reason, dormant: true, status: null, signal: null, stderr: '' };
     }
     return run(s);
   };

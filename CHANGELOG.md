@@ -91,6 +91,9 @@ the update.
   table_info`, existence), cached per hivecontrol build
   (`companion/lib/devswarm-capabilities.js`). A missing surface puts its feature to sleep
   and `doctor` names it; without DevSwarm everything sleeps silently.
+  The gate is default-deny: a `hivecontrol` invocation that maps to no registered
+  capability is refused with a dormant reason (never spawned, never thrown); only
+  explicit `ungated` entries (`--version`, `--help`, `workspace --help`) skip the check.
 - **DevSwarm: auto-archive of done workspaces** (default on, DevSwarm ≥ 2.5.3). The
   supervisor archives a child only when all are proven: finish gates set, branch merged
   (git ancestry or the app's PR row), clean worktree, no unread either way, not the
