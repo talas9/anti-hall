@@ -42,11 +42,7 @@
 // Escape hatches:
 //   - ANTIHALL_VERSION_ALERT=off disables the hook.
 //   - skip.json { "version-alert": <future-ms> } (or "all") disables it.
-//   - NOTE(settings.js pending): another worker is landing
-//     hooks/lib/settings.js with a `versionAlert.enabled` boolean (default
-//     true). Once that module exists, read it here as the primary opt-out,
-//     ahead of the env var. VERSION_ALERT_ENABLED_DEFAULT below documents
-//     that default in the meantime.
+//   - setting versionAlerts.antiHall=false (/anti-hall:settings) disables it.
 //
 // Contract (Claude Code SessionStart hook):
 //   stdin  : JSON { hook_event_name, session_id, cwd, permission_mode, ... }
@@ -79,9 +75,6 @@ const RELOAD_MARK_FILE = path.join(os.homedir(), '.anti-hall', 'version-alert-re
 // detached, off the critical path) while catching same-day releases within a
 // couple of sessions instead of missing an entire day's worth.
 const CACHE_TTL_MS = 2 * 60 * 60 * 1000; // 2 hours
-
-// NOTE(settings.js pending) — see header comment.
-const VERSION_ALERT_ENABLED_DEFAULT = true;
 
 // Local plugin-cache root `/anti-hall:update` (and Codex's update path) mirror
 // a new release into, one semver-named subdir per version — see

@@ -43,6 +43,7 @@ function sourceLabel(src) {
 
 function fmtValue(v) {
   if (v === '' || v === undefined || v === null) return '(empty)';
+  if (typeof v === 'object') return '`' + JSON.stringify(v).replace(/\|/g, '\\|') + '`'; // object settings (jev.prices)
   return String(v);
 }
 
@@ -54,8 +55,11 @@ function renderTable(rows, headers) {
   return lines.join('\n');
 }
 
-function sectionRows(sectionDef, opts, includeAdvanced) {
-  const list = sectionDef.settings.filter((s) => includeAdvanced || !s.advanced);
+// sectionRows(sectionDef, opts, advanced) -> the rows of ONE tier: headline
+// (advanced=false) or advanced-only (advanced=true). Filtered by the flag, not
+// by position — a section may interleave headline and advanced entries.
+function sectionRows(sectionDef, opts, advanced) {
+  const list = sectionDef.settings.filter((s) => !!s.advanced === !!advanced);
   return list.map((s) => {
     const value = settings.get(sectionDef.key, s.key, undefined, opts);
     const src = settings.source(sectionDef.key, s.key, opts);
@@ -110,7 +114,7 @@ function cmdShow(args, opts) {
       if (args.all) {
         out.push('**Advanced:**');
         out.push('');
-        out.push(renderTable(sectionRows(sec, opts, true).slice(headline.length), ['Setting', 'Value', 'Default', 'Source', 'Description']));
+        out.push(renderTable(sectionRows(sec, opts, true), ['Setting', 'Value', 'Default', 'Source', 'Description']));
         out.push('');
       } else {
         out.push('_' + advancedCount + ' advanced setting(s) hidden — rerun with `--all` to show them._');
