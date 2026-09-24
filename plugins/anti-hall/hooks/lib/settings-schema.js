@@ -46,6 +46,7 @@ const SECTIONS = [
     settings: [
       { key: 'enabled', type: 'boolean', default: true, pluginOption: 'auto_handover_enabled', description: 'Write an automatic handover before context runs out.' },
       { key: 'pct', type: 'number', min: 1, max: 99, default: 85, env: 'ANTIHALL_AUTO_HANDOVER_PCT', pluginOption: 'auto_handover_pct', description: 'Context-usage percent that triggers an automatic handover.' },
+      { key: 'maxTokens', type: 'number', min: 0, default: 170000, env: 'ANTIHALL_AUTO_HANDOVER_MAX_TOKENS', description: 'Absolute context-token ceiling that also triggers the handover, whichever of pct/maxTokens comes first (170000 = 85% of a 200k window, so a 1M session hands over at ~170k); 0 = no ceiling.' },
       { key: 'nag', type: 'boolean', default: true, pluginOption: 'auto_handover_nag', description: 'Nag (remind) the user when a handover is due but not yet written.' },
       { key: 'nagStepPct', type: 'number', min: 1, max: 100, default: 5, description: 'Percent increments between successive handover nags.' },
       { key: 'nagQuietMin', type: 'number', min: 1, default: 15, description: 'Minutes to wait before repeating a handover nag.' },

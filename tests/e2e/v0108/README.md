@@ -22,7 +22,7 @@ is tested now.
 
 ## Scenario -> requirement map
 
-### 1. Auto-handover (`auto-handover.test.js`) — 12 live
+### 1. Auto-handover (`auto-handover.test.js`) — 13 live
 
 | Scenario | Requirement |
 |---|---|
@@ -33,11 +33,12 @@ is tested now.
 | drop below threshold re-arms | a later crossing fires fresh |
 | 1M window from the statusline (sticky max_tokens) | % computed against 1,000,000 |
 | usage > 200k with no window info => inferred 1M | directive labelled "inferred 1M window" |
-| unknown window => one soft advisory, never mandatory | no false mandatory fire on an undetected 1M session |
+| unknown window, ceiling off => one soft advisory, never mandatory | no false mandatory fire on an undetected 1M session |
+| 175k tokens on a 1M window => directive (ceiling); `maxTokens=0` => off | absolute `autoHandover.maxTokens` ceiling |
 | settings off => silent | autoHandover.enabled=false silences the hook |
 | ANTIHALL_AUTO_HANDOVER_PCT override | env overrides configured/default pct |
 | pause-nag quiet window | Stop nag only past nagQuietMin since the last nag, once |
-| pause-nag before any directive => silent | nothing fired this arm |
+| Stop-side fire: over threshold, nothing fired yet => the Stop hook delivers it once | long turns that never reach a new prompt |
 
 ### 2. Settings (`settings.test.js`) — 25 live
 

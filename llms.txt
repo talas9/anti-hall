@@ -44,7 +44,7 @@ Codex: `node plugins/anti-hall/codex/install-codex.js` (project) or `--global`. 
 - [plugins/anti-hall/codex/README.md](plugins/anti-hall/codex/README.md) — the Codex port: hook subset, skills, OMX mapping.
 - [docs/README.md](docs/README.md) — index of every doc; [docs/KB.md](docs/KB.md) — knowledge-base ground truth; [docs/GUIDE.md](docs/GUIDE.md) — extended guide and per-hook reference.
 - DevSwarm: [docs/KB-devswarm-hivecontrol.md](docs/KB-devswarm-hivecontrol.md) (hivecontrol + the mesh), [docs/KB-devswarm-app-db.md](docs/KB-devswarm-app-db.md) (the app database).
-- Jev: [docs/KB-jev-classifier.md](docs/KB-jev-classifier.md). Hooks platform: [docs/KB-claude-code-hooks.md](docs/KB-claude-code-hooks.md), [docs/KB-codex-platform-hooks-plugins.md](docs/KB-codex-platform-hooks-plugins.md).
+- Handover: [docs/KB-session-handover.md](docs/KB-session-handover.md), [docs/KB-handover-research.md](docs/KB-handover-research.md). Jev: [docs/KB-jev-classifier.md](docs/KB-jev-classifier.md). Hooks platform: [docs/KB-claude-code-hooks.md](docs/KB-claude-code-hooks.md), [docs/KB-codex-platform-hooks-plugins.md](docs/KB-codex-platform-hooks-plugins.md).
 - [RELEASING.md](RELEASING.md) — release checklist. [AGENTS.md](AGENTS.md) — the protocol for Codex / cross-tool agents.
 
 ## Hooks (plugins/anti-hall/hooks/, registered in hooks.json)
@@ -71,7 +71,7 @@ Env names are the per-hook switches; every user-facing one is also a setting (se
 | UserPromptSubmit | verify-first.js | Short rotating one-line verify-first nudge. | ✓ | — |
 | UserPromptSubmit | task-tracker.js | Task-list discipline directive plus a freshness note when tasks are open/stale. | ✓ | — |
 | UserPromptSubmit | limit-conserve-inject.js | Token-conservation nudge at the usage threshold (auto mode reads the OMC usage cache). | ✓ | `ANTIHALL_LIMIT_CONSERVE`, `ANTIHALL_LIMIT_THRESHOLD` |
-| UserPromptSubmit | auto-handover.js | At 85% context (known window): write a handover unasked, tell the user, urge `/compact`/`/clear`; milestone nags every +5 points; unknown window → one soft advisory only. | ✓ | `ANTIHALL_AUTO_HANDOVER_PCT` (`0` = off) |
+| UserPromptSubmit | auto-handover.js | At 85% context (known window) or 170k tokens: write a handover unasked, tell the user, urge `/compact`/`/clear`; milestone nags every +5 points; unknown window → one soft advisory only. | ✓ | `ANTIHALL_AUTO_HANDOVER_PCT` (`0` = off) |
 | UserPromptSubmit | devswarm-parent-inbox.js | DevSwarm Primary: per-turn workspace table (app titles, sidebar order, finish/PR state, unread) and neglect nags. | ✓ | — |
 | UserPromptSubmit | devswarm-child-turn.js | DevSwarm child: turn-authored heartbeat, keep-parent-updated reminder, unread-inbox surfacing. | ✓ | — |
 | TaskCreated, TaskCompleted | task-lifecycle-log.js | Appends task events to `.anti-hall/history/<date>/<session>.md`. | — | — |
@@ -98,9 +98,10 @@ Env names are the per-hook switches; every user-facing one is also a setting (se
 | Stop | claim-ledger.js | Tier 2.5, ledger-only (never blocks): records confident claims with no supporting evidence in the turn. | ✓ | — |
 | Stop | speculation-judge.js | Tier 3, opt-in: LLM judge for confident unverified assertions. | ✓ | `ANTIHALL_SEMANTIC_JUDGE=1` |
 | Stop | codex-nudge.js | Once per session: suggests an independent Codex review of substantial code. | — | `ANTIHALL_CODEX_NUDGE=off` |
-| Stop | auto-handover-pause-nag.js | After the handover directive: at a quiet pause (no open tasks, no recent spawn) reminds at most once per 15 min. | ✓ | autoHandover.nag |
+| Stop | auto-handover-pause-nag.js | Delivers the handover directive once at a Stop if a long turn never reached a new prompt; afterwards, at a quiet pause, reminds at most once per 15 min. | ✓ | autoHandover.nag |
 | Stop | devswarm-parent-gate.js | DevSwarm Primary: blocks ending the turn with child unread/stale/escalated or own unread (capped). | ✓ | — |
 | Stop | devswarm-child-gate.js | DevSwarm child: must heartbeat/self-report before idling (capped). | ✓ | — |
+| PreCompact | precompact-snapshot.js | Before every compaction writes a mechanical `PRECOMPACT-<n>.md` (git state, task list, last 10 user messages, newest handover pointer); never blocks. | ✓ | — |
 | SessionEnd | session-end-mcp-reaper.js | On clean exit, reaps MCP servers orphaned by earlier crashed sessions (audit-logged). | — | `ANTI_HALL_SESSION_END_REAPER=0` |
 
 Shared libraries (not hooks): `verify-first-core.js`, `coordinator-detect.js`, `skip-guard.js`,
@@ -166,7 +167,7 @@ Shared libraries (not hooks): `verify-first-core.js`, `coordinator-detect.js`, `
 | Path | Verbs / use |
 |---|---|
 | scripts/settings.js | `show [--all] [--section s] [--json]`, `get`, `set`, `reset` — the settings store CLI. |
-| scripts/auto-handover-config.js | `get \| set <1-99> \| off \| on \| nag on\|off \| nag-step <n> \| nag-quiet <n>` — alias over `autoHandover.*`. |
+| scripts/auto-handover-config.js | `get \| set <1-99> \| off \| on \| max-tokens <n> \| nag on\|off \| nag-step <n> \| nag-quiet <n>` — alias over `autoHandover.*`. |
 | scripts/devswarm.js | The DevSwarm mesh CLI (JSON out): register/ensure, heartbeat, send, inbox, roster, mesh, gate, spawn, merge, archive, reconcile, diagnose, healthcheck, app-state, app-sync, sync-ui, auto-archive, prune-archived, retention, … (`help` lists all). |
 | scripts/devswarm-store-leak-report.js | Read-only audit of DevSwarm store growth/leaks. |
 | scripts/jev-setup.js | `status \| enable \| disable \| set-key \| test \| mode` (`--transport vercel\|typesafe`). |
@@ -194,7 +195,7 @@ until the one-time migration is stamped. Numbers clamp to schema bounds.
 
 | Setting | Default | Env |
 |---|---|---|
-| autoHandover.enabled / pct / nag / nagStepPct / nagQuietMin | true / 85 / true / 5 / 15 | `ANTIHALL_AUTO_HANDOVER_PCT` |
+| autoHandover.enabled / pct / maxTokens / nag / nagStepPct / nagQuietMin | true / 85 / 170000 / true / 5 / 15 | `ANTIHALL_AUTO_HANDOVER_PCT`, `ANTIHALL_AUTO_HANDOVER_MAX_TOKENS` |
 | guards.mergeGate / shipitGate | false / false | `ANTIHALL_MERGE_GATE`, `ANTIHALL_SHIPIT_GATE` |
 | guards.outputVerifyGuard / failureRootCauseNudge / repoSelfDrift / emitDedupe | true | `ANTIHALL_OUTPUT_VERIFY_GUARD`, … |
 | guards.stashGuard | false | `ANTIHALL_STASH_GUARD` |

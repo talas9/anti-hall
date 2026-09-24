@@ -22,6 +22,25 @@ the update.
   "inferred 1M" once usage passes 200k. With a genuinely unknown window it sends one soft
   advisory instead of the mandatory directive. `ANTIHALL_AUTO_HANDOVER_PCT` overrides the
   threshold (`0` = off). Shared with the Codex port.
+  - **Absolute token ceiling** `autoHandover.maxTokens` (default 170000 = 85% of a 200k
+    window; env `ANTIHALL_AUTO_HANDOVER_MAX_TOKENS`; CLI `max-tokens <n>`; `0` = off):
+    fires on whichever comes first, so a 1M session hands over at ~170k instead of ~850k.
+    The token count is real, so a ceiling crossing gets the full directive even with an
+    unknown window. The directive prints an exact `/compact focus: …` line; the handover
+    skill ships a CLAUDE.md "Compact Instructions" snippet.
+  - **Stop-side fire:** a long autonomous turn that never reaches a new prompt gets the
+    directive once at a Stop (shared latch, never while `stop_hook_active`).
+  - **PreCompact safety net** (`hooks/precompact-snapshot.js`, Claude + Codex): before
+    every compaction a mechanical `.anti-hall/handovers/<date>/<session>/PRECOMPACT-<n>.md`
+    (pwd, git state, task list from the transcript, last 10 user messages verbatim, newest
+    handover pointer). Always exits 0 and prints nothing, so it never blocks compaction.
+  - **Resume:** `handover-resume.js` names the snapshot, adds git facts measured at resume
+    (HEAD, commits since the handover, dirty files) and asks the agent to read back goal,
+    next action and session rules before acting. All messages are platform-aware (Claude:
+    `/anti-hall:handover`, `/compact focus: …`; Codex: `anti-hall-handover`, `/compact` or
+    `/new`, `AGENTS.md`).
+  - **Handover content:** a verbatim "Session rules" slot; seq N>1 carries forward rules
+    and verified/not-verified rows verbatim. Research: `docs/KB-handover-research.md`.
 - **One settings store for everything.** `~/.anti-hall/settings.json`, with a declarative
   schema (`hooks/lib/settings-schema.js`) and API (`hooks/lib/settings.js`); front ends
   `/anti-hall:settings` (Codex: `anti-hall-settings`) and
@@ -156,7 +175,7 @@ the update.
 
 ### Owner decisions
 
-- Auto-handover is on by default at 85%.
+- Auto-handover is on by default at 85% or 170k tokens, whichever comes first.
 - Auto-archive (`devswarm.autoArchive.mode`) defaults to `on` (`dry-run`/`off` available).
 - Retention defaults: 30 days, 100 MB per store, 200 newest per partition kept, archive
   on, 200 MB archive cap.

@@ -42,6 +42,7 @@ a flat link index so nothing is missed. Start with [`KB.md`](./KB.md) →
 | [`KB-false-completion.md`](./KB-false-completion.md) | False task completion — reward hacking, claimed-vs-verified gaps, mitigations. |
 | [`KB-overengineering.md`](./KB-overengineering.md) | Overengineering causes and measurement; anti-hall's scope-fidelity implications. |
 | [`KB-session-handover.md`](./KB-session-handover.md) | AI-agent session handover design; backs the `handover` skill. |
+| [`KB-handover-research.md`](./KB-handover-research.md) | 2026-09-24 sourced handover research: compaction loss, context rot, trigger points, Claude Code + Codex compaction/hook facts, receiver read-back; the gap review behind the 0.108 handover changes. |
 | [`KB-flutter-claude-debug.md`](./KB-flutter-claude-debug.md) | Research backing the `flutter-debug` skill. |
 | [`CONTEXT-PRESERVATION-KB.md`](./CONTEXT-PRESERVATION-KB.md) | Slowing main-agent context growth — caching, sub-agent isolation, compaction, JIT retrieval. |
 | [`CODEX-KB-MIGRATION-MAP.md`](./CODEX-KB-MIGRATION-MAP.md) | Cross-reference between Claude-side and Codex-side KB docs. |

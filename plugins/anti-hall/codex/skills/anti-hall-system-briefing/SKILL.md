@@ -29,7 +29,7 @@ files on disk. Codex has no `/config` panel and no statusline hook; skills are n
 | nudge / advisory | Injected text that informs but never blocks. |
 | skip | A TTL'd per-guard override in `~/.anti-hall/skip.json`, written only on the user's explicit request; `all` never covers git-guard. |
 | Tier 1 / 2 / 2.5 / 3 | Anti-speculation layers: protocol injection; hedge-word `speculation-guard`; `claim-ledger` (confident claims with no evidence, ledger-only); opt-in LLM `speculation-judge`. |
-| handover | A self-written, lossless session record in `.anti-hall/handovers/` so a fresh session resumes cold. Auto-handover asks for one at 85% context. There is no PreCompact hook (its context would be discarded), so the trigger runs on UserPromptSubmit. |
+| handover | A self-written, lossless session record in `.anti-hall/handovers/` so a fresh session resumes cold. Auto-handover asks for one at 85% context or 170k tokens (UserPromptSubmit, or once at a Stop). `precompact-snapshot.js` (PreCompact) also writes a mechanical `PRECOMPACT-<n>.md` safety-net snapshot before every compaction and never blocks it. |
 | known / unknown window | Whether the context window size is known (statusline figure, Codex rollout, env, sticky, inferred 1M). Unknown → a soft advisory only, never the mandatory handover directive. |
 | settings store | `~/.anti-hall/settings.json`; precedence env > file > `/config` > legacy file > default. `*` below = advanced (hidden unless `show --all`). |
 | repair / migration marker | Idempotent data repairs (`companion/lib/migrations.js`) stamped per version in `~/.anti-hall/update-sweep-state.json`; run by update, `doctor --repair`, and on reload. |
@@ -95,7 +95,7 @@ files on disk. Codex has no `/config` panel and no statusline hook; skills are n
 ## CLI verbs (run from the plugin root; heavy ones via a subagent)
 
 - `scripts/settings.js` — `show` [--all] [--section s] [--json] (list), `get <section.key>`, `set <section.key> <value>` (validated), `reset <section.key>` (drop the override).
-- `scripts/auto-handover-config.js` — `get`, `set <1-99>`, `off`, `on`, `nag on|off`, `nag-step <n>`, `nag-quiet <n>` (alias over `autoHandover.*`).
+- `scripts/auto-handover-config.js` — `get`, `set <1-99>`, `off`, `on`, `nag on|off`, `max-tokens <n>`, `nag-step <n>`, `nag-quiet <n>` (alias over `autoHandover.*`).
 - `scripts/jev-setup.js` — `status`, `enable`, `disable`, `set-key`, `test`, `mode <integration> on|shadow|off`.
 - `scripts/jev-report.js` — (no verb) the report [--json] [--window 24h|7d]; `label <hash> tp|fp`; `prune-audit` (trim audit snippets).
 - `scripts/defect.js` — `report`, `list`, `show`, `rule`, `archive`.
@@ -106,7 +106,7 @@ files on disk. Codex has no `/config` panel and no statusline hook; skills are n
 
 ## Settings (defaults; `*` = advanced)
 
-- **Auto Handover**: `autoHandover.enabled`=true, `autoHandover.pct`=85, `autoHandover.nag`=true, `autoHandover.nagStepPct`=5, `autoHandover.nagQuietMin`=15
+- **Auto Handover**: `autoHandover.enabled`=true, `autoHandover.pct`=85, `autoHandover.maxTokens`=170000, `autoHandover.nag`=true, `autoHandover.nagStepPct`=5, `autoHandover.nagQuietMin`=15
 - **Guards**: `guards.mergeGate`=false, `guards.shipitGate`=false, `guards.outputVerifyGuard`=true, `guards.failureRootCauseNudge`=true, `guards.repoSelfDrift`=true, `guards.stashGuard`=false, `guards.emitDedupe`=true, `guards.editGuardAllow`=—*, `guards.allowSubagentMailbox`=false*, `guards.reaperMatch`=—*, `guards.reaperExclude`=—*, `guards.tasklistWorkThreshold`=3*, `guards.progressFreshMs`=1800000*, `guards.apiGuardThirdparty`=false*
 - **Version Alerts**: `versionAlerts.antiHall`=true, `versionAlerts.claudeCli`=true, `versionAlerts.devswarm`=true
 - **Updates / Maintenance**: `updates.quiet`=false, `updates.reconcileBudgetMs`=60000*, `updates.postpullBudgetMs`=90000*, `updates.sweepBudgetMs`=20000*

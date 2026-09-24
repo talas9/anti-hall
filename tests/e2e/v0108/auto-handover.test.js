@@ -8,15 +8,17 @@
 //     last-seen max_tokens for the session (sticky), else "inferred 1M" once
 //     usage exceeds 200k, else UNKNOWN (200k assumed).
 //   - Below pct => silent.
-//   - Crossing pct with a KNOWN window => the mandatory directive, once per
-//     arm: write a handover unasked, tell the user, urge /compact or /clear,
-//     explain the hallucination risk.
+//   - Crossing pct with a KNOWN window, or crossing the absolute maxTokens
+//     ceiling (default 170000; real token count, so window-independent) =>
+//     the mandatory directive, once per arm: write a handover unasked, tell
+//     the user, urge /compact or /clear, explain the hallucination risk.
 //   - Crossing with an UNKNOWN window => one soft advisory per arm, never the
 //     mandatory directive (a 200k guess could be badly wrong on a 1M session).
 //   - After the directive, a milestone nag at every +nagStepPct past the last
 //     nag; dropping below pct re-arms.
-//   - Stop-time pause nag: only after the directive fired, at most once per
-//     nagQuietMin since the last nag of either kind, with no open task work.
+//   - Stop side: if the directive has not gone out this arm and the agent is
+//     over threshold at a Stop, the Stop hook delivers it (once, shared latch);
+//     after that a pause nag at most once per nagQuietMin, no open task work.
 //   - autoHandover.enabled=false silences it; ANTIHALL_AUTO_HANDOVER_PCT
 //     overrides the threshold.
 
@@ -132,7 +134,7 @@ test('drop below threshold re-arms: a later crossing after /compact fires a fres
   } finally { rm(home); }
 });
 
-test('1M window from the statusline (sticky max_tokens): 180k tokens is ~18% and silent; 900k fires', () => {
+test('1M window from the statusline (sticky max_tokens): 150k tokens is 15% and under the 170k ceiling -> silent; 900k fires', () => {
   const home = makeHome();
   try {
     // The statusline persisted this session's real window earlier (stale ts:
@@ -140,9 +142,9 @@ test('1M window from the statusline (sticky max_tokens): 180k tokens is ~18% and
     const store = path.join(antiHallDir(home), 'context-pct', 'sess-ah-1.json');
     fs.mkdirSync(path.dirname(store), { recursive: true });
     fs.writeFileSync(store, JSON.stringify({ pct: 10, usedTokens: 100000, maxTokens: CONTEXT_WINDOW_1M, ts: Date.now() - 60 * 60 * 1000 }));
-    const under = writeTranscript(home, [mainAssistantUsageLine({ inputTokens: tokensFor(90, CONTEXT_WINDOW_200K) })]);
+    const under = writeTranscript(home, [mainAssistantUsageLine({ inputTokens: 150000 })]);
     const r1 = runHook(HOOK, payload(under), home);
-    assert.ok(!hasDirective(r1), `180k of a 1M window is ~18%; stdout: ${r1.stdout}`);
+    assert.ok(!hasDirective(r1), `150k of a 1M window is 15%; stdout: ${r1.stdout}`);
     const over = writeTranscript(home, [mainAssistantUsageLine({ inputTokens: tokensFor(90, CONTEXT_WINDOW_1M) })]);
     const r2 = runHook(HOOK, payload(over), home);
     assert.ok(hasDirective(r2), `900k of a 1M window is 90%; stdout: ${r2.stdout}`);
@@ -162,9 +164,10 @@ test('no window info but usage > 200k proves a 1M window (inferred-1m): 900k fir
   } finally { rm(home); }
 });
 
-test('UNKNOWN window (no override, no statusline, <=200k): one soft advisory per arm, never the mandatory directive', () => {
+test('UNKNOWN window (no override, no statusline, <=200k) with the token ceiling off: one soft advisory per arm, never the mandatory directive', () => {
   const home = makeHome();
   try {
+    writeJson(settingsPath(home), { autoHandover: { maxTokens: 0 } });
     const t = writeTranscript(home, [mainAssistantUsageLine({ inputTokens: tokensFor(90, CONTEXT_WINDOW_200K) })]);
     const r1 = runHook(HOOK, payload(t), home);
     assert.ok(hasDirective(r1), `stdout: ${r1.stdout}`);
@@ -227,12 +230,34 @@ test('pause-nag: silent within nagQuietMin of the last nag; nags once after it; 
   } finally { rm(home); }
 });
 
-test('pause-nag: never fires when the directive has not fired this arm', () => {
+test('absolute maxTokens ceiling: 175k tokens fires the mandatory directive even on a 1M window at 17.5%', () => {
+  const home = makeHome();
+  try {
+    const t = writeTranscript(home, [mainAssistantUsageLine({ inputTokens: 175000 })]);
+    const r = runHook(HOOK, payload(t), home, { ANTIHALL_CONTEXT_WINDOW_TOKENS: '1000000' });
+    assert.ok(hasDirective(r), `stdout: ${r.stdout}`);
+    assert.match(r.json.hookSpecificOutput.additionalContext, /AUTO-HANDOVER REQUIRED/);
+    const off = makeHome();
+    try {
+      const r2 = runHook(HOOK, payload(writeTranscript(off, [mainAssistantUsageLine({ inputTokens: 175000 })])), off, { ANTIHALL_CONTEXT_WINDOW_TOKENS: '1000000', ANTIHALL_AUTO_HANDOVER_MAX_TOKENS: '0' });
+      assert.ok(!hasDirective(r2), `maxTokens=0 turns the ceiling off; stdout: ${r2.stdout}`);
+    } finally { rm(off); }
+  } finally { rm(home); }
+});
+
+test('Stop-side fire: over threshold at a Stop with no directive yet this arm -> the Stop hook delivers it once', () => {
   const home = makeHome();
   try {
     const t = writeTranscript(home, [mainAssistantUsageLine({ inputTokens: tokensFor(90, CONTEXT_WINDOW_200K) })]);
-    const r = runHook(NAG_HOOK, { hook_event_name: 'Stop', session_id: 'sess-ah-1', transcript_path: t }, home, KNOWN_200K);
-    assert.strictEqual(r.status, 0, r.stderr);
-    assert.ok(!hasStopNag(r), `stdout: ${r.stdout}`);
+    const stopPayload = { hook_event_name: 'Stop', session_id: 'sess-ah-1', transcript_path: t };
+    const r1 = runHook(NAG_HOOK, stopPayload, home, KNOWN_200K);
+    assert.strictEqual(r1.status, 0, r1.stderr);
+    assert.ok(hasStopNag(r1), `stdout: ${r1.stdout}`);
+    assert.match(r1.json.reason, /AUTO-HANDOVER REQUIRED/);
+    const r2 = runHook(NAG_HOOK, stopPayload, home, KNOWN_200K);
+    assert.ok(!hasStopNag(r2), `already fired this arm; stdout: ${r2.stdout}`);
+    const below = writeTranscript(home, [mainAssistantUsageLine({ inputTokens: tokensFor(40, CONTEXT_WINDOW_200K) })]);
+    const r3 = runHook(NAG_HOOK, { hook_event_name: 'Stop', session_id: 'sess-ah-1', transcript_path: below }, home, KNOWN_200K);
+    assert.ok(!hasStopNag(r3), `below threshold: silent; stdout: ${r3.stdout}`);
   } finally { rm(home); }
 });
