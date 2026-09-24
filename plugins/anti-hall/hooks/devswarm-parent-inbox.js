@@ -1427,6 +1427,48 @@ function main() {
     return k;
   }
 
+  // OWN-CHECKOUT ROW FOLD (P0 field bug): the DevSwarm app can self-register
+  // its OWN "primary builder" row under an id other than anti-hall's own
+  // `primaryId` (e.g. an app builder id like `76cf862f…`, label "SkyCrew",
+  // worktree === the Primary's own checkout) — owner-verified on the live
+  // app DB: `builders.builderType === 'primary'` for exactly that row (5
+  // primary vs 209 standard rows). Before this fix such a row fell through
+  // to the generic child path, producing a false "SkyCrew (76cf862f) N
+  // unread" nag with child-shaped wording ("messages YOU sent") for what is
+  // actually the Primary's own inbound mail.
+  //
+  // PROVEN SIGNAL, gated on BOTH conjuncts: worktree match is necessary but
+  // NOT sufficient — this test suite's own fixtures widely reuse `gitTop`
+  // (the test's own repo cwd) as an ordinary CHILD's worktreePath for
+  // convenience, so worktree-match ALONE mis-folded 59 genuine child-row
+  // tests (reverted P0 attempt #1). `builderTypeFor(id)` is the app DB's
+  // OWN answer for whether id is genuinely the app's primary/self row —
+  // when the app DB is unavailable (no node:sqlite, no DB file, no matching
+  // row, any error) it returns null, and null NEVER folds — fail-open to
+  // the pre-existing (unchanged) child-path behavior, exactly why none of
+  // the existing fixtures (none set an app DB) are affected.
+  const appdbMod = (() => { try { return require('../companion/lib/devswarm-appdb.js'); } catch (_) { return null; } })();
+  function builderTypeFor(id) {
+    if (!appdbMod) return null;
+    try {
+      return appdbMod.builderTypeForId(id, {
+        home,
+        dbPath: process.env.ANTIHALL_APPDB_PATH || undefined, // test-only injection point
+      });
+    } catch (_) { return null; }
+  }
+  const ownCheckoutRootCache = new Map(); // worktreePath -> resolved worktreeRoot | null
+  function worktreeRootOf(wt) {
+    if (!wt) return null;
+    if (ownCheckoutRootCache.has(wt)) return ownCheckoutRootCache.get(wt);
+    let root = null;
+    try { root = require('../companion/lib/identity.js').resolveContext(wt, { home, missingPath: 'ancestor' }).worktreeRoot; } catch (_) { root = null; }
+    ownCheckoutRootCache.set(wt, root);
+    return root;
+  }
+  let ownCheckoutExtraUnread = 0;
+  let ownCheckoutExtraUrgency = null;
+
   for (const id of Object.keys(summaryWorkspaces)) {
     if (!isSafeId(id)) continue;
     // #34/Reviewer P1: the Primary's OWN self-registered entry (primary-<hash>,
@@ -1440,6 +1482,15 @@ function main() {
     if (id === primaryId) continue;
     const entry = summaryWorkspaces[id];
     if (!entry || typeof entry !== 'object') continue;
+
+    if (gitTop && entry.worktreePath && worktreeRootOf(entry.worktreePath) === gitTop
+        && builderTypeFor(id) === 'primary') {
+      const rowUnread = Number.isFinite(entry.directUnread) ? entry.directUnread
+        : (Number.isFinite(entry.unread) ? entry.unread : 0);
+      ownCheckoutExtraUnread += rowUnread;
+      if (!ownCheckoutExtraUrgency) ownCheckoutExtraUrgency = entry.urgencyMax || null;
+      continue; // route to the own-unread path below, never the generic child path
+    }
 
     const dKey = repoKeyOfWorktree(entry.worktreePath);
     if (repoKey && dKey && dKey !== repoKey) continue; // #36 structural filter
@@ -1763,6 +1814,15 @@ function main() {
       }
     }
   } catch (_) { ownUnread = 0; ownUrgencyMax = null; ownPendingQuestions = []; }
+
+  // Fold in any app-DB-proven own-checkout row(s) found under a DIFFERENT id
+  // in the main loop above (see ownCheckoutRootCache/builderTypeFor's own
+  // header) — computed independently of the try/catch above so a failure
+  // there can never silently drop it.
+  if (ownCheckoutExtraUnread > 0) {
+    ownUnread += ownCheckoutExtraUnread;
+    if (!ownUrgencyMax) ownUrgencyMax = ownCheckoutExtraUrgency;
+  }
 
   // ownUnanswered (§4.5, CORE fix for claim 1): cross-reference
   // ownPendingQuestions against this PROJECT's recorded reply-state
