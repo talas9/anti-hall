@@ -582,6 +582,26 @@ function isRoutingLiveRow(row, home, opts) {
   try { return !!readDescriptorFile(home, row.id); } catch (_) { return false; }
 }
 
+// appSessionOnWorktree(home, env, sessionId, worktree) -> null | { verdict,
+// builderId, builderType, terminalActive }. v0.108.0: the DevSwarm app DB maps a
+// Claude session id to the worktree it runs in (builder_terminals.ai_session_config
+// -> builders.worktreePath; proven 129/130 on a live DB). ONE-WAY: verdict true =
+// the session runs on `worktree`, false = it runs on a DIFFERENT worktree; null
+// (no app DB, session unknown, unresolvable path) = no opinion — callers keep
+// their existing logic. Never throws.
+function appSessionOnWorktree(home, env, sessionId, worktree) {
+  try {
+    if (!sessionId || !worktree) return null;
+    const appDb = require('../companion/lib/devswarm-app-db.js');
+    const snap = appDb.snapshot({ home, env: env || process.env });
+    const own = appDb.sessionOwner(snap, String(sessionId));
+    if (!own || !own.worktreePath) return null;
+    const a = canonicalWorktreeRealPath(String(own.worktreePath)) || String(own.worktreePath);
+    const b = canonicalWorktreeRealPath(String(worktree)) || String(worktree);
+    return { verdict: a === b, builderId: own.builderId, builderType: own.builderType, terminalActive: own.terminalActive };
+  } catch (_) { return null; }
+}
+
 // siblingAckGate(storeHandle, callerId, partId, home, now) -> bool (true ==
 // LIVE or SELF, skip the ack). Fix Wave 7 Item 1 + Item 2: the ONE
 // mesh-sibling cursor-write gate, used by BOTH `cmdInboxMessages`'s
@@ -679,7 +699,15 @@ function siblingAckGate(storeHandle, callerId, partId, home, now, opts) {
       const anchorSid = anchorRow && anchorRow.sessionId != null ? String(anchorRow.sessionId) : '';
       const callerSid = opts.env && opts.env.CLAUDE_CODE_SESSION_ID ? String(opts.env.CLAUDE_CODE_SESSION_ID) : '';
       let anchorIsOurs = anchorSid === '' || (callerSid !== '' && anchorSid === callerSid);
-      if (!anchorIsOurs && callerSid !== '' && anchorRow) {
+      // v0.108.0: the DevSwarm app's own session map is authoritative when it
+      // knows the caller's session — it names the worktree that session runs
+      // in (true: this anchor's worktree; false: another one). Unknown -> the
+      // liveness fallback below.
+      const appSays = (!anchorIsOurs && callerSid !== '' && anchorRow)
+        ? appSessionOnWorktree(home, opts.env, callerSid, anchorRow.worktreePath || opts.cwd)
+        : null;
+      if (appSays && appSays.verdict !== null) anchorIsOurs = appSays.verdict;
+      else if (!anchorIsOurs && callerSid !== '' && anchorRow) {
         try {
           anchorIsOurs = isSessionAliveRow({ sessionId: callerSid }, home) === true
             && isSessionAliveRow(anchorRow, home) !== true;
@@ -11123,6 +11151,12 @@ function cmdRegisterPrimary(flags, ctx) {
             && String(existing.sessionId) !== String(session)
             && isSessionAliveRow(existing, home)) {
           conflict = existing;
+          // v0.108.0: the DevSwarm app DB is authoritative when it names the
+          // CALLER as this worktree's current AI terminal (the active terminal
+          // of the builder on this worktree): the caller IS the Primary, so the
+          // takeover is not a conflict. Anything else keeps the refusal.
+          const app = appSessionOnWorktree(home, ctx.env, session, worktree);
+          if (app && app.verdict === true && app.terminalActive === true) conflict = null;
         }
       } finally { probeStore.close(); }
     } catch (_) { conflict = null; }
