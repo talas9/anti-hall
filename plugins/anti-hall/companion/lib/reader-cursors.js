@@ -226,12 +226,25 @@ function partitionMeshIds(partition, desc) {
   }
   return ids;
 }
+// cwdInPartition(cwd, meshIds) -> true | false | null. Tri-state (P2-b fix): a
+// `resolveContext` whose OWN answer was uncertain (`c.uncertain` — a git
+// `--show-superproject-working-tree` spawn timed out or errored while
+// classifying a submodule, see identity.js's own comment on that field)
+// collapses null/false the SAME WAY a genuinely-resolved "different repo"
+// answer does — there is no way to tell "definitely not local" apart from
+// "could not tell" from the boolean alone. That ambiguity let a git timeout on
+// one session's cwd be read as a CONFIRMED not-local verdict by
+// repairPinnedFloors, which then retired (and could raise the floor past) a
+// row that was never proven foreign. `null` here means "could not resolve
+// with certainty" and every caller MUST treat it as "keep/include", never as
+// a confident "false".
 function cwdInPartition(cwd, meshIds) {
   if (!cwd || !meshIds || !meshIds.size) return false;
   try {
     const c = require('./identity.js').resolveContext(cwd);
+    if (c && c.uncertain) return null;
     return !!(c && c.meshId && meshIds.has(c.meshId));
-  } catch (_) { return false; }
+  } catch (_) { return null; }
 }
 // mappedShorts(home, partition) -> Set of the short6 ids with a legacy #inst/#nd
 // file for this partition: proof that harness read it before Phase 3.
@@ -280,7 +293,11 @@ function importPlan(store, o) {
     const meshIds = partitionMeshIds(partition, desc);
     const mapped = mappedShorts(o.home, partition);
     harnesses = liveHarnessSessions(o.home, o.procTable, o.kill)
-      .filter((x) => mapped.has(legacyShortFor(x.reader)) || cwdInPartition(x.cwd, meshIds))
+      // cwdInPartition is tri-state (P2-b): `false` !== "not local" here — only
+      // a CONFIRMED `false` excludes a session; `null` (uncertain, e.g. a git
+      // timeout mid-resolution) must declare it rather than silently drop a
+      // possibly-local reader.
+      .filter((x) => mapped.has(legacyShortFor(x.reader)) || cwdInPartition(x.cwd, meshIds) !== false)
       .map((x) => x.reader);
   }
   if (harnesses.length) {
@@ -697,7 +714,10 @@ function repairPinnedFloors(store, opts) {
         if (!rec) v = 'session-gone';
         else if (rec.ambiguous || rec.startMs == null) v = null;
         else if (rec.startMs !== p.startMs) v = 'session-gone';
-        else if (!cwdInPartition(rec.cwd, meshIds)) v = 'not-local';
+        // P2-b fix: only a CONFIRMED `false` is 'not-local'. `null` (uncertain —
+        // resolveContext's own git spawn timed out/errored on this session's
+        // cwd) must KEEP the row, never retire it on an unproven guess.
+        else if (cwdInPartition(rec.cwd, meshIds) === false) v = 'not-local';
       }
     }
     verdicts.set(reader, v);

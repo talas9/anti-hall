@@ -153,7 +153,7 @@ function nullContext(kind, cwdReal) {
   return freeze({
     kind, cwdReal: cwdReal || null, toplevel: null, superproject: null, worktreeRoot: null,
     commonDir: null, mainWorktree: null, repoKey: null, meshId: null, primaryMeshId: null,
-    submoduleDepth: 0, spawned: 0,
+    submoduleDepth: 0, spawned: 0, uncertain: false,
   });
 }
 
@@ -199,6 +199,19 @@ function resolveContext(cwd, opts) {
     } else {
       dotGitIsDir = info.dotGitIsDir;
       let spawned = 0;
+      // uncertain (P2-b fix): a `gitSuperproject` call that FAILED (spawn error,
+      // timeout, non-zero exit) collapses to the SAME `null` as a git call that
+      // cleanly answered "no superproject" (exit 0, empty stdout) — the two are
+      // indistinguishable to every caller of this closure. That ambiguity let a
+      // stuck/unmounted worktree's `rev-parse --show-superproject-working-tree`
+      // timeout be read as "this IS the outermost repo", minting a meshId for a
+      // non-absorbed submodule's OWN dir instead of its superproject's — wrong,
+      // but silently so. Tracked separately from `spawned` (which counts EVERY
+      // call, success or failure) so the Context can expose "this resolution's
+      // answer is not fully trustworthy" to callers that need to tell a
+      // CONFIRMED verdict apart from a DEGRADED one (reader-cursors.js's
+      // not-local retirement — see that file's own comment).
+      let uncertain = 0;
       const realSpawn = typeof o.spawn !== 'function';
       const cacheOn = o.superCache === true || (realSpawn && useMemo);
       const gitSuperproject = (dir) => {
@@ -212,12 +225,12 @@ function resolveContext(cwd, opts) {
         try {
           const r = spawn('git', ['-C', dir, 'rev-parse', '--show-superproject-working-tree'],
             { encoding: 'utf8', env, timeout: GIT_SPAWN_TIMEOUT_MS });
-          if (!r || r.error || r.status !== 0) return null; // failure: not cached, retried next call
+          if (!r || r.error || r.status !== 0) { uncertain += 1; return null; } // failure: not cached, retried next call
           const s = String(r.stdout || '').trim();
           const ans = s ? F.realpathSync(s) : null;
           if (realSpawn && cacheOn) superCache.set(dir, { ans, at: Date.now() });
           return ans;
-        } catch (_) { return null; }
+        } catch (_) { uncertain += 1; return null; }
       };
       // superOf(root, rootInfo) -> realpath'd superproject toplevel, or null when `root`
       // is itself key-bearing (a main checkout or a linked worktree).
@@ -277,6 +290,7 @@ function resolveContext(cwd, opts) {
         primaryMeshId: meshIdForRealPath(realOr(F, mainWorktree)),
         submoduleDepth: depth,
         spawned,
+        uncertain: uncertain > 0,
       });
     }
     if (useMemo) memo.set(cwdReal, { ctx: result, dotGitIsDir });

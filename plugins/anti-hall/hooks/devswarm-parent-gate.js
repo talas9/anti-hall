@@ -538,11 +538,29 @@ function readOwnUnread(home, cwd, repoKey) {
     // the ONE canonical implementation of the actual subtraction/live-read
     // math (companion/lib/devswarm-own-reader.js) — nothing here reimplements
     // that; this only composes the two ALREADY-exported primitives.
-    let unread, staleOwnCache, ownSource;
+    // ownRawWasZero (P2-a fix): true ONLY for the `rawUnread<=0` branch just
+    // below — the ONE path that trusts the cached summary's "0 unread"
+    // VERBATIM with no live check of any kind attempted (not even the
+    // fail-open delta=0 fallback ownReaderDelta takes when this reader has no
+    // declared reader_cursors row). Distinct from `ownSource` (which stays
+    // 'cache' for BOTH this branch AND the ordinary rawUnread>0/delta-fallback
+    // branch below — buildReason's cache-vs-live label must not change) so the
+    // descriptor-loop skip (search "ownRawWasZero" below) can tell "never
+    // checked at all" apart from "checked, cache trusted as-is" — the latter
+    // is DELIBERATE (a summary's own unread already unions the descriptor's
+    // NDJSON inbox, see devswarm-store.js unionUnreadFor; re-deriving it here
+    // double-counts, the exact v0.106.0 regression
+    // tests/hooks/devswarm-parent-gate.test.js's IDENTITY-FAMILY self-row test
+    // guards against). The null/stale branch (`ownSource===null`) also does
+    // NOT set this — that branch already returns `unknown:true` below, which
+    // blocks unconditionally via the synthetic self-row, so no recount is
+    // needed there either.
+    let unread, staleOwnCache, ownSource, ownRawWasZero;
     if (!(rawUnread > 0)) {
-      unread = 0; staleOwnCache = false; ownSource = 'cache';
+      unread = 0; staleOwnCache = false; ownSource = 'cache'; ownRawWasZero = true;
     } else {
       const { delta, stale, live } = ownReaderDelta(home, top, id, entry);
+      ownRawWasZero = false;
       if (live !== undefined) {
         unread = live; staleOwnCache = false; ownSource = 'live';
       } else if (stale) {
@@ -587,7 +605,7 @@ function readOwnUnread(home, cwd, repoKey) {
         registryRows.push({ id: r.id, worktreePath: r.worktreePath || null, sessionId: r.sessionId || null });
       }
     }
-    return { unread, id, urgencyMax, unknown: staleOwnCache, staleOwnCache, ownSource, pendingQuestions, pendingQuestionsTruncated, registryRows, archivedKnown };
+    return { unread, id, urgencyMax, unknown: staleOwnCache, staleOwnCache, ownSource, ownRawWasZero, pendingQuestions, pendingQuestionsTruncated, registryRows, archivedKnown };
   } catch (_) {
     // Any unanticipated failure past the ENOENT-tolerant read above means a
     // summary WAS reachable enough to attempt reading/parsing and something
@@ -639,6 +657,20 @@ function main() {
   // Primary's OWN inbound unread (#34 parity — the parent is gated on its OWN
   // unread too, not just children's).
   const own = readOwnUnread(home, cwd, selfKey);
+
+  // ownReaderKey (P2-a fix) — THIS reader's own identity, resolved the SAME way
+  // ownReaderDelta resolves it (companion/lib/devswarm-own-reader.js), so the
+  // descriptor loop below can re-check the own descriptor AT THIS READER'S OWN
+  // position instead of the partition's conservative FLOOR (reader:null) when
+  // `own.ownRawWasZero`. Lazy + fail-open: an unresolvable identity
+  // (headless caller, missing session record) yields null, which `countFor`
+  // treats exactly like the pre-existing floor view — never worse than before.
+  let ownReaderKey = null;
+  try {
+    const devswarmCli = require('../scripts/devswarm.js');
+    const readerCursorsForOwn = require('../companion/lib/reader-cursors.js');
+    ownReaderKey = readerCursorsForOwn.readerKey(devswarmCli.deriveReaderNonce({ home, cwd }));
+  } catch (_) { ownReaderKey = null; }
 
   // descriptors (moved up from its original position below `unanswered`,
   // read-only, no dependency on `own`/`unanswered`): needed HERE now too, for
@@ -866,11 +898,35 @@ function main() {
   for (const d of descriptors) {
     // The Primary's OWN descriptor (workspaces/<own.id>.json) is already
     // accounted for by the own row above (readOwnUnread: this reader's own
-    // position). Counting it again here read the SAME partition through the
-    // floor view (countFor reader:null) and summed it into the self family —
-    // a phantom "(you) (N unread)" whenever the floor lagged this reader's
-    // own row (v0.106.0 regression).
-    if (own.id && d && String(d.id) === String(own.id)) continue;
+    // position) in EVERY case except one — re-deriving it here through the
+    // floor view (countFor reader:null) summed it into the self family AGAIN,
+    // a phantom "(you) (N unread)" whenever the floor lagged this reader's own
+    // row (v0.106.0 regression, the original reason for this skip). This
+    // holds for 'live' (a live read already queried the store just now) AND
+    // for the ORDINARY 'cache' case (rawUnread>0, this reader has no declared
+    // reader_cursors row so ownReaderDelta's delta=0 fallback trusts the
+    // summary's own number as-is) — a summary's own `unread` already unions
+    // the descriptor's NDJSON inbox (devswarm-store.js unionUnreadFor), so
+    // re-reading it here is a genuine double-count in BOTH those cases
+    // (tests/hooks/devswarm-parent-gate.test.js's IDENTITY-FAMILY self-row
+    // test pins the ordinary-cache case: own.unread=2 + a real 3-message
+    // descriptor must still report "2 unread", never 5).
+    //
+    // P2-a FIX: the ONE case that must NOT skip is `own.ownRawWasZero` (see
+    // readOwnUnread's own comment on that field) — `rawUnread<=0` trusts the
+    // cached summary's "0 unread" with NO check of any kind, live or
+    // fallback, so mail that arrived on primary-<hash> AFTER the summary was
+    // last derived stays hidden until the next computeSummary() run.
+    // Skipping unconditionally hid exactly that. So: fall through ONLY when
+    // `ownRawWasZero` — let this descriptor be counted below LIKE ANY OTHER,
+    // but keyed to `ownReaderKey` (this reader's own identity), never the
+    // floor, at the union step (search "isOwnDescriptor" below) — the floor
+    // is the OTHER readers' minimum and reintroducing it here is the exact
+    // v0.106.0 bug. The null/stale-cache case (`ownSource===null`) needs no
+    // special handling either way: it already sets `own.unknown=true`, which
+    // blocks unconditionally via the synthetic self-row above.
+    if (own.id && d && String(d.id) === String(own.id) && !own.ownRawWasZero) continue;
+    const isOwnDescriptor = !!(own.id && d && String(d.id) === String(own.id));
     // ---- CROSS-PROJECT HANDLING (defect e586afdaa968, P1) ----
     // Two DIFFERENT facts, deliberately given two DIFFERENT treatments:
     //
@@ -1138,8 +1194,18 @@ function main() {
             // CHILD's partition — a monitoring view, so reader=null (the floor:
             // "does the child have backlog", conservative). A read error is
             // UNKNOWN and blocks with a reason — never a silent 0.
+            //
+            // EXCEPT for its OWN descriptor (P2-a fix, `isOwnDescriptor` above,
+            // only reached here when own.ownRawWasZero): the floor is
+            // OTHER readers' minimum, not this reader's own position, and using
+            // it here is the exact v0.106.0 double-count bug the skip above
+            // exists to prevent. Key this ONE call to `ownReaderKey` instead —
+            // this reader's own declared row when it has one, else the floor
+            // exactly as before (positions() falls back to the floor for an
+            // undeclared/unresolvable reader — never worse than the prior
+            // behavior, only more precise when a row exists).
             const readerCursors = require('../companion/lib/reader-cursors.js');
-            const union = readerCursors.countFor(storeHandle, { reader: null, partition: d.id, inboxPath: d.inboxPath, cursorPath: d.cursorPath, home });
+            const union = readerCursors.countFor(storeHandle, { reader: isOwnDescriptor ? ownReaderKey : null, partition: d.id, inboxPath: d.inboxPath, cursorPath: d.cursorPath, home });
             if (union.unknown) {
               unreadUnknown = true;
               unreadReason = union.reason || 'store-read-error';
