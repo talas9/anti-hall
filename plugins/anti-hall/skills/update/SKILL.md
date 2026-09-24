@@ -148,9 +148,20 @@ Modes:
    thread; an execution-shaped spawn with no explicit model also trips
    model-routing-guard's strict-mode block). Brief the subagent to run exactly one of:
    ```
-   node "${CLAUDE_PLUGIN_ROOT}/skills/update/scripts/update.js" --check
-   node "${CLAUDE_PLUGIN_ROOT}/skills/update/scripts/update.js"
+   node "$HOME/.claude/plugins/marketplaces/anti-hall/plugins/anti-hall/skills/update/scripts/update.js" --check
+   node "$HOME/.claude/plugins/marketplaces/anti-hall/plugins/anti-hall/skills/update/scripts/update.js"
    ```
+   **Always the MARKETPLACE CLONE's own copy, never `${CLAUDE_PLUGIN_ROOT}`**
+   (the currently-LOADED, possibly-stale cache dir): a P0 field bug showed
+   `${CLAUDE_PLUGIN_ROOT}` pulling a NEWER version, syncing the cache, then
+   running the OLD cached version's own hardcoded post-pull stage list — a
+   stage first added in the new release never ran until a second update or
+   `doctor` call. The marketplace clone is always the newest copy right after
+   `git pull --ff-only`, which `update.js` itself does as its first step, so
+   this path is self-correcting even before that pull completes. (`update.js`
+   also now re-execs the freshly-pulled version's own copy internally as a
+   second line of defense — see its own `runPostPullReexec` — but the
+   INVOCATION path here should never depend on that.)
    and report its stdout verbatim (the JSON line + the human summary).
 3. Present the result to the user: the `installed → latest` versions, whether it
    updated, and the **changelog delta** (the printed `## <version>` sections).

@@ -71,7 +71,10 @@ const { spawn } = require('child_process');
 
 const PLUGIN_ROOT = path.join(__dirname, '..');
 const PLUGIN_JSON = path.join(PLUGIN_ROOT, '.claude-plugin', 'plugin.json');
-const DOCTOR_JS = path.join(__dirname, 'doctor.js');
+// Fallback ONLY (see resolveDoctorJs below): whatever doctor.js sits next to
+// THIS running hook — i.e. the cache-version dir the harness bound __dirname
+// to when it loaded this file for the current session.
+const DOCTOR_JS_FALLBACK = path.join(__dirname, 'doctor.js');
 
 function antiHallDir(home) { return path.join(home || os.homedir(), '.anti-hall'); }
 function lockPath(home) { return path.join(antiHallDir(home), 'repair-on-reload.lock'); }
@@ -82,6 +85,39 @@ function readRunningVersion() {
   const obj = JSON.parse(raw);
   if (typeof obj.version !== 'string' || !obj.version) throw new Error('missing version');
   return obj.version;
+}
+
+// resolveDoctorJs(home) -> absolute path to the NEWEST cache version's own
+// doctor.js, falling back to THIS running hook's own sibling doctor.js when
+// no newer/valid cache dir can be found. Same staleness class as the update.js
+// re-exec fix (P0): this hook's own __dirname is bound to whichever
+// cache-version dir the harness loaded for the CURRENT session, which can lag
+// a version already synced into the cache by a prior update.js run. Spawning
+// that stale doctor.js would run an OLD repair/migration set instead of the
+// one the just-synced version actually ships. Read-only, fail-open: any
+// resolution failure (missing cache root, unreadable dir, no doctor.js at the
+// resolved path) falls back to DOCTOR_JS_FALLBACK.
+function resolveDoctorJs(home) {
+  try {
+    const cacheRoot = path.join(home || os.homedir(), '.claude', 'plugins', 'cache', 'anti-hall', 'anti-hall');
+    const entries = fs.readdirSync(cacheRoot, { withFileTypes: true });
+    const versions = entries
+      .filter((e) => e.isDirectory())
+      .map((e) => e.name)
+      .filter((name) => /^\d+\.\d+\.\d+$/.test(name)); // semver dirs only — never a sha-named dir
+    if (!versions.length) return DOCTOR_JS_FALLBACK;
+    versions.sort((a, b) => {
+      const pa = a.split('.').map(Number);
+      const pb = b.split('.').map(Number);
+      for (let i = 0; i < 3; i++) { if (pa[i] !== pb[i]) return pa[i] - pb[i]; }
+      return 0;
+    });
+    const newest = versions[versions.length - 1];
+    const candidate = path.join(cacheRoot, newest, 'hooks', 'doctor.js');
+    return fs.existsSync(candidate) ? candidate : DOCTOR_JS_FALLBACK;
+  } catch (_) {
+    return DOCTOR_JS_FALLBACK;
+  }
 }
 
 // repairPending(home, version) -> bool. O(1): one small JSON read
@@ -135,7 +171,8 @@ function spawnDetachedRepair(home) {
     fs.mkdirSync(dir, { recursive: true });
     const logPath = path.join(dir, 'repair-on-reload-' + Date.now() + '.log');
     const fd = fs.openSync(logPath, 'a');
-    const child = spawn(process.execPath, [DOCTOR_JS, '--repair', '--quiet'], {
+    const doctorJs = resolveDoctorJs(home);
+    const child = spawn(process.execPath, [doctorJs, '--repair', '--quiet'], {
       detached: true,
       stdio: ['ignore', fd, fd],
       env: process.env,

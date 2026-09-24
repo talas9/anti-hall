@@ -133,6 +133,22 @@ the update.
   else is kept and listed in `keptNotArchivedInApp`, and an unreadable app DB archives
   nothing. The skill docs no longer suggest a roster screenshot as the source.
 
+- **Fixed (P0): `update.js` ran the CURRENTLY-LOADED (possibly stale) version's
+  own post-pull stages after pulling a newer one.** Field-verified: 0.107.0's
+  update.js pulled 0.107.1, synced the cache, then ran 0.107.0's own hardcoded
+  stage list — a stage that only exists in 0.107.1 (e.g. `mark-app-archived`)
+  never ran until a second update or `doctor` call, since every stage's
+  ORCHESTRATION (not just the library code it calls) is baked into whichever
+  file is executing. Fix: after a real version bump, `update.js` now re-execs
+  the freshly-pulled marketplace clone's own copy with `--post-pull-only`
+  (stages only, no pull) and merges its JSON status in; a loop is prevented
+  via an env marker, and any re-exec failure fails open to the local (stale)
+  stage results with a note. The skill text (Claude + Codex mirror) now
+  points at the marketplace clone's own update.js path instead of the
+  possibly-stale `${CLAUDE_PLUGIN_ROOT}` cache path. `repair-on-reload` was
+  audited for the same class of bug: it now resolves the NEWEST cache
+  version's own `doctor.js`, not whichever copy sits next to the currently-
+  loaded hook.
 - **Added: repairs now also run on a plain `/reload-plugins` or a new session
   on a new version**, not only via `update.js` or a manual `doctor --repair`.
   A new `repair-on-reload` hook (SessionStart + a UserPromptSubmit fallback,

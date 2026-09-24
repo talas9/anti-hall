@@ -27,6 +27,16 @@ node "$ANTI_HALL_ROOT/skills/update/scripts/update.js" --check
 node "$ANTI_HALL_ROOT/skills/update/scripts/update.js"
 ```
 
+This is already the STALE-VERSION-SAFE path — `$ANTI_HALL_ROOT` is derived
+above from the file path Codex itself just showed you for this SKILL.md, i.e.
+wherever THIS invocation's skill file physically lives, not a separate
+version-pinned cache mirror (Codex's clone-based distribution has no such
+mirror step). Never hardcode a different, potentially-stale root here (see
+the Claude-side SKILL.md's own note on the P0 field bug this parallels:
+`${CLAUDE_PLUGIN_ROOT}` there resolves to a cache dir that can lag the
+freshly-pulled marketplace clone). `update.js` itself also re-execs the
+freshly-pulled version's own copy internally as a second line of defense.
+
 For Codex, also re-run the Codex hook installer after a successful update:
 
 ```bash

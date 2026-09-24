@@ -2767,57 +2767,86 @@ function stageProgress(env, name, fn) {
   return result;
 }
 
+// mergeReexecStatus(baseStatus, reexecStatus, reexecNote) -> baseStatus (mutated).
+// Overlays the re-exec'd (freshly-pulled) version's own stage-result keys onto
+// this process's local status object — the child's code is the AUTHORITATIVE
+// stage set for `latest` (it may include a stage this process's own source
+// doesn't even know exists yet). `installed`/`latest`/`updated`/`action`/
+// `cacheSynced` are computed identically by both processes from the same
+// synced marketplace/cache, so they are left as THIS process's own values
+// (avoids any risk of a subtly different string/typing from the child
+// process leaking into the parent's contract); `reexecNote` (present only on
+// a fail-open fallback) is appended to `action` so the miss is visible.
+function mergeReexecStatus(baseStatus, reexecStatus, reexecNote) {
+  const KEPT_LOCAL = new Set(['installed', 'latest', 'updated', 'action', 'cacheSynced']);
+  if (reexecStatus && typeof reexecStatus === 'object') {
+    for (const k of Object.keys(reexecStatus)) {
+      if (KEPT_LOCAL.has(k)) continue;
+      baseStatus[k] = reexecStatus[k];
+    }
+  }
+  if (reexecNote) baseStatus.action = baseStatus.action + reexecNote;
+  return baseStatus;
+}
+
 function runUpdate(opts) {
   const { paths, exec, fsImpl } = opts;
   const e = exec || defaultExec;
   const env = opts.env || process.env;
   const installed = resolveInstalledVersion(paths);
 
-  // Git availability + cleanliness.
-  const st = gitState(paths.marketplaceDir, e);
-  if (!st.ok) {
-    return {
-      status: {
-        installed: installed || null, latest: installed || null,
-        updated: false, cacheSynced: false,
-        action: 'offline / no git — cannot update: ' + st.reason,
-      },
-      changelog: '',
-      stop: false,
-    };
-  }
-  if (!st.clean) {
-    return {
-      status: {
-        installed: installed || null, latest: installed || null,
-        updated: false, cacheSynced: false,
-        action: 'STOP: marketplace clone has local changes — refusing to pull. Resolve them in ' + paths.marketplaceDir,
-      },
-      changelog: '',
-      stop: true,
-    };
-  }
+  // skipPull (P0 re-exec fix, see runPostPullOnly below): the CALLER already
+  // pulled the marketplace clone — this invocation is the freshly-pulled
+  // version's OWN update.js, re-exec'd by an older version's process purely
+  // to run ITS post-pull stages. Skipping the git dance here is what makes
+  // `--post-pull-only` safe to call as a plain function of this same file.
+  if (!opts.skipPull) {
+    // Git availability + cleanliness.
+    const st = gitState(paths.marketplaceDir, e);
+    if (!st.ok) {
+      return {
+        status: {
+          installed: installed || null, latest: installed || null,
+          updated: false, cacheSynced: false,
+          action: 'offline / no git — cannot update: ' + st.reason,
+        },
+        changelog: '',
+        stop: false,
+      };
+    }
+    if (!st.clean) {
+      return {
+        status: {
+          installed: installed || null, latest: installed || null,
+          updated: false, cacheSynced: false,
+          action: 'STOP: marketplace clone has local changes — refusing to pull. Resolve them in ' + paths.marketplaceDir,
+        },
+        changelog: '',
+        stop: true,
+      };
+    }
 
-  // Fast-forward pull only. INVERTED failure posture (A2): only a pull failure
-  // POSITIVELY recognized as offline/network/no-git (the fail-open class) is a
-  // transient report (exit 0). Everything else — non-fast-forward, "refusing to
-  // merge unrelated histories", and any UNKNOWN git error — is treated as
-  // divergence-like and is a hard STOP (exit 1) with the raw git message, so a
-  // real divergence can never masquerade as a transient hiccup.
-  const pull = gitPullFfOnly(paths.marketplaceDir, e);
-  if (!pull.ok) {
-    const offline = OFFLINE_RE.test(pull.reason);
-    return {
-      status: {
-        installed: installed || null, latest: installed || null,
-        updated: false, cacheSynced: false,
-        action: offline
-          ? 'update failed (offline / network): ' + pull.reason
-          : 'STOP: git pull --ff-only failed (likely divergence) — resolve manually in ' + paths.marketplaceDir + ' (' + pull.reason + ')',
-      },
-      changelog: '',
-      stop: !offline,
-    };
+    // Fast-forward pull only. INVERTED failure posture (A2): only a pull failure
+    // POSITIVELY recognized as offline/network/no-git (the fail-open class) is a
+    // transient report (exit 0). Everything else — non-fast-forward, "refusing to
+    // merge unrelated histories", and any UNKNOWN git error — is treated as
+    // divergence-like and is a hard STOP (exit 1) with the raw git message, so a
+    // real divergence can never masquerade as a transient hiccup.
+    const pull = gitPullFfOnly(paths.marketplaceDir, e);
+    if (!pull.ok) {
+      const offline = OFFLINE_RE.test(pull.reason);
+      return {
+        status: {
+          installed: installed || null, latest: installed || null,
+          updated: false, cacheSynced: false,
+          action: offline
+            ? 'update failed (offline / network): ' + pull.reason
+            : 'STOP: git pull --ff-only failed (likely divergence) — resolve manually in ' + paths.marketplaceDir + ' (' + pull.reason + ')',
+        },
+        changelog: '',
+        stop: !offline,
+      };
+    }
   }
 
   // New version from the (now-updated) marketplace plugin.json.
@@ -3096,10 +3125,86 @@ function runUpdate(opts) {
 // ---------------------------------------------------------------------------
 // CLI entrypoint
 // ---------------------------------------------------------------------------
+// runPostPullReexec({paths, status, env, cwd, spawnReexec}) -> { status, note }
+// P0 field bug: whichever update.js the harness happened to load for THIS
+// invocation (a cache-version dir bound at session/skill start) can be OLDER
+// than `status.latest` — the version its own pull just fetched. Every
+// post-pull stage is HARDCODED in that file's own source; a stage first
+// added in a NEWER release (e.g. mark-app-archived) simply does not exist
+// yet, no matter how fresh the LIBRARY code the stages `require()` is.
+// Field-observed: 0.107.0's update.js pulled 0.107.1, synced the cache, then
+// ran 0.107.0's own stage list — the 0.107.1-only stage never ran until a
+// second update/doctor.
+//
+// Fix: whenever `status.installed` (pre-pull) !== `status.latest` (post-
+// pull) — i.e. an update actually happened — re-exec paths.pluginSrcDir's
+// update.js (the marketplace clone, always the newest copy right after a
+// pull) with --post-pull-only (stages only, no pull — see runUpdate's
+// skipPull branch), and merge ITS JSON status over ours so it — not this
+// stale process — owns the stage set. ANTIHALL_UPDATE_REEXEC guards against
+// a loop: the child always sees its OWN version as current once loaded from
+// its own tree, so the mismatch that triggers this can never recur inside
+// it. ANTIHALL_MARKETPLACE_DIR is pinned explicitly to `paths.marketplaceDir`
+// (never left to the child's own re-derivation) so the child resolves the
+// EXACT same paths this process did.
+//
+// CALLED ONLY FROM main() (the real CLI entrypoint), never from a direct
+// runUpdate() call — every existing runUpdate() unit test injects mocked
+// devswarm/exec/spawnIngestInstaller doubles that a spawned CHILD PROCESS
+// could never see, so keeping this out of runUpdate() itself is what keeps
+// every one of those tests exercising exactly the local code path they mock.
+//
+// Fail-open at every step: the new update.js not existing at all, a spawn
+// error, a non-zero exit, or unparseable stdout all keep the ORIGINAL
+// `status` unchanged and return a `note` describing why (main() appends it
+// to `status.action`); a successful re-exec returns `note: null`.
+function runPostPullReexec(opts) {
+  const o = opts || {};
+  const paths = o.paths;
+  const status = o.status;
+  const env = o.env || process.env;
+  if (!status || !isSemver(status.latest) || !isSemver(status.installed) || status.installed === status.latest) {
+    return { status, note: null };
+  }
+  if (env.ANTIHALL_UPDATE_REEXEC === '1') return { status, note: null };
+  try {
+    const newUpdateJs = path.join(paths.pluginSrcDir, 'skills', 'update', 'scripts', 'update.js');
+    if (!fs.existsSync(newUpdateJs)) return { status, note: null }; // nothing to re-exec into
+    const spawnReexec = o.spawnReexec || spawnSync;
+    const res = spawnReexec(process.execPath, [newUpdateJs, '--post-pull-only'], {
+      cwd: o.cwd || process.cwd(),
+      encoding: 'utf8',
+      timeout: GIT_EXEC_TIMEOUT_MS * 6, // the full stage chain, not just one git call
+      env: Object.assign({}, process.env, env, {
+        ANTIHALL_UPDATE_REEXEC: '1',
+        ANTIHALL_MARKETPLACE_DIR: paths.marketplaceDir,
+      }),
+    });
+    if (res.status === 0 && res.stdout) {
+      const parsed = JSON.parse(res.stdout.split('\n').find(Boolean) || 'null');
+      if (parsed && parsed.status && typeof parsed.status === 'object') {
+        return { status: mergeReexecStatus(Object.assign({}, status), parsed.status, ''), note: null };
+      }
+      return { status, note: ' (post-pull re-exec of ' + status.latest + '\'s update.js produced no usable status — kept local stage results for ' + status.installed + ')' };
+    }
+    return { status, note: ' (post-pull re-exec of ' + status.latest + '\'s update.js failed — kept local stage results for ' + status.installed + ')' };
+  } catch (e) {
+    return { status, note: ' (post-pull re-exec raised: ' + (e && e.message ? e.message : String(e)) + ' — kept local stage results)' };
+  }
+}
+
 function main() {
   const isCheck = process.argv.includes('--check');
+  // --post-pull-only (P0 re-exec fix): invoked by an OLDER update.js that
+  // already pulled + synced the cache and is re-exec'ing THIS (freshly-
+  // pulled) version's own copy purely to run its post-pull stages. No git
+  // pull here — see runUpdate's skipPull branch. Output is STRICT JSON only
+  // (one line, no human-readable block) so the parent process can parse
+  // res.stdout directly; ANTIHALL_UPDATE_REEXEC (set by the parent) is what
+  // stops this invocation from ever attempting a re-exec of its own.
+  const isPostPullOnly = process.argv.includes('--post-pull-only');
   const paths = resolvePaths(process.env, os.homedir());
-  if (paths.overrideIgnored) fs.writeSync(1, paths.overrideIgnored + '\n');
+  if (paths.overrideIgnored && !isPostPullOnly) fs.writeSync(1, paths.overrideIgnored + '\n');
 
   // fs.writeSync(1, ...) NOT process.stdout.write: on macOS node 18/20,
   // process.exit races the async stdout pipe flush and truncates large output
@@ -3111,7 +3216,17 @@ function main() {
     process.exit(0);
   }
 
-  const { status, changelog, stop } = runUpdate({ paths });
+  if (isPostPullOnly) {
+    const { status } = runUpdate({ paths, skipPull: true });
+    fs.writeSync(1, JSON.stringify({ status }) + '\n');
+    process.exit(0);
+  }
+
+  let { status, changelog, stop } = runUpdate({ paths });
+  if (!stop) {
+    const r = runPostPullReexec({ paths, status, env: process.env, cwd: process.cwd() });
+    status = r.note ? Object.assign({}, r.status, { action: r.status.action + r.note }) : r.status;
+  }
   fs.writeSync(1, JSON.stringify(status) + '\n');
   fs.writeSync(1, renderHuman(status, changelog) + '\n');
   // A hard STOP (dirty / diverged) is a precondition failure → non-zero so it is
@@ -3213,6 +3328,8 @@ module.exports = {
   versionFromMarketplace,
   resolveInstalledVersion,
   installedVersionLag,
+  mergeReexecStatus,
+  runPostPullReexec,
   extractChangelog,
   syncCache,
   gitState,

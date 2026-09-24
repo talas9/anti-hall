@@ -167,3 +167,34 @@ test('PERFORMANCE: no-op path (nothing pending) completes in well under 500ms', 
     assert.ok(elapsed < 500, `no-op path took ${elapsed}ms (includes node startup) — expected comfortably under 500ms`);
   } finally { h.cleanup(); }
 });
+
+// resolveDoctorJs (P0 follow-up): this hook's own __dirname is bound to
+// whichever cache-version dir the harness loaded for the CURRENT session —
+// which can lag a version already synced into the cache by a prior update.js
+// run (same staleness class as the update.js re-exec fix). Spawning that
+// stale doctor.js would run an OLD repair/migration set. It must resolve to
+// the NEWEST semver-named dir under ~/.claude/plugins/cache/anti-hall/anti-hall.
+test('spawns the NEWEST cache version\'s doctor.js, not this running hook\'s own sibling copy', () => {
+  const h = makeHome();
+  try {
+    const cacheRoot = path.join(h.home, '.claude', 'plugins', 'cache', 'anti-hall', 'anti-hall');
+    const markerPath = path.join(h.home, 'newest-doctor-ran.marker');
+    for (const v of ['9.0.0', '9.9.9', 'not-a-version']) {
+      fs.mkdirSync(path.join(cacheRoot, v, 'hooks'), { recursive: true });
+    }
+    // The NEWEST (9.9.9) fake doctor.js writes a distinctive marker; the OLDER
+    // (9.0.0) one writes a DIFFERENT marker — proves which one actually ran.
+    fs.writeFileSync(path.join(cacheRoot, '9.9.9', 'hooks', 'doctor.js'),
+      "require('fs').writeFileSync(" + JSON.stringify(markerPath) + ", 'newest'); process.exit(0);\n", 'utf8');
+    fs.writeFileSync(path.join(cacheRoot, '9.0.0', 'hooks', 'doctor.js'),
+      "require('fs').writeFileSync(" + JSON.stringify(markerPath) + ", 'older'); process.exit(0);\n", 'utf8');
+
+    const r = testHook(HOOK, sessionStartPayload(), { home: h.home });
+    assert.strictEqual(r.status, 0, `stderr: ${r.stderr}`);
+
+    const marker = waitFor(() => {
+      try { return fs.readFileSync(markerPath, 'utf8'); } catch (_) { return null; }
+    }, 3000);
+    assert.strictEqual(marker, 'newest', 'the NEWEST cache version\'s doctor.js must be the one spawned, not the older one or this hook\'s own sibling copy');
+  } finally { h.cleanup(); }
+});

@@ -3089,3 +3089,114 @@ test('runUpdate: ANTIHALL_UPDATE_QUIET=1 suppresses every [update] stage STDERR 
     assert.deepStrictEqual(lines, [], 'ANTIHALL_UPDATE_QUIET=1 must suppress every stage line:\n' + lines.join(''));
   } finally { t.cleanup(); }
 });
+
+// ===========================================================================
+// runPostPullReexec (P0 field bug): an OLDER update.js pulls a NEWER version,
+// syncs the cache, then would otherwise run ITS OWN (stale) hardcoded stage
+// list forever — a stage first added in the newer release never runs until a
+// second update/doctor call. Fix: re-exec the freshly-pulled marketplace
+// clone's OWN update.js with --post-pull-only and merge its JSON status in.
+// ===========================================================================
+
+// writeFakeNewUpdateJs(pluginSrcDir, markerPath) — a minimal stand-in for "a
+// newer cache version['s update.js" that only needs to prove the MECHANISM
+// (spawn + merge + loop guard), not re-implement the full real stage chain
+// (already covered by every other test in this file). Every --post-pull-only
+// invocation appends one line to markerPath, so "ran exactly once" is
+// directly observable.
+function writeFakeNewUpdateJs(marketplaceDir, markerPath) {
+  const dir = path.join(marketplaceDir, 'plugins', 'anti-hall', 'skills', 'update', 'scripts');
+  fs.mkdirSync(dir, { recursive: true });
+  const src = `
+'use strict';
+const fs = require('fs');
+if (process.argv.includes('--post-pull-only')) {
+  fs.appendFileSync(${JSON.stringify(markerPath)}, 'ran\\n');
+  process.stdout.write(JSON.stringify({ status: { markAppArchived: { attempted: true, archived: 1 } } }) + '\\n');
+  process.exit(0);
+}
+process.exit(1); // this fixture never runs as a normal (non-post-pull-only) update.js
+`;
+  fs.writeFileSync(path.join(dir, 'update.js'), src, 'utf8');
+}
+
+test('runPostPullReexec: re-execs the newly-pulled version\'s update.js exactly once and merges its new stage into status', () => {
+  const t = makeTree();
+  try {
+    const markerPath = path.join(t.root, 'ran-marker.txt');
+    writeFakeNewUpdateJs(t.marketplaceDir, markerPath);
+    const paths = pathsFor(t);
+    const localStatus = { installed: '0.107.0', latest: '0.107.1', updated: true, cacheSynced: true, action: 'run /reload-plugins' };
+
+    const { status, note } = U.runPostPullReexec({ paths, status: localStatus, env: {}, cwd: t.root });
+
+    assert.strictEqual(note, null, 'a successful re-exec must not report a fallback note');
+    assert.ok(status.markAppArchived && status.markAppArchived.attempted === true,
+      'the NEW version\'s stage result must be merged into status: ' + JSON.stringify(status));
+    // Local fields (installed/latest/updated/action) are kept, never overwritten by the child.
+    assert.strictEqual(status.installed, '0.107.0');
+    assert.strictEqual(status.latest, '0.107.1');
+
+    const ranLines = fs.readFileSync(markerPath, 'utf8').trim().split('\n').filter(Boolean);
+    assert.strictEqual(ranLines.length, 1, 'the new stage must have run EXACTLY once: ' + JSON.stringify(ranLines));
+  } finally { t.cleanup(); }
+});
+
+test('runPostPullReexec: ANTIHALL_UPDATE_REEXEC=1 guards against a loop — never spawns again', () => {
+  const t = makeTree();
+  try {
+    const markerPath = path.join(t.root, 'ran-marker-loop.txt');
+    writeFakeNewUpdateJs(t.marketplaceDir, markerPath);
+    const paths = pathsFor(t);
+    const localStatus = { installed: '0.107.0', latest: '0.107.1', updated: true, cacheSynced: true, action: 'run /reload-plugins' };
+
+    const { status, note } = U.runPostPullReexec({ paths, status: localStatus, env: { ANTIHALL_UPDATE_REEXEC: '1' }, cwd: t.root });
+
+    assert.strictEqual(note, null);
+    assert.strictEqual(status, localStatus, 'inside a re-exec\'d child, status must pass through untouched — no further spawn');
+    assert.strictEqual(fs.existsSync(markerPath), false, 'the loop guard must prevent any spawn at all');
+  } finally { t.cleanup(); }
+});
+
+test('runPostPullReexec: same version (installed === latest) never spawns', () => {
+  const t = makeTree();
+  try {
+    const markerPath = path.join(t.root, 'ran-marker-same.txt');
+    writeFakeNewUpdateJs(t.marketplaceDir, markerPath);
+    const paths = pathsFor(t);
+    const localStatus = { installed: '0.107.1', latest: '0.107.1', updated: false, cacheSynced: false, action: 'already up to date' };
+
+    const { status, note } = U.runPostPullReexec({ paths, status: localStatus, env: {}, cwd: t.root });
+
+    assert.strictEqual(note, null);
+    assert.strictEqual(status, localStatus);
+    assert.strictEqual(fs.existsSync(markerPath), false);
+  } finally { t.cleanup(); }
+});
+
+test('runPostPullReexec: fail-open when the new version\'s update.js does not exist (e.g. a minimal fixture tree) — no note, local status kept', () => {
+  const t = makeTree();
+  try {
+    const paths = pathsFor(t); // no skills/update/scripts/update.js written under t.marketplaceDir
+    const localStatus = { installed: '0.107.0', latest: '0.107.1', updated: true, cacheSynced: true, action: 'run /reload-plugins' };
+    const { status, note } = U.runPostPullReexec({ paths, status: localStatus, env: {}, cwd: t.root });
+    assert.strictEqual(note, null);
+    assert.strictEqual(status, localStatus);
+  } finally { t.cleanup(); }
+});
+
+test('runPostPullReexec: fail-open when the re-exec spawn genuinely fails — keeps local status, reports why', () => {
+  const t = makeTree();
+  try {
+    const markerPath = path.join(t.root, 'ran-marker-fail.txt');
+    writeFakeNewUpdateJs(t.marketplaceDir, markerPath);
+    const paths = pathsFor(t);
+    const localStatus = { installed: '0.107.0', latest: '0.107.1', updated: true, cacheSynced: true, action: 'run /reload-plugins' };
+    const spawnReexec = () => ({ status: 1, stdout: '', stderr: 'boom' });
+
+    const { status, note } = U.runPostPullReexec({ paths, status: localStatus, env: {}, cwd: t.root, spawnReexec });
+
+    assert.strictEqual(status, localStatus);
+    assert.match(note, /post-pull re-exec of 0\.107\.1's update\.js failed/);
+  } finally { t.cleanup(); }
+});
