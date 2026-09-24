@@ -62,6 +62,11 @@ function group(matcher, files, timeout) {
 //   dependency — closing a parity gap vs codex/hooks/hooks.json (the shipped
 //   Codex template already registers all five; this manual installer had
 //   drifted behind it).
+//   progress-prune.js (SessionStart) is likewise platform-neutral — it only
+//   reads payload.cwd and archives/prunes .anti-hall/progress + .anti-hall/
+//   history files, no Claude-only dependency — and is registered verbatim
+//   here (tests/hygiene/manifest-drift.test.js caught its absence from both
+//   this file AND codex/hooks/hooks.json; fixed in both together).
 //   The liveness SUPERVISOR (companion/devswarm-supervisor.js) remains
 //   Claude-only — unrelated to this hook set, it identity-binds to `claude
 //   --resume` processes specifically (codex/README.md).
@@ -75,6 +80,7 @@ const ANTI_HALL_HOOKS = {
     group(null, ['devswarm-version.js'], 10),
     group(null, ['claude-cli-version.js'], 10),
     group(null, ['repo-self-drift.js'], 10),
+    group(null, ['progress-prune.js'], 10),
     group(null, ['handover-resume.js'], 10),
     group(null, ['emit-dedupe-reset.js'], 10),
     group(null, ['defect-nudge.js'], 10),
