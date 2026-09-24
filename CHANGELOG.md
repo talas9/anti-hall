@@ -8,6 +8,13 @@ the update.
 
 ## 0.108.0 (2026-09-24)
 
+> **UPGRADE NOTE — coming from 0.107.x or earlier:** run
+> `claude plugin update anti-hall@anti-hall` once, then restart Claude Code. The
+> 0.107.x `update.js` has no post-pull re-exec, so it cannot run 0.108.0's harness
+> registration; without this step Claude Code keeps loading the old build. From 0.108.0
+> on, `update` does it for you. The Codex port loads from the marketplace clone and needs
+> no extra step.
+
 ### New features
 
 - **Auto-handover (on by default).** When the main agent's context first crosses
@@ -164,9 +171,10 @@ the update.
   `claude plugin update anti-hall@anti-hall` whenever that record is behind (reported as
   `harnessRegistered`; never auto-accepts a confirmation — it prints the exact command
   instead), and then says **RESTART** Claude Code (a registry change is not picked up by
-  `/reload-plugins`). The post-pull re-exec means the newly pulled `update.js` performs the
-  registration even when the running one predates it; a registration done by the parent is
-  never hidden by the child's no-op. `doctor` warns when `installed_plugins.json` lags the
+  `/reload-plugins`). From 0.108.0 on, the post-pull re-exec means the newly pulled `update.js`
+  performs the registration even when a later release changes it; a registration done by
+  the parent is never hidden by the child's no-op. This does NOT cover the hop from 0.107.x
+  or earlier (that `update.js` has no re-exec) — see the upgrade note above. `doctor` warns when `installed_plugins.json` lags the
   newest cache/marketplace version.
 - **Identity: a child's messages were labelled as a Primary.** Every sender's `from` was
   `primary-<worktree hash>`, children included, so a resumed Primary could see another

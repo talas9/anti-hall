@@ -5,6 +5,12 @@ description: Update anti-hall to the latest released version and show the change
 
 # Update
 
+> **UPGRADE NOTE — user on 0.107.x or earlier:** tell them to run
+> `claude plugin update anti-hall@anti-hall` once, then restart Claude Code. The 0.107.x
+> `update.js` has no post-pull re-exec, so it cannot perform 0.108.0's harness
+> registration and Claude Code keeps loading the old build until they do. From 0.108.0 on
+> the helper registers the new build itself.
+
 Brings anti-hall up to the latest released version **in place** and reports exactly
 what changed. The hard part of a plugin self-update is honesty about what actually
 takes effect in-session — this skill does not over-promise.

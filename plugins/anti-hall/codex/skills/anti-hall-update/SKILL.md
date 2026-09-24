@@ -5,6 +5,11 @@ description: Check or update anti-hall from the local marketplace clone. Use whe
 
 # anti-hall update for Codex
 
+> **UPGRADE NOTE (Claude Code side only):** a user who also runs the Claude Code plugin on
+> 0.107.x or earlier must run `claude plugin update anti-hall@anti-hall` once, then restart
+> Claude Code — the 0.107.x `update.js` cannot register 0.108.0 with the Claude harness.
+> The Codex port loads from the marketplace clone and needs no extra step.
+
 ## Resolve the plugin root
 
 Codex does not expand `${PLUGIN_ROOT}` inside a skill's own instructions — that

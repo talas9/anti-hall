@@ -116,7 +116,11 @@ description). Start here:
   (`~/.anti-hall/skip.json`, per-guard, TTL'd) — `git-guard` must be named explicitly.
 - **Statusline not showing?** Restart Claude Code once after installing — `statusLine`
   is only read at startup.
-- **Update didn't take effect?** Run `/reload-plugins` after `/anti-hall:update`.
+- **Update didn't take effect?** Restart Claude Code after `/anti-hall:update` when it says
+  RESTART (a registry change); otherwise `/reload-plugins` is enough.
+- **Upgrading from 0.107.x or earlier?** Run `claude plugin update anti-hall@anti-hall`
+  once, then restart Claude Code — the old `update` cannot register 0.108.0 with the
+  harness. Later updates do this themselves.
 - Anything else: [docs/KB.md](docs/KB.md) is the doc index; file a defect with
   `/anti-hall:defects`.
 
