@@ -59,9 +59,12 @@ const BLOAT_SENTENCE =
   'As context grows the model gets less efficient and more prone to hallucination, ' +
   'so compacting/clearing keeps answers accurate, not just under the limit.';
 
-function buildFireDirective(pct) {
+function buildFireDirective(pct, estimated) {
+  const label = estimated
+    ? ' (ESTIMATED — assuming a standard 200k context window; if this is a 1M-context session, set ANTIHALL_CONTEXT_WINDOW_TOKENS or install the anti-hall statusline for an exact reading)'
+    : '';
   return (
-    'CONTEXT AT ~' + Math.round(pct) + '% — AUTO-HANDOVER REQUIRED. Without asking the user first: ' +
+    'CONTEXT AT ~' + Math.round(pct) + '%' + label + ' — AUTO-HANDOVER REQUIRED. Without asking the user first: ' +
     '(1) immediately WRITE an anti-hall session handover YOURSELF, following the /anti-hall:handover ' +
     'skill contract exactly (self-write mandate — never delegate this to a subagent; it never lived ' +
     'this session and would lose decision/trial fidelity); ' +
@@ -101,13 +104,13 @@ function main() {
           if (fired) writeLatch(home, tag, { fired: false });
         } else {
           const transcriptPath = typeof payload.transcript_path === 'string' ? payload.transcript_path : null;
-          const result = getContextPct(transcriptPath, env);
+          const result = getContextPct(transcriptPath, env, { home, sessionId: payload.session_id });
           if (result && Number.isFinite(result.pct)) {
             const now = Date.now();
             if (result.pct < settings.pct) {
               if (fired) writeLatch(home, tag, { fired: false });
             } else if (!fired) {
-              text = buildFireDirective(result.pct);
+              text = buildFireDirective(result.pct, result.estimated === true);
               writeLatch(home, tag, {
                 fired: true, firedAt: now, firedPct: result.pct,
                 lastNagPct: result.pct, lastNagAt: now,

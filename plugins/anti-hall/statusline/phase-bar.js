@@ -191,6 +191,39 @@ function contextLine(input) {
   return `${bar} ${col}${pct}%${C.reset} ${C.dim}context${C.reset}${tokens}`;
 }
 
+// persistContextPct(input) — bridges the harness's OWN context_window figure
+// (used_percentage/used_tokens/max_tokens on THIS statusline render) to hooks
+// via hooks/lib/context-pct-store.js, so hooks/auto-handover.js can prefer
+// the real figure over its transcript-usage estimate (see that store's header
+// for why: it's the only place a 1M-context session's real window size is
+// visible at all). Runs unconditionally, independent of which line-2 case
+// ends up rendering (a semantic phase bar or live-activity line taking
+// priority over the context gauge must not stop this from being recorded).
+// Throttled + atomic inside the store; failures are swallowed here too —
+// this must never affect what the statusline prints.
+function persistContextPct(input) {
+  try {
+    const data = JSON.parse(input);
+    const cw = data && data.context_window;
+    if (!cw || typeof cw !== 'object') return;
+    let pct = cw.used_percentage;
+    if (typeof pct !== 'number') {
+      if (typeof cw.remaining_percentage === 'number') pct = 100 - cw.remaining_percentage;
+      else return;
+    }
+    pct = Math.max(0, Math.min(100, pct));
+    const usedTokens = (typeof cw.used_tokens === 'number') ? cw.used_tokens
+      : (typeof cw.tokens === 'number') ? cw.tokens : null;
+    const maxTokens = (typeof cw.max_tokens === 'number') ? cw.max_tokens
+      : (typeof cw.total_tokens === 'number') ? cw.total_tokens
+      : (typeof cw.context_size === 'number') ? cw.context_size : null;
+    const store = require('../hooks/lib/context-pct-store.js');
+    const tag = store.tagFromSessionId(data && data.session_id);
+    if (!tag) return; // no session_id on this statusline envelope -> nothing to key the bridge on
+    store.write(os.homedir(), tag, { pct, usedTokens, maxTokens });
+  } catch (e) { /* fail-open: never affect the statusline render */ }
+}
+
 // --- Line 2 case A2: auto-tracked live swarm activity ------------------------
 // When no semantic phase-state was set by the coordinator but subagents are
 // actively spawning (recorded by the phase-tracker hook in a HOMEDIR log), show
@@ -263,6 +296,7 @@ function activityLine(input) {
 
 // Priority: phase bar (coordinator) > live activity (auto) > context gauge.
 function runWithInput(input) {
+  persistContextPct(input); // bridge the harness's real context_window figure to hooks, regardless of what renders below
   try {
     let line = phaseBarLine();                 // 1. semantic phase set via phase.js
     if (line === null) line = activityLine(input);  // 2. auto-tracked live swarm activity (per-session)
@@ -279,6 +313,6 @@ function runPhaseBar() {
   }
 }
 
-module.exports = { runWithInput, phaseBarLine, contextLine, activityLine, safeLabel };
+module.exports = { runWithInput, phaseBarLine, contextLine, activityLine, safeLabel, persistContextPct };
 
 if (require.main === module) runPhaseBar();

@@ -154,7 +154,7 @@ function main() {
     if (latch.fired !== true) { emit(); return; } // nothing fired yet this arm
 
     const transcriptPath = typeof payload.transcript_path === 'string' ? payload.transcript_path : null;
-    const result = getContextPct(transcriptPath, env);
+    const result = getContextPct(transcriptPath, env, { home, sessionId: payload.session_id });
     if (!result || !Number.isFinite(result.pct)) { emit(); return; }
 
     const now = Date.now();

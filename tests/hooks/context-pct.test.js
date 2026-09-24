@@ -7,6 +7,7 @@ const assert = require('node:assert');
 const path = require('node:path');
 const { makeHome } = require('../helpers/fixtures.js');
 const { getContextPct } = require('../../plugins/anti-hall/hooks/lib/context-pct.js');
+const store = require('../../plugins/anti-hall/hooks/lib/context-pct-store.js');
 
 function assistantUsageLine(usage, opts) {
   return JSON.stringify({
@@ -104,6 +105,97 @@ test('getContextPct: pct is clamped to [0, 100]', () => {
     const r = getContextPct(p, {});
     assert.ok(r);
     assert.strictEqual(r.pct, 100);
+  } finally {
+    h.cleanup();
+  }
+});
+
+// --- source preference: statusline (real figure) vs transcript (estimate) --
+
+test('getContextPct: prefers a FRESH statusline reading over the transcript, correctly reflecting a 1M window', () => {
+  const h = makeHome();
+  try {
+    // A 1M-context session: the transcript-only estimate (default 200k) would
+    // wildly overstate this — 500000/200000 clamped to 100%. The real
+    // statusline figure (17% of a 1M window) must win.
+    store.write(h.home, 'sess-1m', { pct: 17, usedTokens: 170000, maxTokens: 1000000 });
+    const p = h.writeTranscript([]);
+    require('fs').writeFileSync(p, assistantUsageLine({
+      input_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 500000,
+    }) + '\n', 'utf8');
+
+    const r = getContextPct(p, {}, { home: h.home, sessionId: 'sess-1m' });
+    assert.ok(r);
+    assert.strictEqual(r.source, 'statusline');
+    assert.strictEqual(r.estimated, false);
+    assert.strictEqual(r.pct, 17);
+    assert.strictEqual(r.max, 1000000);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('getContextPct: a STALE statusline reading (>10 min) is ignored, falls back to the transcript estimate', () => {
+  const h = makeHome();
+  try {
+    store.write(h.home, 'sess-1', { pct: 99, usedTokens: 1, maxTokens: 2 }, Date.now() - 11 * 60 * 1000);
+    const p = h.writeTranscript([]);
+    require('fs').writeFileSync(p, assistantUsageLine({
+      input_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 100000,
+    }) + '\n', 'utf8');
+
+    const r = getContextPct(p, {}, { home: h.home, sessionId: 'sess-1' });
+    assert.ok(r);
+    assert.strictEqual(r.source, 'estimate');
+    assert.strictEqual(r.estimated, true);
+    assert.strictEqual(r.max, 200000); // default, not the stale statusline's max
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('getContextPct: no sessionId -> skips the statusline lookup entirely, still returns the transcript estimate', () => {
+  const h = makeHome();
+  try {
+    store.write(h.home, 'sess-1', { pct: 99, usedTokens: 1, maxTokens: 2 });
+    const p = h.writeTranscript([]);
+    require('fs').writeFileSync(p, assistantUsageLine({
+      input_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 20000,
+    }) + '\n', 'utf8');
+
+    const r = getContextPct(p, {}, { home: h.home }); // sessionId omitted
+    assert.ok(r);
+    assert.strictEqual(r.source, 'estimate');
+    assert.strictEqual(r.pct, 10);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('getContextPct: transcript estimate honors ANTIHALL_CONTEXT_WINDOW_TOKENS when no statusline reading exists', () => {
+  const h = makeHome();
+  try {
+    const p = h.writeTranscript([]);
+    require('fs').writeFileSync(p, assistantUsageLine({
+      input_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 170000,
+    }) + '\n', 'utf8');
+
+    const r = getContextPct(p, { ANTIHALL_CONTEXT_WINDOW_TOKENS: '1000000' }, { home: h.home, sessionId: 'sess-1m-manual' });
+    assert.ok(r);
+    assert.strictEqual(r.source, 'estimate');
+    assert.strictEqual(r.estimated, true);
+    assert.strictEqual(r.max, 1000000);
+    assert.strictEqual(r.pct, 17);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('getContextPct: neither source available -> null', () => {
+  const h = makeHome();
+  try {
+    const r = getContextPct(require('node:path').join(h.home, 'nope.jsonl'), {}, { home: h.home, sessionId: 'sess-none' });
+    assert.strictEqual(r, null);
   } finally {
     h.cleanup();
   }

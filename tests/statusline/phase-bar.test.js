@@ -237,3 +237,53 @@ test('phase-bar fail-open: malformed phase-state JSON yields no phase line', () 
     assert.strictEqual(out, '', 'unparseable state falls through, no crash');
   } finally { h.cleanup(); }
 });
+
+// --- context-pct-store bridge (hooks/lib/context-pct-store.js) -------------
+// The harness's real context_window figure must reach the hook-side store on
+// every render, REGARDLESS of which line-2 case ends up printing (a semantic
+// phase bar takes priority over the context gauge but must not suppress the
+// bridge write underneath it).
+
+const store = require('../../plugins/anti-hall/hooks/lib/context-pct-store.js');
+
+test('phase-bar persists context_window to the hook-side store, keyed by session_id', () => {
+  const h = makeStatusHome();
+  try {
+    render(h, JSON.stringify({ session_id: 'sess-abc', context_window: { used_percentage: 17, max_tokens: 1000000, used_tokens: 170000 } }));
+    const r = store.read(h.home, 'sess-abc', 10 * 60 * 1000);
+    assert.ok(r, 'expected a persisted reading');
+    assert.strictEqual(r.pct, 17);
+    assert.strictEqual(r.maxTokens, 1000000);
+    assert.strictEqual(r.usedTokens, 170000);
+  } finally { h.cleanup(); }
+});
+
+test('phase-bar still persists context_window even when a phase-state bar takes priority for line 2', () => {
+  const h = makeStatusHome();
+  try {
+    h.writePhaseState({ code: 'P2', desc: 'build api', done: 3, total: 5, started: Date.now() });
+    const out = render(h, JSON.stringify({ session_id: 'sess-xyz', context_window: { used_percentage: 42, max_tokens: 200000 } }));
+    assert.match(out, /P2/, 'the phase bar still renders, not the context gauge');
+    const r = store.read(h.home, 'sess-xyz', 10 * 60 * 1000);
+    assert.ok(r, 'the bridge write still happened underneath the phase bar');
+    assert.strictEqual(r.pct, 42);
+  } finally { h.cleanup(); }
+});
+
+test('phase-bar bridge: no session_id -> no write, never throws', () => {
+  const h = makeStatusHome();
+  try {
+    const r = runSL('phase-bar.js', { home: h.home, stdin: JSON.stringify({ context_window: { used_percentage: 50 } }) });
+    assert.strictEqual(r.status, 0);
+    assert.strictEqual(store.read(h.home, 'unknown', 10 * 60 * 1000), null);
+  } finally { h.cleanup(); }
+});
+
+test('phase-bar bridge: no context_window on stdin -> no write, no crash', () => {
+  const h = makeStatusHome();
+  try {
+    const r = runSL('phase-bar.js', { home: h.home, stdin: JSON.stringify({ session_id: 'sess-none' }) });
+    assert.strictEqual(r.status, 0);
+    assert.strictEqual(store.read(h.home, 'sess-none', 10 * 60 * 1000), null);
+  } finally { h.cleanup(); }
+});

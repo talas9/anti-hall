@@ -1,41 +1,46 @@
-// anti-hall :: context-pct — estimate the MAIN THREAD's context-window usage
-// from the transcript, with no dependency on the (optional, install-time)
-// statusline being configured.
+// anti-hall :: context-pct — the MAIN THREAD's context-window usage, from the
+// best available source.
 //
-// WHY NOT THE STATUSLINE: Claude Code's statusLine renderer DOES receive an
-// authoritative `context_window.used_percentage` (see
-// statusline/phase-bar.js's contextLine()), but (a) the statusline is an
-// opt-in install (plugins/anti-hall/skills/install-statusline), so a session
-// without it has no signal at all, and (b) bridging that value into a hook
-// would mean writing a state file on every statusline render (a latency-
-// sensitive path, statusline/statusline.js's own header documents a <3s
-// watchdog) from up to four separate renderer files just to read it back
-// here. Computing directly from the transcript's own recorded token usage is
-// self-contained, needs no cross-file wiring, and works whether or not a
-// statusline is installed.
+// TWO SOURCES, in preference order:
 //
-// METHOD: the last MAIN-THREAD (isSidechain !== true) assistant transcript
-// entry carries an Anthropic `usage` block; `input_tokens +
-// cache_creation_input_tokens + cache_read_input_tokens` is the same
-// "tokens sent to the model on the last turn" figure the harness itself uses
-// to derive context-window pressure. Divided by an assumed context-window
-// size (default 200000 — the standard, non-1M Claude context; override via
-// ANTIHALL_CONTEXT_WINDOW_TOKENS for a 1M-context session) this gives an
-// approximate but directionally-correct percentage. This is an ESTIMATE, not
-// the harness's own figure — it can read a few points off in either
-// direction depending on system-prompt/tool-schema overhead the harness
-// counts that a plain token sum does not.
+//   1. STATUSLINE (real figure). The statusLine renderer receives an
+//      authoritative `context_window.{used_percentage, max_tokens}` from
+//      Claude Code on every render (statusline/phase-bar.js's contextLine()),
+//      correct for a 1M-context session as much as the standard 200k one —
+//      this is the ONLY place that size is ever actually known, since it is
+//      never echoed into a transcript entry or a hook payload (verified: no
+//      transcript entry across a real multi-session sample carries a "1m"/
+//      "context-1m" marker or any window-size field — see git history for
+//      the investigation this superseded). statusline/phase-bar.js persists
+//      it to hooks/lib/context-pct-store.js on every render (throttled); this
+//      file prefers that reading whenever it's fresh (FRESH_MS, 10 minutes).
 //
-// FAIL-OPEN: any missing/unreadable/malformed transcript, or an entry
-// lacking a usable usage block, returns null. Never throws.
+//   2. TRANSCRIPT ESTIMATE (fallback, when source 1 is absent/stale — no
+//      statusline installed, or none rendered recently). The last MAIN-THREAD
+//      (isSidechain !== true) assistant transcript entry carries an Anthropic
+//      `usage` block; `input_tokens + cache_creation_input_tokens +
+//      cache_read_input_tokens` divided by an assumed window size gives an
+//      approximate percentage. The window size itself is NOT guessed from the
+//      model id (see the investigation note above) — it is
+//      ANTIHALL_CONTEXT_WINDOW_TOKENS if set, else the standard 200000. This
+//      path is a genuine ESTIMATE and callers should label it as such (see
+//      the `estimated` flag) — on a 1M-context session with no statusline
+//      installed, it will overstate the real percentage.
+//
+// FAIL-OPEN: any missing/unreadable/malformed transcript, or an entry lacking
+// a usable usage block, with no fresh statusline reading either, returns
+// null. Never throws.
 //
 // Pure Node built-ins only.
 
 'use strict';
 
 const fs = require('fs');
+const os = require('os');
+const store = require('./context-pct-store.js');
 
 const DEFAULT_MAX_TOKENS = 200000;
+const FRESH_MS = 10 * 60 * 1000;
 const TAIL_BYTES = 256 * 1024;
 const TAIL_BYTES_WIDE = 4 * 1024 * 1024;
 
@@ -90,22 +95,40 @@ function findLastAssistantUsage(transcriptPath) {
   return null;
 }
 
-// getContextPct(transcriptPath, env) -> { pct, used, max } | null. Fail-open:
-// null on anything unusable. `env` is injectable for tests (default
-// process.env).
-function getContextPct(transcriptPath, env) {
+// getContextPct(transcriptPath, env, opts) -> { pct, used, max, source, estimated } | null.
+//   opts.home      : home dir for the statusline-bridge lookup (tests; default os.homedir())
+//   opts.sessionId : the CURRENT hook payload's session_id — MUST be the raw
+//                    session_id (not a fallback hash): the statusline bridge is
+//                    keyed by session_id alone so the writer (statusline) and
+//                    reader (this file) always agree on the same tag.
+//   source: 'statusline' (real figure, fresh) | 'estimate' (transcript-derived)
+//   estimated: true only for the 'estimate' source — callers should label
+//              messages built from it accordingly.
+// Fail-open: null on anything unusable. `env` is injectable for tests.
+function getContextPct(transcriptPath, env, opts) {
   try {
     const e = env || process.env;
+    const o = opts || {};
+    const home = o.home || os.homedir();
+
+    const tag = store.tagFromSessionId(o.sessionId);
+    if (tag) {
+      const persisted = store.read(home, tag, FRESH_MS);
+      if (persisted) {
+        return { pct: persisted.pct, used: persisted.usedTokens, max: persisted.maxTokens, source: 'statusline', estimated: false };
+      }
+    }
+
     const usage = findLastAssistantUsage(transcriptPath);
     if (!usage) return null;
     const used = usage.input + usage.cacheCreate + usage.cacheRead;
     let max = parseInt(e.ANTIHALL_CONTEXT_WINDOW_TOKENS, 10);
     if (!Number.isFinite(max) || max <= 0) max = DEFAULT_MAX_TOKENS;
     const pct = Math.max(0, Math.min(100, (used / max) * 100));
-    return { pct, used, max };
+    return { pct, used, max, source: 'estimate', estimated: true };
   } catch (_) {
     return null;
   }
 }
 
-module.exports = { getContextPct, findLastAssistantUsage, DEFAULT_MAX_TOKENS };
+module.exports = { getContextPct, findLastAssistantUsage, DEFAULT_MAX_TOKENS, FRESH_MS };

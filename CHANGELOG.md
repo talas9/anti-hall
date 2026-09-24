@@ -340,9 +340,15 @@ the update.
   and a `Stop`-time natural-pause nag (`hooks/auto-handover-pause-nag.js`) at most once per
   `nagQuietMin` minutes (default 15) when there's no open TodoWrite work and no subagent
   spawned in the last 2 minutes. Every message includes one line noting that context bloat
-  itself increases hallucination risk, not just the hard limit. Context % is ESTIMATED from
-  the transcript's own recorded token usage (`hooks/lib/context-pct.js`) rather than the
-  (optional, install-time) statusline, so it works with no setup. Settings are read/written
+  itself increases hallucination risk, not just the hard limit. Context % prefers the
+  harness's OWN `context_window` figure — the statusline (`statusline/phase-bar.js`)
+  persists it every render, throttled, to `hooks/lib/context-pct-store.js`, and
+  `hooks/lib/context-pct.js` reads it back when fresh (≤10 min), keyed by `session_id` —
+  the only correct way to size a 1M-context session (no reliable "[1m]"/`context-1m`
+  marker was found in transcript entries or hook payloads to derive it any other way).
+  Falls back to a transcript-usage estimate (`ANTIHALL_CONTEXT_WINDOW_TOKENS` override,
+  else 200000) when no statusline is installed or none rendered recently, and labels the
+  fire directive as an estimate in that case. Settings are read/written
   through a new shared, sectioned store (`hooks/lib/settings.js`,
   `~/.anti-hall/settings.json`) via `scripts/auto-handover-config.js` and the
   `auto-handover-config` skill ("turn off auto-handover", "set auto-handover to 80%").
