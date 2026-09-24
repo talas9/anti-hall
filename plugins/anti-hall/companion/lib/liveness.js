@@ -216,6 +216,8 @@ function isFreshBeat(ts, now, freshMs) {
 // 1000000. Number() parses (or rejects) the WHOLE trimmed string.
 function dormantThresholdMs(env) {
   const src = env || process.env;
+  try { return require('../../hooks/lib/settings.js').getWithEnv('devswarm', 'dormantMs', DEFAULT_DORMANT_MS, src); }
+  catch (_) { /* fall through */ }
   const raw = src && src.ANTIHALL_DEVSWARM_DORMANT_MS;
   const n = Number(String(raw == null ? '' : raw).trim());
   return (Number.isFinite(n) && n > 0) ? n : DEFAULT_DORMANT_MS;

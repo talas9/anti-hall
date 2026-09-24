@@ -246,8 +246,17 @@ function main() {
     // Parse grace; honor an explicit 0 (don't let `|| 3` swallow it). Finite & >= 0 wins.
     const graceParsed = Number(process.env.MCP_REAP_GRACE);
     const grace = Number.isFinite(graceParsed) && graceParsed >= 0 ? graceParsed : 3;
-    const extraRe = buildExtraRe(process.env.ANTIHALL_REAPER_MATCH);
-    const excludeRe = buildExtraRe(process.env.ANTIHALL_REAPER_EXCLUDE);
+    let reaperMatch, reaperExclude;
+    try {
+      const settingsLib = require('../hooks/lib/settings.js');
+      reaperMatch = settingsLib.get('guards', 'reaperMatch');
+      reaperExclude = settingsLib.get('guards', 'reaperExclude');
+    } catch (_) {
+      reaperMatch = process.env.ANTIHALL_REAPER_MATCH;
+      reaperExclude = process.env.ANTIHALL_REAPER_EXCLUDE;
+    }
+    const extraRe = buildExtraRe(reaperMatch);
+    const excludeRe = buildExtraRe(reaperExclude);
 
     const procs = enumerate();
     const orphans = findOrphans(procs, extraRe, excludeRe);

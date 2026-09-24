@@ -125,20 +125,45 @@ const SECTIONS = [
       { key: 'budget.usdPerWeek', type: 'number', exclusiveMin: 0, default: null, optional: true, pluginOption: 'jev_budget_usd_per_week', description: 'optional: weekly USD spend threshold, used only when budget.mode=watch. [source: jev-assist budget (0.108.0)]' },
     ],
   },
-  // REMOVED (v0.108.0 hardening pass): a `devswarm` section — hivecontrol,
-  // supervisor mode, required gates, and ~25 mesh/supervisor tuning knobs
-  // (cooldownSec, idleSec, nudge*, retention days, wake cadence, etc.) — was
-  // drafted here with every default hand-verified against its source
-  // constant, then removed before ship. Every one of those ANTIHALL_DEVSWARM_*
-  // consumers takes an explicit `env` PARAMETER (for testability) rather than
-  // reading `process.env` directly, so wiring settings.get() into them safely
-  // requires threading a `home` parameter through each resolver first — their
-  // default `os.homedir()` fallback would otherwise risk a unit test that
-  // passes a synthetic env object silently reading the REAL developer
-  // machine's ~/.anti-hall/settings.json. Showing them on the settings page
-  // as controllable without that wiring would be a fake control. The real
-  // ANTIHALL_DEVSWARM_* env vars are unaffected and keep working exactly as
-  // before; re-add this section once each resolver accepts an injectable home.
+  {
+    key: 'devswarm',
+    label: 'DevSwarm',
+    description: 'Multi-workspace mesh orchestration, liveness, and supervisor tuning. Every consumer takes an explicit env parameter (for testability); settings.js routes these through getWithEnv() so a home derived from that SAME env is used, never os.homedir().',
+    settings: [
+      { key: 'hivecontrol', type: 'string', default: '', env: 'ANTIHALL_DEVSWARM_HIVECONTROL', pluginOption: 'devswarm_hivecontrol', description: 'Explicit path to the hivecontrol CLI binary (default: PATH lookup — no single default value; empty means "look it up").' },
+      { key: 'supervisorMode', type: 'enum', values: ['auto', 'on', 'off'], default: 'auto', env: 'ANTIHALL_DEVSWARM_SUPERVISOR', pluginOption: 'devswarm_supervisor_mode', description: 'Force the DevSwarm supervisor context on/off, or auto-detect. [verified: hooks/lib/devswarm-detect.js:33 — mode falsy/unset -> auto]' },
+      { key: 'requiredGates', type: 'csv', default: 'done,merged,tests_passed', env: 'ANTIHALL_DEVSWARM_REQUIRED_GATES', description: 'Merge gates required for DevSwarm tasks. [verified: companion/lib/devswarm-store.js:214 requiredGatesFrom — literal default array]' },
+      { key: 'inboxCmd', type: 'string', default: '', env: 'ANTIHALL_DEVSWARM_INBOX_CMD', description: 'Consumer-configured command to read pending mesh messages (no built-in default). [verified: hooks/command-guard.js:765 buildDevswarmReason — hasInboxCmd only true when explicitly set]' },
+      { key: 'childGateStrict', type: 'boolean', default: true, env: 'ANTIHALL_DEVSWARM_CHILD_GATE_STRICT', advanced: true, description: 'Strict child-gate enforcement. [verified: hooks/devswarm-child-gate.js:530-536 strictEnabled — raw undefined -> "1" -> true; "0" disables]' },
+      { key: 'parentGateCap', type: 'number', min: 2, max: 5, default: 3, env: 'ANTIHALL_DEVSWARM_PARENT_GATE_CAP', advanced: true, description: 'Caps the parent-gate wait/child count, clamped to [2,5]. [verified: hooks/devswarm-parent-gate.js:185 DEFAULT_CAP = 3]' },
+      { key: 'activeFloorPct', type: 'number', min: 0, max: 100, default: 50, env: 'ANTIHALL_DEVSWARM_ACTIVE_FLOOR_PCT', advanced: true, description: 'Min percent of active workspaces kept in the archived cache (0 disables the floor). [verified: companion/lib/devswarm-archived-cache.js:226 DEFAULT_ACTIVE_FLOOR_PCT = 50]' },
+      { key: 'archivedCacheMaxAgeMs', type: 'number', min: 0, default: null, computed: true, env: 'ANTIHALL_DEVSWARM_ARCHIVED_CACHE_MAX_AGE_MS', advanced: true, description: 'computed: no fixed default — 2x the reconcile sweep’s own resolved cooldown (itself env/default-derived), not a literal constant. [verified: companion/lib/devswarm-archived-cache.js:189-221 sweepIntervalMs/resolveArchivedCacheMaxAgeMs]' },
+      { key: 'archivedGraceMs', type: 'number', min: 0, default: 600000, env: 'ANTIHALL_DEVSWARM_ARCHIVED_GRACE_MS', advanced: true, description: 'Grace period (ms) before a workspace is considered archived. [verified: companion/lib/devswarm-archived-cache.js:122 DEFAULT_ARCHIVED_GRACE_MS = 10*60*1000]' },
+      { key: 'cooldownSec', type: 'number', min: 0, default: 600, env: 'ANTIHALL_DEVSWARM_COOLDOWN_SEC', advanced: true, description: 'Supervisor cooldown (sec) between recovery actions. [verified: companion/lib/liveness.js:43 DEFAULT_COOLDOWN_MS = 10*60*1000 -> 600s, imported by companion/devswarm-supervisor.js:39]' },
+      { key: 'idleSec', type: 'number', min: 60, default: 900, env: 'ANTIHALL_DEVSWARM_IDLE_SEC', advanced: true, description: 'Supervisor idle threshold (sec). [verified: companion/lib/liveness.js:42 DEFAULT_IDLE_MS = 15*60*1000 -> 900s, imported by companion/devswarm-supervisor.js:39]' },
+      { key: 'dormantMs', type: 'number', min: 0, default: 1800000, env: 'ANTIHALL_DEVSWARM_DORMANT_MS', advanced: true, description: 'Dormant-workspace threshold (ms). [verified: companion/lib/liveness.js:76 DEFAULT_DORMANT_MS = 30*60*1000]' },
+      { key: 'drainTtlMs', type: 'number', min: 0, default: 600000, env: 'ANTIHALL_DEVSWARM_DRAIN_TTL_MS', advanced: true, description: 'TTL (ms) for the drain marker. [verified: companion/lib/devswarm-drain-marker.js:60 DEFAULT_TTL_MS = 10*60*1000]' },
+      { key: 'graceSec', type: 'number', min: 1, max: 60, default: 5, env: 'ANTIHALL_DEVSWARM_GRACE_SEC', advanced: true, description: 'Grace window (sec) before recovery in devswarm-recover. [verified: companion/lib/recovery.js:62 DEFAULT_GRACE_MS = 5000 -> 5s]' },
+      { key: 'maxRecoveries', type: 'number', min: 1, max: 20, default: 3, env: 'ANTIHALL_DEVSWARM_MAX_RECOVERIES', advanced: true, description: 'Max auto-recovery attempts. [verified: companion/lib/recovery.js:61 DEFAULT_MAX_RECOVERIES = 3]' },
+      { key: 'intervalSec', type: 'number', min: 60, max: 120, default: 90, env: 'ANTIHALL_DEVSWARM_INTERVAL', advanced: true, description: 'Sweep interval (sec) used at supervisor install time, clamped [60,120]. [verified: companion/install-devswarm-supervisor.js:61 clampInterval default 90 for missing/garbage input]' },
+      { key: 'migrateMarkRead', type: 'boolean', default: false, env: 'ANTIHALL_DEVSWARM_MIGRATE_MARK_READ', advanced: true, description: 'Mark migrated messages as read during state migration. [verified: companion/devswarm-migrate.js:96-98 resolveMarkRead — falls back to false when unset]' },
+      { key: 'monitorTimeoutSec', type: 'number', min: 0, default: 30, env: 'ANTIHALL_DEVSWARM_MONITOR_TIMEOUT_SEC', advanced: true, description: 'Bounded cadence (sec) for monitor timeout in devswarm-ingest. [verified: companion/devswarm-ingest.js:91 DEFAULT_MONITOR_TIMEOUT_SEC = 30]' },
+      { key: 'nudgeCooldownSec', type: 'number', min: 0, default: 120, env: 'ANTIHALL_DEVSWARM_NUDGE_COOLDOWN_SEC', advanced: true, description: 'Cooldown (sec) between supervisor nudges. [verified: companion/devswarm-supervisor.js:29 header + DEFAULT_NUDGE_COOLDOWN_MS/1000 = 120]' },
+      { key: 'nudgeMaxAttempts', type: 'number', min: 1, max: 20, default: 2, env: 'ANTIHALL_DEVSWARM_NUDGE_MAX_ATTEMPTS', advanced: true, description: 'Max nudge attempts before escalation. [verified: companion/lib/recovery.js DEFAULT_NUDGE_MAX_ATTEMPTS = 2, via companion/devswarm-supervisor.js:27 header + :100]' },
+      { key: 'nudgeWindowSec', type: 'number', min: 1, default: 180, env: 'ANTIHALL_DEVSWARM_NUDGE_WINDOW_SEC', advanced: true, description: 'Window (sec) for counting nudge attempts. [verified: companion/lib/liveness.js:44 DEFAULT_NUDGE_WINDOW_MS = 3*60*1000 -> 180s, imported by companion/devswarm-supervisor.js:39]' },
+      { key: 'postSpawnGraceSec', type: 'number', min: 0, max: 1800, default: 120, env: 'ANTIHALL_DEVSWARM_POST_SPAWN_GRACE_SEC', advanced: true, description: 'Grace period (sec) right after spawning a child workspace, clamped [0,1800]. [verified: companion/devswarm-supervisor.js:139 DEFAULT_POST_SPAWN_GRACE_MS = 2*60*1000 -> 120s]' },
+      { key: 'reapedRetentionDays', type: 'number', min: 0, default: 30, env: 'ANTIHALL_DEVSWARM_REAPED_RETENTION_DAYS', advanced: true, description: 'Retention window (days) for reaped-workspace logs. [verified: hooks/lib/doctor-repair.js:2651 REAPED_RETENTION_DAYS_DEFAULT = 30]' },
+      { key: 'receiptWindowMs', type: 'number', min: 0, default: 300000, env: 'ANTIHALL_DEVSWARM_RECEIPT_WINDOW_MS', advanced: true, description: 'Window (ms) for parent-reply receipt tracking. [verified: hooks/devswarm-parent-reply-tracker.js:167 RECEIPT_WINDOW_MS_DEFAULT = 5*60*1000]' },
+      { key: 'reconcileSweep', type: 'enum', values: ['auto', 'off'], default: 'auto', env: 'ANTIHALL_DEVSWARM_RECONCILE_SWEEP', advanced: true, description: 'Enable/disable the periodic reconcile sweep in the supervisor. [verified: companion/devswarm-supervisor.js:574 reconcileSweepEnabled — default "auto", only "off" disables]' },
+      { key: 'reconcileSweepSec', type: 'number', min: 300, default: 900, env: 'ANTIHALL_DEVSWARM_RECONCILE_SWEEP_SEC', advanced: true, description: 'Interval (sec) for the reconcile sweep, floor 300s. [verified: companion/devswarm-supervisor.js:554 DEFAULT_RECONCILE_SWEEP_COOLDOWN_MS = 15*60*1000 -> 900s]' },
+      { key: 'rowStaleMs', type: 'number', min: 0, default: 86400000, env: 'ANTIHALL_DEVSWARM_ROW_STALE_MS', advanced: true, description: 'Staleness threshold (ms) for workspace row selection. [verified: companion/lib/devswarm-row-select.js:54 DEFAULT_ROW_STALE_MS = 24*60*60*1000]' },
+      { key: 'sendReceiptRetentionDays', type: 'number', min: 0, default: 7, env: 'ANTIHALL_DEVSWARM_SEND_RECEIPT_RETENTION_DAYS', advanced: true, description: 'Retention window (days) for send-receipt records. [verified: hooks/lib/doctor-repair.js:2652 SEND_RECEIPT_RETENTION_DAYS_DEFAULT = 7]' },
+      { key: 'summaryRetentionDays', type: 'number', min: 0, default: 30, env: 'ANTIHALL_DEVSWARM_SUMMARY_RETENTION_DAYS', advanced: true, description: 'Retention window (days) for summary records. [verified: companion/lib/devswarm-store.js:3119 GC_STALE_SUMMARIES_DAYS_DEFAULT = 30]' },
+      { key: 'wakeCron', type: 'string', default: '*/30 * * * *', env: 'ANTIHALL_DEVSWARM_WAKE_CRON', advanced: true, description: 'Wake-poll cron schedule override (treated as untrusted input). [verified: hooks/lib/devswarm-wake.js:67 WAKE_CRON_DEFAULT = \'*/30 * * * *\']' },
+      { key: 'wakeWatchPollMs', type: 'number', min: 250, max: 60000, default: 2000, env: 'ANTIHALL_DEVSWARM_WAKE_WATCH_POLL_MS', advanced: true, description: 'Poll interval (ms) for the wake-watch loop, clamped [250,60000]. [verified: companion/lib/devswarm-wake-watch.js:215 DEFAULT_POLL_MS = 2000]' },
+      { key: 'supervisorSweepBudgetMs', type: 'number', min: 0, default: 20000, env: 'ANTIHALL_SUPERVISOR_SWEEP_BUDGET_MS', advanced: true, description: 'Time budget (ms) for one supervisor sweep pass. [verified: companion/devswarm-supervisor.js:1029 DEFAULT_SUPERVISOR_SWEEP_BUDGET_MS = 20000]' },
+    ],
+  },
   {
     key: 'statusline',
     label: 'Statusline',

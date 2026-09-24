@@ -532,7 +532,21 @@ function tick(state, snapshot) {
 // malformed, clamp to a sane range. Digits only (no injection surface).
 function pollMsFromEnv(env) {
   try {
-    const raw = (env || process.env)[POLL_ENV_VAR];
+    const e = env || process.env;
+    try {
+      // This function's OWN legacy gate (below) only accepts a strictly
+      // positive digits-only env value — "0" is invalid, not "0, clamped up
+      // to the floor". Reproduce that before consulting settings.get().
+      const rawRaw = e[POLL_ENV_VAR];
+      let effectiveEnv = e;
+      if (typeof rawRaw === 'string' && /^[0-9]+$/.test(rawRaw.trim()) && parseInt(rawRaw.trim(), 10) <= 0) {
+        effectiveEnv = Object.assign({}, e);
+        delete effectiveEnv[POLL_ENV_VAR];
+      }
+      const n = require('../../hooks/lib/settings.js').getWithEnv('devswarm', 'wakeWatchPollMs', DEFAULT_POLL_MS, effectiveEnv);
+      return Math.min(POLL_MS_MAX, Math.max(POLL_MS_MIN, n));
+    } catch (_) { /* fall through */ }
+    const raw = e[POLL_ENV_VAR];
     if (typeof raw !== 'string') return DEFAULT_POLL_MS;
     const trimmed = raw.trim();
     if (!/^[0-9]+$/.test(trimmed)) return DEFAULT_POLL_MS;

@@ -63,7 +63,11 @@ function clampInterval(v) {
   if (!Number.isFinite(n)) return 90;
   return Math.max(60, Math.min(120, n));
 }
-const INTERVAL = clampInterval(process.env.ANTIHALL_DEVSWARM_INTERVAL);
+// v0.108.0 unified settings: env > ~/.anti-hall/settings.json > default 90.
+const INTERVAL = (() => {
+  try { return require('../hooks/lib/settings.js').get('devswarm', 'intervalSec'); }
+  catch (_) { return clampInterval(process.env.ANTIHALL_DEVSWARM_INTERVAL); }
+})();
 
 function say(msg) { process.stdout.write(msg + '\n'); }
 

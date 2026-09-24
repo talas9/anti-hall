@@ -172,7 +172,10 @@ function isAllowed(filePath, cwd) {
       if (!rel.includes('/') && re.test(rel)) return true;
     }
   }
-  const envAllow = String(process.env.ANTIHALL_EDIT_GUARD_ALLOW || '')
+  let editGuardAllowRaw;
+  try { editGuardAllowRaw = require('./lib/settings.js').get('guards', 'editGuardAllow'); }
+  catch (_) { editGuardAllowRaw = process.env.ANTIHALL_EDIT_GUARD_ALLOW; }
+  const envAllow = String(editGuardAllowRaw || '')
     .split(/[:,]/)
     .map((s) => s.trim())
     .filter(Boolean);

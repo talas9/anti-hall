@@ -211,9 +211,11 @@ function listStoreHashes(home, fsi, opts) {
 // consumer-defined so they are trimmed but NOT normalized/lowercased (agnostic).
 function requiredGatesFrom(env) {
   const e = env || process.env;
-  const raw = e.ANTIHALL_DEVSWARM_REQUIRED_GATES;
-  if (typeof raw === 'string' && raw.trim() !== '') {
-    const parts = raw.split(',').map((s) => s.trim()).filter((s) => s !== '');
+  let csv;
+  try { csv = require('../../hooks/lib/settings.js').getWithEnv('devswarm', 'requiredGates', undefined, e); }
+  catch (_) { csv = e.ANTIHALL_DEVSWARM_REQUIRED_GATES; }
+  if (typeof csv === 'string' && csv.trim() !== '') {
+    const parts = csv.split(',').map((s) => s.trim()).filter((s) => s !== '');
     if (parts.length) return parts;
   }
   return DEFAULT_REQUIRED_GATES.slice();
@@ -3151,10 +3153,18 @@ function gcStaleSummaries(opts) {
   const mode = o.mode === 'repair' ? 'repair' : 'check';
   const F = (o.io && o.io.fs) || fs;
   const now = Number.isFinite(o.now) ? o.now : Date.now();
-  const days = Number.isFinite(o.days) ? o.days
-    : Number.isFinite(Number((o.env || process.env).ANTIHALL_DEVSWARM_SUMMARY_RETENTION_DAYS))
-      ? Number((o.env || process.env).ANTIHALL_DEVSWARM_SUMMARY_RETENTION_DAYS)
-      : GC_STALE_SUMMARIES_DAYS_DEFAULT;
+  let days;
+  if (Number.isFinite(o.days)) {
+    days = o.days;
+  } else {
+    try {
+      days = require('../../hooks/lib/settings.js').get('devswarm', 'summaryRetentionDays', GC_STALE_SUMMARIES_DAYS_DEFAULT, { env: o.env || process.env, home });
+    } catch (_) {
+      days = Number.isFinite(Number((o.env || process.env).ANTIHALL_DEVSWARM_SUMMARY_RETENTION_DAYS))
+        ? Number((o.env || process.env).ANTIHALL_DEVSWARM_SUMMARY_RETENTION_DAYS)
+        : GC_STALE_SUMMARIES_DAYS_DEFAULT;
+    }
+  }
   const maxAgeMs = days * 24 * 60 * 60 * 1000;
   const results = [];
 

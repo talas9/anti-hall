@@ -85,7 +85,16 @@ const CRON_FIELD = /^[0-9*/,-]+$/;
 // Never throws.
 function wakeCron(env) {
   try {
-    const raw = (env || process.env).ANTIHALL_DEVSWARM_WAKE_CRON;
+    const e = env || process.env;
+    // v0.108.0 unified settings: the CANDIDATE string may come from env or
+    // ~/.anti-hall/settings.json (via getWithEnv, home-derived from THIS env
+    // so a test's isolated HOME is honored) — either way it is UNTRUSTED and
+    // still runs through the exact same charset/arity validation below before
+    // ever being accepted. Falls back to a raw env read if settings.js is
+    // unavailable.
+    let raw;
+    try { raw = require('./settings.js').getWithEnv('devswarm', 'wakeCron', WAKE_CRON_DEFAULT, e); }
+    catch (_) { raw = e.ANTIHALL_DEVSWARM_WAKE_CRON; }
     if (typeof raw !== 'string') return WAKE_CRON_DEFAULT;
     const expr = raw.trim();
     if (!expr) return WAKE_CRON_DEFAULT;

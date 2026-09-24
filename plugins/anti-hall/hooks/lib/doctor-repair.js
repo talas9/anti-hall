@@ -2598,8 +2598,18 @@ function promoteUnclaimedSessions(opts) {
 // from the caller-supplied env var name so each sweep keeps its own tunable,
 // and an unparseable/absent value falls back to the default (a typo must never
 // widen a deletion window). A missing directory is a routine no-op.
+const RETENTION_SCHEMA_KEY = {
+  ANTIHALL_DEVSWARM_REAPED_RETENTION_DAYS: 'reapedRetentionDays',
+  ANTIHALL_DEVSWARM_SEND_RECEIPT_RETENTION_DAYS: 'sendReceiptRetentionDays',
+};
 function retentionDays(env, varName, fallbackDays) {
-  const raw = (env || process.env)[varName];
+  const e = env || process.env;
+  const schemaKey = RETENTION_SCHEMA_KEY[varName];
+  if (schemaKey) {
+    try { return require('./settings.js').getWithEnv('devswarm', schemaKey, fallbackDays, e); }
+    catch (_) { /* fall through */ }
+  }
+  const raw = e[varName];
   const n = parseInt(raw, 10);
   return Number.isFinite(n) && n > 0 ? n : fallbackDays;
 }

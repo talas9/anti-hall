@@ -646,11 +646,15 @@ function isActionablePriority(p) {
 }
 
 function readThreshold() {
+  try { return require('./lib/settings.js').get('guards', 'tasklistWorkThreshold', DEFAULT_WORK_THRESHOLD); }
+  catch (_) { /* fall through */ }
   const v = parseInt(process.env.ANTIHALL_TASKLIST_WORK_THRESHOLD || '', 10);
   return Number.isFinite(v) && v > 0 ? v : DEFAULT_WORK_THRESHOLD;
 }
 
 function readFreshMs() {
+  try { return require('./lib/settings.js').get('guards', 'progressFreshMs', DEFAULT_PROGRESS_FRESH_MS); }
+  catch (_) { /* fall through */ }
   const v = parseInt(process.env.ANTIHALL_PROGRESS_FRESH_MS || '', 10);
   return Number.isFinite(v) && v >= 0 ? v : DEFAULT_PROGRESS_FRESH_MS;
 }

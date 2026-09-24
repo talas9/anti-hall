@@ -539,7 +539,11 @@ function resolveHivecontrolPath(opts) {
   const cacheOpts = { home: o.home, io: o.io };
   if (platform === 'win32') return null;
   try {
-    const explicit = env[HIVECONTROL_ENV_VAR];
+    let explicit = env[HIVECONTROL_ENV_VAR];
+    if (!explicit) {
+      try { explicit = require('../hooks/lib/settings.js').get('devswarm', 'hivecontrol', '', { env, home: o.home }) || undefined; }
+      catch (_) { /* fall through */ }
+    }
     if (typeof explicit === 'string' && explicit.trim() && path.isAbsolute(explicit.trim())
       && isExecutableFile(explicit.trim(), F)) {
       const bin = explicit.trim();

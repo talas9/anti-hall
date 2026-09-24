@@ -36,8 +36,12 @@ function workspaceDescriptorPath(home, id) {
 // names/defaults recover() has always used.
 function resolveCliThresholds(env) {
   const e = env || process.env;
-  const maxRecoveries = parseEnvNum(e, 'ANTIHALL_DEVSWARM_MAX_RECOVERIES', DEFAULT_MAX_RECOVERIES, { min: 1, max: 20 });
-  const graceSec = parseEnvNum(e, 'ANTIHALL_DEVSWARM_GRACE_SEC', DEFAULT_GRACE_MS / 1000, { min: 1, max: 60 });
+  let g;
+  try { g = require('./../hooks/lib/settings.js').getWithEnv; } catch (_) { g = null; }
+  const maxRecoveries = g ? g('devswarm', 'maxRecoveries', DEFAULT_MAX_RECOVERIES, e)
+    : parseEnvNum(e, 'ANTIHALL_DEVSWARM_MAX_RECOVERIES', DEFAULT_MAX_RECOVERIES, { min: 1, max: 20 });
+  const graceSec = g ? g('devswarm', 'graceSec', DEFAULT_GRACE_MS / 1000, e)
+    : parseEnvNum(e, 'ANTIHALL_DEVSWARM_GRACE_SEC', DEFAULT_GRACE_MS / 1000, { min: 1, max: 60 });
   return { maxRecoveries, graceMs: graceSec * 1000 };
 }
 

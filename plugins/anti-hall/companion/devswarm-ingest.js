@@ -1124,6 +1124,19 @@ function defaultMonitorRun(opts) {
 // is only ever done explicitly — the production main() below never does.)
 function resolveMonitorTimeoutSec(explicit, env) {
   if (Number.isFinite(explicit)) return explicit;
+  try {
+    // This function's OWN legacy gate (below) only accepts a STRICTLY
+    // POSITIVE env value — zero/negative is invalid, not "clamped up to the
+    // floor". Reproduce that before consulting settings.get().
+    const rawRaw = env && env.ANTIHALL_DEVSWARM_MONITOR_TIMEOUT_SEC;
+    const rawN = rawRaw != null ? Number(rawRaw) : NaN;
+    let effectiveEnv = env;
+    if (Number.isFinite(rawN) && rawN <= 0) {
+      effectiveEnv = Object.assign({}, env);
+      delete effectiveEnv.ANTIHALL_DEVSWARM_MONITOR_TIMEOUT_SEC;
+    }
+    return require('../hooks/lib/settings.js').getWithEnv('devswarm', 'monitorTimeoutSec', DEFAULT_MONITOR_TIMEOUT_SEC, effectiveEnv);
+  } catch (_) { /* fall through */ }
   const raw = env && env.ANTIHALL_DEVSWARM_MONITOR_TIMEOUT_SEC;
   const n = raw != null ? Number(raw) : NaN;
   if (Number.isFinite(n) && n > 0) return n;

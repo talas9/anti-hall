@@ -95,11 +95,35 @@ function parseEnvNum(env, name, defaultVal, opts) {
 // as they already do.
 function resolveThresholdsFromEnv(env) {
   const e = env || process.env;
-  const idleSec = parseEnvNum(e, 'ANTIHALL_DEVSWARM_IDLE_SEC', DEFAULT_IDLE_MS / 1000, { min: 60 });
-  const cooldownSec = parseEnvNum(e, 'ANTIHALL_DEVSWARM_COOLDOWN_SEC', DEFAULT_COOLDOWN_MS / 1000, { min: 0 });
-  const nudgeMaxAttempts = parseEnvNum(e, 'ANTIHALL_DEVSWARM_NUDGE_MAX_ATTEMPTS', DEFAULT_NUDGE_MAX_ATTEMPTS, { min: 1, max: 20 });
-  const nudgeWindowSec = parseEnvNum(e, 'ANTIHALL_DEVSWARM_NUDGE_WINDOW_SEC', DEFAULT_NUDGE_WINDOW_MS / 1000, { min: 1 });
-  const nudgeCooldownSec = parseEnvNum(e, 'ANTIHALL_DEVSWARM_NUDGE_COOLDOWN_SEC', DEFAULT_NUDGE_COOLDOWN_MS / 1000, { min: 0 });
+  // v0.108.0 unified settings: getWithEnv threads THIS SAME env through to
+  // settings.get() (env > settings.json > ... > default), deriving `home`
+  // from e.HOME/e.USERPROFILE so it never reads the real machine's home when
+  // a test passes an isolated env. Fails open to the legacy parseEnvNum-only
+  // path if settings.js is unavailable.
+  const g = (key, envName, dflt, opts) => {
+    try {
+      // parseEnvNum's OWN gate (below) only accepts a STRICTLY POSITIVE
+      // integer env value as a real override — zero/negative is treated as
+      // absent (falls to `dflt`, which is then still clamped). Reproduce
+      // that exact gate before consulting settings.get(), so e.g.
+      // ANTIHALL_DEVSWARM_NUDGE_MAX_ATTEMPTS=0 keeps meaning "invalid,
+      // fail-open to default" rather than "0, clamped up to min".
+      const raw = e[envName];
+      let effectiveEnv = e;
+      if (typeof raw === 'string' && /^\d+$/.test(raw.trim()) && parseInt(raw.trim(), 10) <= 0) {
+        effectiveEnv = Object.assign({}, e);
+        delete effectiveEnv[envName];
+      }
+      return require('./../hooks/lib/settings.js').getWithEnv('devswarm', key, dflt, effectiveEnv);
+    } catch (_) {
+      return parseEnvNum(e, envName, dflt, opts);
+    }
+  };
+  const idleSec = g('idleSec', 'ANTIHALL_DEVSWARM_IDLE_SEC', DEFAULT_IDLE_MS / 1000, { min: 60 });
+  const cooldownSec = g('cooldownSec', 'ANTIHALL_DEVSWARM_COOLDOWN_SEC', DEFAULT_COOLDOWN_MS / 1000, { min: 0 });
+  const nudgeMaxAttempts = g('nudgeMaxAttempts', 'ANTIHALL_DEVSWARM_NUDGE_MAX_ATTEMPTS', DEFAULT_NUDGE_MAX_ATTEMPTS, { min: 1, max: 20 });
+  const nudgeWindowSec = g('nudgeWindowSec', 'ANTIHALL_DEVSWARM_NUDGE_WINDOW_SEC', DEFAULT_NUDGE_WINDOW_MS / 1000, { min: 1 });
+  const nudgeCooldownSec = g('nudgeCooldownSec', 'ANTIHALL_DEVSWARM_NUDGE_COOLDOWN_SEC', DEFAULT_NUDGE_COOLDOWN_MS / 1000, { min: 0 });
   return {
     idleThresholdMs: idleSec * 1000,
     cooldownMs: cooldownSec * 1000,
@@ -143,8 +167,10 @@ const DEFAULT_POST_SPAWN_GRACE_MS = 2 * 60 * 1000;
 // disabled outright); clamped to [0, 1800] seconds so a typo can never turn
 // this into an unbounded suppression.
 function resolvePostSpawnGraceMs(env) {
-  const sec = parseEnvNum(env || process.env, 'ANTIHALL_DEVSWARM_POST_SPAWN_GRACE_SEC',
-    DEFAULT_POST_SPAWN_GRACE_MS / 1000, { min: 0, max: 1800 });
+  const e = env || process.env;
+  let sec;
+  try { sec = require('./../hooks/lib/settings.js').getWithEnv('devswarm', 'postSpawnGraceSec', DEFAULT_POST_SPAWN_GRACE_MS / 1000, e); }
+  catch (_) { sec = parseEnvNum(e, 'ANTIHALL_DEVSWARM_POST_SPAWN_GRACE_SEC', DEFAULT_POST_SPAWN_GRACE_MS / 1000, { min: 0, max: 1800 }); }
   return sec * 1000;
 }
 
@@ -602,13 +628,18 @@ function reconcileSweepStatePath(home) {
 function reconcileSweepEnabled(env) {
   const e = env || process.env;
   if (!supervisorEnabled(e)) return false;
-  return String(e.ANTIHALL_DEVSWARM_RECONCILE_SWEEP || 'auto').trim().toLowerCase() !== 'off';
+  let mode;
+  try { mode = require('./../hooks/lib/settings.js').getWithEnv('devswarm', 'reconcileSweep', 'auto', e); }
+  catch (_) { mode = String(e.ANTIHALL_DEVSWARM_RECONCILE_SWEEP || 'auto').trim().toLowerCase(); }
+  return String(mode).trim().toLowerCase() !== 'off';
 }
 
 // resolveReconcileCooldownMs(env) -> ms, floor 5min (see BOUNDED above).
 function resolveReconcileCooldownMs(env) {
-  const sec = parseEnvNum(env || process.env, 'ANTIHALL_DEVSWARM_RECONCILE_SWEEP_SEC',
-    DEFAULT_RECONCILE_SWEEP_COOLDOWN_MS / 1000, { min: 300 });
+  const e = env || process.env;
+  let sec;
+  try { sec = require('./../hooks/lib/settings.js').getWithEnv('devswarm', 'reconcileSweepSec', DEFAULT_RECONCILE_SWEEP_COOLDOWN_MS / 1000, e); }
+  catch (_) { sec = parseEnvNum(e, 'ANTIHALL_DEVSWARM_RECONCILE_SWEEP_SEC', DEFAULT_RECONCILE_SWEEP_COOLDOWN_MS / 1000, { min: 300 }); }
   return sec * 1000;
 }
 
@@ -1115,8 +1146,10 @@ function writeDeferredSweepState(home, F, state) {
 // plumbing (ANTIHALL_UPDATE_SWEEP_BUDGET_MS), so the units must line up
 // without a seconds<->ms conversion at the boundary.
 function resolveSupervisorSweepBudgetMs(env) {
-  const raw = (env || process.env || {}).ANTIHALL_SUPERVISOR_SWEEP_BUDGET_MS;
-  const n = Number(raw);
+  const e = env || process.env || {};
+  try { return require('./../hooks/lib/settings.js').getWithEnv('devswarm', 'supervisorSweepBudgetMs', DEFAULT_SUPERVISOR_SWEEP_BUDGET_MS, e); }
+  catch (_) { /* fall through */ }
+  const n = Number(e.ANTIHALL_SUPERVISOR_SWEEP_BUDGET_MS);
   return Number.isFinite(n) && n >= 0 ? n : DEFAULT_SUPERVISOR_SWEEP_BUDGET_MS;
 }
 

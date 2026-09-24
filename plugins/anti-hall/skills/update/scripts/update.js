@@ -2783,7 +2783,9 @@ const UNKNOWN_INSTALLED_ACTION =
 // ANTIHALL_UPDATE_QUIET=1 suppresses it (e.g. for a script that captures
 // stderr for its own purposes).
 function stageProgress(env, name, fn) {
-  const quiet = !!(env && env.ANTIHALL_UPDATE_QUIET === '1');
+  let quiet;
+  try { quiet = require(path.join(__dirname, '..', '..', '..', 'hooks', 'lib', 'settings.js')).getWithEnv('updates', 'quiet', false, env || process.env) === true; }
+  catch (_) { quiet = !!(env && env.ANTIHALL_UPDATE_QUIET === '1'); }
   if (!quiet) { try { fs.writeSync(2, '[update] ' + name + ' start\n'); } catch (_) { /* best-effort */ } }
   const t0 = Date.now();
   const result = fn();

@@ -95,6 +95,8 @@ function migrateLockPath(home) {
 function resolveMarkRead(o) {
   if (o && typeof o.markRead === 'boolean') return o.markRead;
   const env = (o && o.env) || process.env;
+  try { return require('../hooks/lib/settings.js').getWithEnv('devswarm', 'migrateMarkRead', false, env) === true; }
+  catch (_) { /* fall through */ }
   const raw = String((env && env.ANTIHALL_DEVSWARM_MIGRATE_MARK_READ) || '').trim().toLowerCase();
   return raw === '1' || raw === 'true';
 }

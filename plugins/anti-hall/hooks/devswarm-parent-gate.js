@@ -216,7 +216,12 @@ function wakeReassertLine(env, isChild) {
 // resolveCap(env) -> int in [2,5]. Absent / non-numeric / out-of-range falls
 // back to the default (fail-open: a typo never disables or unbounds the gate).
 function resolveCap(env) {
-  const raw = (env || {}).ANTIHALL_DEVSWARM_PARENT_GATE_CAP;
+  const e = env || {};
+  try {
+    const n = require('./lib/settings.js').getWithEnv('devswarm', 'parentGateCap', DEFAULT_CAP, e);
+    return Math.max(2, Math.min(5, n));
+  } catch (_) { /* fall through */ }
+  const raw = e.ANTIHALL_DEVSWARM_PARENT_GATE_CAP;
   if (typeof raw === 'string' && /^\d+$/.test(raw.trim())) {
     const n = parseInt(raw.trim(), 10);
     if (Number.isFinite(n)) return Math.max(2, Math.min(5, n));

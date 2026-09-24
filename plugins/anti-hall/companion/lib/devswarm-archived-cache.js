@@ -216,7 +216,11 @@ function resolveArchivedCacheMaxAgeMs(env) {
 // resolveArchivedGraceMs(env) -> ms. Conjunct 4's bound. Overridable with
 // ANTIHALL_DEVSWARM_ARCHIVED_GRACE_MS (positive integer ms).
 function resolveArchivedGraceMs(env) {
-  return positiveIntEnv(env, 'ANTIHALL_DEVSWARM_ARCHIVED_GRACE_MS') || DEFAULT_ARCHIVED_GRACE_MS;
+  try {
+    return require('../../hooks/lib/settings.js').getWithEnv('devswarm', 'archivedGraceMs', DEFAULT_ARCHIVED_GRACE_MS, env);
+  } catch (_) {
+    return positiveIntEnv(env, 'ANTIHALL_DEVSWARM_ARCHIVED_GRACE_MS') || DEFAULT_ARCHIVED_GRACE_MS;
+  }
 }
 
 // DEFAULT_ACTIVE_FLOOR_PCT — R17 item 2's partial-list guard (writeActiveCache
@@ -229,6 +233,9 @@ const DEFAULT_ACTIVE_FLOOR_PCT = 50;
 // ANTIHALL_DEVSWARM_ACTIVE_FLOOR_PCT (non-negative integer; 0 disables the
 // floor entirely, i.e. always trust the new snapshot).
 function resolveActiveFloorPct(env) {
+  try {
+    return require('../../hooks/lib/settings.js').getWithEnv('devswarm', 'activeFloorPct', DEFAULT_ACTIVE_FLOOR_PCT, env);
+  } catch (_) { /* fall through to the legacy env-only path */ }
   const e = env || process.env;
   const raw = e.ANTIHALL_DEVSWARM_ACTIVE_FLOOR_PCT;
   if (typeof raw === 'string' && /^\d+$/.test(raw.trim())) {

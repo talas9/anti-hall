@@ -57,7 +57,10 @@ const DEFAULT_ROW_STALE_MS = 24 * 60 * 60 * 1000;
 // positive env value falls back to the default (fail-open: a typo never
 // tightens or disables the window unexpectedly).
 function resolveRowStaleMs(env) {
-  const raw = (env || {}).ANTIHALL_DEVSWARM_ROW_STALE_MS;
+  const e = env || {};
+  try { return require('../../hooks/lib/settings.js').getWithEnv('devswarm', 'rowStaleMs', DEFAULT_ROW_STALE_MS, e); }
+  catch (_) { /* fall through */ }
+  const raw = e.ANTIHALL_DEVSWARM_ROW_STALE_MS;
   if (typeof raw === 'string' && raw.trim() !== '') {
     const n = Number(raw.trim());
     if (Number.isFinite(n) && n > 0) return n;

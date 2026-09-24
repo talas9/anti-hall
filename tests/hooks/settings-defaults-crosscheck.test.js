@@ -7,12 +7,12 @@
 // "[verified: file:line]" comment for the full audit trail this test
 // spot-checks mechanically.
 //
-// NOTE: there is deliberately no `devswarm` section in settings-schema.js —
-// see the removal note at that spot in the schema file. Its knobs' consumers
-// all take an explicit `env` parameter (not `process.env` directly), which
-// makes wiring settings.get() into them unsafe without a `home` parameter
-// threaded through first; they were removed rather than shipped as fake
-// controls.
+// devswarm's ~30 knobs are covered here too: their consumers all take an
+// explicit `env` parameter (not `process.env` directly), so each one is
+// wired via settings.js's getWithEnv() helper, which derives `home` from
+// THAT SAME env (never os.homedir()) — see tests/hygiene/
+// settings-home-injection.test.js for the live proof that none of them
+// leaks to the real machine home.
 
 const { test } = require('node:test');
 const assert = require('node:assert');
@@ -110,6 +110,106 @@ test('jev.budget.* are new (0.108.0) settings with no legacy source, declared nu
   }
 });
 
-test('the schema has no devswarm section (removed pending a home-injectable resolver refactor)', () => {
-  assert.strictEqual(SCHEMA.findSection('devswarm'), null);
+test('devswarm.activeFloorPct matches devswarm-archived-cache.js source constant', () => {
+  assert.strictEqual(find('devswarm', 'activeFloorPct').default, constFromSource(['companion', 'lib', 'devswarm-archived-cache.js'], 'DEFAULT_ACTIVE_FLOOR_PCT'));
+});
+
+test('devswarm.archivedGraceMs matches devswarm-archived-cache.js source constant', () => {
+  assert.strictEqual(find('devswarm', 'archivedGraceMs').default, constFromSource(['companion', 'lib', 'devswarm-archived-cache.js'], 'DEFAULT_ARCHIVED_GRACE_MS'));
+});
+
+test('devswarm.dormantMs matches liveness.js source constant', () => {
+  assert.strictEqual(find('devswarm', 'dormantMs').default, constFromSource(['companion', 'lib', 'liveness.js'], 'DEFAULT_DORMANT_MS'));
+});
+
+test('devswarm.drainTtlMs matches devswarm-drain-marker.js source constant', () => {
+  assert.strictEqual(find('devswarm', 'drainTtlMs').default, constFromSource(['companion', 'lib', 'devswarm-drain-marker.js'], 'DEFAULT_TTL_MS'));
+});
+
+test('devswarm.cooldownSec/idleSec match liveness.js source constants (devswarm-supervisor.js imports them from there, ms/1000)', () => {
+  const cooldownMs = constFromSource(['companion', 'lib', 'liveness.js'], 'DEFAULT_COOLDOWN_MS');
+  const idleMs = constFromSource(['companion', 'lib', 'liveness.js'], 'DEFAULT_IDLE_MS');
+  assert.strictEqual(find('devswarm', 'cooldownSec').default, cooldownMs / 1000);
+  assert.strictEqual(find('devswarm', 'idleSec').default, idleMs / 1000);
+});
+
+test('devswarm.parentGateCap matches devswarm-parent-gate.js source constant', () => {
+  assert.strictEqual(find('devswarm', 'parentGateCap').default, constFromSource(['hooks', 'devswarm-parent-gate.js'], 'DEFAULT_CAP'));
+});
+
+test('devswarm.graceSec/maxRecoveries match lib/recovery.js source constants', () => {
+  const graceMs = constFromSource(['companion', 'lib', 'recovery.js'], 'DEFAULT_GRACE_MS');
+  assert.strictEqual(find('devswarm', 'graceSec').default, graceMs / 1000);
+  assert.strictEqual(find('devswarm', 'maxRecoveries').default, constFromSource(['companion', 'lib', 'recovery.js'], 'DEFAULT_MAX_RECOVERIES'));
+});
+
+test('devswarm.nudgeMaxAttempts/nudgeCooldownSec match lib/recovery.js source constants', () => {
+  const cooldownMs = constFromSource(['companion', 'lib', 'recovery.js'], 'DEFAULT_NUDGE_COOLDOWN_MS');
+  assert.strictEqual(find('devswarm', 'nudgeMaxAttempts').default, constFromSource(['companion', 'lib', 'recovery.js'], 'DEFAULT_NUDGE_MAX_ATTEMPTS'));
+  assert.strictEqual(find('devswarm', 'nudgeCooldownSec').default, cooldownMs / 1000);
+});
+
+test('devswarm.nudgeWindowSec matches liveness.js source constant (devswarm-supervisor.js imports it from there, ms/1000)', () => {
+  const windowMs = constFromSource(['companion', 'lib', 'liveness.js'], 'DEFAULT_NUDGE_WINDOW_MS');
+  assert.strictEqual(find('devswarm', 'nudgeWindowSec').default, windowMs / 1000);
+});
+
+test('devswarm.monitorTimeoutSec matches devswarm-ingest.js source constant', () => {
+  assert.strictEqual(find('devswarm', 'monitorTimeoutSec').default, constFromSource(['companion', 'devswarm-ingest.js'], 'DEFAULT_MONITOR_TIMEOUT_SEC'));
+});
+
+test('devswarm.reapedRetentionDays/sendReceiptRetentionDays match doctor-repair.js source constants', () => {
+  assert.strictEqual(find('devswarm', 'reapedRetentionDays').default, constFromSource(['hooks', 'lib', 'doctor-repair.js'], 'REAPED_RETENTION_DAYS_DEFAULT'));
+  assert.strictEqual(find('devswarm', 'sendReceiptRetentionDays').default, constFromSource(['hooks', 'lib', 'doctor-repair.js'], 'SEND_RECEIPT_RETENTION_DAYS_DEFAULT'));
+});
+
+test('devswarm.receiptWindowMs matches devswarm-parent-reply-tracker.js source constant', () => {
+  assert.strictEqual(find('devswarm', 'receiptWindowMs').default, constFromSource(['hooks', 'devswarm-parent-reply-tracker.js'], 'RECEIPT_WINDOW_MS_DEFAULT'));
+});
+
+test('devswarm.rowStaleMs matches devswarm-row-select.js source constant', () => {
+  assert.strictEqual(find('devswarm', 'rowStaleMs').default, constFromSource(['companion', 'lib', 'devswarm-row-select.js'], 'DEFAULT_ROW_STALE_MS'));
+});
+
+test('devswarm.summaryRetentionDays matches devswarm-store.js source constant', () => {
+  assert.strictEqual(find('devswarm', 'summaryRetentionDays').default, constFromSource(['companion', 'lib', 'devswarm-store.js'], 'GC_STALE_SUMMARIES_DAYS_DEFAULT'));
+});
+
+test('devswarm.wakeCron matches devswarm-wake.js source constant', () => {
+  assert.strictEqual(find('devswarm', 'wakeCron').default, constFromSource(['hooks', 'lib', 'devswarm-wake.js'], 'WAKE_CRON_DEFAULT'));
+});
+
+test('devswarm.wakeWatchPollMs matches devswarm-wake-watch.js source constant', () => {
+  assert.strictEqual(find('devswarm', 'wakeWatchPollMs').default, constFromSource(['companion', 'lib', 'devswarm-wake-watch.js'], 'DEFAULT_POLL_MS'));
+});
+
+test('devswarm.supervisorSweepBudgetMs matches devswarm-supervisor.js source constant', () => {
+  assert.strictEqual(find('devswarm', 'supervisorSweepBudgetMs').default, constFromSource(['companion', 'devswarm-supervisor.js'], 'DEFAULT_SUPERVISOR_SWEEP_BUDGET_MS'));
+});
+
+test('devswarm.reconcileSweepSec matches devswarm-supervisor.js source constant (ms/1000)', () => {
+  const ms = constFromSource(['companion', 'devswarm-supervisor.js'], 'DEFAULT_RECONCILE_SWEEP_COOLDOWN_MS');
+  assert.strictEqual(find('devswarm', 'reconcileSweepSec').default, ms / 1000);
+});
+
+test('devswarm.postSpawnGraceSec matches devswarm-supervisor.js source constant (ms/1000)', () => {
+  const ms = constFromSource(['companion', 'devswarm-supervisor.js'], 'DEFAULT_POST_SPAWN_GRACE_MS');
+  assert.strictEqual(find('devswarm', 'postSpawnGraceSec').default, ms / 1000);
+});
+
+test('devswarm.archivedCacheMaxAgeMs is declared computed (no fixed literal default)', () => {
+  const entry = find('devswarm', 'archivedCacheMaxAgeMs');
+  assert.strictEqual(entry.computed, true);
+  assert.strictEqual(entry.default, null);
+  const src = fs.readFileSync(P('companion', 'lib', 'devswarm-archived-cache.js'), 'utf8');
+  assert.match(src, /function resolveArchivedCacheMaxAgeMs/);
+});
+
+test('devswarm: every advanced tuning knob is marked advanced; headline knobs are not', () => {
+  const headline = ['hivecontrol', 'supervisorMode', 'requiredGates', 'inboxCmd'];
+  const sec = SCHEMA.findSection('devswarm');
+  for (const s of sec.settings) {
+    if (headline.includes(s.key)) assert.ok(!s.advanced, s.key + ' should be headline, not advanced');
+    else assert.ok(s.advanced, s.key + ' should be marked advanced (tuning knob)');
+  }
 });

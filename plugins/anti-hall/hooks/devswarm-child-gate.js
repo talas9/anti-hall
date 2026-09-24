@@ -531,6 +531,8 @@ const MESSAGE_COUNT_TIMEOUT_MS = 5000;
 // '0' disables the native fallback probe (pure-fs durable-unread check only).
 function strictEnabled(env) {
   const e = env || {};
+  try { return require('./lib/settings.js').getWithEnv('devswarm', 'childGateStrict', true, e) !== false; }
+  catch (_) { /* fall through */ }
   const raw = e.ANTIHALL_DEVSWARM_CHILD_GATE_STRICT;
   return String(raw === undefined ? '1' : raw).trim() !== '0';
 }

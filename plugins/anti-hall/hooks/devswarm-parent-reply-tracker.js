@@ -169,7 +169,10 @@ const RECEIPT_WINDOW_MS_DEFAULT = 5 * 60 * 1000;
 // lower-bound check in creditRepliesFromReceipts).
 const CLOCK_SKEW_TOLERANCE_MS = 60 * 1000;
 function receiptWindowMs(env) {
-  const raw = (env || process.env).ANTIHALL_DEVSWARM_RECEIPT_WINDOW_MS;
+  const e = env || process.env;
+  try { return require('./lib/settings.js').getWithEnv('devswarm', 'receiptWindowMs', RECEIPT_WINDOW_MS_DEFAULT, e); }
+  catch (_) { /* fall through */ }
+  const raw = e.ANTIHALL_DEVSWARM_RECEIPT_WINDOW_MS;
   const n = parseInt(raw, 10);
   return Number.isFinite(n) && n > 0 ? n : RECEIPT_WINDOW_MS_DEFAULT;
 }

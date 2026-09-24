@@ -37,6 +37,8 @@
     "jev_budget_mode": { "type": "string", "title": "Jev budget mode", "description": "Jev spend: no limit, or warn when over budget, never auto-disables (unlimited|watch).", "default": "unlimited" },
     "jev_budget_usd_per_day": { "type": "number", "title": "Jev daily budget (USD)", "description": "Daily USD spend threshold, used only when budget mode is \"watch\". Leave unset for no daily threshold." },
     "jev_budget_usd_per_week": { "type": "number", "title": "Jev weekly budget (USD)", "description": "Weekly USD spend threshold, used only when budget mode is \"watch\". Leave unset for no weekly threshold." },
+    "devswarm_hivecontrol": { "type": "string", "title": "DevSwarm hivecontrol path", "description": "Explicit path to the hivecontrol CLI binary (default: PATH lookup).", "default": "" },
+    "devswarm_supervisor_mode": { "type": "string", "title": "DevSwarm supervisor mode", "description": "Force the DevSwarm supervisor context on/off, or auto-detect (auto|on|off).", "default": "auto" },
     "statusline_base": { "type": "string", "title": "Statusline base command", "description": "Shell command run as the line-1 base in consolidated statusline mode.", "default": "" },
     "statusline_no_email": { "type": "boolean", "title": "Hide statusline email", "description": "Suppress the email segment in the statusline.", "default": false }
   }

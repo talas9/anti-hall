@@ -34,6 +34,28 @@ function homeDir(opts) {
   return (opts && opts.home) || os.homedir();
 }
 
+// homeFromEnv(env) -> the home dir an explicit env object implies (HOME, or
+// USERPROFILE on Windows), falling back to os.homedir() ONLY when neither is
+// present on the given env. This is the ONE place that derivation happens —
+// every devswarm/env-parameter consumer routes through getWithEnv() below
+// instead of re-deriving it, so a test that passes a fake env with an
+// isolated HOME can never accidentally fall through to the real machine home.
+function homeFromEnv(env) {
+  const e = env || process.env;
+  return (e && (e.HOME || e.USERPROFILE)) || os.homedir();
+}
+
+// getWithEnv(section, key, dflt, env) -> get(), but for callers that receive
+// an explicit `env` PARAMETER (rather than reading `process.env` directly) —
+// the pattern every DevSwarm resolver and a few others use for testability.
+// Threads that same env object through AND derives `home` from it (never
+// os.homedir() when the env carries a HOME), so settings.json/legacy lookups
+// resolve against the SAME isolated home a test's fake env already implies.
+function getWithEnv(section, key, dflt, env) {
+  const e = env || process.env;
+  return get(section, key, dflt, { env: e, home: homeFromEnv(e) });
+}
+
 // path(opts?) -> ~/.anti-hall/settings.json (home-injectable for tests).
 function settingsPath(opts) {
   return path.join(homeDir(opts), '.anti-hall', 'settings.json');
@@ -107,15 +129,31 @@ function coerceValue(entry, raw) {
       return coerceBoolToken(trimmed);
     case 'number': {
       if (typeof trimmed === 'boolean') return undefined;
-      const n = Number(trimmed);
+      let n = Number(trimmed);
       if (!Number.isFinite(n)) return undefined;
-      if (Number.isFinite(entry.min) && n < entry.min) return undefined;
-      if (Number.isFinite(entry.max) && n > entry.max) return undefined;
+      // exclusiveMin is a validity boundary (e.g. a spend budget "must be >
+      // 0") — a value at/below it is REJECTED (falls through), never clamped
+      // up to a made-up epsilon.
       if (Number.isFinite(entry.exclusiveMin) && n <= entry.exclusiveMin) return undefined;
+      // min/max are RANGE bounds — CLAMPED, not rejected, matching every
+      // legacy resolver's own parseEnvNum-style convention across this
+      // codebase (e.g. devswarm-supervisor.js's parseEnvNum: `Math.max(min,
+      // Math.min(max, v))`). An in-range-but-off value (env typo, a stale
+      // settings.json) still resolves to something usable at this tier
+      // instead of silently falling through to a lower one.
+      if (Number.isFinite(entry.min) && n < entry.min) n = entry.min;
+      if (Number.isFinite(entry.max) && n > entry.max) n = entry.max;
       return n;
     }
-    case 'enum':
-      return (Array.isArray(entry.values) && entry.values.includes(String(trimmed))) ? String(trimmed) : undefined;
+    case 'enum': {
+      // Case-insensitive + trimmed, matching the legacy convention every
+      // mode-string env var in this codebase already used (e.g.
+      // devswarm-detect.js's ANTIHALL_DEVSWARM_SUPERVISOR: '  OFF '  ->
+      // 'off'). `entry.values` are always declared lowercase in the schema,
+      // so the match target is lowercased too.
+      const v = String(trimmed).toLowerCase();
+      return (Array.isArray(entry.values) && entry.values.includes(v)) ? v : undefined;
+    }
     case 'csv':
     case 'string':
       return String(trimmed);
@@ -357,4 +395,4 @@ function source(section, key, opts) {
   return 'default';
 }
 
-module.exports = { load, get, set, reset, source, path: settingsPath, validate };
+module.exports = { load, get, getWithEnv, set, reset, source, path: settingsPath, validate };

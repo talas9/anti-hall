@@ -310,13 +310,14 @@ the update.
   skill or `node plugins/anti-hall/scripts/settings.js show|get|set|reset` (`--json`
   everywhere). Backed by a declarative registry (`hooks/lib/settings-schema.js`) covering
   auto-handover, guards, Jev (including a new opt-in spend-budget watch), limit-
-  conservation, the statusline, and more — each REAL, ACTUALLY WIRED into the hook/module
-  that reads it (jev-client, jev-triage, limit-conserve, the statusline, and every simple
-  boolean guard now resolve through `settings.get()`, not raw `process.env`). A `devswarm`
-  section was deliberately NOT shipped: its ~30 knobs' consumers take an explicit `env`
-  parameter rather than reading `process.env` directly, so wiring them safely needs a
-  `home` parameter threaded through first — those env vars keep working, just not yet via
-  settings.json. Precedence: env var → settings.json → a plugin-option value that actually
+  conservation, DevSwarm, the statusline, and more — EVERY setting is ACTUALLY WIRED into
+  the hook/module that reads it, not just documented. Consumers that take an explicit
+  `env` parameter (most of DevSwarm's ~30 knobs, for testability) route through a new
+  `settings.getWithEnv(section, key, dflt, env)` helper that derives `home` from THAT SAME
+  env (never `os.homedir()`), so a test's isolated HOME is always honored —
+  `tests/hygiene/settings-home-injection.test.js` proves this mechanically by poisoning
+  `os.homedir()` and calling every wired resolver with a synthetic env. Precedence: env
+  var → settings.json → a plugin-option value that actually
   differs from its `plugin.json` `userConfig` manifest default (a value merely sitting at
   the default is treated as unset, so it can never mask a real legacy value) → legacy
   per-feature config file (e.g. `~/.anti-hall/jev.json`, ranked ABOVE the plugin-option tier

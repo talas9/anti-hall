@@ -30,7 +30,10 @@ function isDevswarmActive(env) {
   try {
     const e = env || process.env;
     if (e.DISABLE_ANTIHALL_DEVSWARM === '1') return false;
-    const mode = String(e.ANTIHALL_DEVSWARM_SUPERVISOR || 'auto').trim().toLowerCase();
+    let mode;
+    try { mode = require('./settings.js').getWithEnv('devswarm', 'supervisorMode', 'auto', e); }
+    catch (_) { mode = String(e.ANTIHALL_DEVSWARM_SUPERVISOR || 'auto').trim().toLowerCase(); }
+    mode = String(mode).trim().toLowerCase();
     if (mode === 'off') return false;
     if (mode === 'on') return true;
     return nonEmpty(e.DEVSWARM_REPO_ID); // auto: follow feature-detect

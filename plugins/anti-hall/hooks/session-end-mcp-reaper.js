@@ -531,8 +531,17 @@ function main(opts) {
       return;
     }
 
-    const extraRe = 'extraRe' in o ? o.extraRe : buildExtraRe(process.env.ANTIHALL_REAPER_MATCH);
-    const excludeRe = 'excludeRe' in o ? o.excludeRe : buildExtraRe(process.env.ANTIHALL_REAPER_EXCLUDE);
+    let reaperMatchDflt, reaperExcludeDflt;
+    try {
+      const settingsLib = require('./lib/settings.js');
+      reaperMatchDflt = settingsLib.get('guards', 'reaperMatch');
+      reaperExcludeDflt = settingsLib.get('guards', 'reaperExclude');
+    } catch (_) {
+      reaperMatchDflt = process.env.ANTIHALL_REAPER_MATCH;
+      reaperExcludeDflt = process.env.ANTIHALL_REAPER_EXCLUDE;
+    }
+    const extraRe = 'extraRe' in o ? o.extraRe : buildExtraRe(reaperMatchDflt);
+    const excludeRe = 'excludeRe' in o ? o.excludeRe : buildExtraRe(reaperExcludeDflt);
     const minAgeS =
       typeof o.minAgeS === 'number'
         ? o.minAgeS

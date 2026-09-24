@@ -767,7 +767,9 @@ function buildRawFileReadReason(kind) {
 // messages under a durable inbox). References no wrapper/CLI that does not exist.
 function buildDevswarmReason(kind, env) {
   const e = env || process.env;
-  const inboxCmd = e.ANTIHALL_DEVSWARM_INBOX_CMD;
+  let inboxCmd;
+  try { inboxCmd = require('./lib/settings.js').getWithEnv('devswarm', 'inboxCmd', '', e); }
+  catch (_) { inboxCmd = e.ANTIHALL_DEVSWARM_INBOX_CMD; }
   const hasInboxCmd = typeof inboxCmd === 'string' && inboxCmd.trim() !== '';
   const doNotDelegate =
     ' Do NOT delegate this to a subagent either — a delegated read drains the ' +

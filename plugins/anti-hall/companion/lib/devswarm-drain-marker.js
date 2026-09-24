@@ -67,6 +67,8 @@ const DEFAULT_TTL_MS = 10 * 60 * 1000; // 10 minutes
 // precedent (P2-a there) for the same reason.
 function ttlMs(env) {
   const src = env || process.env;
+  try { return require('../../hooks/lib/settings.js').getWithEnv('devswarm', 'drainTtlMs', DEFAULT_TTL_MS, src); }
+  catch (_) { /* fall through */ }
   const raw = src && src.ANTIHALL_DEVSWARM_DRAIN_TTL_MS;
   const n = Number(String(raw == null ? '' : raw).trim());
   return (Number.isFinite(n) && n > 0) ? n : DEFAULT_TTL_MS;
