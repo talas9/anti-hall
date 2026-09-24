@@ -176,6 +176,26 @@ const HIVECTL_MESSAGE_CHILD =
 const HIVECTL_MESSAGE_PARENT =
   new RegExp('\\b' + DEVSWARM_CLI_VERB_ALT + '\\s+(?:-\\S+\\s+)*workspace\\s+(?:-\\S+\\s+)*message-parent\\b', 'i');
 
+// hivectlSegmentHasHelpFlag(seg) -> true iff this SEGMENT's argv (tokenized the
+// same quote-aware way as every other token scan in this file — tokenizeQuoted,
+// shared with git-guard.js via ./lib/shell-scan.js) contains a bare `--help` or
+// `-h` token. A read-only `--help`/`-h` invocation of a gated hivecontrol/devswarm
+// subcommand (`hivecontrol workspace read-messages --help`, `... monitor -h`,
+// `... message-child --help`) never touches the mailbox/mesh — it just prints
+// usage and exits — so it is not the destructive-read / native-send action this
+// guard exists to stop. Checked PER SEGMENT (splitSegments already isolates
+// shell-chained commands: `;`, `&&`, `||`, `|`, newlines), so a smuggled
+// `hivecontrol workspace message-child --help ; hivecontrol workspace
+// message-child x` still blocks on its SECOND segment, which carries no
+// --help/-h token of its own. Token-exact match only (`--help`/`-h` as their
+// own argv word) — a token that merely CONTAINS "help" as a substring
+// (`--help-me`, a file literally named `-h`) does not count, mirroring how a
+// real arg parser distinguishes a flag from an arbitrary operand.
+function hivectlSegmentHasHelpFlag(seg) {
+  const tokens = tokenizeQuoted(seg);
+  return tokens.some((t) => t === '--help' || t === '-h');
+}
+
 // detectHivectlDestructiveRead(command, depth) -> 'monitor' | 'read-messages' | null.
 // Mirrors isHeavyCommand's matching discipline so DATA and CODE are separated the
 // same way the heavy path does it: the per-segment regex test runs against the
@@ -224,7 +244,7 @@ function detectHivectlDestructiveRead(command, depth) {
     // would need a full shell-expansion simulation, which is out of scope: this
     // guard prevents ACCIDENTAL and quote-obfuscated destructive reads, not a
     // determined shell-expansion bypass. Tests document these as knowingly-allowed.
-    if (DEVSWARM_CLI_VERBS.has(effectiveVerb(dequoted))) {
+    if (DEVSWARM_CLI_VERBS.has(effectiveVerb(dequoted)) && !hivectlSegmentHasHelpFlag(seg)) {
       if (HIVECTL_MONITOR.test(dequoted)) return 'monitor';
       if (HIVECTL_READ_MESSAGES.test(dequoted)) sawReadMessages = true;
     }
@@ -283,7 +303,7 @@ function detectHivectlMessageSend(command, depth) {
   const d = typeof depth === 'number' ? depth : 0;
   for (const seg of splitSegments(command)) {
     const dequoted = dequoteSegment(seg);
-    if (DEVSWARM_CLI_VERBS.has(effectiveVerb(dequoted))) {
+    if (DEVSWARM_CLI_VERBS.has(effectiveVerb(dequoted)) && !hivectlSegmentHasHelpFlag(seg)) {
       if (HIVECTL_MESSAGE_CHILD.test(dequoted)) return 'message-child';
       if (HIVECTL_MESSAGE_PARENT.test(dequoted)) return 'message-parent';
     }

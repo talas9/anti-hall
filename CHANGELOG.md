@@ -124,6 +124,10 @@ the update.
   `usage.input_tokens`/`output_tokens` are read.
 - **`settings.js show --all`** dropped four Jev advanced keys and listed `budget.*` twice
   (headline/advanced split by position); object settings now render as JSON.
+- **command-guard allowed read-only `--help`/`-h`**: `hivecontrol workspace
+  read-messages --help`, `monitor -h` and `message-child --help` only print usage, so a
+  segment carrying a bare `--help`/`-h` token is no longer blocked as a destructive read
+  or native send; a real call chained on another segment still blocks.
 - **edit-guard's handover redirect** now names `.anti-hall/handovers/**` as the exempt
   place to write.
 - **`update.js` split-store summary** now states how many already-handled rows were

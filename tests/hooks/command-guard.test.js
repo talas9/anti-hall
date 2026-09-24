@@ -321,6 +321,34 @@ for (const cmd of HIVECTL_ALLOW) {
   });
 }
 
+// --- --help/-h: read-only usage invocations must not be treated as the
+// destructive action they are naming. Fixes a false positive where
+// `hivecontrol workspace read-messages --help` / `... monitor -h` were blocked
+// identically to the real destructive call, even though neither touches the
+// mailbox/mesh.
+const HIVECTL_HELP_ALLOW = [
+  'hivecontrol workspace read-messages --help',
+  'hivecontrol workspace monitor -h',
+  'hivecontrol workspace monitor --help',
+  'hivecontrol workspace read-messages -h',
+  'devswarm workspace monitor --help',
+];
+for (const cmd of HIVECTL_HELP_ALLOW) {
+  test(`DEVSWARM ALLOW (--help/-h read-only): ${cmd}`, () => {
+    const r = runDevswarm(cmd);
+    assert.strictEqual(r.status, 0, `expected allow for: ${cmd}\nstdout: ${r.stdout}`);
+  });
+}
+
+// A --help token in one chained segment must NOT immunize a SEPARATE segment
+// that carries no --help/-h of its own — splitSegments already isolates them,
+// so the second (real, non-help) invocation still blocks.
+test('DEVSWARM BLOCK: --help on one segment does not shield a chained real monitor call', () => {
+  const r = runDevswarm('hivecontrol workspace monitor --help ; hivecontrol workspace monitor');
+  assert.strictEqual(r.status, 2, `expected block for chained real call\nstdout: ${r.stdout}`);
+  assert.ok(r.json && r.json.decision === 'block', 'decision:block expected in stdout');
+});
+
 // ---------------------------------------------------------------------------
 // v0.58 "mesh-only messaging" branch: HIVECTL_MESSAGE_CHILD / HIVECTL_MESSAGE_PARENT.
 // Native SEND subcommands are now guard-blocked; every LIFECYCLE verb
@@ -409,6 +437,27 @@ for (const cmd of HIVECTL_MESSAGE_ALLOW) {
     assert.strictEqual(r.status, 0, `expected allow for: ${cmd}\nstdout: ${r.stdout}`);
   });
 }
+
+// --help/-h: a read-only usage invocation of message-child/message-parent
+// never sends anything — must not be blocked identically to the real send.
+const HIVECTL_MESSAGE_HELP_ALLOW = [
+  'hivecontrol workspace message-child --help',
+  'hivecontrol workspace message-parent -h',
+  'devswarm workspace message-child --help',
+];
+for (const cmd of HIVECTL_MESSAGE_HELP_ALLOW) {
+  test(`DEVSWARM MESSAGE-SEND ALLOW (--help/-h read-only): ${cmd}`, () => {
+    const r = runDevswarm(cmd);
+    assert.strictEqual(r.status, 0, `expected allow for: ${cmd}\nstdout: ${r.stdout}`);
+  });
+}
+
+// A --help on one chained segment must not shield a separate, real send.
+test('DEVSWARM MESSAGE-SEND BLOCK: --help on one segment does not shield a chained real send', () => {
+  const r = runDevswarm('hivecontrol workspace message-child --help ; hivecontrol workspace message-child x');
+  assert.strictEqual(r.status, 2, `expected block for chained real send\nstdout: ${r.stdout}`);
+  assert.ok(r.json && r.json.decision === 'block', 'decision:block expected in stdout');
+});
 
 // --- SKIP (own name `devswarm-send-guard`, independent of devswarm-read-guard
 // and command-guard's own skip) ---
