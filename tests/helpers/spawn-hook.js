@@ -61,6 +61,7 @@ function isolatedEnv(home) {
     const root = path.parse(home).root; // e.g. "C:\\"
     env.HOME = home;
     env.USERPROFILE = home;
+    env.ANTIHALL_TEST_ISOLATION = '1'; // test marker: installers refuse launchd/systemd/user config
     env.HOMEDRIVE = root;
     env.HOMEPATH = home.slice(root.length);
     return env;
@@ -68,6 +69,9 @@ function isolatedEnv(home) {
   return {
     PATH: process.env.PATH,
     HOME: home,
+    // Test marker (0.108.0 launchd leak): survives a child env that drops
+    // NODE_TEST_CONTEXT, so installers still refuse launchd/systemd/user config.
+    ANTIHALL_TEST_ISOLATION: '1',
   };
 }
 

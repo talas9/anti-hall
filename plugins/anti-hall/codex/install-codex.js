@@ -212,6 +212,12 @@ function writeFileChanged(file, content) {
 }
 
 function main() {
+  // Test guard (0.108.0 launchd/config leak): under a test (NODE_TEST_CONTEXT or
+  // ANTIHALL_TEST_ISOLATION) never write Codex config outside a temp dir.
+  if (!dryRun && require('../companion/lib/test-home-guard.js').userConfigWriteRefused(targetRoot)) {
+    process.stderr.write('anti-hall: install-codex.js refused under a test: ' + targetRoot + ' is outside a temp dir (isolate HOME/cwd)\n');
+    return;
+  }
   const existingHooks = readJSON(hooksPath);
   const merged = mergeHooks(existingHooks);
   const hooksChanged = writeFileChanged(hooksPath, JSON.stringify(merged, null, 2) + '\n');

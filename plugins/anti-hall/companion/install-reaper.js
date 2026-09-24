@@ -36,7 +36,14 @@ const UNINSTALL = args.includes('--uninstall');
 // plain `node install-reaper.js` run by hand outside `node --test` still
 // needs the flag.
 const EXPLICIT_DRYRUN = args.includes('--dry-run');
-const NODE_TEST_CONTEXT_GUARD = !EXPLICIT_DRYRUN && !!process.env.NODE_TEST_CONTEXT;
+// underTest(): NODE_TEST_CONTEXT or the ANTIHALL_TEST_ISOLATION marker tests/helpers
+// set on every child they build (0.108.0 launchd leak: a stripped child env).
+// A lone copy of this file (no lib/ sibling) falls back to the same env check.
+let TEST_GUARD = null;
+try { TEST_GUARD = require('./lib/test-home-guard.js'); } catch (_) { TEST_GUARD = null; }
+const NODE_TEST_CONTEXT_GUARD = !EXPLICIT_DRYRUN && (TEST_GUARD
+  ? TEST_GUARD.underTest()
+  : !!(process.env.NODE_TEST_CONTEXT || process.env.ANTIHALL_TEST_ISOLATION));
 const DRYRUN = EXPLICIT_DRYRUN || NODE_TEST_CONTEXT_GUARD;
 
 function say(msg) {
@@ -92,7 +99,10 @@ function planRun(cmd, argv, opts) {
     say(`[dry-run] would run: ${cmd} ${argv.join(' ')}`);
     return { status: 0, dry: true };
   }
-  const r = spawnSync(cmd, argv, { encoding: 'utf8', ...(opts || {}) });
+  // launchctl/systemctl/crontab go through the ONE service seam, which refuses
+  // them under a test whatever this installer's own DRYRUN says.
+  const r = TEST_GUARD ? TEST_GUARD.runServiceCmd(cmd, argv, opts) : spawnSync(cmd, argv, { encoding: 'utf8', ...(opts || {}) });
+  if (r.refused) { say(`[test-guard] refused under a test: ${cmd} ${argv.join(' ')}`); return r; }
   if (r.error) say(`(warn) ${cmd} failed: ${r.error.message}`);
   else say(`ran: ${cmd} ${argv.join(' ')} (exit ${r.status})`);
   return r;

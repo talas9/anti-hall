@@ -47,7 +47,7 @@ function writeJson(p, obj) {
 // isolatedEnv(home, extra) — controlled child env: PATH + HOME only, plus
 // whatever the caller explicitly asks for. Nothing else leaks in.
 function isolatedEnv(home, extra) {
-  return Object.assign({ PATH: process.env.PATH, HOME: home }, extra || {});
+  return Object.assign({ PATH: process.env.PATH, HOME: home, ANTIHALL_TEST_ISOLATION: '1' }, extra || {});
 }
 
 // runHook(hookFile, payload, home, extraEnv) -> { status, stdout, stderr, json }

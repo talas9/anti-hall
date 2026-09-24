@@ -33,7 +33,7 @@ function rm(home) { try { fs.rmSync(home, { recursive: true, force: true }); } c
 // cross-platform. PATH is preserved so `node` resolves; nothing else leaks in, so
 // coordinator-vs-subagent detection in the guard stays deterministic.
 function isolatedEnv(home, extra) {
-  const env = { PATH: process.env.PATH, HOME: home };
+  const env = { PATH: process.env.PATH, HOME: home, ANTIHALL_TEST_ISOLATION: '1' };
   if (process.platform === 'win32') {
     const root = path.parse(home).root;
     env.USERPROFILE = home;

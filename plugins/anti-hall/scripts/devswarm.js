@@ -6907,7 +6907,10 @@ function defaultSpawnInstaller(worktree, home, env) {
   const installerPath = path.join(__dirname, '..', 'companion', 'install-devswarm-ingest.js');
   try {
     return spawnSync(process.execPath, [installerPath], {
-      cwd: worktree, env: Object.assign({}, env, { HOME: home }), encoding: 'utf8', timeout: 30000,
+      // installerChildEnv: merged onto this process's env with the test
+      // markers carried — a caller's partial ctx.env must never strip
+      // NODE_TEST_CONTEXT/PATH from the installer child (0.108.0 launchd leak).
+      cwd: worktree, env: require('../companion/lib/test-home-guard.js').installerChildEnv(env, { HOME: home, USERPROFILE: home }), encoding: 'utf8', timeout: 30000,
     });
   } catch (_) {
     return null;

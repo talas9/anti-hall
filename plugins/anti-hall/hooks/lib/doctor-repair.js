@@ -1015,9 +1015,15 @@ function unitInstalled(installerPath, home, platform) {
 // subprocess (never a hand-written plist). cwd + env are threaded so os.homedir()
 // and resolveWorktree() inside the child resolve to the same home/worktree doctor
 // is operating on.
+//
+// env is MERGED onto this process's environment (installerChildEnv), never
+// passed raw: spawnSync's env REPLACES the child environment, so a caller's
+// partial env (tests pass `env: {}`) used to start the installer with no HOME
+// (os.homedir() -> the real passwd home) and no NODE_TEST_CONTEXT — every test
+// guard passed and it ran a real `launchctl load` (0.108.0 launchd leak).
 function spawnInstaller(script, argv, cwd, env) {
   return cp.spawnSync(process.execPath, [script].concat(argv || []), {
-    cwd, env, encoding: 'utf8', timeout: 30000,
+    cwd, env: require('../../companion/lib/test-home-guard.js').installerChildEnv(env), encoding: 'utf8', timeout: 30000,
   });
 }
 

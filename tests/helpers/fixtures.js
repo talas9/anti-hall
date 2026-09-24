@@ -8,6 +8,11 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
+// Global test marker (0.108.0 launchd leak): every child this test process
+// spawns from process.env carries it, so installers refuse launchd/systemd and
+// user-config writes even when a caller's env drops NODE_TEST_CONTEXT.
+process.env.ANTIHALL_TEST_ISOLATION = '1';
+
 // makeHome() -> a fresh temp HOME with <home>/.anti-hall created.
 function makeHome() {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'anti-hall-test-'));

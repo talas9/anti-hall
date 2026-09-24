@@ -144,6 +144,14 @@ the update.
 
 ### Fixes
 
+- **P0: tests could register real launchd jobs.** `doctor-repair`'s installer spawn passed
+  a caller's partial env (`env: {}`) straight to `spawnSync`, which replaces the child
+  environment: the installer ran with no `HOME` (so the real home) and no test marker, and
+  loaded a real supervisor/ingest job. Installer spawns (doctor, `devswarm` self-heal,
+  `update`) now merge onto the parent env and always carry the test markers; the
+  supervisor, ingest and reaper installers route `launchctl`/`systemctl`/`crontab` through
+  one seam that refuses them under a test; the statusline and Codex installers refuse user
+  config outside a temp dir under a test. Test helpers set `ANTIHALL_TEST_ISOLATION=1`.
 - **P0: `update.js` ran the old version's post-pull stages.** After pulling a newer
   version it now re-execs the freshly pulled `update.js --post-pull-only`, so stages that
   exist only in the new version run in the same update; any failure falls back to the

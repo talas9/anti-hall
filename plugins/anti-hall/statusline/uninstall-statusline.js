@@ -52,6 +52,13 @@ if (scope === 'user') {
 }
 
 const BACKUP_PATH  = SETTINGS_PATH + '.bak-antihall';
+
+// Test guard (0.108.0 launchd/config leak): under a test (NODE_TEST_CONTEXT or
+// ANTIHALL_TEST_ISOLATION) never write user config outside a temp dir.
+if (require('../companion/lib/test-home-guard.js').userConfigWriteRefused(SETTINGS_PATH)) {
+  process.stderr.write('anti-hall: uninstall-statusline.js refused under a test: ' + SETTINGS_PATH + ' is outside a temp dir (isolate HOME/cwd)\n');
+  process.exit(0);
+}
 const BASE_CFG_DIR = path.join(os.homedir(), '.anti-hall');
 const BASE_CFG     = path.join(BASE_CFG_DIR, 'base-statusline.json');
 

@@ -126,7 +126,14 @@ const UNINSTALL = args.includes('--uninstall');
 // `node --test` (e.g. a plain `node install-devswarm-ingest.js` a developer
 // runs by hand to smoke-test) still needs the explicit flag/env.
 const EXPLICIT_DRYRUN = args.includes('--dry-run') || process.env.ANTIHALL_INGEST_DRY_RUN === '1';
-const NODE_TEST_CONTEXT_GUARD = !EXPLICIT_DRYRUN && !!process.env.NODE_TEST_CONTEXT;
+// underTest(): NODE_TEST_CONTEXT or the ANTIHALL_TEST_ISOLATION marker tests/helpers
+// set on every child they build (0.108.0 launchd leak: a stripped child env).
+// A lone copy of this file (no lib/ sibling) falls back to the same env check.
+let TEST_GUARD = null;
+try { TEST_GUARD = require('./lib/test-home-guard.js'); } catch (_) { TEST_GUARD = null; }
+const NODE_TEST_CONTEXT_GUARD = !EXPLICIT_DRYRUN && (TEST_GUARD
+  ? TEST_GUARD.underTest()
+  : !!(process.env.NODE_TEST_CONTEXT || process.env.ANTIHALL_TEST_ISOLATION));
 // TMP-HOME GUARD (defect d1c57e67998f, P1, field-verified): NODE_TEST_CONTEXT_GUARD
 // above only catches a run that is ITSELF under `node --test` (or a child it
 // spawned) — it has NO signal for a non-test experiment run by hand or by an
@@ -326,7 +333,10 @@ function planRm(file) {
 }
 function planRun(cmd, argv, opts) {
   if (DRYRUN) { noteNodeTestContextGuardTripped(); noteTmpHomeGuardTripped(); say(`[dry-run] would run: ${cmd} ${argv.join(' ')}`); return { status: 0, dry: true }; }
-  const r = spawnSync(cmd, argv, { encoding: 'utf8', ...(opts || {}) });
+  // launchctl/systemctl/crontab go through the ONE service seam, which refuses
+  // them under a test whatever this installer's own DRYRUN says.
+  const r = TEST_GUARD ? TEST_GUARD.runServiceCmd(cmd, argv, opts) : spawnSync(cmd, argv, { encoding: 'utf8', ...(opts || {}) });
+  if (r.refused) { say(`[test-guard] refused under a test: ${cmd} ${argv.join(' ')}`); return r; }
   if (r.error) say(`(warn) ${cmd} failed: ${r.error.message}`);
   else say(`ran: ${cmd} ${argv.join(' ')} (exit ${r.status})`);
   return r;

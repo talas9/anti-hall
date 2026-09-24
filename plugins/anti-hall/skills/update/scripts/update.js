@@ -1009,8 +1009,14 @@ function healIngestDaemon(opts) {
       }
     }
 
+    // Merged env with test markers carried (see doctor-repair spawnInstaller):
+    // a partial caller env must never strip NODE_TEST_CONTEXT/PATH.
+    const childEnv = (() => {
+      try { return require(path.join(paths.pluginSrcDir, 'companion', 'lib', 'test-home-guard.js')).installerChildEnv(env, { HOME: home, USERPROFILE: home }); }
+      catch (_) { return Object.assign({}, process.env, env, { HOME: home, USERPROFILE: home }); }
+    })();
     const spawn = o.spawnFn || ((script) => spawnSync(process.execPath, [script], {
-      cwd, env: Object.assign({}, env, { HOME: home }), encoding: 'utf8', timeout: 30000,
+      cwd, env: childEnv, encoding: 'utf8', timeout: 30000,
     }));
     // FORCED RESTART even when cls === 'ok' (v-pacing-fix delivery gap): `git
     // pull` above already landed new companion/ content at the stable
