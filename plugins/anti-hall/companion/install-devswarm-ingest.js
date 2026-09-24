@@ -331,11 +331,21 @@ function planRm(file) {
   if (DRYRUN) { noteNodeTestContextGuardTripped(); noteTmpHomeGuardTripped(); say(`[dry-run] would remove ${file}`); return; }
   try { fs.unlinkSync(file); say(`removed ${file}`); } catch (_e) { say(`(not present) ${file}`); }
 }
+// svcSpawnSync(cmd, argv, opts) -> the ONE seam every launchctl/systemctl/
+// crontab invocation goes through, mutating OR read-only alike (list/-l
+// probes included — 0.108.0's hygiene test forbids the real binary from
+// being reached at all under a test, not just writes). Routes through
+// TEST_GUARD.runServiceCmd, which refuses under a test regardless of this
+// installer's own DRYRUN state; falls back to a bare spawnSync only when the
+// guard module itself failed to load.
+function svcSpawnSync(cmd, argv, opts) {
+  return TEST_GUARD ? TEST_GUARD.runServiceCmd(cmd, argv, opts) : spawnSync(cmd, argv, Object.assign({ encoding: 'utf8' }, opts || {}));
+}
 function planRun(cmd, argv, opts) {
   if (DRYRUN) { noteNodeTestContextGuardTripped(); noteTmpHomeGuardTripped(); say(`[dry-run] would run: ${cmd} ${argv.join(' ')}`); return { status: 0, dry: true }; }
   // launchctl/systemctl/crontab go through the ONE service seam, which refuses
   // them under a test whatever this installer's own DRYRUN says.
-  const r = TEST_GUARD ? TEST_GUARD.runServiceCmd(cmd, argv, opts) : spawnSync(cmd, argv, { encoding: 'utf8', ...(opts || {}) });
+  const r = svcSpawnSync(cmd, argv, opts);
   if (r.refused) { say(`[test-guard] refused under a test: ${cmd} ${argv.join(' ')}`); return r; }
   if (r.error) say(`(warn) ${cmd} failed: ${r.error.message}`);
   else say(`ran: ${cmd} ${argv.join(' ')} (exit ${r.status})`);
@@ -1291,7 +1301,7 @@ WantedBy=default.target
 `;
 }
 function hasSystemctl() {
-  const r = spawnSync('systemctl', ['--user', '--version'], { encoding: 'utf8' });
+  const r = svcSpawnSync('systemctl', ['--user', '--version']);
   return !r.error && r.status === 0;
 }
 // cron fallback: every minute, restart-if-dead. A live daemon holds the ingest
@@ -1362,7 +1372,7 @@ function removeCronEntry(current, marker) {
 // readCrontab() -> current crontab text ('' if none/unreadable). Fail-open.
 function readCrontab() {
   try {
-    const r = spawnSync('crontab', ['-l'], { encoding: 'utf8' });
+    const r = svcSpawnSync('crontab', ['-l']);
     if (!r.error && typeof r.stdout === 'string') return r.stdout;
   } catch (_) { /* no crontab / not installed -> empty */ }
   return '';
@@ -1581,7 +1591,7 @@ function listInstalledIngestUnits(opts) {
       // parsing the command line following each.
       let crontab = '';
       try {
-        const r = spawnSync('crontab', ['-l'], { encoding: 'utf8' });
+        const r = svcSpawnSync('crontab', ['-l']);
         if (!r.error && typeof r.stdout === 'string') crontab = r.stdout;
       } catch (_) { crontab = ''; }
       const clines = crontab.split('\n');
@@ -1630,7 +1640,7 @@ function listInstalledIngestUnits(opts) {
 // (whitespace-split, length guard) — never assume fixed column widths.
 function defaultListLoadedLaunchd() {
   let r;
-  try { r = spawnSync('launchctl', ['list'], { encoding: 'utf8' }); } catch (_) { return []; }
+  try { r = svcSpawnSync('launchctl', ['list']); } catch (_) { return []; }
   if (!r || r.error || r.status !== 0) return [];
   return String(r.stdout || '').split('\n').slice(1)
     .map((l) => l.trim().split(/\s+/))
@@ -1645,7 +1655,7 @@ function defaultListLoadedLaunchd() {
 function defaultListLoadedSystemd() {
   let r;
   try {
-    r = spawnSync('systemctl', ['--user', 'list-units', '--all', '--no-legend', '--plain'], { encoding: 'utf8' });
+    r = svcSpawnSync('systemctl', ['--user', 'list-units', '--all', '--no-legend', '--plain']);
   } catch (_) { return []; }
   if (!r || r.error || r.status !== 0) return [];
   return String(r.stdout || '').split('\n')
