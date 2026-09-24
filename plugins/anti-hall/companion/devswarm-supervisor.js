@@ -956,6 +956,9 @@ function main() {
   let release = null;
   try {
     const home = os.homedir();
+    // v0.108.0: mark this process as automation — devswarm-lifecycle's
+    // executePrune (workspace DELETE) refuses any non-interactive caller.
+    process.env.ANTIHALL_CALLER = 'supervisor';
     release = acquireSweepLock(home, {});
     if (!release) { process.exit(0); return; } // a prior sweep is still running — do not stack
     const t = resolveThresholdsFromEnv(process.env);
@@ -970,6 +973,10 @@ function main() {
     // Deferred post-update sweep backstop (task #40) — rides inside this SAME
     // single-flight sweep-lock hold, one bounded stage-slot per pass.
     const deferredSweep = deferredSweepIfDue({ home });
+    // v0.108.0 auto-archive (devswarm-lifecycle.js): default mode "dry-run"
+    // only REPORTS (in this stdout line); "on" archives proven-done children.
+    let autoArchive = null;
+    try { autoArchive = require('./lib/devswarm-lifecycle.js').autoArchiveSweep({ home }); } catch (_) { autoArchive = null; }
     // `sweepFamilies` (identity-family collapsed) rides ALONGSIDE the existing
     // `sweep` field (raw per-descriptor count, unchanged — still what
     // sweepOnce actually iterated/wrote verdicts for) rather than replacing
@@ -979,7 +986,7 @@ function main() {
     // worktreePath through sweepOnce's per-result shape.
     let sweepFamilies = results.length;
     try { sweepFamilies = collapsedDescriptorFamilies(readDescriptors(home)).length; } catch (_) { /* fail-open: keep raw count */ }
-    process.stdout.write(JSON.stringify({ ts: new Date().toISOString(), sweep: results.length, sweepFamilies, reconcile, deferredSweep }) + '\n');
+    process.stdout.write(JSON.stringify({ ts: new Date().toISOString(), sweep: results.length, sweepFamilies, reconcile, deferredSweep, autoArchive }) + '\n');
   } catch (_) {
     // absolute fail-safe: never throw out of the sweep
   } finally {

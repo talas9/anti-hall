@@ -574,6 +574,10 @@ function isArchiveReady(id, summary) {
 
 // isArchiveIgnored(home, id) -> bool. A per-workspace ignore mark silences the
 // archive reminder for THAT workspace only (it stays tracked). Existence check.
+function autoArchiveOwnsRow(home, id, now) {
+  try { return require('../companion/lib/devswarm-lifecycle.js').autoArchiveOwns(home, id, { now }); } catch (_) { return false; }
+}
+
 function isArchiveIgnored(home, id) {
   try {
     fs.statSync(archiveIgnorePath(home, id));
@@ -1440,8 +1444,11 @@ function main() {
     }
 
     try {
+      // v0.108.0: with auto-archive mode "on" (and the archive verb available)
+      // the supervisor archives this workspace itself — no user nag for the
+      // rows its last sweep owns (companion/lib/devswarm-lifecycle.js).
       if (archiveReady && !appArchivedRow && !isArchiveIgnored(home, id)
-          && archiveCooldownElapsed(home, id, now)) {
+          && archiveCooldownElapsed(home, id, now) && !autoArchiveOwnsRow(home, id, now)) {
         archiveList.push(id);
       }
     } catch (_) {}

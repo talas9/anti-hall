@@ -16218,6 +16218,8 @@ const VERB_HELP = {
   merge: { synopsis: 'check-merge + merge-into-source via hivecontrol (raw argv pass-through)', mutates: 'MUTATES — forwards to hivecontrol AND unconditionally sends a mesh broadcast reporting the outcome' },
   skip: { synopsis: 'skip <guard> [--ttl <minutes>] — temporarily disable an anti-hall guard', mutates: 'writes a skip-file entry' },
   'gate-intent': { synopsis: 'record a stated-intent signal for the Stop-hook parent gate', mutates: 'writes a gate-intent record' },
+  'auto-archive': { synopsis: 'show the auto-archive plan (done+merged+clean+no-unread+idle workspaces)', mutates: 'read-only' },
+  'prune-archived': { synopsis: 'prune-archived --older-than <days> (dry run) | --confirm-ids <ids> --plan <nonce>', mutates: 'dry run writes a plan file; --confirm-ids DELETES the listed archived workspaces via hivecontrol (owner-approved only)' },
 };
 // verbListFromSwitch() — the verb names actually dispatched by run()'s own
 // switch statement, extracted from run's own source text. Deliberately NOT
@@ -16530,6 +16532,28 @@ function run(argv, ctx0) {
         const r = cmdSkip(guard, flags, ctx);
         return { code: r.ok ? 0 : 2, result: r };
       }
+      case 'auto-archive': {
+        // v0.108.0 — READ-ONLY plan: which done workspaces the supervisor's
+        // auto-archive would archive now, with the proof/blockers per row.
+        // Archiving itself happens only in the supervisor sweep (mode "on").
+        const r = require('../companion/lib/devswarm-lifecycle.js').planAutoArchive({ home: ctx.home, env: ctx.env });
+        return { code: r.ok ? 0 : 2, result: Object.assign({ action: 'auto-archive' }, r) };
+      }
+      case 'prune-archived': {
+        // v0.108.0 — dry run by default; deletion ONLY via --confirm-ids +
+        // --plan <nonce> of a fresh dry run the owner approved. This is the
+        // ONE call site of executePrune (hygiene-tested).
+        const lifecycle = require('../companion/lib/devswarm-lifecycle.js');
+        if (flags['confirm-ids']) {
+          const r = lifecycle.executePrune({
+            home: ctx.home, env: ctx.env, ids: csvList(flags, 'confirm-ids'), nonce: one(flags, 'plan'),
+            archiveDescriptor: (id) => cmdArchive(id, ctx),
+          });
+          return { code: r.ok ? 0 : 2, result: Object.assign({ action: 'prune-archived' }, r) };
+        }
+        const r = lifecycle.planPrune({ home: ctx.home, env: ctx.env, olderThanDays: one(flags, 'older-than') });
+        return { code: r.ok ? 0 : 2, result: Object.assign({ action: 'prune-archived' }, r) };
+      }
       case 'gate-intent': {
         // `gate-intent --reason "<text>" [--session <id>]` — the explicit
         // stated-intent signal devswarm-parent-gate.js's Stop hook consumes.
@@ -16540,7 +16564,7 @@ function run(argv, ctx0) {
       }
       default:
         return { code: 2, result: { ok: false, error: 'unknown command: ' + JSON.stringify(cmd || '') +
-          ' (register|register-primary|ensure|heartbeat|inbox|workspaces|gate|gate-intent|nudge|archive|unarchive|archive-ignore|archive-unignore|archive-request|migrate|migrate-owner-keys|logs|send|roster|diagnose|healthcheck|mesh|reconcile|reap-stale|reconcile-active|spawn|merge|skip)' } };
+          ' (register|register-primary|ensure|heartbeat|inbox|workspaces|gate|gate-intent|nudge|archive|unarchive|archive-ignore|archive-unignore|archive-request|migrate|migrate-owner-keys|logs|send|roster|diagnose|healthcheck|mesh|reconcile|reap-stale|reconcile-active|spawn|merge|skip|auto-archive|prune-archived)' } };
     }
   } catch (e) {
     // Csh: an internal exception used to be swallowed silently into { ok:false }.

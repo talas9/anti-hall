@@ -17,6 +17,24 @@ the update.
   everything sleeps silently. Every `hivecontrol` call in `scripts/devswarm.js` now
   goes through the gate.
 
+- **New: auto-archive for done DevSwarm workspaces** (`companion/lib/devswarm-lifecycle.js`,
+  run by the supervisor sweep). A child workspace is archived only when all of these are
+  proven: its finish gates are set; its branch is merged (git ancestry, or the app's PR row
+  says merged); its worktree is clean; it has no unread mail in either direction; it isn't
+  the Primary; the owner hasn't viewed it in the app for 10 minutes; and it has been idle
+  for `idleMin`. Settings `devswarm.autoArchive.{mode,idleMin,maxPerSweep}` go in
+  `~/.anti-hall/settings.json`. The default `mode` is `"dry-run"`, which only reports and
+  writes nothing; set `"on"` to act. Each archive tells the Primary with an undo hint, and
+  it replaces the "archive-ready" reminder for those workspaces. `devswarm.js auto-archive`
+  shows the plan. Needs DevSwarm >= 2.5.3 and stays dormant on older versions.
+- **New: `devswarm.js prune-archived`.** The dry run (`--older-than <days>`) lists archived
+  workspaces with evidence and stores a 15-minute plan nonce. Deletion runs only through
+  `--confirm-ids <exact ids> --plan <nonce>`, after the owner approves that exact list.
+  Automated callers are refused, and a hygiene test keeps every hook, supervisor and
+  scheduler path away from it. Each row is re-checked before its delete, logged to
+  `~/.anti-hall/logs/devswarm-prune.ndjson`, and tombstoned in anti-hall; no store rows are
+  deleted. Needs DevSwarm >= 2.5.3.
+
 ## 0.107.1 (2026-09-24)
 
 - **Fixed: phantom "N unread" on the Primary's own mailbox.** When a store's

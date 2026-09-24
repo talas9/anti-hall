@@ -202,7 +202,7 @@ Two v0.56.0 additions:
   default ON) that additionally checks a bounded, non-destructive `hivecontrol workspace
   message-count` when the durable check alone shows nothing.
 - **Archive flow — REVISED v0.58: now a direct store write, not a hivecontrol call.**
-  anti-hall never archives mechanically. PARENT role: after verifying
+  anti-hall never archives mechanically (except the opt-in auto-archive, see "Auto-archive and prune" below). PARENT role: after verifying
   merged+tested+deployed **per your own repo's policy** (anti-hall does not check this),
   run `node scripts/devswarm.js archive-request <childId> [--reason TEXT]`. Pre-v0.58 this
   resolved a child branch and posted via `hivecontrol workspace message-child` — as of
@@ -263,6 +263,54 @@ during promotion is now reported as `promotion.registryWriteError` on `inbox pul
 `read-primary`/`inbox messages` JSON output (plus a stderr line) instead of being
 swallowed — the descriptor promotion itself already succeeded, and the next read repairs
 the registry from the descriptor's existing value. Full record: `docs/KB-devswarm-hivecontrol.md` §40. (Phase 5: `read-primary` / `messages --ack` are read-only — after handling the mail run the returned `ackCommand`, i.e. `inbox ack-primary <id> --receipt <rid>`.)
+
+## Auto-archive and prune (v0.108.0; needs DevSwarm >= 2.5.3)
+
+Both features go through the capability gate (`companion/lib/devswarm-capabilities.js`).
+On DevSwarm < 2.5.3 the `hivecontrol workspace archive`/`delete` verbs don't exist, so both
+features stay dormant, and doctor says "feature X needs DevSwarm >= 2.5.3, you have Z".
+
+**Auto-archive (supervisor sweep).** The supervisor archives a child workspace only when ALL
+of these are proven: (a) the finish gates are set (`archive_ready`), (b) its branch is merged
+into its source (`git merge-base --is-ancestor`, else the app's PR row says merged),
+(c) `git status --porcelain` is empty, (d) there's no unread mail to it or from it,
+(e) it isn't the Primary, (f) the owner hasn't selected it in the app for 10 min, and
+(g) it has been idle >= `idleMin`. A fact that can't be read counts as not proven.
+`hivecontrol workspace check-merge` is never used as a probe, because it can create a source
+worktree. Settings live in `~/.anti-hall/settings.json`:
+
+| Key | Values | Default |
+|---|---|---|
+| `devswarm.autoArchive.mode` | `"dry-run"` / `"on"` / `"off"` | `"dry-run"` (reports what WOULD be archived; writes nothing) |
+| `devswarm.autoArchive.idleMin` | minutes, >= 5 | `30` |
+| `devswarm.autoArchive.maxPerSweep` | 1..20 | `3` |
+
+`node scripts/devswarm.js auto-archive` prints the current plan (read-only), with the proof
+or the blockers for each workspace. With `mode: "on"`, each archive sends the Primary one line
+with an undo hint (unarchive it from the DevSwarm app's archived list) and is logged to
+`~/.anti-hall/logs/devswarm-auto-archive.ndjson`. The "archive-ready" reminder is then
+skipped for the workspaces the sweep owns. Archive is recoverable: the worktree is kept.
+
+**Prune old archived workspaces (owner-approved only).** Deletion is permanent. The flow is
+fixed, and every step is required:
+1. Dry run: `node scripts/devswarm.js prune-archived --older-than <days>`. It lists every
+   archived workspace with its evidence (archived since, merged?, uncommitted?, unread?,
+   worktree size) and blockers, and returns `eligibleIds` plus a plan `nonce` (valid 15 min).
+2. Show the owner a table of the eligible rows.
+3. Ask the owner with the EXACT id list, as one question (AskUserQuestion, or the host's
+   ask-the-user tool) with approve / cancel options. Never infer approval.
+4. Only on approval, run `node scripts/devswarm.js prune-archived --confirm-ids <id,id,...> --plan <nonce>`.
+   The ids must equal the plan's `eligibleIds` exactly. Each row is re-checked right before its
+   delete (still archived, not the Primary, clean worktree). Every attempt is logged to
+   `~/.anti-hall/logs/devswarm-prune.ndjson`, and anti-hall tombstones its own records for that
+   id (`pruned/<id>.json` plus the descriptor archive). No store rows are deleted.
+5. Report the per-id results to the owner. A refused or expired plan means: run a new dry run
+   and ask again.
+
+The delete refuses any automated caller (`ANTIHALL_CALLER` set to anything other than
+`interactive`; the supervisor sets `supervisor`). Only the `prune-archived --confirm-ids`
+dispatch calls it, and a hygiene test enforces that. Never run it from a hook, cron,
+Monitor or background agent. anti-hall never uses the DevSwarm app's local HTTP API.
 
 ## Blocking questions — CHILD asks, PARENT answers (never child → human)
 
@@ -454,6 +502,8 @@ matching on `hash` (table-wide UNIQUE) when verifying a specific message landed.
 | `reconcile-active [--active id,...] [--allow-empty] [--stdin] [--yes\|--confirm]` | `--active` required unless `--allow-empty` | **Parent-driven reconciliation against an explicit active set (v0.62.0)**. Never build the set from a screenshot. Since v0.107.1, a current workspace NOT named in `--active`/`--stdin` is archived ONLY when the DevSwarm app's database says it is archived (`isActive=0`, `isHidden=1`). Anything else is kept (`keptNotArchivedInApp`). If the app DB can't be read, nothing is archived. A prefix/substring match spares a workspace and never archives it; refuses an empty set unless `--allow-empty`. Dry-run by default; `--yes`/`--confirm` applies. | Reconciling the mesh against a known-good "what's actually still running" list. | **Read-only in dry-run; writes with `--yes`/`--confirm`.** |
 | `spawn <branch> [hivecontrol create flags...]` | pass-through | Thin wrap of `hivecontrol workspace create`, then best-effort auto-registers the new worktree in the shared registry. | Primary creating a new child workspace. | **Writes.** |
 | `merge [hivecontrol merge-into-source flags...]` | pass-through | Thin wrap of `hivecontrol workspace check-merge` + `merge-into-source`, then broadcasts the outcome. | Child finishing / shipping upstream. | **Writes.** |
+| `auto-archive` | none | **v0.108.0.** Prints the supervisor's auto-archive plan: each tracked child with its proof or its blockers (a done … g idle). Archiving itself only happens in the supervisor sweep with `devswarm.autoArchive.mode: "on"` on DevSwarm >= 2.5.3. | "Which done workspaces would be archived, and why not the others?" | **Read-only.** |
+| `prune-archived --older-than <days>` / `--confirm-ids <ids> --plan <nonce>` | `--older-than` (dry run) or both confirm flags | **v0.108.0.** The dry run lists archived workspaces with evidence and stores a 15-min plan nonce. `--confirm-ids` DELETES exactly the plan's eligible ids through `hivecontrol workspace delete` (DevSwarm >= 2.5.3). Only after the owner approves that exact list; refuses automated callers. | Cleaning up old archived workspaces, following the owner-approved flow in "Auto-archive and prune". | **Dry run writes a plan file; `--confirm-ids` is destructive.** |
 
 `roster`, `diagnose`, and `healthcheck` are the three pure-read, no-id, project-scoped
 verbs — reach for these together for mesh state without touching anything.
