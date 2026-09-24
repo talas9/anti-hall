@@ -1447,14 +1447,14 @@ function main() {
   // row, any error) it returns null, and null NEVER folds — fail-open to
   // the pre-existing (unchanged) child-path behavior, exactly why none of
   // the existing fixtures (none set an app DB) are affected.
-  const appdbMod = (() => { try { return require('../companion/lib/devswarm-appdb.js'); } catch (_) { return null; } })();
+  // builderTypeFor reads the ONE per-invocation app-DB snapshot (appSnap(),
+  // companion/lib/devswarm-app-db.js — capability-gated on
+  // appdb.builders.builderType). Exact id match only (no worktree fallback).
   function builderTypeFor(id) {
-    if (!appdbMod) return null;
     try {
-      return appdbMod.builderTypeForId(id, {
-        home,
-        dbPath: process.env.ANTIHALL_APPDB_PATH || undefined, // test-only injection point
-      });
+      const w = appDbLib ? appDbLib.workspaceFor(appSnap(), { id }) : null;
+      if (!w || typeof w.builderType !== 'string') return null;
+      return w.builderType === 'primary' ? 'primary' : 'standard';
     } catch (_) { return null; }
   }
   const ownCheckoutRootCache = new Map(); // worktreePath -> resolved worktreeRoot | null

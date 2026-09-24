@@ -15,9 +15,9 @@
 //
 // PROVEN SIGNAL (owner-verified on the live DevSwarm app DB): the `builders`
 // table's `builderType` column is 'primary' for exactly the app's own row
-// (5 primary vs 209 standard, live-verified) — companion/lib/devswarm-appdb.js
-// is the injectable (dbPath-overridable), fail-open (-> null on ANY error)
-// accessor for it. The fold requires BOTH conjuncts: worktree match AND
+// (5 primary vs 209 standard, live-verified) — read from the per-invocation
+// companion/lib/devswarm-app-db.js snapshot (ANTIHALL_DEVSWARM_APP_DB-
+// overridable, capability-gated, fail-open -> null on ANY error). The fold requires BOTH conjuncts: worktree match AND
 // builderTypeFor(id) === 'primary'. When the app DB is unavailable (the
 // common case — no test in this suite ships one), builderTypeFor always
 // returns null, so NOTHING folds and every pre-existing fixture is
@@ -45,7 +45,8 @@ function payload() { return { hook_event_name: 'UserPromptSubmit', session_id: '
 function ctx(r) { return (r.json && r.json.hookSpecificOutput && r.json.hookSpecificOutput.additionalContext) || ''; }
 function segment(c, banner) { return c.split('\n\n').find((s) => s.startsWith(banner)) || ''; }
 function tableSeg(c) { return segment(c, 'DEVSWARM WORKSPACES'); }
-function tableRow(c, id) { return tableSeg(c).split('\n').find((l) => l.startsWith('| ' + id + ' ')) || ''; }
+// With an app DB the row is titled from the app label: `| <label> (<id>) |`.
+function tableRow(c, id) { return tableSeg(c).split('\n').find((l) => l.startsWith('| ' + id + ' ') || l.includes('(' + id + ') |')) || ''; }
 
 function writeSharedSummary(home, workspaces) {
   const dir = path.join(home, '.anti-hall', 'devswarm', 'summaries');
@@ -64,14 +65,14 @@ function writeSharedSummary(home, workspaces) {
 }
 
 // writeAppDb(home, rows) -> absolute path to a fixture DevSwarm app DB with a
-// minimal `builders(id, builderType, worktreePath, label)` table — exactly
-// the shape devswarm-appdb.js's builderTypeForId query reads.
+// minimal `builders(id, isActive, builderType, worktreePath, label)` table —
+// the snapshot's core columns (id, isActive) plus builderType.
 function writeAppDb(home, rows) {
   const { DatabaseSync } = require('node:sqlite');
   const dbPath = path.join(home, 'fixture-devswarm-app.db');
   const db = new DatabaseSync(dbPath);
-  db.exec('CREATE TABLE builders (id TEXT PRIMARY KEY, builderType TEXT, worktreePath TEXT, label TEXT)');
-  const stmt = db.prepare('INSERT INTO builders (id, builderType, worktreePath, label) VALUES (?, ?, ?, ?)');
+  db.exec('CREATE TABLE builders (id TEXT PRIMARY KEY, isActive INTEGER, builderType TEXT, worktreePath TEXT, label TEXT)');
+  const stmt = db.prepare('INSERT INTO builders (id, isActive, builderType, worktreePath, label) VALUES (?, 1, ?, ?, ?)');
   for (const r of rows) stmt.run(r.id, r.builderType, r.worktreePath || null, r.label || null);
   db.close();
   return dbPath;
@@ -90,7 +91,7 @@ function runInbox(home, envOverride) {
         '76cf862f': { worktreePath: REPO_CWD, total: 2, cursor: 0, unread: 2, directUnread: 2, urgencyMax: 'normal' },
       });
       const dbPath = writeAppDb(h.home, [{ id: '76cf862f', builderType: 'primary', worktreePath: REPO_CWD, label: 'SkyCrew' }]);
-      const r = runInbox(h.home, { ANTIHALL_APPDB_PATH: dbPath });
+      const r = runInbox(h.home, { ANTIHALL_DEVSWARM_APP_DB: dbPath });
       const c = ctx(r);
       assert.strictEqual(tableRow(c, '76cf862f'), '', 'the app-primary row must NEVER appear as a standalone child table row');
       assert.ok(!/SkyCrew \(76cf862f\)/.test(c), 'must never render the false child-shaped nag: ' + c);
@@ -109,7 +110,7 @@ function runInbox(home, envOverride) {
         wsStd: { worktreePath: REPO_CWD, total: 2, cursor: 0, unread: 2, directUnread: 2, urgencyMax: 'normal' },
       });
       const dbPath = writeAppDb(h.home, [{ id: 'wsStd', builderType: 'standard', worktreePath: REPO_CWD, label: 'a-child' }]);
-      const r = runInbox(h.home, { ANTIHALL_APPDB_PATH: dbPath });
+      const r = runInbox(h.home, { ANTIHALL_DEVSWARM_APP_DB: dbPath });
       const c = ctx(r);
       assert.match(tableRow(c, 'wsStd'), /wsStd/, 'a standard-builderType row must still render as an ordinary child row');
     } finally { h.cleanup(); }
@@ -122,8 +123,8 @@ test('no app DB available (the common/default case) — same-worktree row behave
     writeSharedSummary(h.home, {
       wsNoDb: { worktreePath: REPO_CWD, total: 2, cursor: 0, unread: 2, directUnread: 2, urgencyMax: 'normal' },
     });
-    // No ANTIHALL_APPDB_PATH set, and no real app DB exists at the guessed
-    // per-OS path inside this fake HOME -> builderTypeForId fails open to
+    // No ANTIHALL_DEVSWARM_APP_DB set, and no app DB exists at the per-OS
+    // path inside this fake HOME -> builderTypeFor fails open to
     // null -> the fold never applies -> unchanged child-row behavior.
     const r = runInbox(h.home);
     const c = ctx(r);
