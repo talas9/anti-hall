@@ -612,9 +612,10 @@ function main() {
       reason:
         'HANDOVER-LOCATION RULE: a NEW session-handover doc belongs under ' +
         '.anti-hall/handovers/<YYYY-MM-DD>/<session-id>/ (see the `handover` skill, ' +
-        'which computes <date>/<session-id> for you) — not at this path. Redirect this ' +
-        'write there. If this is an intentional exception, honor it via the existing ' +
-        "skip mechanism — run 'node scripts/devswarm.js skip edit-guard' " +
+        'which computes <date>/<session-id> for you) — not at this path. Write ' +
+        'handovers under .anti-hall/handovers/** (exempt); copy elsewhere afterwards ' +
+        'if the project wants one. If this is an intentional exception, honor it via ' +
+        "the existing skip mechanism — run 'node scripts/devswarm.js skip edit-guard' " +
         '(~/.anti-hall/skip.json, 15-min TTL), then retry. Never skip on your own ' +
         'initiative. (tool: ' + toolName + ')',
     }) + '\n');

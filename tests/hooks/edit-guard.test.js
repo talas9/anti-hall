@@ -648,6 +648,12 @@ for (const p of HANDOVER_DOC_REDIRECTED_NEW) {
       assert.match(r.json.reason, /\.anti-hall\/handovers/);
       assert.match(r.json.reason, /handover.* skill/);
       assert.match(r.json.reason, /skip edit-guard/);
+      // item D (v0.107.1): the deny explicitly names the exempt path AND says
+      // the write can be copied elsewhere afterwards, so a child orchestrator
+      // isn't left guessing whether it can ever produce a doc outside the
+      // exempt tree.
+      assert.match(r.json.reason, /Write handovers under \.anti-hall\/handovers\/\*\* \(exempt\)/);
+      assert.match(r.json.reason, /copy elsewhere afterwards if the project wants one/);
     } finally {
       proj.cleanup();
     }

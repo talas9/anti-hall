@@ -133,6 +133,17 @@ the update.
   else is kept and listed in `keptNotArchivedInApp`, and an unreadable app DB archives
   nothing. The skill docs no longer suggest a roster screenshot as the source.
 
+- **Fixed: edit-guard's handover-location redirect didn't say where to write
+  instead.** The deny message now explicitly says "write handovers under
+  .anti-hall/handovers/** (exempt); copy elsewhere afterwards if the project
+  wants one" rather than only naming the rule.
+- **Fixed: `update.js --check` trusted the harness-owned `installed_plugins.json`
+  first**, which can lag a cache already synced by a prior `update.js` run (a live
+  machine reported installed=0.105.3 while the cache held 0.107.0). Resolution now
+  takes the HIGHER of `installed_plugins.json` and the newest cache dir, and flags
+  the disagreement in `--check`'s action text ("... — run /reload-plugins") instead
+  of silently reporting the stale one. Never writes `installed_plugins.json`.
+
 ## 0.107.0 (2026-09-24)
 
 - **Fixed: phantom unread.** The v0.106.0 reader-position import had declared every live
