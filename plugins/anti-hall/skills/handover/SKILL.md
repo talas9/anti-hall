@@ -9,7 +9,9 @@ description: Use when the user says "prepare a handover", "handover", "write a h
 main agent's estimated context usage and, at 85% by default (`autoHandover` section of
 `~/.anti-hall/settings.json`, or `ANTIHALL_AUTO_HANDOVER_PCT`; `/anti-hall:settings` skill
 to change it), injects a directive to run THIS skill's contract yourself, right now,
-without asking the user first — same self-write mandate as below. If you're reading this
+without asking the user first — same self-write mandate as below. A long autonomous turn
+that never passes a user prompt gets the same directive once at a `Stop`
+(`hooks/auto-handover-pause-nag.js`, shared latch, never while `stop_hook_active`). If you're reading this
 skill because that directive fired, follow it exactly as written; nothing else changes.
 
 Prepares a session handover: perishable job state (goal, current position, next
@@ -255,6 +257,15 @@ handover SUPERSEDES the auto-compact summary and any legacy
 `CONTINUE-HERE`-style file for continuation state. This means writing a
 handover is not just documentation — it is what the next context actually
 resumes from.
+
+**PreCompact safety net.** `hooks/precompact-snapshot.js` (PreCompact, manual +
+auto) writes `PRECOMPACT-<n>.md` into this session's handover dir right before
+every compaction: `pwd`, git branch/HEAD/dirty files, the task-list snapshot
+parsed from the transcript, the last 10 user messages verbatim, and a pointer to
+the newest `HANDOVER*.md`. It is mechanical (a hook cannot make the model
+write), never a substitute for this skill, and never blocks compaction. The
+resume hook names it — as NEWER than the handover when work happened after the
+handover, or as the only pointer when no handover exists for the session.
 
 **Write proactively** — at task boundaries or when compaction risk is rising, not
 only when explicitly asked and not at the context ceiling (`/compact` itself can

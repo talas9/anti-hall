@@ -323,3 +323,81 @@ test("(f) 'startup' source with a fresh handover -> different prefix wording tha
     fs.rmSync(cwd, { recursive: true, force: true });
   }
 });
+
+// PreCompact snapshot awareness (hooks/precompact-snapshot.js writes
+// PRECOMPACT-<n>.md into the session dir right before compaction).
+function writeSnapshot(cwd, date, sessionId, n, ageMs) {
+  const dir = path.join(cwd, '.anti-hall', 'handovers', date, sessionId);
+  fs.mkdirSync(dir, { recursive: true });
+  const p = path.join(dir, `PRECOMPACT-${n}.md`);
+  fs.writeFileSync(p, '# PRECOMPACT snapshot\n', 'utf8');
+  if (ageMs != null) {
+    const t = new Date(Date.now() - ageMs);
+    fs.utimesSync(p, t, t);
+  }
+  return p;
+}
+
+function resumeCtx(h, cwd, sessionId, source) {
+  const r = testHook(HOOK, { session_id: sessionId, cwd, source, hook_event_name: 'SessionStart' }, { home: h.home, expectJson: true });
+  assert.strictEqual(r.status, 0);
+  return (r.json && r.json.hookSpecificOutput && r.json.hookSpecificOutput.additionalContext) || '';
+}
+
+test('(h) snapshot NEWER than the handover -> pointer names it as newer (work happened after the handover)', () => {
+  const h = makeHome();
+  const cwd = makeProjectCwd();
+  try {
+    writeHandover(cwd, '2026-09-24', 'sess-h', 1, { ageMs: 60 * 60 * 1000 });
+    const snap = writeSnapshot(cwd, '2026-09-24', 'sess-h', 1, 1000);
+    const c = resumeCtx(h, cwd, 'sess-h', 'compact');
+    assert.match(c, /GUIDED RESUME PATH/);
+    assert.ok(c.includes('PRE-COMPACTION SNAPSHOT (newer than the handover): ' + snap), c);
+  } finally {
+    h.cleanup();
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test('(i) snapshot OLDER than the handover -> named as already covered', () => {
+  const h = makeHome();
+  const cwd = makeProjectCwd();
+  try {
+    writeSnapshot(cwd, '2026-09-24', 'sess-i', 1, 60 * 60 * 1000);
+    writeHandover(cwd, '2026-09-24', 'sess-i', 1, { ageMs: 1000 });
+    const c = resumeCtx(h, cwd, 'sess-i', 'compact');
+    assert.match(c, /older than the handover, which already covers it/);
+  } finally {
+    h.cleanup();
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test('(j) no handover but a same-session snapshot -> snapshot pointer instead of the negative report', () => {
+  const h = makeHome();
+  const cwd = makeProjectCwd();
+  try {
+    const snap = writeSnapshot(cwd, '2026-09-24', 'sess-j', 2, 1000);
+    const c = resumeCtx(h, cwd, 'sess-j', 'compact');
+    assert.ok(c.includes('PRE-COMPACTION SNAPSHOT: ' + snap), c);
+    assert.doesNotMatch(c, /No session handover found/);
+    assert.ok(!fs.existsSync(path.join(h.home, '.anti-hall', 'handover-resume-state-sess-j.json')),
+      'no resume-verified rail for a snapshot-only resume (there is no handover to mark)');
+  } finally {
+    h.cleanup();
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("(k) another session's snapshot is ignored -> negative report as before", () => {
+  const h = makeHome();
+  const cwd = makeProjectCwd();
+  try {
+    writeSnapshot(cwd, '2026-09-24', 'other-session', 1, 1000);
+    const c = resumeCtx(h, cwd, 'sess-k', 'compact');
+    assert.match(c, /No session handover found/);
+  } finally {
+    h.cleanup();
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
+});

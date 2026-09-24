@@ -1,5 +1,12 @@
 #!/usr/bin/env node
-// anti-hall :: auto-handover pause nag (Stop)
+// anti-hall :: auto-handover pause nag + Stop-side fire (Stop)
+//
+// STOP-SIDE FIRE: when the fire directive has NOT gone out yet this arm and
+// the main agent is over threshold at a Stop, this hook delivers the same
+// fire directive hooks/auto-handover.js would (once — shared latch), so a
+// long autonomous turn (ralph/ultrawork-style loops, queued work) that never
+// passes UserPromptSubmit still gets told to write its handover before
+// auto-compact. Guarded by stop_hook_active like the nag below.
 //
 // Complements hooks/auto-handover.js's fire + milestone nags with a
 // NATURAL-PAUSE reminder: once the fire directive has already gone out this
@@ -20,7 +27,7 @@
 // answer — the agent relays the one-liner, stops again, and that second Stop
 // call is let through unconditionally.
 //
-// Never fires: for a subagent/sidechain Stop, when auto-handover is
+// The NAG never fires: for a subagent/sidechain Stop, when auto-handover is
 // disabled/never fired this session, when nag=false, when still under
 // threshold (also re-arms the shared latch, mirroring auto-handover.js),
 // within the quiet window of the last nag (of EITHER kind), with open tasks,
@@ -50,20 +57,10 @@ const { getContextPct } = require('./lib/context-pct.js');
 const { resolveEffective } = require('./lib/auto-handover-config.js');
 const { sessionTag, readLatch, writeLatch } = require('./lib/auto-handover-state.js');
 const { readTail } = require('./lib/transcript-tail.js');
-
-const BLOAT_SENTENCE =
-  'As context grows the model gets less efficient and more prone to hallucination, ' +
-  'so compacting/clearing keeps answers accurate, not just under the limit.';
+const { buildFireDirective, buildPauseNag } = require('./lib/auto-handover-text.js');
 
 const SPAWN_LOG = path.join(os.homedir(), '.anti-hall', 'agent-spawns.log');
 const SPAWN_ACTIVITY_MS = 2 * 60 * 1000; // matches statusline/phase-bar.js's ACTIVITY_MS
-
-function buildPauseNag(pct) {
-  return (
-    'Good stopping point: context is still ~' + Math.round(pct) + '% and a handover is already saved. ' +
-    BLOAT_SENTENCE + ' Mention /compact or /clear to the user now.'
-  );
-}
 
 // hasRecentSpawn(tag, now) -> true if agent-spawns.log has an entry for this
 // session tag within the last SPAWN_ACTIVITY_MS. Mirrors statusline/
@@ -178,15 +175,37 @@ function main() {
     const home = os.homedir();
     const env = process.env;
     const settings = resolveEffective({ home, env });
-    if (!settings.enabled || !settings.nag) { emit(); return; }
+    if (!settings.enabled) { emit(); return; }
 
     const tag = sessionTag(payload);
     if (!tag) { emit(); return; }
 
     const latch = readLatch(home, tag);
-    if (latch.fired !== true) { emit(); return; } // nothing fired yet this arm
-
     const transcriptPath = typeof payload.transcript_path === 'string' ? payload.transcript_path : null;
+
+    if (latch.fired !== true) {
+      // STOP-SIDE FIRE (once per arm): a long autonomous turn can cross the
+      // threshold and reach auto-compact without ever passing
+      // UserPromptSubmit, where hooks/auto-handover.js fires. Same latch, so
+      // whichever hook sees the crossing first fires and the other stays
+      // quiet. Never for an unknown-window estimate (no mandatory directive
+      // from a guess — the UserPromptSubmit hook's soft advisory covers it).
+      const result = getContextPct(transcriptPath, env, { home, sessionId: payload.session_id });
+      if (result && Number.isFinite(result.pct) && result.pct >= settings.pct && result.windowKnown !== false) {
+        const now = Date.now();
+        writeLatch(home, tag, {
+          fired: true, firedAt: now, firedPct: result.pct, firedVia: 'stop',
+          lastNagPct: result.pct, lastNagAt: now, softFired: latch.softFired === true,
+        });
+        emit(buildFireDirective(result.pct, result.estimated === true, result.windowLabel));
+        return;
+      }
+      emit();
+      return;
+    }
+
+    if (!settings.nag) { emit(); return; }
+
     const lines = transcriptPath ? readTail(transcriptPath) : null; // ONE shared read
     const result = getContextPct(transcriptPath, env, { home, sessionId: payload.session_id, lines: lines || undefined });
     if (!result || !Number.isFinite(result.pct)) { emit(); return; }

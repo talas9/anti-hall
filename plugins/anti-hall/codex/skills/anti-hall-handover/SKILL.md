@@ -14,7 +14,9 @@ verbatim with the Claude plugin) watches the main agent's estimated context usag
 85% by default (`autoHandover` section of `~/.anti-hall/settings.json`, or
 `ANTIHALL_AUTO_HANDOVER_PCT`; `anti-hall-settings` skill to change it), injects
 a directive to run THIS skill's contract yourself, right now, without asking the user
-first — same self-write mandate as below. If you're reading this skill because that
+first — same self-write mandate as below. A long autonomous turn that never passes a
+user prompt gets the same directive once at a `Stop` (`hooks/auto-handover-pause-nag.js`,
+shared latch, never while `stop_hook_active`). If you're reading this skill because that
 directive fired, follow it exactly as written; nothing else changes.
 
 Prepares a session handover: perishable job state (goal, current position,
@@ -257,6 +259,15 @@ pointer to its path plus the numbered Guided Resume Path — never the file's
 content — stating it SUPERSEDES the auto-compact summary and any legacy
 `CONTINUE-HERE`-style file. Writing a handover is not just documentation — it
 is what the next context actually resumes from.
+
+**PreCompact safety net.** `hooks/precompact-snapshot.js` (registered on Codex's
+own `PreCompact` event) writes `PRECOMPACT-<n>.md` into this session's handover
+dir right before every compaction: `pwd`, git branch/HEAD/dirty files, a
+task-list snapshot when the transcript has one, the last 10 user messages
+verbatim (Codex rollout `user_message` events), and a pointer to the newest
+`HANDOVER*.md`. Mechanical, never a substitute for this skill, and it never
+stops compaction (no stdout, exit 0). The resume hook names it on the next
+`SessionStart`.
 
 **Write proactively** — at task boundaries or when a reset is likely, not only
 when asked and not at the absolute context-window limit (reset mechanisms can

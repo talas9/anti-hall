@@ -21,6 +21,13 @@
 //   incoming payload.session_id (same-session continuation across clear/compact)
 //   over a purely newer file from a different session.
 //
+// PreCompact snapshot awareness: hooks/precompact-snapshot.js writes a
+// mechanical PRECOMPACT-<n>.md into THIS session's dir right before every
+// compaction. When one exists (same session, <= 7 days), the injection names
+// it -- flagged as NEWER than the handover when work happened after the
+// handover -- and when no usable handover exists at all it points at the
+// snapshot instead of the negative report.
+//
 // Session-id sanitize: reuse tasklist-guard.js's sanitizeSessionId EXACTLY (same
 // regex) so directory names line up with what the handover skill itself writes.
 //
@@ -37,82 +44,13 @@ const path = require('path');
 const os = require('os');
 
 const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
-const UNKNOWN_SESSION = 'unknown-session';
-const HANDOVER_FILE_RE = /^HANDOVER(?:-(\d+))?\.md$/;
-
-// sanitizeSessionId -- reused EXACTLY from tasklist-guard.js so this hook's
-// session-id comparisons line up with the directory names the handover skill
-// (and tasklist-guard's own progress/history dirs) already produce.
-function sanitizeSessionId(raw) {
-  const safe = String(raw || '').replace(/[^A-Za-z0-9_-]/g, '');
-  return safe || UNKNOWN_SESSION;
-}
-
-// listDirs(p) -> array of directory names directly under p, or [] on any error.
-function listDirs(p) {
-  let entries;
-  try {
-    entries = fs.readdirSync(p, { withFileTypes: true });
-  } catch (_) {
-    return [];
-  }
-  return entries.filter((e) => e.isDirectory()).map((e) => e.name);
-}
-
-// findNewestHandover(handoversRoot, wantSessionId) -> candidate object or null.
-// candidate: { filePath, mtimeMs, date, sessionId, seq }
-function findNewestHandover(handoversRoot, wantSessionId) {
-  const candidates = [];
-
-  const dateDirs = listDirs(handoversRoot);
-  for (const date of dateDirs) {
-    const datePath = path.join(handoversRoot, date);
-    const sessionDirs = listDirs(datePath);
-    for (const sessionId of sessionDirs) {
-      const sessionPath = path.join(datePath, sessionId);
-      let files;
-      try {
-        files = fs.readdirSync(sessionPath);
-      } catch (_) {
-        continue;
-      }
-      for (const fname of files) {
-        const m = HANDOVER_FILE_RE.exec(fname);
-        if (!m) continue;
-        const filePath = path.join(sessionPath, fname);
-        let st;
-        try {
-          st = fs.statSync(filePath);
-        } catch (_) {
-          continue;
-        }
-        if (!st.isFile()) continue;
-        const seq = m[1] ? parseInt(m[1], 10) : 1;
-        candidates.push({
-          filePath,
-          mtimeMs: st.mtimeMs,
-          date,
-          sessionId,
-          seq,
-        });
-      }
-    }
-  }
-
-  if (candidates.length === 0) return null;
-
-  // PREFER same-session candidates (continuation after clear/compact) over pure
-  // mtime -- pick the highest-mtime candidate within the matching set if any
-  // exist, else fall back to the highest-mtime candidate overall.
-  let pool = candidates;
-  if (wantSessionId) {
-    const sameSession = candidates.filter((c) => c.sessionId === wantSessionId);
-    if (sameSession.length > 0) pool = sameSession;
-  }
-
-  pool.sort((a, b) => b.mtimeMs - a.mtimeMs);
-  return pool[0];
-}
+// Discovery + session-id sanitize live in hooks/lib/handover-find.js (shared
+// with hooks/precompact-snapshot.js).
+const {
+  sanitizeSessionId,
+  findNewestHandover,
+  findNewestPrecompact,
+} = require('./lib/handover-find.js');
 
 // readIndexOutcome(handoversRoot, date, sessionId, seq) -> one-line outcome
 // string parsed from INDEX.md's row for this handover, or '' if unparseable or
@@ -171,6 +109,32 @@ function buildContext(candidate, outcome, prefix) {
     'evidence-backed record; the compact summary is lossy.'
   );
   return lines.join('\n');
+}
+
+// buildSnapshotLine(snap, candidate) -- one paragraph appended to the normal
+// resume pointer when this session also has a PreCompact snapshot. A snapshot
+// NEWER than the handover means work happened after the handover was written.
+function buildSnapshotLine(snap, candidate) {
+  if (snap.mtimeMs > candidate.mtimeMs) {
+    return 'PRE-COMPACTION SNAPSHOT (newer than the handover): ' + snap.filePath +
+      ' -- anti-hall\'s PreCompact hook saved it mechanically right before compaction ' +
+      '(git state, task-list snapshot, the last user messages verbatim). Work happened AFTER ' +
+      'the handover was written: read this snapshot right after the handover to catch up, and ' +
+      'carry any session rules quoted in its user messages forward.';
+  }
+  return 'Pre-compaction snapshot (older than the handover, which already covers it): ' +
+    snap.filePath + ' -- open it only if the handover is missing something.';
+}
+
+// buildSnapshotOnlyContext(snap) -- no usable HANDOVER*.md, but a PreCompact
+// snapshot exists for this session.
+function buildSnapshotOnlyContext(snap) {
+  return 'No HANDOVER*.md was written for this session, but anti-hall\'s PreCompact hook saved a ' +
+    'mechanical PRE-COMPACTION SNAPSHOT: ' + snap.filePath + ' (written ' +
+    new Date(snap.mtimeMs).toISOString() + '). Read it FULLY before trusting the compact summary: ' +
+    'it holds git state, a task-list snapshot and the last user messages VERBATIM, which may carry ' +
+    'session rules the summary dropped. It is a crash dump, not a handover (no judgment went into ' +
+    'it) -- once you have re-established state, write a real handover with the anti-hall handover skill.';
 }
 
 // resumeStatePath(sessionId) -- v0.75.0 resume-verification rail. Lives under
@@ -257,25 +221,36 @@ function main() {
   const rawSessionId = payload.session_id != null ? String(payload.session_id) : '';
   const wantSessionId = rawSessionId ? sanitizeSessionId(rawSessionId) : '';
 
-  const candidate = findNewestHandover(handoversRoot, wantSessionId);
-  if (!candidate) {
-    if (isCompactOrClear) emitNegativeReport(payload);
-    return;
-  }
+  const hookEventName = typeof payload.hook_event_name === 'string' && payload.hook_event_name
+    ? payload.hook_event_name
+    : 'SessionStart';
 
-  const ageMs = Date.now() - candidate.mtimeMs;
-  if (ageMs > SEVEN_DAYS_MS) return; // stale -- silent, per spec (unchanged).
+  // PreCompact safety net (hooks/precompact-snapshot.js): THIS session's
+  // newest mechanical PRECOMPACT-<n>.md, if fresh. Same-session only.
+  let snap = wantSessionId ? findNewestPrecompact(handoversRoot, wantSessionId) : null;
+  if (snap && (Date.now() - snap.mtimeMs) > SEVEN_DAYS_MS) snap = null;
+
+  const candidate = findNewestHandover(handoversRoot, wantSessionId);
+  if (!candidate || (Date.now() - candidate.mtimeMs) > SEVEN_DAYS_MS) {
+    if (snap) {
+      // No usable handover, but the PreCompact hook left a crash dump for
+      // this session -- point at it instead of the negative report.
+      fs.writeSync(1, JSON.stringify({
+        hookSpecificOutput: { hookEventName, additionalContext: buildSnapshotOnlyContext(snap) },
+      }) + '\n');
+      return;
+    }
+    if (!candidate && isCompactOrClear) emitNegativeReport(payload);
+    return; // (a stale candidate stays silent, per spec -- unchanged)
+  }
 
   const prefix = isCompactOrClear
     ? 'A session handover was found for this continuation'
     : 'A previous session left a handover';
 
   const outcome = readIndexOutcome(handoversRoot, candidate.date, candidate.sessionId, candidate.seq);
-  const additionalContext = buildContext(candidate, outcome, prefix);
-
-  const hookEventName = typeof payload.hook_event_name === 'string' && payload.hook_event_name
-    ? payload.hook_event_name
-    : 'SessionStart';
+  let additionalContext = buildContext(candidate, outcome, prefix);
+  if (snap) additionalContext += '\n\n' + buildSnapshotLine(snap, candidate);
 
   // Record that a resume injection happened THIS session, pointing at the
   // referenced handover file -- tasklist-guard.js reads this to require a
