@@ -1157,3 +1157,72 @@ test('FIX 7: scratchpad-noise churn between two Stops does not re-trigger an alr
     assert.ok(!isBlock(r2), `scratchpad churn after compliance must not re-nag; stdout: ${r2.stdout}`);
   } finally { h.cleanup(); }
 });
+
+// ---------------------------------------------------------------------------
+// Review fix: isScratchOnly must check ALL write targets, not just "does
+// /scratchpad/ appear anywhere on the line" — a script/patch staged in
+// scratchpad can still mutate real repo files.
+
+test('REVIEW FIX: a `cp` FROM scratchpad INTO a real repo path still counts as work (real target outside scratchpad)', () => {
+  const h = makeHome();
+  try {
+    const session = 'reviewfix-cp-real-target';
+    const src = '/private/tmp/claude-501/-fake-project/' + session + '/scratchpad/built.js';
+    const dest = '/private/tmp/claude-501/-fake-project/real/dest.js';
+    const cmds = [];
+    for (let i = 0; i < 4; i++) {
+      cmds.push({
+        type: 'assistant',
+        message: { role: 'assistant', content: [{ type: 'tool_use', name: 'Bash', id: 'toolu_cprt' + i, input: { command: 'cp ' + src + ' ' + dest } }] },
+      });
+    }
+    const tp = h.writeTranscript(cmds);
+    const r = testHook(HOOK, stopPayload(tp, h.home, session), { home: h.home });
+    assert.ok(isBlock(r), `cp with a real (non-scratchpad) destination must still count as work; stdout: ${r.stdout}`);
+  } finally { h.cleanup(); }
+});
+
+test('REVIEW FIX: `patch < scratchpad-file.patch` counts as work even though the patch FILE itself sits in scratchpad', () => {
+  const h = makeHome();
+  try {
+    const session = 'reviewfix-patch-from-scratch';
+    const patchFile = '/private/tmp/claude-501/-fake-project/' + session + '/scratchpad/fix.patch';
+    const cmds = [];
+    for (let i = 0; i < 4; i++) {
+      cmds.push({
+        type: 'assistant',
+        message: { role: 'assistant', content: [{ type: 'tool_use', name: 'Bash', id: 'toolu_patch' + i, input: { command: 'patch -p1 < ' + patchFile } }] },
+      });
+    }
+    const tp = h.writeTranscript(cmds);
+    const r = testHook(HOOK, stopPayload(tp, h.home, session), { home: h.home });
+    assert.ok(isBlock(r), `patch applying a diff must always count as work, regardless of where the .patch file lives; stdout: ${r.stdout}`);
+  } finally { h.cleanup(); }
+});
+
+test('REVIEW FIX: a read-only `cat` of the progress file (piped/redirected elsewhere) must NOT count as a progress write', () => {
+  const h = makeHome();
+  try {
+    const session = 'reviewfix-cat-read-not-write';
+    const p = progressPath(h.home, session);
+    // Progress file exists but is STALE — only a genuine WRITE to it should
+    // reset freshness. A `cat` that merely READS it and redirects elsewhere
+    // (a real elsewhere path, not the progress file) must not count.
+    writeProgress(h.home, Date.now() - 10 * 60 * 1000, session);
+    const elsewhere = '/private/tmp/claude-501/-fake-project/' + session + '/scratchpad/dump.txt';
+    const tp = h.writeTranscript([
+      ...edits(4),
+      ...taskCreate(1, 'do the work', 'completed'),
+      {
+        type: 'assistant',
+        timestamp: new Date().toISOString(),
+        message: { role: 'assistant', content: [{ type: 'tool_use', name: 'Bash', id: 'toolu_catread', input: { command: 'cat ' + p + ' >> ' + elsewhere } }] },
+      },
+    ]);
+    const r = testHook(HOOK, stopPayload(tp, h.home, session), {
+      home: h.home,
+      env: { ANTIHALL_PROGRESS_FRESH_MS: '120000' },
+    });
+    assert.ok(isBlock(r), `a read of the progress file redirected elsewhere must NOT count as a fresh write — should still block on staleness; stdout: ${r.stdout}`);
+  } finally { h.cleanup(); }
+});

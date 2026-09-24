@@ -400,6 +400,19 @@ function askSync(opts = {}) {
 function askDetached(opts = {}) {
   try {
     const { id, question, state, trust, baseline, cacheKey, budgetMs, home } = opts;
+    // Check the integration mode BEFORE spawning — an 'off' integration (or
+    // Jev disabled entirely, or a relax-block guard on a non-blocking
+    // baseline) must cost this caller a single sync config read, never a
+    // process spawn. Same skip logic ask()/askSync() use via prepare(); the
+    // decision row still lands (every ask()/askSync()/askDetached() call
+    // always logs, matching finalize()'s contract for call-volume/failure-
+    // rate tracking) — written synchronously here since there's no network
+    // call to wait on either way, so a spawn would only add overhead.
+    const { h, mode, hash, threshold, skip } = prepare({ id, home, trust, baseline, cacheKey, state });
+    if (skip) {
+      finalize({ id, home: h, hash, mode, trust, baseline, judge: null, threshold, r: null, cachedFlag: false });
+      return;
+    }
     const input = JSON.stringify({ id, question, state, trust, baseline, cacheKey, budgetMs, home });
     const child = spawn(process.execPath, [DETACHED_WORKER_PATH], {
       detached: true,

@@ -317,7 +317,14 @@ function resolveStoreBackend(dir, opts) {
   const marker = readBackendMarker(dir);
   if (marker === 'journal') return 'journal';
   if (marker === 'sqlite') return sqliteAvailable() ? 'sqlite' : 'journal';
-  const inferred = inferBackendFromDisk(dir);
+  let inferred = inferBackendFromDisk(dir);
+  // A prior process wrote real sqlite data to disk, but THIS runtime lacks
+  // node:sqlite (e.g. Node <22.5) — never infer 'sqlite' here: openSqlite
+  // would crash, and writing a 'sqlite' marker would pin every future open
+  // (including sqlite-capable ones) to a backend this process cannot even
+  // read from right now. Same safe-fallback semantics as the marker/forced
+  // paths above.
+  if (inferred === 'sqlite' && !sqliteAvailable()) inferred = 'journal';
   const chosen = inferred || selectBackend(o);
   if (!o.readOnly) writeBackendMarker(dir, chosen);
   return chosen;
@@ -424,27 +431,17 @@ function mergeSplitBackendStore(home, hash, opts) {
         }
         if (row.hash != null) seenHash.add(row.hash); else seenNullKey.add(nullHashDedupeKey(withId));
       }
-      // cursors — max-only, never regress a reader's own progress.
-      try {
-        const oc = otherHandle.cursorValue(id);
-        const cc = chosenHandle.cursorValue(id);
-        if (Number.isFinite(oc) && oc > cc) { if (!dryRun) chosenHandle.setCursor(id, oc); out.cursorsAdvanced += 1; }
-      } catch (_) { /* fail-open: a cursor read/write hiccup never blocks the merge */ }
-      try {
-        const ob = otherHandle.broadcastCursorValue(id);
-        const cb = chosenHandle.broadcastCursorValue(id);
-        if (Number.isFinite(ob) && ob > cb) { if (!dryRun) chosenHandle.setBroadcastCursor(id, ob); out.broadcastCursorsAdvanced += 1; }
-      } catch (_) { /* fail-open */ }
-      // reader_cursors — MAX-only at the SQL/journal-reduce level already
-      // (readerCursorTxn's own `put`), so re-applying the other side's rows
-      // is safe and idempotent by construction; only count rows that exist.
-      try {
-        const rows = otherHandle.readerCursorRows(id) || [];
-        if (rows.length) {
-          out.readerCursorRowsMerged += rows.length;
-          if (!dryRun) chosenHandle.readerCursorTxn((tx) => { for (const rec of rows) tx.put(rec); });
-        }
-      } catch (_) { /* fail-open: a pre-Phase-3 side has no such table — "no rows yet" */ }
+      // Cursors, broadcast cursors, and reader_cursors are DELIBERATELY NEVER
+      // copied from the other backend. The two sides use INDEPENDENT sequence
+      // numbering (row order/seq is per-physical-store), so a "max-only" copy
+      // of a raw cursor VALUE is not loss-free here the way it is for a shared
+      // sequence space elsewhere: a chosen side with 10 rows at cursor 2 next
+      // to an other side with 50 rows read (cursor 50) would, after a naive
+      // value-copy, land the chosen side at cursor 50 over its own (now) 60
+      // rows — silently marking that side's 8 real unread rows as read. The
+      // chosen side's own cursor position is left exactly as-is; newly merged
+      // rows simply append as unread there (a bounded re-delivery, never a
+      // lost read) instead of risking hidden unread loss.
     }
 
     // registry — union; a row missing on the chosen side is folded in as-is;
@@ -476,8 +473,11 @@ function mergeSplitBackendStore(home, hash, opts) {
     try { if (otherHandle) otherHandle.close(); } catch (_) {}
   }
 
-  out.pending = out.messagesOnlyInOther > 0 || out.registryMerged > 0 || out.cursorsAdvanced > 0
-    || out.broadcastCursorsAdvanced > 0 || out.readerCursorRowsMerged > 0;
+  // cursorsAdvanced/broadcastCursorsAdvanced/readerCursorRowsMerged are kept
+  // at 0 (never copied — see the note above) and deliberately excluded here:
+  // counting them would make `pending` true forever and re-run this migration
+  // on every pass with nothing left it could ever finish.
+  out.pending = out.messagesOnlyInOther > 0 || out.registryMerged > 0;
 
   if (!dryRun && out.ok) {
     // Re-derive so unread/gates/broadcastUnread reflect the merged messages

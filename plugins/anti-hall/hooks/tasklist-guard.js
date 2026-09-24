@@ -93,7 +93,13 @@ const ALWAYS_WORK_SRC =
   '|\\bsed\\s+-i' +
   '|\\bnpm\\s+(?:install|i|ci)\\b' +
   '|\\b(?:pnpm|yarn)\\s+(?:add|install)\\b' +
-  '|\\bpip\\s+install\\b';
+  '|\\bpip\\s+install\\b' +
+  // `patch` (unlike `git apply`, already listed above) mutates whatever files
+  // its diff headers name — never discoverable from the command line's own
+  // arguments (the patch FILE itself may sit anywhere, including scratchpad,
+  // via `patch < …/scratchpad/x.patch`) — so it must always count as work
+  // regardless of what path also appears on the line.
+  '|\\bpatch\\b';
 const ALWAYS_WORK_RE = new RegExp('(' + ALWAYS_WORK_SRC + ')', 'im');
 const BASH_WORK_RE = new RegExp(
   '(' +
@@ -123,6 +129,49 @@ const BASH_WORK_RE = new RegExp(
 // mtime race — the mtime read was always correct and fresh immediately after
 // the write).
 const SCRATCHPAD_PATH_RE = /\/scratchpad\//;
+
+// allPathsUnderScratchpad(neutralized) -> bool. Conservative companion to
+// SCRATCHPAD_PATH_RE above (Codex review fix): the original check only asked
+// "does /scratchpad/ appear ANYWHERE on the line", which wrongly excluded a
+// command whose SOURCE happens to sit in scratchpad but whose real write
+// target does not — e.g. `cp /…/scratchpad/x.py /real/repo/dest.py` or
+// `python3 /…/scratchpad/x.py > /real/repo/out.txt` genuinely mutate the repo.
+// Requires that EVERY path-looking token (anything containing "/") on the
+// (quote-neutralized) line sits under scratchpad; a single non-scratch path
+// token means this command is NOT scratch-only (counted as work — the safe,
+// loss-free direction: over-count real work rather than hide it).
+function allPathsUnderScratchpad(neutralized) {
+  const tokens = neutralized.split(/\s+/).filter(Boolean);
+  for (const tok of tokens) {
+    if (tok.indexOf('/') === -1) continue;
+    if (!SCRATCHPAD_PATH_RE.test(tok)) return false;
+  }
+  return true;
+}
+
+// commandWritesToPath(cmd, targetPath) -> bool. Used ONLY to attribute a
+// progress-file WRITE (never a read) to lastProgressWriteTs (Codex review
+// fix): a plain `cat <progressAbsPath> >> /elsewhere` reads the progress file
+// and writes somewhere else — the old check (`cmd.indexOf(progressAbsPath)`)
+// treated any appearance of the path anywhere on the line as a write. This
+// only counts a redirect (`>`/`>>`) whose TARGET is exactly targetPath, or a
+// `tee`/`cp`/`mv` invocation whose LAST path-looking argument is targetPath —
+// the actual write-destination positions for the verbs BASH_WORK_RE detects.
+function commandWritesToPath(cmd, targetPath) {
+  if (!targetPath) return false;
+  const redirectTarget = cmd.match(/(?<![0-9&])>{1,2}(?!&)\s*("[^"]*"|'[^']*'|\S+)/);
+  if (redirectTarget) {
+    const raw = redirectTarget[1].replace(/^["']|["']$/g, '');
+    if (raw === targetPath) return true;
+  }
+  const teeOrCopy = cmd.match(/\b(?:tee|cp|mv)\b[^;&|\n]*/);
+  if (teeOrCopy) {
+    const parts = teeOrCopy[0].split(/\s+/).filter((t) => t && !t.startsWith('-'));
+    const last = parts[parts.length - 1];
+    if (last === targetPath) return true;
+  }
+  return false;
+}
 
 // neutralizeQuotedContents — blank out the CONTENTS of single- and double-quoted
 // string literals (delimiters included) so BASH_WORK_RE cannot match text that is
@@ -744,13 +793,14 @@ function scanTranscript(filePath, opts) {
           // traffic, not project work — don't count it. A genuine mutation
           // verb (git commit/rebase/…, npm/pip install, sed -i) ALWAYS
           // counts regardless of what path also appears on the line.
-          const isScratchOnly = SCRATCHPAD_PATH_RE.test(cmd) && !ALWAYS_WORK_RE.test(neutralized);
+          const isScratchOnly = SCRATCHPAD_PATH_RE.test(cmd) && !ALWAYS_WORK_RE.test(neutralized)
+            && allPathsUnderScratchpad(neutralized);
           if (!isScratchOnly) {
             workCount++;
             if (Number.isFinite(entryTs) && entryTs > lastWorkTs) lastWorkTs = entryTs;
           }
           if (
-            progressAbsPath && cmd.indexOf(progressAbsPath) !== -1 &&
+            progressAbsPath && commandWritesToPath(cmd, progressAbsPath) &&
             Number.isFinite(entryTs) && entryTs > lastProgressWriteTs
           ) {
             lastProgressWriteTs = entryTs;

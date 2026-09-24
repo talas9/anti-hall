@@ -113,6 +113,49 @@ const HAS_SQLITE = store.sqliteAvailable();
   sqFinal.close();
 });
 
+(HAS_SQLITE ? test : test.skip)('mergeSplitBackendStore: NEVER copies a cursor value across backends — the chosen side\'s real unread stay unread after merge', () => {
+  const home = tmpHome();
+  const hash = 'proj-cursorsafe1';
+  const dir = store.storeDirForHash(home, hash);
+
+  // Chosen (sqlite) side: 10 rows, reader has consumed only the first 2
+  // (cursor at 2) — 8 real unread rows on the chosen side.
+  const sq = store.openSqlite(home, null, { hash });
+  for (let i = 0; i < 10; i++) {
+    sq.appendMeshRow({ workspaceId: 'w1', ts: i, hash: 'sq-' + i, body: 'sqlite ' + i, sender: 'primary-aaa', mtype: 'direct' });
+  }
+  sq.upsertRegistry({ id: 'w1', worktreePath: '/tmp/w1', sessionId: 's1', updatedAt: 100 });
+  sq.setCursor('w1', 2);
+  sq.close();
+  store.writeBackendMarker(dir, 'sqlite');
+
+  // Other (journal) side: same-shaped history, but fully read (cursor at 50 —
+  // simulating a much longer, independently-numbered other-side sequence).
+  const jn = store.openJournal(home, null, null, null, { hash });
+  jn.appendMeshRow({ workspaceId: 'w1', ts: 999, hash: 'jn-only-1', body: 'journal only', sender: 'primary-bbb', mtype: 'direct' });
+  jn.setCursor('w1', 50);
+  jn.close();
+
+  const applied = store.mergeSplitBackendStore(home, hash, {});
+  assert.strictEqual(applied.ok, true);
+  assert.strictEqual(applied.messagesMerged, 1, 'the journal-only row still merges in as a new (unread) row');
+  // cursorsAdvanced must stay 0 — no cursor VALUE is ever copied from the
+  // other backend, regardless of which side's raw number is larger.
+  assert.strictEqual(applied.cursorsAdvanced, 0);
+
+  const sqAfter = store.openSqlite(home, null, { hash, readOnly: true });
+  assert.strictEqual(sqAfter.cursorValue('w1'), 2, 'the chosen side\'s own cursor position must be left exactly as-is');
+  const w1msgs = sqAfter.listMessages('w1');
+  assert.strictEqual(w1msgs.length, 11);
+  sqAfter.close();
+
+  // Unread correctness: the chosen side's 8 pre-existing unread rows (index
+  // 2..9) plus the newly-merged journal-only row are ALL still unread — none
+  // of them were silently marked read by a naive cursor-value copy.
+  const sum = store.computeSummary(store.openSqlite(home, null, { hash, readOnly: true }), { home });
+  assert.strictEqual(sum.workspaces.w1.directUnread, 9, '8 pre-existing + 1 newly-merged unread row, none hidden by the merge');
+});
+
 (HAS_SQLITE ? test : test.skip)('mergeSplitBackendStoresAllStores: sweeps every store hash, aggregates counts, skips non-split stores', () => {
   const home = tmpHome();
   // A clean, never-split store (repoKey-shaped hash: name-6hex).

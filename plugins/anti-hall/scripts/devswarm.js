@@ -12164,7 +12164,24 @@ function cmdArchiveRequest(id, flags, ctx) {
         archiveReady = !!(entryForRequest && entryForRequest.archive_ready === true);
       } catch (_) { archiveReady = false; }
       if (archiveReady) {
-        const archiveResult = cmdArchive(id, ctx, {});
+        // Re-check liveness INSIDE cmdArchive's per-id lock, immediately
+        // before the archive (same P1-5 pattern reap-stale/reconcile-active
+        // already use above) — the outside-the-lock computeRowLive check at
+        // the top of this function is a candidate filter only; a target that
+        // heartbeats or commits between that check and here must be skipped,
+        // not wrong-archived.
+        const archiveResult = cmdArchive(id, ctx, {
+          revalidate: (desc) => {
+            let liveNow = true;
+            try {
+              liveNow = computeRowLive(
+                { id, worktreePath: (desc && desc.worktreePath) || descForRequest.worktreePath, sessionId: (desc && desc.sessionId) || descForRequest.sessionId },
+                home, { now: ctx.now }
+              );
+            } catch (_) { liveNow = true; }
+            return liveNow ? 'became-live' : null;
+          },
+        });
         return Object.assign({}, archiveResult, {
           action: 'archive-request', id, childId: id, posted: false,
           autoArchived: !!archiveResult.ok,

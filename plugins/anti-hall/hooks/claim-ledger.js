@@ -267,19 +267,44 @@ function main() {
 
   const flags = extractFlags(walked.lastText, walked.evidence, walked.toolsThisTurn);
 
+  // Ledger write FIRST: this hook runs inside a bounded (~30s) Stop hook, and
+  // must never lose the ledger record to a slow downstream call. Only after
+  // the write below is the (best-effort, fire-and-forget) Jev shadow ask
+  // fired — see the comment on that call for why it can never block here.
+  try {
+    fs.mkdirSync(ledgerDir, { recursive: true });
+    fs.writeFileSync(lastFile, hash, 'utf8');
+    if (flags.length) {
+      const rec = {
+        ts: new Date().toISOString(),
+        session: safeSession,
+        hash,
+        tools_this_turn: walked.toolsThisTurn,
+        msg_chars: walked.lastText.length,
+        evidence_chars: walked.evidence.length,
+        window_truncated: tail.truncated,
+        flags,
+      };
+      fs.appendFileSync(path.join(ledgerDir, safeSession + '.jsonl'), JSON.stringify(rec) + '\n', 'utf8');
+    }
+  } catch (_) { /* fail-open */ }
+
   // JEV SHADOW (claimLedger, default mode "shadow" — see jev-assist.js): for
   // each flagged line, ask Jev whether the claim is unsupported by the
   // session's own evidence. baseline = true (it's already flagged); trust
   // 'relax-block' means an "on" promotion could let a confident Jev
   // disagreement unflag a false positive, but in shadow (the default) this
-  // NEVER changes what gets written to the ledger below — it only logs to
-  // jev-assist.ndjson so `jev report` can show the would-be agreement rate
-  // before anyone trusts it. Best-effort; a Jev failure/timeout degrades to
-  // baseline (jev-assist's own contract) and never affects the ledger.
+  // NEVER changes what was already written to the ledger above — it only
+  // logs to jev-assist.ndjson so `jev report` can show the would-be agreement
+  // rate before anyone trusts it. askDetached is fire-and-forget (spawns a
+  // detached worker and returns immediately, never awaiting the network call)
+  // — up to 40 flags asking askSync's own ~2s budget each would risk this
+  // Stop hook's ~30s deadline killing it before the ledger write above even
+  // ran; askDetached costs this hook nothing.
   try {
     const jevAssist = require('./lib/jev-assist.js');
     for (const flag of flags) {
-      jevAssist.askSync({
+      jevAssist.askDetached({
         id: 'claimLedger',
         question: {
           type: 'noul',
@@ -295,23 +320,6 @@ function main() {
       });
     }
   } catch (_) { /* jev-assist unavailable — ledger-only behavior unaffected */ }
-
-  try {
-    fs.mkdirSync(ledgerDir, { recursive: true });
-    fs.writeFileSync(lastFile, hash, 'utf8');
-    if (!flags.length) return;
-    const rec = {
-      ts: new Date().toISOString(),
-      session: safeSession,
-      hash,
-      tools_this_turn: walked.toolsThisTurn,
-      msg_chars: walked.lastText.length,
-      evidence_chars: walked.evidence.length,
-      window_truncated: tail.truncated,
-      flags,
-    };
-    fs.appendFileSync(path.join(ledgerDir, safeSession + '.jsonl'), JSON.stringify(rec) + '\n', 'utf8');
-  } catch (_) { /* fail-open */ }
 }
 
 if (require.main === module) {
