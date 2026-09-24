@@ -84,6 +84,16 @@ If re-invoked for a seq that already exists in this same session (rare — e.g. 
 agent explicitly asks to refresh the just-written handover), UPDATE that file in
 place rather than incrementing again.
 
+**Carry-forward rule (seq N>1).** A later handover is often written from an
+already-compacted context, and every re-summary loses more (anti-hall repo
+`docs/KB-handover-research.md`, P3/P4: never compact a compaction). So:
+- COPY the predecessor's Session rules, Done + Verified rows and NOT-verified
+  rows **verbatim, with their original evidence**, each tagged
+  `(carried from <predecessor file>)` — never re-summarize or re-word them.
+- Drop a carried row only when this session has fresh evidence it no longer
+  applies, and say so in one line (`superseded: <row> — <evidence>`).
+- New rows come only from evidence gathered since the predecessor was written.
+
 ## HANDOVER.md contract
 
 **≤200 lines. Front-loaded**: the first ~15 lines are Situation (2-3 lines) plus a
@@ -98,6 +108,13 @@ consolidated schema):
 
 1. **Situation** — 2-3 lines: what this session was doing.
 2. **Goal + definition of done** — one sentence each.
+2a. **Session rules (verbatim)** — every instruction the USER issued for this
+   job (scope limits, "don't X until Y", ordering/serial-only rules, approval
+   gates), quoted EXACTLY with the turn/date it came from — never paraphrased.
+   This is the class compaction keeps worst (one study measured 17% of injected
+   constraints retained — anti-hall repo `docs/KB-handover-research.md`, P2).
+   Write `none issued` rather than omitting the section. Keep every rule that
+   is still active in every later seq.
 3. **Done + Verified** — with evidence: `file:line`, the command run, and its
    actual output/result. Never "tests pass" without the command and a real output
    summary.
@@ -126,6 +143,12 @@ consolidated schema):
     `handover-resume.js` injected a resume pointer this session and this
     session then makes file-changing actions with no `resume-verified:` line
     ever landing in the referenced file, one capped Stop-hook nudge fires.
+    Then the **receiver read-back**: before any new work, tell the user in your
+    own words (not a paste) the goal, the single next action and every active
+    session rule, and invite corrections — the incoming side restating the
+    handover is the step structured clinical handoffs credit with fewer errors
+    (I-PASS "synthesis by receiver", anti-hall repo
+    `docs/KB-handover-research.md`, P8/P9).
 
 Everywhere: concrete over vague ("2-space indentation", not "format properly").
 Pointers over payloads — reference files/commits/artifacts by path, never inline
@@ -145,6 +168,9 @@ single worst format per the KB's own tool survey).
 
 ## Goal + definition of done
 <1-2 lines>
+
+## Session rules (verbatim)
+- "<exact user wording>" — <turn/date given>; still active: yes
 
 ## Done + Verified
 - <claim> — evidence: `path:line`, command `<cmd>` → `<real output summary>`
@@ -177,6 +203,7 @@ single worst format per the KB's own tool survey).
 - [ ] `pwd` — expect: <path>
 - [ ] re-read `AGENTS.md` — rules may have been dropped by a context reset
 - [ ] `<smoke/test command>` — expect: <result>
+- [ ] read-back to the user: goal, next action, active session rules — in your own words, before any new work
 
 resume-verified: <ISO timestamp> -- <one-line git-status/pwd/smoke summary>
 ```
@@ -240,7 +267,8 @@ as `.anti-hall/progress/INDEX.md`:
    fallback, or a stable slug) and today's date.
 2. Compute seq = (existing `HANDOVER*.md` count in this session's dir) + 1.
 3. Write/update the 5 files: `HANDOVER.md` (or `HANDOVER-N.md`), `state.md`,
-   `decisions.md`, `trials.md`, `knowledge.md`. Detail files are append-only
+   `decisions.md`, `trials.md`, `knowledge.md` (seq N>1: apply the carry-forward
+   rule above first). Detail files are append-only
    across a session's multiple handovers (seq 2 appends to seq 1's `state.md`
    etc., doesn't overwrite); `HANDOVER*.md` itself is a fresh file per seq.
 4. Append the `INDEX.md` row (create `INDEX.md` if it doesn't exist yet).
@@ -301,6 +329,8 @@ file-changing work after the newest `HANDOVER*.md`'s mtime gets a capped
 3. Run the Resume-verification checklist BEFORE trusting anything else in the
    file, THEN append the `resume-verified:` line to it — `tasklist-guard.js`
    nags (once, capped) if file-changing work happens this session without one.
+   Then give the user your read-back (goal, next action, active session rules,
+   in your own words) before starting any new work.
 4. Page in detail files only as needed, per the Detail-file pointer table's "read
    this when" column — progressive disclosure, not a full read of everything.
 5. Recreate/reconcile your task list from state.md's Task list snapshot BEFORE

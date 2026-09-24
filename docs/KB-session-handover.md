@@ -251,10 +251,36 @@ Mapping to the principles above:
 | Resume verification | `HANDOVER.md` ends with the checklist: re-read `CLAUDE.md`, `pwd`, `git status`, smoke test |
 | Verification honesty | A required "Verified / NOT tested" slot; an empty NOT-tested field must be explicit, not blank |
 | Handover ≠ memory | Durable project rules stay in `CLAUDE.md`; the handover carries only perishable session state |
+| Session rules verbatim | Slot 2a "Session rules (verbatim)": every user-issued rule for the job, quoted exactly with its turn/date — the class compaction retains worst ([KB-handover-research](KB-handover-research.md) P2) |
+| Never re-summarize a summary | Seq N>1 carry-forward rule: predecessor rules, Done + Verified and NOT-verified rows are copied verbatim with their evidence, tagged `(carried from …)`; only fresh evidence adds or supersedes rows (P3/P4) |
+| Receiver read-back | After the resume checklist, the resumed agent restates goal / next action / active session rules to the user in its own words before acting (I-PASS "synthesis by receiver", P8/P9); `handover-resume.js` step 5 asks for it |
+| Mechanical safety net | `precompact-snapshot.js` (PreCompact) writes `PRECOMPACT-<n>.md` — git state, task snapshot, last 10 user messages verbatim, newest-handover pointer — right before every compaction; the resume hook names it |
+| Trigger before the model degrades | Auto-handover fires at the pct threshold OR the absolute `maxTokens` ceiling (default 170000), from `UserPromptSubmit` or once from `Stop`, and hands the user an exact `/compact focus: <handover path>` line |
 
 This mirrors the existing `.anti-hall/progress/` and `.anti-hall/history/` layouts, so the
 three artifacts share one navigation model: read the `INDEX.md` first, open only what the
 index says is relevant.
+
+### Compact Instructions snippet (Claude Code)
+
+Claude Code steers every compaction summary with a "Compact Instructions" section in
+`CLAUDE.md` (official: https://code.claude.com/docs/en/how-claude-code-works). The
+handover skill ships this snippet for projects to paste:
+
+```markdown
+## Compact Instructions
+Continuation state lives in the newest .anti-hall/handovers/<date>/<session>/HANDOVER*.md
+(and any newer PRECOMPACT-<n>.md beside it). In the summary, name that path, keep every
+pending/in-progress task, quote the user's session rules verbatim, and keep the
+"NOT verified" items. Do not restate work as verified unless the handover says so.
+```
+
+Codex has no documented CLAUDE.md-style compaction section; its equivalent resume path is the
+`SessionStart` `compact` source, which `handover-resume.js` already uses (see
+[KB-handover-research](KB-handover-research.md) §Codex).
+
+The 2026-09-24 research refresh with every source and the gap review lives in
+[KB-handover-research.md](KB-handover-research.md).
 
 ## Sources
 

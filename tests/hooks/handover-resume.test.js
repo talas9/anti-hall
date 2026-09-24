@@ -135,7 +135,8 @@ test("(b) handover present + source 'compact' -> context has path, SUPERSEDES, a
     assert.match(ctx, /^2\. Run its section-10 resume-verification checklist/m, 'numbered guided step 2');
     assert.match(ctx, /^3\. Load detail files ONLY as needed/m, 'numbered guided step 3');
     assert.match(ctx, /^4\. Check trials\.md do-not-repeat list/m, 'numbered guided step 4');
-    assert.match(ctx, /^5\. Continue from the single Next Action/m, 'numbered guided step 5');
+    assert.match(ctx, /^5\. READ-BACK: .*Session rules \(verbatim\)/m, 'numbered guided step 5: receiver read-back');
+    assert.match(ctx, /^6\. Continue from the single Next Action/m, 'numbered guided step 6');
     assert.match(ctx, /finished the widget refactor/, 'must surface the INDEX.md one-line outcome');
     assert.match(ctx, /found for this continuation/, 'compact source must use the continuation prefix wording');
     assert.ok(ctx.length < 4000, `context must stay well under 4k chars, got ${ctx.length}`);

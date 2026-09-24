@@ -100,8 +100,9 @@ function buildContext(candidate, outcome, prefix) {
   lines.push('2. Run its section-10 resume-verification checklist (git status, pwd, CLAUDE.md re-read, smoke command) BEFORE trusting any written state, THEN append a line to ' + candidate.filePath + ': `resume-verified: <ISO timestamp> -- <one-line git-status/pwd/smoke summary>`.');
   lines.push('3. Load detail files ONLY as needed via the pointer table (state.md / decisions.md / trials.md / knowledge.md).');
   lines.push('4. Check trials.md do-not-repeat list before re-attempting anything.');
-  lines.push('5. Continue from the single Next Action.');
-  lines.push("6. Recreate/reconcile your task list from state.md's Task list snapshot BEFORE working.");
+  lines.push('5. READ-BACK: before any new work, tell the user in your own words (not a paste) the goal, the single Next Action and every active rule from its "Session rules (verbatim)" section, and invite corrections.');
+  lines.push('6. Continue from the single Next Action.');
+  lines.push("7. Recreate/reconcile your task list from state.md's Task list snapshot BEFORE working.");
   lines.push('');
   lines.push(
     'This handover SUPERSEDES the auto-compact summary and any legacy CONTINUE-HERE-style ' +
