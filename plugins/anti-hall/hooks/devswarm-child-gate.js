@@ -120,10 +120,10 @@ function wakeReassertLine(env, isChild) {
   }
 }
 
-// findGitToplevel(startDir) -> absolute repo-root path | null. A PURE fs walk-up
-// looking for a `.git` entry — mirrors devswarm-child-turn.js's/devswarm-parent-
-// inbox.js's own copy byte-for-byte (kept local rather than shared so this Stop
-// hook's dependency surface stays exactly what it already was).
+// findGitToplevel used to live here as a local pure-fs walk-up (byte-for-byte
+// mirrored across 6 hook files — Phase 2 mesh redesign, B3); both call sites
+// below now resolve `worktree` via companion/lib/identity.js's resolveContext
+// (same zero-spawn-first fs walk, submodule-aware).
 // resolvedIdSafe(env) -> the real DEVSWARM_BUILDER_ID (hooks/lib/devswarm-wake.js's
 // resolvedId — validated against ID_FIELD there) when set/safe, else the literal
 // placeholder `<DEVSWARM_BUILDER_ID>`. Same lazy+guarded require idiom as
@@ -135,24 +135,6 @@ function resolvedIdSafe(env) {
     if (wake && typeof wake.resolvedId === 'function') return wake.resolvedId(env);
   } catch (_) { /* fail-open below */ }
   return '<DEVSWARM_BUILDER_ID>';
-}
-
-function findGitToplevel(startDir) {
-  try {
-    let dir = path.resolve(String(startDir || ''));
-    if (!dir) return null;
-    for (;;) {
-      try {
-        fs.statSync(path.join(dir, '.git'));
-        return dir;
-      } catch (_) { /* keep walking up */ }
-      const parent = path.dirname(dir);
-      if (parent === dir) return null; // reached filesystem root, no .git found
-      dir = parent;
-    }
-  } catch (_) {
-    return null;
-  }
 }
 
 // alreadyReportedThisEpisode(env, home, cwd, episodeSince) -> bool. PROJECTION-
@@ -174,7 +156,8 @@ function alreadyReportedThisEpisode(env, home, cwd, episodeSince) {
     let repokeyMod = null;
     try { repokeyMod = require('../companion/lib/devswarm-repokey.js'); } catch (_) { repokeyMod = null; }
     if (!repokeyMod) return false;
-    const worktree = findGitToplevel(cwd);
+    let worktree = null;
+    try { worktree = require('../companion/lib/identity.js').resolveContext(cwd, { home, missingPath: 'ancestor' }).worktreeRoot || null; } catch (_) { worktree = null; }
     if (!worktree) return false;
     let repoKey = null;
     try { repoKey = repokeyMod.repoKeyForWorktree(worktree); } catch (_) { repoKey = null; }
@@ -262,7 +245,8 @@ function findRecentDropAttempt(env, home, cwd, episodeSince, diag) {
     let repokeyMod = null;
     try { repokeyMod = require('../companion/lib/devswarm-repokey.js'); } catch (_) { repokeyMod = null; }
     if (!repokeyMod) return null;
-    const worktree = findGitToplevel(cwd);
+    let worktree = null;
+    try { worktree = require('../companion/lib/identity.js').resolveContext(cwd, { home, missingPath: 'ancestor' }).worktreeRoot || null; } catch (_) { worktree = null; }
     if (!worktree) return null;
     let repoKey = null;
     try { repoKey = repokeyMod.repoKeyForWorktree(worktree); } catch (_) { repoKey = null; }

@@ -36,12 +36,8 @@ const ALLOWLIST = {
   'companion/lib/devswarm-wake-watch.js': { 'primaryWorkspaceId-call': 2 },
   'companion/lib/liveness.js': { 'primaryWorkspaceId-call': 1 },
   'companion/lib/recovery.js': { 'primaryWorkspaceId-call': 1 },
-  'hooks/command-guard.js': { 'fn-findGitToplevel': 1, 'stat-dotgit': 1 },
-  'hooks/devswarm-child-gate.js': { 'fn-findGitToplevel': 1, 'stat-dotgit': 1 },
-  'hooks/devswarm-child-turn.js': { 'fn-findGitToplevel': 1, 'stat-dotgit': 1 },
-  'hooks/devswarm-parent-gate.js': { 'fn-findGitToplevel': 1, 'stat-dotgit': 1, 'primaryWorkspaceId-call': 1 },
-  'hooks/devswarm-parent-inbox.js': { 'fn-findGitToplevel': 1, 'stat-dotgit': 1, 'primaryWorkspaceId-call': 2 },
-  'hooks/devswarm-parent-reply-tracker.js': { 'fn-findGitToplevel': 1, 'stat-dotgit': 1 },
+  'hooks/devswarm-parent-gate.js': { 'primaryWorkspaceId-call': 1 },
+  'hooks/devswarm-parent-inbox.js': { 'primaryWorkspaceId-call': 1 },
   'hooks/lib/doctor-repair.js': { 'show-toplevel': 1 },
   // B2: resolvers route through identity; left: the reconcile git-root probe (stubbed by
   // devswarm-reconcile-budget.test.js via repokey.defaultRun) and primaryWorkspaceId calls.

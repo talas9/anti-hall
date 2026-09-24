@@ -570,22 +570,12 @@ function detectMutatingGitStash(command, depth) {
   }
   return null;
 }
-// findGitToplevelForStashGuard(startDir) — a PURE fs walk-up (no git spawn),
-// same convention as hooks/devswarm-parent-inbox.js's own findGitToplevel.
-function findGitToplevelForStashGuard(startDir) {
-  try {
-    let dir = path.resolve(String(startDir || ''));
-    if (!dir) return null;
-    for (;;) {
-      try { fs.statSync(path.join(dir, '.git')); return dir; } catch (_) { /* keep walking up */ }
-      const parent = path.dirname(dir);
-      if (parent === dir) return null;
-      dir = parent;
-    }
-  } catch (_) {
-    return null;
-  }
-}
+// findGitToplevelForStashGuard used to live here as its own PURE fs walk-up
+// (no git spawn) — Phase 2 mesh redesign, B3: retired in favor of the one
+// canonical resolver (companion/lib/identity.js's resolveContext), which is
+// the same zero-spawn-first walk. `ctx.toplevel`, not `worktreeRoot`, is the
+// right field here: a stash acts on the nearest repo actually checked out at
+// cwd (a submodule included), not its superproject.
 // hasProtectedStashesMarker(cwd) -> bool. The repo opts INTO stash protection
 // by creating `.anti-hall/protected-stashes` at its git toplevel (any
 // content, existence-only check) — this marker (or the ANTIHALL_STASH_GUARD=1
@@ -594,7 +584,7 @@ function findGitToplevelForStashGuard(startDir) {
 // "no unconditional default block in a public plugin").
 function hasProtectedStashesMarker(cwd) {
   try {
-    const top = findGitToplevelForStashGuard(cwd || process.cwd());
+    const top = require('../companion/lib/identity.js').resolveContext(cwd || process.cwd(), { missingPath: 'ancestor' }).toplevel;
     if (!top) return false;
     fs.statSync(path.join(top, '.anti-hall', 'protected-stashes'));
     return true;

@@ -254,46 +254,21 @@ function creditRepliesFromReceipts(home, repoKey, now, env) {
   return credited;
 }
 
-// findGitToplevel(startDir) -> absolute repo-root path | null. A PURE fs
-// walk-up looking for a `.git` entry — the same root `git rev-parse
-// --show-toplevel` would report, WITHOUT spawning git. Mirrors
-// devswarm-parent-gate.js / devswarm-parent-inbox.js BYTE-FOR-BYTE (kept as a
-// local copy rather than a shared require, matching this codebase's existing
-// convention for this exact primitive — see those files' own copies).
-function findGitToplevel(startDir) {
-  try {
-    let dir = path.resolve(String(startDir || ''));
-    if (!dir) return null;
-    for (;;) {
-      try {
-        fs.statSync(path.join(dir, '.git'));
-        return dir;
-      } catch (_) { /* keep walking up */ }
-      const parent = path.dirname(dir);
-      if (parent === dir) return null; // reached filesystem root, no .git found
-      dir = parent;
-    }
-  } catch (_) {
-    return null;
-  }
-}
-
 // resolveRepoKey(cwd) -> repoKey | null. The SAME durable per-project
 // identity devswarm-parent-gate.js's `selfKey` and devswarm-parent-inbox.js's
-// `repoKey` already resolve (companion/lib/devswarm-repokey.js's
-// repoKeyForWorktree) — replicated here via the SAME
-// findGitToplevel-then-repoKeyForWorktree idiom so all three hooks agree on
-// what one project's key is; a mismatch between how this tracker resolves it
-// and how the gate/inbox hooks do would silently reintroduce the exact
-// session-scoping bug this fix closes. Lazy-required + try/catch (D27
-// idiom, matching the sibling hooks) so a missing/corrupt module fails this
-// open (returns null) rather than crashing the hook.
+// `repoKey` already resolve — now via companion/lib/identity.js's
+// resolveContext (Phase 2 mesh redesign, B3: this file's local findGitToplevel
+// copy is retired in favor of the one canonical resolver every hook shares) so
+// all three hooks keep agreeing on what one project's key is; a mismatch
+// between how this tracker resolves it and how the gate/inbox hooks do would
+// silently reintroduce the exact session-scoping bug this fix closes.
+// resolveContext's own repoKey field is byte-identical to repoKeyForWorktree
+// for every shape (tests/companion/identity-equivalence.test.js), so this
+// reads it directly rather than re-deriving via repoKeyForWorktree(worktreeRoot).
 function resolveRepoKey(cwd) {
   try {
-    const top = cwd ? findGitToplevel(cwd) : null;
-    if (!top) return null;
-    const repokeyMod = require('../companion/lib/devswarm-repokey.js');
-    return repokeyMod.repoKeyForWorktree(top);
+    if (!cwd) return null;
+    return require('../companion/lib/identity.js').resolveContext(cwd, { missingPath: 'ancestor' }).repoKey || null;
   } catch (_) {
     return null;
   }

@@ -267,7 +267,9 @@ function writeHeartbeat(env, sessionId, cwd, home) {
   // the field incident this exists to catch (unpushed commits + no upstream,
   // silently invisible to the parent).
   try {
-    const worktreePath = findGitToplevel(cwd);
+    // toplevel, not worktreeRoot: push state is a property of whatever repo is
+    // literally checked out at cwd (a submodule included), not its superproject.
+    const worktreePath = require('../companion/lib/identity.js').resolveContext(cwd, { home, missingPath: 'ancestor' }).toplevel || null;
     if (worktreePath) {
       const push = gitTruth.gitPushState(worktreePath);
       if (push && typeof push.noUpstream === 'boolean') {
@@ -394,30 +396,21 @@ function buildArchiveRequestSegment(id) {
   );
 }
 
-// findGitToplevel(startDir) -> absolute repo-root path | null. A PURE fs walk-up
-// looking for a `.git` entry (a directory for a normal checkout, a FILE for a
-// linked worktree/submodule) — the same root `git rev-parse --show-toplevel`
-// would report for that cwd, WITHOUT spawning git. Mirrors devswarm-parent-
-// inbox.js's own findGitToplevel byte-for-byte (kept as a local copy rather than a
-// shared require so this hot per-turn hook's dependency surface stays exactly what
-// it already was — no new cross-file coupling for a few lines of pure fs walk).
-function findGitToplevel(startDir) {
-  try {
-    let dir = path.resolve(String(startDir || ''));
-    if (!dir) return null;
-    for (;;) {
-      try {
-        fs.statSync(path.join(dir, '.git'));
-        return dir;
-      } catch (_) { /* keep walking up */ }
-      const parent = path.dirname(dir);
-      if (parent === dir) return null; // reached filesystem root, no .git found
-      dir = parent;
-    }
-  } catch (_) {
-    return null;
-  }
-}
+// findGitToplevel used to live here as a local pure-fs walk-up (byte-for-byte
+// mirrored across 6 hook files — Phase 2 mesh redesign, B3). Retired: both
+// call sites below now go through companion/lib/identity.js's resolveContext
+// and both want `ctx.toplevel` (the literal nearest repo), NOT `worktreeRoot`
+// — the git-push-state probe because push state is a property of whatever's
+// actually checked out at cwd (submodule included), and registerChildDescriptor
+// because the persisted `worktreePath` is ALSO the session's literal on-disk
+// location: companion/lib/target-session.js's findTarget matches it against
+// `path.resolve(cwd)` and recovery.js resumes a session with
+// `cwd: descriptor.worktreePath` — a superproject-keyed value there would
+// never match a submodule-cwd child's own cwd and would resume it in the
+// wrong directory (B3 P0 fix). repoKey/meshId stay correctly superproject-
+// keyed regardless, since every reader re-derives them from `worktreePath` via
+// repoKeyForWorktree/identity.resolveContext, which already folds a submodule
+// onto its outermost superproject at READ time.
 
 // Default inbox/cursor locations for a FRESH descriptor — must match
 // companion/lib/devswarm-pull.js's inboxDefaultPath/cursorDefaultPath byte-for-
@@ -506,7 +499,19 @@ function registerChildDescriptor(env, sessionId, cwd, home) {
     }
   }
 
-  const worktreePath = findGitToplevel(cwd);
+  // toplevel, NOT worktreeRoot (B3 P0 fix): worktreePath is PERSISTED and is
+  // also the session's literal location — companion/lib/target-session.js's
+  // findTarget matches `path.resolve(cwd) === path.resolve(worktreePath)`,
+  // and recovery.js resumes a session with `cwd: descriptor.worktreePath`. A
+  // submodule-cwd child persisted at its superproject's worktreeRoot would
+  // never match its own cwd and would resume in the wrong directory. Keys
+  // (repoKey/meshId) are still correctly superproject-keyed at READ time —
+  // every reader goes through repoKeyForWorktree/identity.resolveContext(
+  // desc.worktreePath), which already folds a submodule onto its outermost
+  // superproject — so persisting the literal toplevel here loses nothing on
+  // the key side while fixing the literal-location contract.
+  let worktreePath = null;
+  try { worktreePath = require('../companion/lib/identity.js').resolveContext(cwd, { home, missingPath: 'ancestor' }).toplevel || null; } catch (_) { worktreePath = null; }
   if (!worktreePath) return null;
 
   const dir = path.join(devswarmRoot(home), 'workspaces');
@@ -859,7 +864,7 @@ function main() {
   // B not yet landed) is falsy, so this stays a pure no-op until it ships.
   let archiveRequestedId = null;
   try {
-    const worktree = findGitToplevel(payload.cwd);
+    const worktree = require('../companion/lib/identity.js').resolveContext(payload.cwd, { home, missingPath: 'ancestor' }).worktreeRoot || null;
     if (worktree) {
       let ingestHealthMod = null;
       try { ingestHealthMod = require('../companion/lib/ingest-health.js'); } catch (_) { ingestHealthMod = null; }

@@ -334,30 +334,12 @@ function isArchiveReadyFor(id, repoKey, home) {
   return !!(entry && entry.archive_ready === true);
 }
 
-// findGitToplevel(startDir) -> absolute repo-root path | null. A PURE fs walk-up
-// looking for a `.git` entry — the same root `git rev-parse --show-toplevel`
-// would report, WITHOUT spawning git (keeps this Stop hook's ~30s budget cheap).
-// Mirrors devswarm-parent-inbox.js / devswarm-child-turn.js byte-for-byte (kept
-// as a local copy rather than a shared require so this hook's dependency surface
-// stays exactly what it already was — no new cross-file coupling for a few lines
-// of pure fs walk).
-function findGitToplevel(startDir) {
-  try {
-    let dir = path.resolve(String(startDir || ''));
-    if (!dir) return null;
-    for (;;) {
-      try {
-        fs.statSync(path.join(dir, '.git'));
-        return dir;
-      } catch (_) { /* keep walking up */ }
-      const parent = path.dirname(dir);
-      if (parent === dir) return null; // reached filesystem root, no .git found
-      dir = parent;
-    }
-  } catch (_) {
-    return null;
-  }
-}
+// findGitToplevel used to live here as a local pure-fs walk-up (byte-for-byte
+// mirrored across 6 hook files — Phase 2 mesh redesign, B3). It is retired:
+// readOwnUnread below now resolves `top` via companion/lib/identity.js's
+// resolveContext(cwd), which is the SAME zero-spawn-first, submodule-aware,
+// worktree-root resolution the 3-step fallback chain below used to hand-roll
+// (resolveWorktreeNoSpawn -> resolveCallerWorktree -> findGitToplevel).
 
 // readOwnUnread(home, cwd, repoKey) -> { unread, id, urgencyMax, unknown }. The
 // Primary's OWN inbound (#34) has no descriptor with an inboxPath/cursorPath
@@ -462,20 +444,18 @@ function findGitToplevel(startDir) {
 // unparseable `.git` file, or any other shape outside what it models) —
 // same "fs-only first, spawn as fallback" discipline
 // repoKeyForWorktreeFast already established in the same shared lib.
-// findGitToplevel is kept ONLY as the LAST-resort fail-open fallback, for
-// when even the devswarm-repokey.js/scripts/devswarm.js requires fail.
+// B3: the 3-step fallback chain (resolveWorktreeNoSpawn -> resolveCallerWorktree
+// -> findGitToplevel) collapses to one identity.js call — resolveContext already
+// does zero-spawn-first fs walk with submodule-hop fallback, and `worktreeRoot`
+// is exactly the key-bearing root the old chain hand-rolled (fixes D6 for the
+// nested-submodule shape as a side effect: one canonical hop-until-outermost
+// walk instead of three resolvers that could each stop at a different depth).
 function readOwnUnread(home, cwd, repoKey) {
   let top = null;
   if (cwd) {
     try {
-      top = require('../companion/lib/devswarm-repokey.js').resolveWorktreeNoSpawn(cwd) || null;
+      top = require('../companion/lib/identity.js').resolveContext(cwd, { home, missingPath: 'ancestor' }).worktreeRoot || null;
     } catch (_) { top = null; }
-    if (!top) {
-      try {
-        top = require('../scripts/devswarm.js').resolveCallerWorktree(cwd) || null;
-      } catch (_) { top = null; }
-    }
-    if (!top) top = findGitToplevel(cwd);
   }
   if (!top) return { unread: 0, id: null, urgencyMax: null, unknown: false, pendingQuestions: [], pendingQuestionsTruncated: null };
 

@@ -329,31 +329,14 @@ function summaryEntry(summary, id) {
   return entry && typeof entry === 'object' ? entry : null;
 }
 
-// findGitToplevel(startDir) -> absolute repo-root path | null. A PURE fs walk-up
-// looking for a `.git` entry (a directory for a normal checkout, a FILE for a
-// linked worktree/submodule) — the same root `git rev-parse --show-toplevel`
-// would report for that cwd, WITHOUT spawning git (this hook's hot path spawns no
-// subprocess at all — install-devswarm-ingest.js's own worktreeHash() then
-// fs.realpathSync()'s this path, so it agrees byte-for-byte with what the
-// installer baked into the daemon's unit at install time, as long as this walk
-// lands on the same toplevel git itself would have found).
-function findGitToplevel(startDir) {
-  try {
-    let dir = path.resolve(String(startDir || ''));
-    if (!dir) return null;
-    for (;;) {
-      try {
-        fs.statSync(path.join(dir, '.git'));
-        return dir;
-      } catch (_) { /* keep walking up */ }
-      const parent = path.dirname(dir);
-      if (parent === dir) return null; // reached filesystem root, no .git found
-      dir = parent;
-    }
-  } catch (_) {
-    return null;
-  }
-}
+// findGitToplevel used to live here as a local pure-fs walk-up (byte-for-byte
+// mirrored across 6 hook files — Phase 2 mesh redesign, B3). Retired: both
+// `gitTop` below and the `resolveMeshId` fast path further down now go through
+// companion/lib/identity.js's resolveContext, which is the SAME zero-spawn-
+// first fs walk with submodule-hop fallback the two hand-rolled fast paths
+// here approximated (and fixes D5 — the phantom-meshId shape inside a
+// submodule — since resolveContext's `worktreeRoot`/`meshId` already fold onto
+// the outermost superproject instead of stopping at a submodule's own toplevel).
 
 // readVerdictFile(home, id) -> parsed liveness verdict | null. Reads the
 // supervisor's already-written fs verdict (zero git, no computeLiveness). Tolerant
@@ -1187,7 +1170,7 @@ function main() {
   let primaryId = null;
   let gitTop = null;
   try {
-    gitTop = cwd ? findGitToplevel(cwd) : null;
+    gitTop = cwd ? require('../companion/lib/identity.js').resolveContext(cwd, { home, missingPath: 'ancestor' }).worktreeRoot : null;
     worktreeHash = gitTop ? installIngest.worktreeHash(gitTop) : null;
     primaryId = gitTop ? installIngest.primaryWorkspaceId(gitTop) : null;
   } catch (_) { worktreeHash = null; primaryId = null; gitTop = null; }
@@ -1623,46 +1606,25 @@ function main() {
     try { descriptors = require('../companion/devswarm-supervisor.js').readDescriptors(home) || []; }
     catch (_) { descriptors = []; }
     const meshIdCache = new Map();
-    // FAST PATH (P0 perf fix, measured 2026-09-18/19): canonicalMeshId(wt)
-    // (scripts/devswarm.js) resolves via resolveCallerWorktree(wt), which
-    // ALWAYS spawns `git rev-parse --show-toplevel` first (pure-fs
-    // findGitToplevel is only its FAILURE fallback) and THEN unconditionally
-    // spawns a SECOND `git rev-parse --show-superproject-working-tree` to
-    // check for a submodule remap — TWO spawns per distinct worktreePath,
-    // per turn, on this hot path. Profiled live against ToolFox3 (2026-09-19,
-    // --cpu-prof): this exact chain (familyAwareUnanswered -> collapseFamilies
-    // -> keyFor -> resolveMeshId -> canonicalMeshId -> resolveCallerWorktree)
-    // was 94% of this hook's sampled CPU time (8,750/9,314 hits) — dwarfing
-    // the #36-filter repoKey spawns this same perf pass already fixed.
-    // Mirrors that fix's shape: try the SAME local findGitToplevel() this file
-    // already uses for `gitTop` above (pure fs, byte-for-byte the same walk
-    // `git rev-parse --show-toplevel` performs — see its own doc comment) to
-    // find the toplevel with ZERO spawns, confirm via repoKeyForWorktreeFast's
-    // own zero-spawn submodule-shape detector that the toplevel is NOT a
-    // submodule (the one shape a spawn-free walk cannot correctly remap), then
-    // finish with installIngest.primaryWorkspaceId(top) — the SAME pure
-    // sha256-of-realpath hash canonicalMeshId itself ends on, already required
-    // at the top of this file, no spawn. Falls back to the full spawn-based
-    // canonicalMeshId ONLY when the fs walk finds no `.git` at all, or the
-    // submodule-shape detector cannot confirm a non-submodule toplevel —
-    // exactly the same fail-open-to-correctness posture as the repoKey fix.
+    // Phase 2 mesh redesign, B3: this used to be a hand-rolled fast path
+    // (pure-fs findGitToplevel + repoKeyForWorktreeFast's zero-spawn
+    // submodule-shape detector, falling back to the full spawn-based
+    // canonicalMeshId ONLY when the fs walk couldn't confirm a non-submodule
+    // toplevel — the perf fix that made this hook's dominant CPU cost,
+    // profiled 94% of sampled time, ToolFox3 2026-09-19). identity.js's
+    // resolveContext IS that fast path (zero-spawn-first fs walk, submodule-
+    // hop fallback only when genuinely needed) with correct submodule handling
+    // built in rather than approximated, so both branches collapse to one call
+    // — and it fixes D5 (this hook's own phantom-meshId-inside-a-submodule
+    // defect) as a side effect, since resolveContext folds a submodule cwd
+    // onto its outermost superproject instead of stopping at the submodule's
+    // own toplevel.
     const resolveMeshId = (wt) => {
       if (meshIdCache.has(wt)) return meshIdCache.get(wt);
       let k = null;
       try {
-        const top = wt ? findGitToplevel(wt) : null;
-        if (top) {
-          const cd = repokeyMod ? repokeyMod.gitCommonDirNoSpawn(top) : null;
-          if (cd) {
-            // Confirmed non-submodule shape with zero spawns — finish with
-            // the same pure hash canonicalMeshId itself computes.
-            k = installIngest.primaryWorkspaceId(top);
-          }
-        }
+        k = wt ? require('../companion/lib/identity.js').resolveContext(wt, { home, missingPath: 'ancestor' }).meshId : null;
       } catch (_) { k = null; }
-      if (k === null) {
-        try { k = require('../scripts/devswarm.js').canonicalMeshId(wt); } catch (_) { k = null; }
-      }
       meshIdCache.set(wt, k);
       return k;
     };

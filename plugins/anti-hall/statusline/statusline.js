@@ -121,7 +121,12 @@ function runBaseCommand(baseCmd, stdinBytes) {
 // mirror the old catch-all fallback to `cwd` for both.
 function gitToplevel(cwd) {
   try {
-    return identity.resolveContext(cwd).toplevel || cwd;
+    // missingPath:'ancestor' (B3 P1 fix, mesh redesign): cwd can be a session
+    // dir removed out from under the statusline (a cleaned-up worktree) — fall
+    // back to the nearest EXISTING ancestor's toplevel (same walk-up the old
+    // findGitToplevel always did) rather than degrading the label to the raw,
+    // no-longer-existing cwd string.
+    return identity.resolveContext(cwd, { missingPath: 'ancestor' }).toplevel || cwd;
   } catch (e) {
     return cwd;
   }
