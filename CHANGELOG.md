@@ -264,6 +264,13 @@ the update.
   `costUsd`/`costSource`/`tokensIn`/`tokensOut`. `jev report --window 24h|7d` (default: both)
   shows real cost totals, $/call, and $/changed-decision per integration, alongside the
   existing manual `costPerCall` estimate.
+- **Added: opt-in Jev budget watch.** `jev.json` `budget: {mode: "unlimited"|"watch",
+  usdPerDay, usdPerWeek}` (default `"unlimited"`, no watching at all). In `"watch"` mode,
+  once the day's real spend exceeds `usdPerDay`, the assist layer logs ONE
+  `type:"budget-warning"` row per calendar day to `jev-assist.ndjson`; there is no existing
+  Jev user-facing notice path in this codebase, so the warning surfaces only through
+  `jev report`, which also shows spend vs budget per window. Jev is NEVER auto-disabled by
+  a budget, in any mode.
 
 ## 0.107.0 (2026-09-24)
 

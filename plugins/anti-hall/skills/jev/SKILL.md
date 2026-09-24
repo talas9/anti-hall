@@ -108,6 +108,23 @@ pricing, or TypeSafe's own pricing for the direct transport). Two cost signals:
   charges a cache hit. `jev report --window 24h|7d` shows real cost totals,
   $/call, and $/changed-decision per integration (default: both windows).
 
+## Budget watch (opt-in, observability only)
+
+Set `budget` in `~/.anti-hall/jev.json` to watch real spend against a cap:
+
+```json
+{ "budget": { "mode": "watch", "usdPerDay": 5, "usdPerWeek": 25 } }
+```
+
+`mode` defaults to `"unlimited"` (no watching, no warnings). In `"watch"` mode,
+`usdPerDay` is required and `usdPerWeek` is optional. When the day's real spend
+exceeds `usdPerDay`, the assist layer logs ONE warning per calendar day to
+`jev-assist.ndjson` (`type:"budget-warning"`) — there is no existing Jev
+user-facing notice path in this build, so the warning surfaces only through
+`jev report` (below), never injected into a hook's own output. **Jev is never
+auto-disabled by a budget, in any mode** — a human decides whether to act on
+it.
+
 ## "jev report"
 
 `node "${CLAUDE_PLUGIN_ROOT}/scripts/jev-report.js" [--window 24h|7d]` — a

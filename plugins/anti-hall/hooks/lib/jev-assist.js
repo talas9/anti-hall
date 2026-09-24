@@ -189,6 +189,92 @@ function computeCostUsd({ r, cachedFlag, home }) {
   return { costUsd: null, costSource: null };
 }
 
+// --- Budget watch (opt-in, NEVER auto-disables Jev) -------------------------
+//
+// ~/.anti-hall/jev.json:
+//   {"budget": {"mode": "unlimited"|"watch", "usdPerDay": 5, "usdPerWeek": 25}}
+//   mode defaults to "unlimited" (no warnings at all). "watch" requires a
+//   positive `usdPerDay`; `usdPerWeek` is optional (jev-report can still show
+//   a 7d window without it -- see jev-report.js).
+//
+// NOTE: this codebase has no hooks/lib/settings.js get('jev', ...) accessor
+// (checked before writing this) -- budget config is read directly from
+// jev.json under a `budget` key, same as every other jev.json field.
+//
+// In watch mode, once the rolling DAY's real cost exceeds usdPerDay, the
+// assist layer logs ONE warning per calendar day (a `type:'budget-warning'`
+// line in jev-assist.ndjson) -- there is no existing Jev user-facing notice
+// path in this codebase (checked: no notice/systemMessage/additionalContext
+// plumbing in any jev-*.js hook), so "report only" applies: the warning
+// surfaces via `jev report`, never injected into a hook's own output. Jev is
+// NEVER auto-disabled by this path, under any configuration.
+function budgetStatePath(home) {
+  return path.join(homeDir(home), '.anti-hall', 'state', 'jev-budget.json');
+}
+
+function readBudgetConfig(home) {
+  const cfg = readJevJson(home);
+  const b = (cfg.budget && typeof cfg.budget === 'object' && !Array.isArray(cfg.budget)) ? cfg.budget : {};
+  const mode = b.mode === 'watch' ? 'watch' : 'unlimited';
+  const usdPerDay = (Number.isFinite(b.usdPerDay) && b.usdPerDay > 0) ? b.usdPerDay : null;
+  const usdPerWeek = (Number.isFinite(b.usdPerWeek) && b.usdPerWeek > 0) ? b.usdPerWeek : null;
+  return { mode, usdPerDay, usdPerWeek };
+}
+
+function todayUtc() {
+  return new Date().toISOString().slice(0, 10); // YYYY-MM-DD, UTC
+}
+
+function readBudgetState(home) {
+  try {
+    const raw = fs.readFileSync(budgetStatePath(home), 'utf8');
+    const parsed = JSON.parse(raw);
+    return (parsed && typeof parsed === 'object') ? parsed : {};
+  } catch (_) {
+    return {};
+  }
+}
+
+function writeBudgetState(home, state) {
+  try {
+    const p = budgetStatePath(home);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, JSON.stringify(state), 'utf8');
+  } catch (_) {
+    // best-effort only
+  }
+}
+
+// maybeWarnBudget({home, costUsd}) — best-effort, never throws, NEVER
+// disables Jev. Called only when watch mode is on and this call's real cost
+// is known; a whole-file skip (mode !== 'watch') costs nothing beyond the
+// one readJevJson() readBudgetConfig() already needs to check the mode.
+function maybeWarnBudget({ home, costUsd }) {
+  try {
+    const budget = readBudgetConfig(home);
+    if (budget.mode !== 'watch' || !Number.isFinite(costUsd)) return;
+
+    const today = todayUtc();
+    let state = readBudgetState(home);
+    // A new calendar day resets BOTH the running spend and warn eligibility
+    // -- carrying yesterday's warnedDate forward would silently suppress the
+    // "one warning per day" cadence on a fresh, unwarned day.
+    if (state.date !== today) state = { date: today, spentUsd: 0, warnedDate: null };
+    state.spentUsd = (Number.isFinite(state.spentUsd) ? state.spentUsd : 0) + costUsd;
+
+    if (Number.isFinite(budget.usdPerDay) && state.spentUsd > budget.usdPerDay && state.warnedDate !== today) {
+      appendLog(home, {
+        ts: new Date().toISOString(), type: 'budget-warning', window: 'daily',
+        spentUsd: state.spentUsd, budgetUsd: budget.usdPerDay,
+      });
+      state.warnedDate = today;
+    }
+    writeBudgetState(home, state);
+  } catch (_) {
+    // best-effort only -- must never affect the caller's decision.
+  }
+}
+
 function contentHash(parts) {
   return crypto.createHash('sha256').update(parts.join('\u0001')).digest('hex').slice(0, 16);
 }
@@ -350,6 +436,9 @@ function finalize({ id, home, hash, mode, trust, baseline, judge, threshold, r, 
   // written when the caller actually passes a boolean; omitted otherwise so
   // older/other callers' rows are unaffected.
   if (typeof compare === 'boolean') entry.compare = compare;
+  // Budget watch: best-effort, only touches disk when watch mode is on, and
+  // never affects `final`/`entry` above -- see maybeWarnBudget's own comment.
+  if (r) maybeWarnBudget({ home, costUsd });
   appendLog(home, entry);
 
   return {
@@ -514,6 +603,9 @@ module.exports = {
   envNameFor,
   computeFinal,
   computeCostUsd,
+  readBudgetConfig,
+  budgetStatePath,
+  maybeWarnBudget,
   cachePath,
   logPath,
   CACHE_MAX_ENTRIES,

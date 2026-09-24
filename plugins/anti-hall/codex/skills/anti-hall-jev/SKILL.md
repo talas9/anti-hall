@@ -75,6 +75,12 @@ itself.
   fields, so set `prices` (`{"<model>": {"inPerMTok", "outPerMTok"}}` or a
   `"default"` entry) in `jev.json` to compute real cost from token counts when
   present instead. Never an extra network call; never charges a cache hit.
+- Budget watch (opt-in): `jev.json` `"budget": {"mode": "watch", "usdPerDay": 5,
+  "usdPerWeek": 25}` (default mode `"unlimited"`, no watching). Over `usdPerDay`,
+  the assist layer logs ONE `type:"budget-warning"` row per calendar day to
+  `jev-assist.ndjson` -- no existing user-facing Jev notice path exists in this
+  build, so it surfaces only via `jev-report.js`. Jev is NEVER auto-disabled by
+  a budget.
 
 ## Never
 

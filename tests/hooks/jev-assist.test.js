@@ -225,6 +225,85 @@ test('computeCostUsd: no result at all (skipped call) -> null', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Budget watch (opt-in, never auto-disables)
+// ---------------------------------------------------------------------------
+
+test('readBudgetConfig: no jev.json / no budget key -> "unlimited", no thresholds', () => {
+  const { readBudgetConfig } = freshLib();
+  const h = makeHome();
+  try {
+    assert.deepStrictEqual(readBudgetConfig(h.home), { mode: 'unlimited', usdPerDay: null, usdPerWeek: null });
+  } finally { h.cleanup(); }
+});
+
+test('readBudgetConfig: watch mode with usdPerDay/usdPerWeek', () => {
+  const h = makeHome();
+  try {
+    h.writeState('jev.json', { budget: { mode: 'watch', usdPerDay: 5, usdPerWeek: 25 } });
+    const { readBudgetConfig } = freshLib();
+    assert.deepStrictEqual(readBudgetConfig(h.home), { mode: 'watch', usdPerDay: 5, usdPerWeek: 25 });
+  } finally { h.cleanup(); }
+});
+
+test('maybeWarnBudget: mode "unlimited" (default) -> never writes state, never warns, regardless of spend', () => {
+  const h = makeHome();
+  try {
+    const { maybeWarnBudget } = freshLib();
+    maybeWarnBudget({ home: h.home, costUsd: 1000 });
+    assert.ok(!fs.existsSync(path.join(h.home, '.anti-hall', 'state', 'jev-budget.json')), 'unlimited mode touches no state at all');
+    const log = readNdjson(path.join(h.home, '.anti-hall', 'logs', 'jev-assist.ndjson'));
+    assert.strictEqual(log.length, 0);
+  } finally { h.cleanup(); }
+});
+
+test('maybeWarnBudget: watch mode, under budget -> tracks spend, no warning', () => {
+  const h = makeHome();
+  try {
+    h.writeState('jev.json', { budget: { mode: 'watch', usdPerDay: 5 } });
+    const { maybeWarnBudget } = freshLib();
+    maybeWarnBudget({ home: h.home, costUsd: 1 });
+    const log = readNdjson(path.join(h.home, '.anti-hall', 'logs', 'jev-assist.ndjson'));
+    assert.strictEqual(log.length, 0, 'no warning while under budget');
+  } finally { h.cleanup(); }
+});
+
+test('maybeWarnBudget: watch mode, over budget -> exactly ONE warning per day, never disables Jev', () => {
+  const h = makeHome();
+  try {
+    h.writeState('jev.json', { budget: { mode: 'watch', usdPerDay: 5 } });
+    const { maybeWarnBudget } = freshLib();
+    maybeWarnBudget({ home: h.home, costUsd: 3 });
+    maybeWarnBudget({ home: h.home, costUsd: 3 }); // total now 6 > 5 -> warn once
+    maybeWarnBudget({ home: h.home, costUsd: 3 }); // still over -> must NOT warn again today
+    const log = readNdjson(path.join(h.home, '.anti-hall', 'logs', 'jev-assist.ndjson'));
+    const warnings = log.filter((l) => l.type === 'budget-warning');
+    assert.strictEqual(warnings.length, 1, 'exactly one warning per calendar day');
+    assert.strictEqual(warnings[0].window, 'daily');
+    assert.strictEqual(warnings[0].budgetUsd, 5);
+    // jev.json is untouched (never auto-disabled)
+    const cfg = JSON.parse(fs.readFileSync(path.join(h.home, '.anti-hall', 'jev.json'), 'utf8'));
+    assert.strictEqual(cfg.enabled, undefined, 'budget watch never writes an enabled flag');
+  } finally { h.cleanup(); }
+});
+
+test('maybeWarnBudget: a new day resets spend and allows a fresh warning', () => {
+  const h = makeHome();
+  try {
+    h.writeState('jev.json', { budget: { mode: 'watch', usdPerDay: 5 } });
+    const { maybeWarnBudget, budgetStatePath } = freshLib();
+    maybeWarnBudget({ home: h.home, costUsd: 10 }); // warns once "today"
+    // simulate yesterday's state so the next call sees a new day
+    const statePath = budgetStatePath(h.home);
+    const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+    state.date = '2000-01-01';
+    fs.writeFileSync(statePath, JSON.stringify(state), 'utf8');
+    maybeWarnBudget({ home: h.home, costUsd: 10 }); // new day -> warns again
+    const log = readNdjson(path.join(h.home, '.anti-hall', 'logs', 'jev-assist.ndjson'));
+    assert.strictEqual(log.filter((l) => l.type === 'budget-warning').length, 2);
+  } finally { h.cleanup(); }
+});
+
+// ---------------------------------------------------------------------------
 // ask() end-to-end (mock server)
 // ---------------------------------------------------------------------------
 

@@ -107,6 +107,60 @@ function readCostPerCall(home) {
   }
 }
 
+// readBudgetConfig(home) -> {mode, usdPerDay, usdPerWeek}. No
+// hooks/lib/settings.js get('jev', ...) accessor exists in this codebase
+// (checked) -- read directly from jev.json's `budget` key, mirroring
+// hooks/lib/jev-assist.js's own readBudgetConfig. mode defaults
+// "unlimited" (report shows no budget section at all).
+function readBudgetConfig(home) {
+  try {
+    const raw = fs.readFileSync(jevConfigPath(home), 'utf8');
+    const parsed = JSON.parse(raw);
+    const b = (parsed && parsed.budget && typeof parsed.budget === 'object') ? parsed.budget : {};
+    const mode = b.mode === 'watch' ? 'watch' : 'unlimited';
+    const usdPerDay = (Number.isFinite(b.usdPerDay) && b.usdPerDay > 0) ? b.usdPerDay : null;
+    const usdPerWeek = (Number.isFinite(b.usdPerWeek) && b.usdPerWeek > 0) ? b.usdPerWeek : null;
+    return { mode, usdPerDay, usdPerWeek };
+  } catch (_) {
+    return { mode: 'unlimited', usdPerDay: null, usdPerWeek: null };
+  }
+}
+
+// computeBudgetStatus(rows, budget) -> null (mode !== 'watch') or
+// {'24h': {spentUsd, budgetUsd, exceeded}|null, '7d': {...}|null} — spend is
+// summed across ALL integrations (budget is a single global daily/weekly
+// cap, not per-integration), from the SAME real costUsd field jev-assist.js
+// writes. A window with no configured budget for it (e.g. usdPerWeek unset)
+// reports null for that window, not a fabricated 0/0.
+function computeBudgetStatus(rows, budget) {
+  if (!budget || budget.mode !== 'watch') return null;
+  const sumWindow = (days) => {
+    const cutoff = Date.now() - days * 86400000;
+    let sum = 0;
+    for (const row of rows) {
+      if (!row || typeof row !== 'object' || row.type === 'outcome') continue;
+      const ts = row.ts ? Date.parse(row.ts) : NaN;
+      if (!Number.isFinite(ts) || ts < cutoff) continue;
+      if (Number.isFinite(row.costUsd)) sum += row.costUsd;
+    }
+    return sum;
+  };
+  const status = {};
+  if (Number.isFinite(budget.usdPerDay)) {
+    const spentUsd = sumWindow(1);
+    status['24h'] = { spentUsd, budgetUsd: budget.usdPerDay, exceeded: spentUsd > budget.usdPerDay };
+  } else {
+    status['24h'] = null;
+  }
+  if (Number.isFinite(budget.usdPerWeek)) {
+    const spentUsd = sumWindow(7);
+    status['7d'] = { spentUsd, budgetUsd: budget.usdPerWeek, exceeded: spentUsd > budget.usdPerWeek };
+  } else {
+    status['7d'] = null;
+  }
+  return status;
+}
+
 // readLines(home) -> array of parsed rows (decision rows + outcome rows),
 // reading BOTH the live file and its one rotated backup (.1) so a report run
 // right after a rotation doesn't silently lose the older half.
@@ -478,6 +532,23 @@ function printCostWindows(costWindows) {
   }
 }
 
+// printBudgetStatus(status) — status is null when budget.mode !== 'watch'
+// (nothing printed: unlimited is the silent default). Never suggests
+// disabling Jev; a budget in "watch" mode is observability only.
+function printBudgetStatus(status) {
+  if (!status) return;
+  const lines = [];
+  for (const label of ['24h', '7d']) {
+    const s = status[label];
+    if (!s) continue;
+    const flag = s.exceeded ? 'EXCEEDED' : 'ok';
+    lines.push(`  ${label}: $${s.spentUsd.toFixed(4)} / $${s.budgetUsd.toFixed(2)} budget (${flag})`);
+  }
+  if (lines.length === 0) return;
+  console.log('\nbudget (watch mode -- observability only, Jev is never auto-disabled):');
+  for (const line of lines) console.log(line);
+}
+
 function main() {
   const opts = parseArgs(process.argv.slice(2));
   const home = opts.home;
@@ -490,18 +561,21 @@ function main() {
     ? { [opts.window]: COST_WINDOWS[opts.window] != null ? COST_WINDOWS[opts.window] : Number(opts.window) }
     : COST_WINDOWS;
   const costWindows = buildCostWindows(rows, { costPerCall, windows });
+  const budget = readBudgetConfig(home);
+  const budgetStatus = computeBudgetStatus(rows, budget);
 
   if (opts.json) {
-    process.stdout.write(JSON.stringify(Object.assign({}, report, { costWindows }), null, 2) + '\n');
+    process.stdout.write(JSON.stringify(Object.assign({}, report, { costWindows, budget, budgetStatus }), null, 2) + '\n');
   } else {
     printTable(report);
     printCostWindows(costWindows);
+    printBudgetStatus(budgetStatus);
   }
 }
 
 module.exports = {
   buildReport, readLines, readTriageLines, buildTriageAnswerReport, percentile,
-  buildCostWindows, COST_WINDOWS,
+  buildCostWindows, COST_WINDOWS, readBudgetConfig, computeBudgetStatus,
 };
 
 if (require.main === module) {

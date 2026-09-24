@@ -270,6 +270,30 @@ test('buildCostWindows: default windows are 24h and 7d, each re-running buildRep
   assert.ok(Math.abs(r7.realCostTotal - 0.03) < 1e-9, '7d window includes both rows');
 });
 
+// ---------------------------------------------------------------------------
+// Budget watch status (jev-report side: display only, never mutates state)
+// ---------------------------------------------------------------------------
+
+test('computeBudgetStatus: mode "unlimited" (default) -> null, nothing to show', () => {
+  const { computeBudgetStatus } = require('../../plugins/anti-hall/scripts/jev-report.js');
+  assert.strictEqual(computeBudgetStatus([row({ costUsd: 100 })], { mode: 'unlimited', usdPerDay: null, usdPerWeek: null }), null);
+});
+
+test('computeBudgetStatus: watch mode, usdPerDay only -> 24h computed, 7d null (not configured)', () => {
+  const { computeBudgetStatus } = require('../../plugins/anti-hall/scripts/jev-report.js');
+  const rows = [row({ id: 'speculation', costUsd: 3 }), row({ id: 'modelRouting', costUsd: 4 })];
+  const status = computeBudgetStatus(rows, { mode: 'watch', usdPerDay: 5, usdPerWeek: null });
+  assert.strictEqual(status['24h'].spentUsd, 7, 'spend sums across ALL integrations');
+  assert.strictEqual(status['24h'].exceeded, true);
+  assert.strictEqual(status['7d'], null, 'usdPerWeek not configured -> null, not a fabricated 0');
+});
+
+test('computeBudgetStatus: under budget -> exceeded false', () => {
+  const { computeBudgetStatus } = require('../../plugins/anti-hall/scripts/jev-report.js');
+  const status = computeBudgetStatus([row({ costUsd: 1 })], { mode: 'watch', usdPerDay: 5, usdPerWeek: null });
+  assert.strictEqual(status['24h'].exceeded, false);
+});
+
 test('buildTriageAnswerReport: separates urgent vs non-urgent time-to-answer', () => {
   const { buildTriageAnswerReport } = require('../../plugins/anti-hall/scripts/jev-report.js');
   const triageRows = [
