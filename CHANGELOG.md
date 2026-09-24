@@ -6,102 +6,159 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
-## Unreleased
+## 0.108.0 (2026-09-24)
 
-- **New: DevSwarm capability gate** (`companion/lib/devswarm-capabilities.js`). Every
-  DevSwarm surface anti-hall uses (each `hivecontrol workspace` verb, plus app-DB
-  tables and columns) is now gated by a minimum version AND runtime detection: `--help`
-  parsing for verbs, `PRAGMA table_info` for columns, cached per installed hivecontrol
-  build. A surface this DevSwarm build lacks puts its feature to sleep, and doctor
-  lists it ("feature X needs DevSwarm >= Y, you have Z"). No DevSwarm installed means
-  everything sleeps silently. Every `hivecontrol` call in `scripts/devswarm.js` now
-  goes through the gate.
+### New features
 
-- **New: auto-archive for done DevSwarm workspaces** (`companion/lib/devswarm-lifecycle.js`,
-  run by the supervisor sweep). A child workspace is archived only when all of these are
-  proven: its finish gates are set; its branch is merged (git ancestry, or the app's PR row
-  says merged); its worktree is clean; it has no unread mail in either direction; it isn't
-  the Primary; the owner hasn't viewed it in the app for 10 minutes; and it has been idle
-  for `idleMin`. Settings `devswarm.autoArchive.{mode,idleMin,maxPerSweep}` go in
-  `~/.anti-hall/settings.json`. The default `mode` is `"on"`. Set it to `"dry-run"`
-  to report only (writes nothing), or `"off"` to disable. Each archive tells the Primary with an undo hint, and
-  it replaces the "archive-ready" reminder for those workspaces. `devswarm.js auto-archive`
-  shows the plan. Needs DevSwarm >= 2.5.3 and stays dormant on older versions.
-- **New: `devswarm.js prune-archived`.** The dry run (`--older-than <days>`) lists archived
-  workspaces with evidence and stores a 15-minute plan nonce. Deletion runs only through
-  `--confirm-ids <exact ids> --plan <nonce>`, after the owner approves that exact list.
-  Automated callers are refused, and a hygiene test keeps every hook, supervisor and
-  scheduler path away from it. Each row is re-checked before its delete, logged to
-  `~/.anti-hall/logs/devswarm-prune.ndjson`, and tombstoned in anti-hall; no store rows are
-  deleted. Needs DevSwarm >= 2.5.3.
+- **Auto-handover (on by default).** When the main agent's context first crosses
+  `autoHandover.pct` (85%), `hooks/auto-handover.js` tells it, without asking first, to
+  write an anti-hall handover itself, tell the user and list the saved paths, and urge
+  `/compact` or `/clear`. After that: a short reminder every `nagStepPct` (5) further
+  points, and a Stop-time reminder at a quiet pause (no open tasks, no recent spawn) at
+  most once per `nagQuietMin` (15) minutes (`hooks/auto-handover-pause-nag.js`). Context %
+  comes from the statusline's real `context_window` figure (persisted by
+  `statusline/phase-bar.js`), a Codex rollout's `model_context_window`, or a transcript
+  estimate whose window is the env override, the session's last-seen statusline window, or
+  "inferred 1M" once usage passes 200k. With a genuinely unknown window it sends one soft
+  advisory instead of the mandatory directive. `ANTIHALL_AUTO_HANDOVER_PCT` overrides the
+  threshold (`0` = off). Shared with the Codex port.
+- **One settings store for everything.** `~/.anti-hall/settings.json`, with a declarative
+  schema (`hooks/lib/settings-schema.js`) and API (`hooks/lib/settings.js`); front ends
+  `/anti-hall:settings` (Codex: `anti-hall-settings`) and
+  `scripts/settings.js show|get|set|reset [--json]`. Precedence: env → settings.json →
+  `/config` (a `plugin.json` `userConfig` value that differs from its manifest default) →
+  legacy file (e.g. `jev.json`; outranks `/config` until the one-time migration is
+  stamped) → default. Every setting is wired to the code that reads it, including
+  auto-archive, retention and the Jev budget/prices/audit settings; resolvers that take an
+  `env` derive `home` from that env (`settings.getWithEnv`). Dotted keys can be written
+  flat (`"autoArchive.mode"`) or nested. A corrupt settings.json is backed up before any
+  write. The old `auto-handover-config` skill is folded into `/anti-hall:settings`;
+  `scripts/auto-handover-config.js` stays as a CLI alias.
+- **Repairs run on every reload.** `hooks/repair-on-reload.js` (SessionStart + a
+  UserPromptSubmit fallback, since `/reload-plugins` is not shown to re-fire SessionStart)
+  starts one detached `doctor.js --repair` whenever a repair is not yet stamped for the
+  running version. Lock-guarded, never blocks, no-op when nothing is pending.
+  `ANTIHALL_REPAIR_ON_RELOAD=off` disables it.
+- **Version alerts say update or reload.** If the plugin-cache mirror already holds a
+  newer version than the running one, the agent is told to reload (with that version's
+  changelog headline); if the remote is newer, to update and then reload. Both are explicit
+  "tell the user now" directives, once per session per case, on Claude and Codex.
+- **Jev metrics.** Real per-call cost (gateway-reported, else tokens × `jev.prices`; a
+  cache hit costs $0; never invented); `jev-report.js` shows cost windows (`--window
+  24h|7d`), precision from `label <hash> tp|fp` (plus derived AUTO labels), yield, cost
+  efficiency, overhead and a one-line headline per integration; the Vercel AI Gateway
+  credit balance (report/status time, 15-min cache). Opt-in budget watch
+  (`jev.budget.mode=watch` + `usdPerDay`/`usdPerWeek`/`minCreditUsd`) only warns and never
+  disables Jev. Opt-in audit snippets (`jev.audit.snippets`) keep a redacted ~200-char
+  snippet for decisions Jev changed; `jev-report.js prune-audit --days N` trims them.
+- **DevSwarm: the app database is the ground truth.** One read-only snapshot of the
+  DevSwarm app's own SQLite DB (`companion/lib/devswarm-app-db.js`) feeds the per-turn
+  table, `roster`, identity, `doctor` and the supervisor: archived/open state, full titles
+  (app renames propagate), sidebar order, `[pinned]`, `[on screen]` (nags for the focused
+  workspace are suppressed for 2 min), PR state (`PR #N merged, checks failed`, only when
+  synced after the branch last moved), and `[⚠ brief not delivered]`/`[⚠ brief withheld]`.
+  It never reads message bodies, brief text or credential tables. The Primary's anchor
+  self-ack and `register-primary` takeover follow the app's session map when Claude's own
+  transcript confirms it. A pinned schema makes `doctor` warn when the app drops a column
+  anti-hall reads. Evidence per field: `docs/KB-devswarm-app-db.md`.
+- **DevSwarm: supervisor app sync every tick.** Archived markers for workspaces the app
+  archived or deleted (never a delete), title refresh, `app-state.json` (session map,
+  drift, pending app deletions, a report-only message-gap cross-check); about 0.1 s per
+  sweep. `devswarm.js app-state [--json]` and `app-sync`; `ANTIHALL_DEVSWARM_APP_SYNC=0`
+  disables it.
+- **DevSwarm: capability gate.** Every DevSwarm surface anti-hall touches — each
+  `hivecontrol workspace` verb, every app-DB table and column, and the app files it stats —
+  is checked by minimum version and runtime detection (`--help` parsing, `PRAGMA
+  table_info`, existence), cached per hivecontrol build
+  (`companion/lib/devswarm-capabilities.js`). A missing surface puts its feature to sleep
+  and `doctor` names it; without DevSwarm everything sleeps silently.
+- **DevSwarm: auto-archive of done workspaces** (default on, DevSwarm ≥ 2.5.3). The
+  supervisor archives a child only when all are proven: finish gates set, branch merged
+  (git ancestry or the app's PR row), clean worktree, no unread either way, not the
+  Primary, not viewed in the app for 10 minutes, idle ≥ `idleMin`. It always names the
+  workspace id, tells the Primary with an undo hint, and replaces the archive-ready nag for
+  those workspaces. `devswarm.js auto-archive` shows the plan.
+- **DevSwarm: owner-approved prune.** `devswarm.js prune-archived --older-than <days>`
+  lists archived workspaces with evidence and a 15-minute plan nonce; deletion runs only
+  with `--confirm-ids <exact ids> --plan <nonce>` from an interactive caller. Each row is
+  re-checked, logged (`logs/devswarm-prune.ndjson`) and tombstoned; no store rows are
+  deleted. A hygiene test keeps every automated path away from it.
+- **DevSwarm: message retention.** The supervisor archives old message bodies to
+  `~/.anti-hall/devswarm/archive/<store>/<yyyy-mm>.ndjson.gz`, then clears them (rows,
+  read positions, hashes and seq numbers stay, so unread counts and gates do not change).
+  Only bodies older than `retention.days` (30) that every reader has read, outside the
+  newest `keepPerPartition` (200) rows and not an open question; a store over `maxStoreMB`
+  (100) is pruned oldest first; `VACUUM` reclaims space; the archive is capped at
+  `archiveMaxMB` (200). First run on a machine is a dry-run report. `devswarm.js retention
+  status | run [--dry-run] | restore --store X --month yyyy-mm`.
+- **DevSwarm: screenshot sync.** When the app DB is unreadable or disagrees, the per-turn
+  hook asks once per session for a sidebar screenshot; `devswarm.js sync-ui` plans it
+  against the app DB and the owner confirms. It archives only what the app DB proves,
+  never unarchives by itself, never deletes.
+- **Operator guide.** `/anti-hall:system-briefing` (and the Codex mirror) is now the
+  agent-facing guide: glossary, hard rules, every skill, CLI verb and setting with its
+  default, plus the live inventory. The SessionStart foundation points agents at it.
 
-- **New: the DevSwarm app database is the ground truth for workspace state.** One
-  read-only snapshot of the desktop app's own DB (`companion/lib/devswarm-app-db.js`)
-  now feeds every surface: the per-turn table, `roster`, identity, `doctor` and the
-  supervisor. It never reads message bodies, brief text or credential tables. Every
-  table and column read goes through the DevSwarm capability gate and falls back to the
-  old behaviour if missing. A pinned schema makes `doctor` warn
-  `DevSwarm app schema changed: <table.column>` when the app drops something anti-hall
-  reads. Each field was proven on a live DB and against the app source before any
-  decision used it. The evidence, and the fields deliberately left unused, are in
-  `docs/KB-devswarm-app-db.md`.
-- **New: the supervisor syncs with the app every tick.** It writes archived markers for
-  workspaces the app archived *or deleted*, and never deletes anything. It refreshes
-  workspace titles when they change in the app. It writes `app-state.json`, which holds
-  the session map, open-but-unknown and open-but-archived drift, pending app deletions,
-  and a message cross-check (app messages to live targets that never reached the mesh
-  store, counted per branch and age, report only). Measured cost: about 0.1 s per sweep.
-  There is no file watcher, because the app's WAL changes about every 13 s from its own
-  background writes. `ANTIHALL_DEVSWARM_APP_SYNC=0` disables the sync.
-- **New: `devswarm.js app-state [--json]`** (read-only summary) and **`app-sync`** (run
-  the sync step now).
-- **Changed: spawn titles are no longer cut at 60 chars** (owner decision). The table and
-  roster show the app's full title, and renames made in the app propagate.
-- **New: app signals in the table and roster:**
-  - the sidebar order;
-  - `[pinned]`;
-  - `PR #N merged, checks failed` in the finish column, shown only when the app synced
-    the PR after the branch last moved, and never overriding the gates;
-  - `[⚠ brief not delivered]` / `[⚠ brief withheld]` for a spawned child that never
-    got its task;
-  - `[on screen]` for the workspace the owner has focused in the app. Nags about that
-    workspace are suppressed while it is focused (2 min, `ANTIHALL_DEVSWARM_FOCUS_MS`).
-- **Changed: self-identification uses the app's session map.** The Primary's anchor
-  self-ack and the `register-primary` takeover now follow the app's session-to-worktree
-  map, but only when Claude's own transcript for that session confirms the worktree.
-  Otherwise the v0.107.1 liveness rule decides, as before.
-- **New: screenshot sync (`devswarm.js sync-ui`).** When the app DB is unreadable or
-  disagrees with anti-hall, the per-turn hook asks once per session for a screenshot of
-  the DevSwarm sidebar. The skill transcribes it, `sync-ui` plans it against the app DB,
-  and the owner confirms. It archives only what the app DB says is archived, never
-  unarchives on its own, never deletes, and refuses conflicts until the owner confirms.
-- **New: hygiene test.** The build fails if any code line names a DevSwarm credential
-  table, a browser-profile store, or the app's unauthenticated internal HTTP, WebSocket
-  or MCP endpoints.
+### Fixes
 
-- **New: message retention, so DevSwarm stores stop growing without limit.** The supervisor
-  sweep now archives old message bodies to
-  `~/.anti-hall/devswarm/archive/<store>/<yyyy-mm>.ndjson.gz`, fsyncs the archive, then
-  clears the bodies. Rows, read positions, hashes and seq numbers stay, so unread counts,
-  gates and dedupe do not change.
-  - A body is pruned only when it is older than 30 days, every reader has read it, it is not
-    in the newest 200 rows of its partition, and it is not an open question. It also must
-    not be mirrored in the partition's NDJSON inbox, or be a heartbeat or broadcast the
-    roster still shows.
-  - A store over 100 MB is pruned oldest first until it is under the limit. Unread and
-    protected rows are never pruned; if they alone keep a store over the limit, `doctor`
-    WARNs.
-  - `VACUUM` then reclaims the space. On a 60 MB store: 37k bodies pruned in 1.3 s, VACUUM
-    in about 230 ms, file down to 41 MB.
-  - Already-merged legacy `journal/*.ndjson` files are compressed into the archive.
-  - The archive is capped at 200 MB; the oldest month files are removed first.
-  - On a new machine, the first run is a dry-run report only (`retention-dry-run.json`).
-  - Every batch is logged, with counts and id ranges but no bodies, to
-    `~/.anti-hall/logs/devswarm-retention.ndjson`.
-  - New commands: `devswarm.js retention status | run [--dry-run] [--store X] | restore
-    --store X --month yyyy-mm`. `restore` dedupes by id and holds restored rows for 7 days.
-  - Settings: `devswarm.retention.days` / `maxStoreMB` / `keepPerPartition` / `archive` /
-    `archiveMaxMB`, also settable as `ANTIHALL_DEVSWARM_RETENTION_*` env vars.
+- **P0: `update.js` ran the old version's post-pull stages.** After pulling a newer
+  version it now re-execs the freshly pulled `update.js --post-pull-only`, so stages that
+  exist only in the new version run in the same update; any failure falls back to the
+  local results with a note. `repair-on-reload` likewise uses the newest cached
+  `doctor.js`.
+- **Version alert missed multi-release days**: the 24 h cache TTL served a stale `latest`
+  all day; now 2 h, plus the network-free plugin-cache check above.
+- **`update.js --check` trusted a lagging `installed_plugins.json`**; it now takes the
+  higher of that and the newest cache dir and says when to `/reload-plugins`.
+- **Three `doctor` false failures**: the parent-inbox self-test resolved its repoKey from
+  the plugin dir (and a skip counted as a failure); a `register-primary` Primary row was
+  poked/escalated like a child (the supervisor now skips Primary rows); doctor's own
+  context-footprint probe no longer triggers `repair-on-reload`. doctor's version-alert
+  self-test matches the new directive wording.
+- **Parent-inbox**: the app's own primary builder row on the Primary's checkout (proven by
+  `builderType`) folds into the own-unread line instead of a false child nag; an
+  app-archived row with a stored not-draining flag renders plain archived.
+- **`jev report`**: "agreement" compared Jev to a trust constant — it now uses the caller's
+  own heuristic verdict (`compare`) and reports `n/a` without one; changed decisions and
+  cost are counted once per content hash (a fresh call plus its cache hits); TypeSafe's
+  `usage.input_tokens`/`output_tokens` are read.
+- **`settings.js show --all`** dropped four Jev advanced keys and listed `budget.*` twice
+  (headline/advanced split by position); object settings now render as JSON.
+- **edit-guard's handover redirect** now names `.anti-hall/handovers/**` as the exempt
+  place to write.
+- **`update.js` split-store summary** now states how many already-handled rows were
+  re-delivered as unread, and why (no behaviour change).
+- **DevSwarm 2.5.3**: `workspace archive|delete [idOrBranch]` default to the CURRENT
+  workspace and have no `--yes`; anti-hall now always passes the explicit workspace id and
+  makes no call without one. Help fixtures are the real 2.5.3 text.
+- **Docs**: full `docs/README.md` index and link check (`tests/hygiene/docs-links.test.js`);
+  `llms.txt` is now the condensed catalog of every hook, skill, script and setting;
+  `tests/hygiene/docs-coverage.test.js` fails the build when anything shipped is
+  undocumented.
+
+### Data repairs (update + `doctor --repair`, idempotent, never delete)
+
+- **Settings migration**: legacy config (`~/.anti-hall/jev.json`, including nested
+  `budget`/`audit` keys) is forward-migrated into `settings.json` once per version; the
+  legacy file is never deleted, and file-only `prices` keeps being read from it.
+- **Escalated Primary verdicts**: `doctor --repair` clears an already-stale `escalated`
+  verdict left on a `register-primary` Primary row.
+- **App-archived/deleted workspaces**: the supervisor's app sync writes the archived
+  marker for workspaces the app archived or deleted (marker only; nothing is deleted).
+- **State retention**: `doctor --repair` sweeps auto-handover latches and context-% state
+  older than 30 days (`ANTIHALL_AUTO_HANDOVER_STATE_RETENTION_DAYS`,
+  `ANTIHALL_CONTEXT_PCT_STATE_RETENTION_DAYS`).
+- **Repairs now also run on reload** (`repair-on-reload.js`), not only on update.
+
+### Owner decisions
+
+- Auto-handover is on by default at 85%.
+- Auto-archive (`devswarm.autoArchive.mode`) defaults to `on` (`dry-run`/`off` available).
+- Retention defaults: 30 days, 100 MB per store, 200 newest per partition kept, archive
+  on, 200 MB archive cap.
+- Spawn titles are no longer truncated (the 60-char cap is gone).
+- Deleting DevSwarm workspaces is never automated: only `prune-archived` with an
+  owner-approved exact list.
 
 ## 0.107.1 (2026-09-24)
 
@@ -132,245 +189,6 @@ the update.
   is now archived only when the DevSwarm app database confirms it is archived. Anything
   else is kept and listed in `keptNotArchivedInApp`, and an unreadable app DB archives
   nothing. The skill docs no longer suggest a roster screenshot as the source.
-
-- **Fixed (P0): `update.js` ran the CURRENTLY-LOADED (possibly stale) version's
-  own post-pull stages after pulling a newer one.** Field-verified: 0.107.0's
-  update.js pulled 0.107.1, synced the cache, then ran 0.107.0's own hardcoded
-  stage list — a stage that only exists in 0.107.1 (e.g. `mark-app-archived`)
-  never ran until a second update or `doctor` call, since every stage's
-  ORCHESTRATION (not just the library code it calls) is baked into whichever
-  file is executing. Fix: after a real version bump, `update.js` now re-execs
-  the freshly-pulled marketplace clone's own copy with `--post-pull-only`
-  (stages only, no pull) and merges its JSON status in; a loop is prevented
-  via an env marker, and any re-exec failure fails open to the local (stale)
-  stage results with a note. The skill text (Claude + Codex mirror) now
-  points at the marketplace clone's own update.js path instead of the
-  possibly-stale `${CLAUDE_PLUGIN_ROOT}` cache path. `repair-on-reload` was
-  audited for the same class of bug: it now resolves the NEWEST cache
-  version's own `doctor.js`, not whichever copy sits next to the currently-
-  loaded hook.
-- **Added: repairs now also run on a plain `/reload-plugins` or a new session
-  on a new version**, not only via `update.js` or a manual `doctor --repair`.
-  A new `repair-on-reload` hook (SessionStart + a UserPromptSubmit fallback,
-  since no documented/observed evidence shows `/reload-plugins` re-fires
-  SessionStart) cheaply compares the running plugin version + migration-
-  registry state against the shared marker store and, only when a repair is
-  pending and none is already in flight (lock-protected), launches `doctor.js
-  --repair` DETACHED — idempotent, fail-open, never blocking the turn, no-op
-  path measured well under budget. Codex parity via its SessionStart/
-  UserPromptSubmit equivalent (same shared hook script).
-- **Fixed: three `doctor.js` false failures** (field report, v0.107.0):
-  1. the `devswarm-parent-inbox` self-test resolved its repoKey from the
-     PLUGIN's own install dir instead of the caller's cwd, so it always
-     SKIPPED on a real machine — and a SKIP was counted as a FAILURE. Now
-     resolves from `process.cwd()`, and a skip is informational, never a
-     failure.
-  2. a `register-primary`-registered Primary row (a real, documented setup
-     step) was swept by the same nudge/escalate machinery as CHILD
-     workspaces; since a Primary structurally has no `nudgeCommand`, it
-     escalated on the very first stale tick with `nudgeAttempts=0` — for a
-     live, actively-draining Primary. The supervisor sweep now excludes
-     primary rows from pokeOrEscalate entirely, and `doctor --repair` clears
-     any already-stale escalated verdict for one.
-  3. (investigated, not independently reproducible beyond the two causes
-     above): a reported failure-count mismatch between `--repair`'s summary
-     and its printed ✗ lines. Fixes 1-2 remove the exact false-FAIL lines the
-     report showed; the counting mechanism itself (`bad()`) was verified
-     atomic (increment + print together, no cap/dedupe) against a clean
-     fixture, so no further divergence could be proven without the
-     reporter's own store contents.
-  Also: doctor's own context-footprint self-measurement (which spawns every
-  registered SessionStart hook) now disables `repair-on-reload` for that one
-  probe, so `doctor` measuring itself can never recursively spawn another
-  `doctor.js --repair`.
-- **Changed: `update.js`'s split-store-merge summary now explains re-delivery.**
-  The v0.107.0 split-store merge re-delivers already-handled messages as unread
-  by design (cursors are never copied across the two backends' independent
-  sequence spaces). The human summary and JSON state (`reDeliveredUnread`) now
-  say how many rows were re-delivered and why, instead of leaving it silent.
-  No behavior change.
-- **Fixed: edit-guard's handover-location redirect didn't say where to write
-  instead.** The deny message now explicitly says "write handovers under
-  .anti-hall/handovers/** (exempt); copy elsewhere afterwards if the project
-  wants one" rather than only naming the rule.
-- **Fixed: `update.js --check` trusted the harness-owned `installed_plugins.json`
-  first**, which can lag a cache already synced by a prior `update.js` run (a live
-  machine reported installed=0.105.3 while the cache held 0.107.0). Resolution now
-  takes the HIGHER of `installed_plugins.json` and the newest cache dir, and flags
-  the disagreement in `--check`'s action text ("... — run /reload-plugins") instead
-  of silently reporting the stale one. Never writes `installed_plugins.json`.
-
-- **Fixed: `version-alert` (SessionStart) went silent on multi-release days.** ROOT CAUSE
-  (proven against the real `~/.anti-hall/version-check.json` on the machine that reported
-  it): the old 24h cache TTL let a genuinely-fresh cache serve a STALE `latest` for the
-  rest of the day — the cache read `{"latest":"v0.104.0","checkedAt":<2026-09-24T07:21Z>}`,
-  correct at that instant, but v0.105.0 through v0.107.0 (six releases) all shipped in the
-  following ~10 hours and the alert never fired for any of them, since the cache "wasn't
-  stale yet" per the old TTL. TTL shortened to 2h. Added a SECOND, independent, network-free
-  case: if the local version-pinned plugin cache
-  (`~/.claude/plugins/cache/anti-hall/anti-hall/<version>/`) already holds a newer version
-  than the one actually running — an update was fetched (`/anti-hall:update` or Codex's
-  update path) but the session was never reloaded — the hook now tells the user to
-  `/reload-plugins` (or restart Codex), independent of the remote-cache TTL, and includes a
-  one-line changelog headline read straight off the already-on-disk mirrored copy. Both
-  cases now emit an explicit ACTION directive ("Tell the user now: ...") instead of a bare
-  fact, since additionalContext reaches the model, not the user, and the model must be told
-  to relay it. Running version is (and always was) read from the plugin.json next to the
-  executing hook (`CLAUDE_PLUGIN_ROOT`-relative), never from
-  `~/.claude/plugins/installed_plugins.json` — confirmed harness-owned and laggy (observed
-  reporting 0.105.3 while 0.107.0 was actually loaded). Alerts are now deduped once per
-  session (a resume/compact/clear/fork re-fire of SessionStart for an already-checked
-  session is silent; a different session is told again) via `hooks/lib/drift-baseline.js`'s
-  existing key-based dedupe, with a dedicated marker file for the reload case so it dedupes
-  even when no remote cache has ever been written. `version-alert.js` is registered under
-  `SessionStart` only (never `SubagentStart`), so a subagent/sidechain never triggers this
-  hook at all; a defensive in-code check also skips a payload carrying a subagent marker.
-  Settings key `versionAlert.enabled` (default true) is documented as the intended
-  long-term off-switch pending `hooks/lib/settings.js`, which does not exist in this
-  codebase yet; `ANTIHALL_VERSION_ALERT=off` and the `version-alert` skip-guard hatch are
-  unchanged. Codex parity: same shared `hooks/version-alert.js` file (already registered in
-  `codex/hooks/hooks.json`); both directive strings name the Codex-side update path (the
-  `anti-hall-update` skill) and reload step (restart Codex / start a fresh session) inline.
-  19 tests.
-
-- **Fixed: `jev report`'s "agreement" metric was computing `jev === base`, and for
-  speculation-guard `base` is a hardcoded add-block trust constant (`false`), not a real
-  verdict — so "agreement" was silently reporting "rate Jev said not-speculative", never
-  actual agreement with the regex heuristic. `ask()`/`askSync()`/`askDetached()` now accept
-  an optional `compare` field (the caller's independent heuristic verdict, e.g.
-  speculation-guard's `regexWouldBlock`) that `jev-assist.ndjson` logs verbatim and that
-  `jev-report` uses for agreement instead of `base`; rows with no `compare` field are
-  excluded from the metric (reported separately as `excludedNoCompare`) rather than
-  silently folded in, and the table shows `n/a (no comparison signal)` when none exist. The
-  merged `agree%/label%` column is split into two columns (`agree%`, `label%`). `compare`
-  never affects trust math. Added a `costPerCall` quick-start pointer to `skills/jev/
-  SKILL.md` (and its Codex mirror).
-- **Fixed: `jev report` was counting a decision once per log row instead of once per
-  decision.** A Stop-hook retry produces one fresh call plus N cache hits sharing the same
-  content hash; changed-decision counts, the outcome join, and the cost estimate were all
-  inflated by every cache-hit retry (a real log showed 6 rows -> 6 "changed" counted for one
-  actual decision). Changed-decision counts/rate, outcome-join, and cost are now deduped by
-  content hash and computed from fresh (non-cached) rows only -- a cache hit is never a new
-  decision and never costs anything. `jev report`'s `calls` column now shows
-  `calls (fresh/cached)`.
-- **Added: real per-call Jev cost tracking.** `jevDecide` now defensively parses each response
-  for gateway-reported cost/token-usage fields (verified against Vercel AI Gateway's docs at
-  https://vercel.com/docs/ai-gateway/sdks-and-apis/rest-api#look-up-a-generation — the
-  `typesafe/v1/systemone` passthrough this build calls does not currently return them, so this
-  is forward-compatible parsing, not a guess). When real cost is unavailable but real token
-  counts are, `jev.json`'s new optional `prices` map (`{model: {inPerMTok, outPerMTok}}`, or a
-  `"default"` entry) computes it; a cache hit always costs $0; otherwise cost is logged as
-  `null`, never fabricated, and never an extra network call. `jev-assist.ndjson` rows gain
-  `costUsd`/`costSource`/`tokensIn`/`tokensOut`. `jev report --window 24h|7d` (default: both)
-  shows real cost totals, $/call, and $/changed-decision per integration, alongside the
-  existing manual `costPerCall` estimate.
-- **Added: opt-in Jev budget watch.** `jev.json` `budget: {mode: "unlimited"|"watch",
-  usdPerDay, usdPerWeek}` (default `"unlimited"`, no watching at all). In `"watch"` mode,
-  once the day's real spend exceeds `usdPerDay`, the assist layer logs ONE
-  `type:"budget-warning"` row per calendar day to `jev-assist.ndjson`; there is no existing
-  Jev user-facing notice path in this codebase, so the warning surfaces only through
-  `jev report`, which also shows spend vs budget per window. Jev is NEVER auto-disabled by
-  a budget, in any mode.
-- **Added: Jev precision labels (tp/fp) and an efficiency headline.** A changed decision's
-  content hash `h` doubles as its stable id. `jev report label <hash> tp|fp` is the ONE write
-  path `jev-report.js` has: it appends to a separate, append-only
-  `~/.anti-hall/logs/jev-labels.ndjson`, never touching `jev-assist.ndjson`. AUTO labels are
-  derived, at report time, from the SAME mechanical outcome signal `recordOutcome()` already
-  logs (offline, over already-logged data, never in the hook path, never re-parsed
-  transcripts, never treated as ground truth) and are always reported separately from human
-  labels, which win when both exist for a hash. `jev report` gains yield (changed/TP per 100
-  fresh calls), cost efficiency ($/TP, $/changed decision), overhead (% calls over 1s,
-  timeouts, fallback count), and a one-line headline per integration extending the existing
-  KEEP/REVIEW/REMOVE suggestion, e.g. `speculation: 6 changed/24h · 5 TP (3 human, 2 auto) ·
-  $0.02/TP · p50=120ms · KEEP`.
-- **Added: opt-in Jev audit snippets.** `jev.json` `audit: {snippets: true}` (default `false`)
-  stores a REDACTED ~200-char snippet of the judged text, but ONLY for a decision that actually
-  changes an outcome, in a separate `~/.anti-hall/logs/jev-audit.ndjson`, file mode 600, keyed
-  by the decision's content hash. `scrubSecrets()` (new, minimal, scoped to this feature -- no
-  secret-scrubbing utility existed anywhere in this codebase before) redacts Bearer tokens,
-  known key prefixes (`sk-`, `AIza`, `ghp_`, `xox*-`), `key=`/`token=` assignments, emails, and
-  long base64/hex-looking runs (>=32 chars) before anything is written. `jev report label
-  <hash>` prints the stored snippet if one exists. Deletion is manual-only via `jev report
-  prune-audit --days N`; nothing in this codebase ever prunes it automatically.
-- **Added: Vercel AI Gateway credit balance.** Verified via
-  https://vercel.com/docs/ai-gateway/sdks-and-apis/rest-api#check-credit-balance
-  (`GET /v1/credits` -> `{balance, total_used}`); TypeSafe's own direct API documents no
-  equivalent (checked https://docs.typesafe.ai/api), so this is `vercel`-transport only, and
-  reports plainly rather than inventing one for `typesafe`. `jev-report.js` and
-  `jev-setup.js status` show the balance, fetched only at report/status time (never the hook
-  path) through a 15-minute cache (`~/.anti-hall/cache/jev-credits.json`). `jev.json`
-  `budget.minCreditUsd` (watch mode only) triggers the same once-per-day low-credit warning
-  cadence the spend budget uses, checked at report time; never auto-disables Jev. Also fixed
-  `extractCostAndUsage` to read TypeSafe's OWN documented `usage.input_tokens`/
-  `output_tokens` field names (confirmed via https://docs.typesafe.ai/api, which the earlier
-  commit had not checked) alongside the existing defensive Vercel/OpenAI-shaped fallbacks.
-
-- **Added: unified settings** — every user-facing anti-hall setting now has one home,
-  `~/.anti-hall/settings.json`, browsable and editable via the new `/anti-hall:settings`
-  skill or `node plugins/anti-hall/scripts/settings.js show|get|set|reset` (`--json`
-  everywhere). Backed by a declarative registry (`hooks/lib/settings-schema.js`) covering
-  auto-handover, guards, Jev (including a new opt-in spend-budget watch), limit-
-  conservation, DevSwarm, the statusline, and more — EVERY setting is ACTUALLY WIRED into
-  the hook/module that reads it, not just documented. Consumers that take an explicit
-  `env` parameter (most of DevSwarm's ~30 knobs, for testability) route through a new
-  `settings.getWithEnv(section, key, dflt, env)` helper that derives `home` from THAT SAME
-  env (never `os.homedir()`), so a test's isolated HOME is always honored —
-  `tests/hygiene/settings-home-injection.test.js` proves this mechanically by poisoning
-  `os.homedir()` and calling every wired resolver with a synthetic env. Precedence: env
-  var → settings.json → a plugin-option value that actually
-  differs from its `plugin.json` `userConfig` manifest default (a value merely sitting at
-  the default is treated as unset, so it can never mask a real legacy value) → legacy
-  per-feature config file (e.g. `~/.anti-hall/jev.json`, ranked ABOVE the plugin-option tier
-  until the one-time migration below is stamped for this version) → default. A corrupt
-  `settings.json` is backed up to `settings.json.corrupt-<ts>` (never silently clobbered)
-  before any write. `doctor --repair` and
-  `/anti-hall:update` forward-migrate legacy config into `settings.json` once, idempotently,
-  and never delete the legacy file. Codex gets a mirrored `anti-hall-settings` skill (numbered-
-  choice menu in place of `AskUserQuestion`; no `/config` equivalent) driving the same CLI.
-
-- **Added: auto-handover trigger.** When the main agent's estimated context usage first
-  crosses 85% (configurable, `autoHandover` section of `~/.anti-hall/settings.json`, or
-  env `ANTIHALL_AUTO_HANDOVER_PCT`, `0` = off) a `UserPromptSubmit` hook
-  (`hooks/auto-handover.js`) tells the agent to, without asking the user first: self-write
-  an anti-hall handover (never delegate — the `/anti-hall:handover` skill's existing
-  self-write mandate), tell the user it did so and list the saved paths, and urge
-  `/compact`/`/clear`. Fires once per session at the crossing and re-arms once usage drops
-  back below threshold (in practice, a compact/clear). Follow-up reminders are on by
-  default: a short milestone nag every `nagStepPct` further points of growth (default 5),
-  and a `Stop`-time natural-pause nag (`hooks/auto-handover-pause-nag.js`) at most once per
-  `nagQuietMin` minutes (default 15) when there's no open TodoWrite work and no subagent
-  spawned in the last 2 minutes. Every message includes one line noting that context bloat
-  itself increases hallucination risk, not just the hard limit. Context % prefers the
-  harness's OWN `context_window` figure — the statusline (`statusline/phase-bar.js`)
-  persists it every render, throttled, to `hooks/lib/context-pct-store.js`, and
-  `hooks/lib/context-pct.js` reads it back when fresh (≤10 min), keyed by `session_id` —
-  the only correct way to size a 1M-context session (no reliable "[1m]"/`context-1m`
-  marker was found in transcript entries or hook payloads to derive it any other way).
-  Falls back to a transcript-usage estimate (`ANTIHALL_CONTEXT_WINDOW_TOKENS` override,
-  else 200000) when no statusline is installed or none rendered recently, and labels the
-  fire directive as an estimate in that case. Settings are read/written
-  through a new shared, sectioned store (`hooks/lib/settings.js`,
-  `~/.anti-hall/settings.json`) via `scripts/auto-handover-config.js` and the
-  `auto-handover-config` skill ("turn off auto-handover", "set auto-handover to 80%").
-  Shared, unmodified files on the Codex port (`hooks/auto-handover.js` /
-  `auto-handover-pause-nag.js` registered in `codex/hooks/hooks.json` and
-  `codex/install-codex.js`) — Codex has no context-window telemetry of its own and no
-  `PreCompact`/`PostCompact` mapping yet, so it relies entirely on the transcript estimate;
-  see `codex/skills/anti-hall-auto-handover-config/SKILL.md` for that gap.
-
-- **Fixed: doc index + broken doc links.** The root and plugin READMEs linked only
-  9–10 of 48 `docs/**/*.md` files. Added a full `docs/README.md` index (Guides,
-  Knowledge base, Reference/design, Archive/history) and a "Documentation" section to
-  both READMEs; the plugin README uses absolute GitHub URLs for `docs/` links since it
-  ships inside the plugin cache where `../../docs/` doesn't resolve. Converted
-  remaining backticked (non-linked) doc paths in both READMEs, the Codex README, and
-  `docs/GUIDE.md` into real links. Fixed 6 links that pointed at the wrong path
-  (`docs/GUIDE.md`'s `../../docs/KB-jev-classifier.md`, `companion/README.md`, and
-  `plugins/anti-hall/README.md` all resolved one directory too high or too low; a
-  stale `docs/KB.md` row referenced a `session-handoff.md` file that no longer
-  exists). Added `tests/hygiene/docs-links.test.js`: every relative `.md` link in the
-  READMEs and `docs/**/*.md` must resolve, and every top-level `docs/*.md` must be
-  linked from `docs/README.md` or the root README.
 
 ## 0.107.0 (2026-09-24)
 
