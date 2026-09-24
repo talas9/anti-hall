@@ -58,6 +58,7 @@
 'use strict';
 
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 
 // Tools this guard applies to. Anything else passes through untouched.
@@ -335,15 +336,31 @@ function isHandoverDoc(filePath) {
   return HANDOVER_DOC_RE.test(base);
 }
 
-// OWN-SESSION SCRATCHPAD EXEMPTION (P2 fp 385aa8beb602): the harness itself
-// tells every agent (coordinator included) to use its OWN session-local
-// scratchpad directory for temp files — a fixed, harness-controlled layout of
-// `/tmp/claude-<uid>/<sanitized-cwd>/<session-id>/scratchpad/**`, where
+// OWN-SESSION SCRATCHPAD EXEMPTION (P2 fp 385aa8beb602, widened for fp
+// 6-of-2026-09-24): the harness itself tells every agent (coordinator
+// included) to use its OWN session-local scratchpad directory for temp
+// files — a fixed, harness-controlled layout of
+// `<tmp-root>/claude-<uid>/<sanitized-cwd>/<session-id>/scratchpad/**`, where
 // <sanitized-cwd> is the session's cwd with every '/' replaced by '-' (e.g.
 // cwd '/Users/x/proj' -> '-Users-x-proj') and <session-id> is the exact
 // harness-assigned session_id for THIS run. Blocking writes there forced a
 // pointless subagent detour on the one path whose entire purpose is
 // disposable scratch I/O.
+//
+// MULTIPLE TMP ROOTS (fp 6-of-2026-09-24): the original fix hardcoded '/tmp'
+// as the only tmp root, but a Bash heredoc writing to the SAME scratchpad
+// path was allowed while Write/Edit to it was blocked — because on some
+// environments the harness reports (or a session otherwise resolves) its
+// scratchpad under Node's `os.tmpdir()` root instead of the literal '/tmp'
+// (on macOS `os.tmpdir()` is the per-user $TMPDIR, `/var/folders/.../T/`, a
+// DIFFERENT directory than '/tmp' or '/private/tmp' — see the identical
+// tmp-root enumeration in companion/install-devswarm-ingest.js's
+// homeIsUnderTmpdir(), which hit this exact gap first: "os.tmpdir() alone
+// misses real tmp roots it doesn't resolve to"). ownScratchpadDirs() below
+// now enumerates ALL THREE roots (os.tmpdir(), '/tmp', '/private/tmp'),
+// de-duplicated by realpath, so a scratchpad path reported under any of them
+// is recognized — mirroring the guard-agnostic tmp-root set already proven
+// out in the ingest installer.
 //
 // SCOPING (why this cannot become a general escape hatch):
 //   - Computed DETERMINISTICALLY from THIS payload's own `cwd` + `session_id`
@@ -365,22 +382,48 @@ function isHandoverDoc(filePath) {
 //   - Still requires allowlistIsHonest() below (no symlink/hardlink redirect
 //     out of the scratchpad tree to a real source file).
 //   - Windows has no '/tmp' convention and Windows support is dropped
-//     (min Node 22, ubuntu/macos CI only) — inert (returns null) there, which
+//     (min Node 22, ubuntu/macos CI only) — inert (returns []) there, which
 //     fails CLOSED (falls through to the normal block), never open.
-function ownScratchpadDir(payload) {
+//
+// TMP ROOTS (fp 6-of-2026-09-24): enumerates os.tmpdir(), '/tmp', and
+// '/private/tmp' — the same three-root set as
+// companion/install-devswarm-ingest.js's homeIsUnderTmpdir() — rather than
+// hardcoding '/tmp' alone. Deduplicated by raw string (cheap, order-
+// preserving); a symlinked root (macOS '/tmp' -> '/private/tmp') is not
+// collapsed here but is still handled correctly downstream: each candidate
+// dir is realpath'd independently at the comparison site
+// (isOwnScratchpadPath), so two string-distinct roots that resolve to the
+// same real directory simply produce two candidates that both match.
+function tmpRoots() {
+  const roots = [];
+  const seen = new Set();
+  const add = (r) => {
+    if (typeof r === 'string' && r && !seen.has(r)) { seen.add(r); roots.push(r); }
+  };
+  try { add(os.tmpdir()); } catch (_) { /* ignore */ }
+  add('/tmp');
+  add('/private/tmp');
+  return roots;
+}
+
+// ownScratchpadDirs(payload) -> array of candidate scratchpad directories (one
+// per known tmp root), or [] when the payload lacks the fields needed to
+// compute one, or on win32. Never throws.
+function ownScratchpadDirs(payload) {
   try {
-    if (process.platform === 'win32') return null;
+    if (process.platform === 'win32') return [];
     const cwd = payload && payload.cwd;
     const sessionId = payload && payload.session_id;
-    if (typeof cwd !== 'string' || !cwd || !path.isAbsolute(cwd)) return null;
-    if (typeof sessionId !== 'string' || !/^[A-Za-z0-9._-]+$/.test(sessionId)) return null;
+    if (typeof cwd !== 'string' || !cwd || !path.isAbsolute(cwd)) return [];
+    if (typeof sessionId !== 'string' || !/^[A-Za-z0-9._-]+$/.test(sessionId)) return [];
     let uid = null;
     try { uid = typeof process.getuid === 'function' ? process.getuid() : null; } catch (_) { uid = null; }
-    if (uid === null || uid === undefined || Number.isNaN(uid)) return null;
+    if (uid === null || uid === undefined || Number.isNaN(uid)) return [];
     const sanitizedCwd = cwd.replace(/\//g, '-');
-    return path.join('/tmp', 'claude-' + uid, sanitizedCwd, sessionId, 'scratchpad');
+    return tmpRoots().map((root) =>
+      path.join(root, 'claude-' + uid, sanitizedCwd, sessionId, 'scratchpad'));
   } catch (_) {
-    return null; // fail CLOSED: no exemption on any unexpected error
+    return []; // fail CLOSED: no exemption on any unexpected error
   }
 }
 
@@ -419,28 +462,37 @@ function realpathOrSelf(p) {
 // equal to it, and never merely a path that happens to CONTAIN the word
 // "scratchpad").
 //
-// REALPATH BOTH SIDES (P2 fix): `ownScratchpadDir` hard-codes '/tmp', but on
-// macOS '/tmp' is itself a symlink to '/private/tmp' — the harness's own
-// reported scratchpad path (and any payload cwd derived under it) is
-// typically already the REAL '/private/tmp/...' form. Comparing the raw
-// '/tmp/...'-prefixed computed dir against a raw '/private/tmp/...' abs path
-// via plain string-prefix `path.relative` fails CLOSED (never matches) even
-// though both name the identical directory — the exemption silently never
-// fires on macOS. Realpathing both sides (fail-safe via realpathOrSelf, never
-// throwing on a not-yet-created path) makes the comparison symlink-invariant
-// on both directions, cross-platform (a no-op wherever there is no such
-// symlink, e.g. Linux CI).
+// REALPATH BOTH SIDES (P2 fix): a computed candidate dir may be rooted at
+// '/tmp', which on macOS is itself a symlink to '/private/tmp' — the
+// harness's own reported scratchpad path (and any payload cwd derived under
+// it) is typically already the REAL '/private/tmp/...' form. Comparing the
+// raw '/tmp/...'-prefixed computed dir against a raw '/private/tmp/...' abs
+// path via plain string-prefix `path.relative` fails CLOSED (never matches)
+// even though both name the identical directory — the exemption silently
+// never fires on macOS. Realpathing both sides (fail-safe via
+// realpathOrSelf, never throwing on a not-yet-created path) makes the
+// comparison symlink-invariant on both directions, cross-platform (a no-op
+// wherever there is no such symlink, e.g. Linux CI).
+//
+// MULTIPLE CANDIDATES (fp 6-of-2026-09-24): checks EVERY dir from
+// ownScratchpadDirs() (one per known tmp root — os.tmpdir(), '/tmp',
+// '/private/tmp') and matches if filePath resolves inside ANY of them, so a
+// scratchpad reported under a non-'/tmp' root (e.g. macOS's per-user
+// os.tmpdir() at '/var/folders/.../T/') is recognized too.
 function isOwnScratchpadPath(filePath, payload) {
   if (!filePath) return false;
-  const dir = ownScratchpadDir(payload);
-  if (!dir) return false;
+  const dirs = ownScratchpadDirs(payload);
+  if (!dirs.length) return false;
   try {
     const base = (payload && payload.cwd) || process.cwd();
     const abs = path.resolve(String(base), String(filePath));
-    const realDir = realpathOrSelf(dir);
     const realAbs = realpathOrSelf(abs);
-    const rel = path.relative(realDir, realAbs);
-    return !!rel && !rel.startsWith('..') && !path.isAbsolute(rel);
+    for (const dir of dirs) {
+      const realDir = realpathOrSelf(dir);
+      const rel = path.relative(realDir, realAbs);
+      if (rel && !rel.startsWith('..') && !path.isAbsolute(rel)) return true;
+    }
+    return false;
   } catch (_) {
     return false;
   }
@@ -512,7 +564,7 @@ function main() {
   if (isAllowed(filePath, cwd) && allowlistIsHonest(filePath, cwd)) process.exit(0);
 
   // OWN-SESSION SCRATCHPAD EXEMPTION — see isOwnScratchpadPath()/
-  // ownScratchpadDir() above for the full rationale and anti-bypass scoping
+  // ownScratchpadDirs() above for the full rationale and anti-bypass scoping
   // (session-id + cwd + real uid computed path only, honesty-checked).
   if (isOwnScratchpadPath(filePath, payload) && allowlistIsHonest(filePath, cwd)) {
     process.exit(0);

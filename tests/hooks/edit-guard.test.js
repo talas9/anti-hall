@@ -945,3 +945,132 @@ test('P2 fp 385aa8beb602 NEGATIVE CONTROL: a bare /tmp/** path (not the computed
     p.cleanup();
   }
 });
+
+// ---------------------------------------------------------------------------
+// fp 6-of-2026-09-24: in a Primary/coordinator session, Write was blocked for
+// a session scratchpad reported under a tmp root OTHER than the literal
+// '/tmp' — e.g. Node's os.tmpdir() on a platform/config where that resolves
+// to a different directory than '/tmp' or '/private/tmp' (macOS's per-user
+// $TMPDIR, '/var/folders/.../T/', is the canonical example: it is NOT under
+// '/tmp' at all) — while a Bash heredoc writing to the SAME path sailed
+// through untouched (command-guard has no file-path notion to gate on).
+//
+// FIX: ownScratchpadDirs() now enumerates os.tmpdir(), '/tmp', and
+// '/private/tmp' (mirrors companion/install-devswarm-ingest.js's
+// homeIsUnderTmpdir() tmp-root set) instead of hardcoding '/tmp' alone, and
+// isOwnScratchpadPath() matches if the target resolves under ANY of them.
+//
+// MUTATION LIST (apply each, prove RED, then revert -> GREEN):
+//   M1: revert tmpRoots() to `return ['/tmp'];` -> OS_TMPDIR_SCRATCHPAD_ALLOW
+//       below must flip from allow (0) to block (2) whenever os.tmpdir() !==
+//       '/tmp' and !== '/private/tmp' on the test machine.
+// ---------------------------------------------------------------------------
+
+test('fp 6-of-2026-09-24 FIX: Write to the session\'s OWN scratchpad dir rooted at os.tmpdir() is ALLOWED', () => {
+  if (process.platform === 'win32') return; // scratchpad convention is posix-only; see hook comment
+  const p = makeProject();
+  try {
+    const sessionId = 'sess-fp6-osTmpdir';
+    const uid = process.getuid();
+    const sanitizedCwd = p.dir.replace(/\//g, '-');
+    // Build the scratchpad dir under os.tmpdir() directly (NOT the guard's
+    // literal '/tmp' formula) — this is the exact shape the fix must cover.
+    const dir = path.join(os.tmpdir(), 'claude-' + uid, sanitizedCwd, sessionId, 'scratchpad');
+    fs.mkdirSync(dir, { recursive: true });
+    try {
+      const scratchFile = path.join(dir, 'msg-body.txt');
+      const payload = {
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Write',
+        tool_input: { file_path: scratchFile, content: 'x' },
+        session_id: sessionId,
+        cwd: p.dir,
+      };
+      const h = makeHome();
+      try {
+        const r = testHook(HOOK, payload, { home: h.home, env: Object.assign({}, COORD, { TMPDIR: os.tmpdir() }) });
+        assert.strictEqual(r.status, 0, `os.tmpdir()-rooted own-session scratchpad write must be allowed; stdout: ${r.stdout}`);
+      } finally {
+        h.cleanup();
+      }
+    } finally {
+      try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_) {}
+    }
+  } finally {
+    p.cleanup();
+  }
+});
+
+test('fp 6-of-2026-09-24: Edit tool (not just Write) to an os.tmpdir()-rooted scratchpad dir is ALLOWED', () => {
+  if (process.platform === 'win32') return;
+  const p = makeProject();
+  try {
+    const sessionId = 'sess-fp6-edit-tool';
+    const uid = process.getuid();
+    const sanitizedCwd = p.dir.replace(/\//g, '-');
+    const dir = path.join(os.tmpdir(), 'claude-' + uid, sanitizedCwd, sessionId, 'scratchpad');
+    fs.mkdirSync(dir, { recursive: true });
+    try {
+      const scratchFile = path.join(dir, 'notes.md');
+      fs.writeFileSync(scratchFile, 'orig');
+      const payload = {
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Edit',
+        tool_input: { file_path: scratchFile, old_string: 'orig', new_string: 'new' },
+        session_id: sessionId,
+        cwd: p.dir,
+      };
+      const h = makeHome();
+      try {
+        const r = testHook(HOOK, payload, { home: h.home, env: Object.assign({}, COORD, { TMPDIR: os.tmpdir() }) });
+        assert.strictEqual(r.status, 0, `Edit to os.tmpdir()-rooted scratchpad must be allowed; stdout: ${r.stdout}`);
+      } finally {
+        h.cleanup();
+      }
+    } finally {
+      try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_) {}
+    }
+  } finally {
+    p.cleanup();
+  }
+});
+
+test('fp 6-of-2026-09-24 NEGATIVE CONTROL: an os.tmpdir()-rooted path for a DIFFERENT session still BLOCKS', () => {
+  if (process.platform === 'win32') return;
+  const p = makeProject();
+  try {
+    const uid = process.getuid();
+    const sanitizedCwd = p.dir.replace(/\//g, '-');
+    const scratchFile = path.join(
+      os.tmpdir(), 'claude-' + uid, sanitizedCwd, 'OTHER-SESSION-ID', 'scratchpad', 'msg-body.txt');
+    const r = runCoord({
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Write',
+      tool_input: { file_path: scratchFile, content: 'x' },
+      session_id: 'THIS-SESSION-ID',
+      cwd: p.dir,
+    });
+    assert.strictEqual(r.status, 2, `a different session's os.tmpdir()-rooted scratchpad must still block; stdout: ${r.stdout}`);
+    assert.ok(r.json && r.json.decision === 'block');
+  } finally {
+    p.cleanup();
+  }
+});
+
+test('fp 6-of-2026-09-24 NEGATIVE CONTROL: a bare os.tmpdir() path (not the computed scratchpad dir) still BLOCKS', () => {
+  if (process.platform === 'win32') return;
+  const p = makeProject();
+  try {
+    const r = runCoord({
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Write',
+      tool_input: { file_path: path.join(os.tmpdir(), 'some-other-file.js'), content: 'x' },
+      session_id: 'sess-x',
+      cwd: p.dir,
+    });
+    assert.strictEqual(r.status, 2, `an unrelated os.tmpdir() path must still block; stdout: ${r.stdout}`);
+    assert.ok(r.json && r.json.decision === 'block');
+  } finally {
+    p.cleanup();
+  }
+});
