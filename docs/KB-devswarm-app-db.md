@@ -23,7 +23,7 @@ anti-hall reads the DevSwarm desktop app's own SQLite database. It never writes 
 
   `tests/companion/devswarm-app-db-hygiene.test.js` fails the build if any code line names a credential table, a browser-profile store, or the app's internal HTTP/WebSocket/MCP endpoints.
 - **Fail-open.** If the database, its `builders` table, or the `builders.id`/`isActive` columns are missing, the reader returns "no opinion" and every caller falls back to its pre-0.108 logic. Any other missing column or table reads as null and is listed in `snapshot.missing`. `doctor` then prints `DevSwarm app schema changed: <table.column>`.
-- **Capability-gated.** Every table and column read first asks `companion/lib/devswarm-capabilities.js` `can('appdb.<table>[.<column>]')`, which checks the DevSwarm version and detects the schema at runtime. A gated read degrades the same way a missing column does and is listed in `snapshot.gated`. A name that is not in the gate's registry is not treated as a verdict; the reader's own `PRAGMA table_info` check still applies.
+- **Capability-gated.** Every table and column read first asks `companion/lib/devswarm-capabilities.js` `can('appdb.<table>[.<column>]')`, which checks the DevSwarm version and detects the schema at runtime. A gated read degrades the same way a missing column does and is listed in `snapshot.gated`. Every table, column and app file the reader touches is registered in the gate (`appdb.*`, `appfs.terminal-scrollback`, `appfs.sentry-session`, `appfs.scheduled-for-deletion`); a test pins `SCHEMA` ⊆ registry, and the gate checks the same DB file the reader opened.
 - **Schema pin.** `SCHEMA` in the module lists every column anti-hall reads. The test fixture (`tests/helpers/app-db-fixture.js`) must carry exactly those columns.
 
 ## Field semantics
@@ -107,6 +107,13 @@ Not verified: whether a pasted image shows up as `[Image #N]` in a `UserPromptSu
 
 ## Never used
 
-- The app's local HTTP API on `127.0.0.1:47836`, including `/api/*`, the `/ws` WebSocket, and `POST /mcp`. None of it is authenticated, and some routes are destructive (2.5.2's `DELETE /api/workspace/:id` has no guard). The hygiene test enforces this.
+- The app's local HTTP API on `127.0.0.1:47836`, including `/api/*`, the `/ws` WebSocket, and `POST /mcp`. On 2.5.2 it was unauthenticated and some routes are destructive (`DELETE /api/workspace/:id` has no guard); on 2.5.3 `/api` answers 401 (auth required). Either way anti-hall never calls it, and the hygiene test enforces this.
 - `hivecontrol workspace check-merge`. It can create a worktree as a side effect.
 - `hivecontrol workspace search`. It is a cloud knowledge search, not local state.
+
+## DevSwarm 2.5.3 notes (verified on a live 2.5.3 install)
+
+- **Schema:** 55 app migrations (53 on 2.5.2). The `builders`, `builder_terminals`, `workspace_messages` and `pull_requests` columns are unchanged, and archive semantics (`isActive=0, isHidden=1`) are unchanged. Four new tables track terminal process ownership: `builder_process_owners`, `claude_session_mutation_cleanup`, `terminal_process_claims`, `terminal_process_owners`. anti-hall does not read them. Nothing in anti-hall pins a migration count.
+- **Auto-resume:** after an app restart, DevSwarm relaunches every AI terminal whose `builder_terminals` row is active and `panelStatus='resumable'` as `claude --resume <sessionId>`, where `<sessionId>` is that row's `ai_session_config.sessionId`, with the builder's `worktreePath` as cwd. So after a restart the session map still points at the live sessions.
+- **`hivecontrol workspace archive|delete [idOrBranch]`:** the argument is optional and defaults to the CURRENT workspace; there is no `--yes`, no prompt and no cwd requirement. anti-hall always passes the explicit workspace UUID and makes no call when it has none (`companion/lib/devswarm-lifecycle.js` `verbArgv`). Both verbs are gated at `minVersion` 2.5.3.
+- **`workspace list`** is now documented next to a new `workspace children` command; `workspace list all` still works.

@@ -1,0 +1,10 @@
+Usage: hivecontrol workspace delete [options] [idOrBranch]
+
+Permanently delete an archived Workspace. Refuses active Workspaces and any
+uncommitted parent or Multi-Repo member worktree changes.
+
+Arguments:
+  idOrBranch  Workspace UUID or branch name
+
+Options:
+  -h, --help  display help for command

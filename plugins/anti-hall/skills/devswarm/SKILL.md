@@ -286,6 +286,9 @@ the registry from the descriptor's existing value. Full record: `docs/KB-devswar
 Both features go through the capability gate (`companion/lib/devswarm-capabilities.js`).
 On DevSwarm < 2.5.3 the `hivecontrol workspace archive`/`delete` verbs don't exist, so both
 features stay dormant, and doctor says "feature X needs DevSwarm >= 2.5.3, you have Z".
+On 2.5.3, `archive`/`delete [idOrBranch]` default to the CURRENT workspace and have no
+`--yes` and no prompt, so anti-hall always passes the explicit workspace UUID and makes no
+call at all without one.
 
 **Auto-archive (supervisor sweep).** The supervisor archives a child workspace only when ALL
 of these are proven: (a) the finish gates are set (`archive_ready`), (b) its branch is merged

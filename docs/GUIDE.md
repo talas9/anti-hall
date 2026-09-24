@@ -427,7 +427,9 @@ plugin depends on it.
 
   The supervisor syncs it every tick, and a message-gap cross-check lands in `doctor`.
   `devswarm.js app-state` shows it all. A sidebar screenshot (`sync-ui`) is only the
-  fallback for when the DB can't settle something. Details:
+  fallback for when the DB can't settle something. On DevSwarm 2.5.3 the app relaunches
+  every resumable AI terminal after a restart as `claude --resume <sessionId>` (the same
+  session id the app DB maps), so the session map stays valid across app restarts. Details:
   [`docs/KB-devswarm-app-db.md`](KB-devswarm-app-db.md).
 - **Layered recovery, never-auto-kill** — a wedged child self-reports idleness, a
   supervisor **pokes** it, then **escalates to the parent**; the only path that ever kills

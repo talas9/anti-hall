@@ -26,10 +26,10 @@ const skip = sqlite ? false : 'node:sqlite unavailable';
 const FIX = path.join(__dirname, '..', 'fixtures', 'devswarm-capabilities');
 const V252 = { version: '2.5.2', workspaceHelp: path.join(FIX, 'hivecontrol-2.5.2-workspace-help.txt') };
 const V253 = {
-  version: '2.5.3', workspaceHelp: path.join(FIX, 'hivecontrol-2.5.3-workspace-help.UNVERIFIED.txt'),
+  version: '2.5.3', workspaceHelp: path.join(FIX, 'hivecontrol-2.5.3-workspace-help.txt'),
   verbHelp: {
-    archive: path.join(FIX, 'hivecontrol-2.5.3-archive-help.UNVERIFIED.txt'),
-    delete: path.join(FIX, 'hivecontrol-2.5.3-delete-help.UNVERIFIED.txt'),
+    archive: path.join(FIX, 'hivecontrol-2.5.3-archive-help.txt'),
+    delete: path.join(FIX, 'hivecontrol-2.5.3-delete-help.txt'),
   },
 };
 const MIN = 60000;
@@ -277,7 +277,7 @@ test('approved prune: re-verifies, deletes via hivecontrol, logs, tombstones, pl
   assert.deepStrictEqual(r.results.find((x) => x.id === 'a3'), { id: 'a3', ok: false, refused: 'uncommitted-changes' });
   assert.strictEqual(r.results.find((x) => x.id === 'a1').ok, true);
   const dels = readCalls(fx.bin.callsFile).filter((c) => c.argv[1] === 'delete' && c.argv[2] !== '--help');
-  assert.deepStrictEqual(dels.map((c) => c.argv), [['workspace', 'delete', 'a1', '--yes']]);
+  assert.deepStrictEqual(dels.map((c) => c.argv), [['workspace', 'delete', 'a1']]);
   const log = fs.readFileSync(path.join(fx.home, '.anti-hall', 'logs', 'devswarm-prune.ndjson'), 'utf8').trim().split('\n').map(JSON.parse);
   assert.deepStrictEqual(log.map((x) => [x.id, x.ok]), [['a1', true], ['a3', false]]);
   assert.ok(fs.existsSync(path.join(fx.home, '.anti-hall', 'devswarm', 'pruned', 'a1.json')));
@@ -323,4 +323,15 @@ test('DEFAULT (no settings file) + 2.5.2: dormant, nothing archived', { skip }, 
   assert.match(r.dormant, /requires DevSwarm >= 2\.5\.3/);
   assert.deepStrictEqual(r.archived, []);
   assert.ok(!readCalls(fx.bin.callsFile).some((c) => c.argv[1] === 'archive'));
+});
+
+// DevSwarm 2.5.3: archive/delete with no argument act on the CURRENT workspace.
+test('verbArgv always passes the explicit workspace id, never --yes; no id -> no call', () => {
+  const detail = { args: [{ name: 'idOrBranch', required: false }], flags: ['-h', '--help'] };
+  assert.deepStrictEqual(L.verbArgv('archive', detail, { id: 'ws-1', branch: 'feat/x' }), ['workspace', 'archive', 'ws-1']);
+  assert.deepStrictEqual(L.verbArgv('delete', {}, { id: 'ws-2' }), ['workspace', 'delete', 'ws-2'], 'help parse failure still passes the id');
+  assert.deepStrictEqual(L.verbArgv('delete', { flags: ['--yes'] }, { id: 'ws-3' }), ['workspace', 'delete', 'ws-3']);
+  assert.strictEqual(L.verbArgv('delete', detail, { branch: 'feat/x' }), null);
+  assert.strictEqual(L.verbArgv('archive', detail, { id: '' }), null);
+  assert.strictEqual(L.verbArgv('archive', detail, { id: '--help' }), null);
 });

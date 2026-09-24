@@ -7,16 +7,17 @@ Options:
   -h, --help                               display help for command
 
 Commands:
-  list                                     List workspaces. Use 'children' for your direct children (+ --tree for your subtree) or 'all' for everything in the repo (+ --tree for the full hierarchy).
-  info [idOrBranch]                        Get workspace details. Defaults to the current workspace; pass a workspace ID or branch name to look up a different one. Returns JSON with branch, path, agent, and terminal info.
+  children [options]                       List direct children of the current workspace (sourceBranch matches your current branch) as a flat JSON array. With --tree, render the full subtree (you + direct children + their descendants). Errors when not inside a DevSwarm workspace.
+  list [options]                           List every workspace in the current repository as a flat JSON array. Pass --tree for an ASCII hierarchy, or use 'workspace children' to scope to the current workspace.
+  info [idOrBranch]                        Get workspace details. Defaults to the current workspace; pass a workspace ID or branch name to look up a different one. Returns JSON with branch, path, agent, terminal info, and a startup state saying whether the workspace actually started.
   create [options] <branch>                Create a new workspace. Uses current branch as source (establishing parent-child relationship).
   update-title [options] <title>           Update the display title for a workspace
+  archive [idOrBranch]                     Archive a Workspace without deleting its worktree. Defaults to the current Workspace; accepts a Workspace ID or branch. Repeats are safe.
+  delete [idOrBranch]                      Permanently delete an archived Workspace. Refuses active Workspaces and any uncommitted parent or Multi-Repo member worktree changes.
   check-merge                              Check merge status and get paths to source/current directories. Returns JSON with isMergeable, hasConflicts, targetDirectoryClean, and file paths. Run from your workspace - do not cd elsewhere.
   merge-from-source                        Merge source branch INTO current workspace. Run from your workspace - do not cd elsewhere. If WORKING_DIRECTORY_NOT_CLEAN, explain to user and ask before proceeding.
   merge-into-source                        Merge current workspace INTO source branch. Run from your workspace - do not cd elsewhere. If WORKING_DIRECTORY_NOT_CLEAN, explain to user and ask before proceeding.
   update-base [options]                    Update a workspace's recorded sourceBranch. Without --source, reads the workspace's open PR (if there's exactly one) and offers to apply its target. With --source <branch>, skips detection and writes the value directly (backend cycle check authoritative). Defaults to the current workspace.
-  archive [options] [idOrBranch]           Archive a workspace (recoverable; the worktree is preserved). Defaults to the current workspace.
-  delete [options] <idOrBranch>            Permanently delete an ARCHIVED workspace. Refuses the Primary and workspaces with uncommitted changes.
   message-child <target-branch> <message>  Send a message to a child workspace
   message-parent <message>                 Send a message to parent workspace
   read-messages                            Read unread messages for current workspace (marks as read)

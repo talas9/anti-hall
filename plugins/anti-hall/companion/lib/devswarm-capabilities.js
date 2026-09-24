@@ -79,8 +79,10 @@ const CAPABILITIES = Object.freeze([
   verbCap('merge-from-source'), verbCap('merge-into-source'),
   verbCap('message-child'), verbCap('message-parent'),
   verbCap('read-messages'), verbCap('message-count'), verbCap('monitor'),
-  // 2.5.3 (from release notes — verify after upgrade): recoverable archive, and
-  // delete (archived-only, Primary-protected, refuses uncommitted work).
+  // 2.5.3 (verified against the real 2.5.3 --help): `archive [idOrBranch]`
+  // (recoverable, keeps the worktree) and `delete [idOrBranch]` (archived-only,
+  // refuses uncommitted work). Both DEFAULT TO THE CURRENT WORKSPACE, have no
+  // --yes and never prompt — callers always pass the explicit id.
   verbCap('archive', '2.5.3', 'auto-archive of done workspaces'),
   verbCap('delete', '2.5.3', 'prune of old archived workspaces'),
   // App-DB tables/columns: every column companion/lib/devswarm-app-db.js SCHEMA

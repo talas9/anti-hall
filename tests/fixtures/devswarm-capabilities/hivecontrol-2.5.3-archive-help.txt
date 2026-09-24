@@ -1,0 +1,10 @@
+Usage: hivecontrol workspace archive [options] [idOrBranch]
+
+Archive a Workspace without deleting its worktree. Defaults to the current
+Workspace; accepts a Workspace ID or branch. Repeats are safe.
+
+Arguments:
+  idOrBranch  Workspace UUID or branch name
+
+Options:
+  -h, --help  display help for command

@@ -2,7 +2,7 @@
 // v0.108.0 — companion/lib/devswarm-capabilities.js: every DevSwarm surface is
 // gated by minVersion AND runtime detection; a missing surface sleeps.
 //   - 2.5.2 (REAL captured help): archive/delete dormant, existing verbs ok
-//   - 2.5.3 (UNVERIFIED fixture from release notes): archive/delete detected
+//   - 2.5.3 (REAL captured help): archive/delete detected, id-or-branch, no --yes
 //   - unknown version: detection alone decides
 //   - missing app-DB column: dormant
 //   - hivecontrol absent: everything dormant and silent (no doctor line)
@@ -21,9 +21,9 @@ const { fakeHivecontrol, readCalls } = require('../helpers/fake-hivecontrol.js')
 
 const FIX = path.join(__dirname, '..', 'fixtures', 'devswarm-capabilities');
 const HELP_252 = path.join(FIX, 'hivecontrol-2.5.2-workspace-help.txt');
-const HELP_253 = path.join(FIX, 'hivecontrol-2.5.3-workspace-help.UNVERIFIED.txt');
-const ARCHIVE_253 = path.join(FIX, 'hivecontrol-2.5.3-archive-help.UNVERIFIED.txt');
-const DELETE_253 = path.join(FIX, 'hivecontrol-2.5.3-delete-help.UNVERIFIED.txt');
+const HELP_253 = path.join(FIX, 'hivecontrol-2.5.3-workspace-help.txt');
+const ARCHIVE_253 = path.join(FIX, 'hivecontrol-2.5.3-archive-help.txt');
+const DELETE_253 = path.join(FIX, 'hivecontrol-2.5.3-delete-help.txt');
 
 let sqlite = null;
 try { sqlite = require('node:sqlite'); } catch (_) { sqlite = null; }
@@ -72,14 +72,16 @@ test('2.5.2 fake: archive/delete dormant with a doctor line; existing verbs ok',
   assert.strictEqual(readCalls(s.fake.callsFile).length, before);
 });
 
-test('2.5.3 fake (UNVERIFIED fixture): archive/delete detected with usage + flags', () => {
+test('2.5.3 (real help): archive/delete detected — optional idOrBranch, no --yes flag', () => {
   const s = setup({ version: '2.5.3', workspaceHelp: HELP_253, verbHelp: { archive: ARCHIVE_253, delete: DELETE_253 } });
   const a = caps.can('workspace.archive', s.opts);
   assert.strictEqual(a.ok, true, a.reason);
   assert.deepStrictEqual(a.detail.args, [{ name: 'idOrBranch', required: false }]);
+  assert.ok(!a.detail.flags.includes('--yes'));
   const d = caps.can('workspace.delete', s.opts);
   assert.strictEqual(d.ok, true);
-  assert.ok(d.detail.flags.includes('--yes'));
+  assert.deepStrictEqual(d.detail.args, [{ name: 'idOrBranch', required: false }]);
+  assert.deepStrictEqual(d.detail.flags, ['-h', '--help'], '2.5.3 delete has no --yes and never prompts');
   assert.deepStrictEqual(caps.dormantLines(s.home), []);
 });
 

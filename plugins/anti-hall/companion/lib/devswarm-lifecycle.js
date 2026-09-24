@@ -326,14 +326,17 @@ function appendNdjson(file, rec) {
   } catch (_) {}
 }
 
-// targetArgs(verb detail, builder) -> argv tail (id or branch per documented usage) + --yes if documented.
+// verbArgv(verb, detail, target) -> ['workspace', verb, <id>] | null.
+// DevSwarm 2.5.3 `archive|delete [idOrBranch]` DEFAULT TO THE CURRENT
+// WORKSPACE when the argument is omitted, have no --yes flag and never
+// prompt. So the explicit workspace UUID is ALWAYS passed (never a branch —
+// ids are unambiguous) regardless of what the parsed help shows, and no
+// target id means no call at all (null): an argument-less archive/delete
+// would act on whatever workspace the command runs in.
 function verbArgv(verb, detail, target) {
-  const d = detail || {};
-  const argv = ['workspace', verb];
-  const first = (d.args || [])[0];
-  if (first) argv.push(/id/i.test(first.name) ? target.id : (target.branch || target.id));
-  if ((d.flags || []).includes('--yes')) argv.push('--yes');
-  return argv;
+  const id = target && typeof target.id === 'string' ? target.id.trim() : '';
+  if (!id || id.startsWith('-')) return null;
+  return ['workspace', verb, id];
 }
 
 function primaryWorktreeFor(db, repositoryId) {
@@ -385,6 +388,7 @@ function autoArchiveSweep(opts) {
     const cand = again.candidates.find((c) => c.id === id);
     if (!cand || !cand.eligible) { summary.failed.push({ id, reason: 'no-longer-eligible' }); continue; }
     const argv = verbArgv('archive', cap.detail, cand);
+    if (!argv) { summary.failed.push({ id, reason: 'no-workspace-id' }); continue; }
     const cwd = (db && primaryWorktreeFor(db, cand.repositoryId)) || cand.worktreePath;
     const res = deps.run({ args: argv, env: o.env, cwd, timeout: HC_TIMEOUT_MS });
     const rec = { ts: new Date(now).toISOString(), action: 'auto-archive', id, branch: cand.branch, label: cand.label, argv, ok: !!(res && res.ok), error: res && !res.ok ? String(res.error || '') : null };
@@ -576,6 +580,7 @@ function executePrune(opts) {
       continue;
     }
     const argv = verbArgv('delete', cap.detail, { id, branch: b.branchName });
+    if (!argv) { results.push({ id, ok: false, refused: 'no-workspace-id' }); continue; }
     const cwd = primaryWorktreeFor(db, b.repositoryId) || o.cwd || process.cwd();
     const res = deps.run({ args: argv, env: o.env, cwd, timeout: HC_TIMEOUT_MS });
     const ok = !!(res && res.ok);
