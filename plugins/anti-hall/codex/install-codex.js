@@ -82,6 +82,7 @@ const ANTI_HALL_HOOKS = {
     group(null, ['repo-self-drift.js'], 10),
     group(null, ['progress-prune.js'], 10),
     group(null, ['handover-resume.js'], 10),
+    group(null, ['jev-weekly-scorecard.js'], 10),
     group(null, ['emit-dedupe-reset.js'], 10),
     group(null, ['defect-nudge.js'], 10),
     group(null, ['repair-on-reload.js'], 10),
