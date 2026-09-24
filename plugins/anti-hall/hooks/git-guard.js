@@ -663,7 +663,62 @@ function ghSelfCreditMessage(args) {
       }
     }
   }
+  // JEV ADD-BLOCK (gitGuardSelfCredit, default mode "shadow" — see jev-assist.js):
+  // the regexes above catch canonical trailers/footers/links but miss a
+  // PARAPHRASED self-credit ("written with help from Claude", "AI-assisted
+  // commit"). Consulted ONLY when a body/title value was actually present AND
+  // the regex scan above found nothing (baseline=false — trust 'add-block'
+  // means this can only ADD a block, never relax the regex verdict, which
+  // already returned above when it fired). Any Jev failure/timeout/low
+  // confidence -> baseline (unblocked), matching every other jev-assist caller.
+  for (const v of vals) {
+    if (v && consultGitGuardSelfCreditJev(v)) {
+      return (
+        'anti-hall git-guard: BLOCKED. A gh pr/issue/release body or title appears to ' +
+        'credit an AI assistant (paraphrased self-credit, flagged by the Jev ' +
+        'classifier — not a literal trailer/footer match). Remove it — PRs and issues ' +
+        'carry no AI attribution.'
+      );
+    }
+  }
   return null;
+}
+
+// consultGitGuardSelfCreditJev(text) -> true when Jev, running "on", confidently
+// judges `text` to contain paraphrased AI self-credit. Trust 'add-block' /
+// baseline `false`: this function's result can only ever ADD a block on top of
+// a regex miss, never relax one (git-guard's own non-negotiable rule — see
+// CLAUDE.md "NEVER relax" for this guard). askSync spawns the actual network
+// call in a subprocess with its own hard timeout so this hook's fully
+// synchronous main() never blocks past its own PreToolUse budget; jev-assist's
+// own content-hash cache means a repeated identical message is never re-asked.
+function consultGitGuardSelfCreditJev(text) {
+  try {
+    const { askSync } = require('./lib/jev-assist.js');
+    const result = askSync({
+      id: 'gitGuardSelfCredit',
+      question: {
+        type: 'noul',
+        instructions: 'Does this commit message, or PR/issue/release body or title, ' +
+          'credit an AI assistant as an author, co-author, or contributor — even ' +
+          'paraphrased or indirect (e.g. "written with help from Claude", ' +
+          '"AI-assisted commit", "co-written by an assistant") — NOT a canonical ' +
+          'trailer/footer/link (those are already caught by regex and never reach ' +
+          'this question)?',
+        criteria: {
+          true: 'credits an AI assistant as author/co-author/contributor, in any phrasing',
+          false: 'no AI self-credit of any kind',
+        },
+      },
+      state: String(text).slice(0, 4000),
+      trust: 'add-block',
+      baseline: false,
+      budgetMs: 1500,
+    });
+    return result.final === true;
+  } catch (_) {
+    return false;
+  }
 }
 
 // Extract the payload of an `eval <payload>` segment as a COMMAND string to be
@@ -924,6 +979,20 @@ function scanCommand(cmd, depth) {
           );
         }
       }
+      // JEV ADD-BLOCK (gitGuardSelfCredit, default mode "shadow" — see
+      // jev-assist.js / ghSelfCreditMessage's twin call above for the full
+      // rationale). Only reached when an inline -m/-F message was actually
+      // present AND the regex scan above found nothing — can only ADD a
+      // block, never relax the regex verdict.
+      for (const m of msgs) {
+        if (m && consultGitGuardSelfCreditJev(m)) {
+          return (
+            'anti-hall git-guard: BLOCKED. Commit message appears to credit an AI ' +
+            'assistant (paraphrased self-credit, flagged by the Jev classifier — not ' +
+            'a literal trailer match). Remove it - commits carry no AI co-author credit.'
+          );
+        }
+      }
 
       // --- ADDITIVE: `-F <file>` / `--file[=<file>]` (never removes a block,
       // only adds one) ---
@@ -958,6 +1027,16 @@ function scanCommand(cmd, depth) {
             'read from a heredoc body or file) contains an AI/assistant self-credit ' +
             'trailer (Co-Authored-By / "Generated with <AI>"). Remove it - commits ' +
             'carry no AI co-author credit. Re-run the commit without that trailer.'
+          );
+        }
+        // JEV ADD-BLOCK (gitGuardSelfCredit) — same twin call as the inline
+        // -m/--trailer path above, for a `-F`/`--file`-sourced message.
+        if (consultGitGuardSelfCreditJev(text)) {
+          return (
+            'anti-hall git-guard: BLOCKED. Commit message (via `-F`/`--file`) appears ' +
+            'to credit an AI assistant (paraphrased self-credit, flagged by the Jev ' +
+            'classifier — not a literal trailer match). Remove it - commits carry no ' +
+            'AI co-author credit.'
           );
         }
       }

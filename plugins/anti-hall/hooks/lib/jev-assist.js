@@ -689,6 +689,22 @@ module.exports = {
   ask,
   askSync,
   askDetached,
+  // finalize is exported for the small set of callers that already HAVE a
+  // Jev answer from a cache another feature populated (e.g. jev-triage.js's
+  // own confidence-gated kind/urgency cache) and want the SAME mode-gating +
+  // trust-math + metrics-logging machinery ask()/askSync() use, WITHOUT
+  // spawning a second, redundant network call — see devswarm-parent-gate.js's
+  // and devswarm-supervisor.js's `parentGateQuestion`/`supervisorBlockerLabel`
+  // integrations. Callers pass a fully-formed `r` ({ok:true, answer,
+  // confidence, ms}) and `cachedFlag:true` (this IS a cache hit, by
+  // definition — the classification already happened elsewhere) so the
+  // logged `backend` reads 'cache', never 'jev', and no cost is ever
+  // attributed to a call that made no network request.
+  finalize,
+  // prepare resolves {mode, hash, threshold, skip} — the same pre-flight a
+  // finalize() caller (above) needs so it never has to reimplement
+  // getMode()/contentHash()/confidenceThreshold resolution itself.
+  prepare,
   recordOutcome,
   getMode,
   envNameFor,

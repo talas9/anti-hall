@@ -303,3 +303,155 @@ test('FAIL-OPEN: malformed JSON -> allow', () => {
     h.cleanup();
   }
 });
+
+// ---------------------------------------------------------------------------
+// JEV ADD-BLOCK (gitGuardSelfCredit) — paraphrased self-credit the regexes
+// above miss. Default mode "shadow" (never in LEGACY_ON_DEFAULT, see
+// hooks/lib/jev-assist.js's getMode).
+//
+// MOCK SERVER RUNS AS ITS OWN PROCESS (tests/helpers/jev-mock-server.js), NOT
+// an in-process http server like tests/hooks/jev-assist.test.js uses. Reason
+// (confirmed by reproduction while building this integration): testHook()
+// spawns the hook via spawnSync, which BLOCKS this test process's event loop
+// for the hook's whole lifetime. The hook's own askSync() then spawns a
+// SECOND subprocess (jev-assist-worker.js) that would need to fetch an
+// in-process mock server living in THIS (now-blocked) test process — a real
+// deadlock; the request handler never fires and every call times out at
+// exactly its budget. A mock server in its own process keeps its own event
+// loop regardless of what this test process's spawnSync chain is doing.
+// ---------------------------------------------------------------------------
+const { spawn } = require('node:child_process');
+
+const MOCK_SERVER = path.join(__dirname, '..', 'helpers', 'jev-mock-server.js');
+
+// startMockJevServer(noul) -> Promise<{endpoint, stop()}>. `noul` is the raw
+// noul value jev-client.js's math reads as answer=(noul>=0.5): pass a high
+// value (e.g. 0.95) for a confident "true", a low value (e.g. 0.05) for a
+// confident "false".
+function startMockJevServer(noul) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [MOCK_SERVER], {
+      env: { PATH: process.env.PATH, ANTIHALL_MOCK_NOUL: String(noul) },
+    });
+    let buf = '';
+    let settled = false;
+    const onData = (c) => {
+      buf += c;
+      const m = buf.match(/PORT=(\d+)/);
+      if (m && !settled) {
+        settled = true;
+        child.stdout.off('data', onData);
+        resolve({
+          endpoint: `http://127.0.0.1:${m[1]}/mock`,
+          stop: () => { try { child.kill(); } catch (_) { /* ignore */ } },
+        });
+      }
+    };
+    child.stdout.on('data', onData);
+    child.on('error', (e) => { if (!settled) { settled = true; reject(e); } });
+    child.on('exit', (code) => {
+      if (!settled) { settled = true; reject(new Error('mock server exited early, code ' + code)); }
+    });
+  });
+}
+
+async function withMockJevServer(answer, confidence, fn) {
+  const noul = answer ? confidence : 1 - confidence;
+  const server = await startMockJevServer(noul);
+  try {
+    return await fn(server.endpoint);
+  } finally {
+    server.stop();
+  }
+}
+
+function runWithJev(command, jevCfg, endpoint) {
+  const h = makeHome();
+  try {
+    h.writeState('jev.json', jevCfg);
+    const r = testHook(HOOK, bashPayload(command), {
+      home: h.home,
+      env: { AI_GATEWAY_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint },
+    });
+    return r;
+  } finally {
+    h.cleanup();
+  }
+}
+
+test('JEV shadow: paraphrased self-credit is logged but NEVER blocks (commit message)', async () => {
+  await withMockJevServer(true, 0.95, (endpoint) => {
+    const r = runWithJev(
+      'git commit -m "wip: written with help from Claude, no big deal"',
+      { enabled: true, timeoutMs: 3000, integrations: { gitGuardSelfCredit: 'shadow' } },
+      endpoint,
+    );
+    assert.strictEqual(r.status, 0, `shadow must never block\nstderr: ${r.stderr}`);
+  });
+});
+
+test('JEV on: confident paraphrased self-credit BLOCKS the commit', async () => {
+  await withMockJevServer(true, 0.95, (endpoint) => {
+    const r = runWithJev(
+      'git commit -m "wip: written with help from Claude, no big deal"',
+      { enabled: true, timeoutMs: 3000, integrations: { gitGuardSelfCredit: 'on' } },
+      endpoint,
+    );
+    assert.strictEqual(r.status, 2, `expected block\nstderr: ${r.stderr}`);
+    assert.match(r.stderr, /flagged by the Jev classifier/);
+  });
+});
+
+test('JEV on: confident paraphrased self-credit BLOCKS a gh pr body', async () => {
+  await withMockJevServer(true, 0.95, (endpoint) => {
+    const r = runWithJev(
+      'gh pr create --title x --body "this PR was put together with AI assistance"',
+      { enabled: true, timeoutMs: 3000, integrations: { gitGuardSelfCredit: 'on' } },
+      endpoint,
+    );
+    assert.strictEqual(r.status, 2, `expected block\nstderr: ${r.stderr}`);
+    assert.match(r.stderr, /flagged by the Jev classifier/);
+  });
+});
+
+test('JEV on: an ordinary message with no self-credit is NOT blocked (low-confidence/false answer)', async () => {
+  await withMockJevServer(false, 0.95, (endpoint) => {
+    const r = runWithJev(
+      'git commit -m "fix the parser bug"',
+      { enabled: true, timeoutMs: 3000, integrations: { gitGuardSelfCredit: 'on' } },
+      endpoint,
+    );
+    assert.strictEqual(r.status, 0, `expected allow\nstderr: ${r.stderr}`);
+  });
+});
+
+test('JEV on: NEVER relaxes an existing regex block — canonical trailer still blocks even if Jev would say false', async () => {
+  await withMockJevServer(false, 0.95, (endpoint) => {
+    const r = runWithJev(
+      'git commit -m "x\\n\\nCo-Authored-By: Claude <noreply@anthropic.com>"',
+      { enabled: true, timeoutMs: 3000, integrations: { gitGuardSelfCredit: 'on' } },
+      endpoint,
+    );
+    assert.strictEqual(r.status, 2, `regex block must never be relaxed\nstderr: ${r.stderr}`);
+    assert.match(r.stderr, REASON.COMMIT, 'must block via the ORIGINAL regex reason, never reaching the Jev path');
+  });
+});
+
+test('JEV unavailable (mode on, endpoint unreachable): fails open to baseline (allow)', () => {
+  const h = makeHome();
+  try {
+    h.writeState('jev.json', { enabled: true, timeoutMs: 300, integrations: { gitGuardSelfCredit: 'on' } });
+    const r = testHook(HOOK, bashPayload('git commit -m "written with help from an assistant"'), {
+      home: h.home,
+      env: { AI_GATEWAY_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: 'http://127.0.0.1:1/unreachable' },
+    });
+    assert.strictEqual(r.status, 0, `jev unavailable must fail open to today's behavior\nstderr: ${r.stderr}`);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('JEV disabled entirely (no jev.json): a paraphrase is never consulted, byte-identical to pre-Jev behavior', () => {
+  const r = run('git commit -m "written with help from Claude"');
+  assert.strictEqual(r.status, 0);
+});
