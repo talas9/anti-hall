@@ -6,6 +6,26 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.105.0 (2026-09-24)
+
+- **Added: optional Jev backend for `speculation-judge`.** An opt-in Jev (TypeSafe
+  System One, via the Vercel AI Gateway) judge can now run before the existing Haiku
+  judge — **off by default**, enabled via `~/.anti-hall/jev.json` (`{"enabled": true}`)
+  or `ANTIHALL_JEV=1` (`ANTIHALL_JEV=0` always wins). A verdict at or above the
+  confidence threshold (0.85) is used directly in either direction; a low-confidence
+  verdict or any failure (no key, timeout, HTTP error, bad response) falls back to the
+  unchanged Haiku judge. Disabled, behavior is byte-identical to before Jev existed and
+  writes no log; the key is never logged. Documented in `docs/KB-jev-classifier.md`
+  with the benchmark behind the defaults.
+
+- **Fixed: `git-guard` now scans commit messages passed via `-F -` / a heredoc, or
+  `-F <file>`, for AI self-credit trailers.** Previously only the inline `-m` /
+  `--message` form was inspected, so the same trailer could land via `-F` unblocked.
+  The guard now extracts heredoc bodies from the raw command and reads `-F` files
+  (relative to a preceding `cd` in the same command), running the existing trailer
+  check over them. Purely additive — command segmentation and every existing block
+  behave exactly as before; an unreadable file still fails open.
+
 ## 0.104.0 (2026-09-24)
 
 **First structural step of a mesh redesign.** Recurring project-context defects traced back to

@@ -178,9 +178,12 @@ Codex repo marketplace compatibility is provided by [`../../.agents/plugins/mark
 
 `git-guard.js` (PreToolUse on Bash) mechanically **blocks** two things:
 
-- Commits whose inline `-m` / `--message` carries a `Co-Authored-By` / self-credit
+- Commits whose `-m` / `--message`, or whose `-F` / `--file` message (a `-F -` /
+  `--file=-` / `-F /dev/stdin` heredoc, or `-F <path>` naming a real, readable
+  file, relative to a preceding `cd`), carries a `Co-Authored-By` / self-credit
   trailer (including the canonical emoji-prefixed `Generated with [Claude Code]`
-  footer). Commits take no AI credit.
+  footer). Commits take no AI credit. An unreadable `-F` file fails open (not
+  scanned) rather than guessing at its contents.
 - `git push --force` (and quoted/bundled variants). History rewrites are a
   deliberate human action.
 
@@ -190,10 +193,14 @@ flags (`git push "--force"`), bundled `-f`, `+refspec` pushes, and a trailing
 `sh -c` / `zsh -c` / `dash -c` / `ksh -c` / `ash -c` shell wrappers and re-inspects
 the payload, so `bash -c "git push --force"` and `bash -c '...Co-Authored-By:
 Claude...'` cannot smuggle either block past it that way.
-**Documented fail-open scope:** it inspects only inline `-m` / `--message` trailers,
-so `-F <file>` / `--file` and editor commits are not scanned, and `xargs` / an
-aliased `g push` can still bypass it. These are documented boundaries, not silent
-gaps.
+It scans commit messages both INLINE (`-m` / `--message` / `--trailer`) and via
+`-F -` / `--file=-` / `-F /dev/stdin` fed by a heredoc on the same command
+line, or via `-F <path>` naming a real, readable file (a relative path
+resolves against a preceding `cd` in the same command). **Documented fail-open
+scope:** an interactive EDITOR commit (no `-m`, no `-F`) is not scanned — the
+message is typed live and never appears on the command line — and `xargs` /
+an aliased `g push` can still bypass the force-push block. These are
+documented boundaries, not silent gaps.
 
 ### Task discipline
 
@@ -572,7 +579,8 @@ See `statusline/STATUSLINE.md` for details and how to revert.
 - **Statusline didn't apply?** It is opt-in — run the installer above. If it reports
   "not found", run `/plugin install` first, then re-run, or locate the dir via `/plugin`.
 - **git-guard let a force-push through?** Check the documented fail-open scope above
-  (`xargs` / aliases / `-F <file>` commits are out of scope by design; `bash -c`/`sh -c`
+  (`xargs` / aliases / interactive-editor commits with no `-m`/`-F` are out of scope
+  by design; `bash -c`/`sh -c`
   wrappers are unwrapped and inspected, not a bypass).
 - **Using Codex too?** Copy `AGENTS.md` (repo root) into your own repo root — it is
   not bundled by `/plugin install`. Verify with
