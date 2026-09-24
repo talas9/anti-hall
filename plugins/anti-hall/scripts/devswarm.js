@@ -7942,6 +7942,7 @@ function cmdHeartbeat(id, flags, ctx) {
   // id other than its own real DEVSWARM_BUILDER_ID — see warnIdMismatch's
   // own header comment.
   const idMismatch = warnIdMismatch(id, ctx);
+  refreshAnchorSession(ctx); // v0.108.0: anchor follows the running Primary session (fail-open)
   const dir = heartbeatsDir(home);
   fs.mkdirSync(dir, { recursive: true });
   // R15 P2 (broadcastFamilyOwns leg a3, "placeholder row" test): captured
@@ -10341,11 +10342,38 @@ function cmdInboxMessagesInner(id, flags, ctx, opts) {
 // are instrumentation, never allowed to fail the tick's real count result);
 // the underlying `pull`/`count` calls keep their OWN existing error handling
 // unchanged (this function adds no new failure mode to either).
+// refreshAnchorSession(ctx) -> null | { refreshed, id, from, to } | { refreshed:false, reason }.
+// v0.108.0: the Primary anchor (`primary-<hash>`) records a sessionId; after a
+// /clear the running session is a NEW one but the anchor kept the old id, so a
+// DevSwarm restart resumed the stale session. On the running session's own
+// tick/heartbeat, re-register the anchor under the caller's session — only on
+// the Primary checkout, only for an EXISTING anchor, only when the caller's
+// session is positively running, and via cmdRegisterPrimary, whose
+// live-primary-conflict guard refuses while the recorded session is still alive.
+function refreshAnchorSession(ctx) {
+  try {
+    const env = (ctx && ctx.env) || {};
+    const sid = env.CLAUDE_CODE_SESSION_ID ? String(env.CLAUDE_CODE_SESSION_ID) : '';
+    if (!sid || !ctx.home) return null;
+    const ic = identityContext(ctx.cwd || process.cwd(), CALLER_CWD);
+    if (!ic.worktreeRoot || !isPrimaryCheckout(ic.worktreeRoot, ic.mainWorktree, ctx.home, env)) return null;
+    const id = inst.primaryWorkspaceId(ic.worktreeRoot);
+    const desc = readDescriptorFile(ctx.home, id);
+    if (!desc || !desc.sessionId || String(desc.sessionId) === sid) return null;
+    if (!isSessionAliveRow({ sessionId: sid }, ctx.home)) return null;
+    const flags = { worktree: [ic.worktreeRoot] };
+    if (desc.cursorPath) flags.cursor = [String(desc.cursorPath)];
+    const r = cmdRegisterPrimary(flags, Object.assign({}, ctx, { cwd: ic.worktreeRoot }));
+    return r && r.ok ? { refreshed: true, id, from: String(desc.sessionId), to: sid } : { refreshed: false, reason: (r && (r.reason || r.error)) || 'unknown' };
+  } catch (_) { return null; }
+}
+
 function cmdInboxTick(id, flags, ctx) {
   const home = ctx.home;
   // defect 735b179362e8 (B): same fail-open id-mismatch warning as
   // cmdHeartbeat — see warnIdMismatch's own header comment.
   const idMismatch = warnIdMismatch(id, ctx);
+  const anchorRefresh = refreshAnchorSession(ctx);
   const isChildFlag = hasFlag(flags, 'child');
   let pulled = null;
   if (isChildFlag) {
@@ -10450,7 +10478,9 @@ function cmdInboxTick(id, flags, ctx) {
     }
   } catch (_) { /* fail-open: measurement only, never breaks the tick */ }
 
-  return Object.assign({}, counted, { action: 'tick', idMismatch });
+  const tickOut = Object.assign({}, counted, { action: 'tick', idMismatch });
+  if (anchorRefresh && anchorRefresh.refreshed) tickOut.anchorRefresh = anchorRefresh;
+  return tickOut;
 }
 
 function cmdInbox(sub, id, flags, ctx) {
@@ -17447,6 +17477,7 @@ module.exports = {
   // reader_cursors adapters:
   deriveReaderNonce, callerReaderKey, commitNdAck, floorCursor, importReaderCursorsAllStores, repairReaderFloorsAllStores, markAppArchivedDescriptors, deriveTitleFromBrief, appSessionOnWorktree, refreshNamesFromApp, syncAppState, messageGaps, appStatePath, cmdAppState, cmdSyncUi, repairChildSenderLabelsAllStores,
   senderIdentityDetailed, childSenderId, isPrimaryCheckout,
+  refreshAnchorSession,
   reconcileDualPartitionAcksAllStores, declaredSelfId,
   mergeSplitBackendStoresAllStores,
   // instanceNonce CONSUMERS (defect d3d571495bf6, items a/b/c — exported for

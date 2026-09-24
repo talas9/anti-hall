@@ -2139,6 +2139,19 @@ function main() {
   // scenario that path exists for).
   if (staleBanner) segments.push(staleBanner);
 
+  // v0.108.0 PRIMARY SESSION DRIFT (read-only): the anchor records a session
+  // id; after a /clear the live session is a newer transcript, and a DevSwarm
+  // restart resumes the anchor's OLD session. Name the newer one so the user
+  // can /resume it. Deduped per session; no auto-action.
+  try {
+    if (primaryId && gitTop) {
+      const desc = JSON.parse(fs.readFileSync(path.join(home, '.anti-hall', 'devswarm', 'workspaces', primaryId + '.json'), 'utf8'));
+      const drift = require('../companion/lib/primary-session-drift.js');
+      const notice = drift.driftNotice(drift.anchorSessionDrift({ anchorSessionId: desc && desc.sessionId, worktree: gitTop, home }), sessionId);
+      if (notice && dedupeEmit(home, sessionId, 'parent-inbox-session-drift', notice, { transcriptPath, keepaliveTurns: 20 })) segments.push(notice);
+    }
+  } catch (_) { /* no descriptor / unreadable: no notice */ }
+
   // Live workspace table — the always-on status overview the Primary reads
   // every turn. Attention-needed rows (escalated/stale) sort to the top; ties by
   // unread desc, then id. Capped at MAX_TABLE_ROWS with a logged "+N more".
