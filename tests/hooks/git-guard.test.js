@@ -3,6 +3,9 @@
 
 const { test } = require('node:test');
 const assert = require('node:assert');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 const { testHook, testHookRaw, bashPayload } = require('../helpers/spawn-hook.js');
 const { makeHome } = require('../helpers/fixtures.js');
 
@@ -34,6 +37,7 @@ const REASON = {
   CMDSUBST: /command substitution \/ backtick/,
   COMMIT: /AI\/assistant self-credit trailer/,
   REMAP: /trailer\.\*\.key=/,
+  FILE: /Commit message \(via `-F`\/`--file`/,
 };
 
 const BLOCK = [
@@ -93,6 +97,58 @@ const BLOCK = [
   { cmd: 'git push origin main 2>&1 --force', reason: REASON.FORCE },
   { cmd: 'git push origin main >&2 --force', reason: REASON.FORCE },
   { cmd: 'git push origin main &>out.log --force', reason: REASON.FORCE },
+  // --- `-F -` / `--file=-` fed by a heredoc (Rule 1, the F-22 fix) ---
+  // A `git commit -F -`/`--file=-` reads its message from stdin; when that
+  // stdin is a heredoc ON THE SAME command line, the guard must scan the body
+  // exactly like an inline -m message. Prior to the fix, the heredoc body's
+  // own newlines fragmented it into unrelated segments and the trailer never
+  // reached a `git`-verb segment (confirmed bypass, defect report).
+  {
+    cmd: 'git commit -q -F - <<\'EOF\'\nsubject\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nEOF',
+    reason: REASON.FILE,
+  },
+  // Unquoted delimiter (<<EOF, not <<'EOF') must ALSO be recognized.
+  {
+    cmd: 'git commit -F - <<EOF\nsubject\n\nCo-Authored-By: Claude <noreply@anthropic.com>\nEOF',
+    reason: REASON.FILE,
+  },
+  // `--file=-` long-flag form.
+  {
+    cmd: 'git commit --file=- <<\'EOF\'\nsubject\n\nCo-Authored-By: Claude <noreply@anthropic.com>\nEOF',
+    reason: REASON.FILE,
+  },
+  // `--file -` separate-token form.
+  {
+    cmd: 'git commit --file - <<\'EOF\'\nsubject\n\nCo-Authored-By: Claude <noreply@anthropic.com>\nEOF',
+    reason: REASON.FILE,
+  },
+  // `-F /dev/stdin` explicit-path spelling of stdin.
+  {
+    cmd: 'git commit -F /dev/stdin <<\'EOF\'\nsubject\n\nCo-Authored-By: Claude <noreply@anthropic.com>\nEOF',
+    reason: REASON.FILE,
+  },
+  // --- P0 REGRESSION REPROS (security review, reworked patch) ---
+  // A heredoc opener line's TRAILING control operator (&&, ;, |, |&) chains a
+  // SEPARATE command that runs after the heredoc body is consumed. A prior
+  // version of this fix folded heredoc-body consumption INTO splitSegments
+  // itself and appended "the rest of the opener line" (including the chained
+  // `&& git push --force ...`) into the SAME segment as the heredoc-opening
+  // command verbatim, without re-splitting on the operator — so the chained
+  // command's own verb/flags were never inspected as their own segment
+  // (confirmed base=BLOCKED / that patched=ALLOWED bypass). splitSegments is
+  // now byte-identical to base, so these must block exactly like base does
+  // (each simply splits on the operator; the heredoc body's line-by-line
+  // fragmentation is incidental to base's plain `\n`-splits, not a heredoc
+  // feature of this fix).
+  { cmd: 'cat <<EOF && git push --force origin main\nbody\nEOF', reason: REASON.FORCE },
+  { cmd: 'cat <<EOF ; git push --force origin main\nbody\nEOF', reason: REASON.FORCE },
+  { cmd: 'cat <<EOF | git push --force origin main\nbody\nEOF', reason: REASON.FORCE },
+  { cmd: 'cat <<EOF |& git push --force origin main\nbody\nEOF', reason: REASON.FORCE },
+  { cmd: 'cat <<-EOF && git push --force origin main\n\tbody\n\tEOF', reason: REASON.FORCE },
+  // Unterminated heredoc: base has no heredoc awareness at all, so the
+  // `git push --force origin main` line is just its own `\n`-split segment
+  // regardless of any (missing) terminator — must still block.
+  { cmd: 'cat <<EOF\ngit push --force origin main', reason: REASON.FORCE },
 ];
 
 const ALLOW = [
@@ -115,6 +171,10 @@ const ALLOW = [
   // the redirection `&` must not be misread as force, nor over-block.
   'git push origin main 2>&1',
   'git push origin main &>out.log',
+  // `-F -` fed by a heredoc with NO self-credit trailer must still ALLOW —
+  // proves the new heredoc-body scan doesn't over-block ordinary messages.
+  'git commit -q -F - <<\'EOF\'\nsubject\n\nordinary body, no trailer\nEOF',
+  'git commit -F - <<EOF\nsubject\n\nordinary body, no trailer\nEOF',
 ];
 
 // gh self-credit BLOCK cases. All block via ghSelfCreditMessage(), whose message
@@ -173,6 +233,58 @@ for (const cmd of GH_ALLOW) {
     assert.strictEqual(r.status, 0, `expected allow (exit 0) for: ${cmd}\nstderr: ${r.stderr}`);
   });
 }
+
+// `-F <real path>`: the guard reads the named file directly (no heredoc
+// involved). Uses its own disposable temp file per test, separate from the
+// fake HOME `run()` uses for the guard's own state.
+function writeTempMessageFile(body) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'git-guard-file-msg-'));
+  const p = path.join(dir, 'msg.txt');
+  fs.writeFileSync(p, body, 'utf8');
+  return { path: p, cleanup: () => fs.rmSync(dir, { recursive: true, force: true }) };
+}
+
+test('BLOCK: git commit -F <file> with a self-credit trailer', () => {
+  const f = writeTempMessageFile('subject\n\nCo-Authored-By: Claude <noreply@anthropic.com>\n');
+  try {
+    const r = run(`git commit -F ${f.path}`);
+    assert.strictEqual(r.status, 2, `expected block (exit 2)\nstderr: ${r.stderr}`);
+    assert.match(r.stderr, REASON.FILE, `blocked for the WRONG reason\ngot: ${r.stderr}`);
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('ALLOW: git commit -F <file> with an ordinary message', () => {
+  const f = writeTempMessageFile('subject\n\nordinary body, no trailer\n');
+  try {
+    const r = run(`git commit -F ${f.path}`);
+    assert.strictEqual(r.status, 0, `expected allow (exit 0)\nstderr: ${r.stderr}`);
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('ALLOW: git commit -F <nonexistent file> -> fail-open (unreadable file, no guess)', () => {
+  const r = run('git commit -F /nonexistent/path/does-not-exist-git-guard-test.txt');
+  assert.strictEqual(r.status, 0, `expected allow/fail-open (exit 0)\nstderr: ${r.stderr}`);
+});
+
+test('BLOCK: git commit -F <relative path> resolved against a leading `cd <dir> &&`', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'git-guard-cd-msg-'));
+  try {
+    fs.writeFileSync(
+      path.join(dir, 'msg.txt'),
+      'subject\n\nCo-Authored-By: Claude <noreply@anthropic.com>\n',
+      'utf8',
+    );
+    const r = run(`cd ${dir} && git commit -F msg.txt`);
+    assert.strictEqual(r.status, 2, `expected block (exit 2)\nstderr: ${r.stderr}`);
+    assert.match(r.stderr, REASON.FILE, `blocked for the WRONG reason\ngot: ${r.stderr}`);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 test('FAIL-OPEN: empty stdin -> allow', () => {
   const h = makeHome();

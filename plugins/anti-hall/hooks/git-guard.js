@@ -3,15 +3,29 @@
 //
 // Mechanically enforces two commit/push rules that prose instructions never
 // reliably hold:
-//   1. NO self-credit in commits. Blocks `git commit` whose INLINE message
-//      (-m / -m=) contains a canonical AI co-author / "Generated with <AI>"
-//      self-credit trailer. Commits are the human's; the assistant takes no
-//      credit.
-//      LIMITATION (F-22, documented honestly): `-F <file>` / `--file` / editor
-//      commits are NOT scanned - the message body lives in a file or the editor,
-//      not the command line, so it cannot be inspected here. The guard
-//      fail-OPEN for those forms rather than guess. README/CHANGELOG wording
-//      reflects this: it blocks INLINE -m self-credit trailers, not all commits.
+//   1. NO self-credit in commits. Blocks `git commit` whose message contains a
+//      canonical AI co-author / "Generated with <AI>" self-credit trailer,
+//      whether the message arrives INLINE (-m / --message / --trailer), or via
+//      `-F -` / `--file=-` / `-F /dev/stdin` fed by a heredoc on the same
+//      command line, or via `-F <path>` naming a real, readable file. Commits
+//      are the human's; the assistant takes no credit.
+//      DESIGN NOTE: the `-F`/`--file`/heredoc scan (extractHeredocBodies /
+//      fileCommitMessages below) is a strictly ADDITIVE side-channel on top of
+//      the original INLINE -m/--trailer scan and the untouched splitSegments
+//      force-push/verb-detection path - it can only ADD a block, never widen
+//      what a legitimate command is parsed as, so it carries none of
+//      splitSegments' bypass-hardening risk. It scans every heredoc body found
+//      ANYWHERE in the raw command (not tied to a specific `-F -` call site -
+//      simplest correct-by-construction approach, no segment/heredoc
+//      correlation to get subtly wrong) whenever ANY `git commit` segment uses
+//      the stdin spelling.
+//      LIMITATION (documented honestly): an interactive EDITOR commit (no -m,
+//      no -F) is NOT scanned - the message is typed live and never appears on
+//      the command line. A relative `-F <path>` is resolved against a leading
+//      `cd <dir> &&`/`cd <dir> ;` segment if one precedes the commit segment in
+//      the SAME command (tracked in read order across `splitSegments`' own
+//      segments - not a full shell cwd emulation), else against the hook's own
+//      cwd; an unresolved-or-unreadable path fails OPEN rather than guess.
 //   2. NO force push. Blocks `git push --force` / `-f` / `--force-with-lease` /
 //      a `+refspec`. Rewriting published history is a deliberate human action,
 //      never automatic.
@@ -28,6 +42,7 @@
 'use strict';
 
 const fs = require('fs');
+const path = require('path');
 
 function fail_open() {
   process.exit(0);
@@ -698,6 +713,120 @@ function extractShellCPayload(segment) {
   return '';
 }
 
+// Extract `-F <spec>` / `--file[=<spec>]` specs from a `git commit` arg list
+// (repeated). `spec` is the raw value as given: '-' / '/dev/stdin' means "read
+// the message from stdin" (resolved by the caller against extractHeredocBodies
+// output); anything else is a file path (resolved by the caller). Purely
+// additive: a NEW extraction, does not alter inlineCommitMessages or how any
+// existing -m/--trailer form is scanned.
+function fileCommitMessages(rest) {
+  const specs = [];
+  for (let i = 0; i < rest.length; i++) {
+    const w = rest[i].text;
+    if (w === '--file') {
+      if (i + 1 < rest.length) { specs.push(rest[i + 1].text); i++; }
+    } else if (w.startsWith('--file=')) {
+      specs.push(w.slice('--file='.length));
+    } else if (/^-[A-Za-z]*F$/.test(w)) {
+      // Short-flag cluster whose final char is `F` (e.g. `-F`, `-qF`): the
+      // spec is the NEXT token. Mirrors inlineCommitMessages' `-m` handling.
+      if (i + 1 < rest.length) { specs.push(rest[i + 1].text); i++; }
+    } else if (/^-[A-Za-z]*F./.test(w)) {
+      // Inline-value cluster `-qFspec`: everything after the final `F` is the
+      // spec value.
+      specs.push(w.slice(w.indexOf('F', 1) + 1));
+    }
+  }
+  return specs;
+}
+
+// Heredoc opener regex (mirrors command-guard.js's HEREDOC_RE): <<[-]WORD,
+// <<'WORD', <<"WORD", <<WORD. Captures the dash (tab-stripping mode) and the
+// terminator word (quoted or bare).
+const HEREDOC_RE = /^<<(-)?\s*("([^"]*)"|'([^']*)'|([A-Za-z_][A-Za-z0-9_]*))/;
+
+// Extract every heredoc BODY appearing anywhere in the raw command string, as
+// a standalone SIDE-CHANNEL scan over the raw text. This is intentionally
+// SEPARATE from splitSegments and does not change segmentation, force-push
+// detection, or inline -m/--trailer scanning in any way (P0 regression fix:
+// an earlier version folded heredoc-consumption INTO splitSegments itself and
+// that changed how the opener line's trailing `&&`/`;`/`|`/`|&` control
+// operators were parsed, silently swallowing a chained `git push --force`
+// into the heredoc-opener's own segment - a guard bypass. splitSegments here
+// is byte-identical to the base/original implementation).
+// Quote-tracks the raw string so a `<<` inside a quoted string is not
+// mistaken for a real heredoc opener. Per real shell behavior, an
+// UNTERMINATED heredoc's body is the REST of the command (bash keeps reading
+// looking for the terminator until EOF), so we do the same rather than guess
+// a boundary - this only makes the additive commit-message scan see MORE
+// text, never less.
+function extractHeredocBodies(cmd) {
+  const bodies = [];
+  const n = cmd.length;
+  let i = 0;
+  let inSingle = false;
+  let inDouble = false;
+
+  while (i < n) {
+    const c = cmd[i];
+    const c2 = i + 1 < n ? cmd[i + 1] : '';
+
+    if (inSingle) {
+      if (c === "'") inSingle = false;
+      i++;
+      continue;
+    }
+    if (inDouble) {
+      if (c === '\\' && c2) { i += 2; continue; }
+      if (c === '"') inDouble = false;
+      i++;
+      continue;
+    }
+    if (c === "'") { inSingle = true; i++; continue; }
+    if (c === '"') { inDouble = true; i++; continue; }
+
+    if (c === '<' && c2 === '<') {
+      const m = HEREDOC_RE.exec(cmd.slice(i));
+      const word = m ? (m[3] !== undefined ? m[3] : (m[4] !== undefined ? m[4] : m[5])) : '';
+      if (m && word) {
+        const dashStrip = !!m[1];
+        const quoted = m[3] !== undefined || m[4] !== undefined;
+        i += m[0].length;
+        // Skip past the rest of the opener line (trailing redirections/
+        // operators are splitSegments' concern, untouched here) to the
+        // newline that starts the heredoc body.
+        let lineEnd = cmd.indexOf('\n', i);
+        if (lineEnd === -1) {
+          bodies.push({ word, quoted, body: '' }); // opener runs to EOF, no body
+          break;
+        }
+        i = lineEnd + 1;
+        const bodyLines = [];
+        let terminated = false;
+        while (i <= n) {
+          const nextNl = cmd.indexOf('\n', i);
+          const lineRaw = nextNl === -1 ? cmd.slice(i) : cmd.slice(i, nextNl);
+          const line = dashStrip ? lineRaw.replace(/^\t+/, '') : lineRaw;
+          if (line === word) {
+            terminated = true;
+            i = nextNl === -1 ? n : nextNl + 1;
+            break;
+          }
+          bodyLines.push(line);
+          if (nextNl === -1) { i = n; break; } // unterminated: to EOF
+          i = nextNl + 1;
+        }
+        bodies.push({ word, quoted, body: bodyLines.join('\n') });
+        if (!terminated) break; // consumed the rest of the command as body
+        continue;
+      }
+    }
+
+    i++;
+  }
+  return bodies;
+}
+
 // Run the git force/trailer detection on every segment of a command string.
 // Returns a block message string if a violation is found, else null. Recurses
 // into `eval <payload>` segments (depth-bounded) so force/trailer forms hidden
@@ -707,12 +836,30 @@ function scanCommand(cmd, depth) {
   const d = typeof depth === 'number' ? depth : 0;
   const segments = splitSegments(cmd);
 
+  // Additive side-channel data for the `-F`/`--file` commit-message scan
+  // (see fileCommitMessages/extractHeredocBodies above): every heredoc body
+  // anywhere in THIS level's raw command text, and the most recent literal
+  // `cd <dir>` segment seen so far (read order), used to resolve a relative
+  // `-F <path>`. Neither affects segmentation, verb resolution, force-push
+  // detection, or inline -m/--trailer scanning below.
+  const heredocBodies = extractHeredocBodies(cmd);
+  let lastCdDir = null;
+
   for (const seg of segments) {
     const tokens = tokenize(seg);
     if (!tokens.length) continue;
 
     const ev = effectiveVerb(tokens);
     if (!ev) continue;
+
+    // Track a literal `cd <dir>` segment (read order) so a later relative
+    // `-F <path>` in this same command can be resolved against it. Does not
+    // affect any existing verb/force/trailer detection.
+    if (ev.verb === 'cd') {
+      const dirTok = ev.args.find((t) => !t.text.startsWith('-'));
+      if (dirTok) lastCdDir = dirTok.text;
+      continue;
+    }
 
     // Unwrap `eval <payload>`: re-parse its argument as a command string.
     if (ev.verb === 'eval') {
@@ -800,6 +947,43 @@ function scanCommand(cmd, depth) {
             'anti-hall git-guard: BLOCKED. Commit message contains an AI/assistant ' +
             'self-credit trailer (Co-Authored-By / "Generated with <AI>"). Remove it - ' +
             'commits carry no AI co-author credit. Re-run the commit without that trailer.'
+          );
+        }
+      }
+
+      // --- ADDITIVE: `-F <file>` / `--file[=<file>]` (never removes a block,
+      // only adds one) ---
+      //   - `-F -` / `--file=-` / `-F /dev/stdin`: the message is read from
+      //     STDIN. Scanned against every heredoc body found anywhere in this
+      //     command's raw text (extractHeredocBodies, a side-channel over the
+      //     raw string - splitSegments/force-push/inline-message detection
+      //     above are completely untouched by this).
+      //   - `-F <real path>`: read the file directly (relative paths resolved
+      //     against a preceding literal `cd <dir>` segment if any, else the
+      //     hook's cwd). Fail-open (skip, do not block) if it cannot be read.
+      const fileSpecs = fileCommitMessages(rest);
+      for (const spec of fileSpecs) {
+        let text = null;
+        if (spec === '-' || spec === '/dev/stdin') {
+          if (heredocBodies.length) text = heredocBodies.map((h) => h.body).join('\n');
+        } else {
+          let filePath = spec;
+          if (!path.isAbsolute(filePath) && lastCdDir) {
+            filePath = path.join(lastCdDir, filePath);
+          }
+          try {
+            text = fs.readFileSync(filePath, 'utf8');
+          } catch (_) {
+            text = null; // unreadable/nonexistent -> fail-open, do not guess
+          }
+        }
+        if (text === null) continue;
+        if (SELF_CREDIT_COAUTHOR.test(text) || SELF_CREDIT_GENERATED.test(text)) {
+          return (
+            'anti-hall git-guard: BLOCKED. Commit message (via `-F`/`--file`, ' +
+            'read from a heredoc body or file) contains an AI/assistant self-credit ' +
+            'trailer (Co-Authored-By / "Generated with <AI>"). Remove it - commits ' +
+            'carry no AI co-author credit. Re-run the commit without that trailer.'
           );
         }
       }
