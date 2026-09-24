@@ -89,6 +89,10 @@ out of scope for this contract.
 | all migrations stamped for the running version => no lock, no spawn, cheap | no-op path (budgeted over a bare `node` start) |
 | `ANTIHALL_REPAIR_ON_RELOAD=off` | escape hatch |
 
+Unit coverage in `tests/hooks/repair-on-reload.test.js` adds: the child is
+`doctor --repair --migrations-only` and leaves every file outside `~/.anti-hall`
+byte-identical; a cache doctor older than the running version is never spawned.
+
 ### 5. Jev report (`jev-report.test.js`) — 8 live
 
 | Scenario | Requirement |

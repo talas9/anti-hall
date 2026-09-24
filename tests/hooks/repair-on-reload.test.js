@@ -7,7 +7,8 @@
 // of them. This hook derives "repair pending" cheaply from the SAME
 // per-migration marker store migrations.js/update.js/doctor already share,
 // and — only when something is pending and no repair is already in flight —
-// spawns `doctor.js --repair --quiet` DETACHED, never blocking the turn.
+// spawns `doctor.js --repair --migrations-only --quiet` DETACHED, never
+// blocking the turn.
 
 const { test } = require('node:test');
 const assert = require('node:assert');
@@ -196,5 +197,73 @@ test('spawns the NEWEST cache version\'s doctor.js, not this running hook\'s own
       try { return fs.readFileSync(markerPath, 'utf8'); } catch (_) { return null; }
     }, 3000);
     assert.strictEqual(marker, 'newest', 'the NEWEST cache version\'s doctor.js must be the one spawned, not the older one or this hook\'s own sibling copy');
+  } finally { h.cleanup(); }
+});
+
+// P1a (0.108.0 audit): the reload hook runs ONLY the stamped data migrations
+// (`doctor.js --repair --migrations-only`). A full `doctor --repair` would
+// install the statusLine into ~/.claude/settings.json and Codex hooks +
+// `[features] hooks = true` into ~/.codex on an unasked first session — that
+// stays behind a user-typed `doctor --repair`. The REAL doctor.js runs here
+// against a scratch HOME; the test waits for the detached child to exit and
+// then proves every file outside ~/.anti-hall is byte-identical.
+test('P1a: reload repair touches nothing outside ~/.anti-hall (theme-only settings.json + bare config.toml stay byte-identical)', () => {
+  const h = makeHome();
+  try {
+    const settingsPath = path.join(h.home, '.claude', 'settings.json');
+    const tomlPath = path.join(h.home, '.codex', 'config.toml');
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+    fs.mkdirSync(path.dirname(tomlPath), { recursive: true });
+    const settingsBefore = '{"theme":"dark"}\n';
+    const tomlBefore = '[model]\nname = "x"\n';
+    fs.writeFileSync(settingsPath, settingsBefore, 'utf8');
+    fs.writeFileSync(tomlPath, tomlBefore, 'utf8');
+    const listOutside = () => {
+      const out = [];
+      const walk = (d) => {
+        for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+          const p = path.join(d, e.name);
+          if (p === path.join(h.home, '.anti-hall')) continue;
+          if (e.isDirectory()) walk(p); else out.push(path.relative(h.home, p));
+        }
+      };
+      walk(h.home);
+      return out.sort();
+    };
+    const filesBefore = listOutside();
+
+    const r = testHook(HOOK, sessionStartPayload(), { home: h.home, env: { ANTIHALL_INGEST_DRY_RUN: '1' } });
+    assert.strictEqual(r.status, 0, `stderr: ${r.stderr}`);
+    const lock = JSON.parse(fs.readFileSync(lockFile(h.home), 'utf8'));
+    const exited = waitFor(() => { try { process.kill(lock.pid, 0); return false; } catch (_) { return true; } }, 30000);
+    assert.ok(exited, 'the detached migrations-only child must finish');
+    const logName = fs.readdirSync(logsDir(h.home)).find((f) => f.startsWith('repair-on-reload-'));
+    const log = fs.readFileSync(path.join(logsDir(h.home), logName), 'utf8');
+    assert.match(log, /"action":"migrations-only"/, 'the child must be the migrations-only doctor pass: ' + log.slice(0, 300));
+
+    assert.strictEqual(fs.readFileSync(settingsPath, 'utf8'), settingsBefore, '~/.claude/settings.json must be byte-identical (no statusLine install)');
+    assert.strictEqual(fs.readFileSync(tomlPath, 'utf8'), tomlBefore, '~/.codex/config.toml must be byte-identical (no [features] hooks)');
+    assert.deepStrictEqual(listOutside(), filesBefore, 'no new file outside ~/.anti-hall (no codex hooks.json, no .bak)');
+  } finally { h.cleanup(); }
+});
+
+// A cache dir OLDER than the running version (a dev/--plugin-dir run whose
+// cache still holds a previous release) must never be picked: that doctor.js
+// predates --migrations-only and would run the full repair instead.
+test('never spawns a cache doctor.js OLDER than the running version (falls back to its own sibling)', () => {
+  const h = makeHome();
+  try {
+    const cacheRoot = path.join(h.home, '.claude', 'plugins', 'cache', 'anti-hall', 'anti-hall');
+    const markerPath = path.join(h.home, 'old-doctor-ran.marker');
+    fs.mkdirSync(path.join(cacheRoot, '0.0.1', 'hooks'), { recursive: true });
+    fs.writeFileSync(path.join(cacheRoot, '0.0.1', 'hooks', 'doctor.js'),
+      "require('fs').writeFileSync(" + JSON.stringify(markerPath) + ", 'old'); process.exit(0);\n", 'utf8');
+    const r = testHook(HOOK, sessionStartPayload(), { home: h.home, env: { ANTIHALL_INGEST_DRY_RUN: '1' } });
+    assert.strictEqual(r.status, 0, `stderr: ${r.stderr}`);
+    const lock = JSON.parse(fs.readFileSync(lockFile(h.home), 'utf8'));
+    waitFor(() => { try { process.kill(lock.pid, 0); return false; } catch (_) { return true; } }, 30000);
+    assert.strictEqual(fs.existsSync(markerPath), false, 'the older cache doctor.js must not be the one spawned');
+    const logName = fs.readdirSync(logsDir(h.home)).find((f) => f.startsWith('repair-on-reload-'));
+    assert.match(fs.readFileSync(path.join(logsDir(h.home), logName), 'utf8'), /"action":"migrations-only"/);
   } finally { h.cleanup(); }
 });

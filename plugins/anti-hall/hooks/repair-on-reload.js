@@ -39,11 +39,13 @@
 //     (~/.anti-hall/repair-on-reload.lock, atomic 'wx' create). Lock held by a
 //     LIVE pid -> skip (another repair already in flight, this session or
 //     another). Lock held by a DEAD pid (or unreadable/corrupt) -> stolen.
-//   - Lock acquired -> spawn `node hooks/doctor.js --repair --quiet` DETACHED
+//   - Lock acquired -> spawn `node hooks/doctor.js --repair --migrations-only
+//     --quiet` DETACHED
 //     (stdio redirected to a fresh ~/.anti-hall/logs/repair-on-reload-<ts>.log
 //     file, unref'd) and return immediately — the hook itself never waits.
-//     doctor.js --repair already IS the migrations/repair pass (runMigrations
-//     via lib/doctor-repair.js): idempotent, fail-open, no-delete, and it
+//     doctor.js --repair --migrations-only runs ONLY the stamped data
+//     migrations + store repairs (runMigrations via lib/doctor-repair.js) and
+//     never touches config outside ~/.anti-hall: idempotent, fail-open, no-delete, and it
 //     stamps each migration's own marker (migrations.js recordRun) ONLY once
 //     that migration's apply+re-scan both report complete — "stamp only after
 //     success" falls out of reusing that existing contract rather than this
@@ -97,7 +99,14 @@ function readRunningVersion() {
 // one the just-synced version actually ships. Read-only, fail-open: any
 // resolution failure (missing cache root, unreadable dir, no doctor.js at the
 // resolved path) falls back to DOCTOR_JS_FALLBACK.
-function resolveDoctorJs(home) {
+function semverCmp(a, b) {
+  const pa = String(a).split('.').map(Number);
+  const pb = String(b).split('.').map(Number);
+  for (let i = 0; i < 3; i++) { if (pa[i] !== pb[i]) return (pa[i] || 0) - (pb[i] || 0); }
+  return 0;
+}
+
+function resolveDoctorJs(home, runningVersion) {
   try {
     const cacheRoot = path.join(home || os.homedir(), '.claude', 'plugins', 'cache', 'anti-hall', 'anti-hall');
     const entries = fs.readdirSync(cacheRoot, { withFileTypes: true });
@@ -106,13 +115,13 @@ function resolveDoctorJs(home) {
       .map((e) => e.name)
       .filter((name) => /^\d+\.\d+\.\d+$/.test(name)); // semver dirs only — never a sha-named dir
     if (!versions.length) return DOCTOR_JS_FALLBACK;
-    versions.sort((a, b) => {
-      const pa = a.split('.').map(Number);
-      const pb = b.split('.').map(Number);
-      for (let i = 0; i < 3; i++) { if (pa[i] !== pb[i]) return pa[i] - pb[i]; }
-      return 0;
-    });
+    versions.sort(semverCmp);
     const newest = versions[versions.length - 1];
+    // Never pick a cache dir OLDER than the running version (e.g. a
+    // --plugin-dir/dev run whose cache still holds a previous release): an
+    // older doctor.js predates --migrations-only and would ignore it, running
+    // the full repair instead. Own sibling copy is the right one then.
+    if (runningVersion && semverCmp(newest, runningVersion) < 0) return DOCTOR_JS_FALLBACK;
     const candidate = path.join(cacheRoot, newest, 'hooks', 'doctor.js');
     return fs.existsSync(candidate) ? candidate : DOCTOR_JS_FALLBACK;
   } catch (_) {
@@ -165,14 +174,20 @@ function acquireLock(home) {
   }
 }
 
-function spawnDetachedRepair(home) {
+function spawnDetachedRepair(home, runningVersion) {
   try {
     const dir = logsDir(home);
     fs.mkdirSync(dir, { recursive: true });
     const logPath = path.join(dir, 'repair-on-reload-' + Date.now() + '.log');
     const fd = fs.openSync(logPath, 'a');
-    const doctorJs = resolveDoctorJs(home);
-    const child = spawn(process.execPath, [doctorJs, '--repair', '--quiet'], {
+    const doctorJs = resolveDoctorJs(home, runningVersion);
+    // --migrations-only: the reload hook runs ONLY the stamped data
+    // migrations (runMigrations, runSettingsMigration, store repairs under
+    // ~/.anti-hall). Everything that writes config OUTSIDE ~/.anti-hall —
+    // statusLine into ~/.claude/settings.json, Codex hooks/[features] into
+    // ~/.codex, supervisor/ingest units — stays behind a user-typed
+    // `doctor --repair`; an unasked reload must never install those.
+    const child = spawn(process.execPath, [doctorJs, '--repair', '--migrations-only', '--quiet'], {
       detached: true,
       stdio: ['ignore', fd, fd],
       env: process.env,
@@ -228,7 +243,7 @@ function main() {
 
   if (!acquireLock(home)) return; // another repair already in flight
 
-  spawnDetachedRepair(home);
+  spawnDetachedRepair(home, version);
 }
 
 try {

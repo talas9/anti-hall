@@ -55,8 +55,10 @@ the update.
   `scripts/auto-handover-config.js` stays as a CLI alias.
 - **Repairs run on every reload.** `hooks/repair-on-reload.js` (SessionStart + a
   UserPromptSubmit fallback, since `/reload-plugins` is not shown to re-fire SessionStart)
-  starts one detached `doctor.js --repair` whenever a repair is not yet stamped for the
-  running version. Lock-guarded, never blocks, no-op when nothing is pending.
+  starts one detached `doctor.js --repair --migrations-only` whenever a repair is not yet
+  stamped for the running version. It runs only the data migrations and store repairs;
+  statusline, Codex hooks and the supervisor are never installed by a reload (that stays
+  behind a user-typed `doctor --repair`). Lock-guarded, never blocks, no-op when nothing is pending.
   `ANTIHALL_REPAIR_ON_RELOAD=off` disables it.
 - **Version alerts say update or reload.** If the plugin-cache mirror already holds a
   newer version than the running one, the agent is told to reload (with that version's

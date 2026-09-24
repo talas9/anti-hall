@@ -2,7 +2,8 @@
 // v0.108.0 contract 4 — repair-on-reload (hooks/repair-on-reload.js, on
 // SessionStart AND UserPromptSubmit): when any DEFAULT migration is not yet
 // stamped for the RUNNING plugin version, spawn ONE detached
-// `doctor.js --repair --quiet` and return immediately; when every migration
+// `doctor.js --repair --migrations-only --quiet` and return immediately (data
+// migrations only — never config outside ~/.anti-hall); when every migration
 // is stamped for the running version, it is a no-op that touches nothing.
 //
 // The "already repaired" record is the SAME per-migration marker store that

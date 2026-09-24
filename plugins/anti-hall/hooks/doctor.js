@@ -22,6 +22,12 @@ const cp   = require('child_process');
 const ROOT  = path.resolve(__dirname, '..');     // plugin root
 const HOOKS = __dirname;                           // hooks/
 const QUIET = process.argv.includes('--quiet');
+// --migrations-only (with --repair): the automatic repair-on-reload pass —
+// stamped data migrations + ~/.anti-hall sweeps only, and it skips the
+// self-test diagnostics (see the early exit right after the repair pass).
+// Nothing outside ~/.anti-hall is touched (no statusLine, no Codex install, no
+// daemon install/restart); those stay behind a user-typed `doctor --repair`.
+const MIGRATIONS_ONLY = process.argv.includes('--migrations-only');
 // Repair mode is OPT-IN (mesh redesign Phase 4). Plain `doctor` and `--check`
 // run NO repair: diagnostics only. The live self-tests below still exercise the
 // real guards end-to-end, so they create their own throwaway temp dirs under
@@ -155,6 +161,23 @@ function runHook(file, payload, env) {
 }
 const BLOCKED = (r) => r.code === 2;     // PreToolUse block contract: exit 2
 const ALLOWED = (r) => r.code === 0;
+
+// --- repair-on-reload's automatic pass: migrations only, no diagnostics ----
+if (MIGRATIONS_ONLY && DO_REPAIR) {
+  let v = '(unknown)';
+  try { v = require(path.join(ROOT, '.claude-plugin', 'plugin.json')).version; } catch (_) { /* unknown */ }
+  let rows = [];
+  let error = null;
+  try {
+    rows = require('./lib/doctor-repair.js').runRepairs({
+      cwd: process.cwd(), env: process.env, home: os.homedir(), dryRun: DRYRUN, migrationsOnly: true,
+      version: v !== '(unknown)' ? v : undefined,
+    });
+  } catch (e) { error = String((e && e.message) || e); }
+  const failed = rows.filter((r) => r.status === 'failed').length;
+  fs.writeSync(1, JSON.stringify({ ok: !error && failed === 0, action: 'migrations-only', version: v, error, repairs: rows }) + '\n');
+  process.exit(error || failed ? 1 : 0);
+}
 
 // --- 1. Environment ----------------------------------------------------------
 head('Environment');
@@ -1072,7 +1095,7 @@ if (DO_REPAIR) {
   let repairs = [];
   try {
     repairs = require('./lib/doctor-repair.js').runRepairs({
-      cwd: process.cwd(), env: process.env, home: os.homedir(), dryRun: DRYRUN,
+      cwd: process.cwd(), env: process.env, home: os.homedir(), dryRun: DRYRUN, migrationsOnly: MIGRATIONS_ONLY,
       version: version !== '(unknown)' ? version : undefined,
     });
   } catch (e) {

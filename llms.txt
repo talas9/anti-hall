@@ -68,7 +68,7 @@ Env names are the per-hook switches; every user-facing one is also a setting (se
 | SessionStart | emit-dedupe-reset.js | Marks a context loss so repeated per-turn blocks are re-emitted. | ✓ | — |
 | SessionStart | jev-weekly-scorecard.js | Jev enabled only: once a week names one integration worth promoting (KEEP) or turning off (REMOVE). | ✓ | jev.weeklyNotice |
 | SessionStart | defect-nudge.js | Once-a-day count of open defect reports (counts only, never reporter text). | ✓ | — |
-| SessionStart + UserPromptSubmit | repair-on-reload.js | When any repair migration isn't stamped for the running version, spawns one detached `doctor.js --repair --quiet` (lock-guarded). | ✓ | `ANTIHALL_REPAIR_ON_RELOAD=off` |
+| SessionStart + UserPromptSubmit | repair-on-reload.js | When any repair migration isn't stamped for the running version, spawns one detached `doctor.js --repair --migrations-only --quiet` (data migrations only; never writes config outside `~/.anti-hall`; lock-guarded). | ✓ | `ANTIHALL_REPAIR_ON_RELOAD=off` |
 | UserPromptSubmit | verify-first.js | Short rotating one-line verify-first nudge. | ✓ | — |
 | UserPromptSubmit | task-tracker.js | Task-list discipline directive plus a freshness note when tasks are open/stale. | ✓ | — |
 | UserPromptSubmit | limit-conserve-inject.js | Token-conservation nudge at the usage threshold (auto mode reads the OMC usage cache). | ✓ | `ANTIHALL_LIMIT_CONSERVE`, `ANTIHALL_LIMIT_THRESHOLD` |

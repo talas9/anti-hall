@@ -1125,6 +1125,7 @@ function reapOrphanedLegacyUnits(opts) {
 // ---------------------------------------------------------------------------
 function runRepairs(opts) {
   const o = opts || {};
+  const migrationsOnly = !!o.migrationsOnly;
   const cwd = o.cwd || process.cwd();
   const env = o.env || process.env;
   const home = o.home || os.homedir();
@@ -1347,6 +1348,12 @@ function runRepairs(opts) {
     }
   }
 
+  // --migrations-only (repair-on-reload's automatic pass): ONLY the stamped
+  // data migrations above and the ~/.anti-hall sweeps below run. Everything in
+  // this block touches config OUTSIDE ~/.anti-hall (Claude statusLine, Codex
+  // hooks/config.toml, launchd/systemd units, native hivecontrol queues) and
+  // stays behind a user-typed `doctor --repair`.
+  if (!migrationsOnly) {
   // --- AUTO-SAFE: statusline-if-missing ------------------------------------
   try {
     const sl = scanStatusLine(cwd, home);
@@ -1781,6 +1788,7 @@ function runRepairs(opts) {
     push('install-divergence', 'none', 'skipped', 'install-integrity check raised: ' + errMsg(e));
   }
 
+  } // end !migrationsOnly
   // --- R13 item 2: WIRE THE FOUR STANDALONE SWEEPS ------------------------
   //
   // sweepStaleDrainMarkers, promoteUnclaimedSessions, sweepReapedLogs and
