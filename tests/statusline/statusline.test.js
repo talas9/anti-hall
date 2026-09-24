@@ -121,3 +121,55 @@ test('dispatcher fail-open: never crashes on empty stdin', () => {
     assert.strictEqual(r.status, 0);
   } finally { h.cleanup(); proj.cleanup(); }
 });
+
+test('dispatcher: a base command that IS anti-hall\'s own renderer (statusline-rich.js) runs in-process, byte-identical to a direct run', () => {
+  // Regression for the fork-avoidance fix: when ~/.anti-hall/base-statusline.json
+  // points straight at anti-hall's own statusline-rich.js (e.g. captured from a
+  // prior/partial install), the dispatcher must recognize that self-referential
+  // shape and run it in-process via require().runWithInput() instead of forking
+  // a shell that forks a second node. Output must be byte-identical either way.
+  const h = makeStatusHome();
+  const proj = makeProjectDir();
+  try {
+    const richScript = path.join(require('./helper.js').SL_DIR, 'statusline-rich.js');
+    fs.writeFileSync(path.join(h.antiHall, 'base-statusline.json'),
+      JSON.stringify({ command: `node "${richScript}"` }), 'utf8');
+
+    const payload = { model: { display_name: 'Opus' }, context_window: { used_percentage: 42 } };
+    const dispatched = run(payload, h.home, proj.dir);
+    const direct = runSL('statusline-rich.js', {
+      home: h.home, cwd: proj.dir, stdin: JSON.stringify(payload),
+      env: { NO_COLOR: '1', ANTIHALL_STATUSLINE_NO_EMAIL: '1' },
+    });
+
+    const dispatchedLine1 = dispatched.stdout.split('\n')[0];
+    assert.strictEqual(dispatchedLine1, direct.stdout.replace(/[\r\n]+$/, ''),
+      'in-process self-referential base command output matches a direct run byte-for-byte');
+    assert.match(stripAnsi(dispatchedLine1), new RegExp(path.basename(proj.dir)));
+  } finally { h.cleanup(); proj.cleanup(); }
+});
+
+test('timeout budget: the outer stdin-collection watchdog exceeds every inner spawn timeout', () => {
+  // Coherence guard: main()'s outer watchdog must never be shorter than the
+  // inner spawnSync budgets it can end up racing against (runBaseCommand's
+  // base-command spawn, phaseBarLine's fallback spawn) — otherwise the
+  // watchdog can fire and exit(0) before line 1/2 are ever attempted, even
+  // though the inner work would have finished within its own budget.
+  const src = fs.readFileSync(path.join(require('./helper.js').SL_DIR, 'statusline.js'), 'utf8');
+  const inner = Number((/INNER_SPAWN_TIMEOUT_MS\s*=\s*(\d+)/.exec(src) || [])[1]);
+  const outer = Number((/OUTER_WATCHDOG_MS\s*=\s*(\d+)/.exec(src) || [])[1]);
+  assert.ok(Number.isFinite(inner) && inner > 0, 'INNER_SPAWN_TIMEOUT_MS found in source');
+  assert.ok(Number.isFinite(outer) && outer > 0, 'OUTER_WATCHDOG_MS found in source');
+  assert.ok(outer > inner, `OUTER_WATCHDOG_MS (${outer}) must exceed INNER_SPAWN_TIMEOUT_MS (${inner})`);
+});
+
+test('timeout budget: the outer watchdog stays at or under 3000ms (a statusline must stay fast)', () => {
+  // A statusline is rendered on every prompt — the outer ceiling must not be
+  // raised to accommodate slow inner work (that would let a stuck render
+  // block Claude Code's UI for as long as the ceiling allows). Inner work is
+  // instead bounded BELOW this fixed 3000ms budget.
+  const src = fs.readFileSync(path.join(require('./helper.js').SL_DIR, 'statusline.js'), 'utf8');
+  const outer = Number((/OUTER_WATCHDOG_MS\s*=\s*(\d+)/.exec(src) || [])[1]);
+  assert.ok(Number.isFinite(outer) && outer > 0, 'OUTER_WATCHDOG_MS found in source');
+  assert.ok(outer <= 3000, `OUTER_WATCHDOG_MS (${outer}) must stay <= 3000ms`);
+});

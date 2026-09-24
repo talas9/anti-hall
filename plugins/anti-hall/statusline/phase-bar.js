@@ -252,13 +252,33 @@ function activityLine(input) {
          `${C.blue}${n} agent${n === 1 ? '' : 's'}${C.reset} ${C.dim}active${C.reset}`;
 }
 
-// --- Main: phase bar (coordinator) > live activity (auto) > context gauge -----
-try {
-  const input = readStdin();
-  let line = phaseBarLine();                 // 1. semantic phase set via phase.js
-  if (line === null) line = activityLine(input);  // 2. auto-tracked live swarm activity (per-session)
-  if (line === null) line = contextLine(input); // 3. idle context-window gauge
-  if (line) process.stdout.write(line + '\n');
-} catch (e) {
-  process.exit(0); // fail-open
+// --- Entry points -------------------------------------------------------
+// Same in-process / standalone split as statusline-rich.js: the dispatcher
+// (statusline.js) requires this module and calls runWithInput(input)
+// directly instead of forking `node phase-bar.js` on every render (that
+// fork was a measured contributor to statusline latency under load — see
+// runInProcess() in statusline.js). Standalone behavior (reading fd 0,
+// trailing newline, exit(0) fail-open) is unchanged for direct invocation
+// (tests, manual runs, and the dispatcher's own fallback spawn path).
+
+// Priority: phase bar (coordinator) > live activity (auto) > context gauge.
+function runWithInput(input) {
+  try {
+    let line = phaseBarLine();                 // 1. semantic phase set via phase.js
+    if (line === null) line = activityLine(input);  // 2. auto-tracked live swarm activity (per-session)
+    if (line === null) line = contextLine(input); // 3. idle context-window gauge
+    if (line) process.stdout.write(line + '\n');
+  } catch (e) { /* fail-open: never crash the statusline */ }
 }
+
+function runPhaseBar() {
+  try {
+    runWithInput(readStdin());
+  } catch (e) {
+    process.exit(0); // fail-open
+  }
+}
+
+module.exports = { runWithInput, phaseBarLine, contextLine, activityLine, safeLabel };
+
+if (require.main === module) runPhaseBar();

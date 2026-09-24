@@ -26,7 +26,11 @@ function getProjectRoot() {
   try {
     root = execFileSync('git', ['rev-parse', '--show-toplevel'], {
       encoding: 'utf-8',
-      timeout: 2000,
+      // Bounded well under statusline.js's OUTER_WATCHDOG_MS (3000ms): this
+      // renderer now runs IN-PROCESS under the dispatcher, so a slow git call
+      // here eats directly into the dispatcher's own budget, not a separate
+      // child's.
+      timeout: 1500,
       stdio: ['pipe', 'pipe', 'pipe'],
       cwd: CWD,
     }).trim();
@@ -297,7 +301,9 @@ function getGitInfo() {
     try {
       return execFileSync('git', args, {
         encoding: 'utf-8',
-        timeout: 2000,
+        // See getProjectRoot()'s timeout comment: bounded under the
+        // dispatcher's OUTER_WATCHDOG_MS since this now runs in-process.
+        timeout: 1500,
         stdio: ['pipe', 'pipe', 'pipe'],
         maxBuffer: 4 * 1024 * 1024,
         cwd: CWD,

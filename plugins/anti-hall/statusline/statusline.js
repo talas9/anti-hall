@@ -46,6 +46,22 @@ const { spawnSync } = require('child_process');
 const identity = require('../companion/lib/identity.js');
 
 // ---------------------------------------------------------------------------
+// Timeout budget (coherence)
+// ---------------------------------------------------------------------------
+// A statusline must stay fast — OUTER_WATCHDOG_MS is the hard ceiling on the
+// whole dispatcher (stdin collection in main()) and stays at 3000ms; it is
+// NOT raised to accommodate slow inner work. Instead, everything the
+// dispatcher can spawn is bounded BELOW it: INNER_SPAWN_TIMEOUT_MS caps
+// runBaseCommand()'s spawnSync (a user-configured, possibly-foreign base
+// command) and phaseBarLine()'s fallback spawn; the git calls statusline-
+// rich.js issues when run in-process (getProjectRoot/getGitInfo) are
+// separately capped at ~1500ms each for the same reason. Keep
+// INNER_SPAWN_TIMEOUT_MS < OUTER_WATCHDOG_MS <= 3000; see the asserting
+// tests in tests/statusline/statusline.test.js.
+const INNER_SPAWN_TIMEOUT_MS = 2500;
+const OUTER_WATCHDOG_MS = 3000;
+
+// ---------------------------------------------------------------------------
 // Base-statusline config
 // ---------------------------------------------------------------------------
 
@@ -75,7 +91,7 @@ function runBaseCommand(baseCmd, stdinBytes) {
       input: stdinBytes,
       encoding: 'buffer',     // preserve raw bytes (ANSI / arbitrary encoding)
       // CI runner contention has delayed trivial base commands; hangs still fail open to ownLine1.
-      timeout: 10000,
+      timeout: INNER_SPAWN_TIMEOUT_MS,
       maxBuffer: 256 * 1024,
     });
 
@@ -110,6 +126,71 @@ function runBaseCommand(baseCmd, stdinBytes) {
 }
 
 // ---------------------------------------------------------------------------
+// In-process renderer execution
+// ---------------------------------------------------------------------------
+// Every renderer this dispatcher owns (statusline-rich.js, statusline-
+// monorepo.js, statusline-simple.js, phase-bar.js) exports runWithInput(input)
+// for exactly this purpose: run it via require() in THIS process instead of
+// forking `node <script>` as a child. A fork here costs a shell + a second
+// node startup (plus whatever subprocesses the renderer itself spawns, e.g.
+// git) — measured as the dominant contributor to statusline latency under
+// load (p50 264ms / max 448ms vs ~160ms for other hooks). Returns the
+// captured stdout (trailing newline trimmed), or null if the module has no
+// runWithInput or throws — callers fall back to a real spawn in that case.
+function runInProcess(scriptPath, input) {
+  let mod;
+  try {
+    mod = require(scriptPath);
+  } catch (e) {
+    return null;
+  }
+  if (!mod || typeof mod.runWithInput !== 'function') return null;
+  const saved  = process.stdout.write.bind(process.stdout);
+  const chunks = [];
+  process.stdout.write = (chunk) => { chunks.push(String(chunk)); return true; };
+  try {
+    mod.runWithInput(input);
+  } catch (e) {
+    return null;
+  } finally {
+    process.stdout.write = saved;
+  }
+  return chunks.join('').replace(/[\r\n]+$/, '');
+}
+
+// A user's ~/.anti-hall/base-statusline.json can end up pointing straight at
+// anti-hall's OWN renderer (statusline-rich.js / phase-bar.js) — e.g. a base
+// config captured from a prior/partial install. Recognize that specific,
+// narrow shape (`node "<path>"` / `node <path>`, nothing else — no pipes,
+// flags, redirection, or extra commands) and run it in-process via
+// runInProcess() instead of forking a shell that forks node. Anything less
+// exact keeps the spawn path: we can't safely reproduce arbitrary shell
+// semantics (env vars, pipes, multiple commands) in-process, and a genuinely
+// foreign user-configured base command must still go through the real shell.
+function matchOwnRendererCommand(baseCmd) {
+  const m = /^node\s+"?([^"|;&<>]+?\.js)"?\s*$/.exec(String(baseCmd).trim());
+  if (!m) return null;
+  const candidate = m[1].trim();
+  if (!candidate) return null;
+  let resolved;
+  try {
+    resolved = fs.realpathSync(candidate);
+  } catch (e) {
+    return null;
+  }
+  const ownRenderers = [
+    path.join(__dirname, 'statusline-rich.js'),
+    path.join(__dirname, 'phase-bar.js'),
+  ];
+  for (const own of ownRenderers) {
+    try {
+      if (fs.realpathSync(own) === resolved) return own;
+    } catch (e) { /* skip — own renderer file missing, shouldn't happen */ }
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------------
 // Monorepo detection
 // ---------------------------------------------------------------------------
 
@@ -141,8 +222,20 @@ function isMonorepo(dir) {
 // ---------------------------------------------------------------------------
 
 function phaseBarLine(stdinBytes) {
+  const phaseBarScript = path.join(__dirname, 'phase-bar.js');
+
+  // phase-bar.js is always anti-hall's OWN script (never user-configured, no
+  // shell string to interpret) — run it in-process via runInProcess() rather
+  // than forking `node phase-bar.js` on every single render.
   try {
-    const phaseBarScript = path.join(__dirname, 'phase-bar.js');
+    const out = runInProcess(phaseBarScript, stdinBytes.toString('utf8'));
+    if (out !== null) return out || null;
+  } catch (e) { /* fall through to the spawn below */ }
+
+  // Fallback spawn path — kept for robustness (e.g. a mangled install whose
+  // phase-bar.js lacks runWithInput) so line 2 still degrades gracefully
+  // instead of silently disappearing.
+  try {
     const result = spawnSync(process.execPath, [phaseBarScript], {
       input: stdinBytes,            // pass the session JSON so the context bar has data
       encoding: 'utf8',
@@ -151,7 +244,7 @@ function phaseBarLine(stdinBytes) {
       // a too-tight deadline even though the child itself is fast, silently
       // dropping line 2 (fail-open) and leaving a misleading line-1-only
       // statusline. 2000ms measured flaky under real full-suite contention.
-      timeout: 10000,
+      timeout: INNER_SPAWN_TIMEOUT_MS,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     if (result.error) return null;
@@ -216,7 +309,7 @@ function ownLine1(input) {
 
 function main() {
   const inputChunks = [];
-  const timeout = setTimeout(() => process.exit(0), 3000);
+  const timeout = setTimeout(() => process.exit(0), OUTER_WATCHDOG_MS);
 
   // Collect raw bytes from stdin so we can forward them intact to the base command.
   process.stdin.on('data', chunk => { inputChunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)); });
@@ -231,11 +324,17 @@ function main() {
     try {
       const baseCmd = readBaseCommand();
       if (baseCmd) {
-        const baseOut = runBaseCommand(baseCmd, stdinBytes);
-        if (baseOut !== null) {
+        // Self-referential base command (points at anti-hall's own renderer,
+        // e.g. from a prior/partial install) — run in-process, no shell/node fork.
+        const ownScript = matchOwnRendererCommand(baseCmd);
+        const baseOut = ownScript
+          ? runInProcess(ownScript, inputString)
+          : runBaseCommand(baseCmd, stdinBytes);
+        if (baseOut !== null && baseOut !== '') {
           line1 = baseOut;
         } else {
-          // Base command failed — fall through to own dispatch
+          // Base command failed (or, for the in-process path, yielded nothing)
+          // — fall through to own dispatch.
           line1 = ownLine1(inputString);
         }
       } else {
