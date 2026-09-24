@@ -81,15 +81,24 @@ const MUTATING_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
 //       and fd-duplication forms (`2>/dev/null`, `2>&1`, `>&2`) are excluded —
 //       they redirect a descriptor, not a file write.
 const CMD_BOUNDARY = '(?:^|[;&|`(]|\\$\\(|\\n)\\s*';
+// ALWAYS_WORK_SRC — the high-confidence, unambiguous mutation verbs (real git
+// history/dependency mutations). Factored out from BASH_WORK_RE so it can also
+// be tested ALONE by the scratchpad-noise filter below (FIX 7): these always
+// count as work even when a scratchpad/tmp path also appears in the same
+// command line, whereas the generic bare-verb/redirect matches (2)/(3) do not
+// when the ONLY path touched is the session's own scratchpad.
+const ALWAYS_WORK_SRC =
+  '\\bgit\\s+(?:commit|rebase|merge|cherry-pick|stash|reset|apply|am)\\b' +
+  '|\\bgit\\s+(?:checkout|switch|restore|clean)\\b' +
+  '|\\bsed\\s+-i' +
+  '|\\bnpm\\s+(?:install|i|ci)\\b' +
+  '|\\b(?:pnpm|yarn)\\s+(?:add|install)\\b' +
+  '|\\bpip\\s+install\\b';
+const ALWAYS_WORK_RE = new RegExp('(' + ALWAYS_WORK_SRC + ')', 'im');
 const BASH_WORK_RE = new RegExp(
   '(' +
     // (1) always-work, anywhere
-    '\\bgit\\s+(?:commit|rebase|merge|cherry-pick|stash|reset|apply|am)\\b' +
-    '|\\bgit\\s+(?:checkout|switch|restore|clean)\\b' +
-    '|\\bsed\\s+-i' +
-    '|\\bnpm\\s+(?:install|i|ci)\\b' +
-    '|\\b(?:pnpm|yarn)\\s+(?:add|install)\\b' +
-    '|\\bpip\\s+install\\b' +
+    ALWAYS_WORK_SRC +
     // (2) command-position-only bare verbs
     '|' + CMD_BOUNDARY + '(?:rm|cp|mv|tee|mkdir|touch|make|chmod)\\b' +
     // (3) file redirect, excluding fd-only `2>` / `>&` / `2>&1`
@@ -97,6 +106,23 @@ const BASH_WORK_RE = new RegExp(
   ')',
   'im'
 );
+// SCRATCHPAD_PATH_RE (FIX 7, root cause of #17 per real-transcript evidence):
+// the harness's own per-session scratchpad — literally named "scratchpad" in
+// its own path segment (see this file's own guidance to agents: "always use
+// [the scratchpad] ... instead of /tmp") — holds inter-agent message-passing
+// and scratch artifacts, never PROJECT work. In two independently-reproduced
+// SkyCrew Primary sessions, 70-90% of the Bash "work" counted between two
+// consecutive progress-staleness blocks was `cat >`/`mkdir`/`touch` traffic
+// into this exact scratchpad directory (message relaying to child agents),
+// not project edits. That churn shifts workBucket (floor(workCount/threshold))
+// on every Stop, defeating the hash-based dedup and re-firing the SAME
+// already-complied-with "update your progress file" cause every time the
+// freshness window lapses — even though the file was written to the exact
+// expected path within seconds of each prior nag (confirmed against the real
+// transcripts; ruled out: path mismatch, date rollover, session-id mismatch,
+// mtime race — the mtime read was always correct and fresh immediately after
+// the write).
+const SCRATCHPAD_PATH_RE = /\/scratchpad\//;
 
 // neutralizeQuotedContents — blank out the CONTENTS of single- and double-quoted
 // string literals (delimiters included) so BASH_WORK_RE cannot match text that is
@@ -147,10 +173,23 @@ function main() {
     process.exit(0); // cold-start fail-open
   }
 
-  // Single-pass scan: WORK_COUNT, sawTaskActivity, and reconstructed task state.
+  // Session/progress-path identity computed BEFORE the scan so the single-pass
+  // scanner can ALSO watch for a Write/Edit/MultiEdit/Bash tool call that targets
+  // this exact progress file (see FIX 6 below) — independent of the file's mtime.
+  const rawSessionId = payload && payload.session_id != null ? String(payload.session_id) : '';
+  const sessionIdForPath = sanitizeSessionId(rawSessionId);
+  const progressDate = new Date().toISOString().slice(0, 10);
+  const progressHeader = '<!-- session: ' + (rawSessionId || UNKNOWN_SESSION) +
+    ' | started: ' + new Date().toISOString() + ' -->';
+  const progressRelPath = path.join('.anti-hall', 'progress', progressDate, sessionIdForPath + '.md');
+  const cwd = payload && payload.cwd;
+  const progressAbsPath = (cwd && typeof cwd === 'string') ? path.join(cwd, progressRelPath) : null;
+
+  // Single-pass scan: WORK_COUNT, sawTaskActivity, reconstructed task state, and
+  // (FIX 6) the newest transcript-observed write to the progress file itself.
   let scan;
   try {
-    scan = scanTranscript(transcriptPath);
+    scan = scanTranscript(transcriptPath, { progressAbsPath });
   } catch (_) {
     process.exit(0);
   }
@@ -161,13 +200,6 @@ function main() {
   const hasStaleInProgress = scan.hasStaleInProgress;
   const inProgressCount = scan.inProgressCount;
   const openTaskIds = scan.openTaskIds;
-
-  const rawSessionId = payload && payload.session_id != null ? String(payload.session_id) : '';
-  const sessionIdForPath = sanitizeSessionId(rawSessionId);
-  const progressDate = new Date().toISOString().slice(0, 10);
-  const progressHeader = '<!-- session: ' + (rawSessionId || UNKNOWN_SESSION) +
-    ' | started: ' + new Date().toISOString() + ' -->';
-  const progressRelPath = path.join('.anti-hall', 'progress', progressDate, sessionIdForPath + '.md');
 
   // Progress-file freshness — relative to the session's cwd.
   //
@@ -182,7 +214,6 @@ function main() {
   // bumps on any child change); a SYMLINK could spoof freshness by pointing at an
   // always-touched file. lstat does not follow the link, and st.isFile() rejects
   // both a directory and a symlink — only a real regular file counts as progress.
-  const cwd = payload && payload.cwd;
   let progressFresh = true;
   if (cwd && typeof cwd === 'string') {
     let cwdExists = false;
@@ -222,6 +253,30 @@ function main() {
     }
   } else {
     progressFresh = true; // no cwd → can't locate the file → fail-open
+  }
+
+  // FIX 6 (defense-in-depth, NOT the confirmed root cause of #17 — see FIX 7
+  // below for that; kept because it is a real, cheap-to-close gap even though
+  // it wasn't what actually fired in the transcripts we checked): mtime is
+  // not the ONLY trustworthy freshness signal. A just-written progress file
+  // could in principle still read as missing/stale here if the write and this
+  // read raced across process/mount boundaries (e.g. a background-agent
+  // sandbox writing through a different mount than the one this Stop hook
+  // stats). The transcript itself is ground truth for "did THIS session's own
+  // tool calls write to THIS exact progress path" — scanTranscript (above)
+  // already looked for a Write/Edit/MultiEdit targeting progressAbsPath, or a
+  // Bash command that both matches the mutating-command heuristic AND names
+  // progressAbsPath, and returned the newest such write's transcript
+  // timestamp. OR that signal into progressFresh: EITHER a fresh mtime OR a
+  // recent transcript-observed write to the file resets the "go update
+  // progress" requirement. This can only flip progressFresh from false to
+  // true (never true to false), so it stays fail-open/no-loop-risk exactly
+  // like every other signal in this file.
+  if (!progressFresh && scan && Number.isFinite(scan.lastProgressWriteTs) && scan.lastProgressWriteTs > 0) {
+    const progressWriteAge = Date.now() - scan.lastProgressWriteTs;
+    if (progressWriteAge <= readFreshMs()) {
+      progressFresh = true;
+    }
   }
 
   // History-index maintenance — purely a side effect, NEVER affects blocking.
@@ -602,16 +657,26 @@ function readTranscriptTail(transcriptPath, windowBytes) {
 //   - sawTaskActivity   : any TaskCreate/TaskUpdate/TodoWrite tool_use present
 //   - task state map    : reconstructed (mode-agnostic) to detect in_progress
 // Mirrors task-guard's TaskCreate(result-id)/TaskUpdate(taskId)/TodoWrite logic.
-function scanTranscript(filePath) {
+//
+// opts.progressAbsPath (FIX 6, root cause of #17): when given, also tracks
+// lastProgressWriteTs — the newest transcript timestamp of an Edit/Write/
+// MultiEdit/NotebookEdit whose file_path resolves to this exact path, OR a
+// Bash command that both matches BASH_WORK_RE and names this exact path. This
+// is a SECOND, independent freshness signal the caller ORs against the
+// file's mtime, so a genuine same-session progress-file update is never
+// missed by a stat-vs-write race or mtime-reading edge case.
+function scanTranscript(filePath, opts) {
+  const progressAbsPath = opts && typeof opts.progressAbsPath === 'string' ? opts.progressAbsPath : null;
   const tail = readTranscriptTail(filePath);
   if (!tail) {
-    return { workCount: 0, sawTaskActivity: false, hasStaleInProgress: false, openTaskIds: [], lastWorkTs: 0 };
+    return { workCount: 0, sawTaskActivity: false, hasStaleInProgress: false, openTaskIds: [], lastWorkTs: 0, lastProgressWriteTs: 0 };
   }
   const lines = tail.data.split(/\r?\n/);
   if (tail.truncated && lines.length > 0) lines.shift();
 
   let workCount = 0;
   let lastWorkTs = 0; // ms epoch of the NEWEST counted file-changing action (0 = unknown)
+  let lastProgressWriteTs = 0; // ms epoch of the NEWEST write targeting progressAbsPath (0 = none seen)
   let sawTaskActivity = false;
 
   const provisionalMap = new Map(); // tool_use_id -> { content, status }
@@ -652,16 +717,44 @@ function scanTranscript(filePath) {
       const name = tu.name || '';
 
       if (MUTATING_TOOLS.has(name)) {
-        workCount++;
-        if (Number.isFinite(entryTs) && entryTs > lastWorkTs) lastWorkTs = entryTs;
+        const fp = tu.input && typeof tu.input.file_path === 'string' ? tu.input.file_path : '';
+        // FIX 7: a direct Edit/Write/etc into the session's own scratchpad is
+        // not project work (see SCRATCHPAD_PATH_RE above) — don't count it.
+        if (!SCRATCHPAD_PATH_RE.test(fp)) {
+          workCount++;
+          if (Number.isFinite(entryTs) && entryTs > lastWorkTs) lastWorkTs = entryTs;
+        }
+        if (
+          progressAbsPath && fp === progressAbsPath &&
+          Number.isFinite(entryTs) && entryTs > lastProgressWriteTs
+        ) {
+          lastProgressWriteTs = entryTs;
+        }
         continue;
       }
 
       if (name === 'Bash') {
         const cmd = tu.input && typeof tu.input.command === 'string' ? tu.input.command : '';
-        if (cmd && BASH_WORK_RE.test(neutralizeQuotedContents(cmd))) {
-          workCount++;
-          if (Number.isFinite(entryTs) && entryTs > lastWorkTs) lastWorkTs = entryTs;
+        const neutralized = cmd ? neutralizeQuotedContents(cmd) : '';
+        if (cmd && BASH_WORK_RE.test(neutralized)) {
+          // FIX 7 (root cause of #17, confirmed against real SkyCrew Primary
+          // transcripts): a command whose ONLY matched work signal is a
+          // generic bare-verb/redirect (mkdir/touch/cat >/tee/…) AND that
+          // targets the session's own scratchpad is inter-agent message
+          // traffic, not project work — don't count it. A genuine mutation
+          // verb (git commit/rebase/…, npm/pip install, sed -i) ALWAYS
+          // counts regardless of what path also appears on the line.
+          const isScratchOnly = SCRATCHPAD_PATH_RE.test(cmd) && !ALWAYS_WORK_RE.test(neutralized);
+          if (!isScratchOnly) {
+            workCount++;
+            if (Number.isFinite(entryTs) && entryTs > lastWorkTs) lastWorkTs = entryTs;
+          }
+          if (
+            progressAbsPath && cmd.indexOf(progressAbsPath) !== -1 &&
+            Number.isFinite(entryTs) && entryTs > lastProgressWriteTs
+          ) {
+            lastProgressWriteTs = entryTs;
+          }
         }
         continue;
       }
@@ -771,7 +864,7 @@ function scanTranscript(filePath) {
   // genuinely-dangling in_progress, so nothing is permanently masked.
   const hasStaleInProgress = inProgressCount > 1 && !agentsRunning();
 
-  return { workCount, sawTaskActivity, hasStaleInProgress, inProgressCount, openTaskIds, lastWorkTs };
+  return { workCount, sawTaskActivity, hasStaleInProgress, inProgressCount, openTaskIds, lastWorkTs, lastProgressWriteTs };
 }
 
 // agentsRunning() — true if ~/.anti-hall/agents/ holds a FRESH heartbeat, meaning

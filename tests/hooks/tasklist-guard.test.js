@@ -947,3 +947,213 @@ test('RESUME-VERIFY: capped — does not repeat once already nudged this session
     assert.ok(!isBlock(r2), `second Stop must allow — resume nudge capped and normal shouldBlock is false; stdout: ${r2.stdout}`);
   } finally { h.cleanup(); }
 });
+
+// ---------------------------------------------------------------------------
+// FIX 6 (root cause of #17): a transcript-observed Write/Edit/Bash write to the
+// session's own progress file must reset the freshness requirement even when
+// the file's mtime cannot be trusted (stat/write race, sandboxed-mount clock
+// skew, etc.) — and repeated Stops with no NEW file-changing work must never
+// re-nag for the same already-resolved cause.
+
+function editProgress(home, session, ts = new Date()) {
+  const p = progressPath(home, session);
+  return {
+    type: 'assistant',
+    timestamp: ts.toISOString(),
+    message: { role: 'assistant', content: [{ type: 'tool_use', name: 'Edit', id: 'toolu_prog', input: { file_path: p } }] },
+  };
+}
+
+function bashWriteProgress(home, session, ts = new Date()) {
+  const p = progressPath(home, session);
+  return {
+    type: 'assistant',
+    timestamp: ts.toISOString(),
+    message: { role: 'assistant', content: [{ type: 'tool_use', name: 'Bash', id: 'toolu_progb', input: { command: 'cat > ' + p + ' <<EOF\nprogress\nEOF' } }] },
+  };
+}
+
+test('FIX 6: transcript-observed Edit of the progress file resets freshness even with a STALE mtime', () => {
+  const h = makeHome();
+  try {
+    const session = 'fix6-stale-mtime';
+    // File exists but its mtime is old (simulates a stat/write race or a
+    // filesystem where mtime lags the real write) — a fresh-window that would
+    // otherwise read this as stale.
+    writeProgress(h.home, Date.now() - 10 * 60 * 1000, session);
+    const tp = h.writeTranscript([
+      ...edits(4),
+      ...taskCreate(1, 'do the work', 'completed'),
+      editProgress(h.home, session), // transcript proves a just-now write to THIS file
+    ]);
+    const r = testHook(HOOK, stopPayload(tp, h.home, session), {
+      home: h.home,
+      // Window shorter than the 10-min-stale mtime but generous enough to
+      // absorb subprocess-spawn latency under a loaded CI/dev machine (the
+      // transcript-observed timestamp is captured at test-build time, a few
+      // seconds before the hook subprocess actually runs).
+      env: { ANTIHALL_PROGRESS_FRESH_MS: '120000' },
+    });
+    assert.ok(!isBlock(r), `transcript-observed write must reset freshness; stdout: ${r.stdout}`);
+  } finally { h.cleanup(); }
+});
+
+test('FIX 6: transcript-observed Bash write to the progress file also resets freshness', () => {
+  const h = makeHome();
+  try {
+    const session = 'fix6-bash-write';
+    writeProgress(h.home, Date.now() - 10 * 60 * 1000, session);
+    const tp = h.writeTranscript([
+      ...edits(4),
+      ...taskCreate(1, 'do the work', 'completed'),
+      bashWriteProgress(h.home, session),
+    ]);
+    const r = testHook(HOOK, stopPayload(tp, h.home, session), {
+      home: h.home,
+      env: { ANTIHALL_PROGRESS_FRESH_MS: '120000' },
+    });
+    assert.ok(!isBlock(r), `Bash write to the progress file must reset freshness; stdout: ${r.stdout}`);
+  } finally { h.cleanup(); }
+});
+
+test('FIX 6: an Edit to a DIFFERENT file must NOT count as a progress-file write', () => {
+  const h = makeHome();
+  try {
+    const session = 'fix6-different-file';
+    writeProgress(h.home, Date.now() - 10 * 60 * 1000, session); // stale
+    const tp = h.writeTranscript([
+      ...edits(4),
+      ...taskCreate(1, 'do the work', 'completed'),
+    ]);
+    const r = testHook(HOOK, stopPayload(tp, h.home, session), {
+      home: h.home,
+      env: { ANTIHALL_PROGRESS_FRESH_MS: '1000' },
+    });
+    assert.ok(isBlock(r), `stale progress with no observed write to it must still block; stdout: ${r.stdout}`);
+    assert.match(r.json.reason, /missing or stale/i);
+  } finally { h.cleanup(); }
+});
+
+test('DEDUP: update the progress file -> next Stop does not nag again', () => {
+  const h = makeHome();
+  try {
+    const session = 'fix6-update-then-quiet';
+    // Round 1: no progress file at all -> blocks.
+    const tp1 = h.writeTranscript([
+      ...edits(4),
+      ...taskCreate(1, 'do the work', 'completed'),
+    ]);
+    const r1 = testHook(HOOK, stopPayload(tp1, h.home, session), { home: h.home });
+    assert.ok(isBlock(r1), `first Stop (no progress file) must block; stdout: ${r1.stdout}`);
+    assert.match(r1.json.reason, /missing or stale/i);
+
+    // Agent updates the progress file (fresh mtime) and does one more edit.
+    writeProgress(h.home, Date.now(), session);
+    const tp2 = h.writeTranscript([
+      ...edits(4),
+      ...taskCreate(1, 'do the work', 'completed'),
+      editProgress(h.home, session),
+    ]);
+    const r2 = testHook(HOOK, stopPayload(tp2, h.home, session), { home: h.home });
+    assert.ok(!isBlock(r2), `Stop right after updating progress must not nag; stdout: ${r2.stdout}`);
+  } finally { h.cleanup(); }
+});
+
+test('DEDUP: repeated Stops with no NEW file-changing work never re-nag', () => {
+  const h = makeHome();
+  try {
+    const session = 'fix6-idempotent-stop';
+    writeProgress(h.home, Date.now(), session);
+    const tp = h.writeTranscript([
+      ...edits(4),
+      ...taskCreate(1, 'do the work', 'completed'),
+    ]);
+    const payload = stopPayload(tp, h.home, session);
+    const r1 = testHook(HOOK, payload, { home: h.home });
+    const r2 = testHook(HOOK, payload, { home: h.home });
+    const r3 = testHook(HOOK, payload, { home: h.home });
+    assert.ok(!isBlock(r1) && !isBlock(r2) && !isBlock(r3),
+      `identical repeated Stops must never nag; stdout: ${r1.stdout} | ${r2.stdout} | ${r3.stdout}`);
+  } finally { h.cleanup(); }
+});
+
+// ---------------------------------------------------------------------------
+// FIX 7 (confirmed root cause of #17 against real SkyCrew Primary transcripts):
+// inter-agent message-passing Bash writes into the session's OWN scratchpad
+// directory (`.../<session>/scratchpad/...`) must not count toward workCount —
+// they are not project work, and counting them shifted workBucket fast enough
+// to defeat the hash dedup, re-firing an already-complied-with "update your
+// progress file" nag every ~30 min during long coordinator sessions.
+
+function scratchBash(i, home, session, ts = new Date()) {
+  const p = '/private/tmp/claude-501/-fake-project/' + session + '/scratchpad/msg-' + i + '.md';
+  return {
+    type: 'assistant',
+    timestamp: ts.toISOString(),
+    message: { role: 'assistant', content: [{ type: 'tool_use', name: 'Bash', id: 'toolu_scr' + i, input: { command: 'cat > ' + p + " <<'EOF'\nhello\nEOF" } }] },
+  };
+}
+function scratchBashes(home, session, n) {
+  const a = [];
+  for (let i = 0; i < n; i++) a.push(scratchBash(i, home, session));
+  return a;
+}
+
+test('FIX 7: Bash writes into the session scratchpad do not count toward workCount (below threshold, allow)', () => {
+  const h = makeHome();
+  try {
+    const session = 'fix7-scratch-only';
+    // 4 scratchpad-only writes: if counted, this crosses the threshold (3) and
+    // would block on "tracked NO tasks"; since scratchpad writes are excluded,
+    // workCount stays 0 and the session is trivial -> allow.
+    const tp = h.writeTranscript(scratchBashes(h.home, session, 4));
+    const r = testHook(HOOK, stopPayload(tp, h.home, session), { home: h.home });
+    assert.ok(!isBlock(r), `scratchpad-only writes must not count as work; stdout: ${r.stdout}`);
+  } finally { h.cleanup(); }
+});
+
+test('FIX 7: a genuine git commit still counts as work even when a scratchpad path also appears on the line', () => {
+  const h = makeHome();
+  try {
+    const session = 'fix7-git-commit-with-scratch-path';
+    const p = '/private/tmp/claude-501/-fake-project/' + session + '/scratchpad/note.md';
+    const cmds = [];
+    for (let i = 0; i < 4; i++) {
+      cmds.push({
+        type: 'assistant',
+        message: { role: 'assistant', content: [{ type: 'tool_use', name: 'Bash', id: 'toolu_gc' + i, input: { command: 'cat ' + p + ' > /dev/null; git commit -m "wip"' } }] },
+      });
+    }
+    const tp = h.writeTranscript(cmds);
+    const r = testHook(HOOK, stopPayload(tp, h.home, session), { home: h.home });
+    assert.ok(isBlock(r), `git commit must still count as work even with a scratchpad path present; stdout: ${r.stdout}`);
+  } finally { h.cleanup(); }
+});
+
+test('FIX 7: scratchpad-noise churn between two Stops does not re-trigger an already-complied progress nag', () => {
+  const h = makeHome();
+  try {
+    const session = 'fix7-no-rechurn';
+    // Round 1: no progress file -> blocks.
+    const tp1 = h.writeTranscript([
+      ...edits(4),
+      ...taskCreate(1, 'do the work', 'completed'),
+    ]);
+    const r1 = testHook(HOOK, stopPayload(tp1, h.home, session), { home: h.home });
+    assert.ok(isBlock(r1), `first Stop (no progress file) must block; stdout: ${r1.stdout}`);
+
+    // Agent complies immediately: writes the progress file (fresh mtime).
+    writeProgress(h.home, Date.now(), session);
+
+    // A burst of scratchpad-only message-passing follows (heavy coordinator
+    // traffic, no real project work) -- this must NOT shift workBucket enough
+    // to re-fire the (already-resolved) progress-freshness cause.
+    const tp2 = h.writeTranscript([
+      ...edits(4),
+      ...taskCreate(1, 'do the work', 'completed'),
+      ...scratchBashes(h.home, session, 12),
+    ]);
+    const r2 = testHook(HOOK, stopPayload(tp2, h.home, session), { home: h.home });
+    assert.ok(!isBlock(r2), `scratchpad churn after compliance must not re-nag; stdout: ${r2.stdout}`);
+  } finally { h.cleanup(); }
+});
