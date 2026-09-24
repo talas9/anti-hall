@@ -36,6 +36,15 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const {
+  HEREDOC_RE,
+  basename,
+  parseHeredocAt,
+  tokenizeQuoted,
+  dequoteSegment,
+  extractSubstitutions,
+  SHELL_VERBS,
+} = require('./lib/shell-scan.js');
 
 // Commands whose FIRST WORD (verb) are always heavy in coordinator context.
 const HEAVY_VERBS = new Set([
@@ -637,50 +646,26 @@ const FILE_READ_VERBS = new Set([
 // are NOT in this set — every one of their non-flag operands is a path.
 const PATTERN_FIRST_VERBS = new Set(['grep', 'sed', 'awk']);
 
-// Tokenize a segment respecting single/double quotes, STRIPPING the quote
-// delimiters but PRESERVING their contents (unlike neutralizeQuotedContents,
-// which blanks quoted content out for pattern matching). This recovers the
-// real text of a quoted argument — `cat "…/inbox/x"` yields the token
-// `…/inbox/x`, identical to the unquoted form — so a quoted path argument is
-// visible to detectProtectedFileRead's classifier instead of disappearing.
-// Mirrors the quote-handling already used by extractShellCPayload/
-// extractEvalPayload (best-effort tokenization; no backslash-escape support,
-// consistent with those siblings).
-function tokenizeQuoted(segment) {
-  const tokens = [];
-  let cur = ''; let q = ''; let any = false;
-  const str = segment.trim();
-  for (let i = 0; i < str.length; i++) {
-    const c = str[i];
-    if (q) { if (c === q) { q = ''; } else cur += c; any = true; continue; }
-    if (c === "'" || c === '"') { q = c; any = true; continue; }
-    if (/\s/.test(c)) { if (any) { tokens.push(cur); cur = ''; any = false; } continue; }
-    cur += c; any = true;
-  }
-  if (any) tokens.push(cur);
-  return tokens;
-}
-
-// dequoteSegment(segment) -> the SHELL-EFFECTIVE argv text: quote delimiters
-// stripped, quoted/unquoted fragments WITHIN one token concatenated (via
-// tokenizeQuoted), tokens rejoined with single spaces. Models what the shell
-// actually passes as argv — quoting a bareword does NOT change argv, the shell
-// executes it identically — so `"hivecontrol"`, `'message-parent'`, and
-// `mes"sage-par"ent` all dequote to the same literal text as their unquoted
-// form (`hivecontrol`, `message-parent`). Used (instead of
-// neutralizeQuotedContents, which BLANKS quoted content and was the source of
-// a live-verified P0 bypass — quoting a subcommand or the verb made the
-// hivectl guards below miss it entirely) so verb-anchoring and subcommand
-// matching run against the same text the shell would. Quoted DATA passed to
-// an unrelated verb stays safe: `grep -n "hivecontrol workspace
-// message-parent" f` dequotes to `grep -n hivecontrol workspace
-// message-parent f`, but the verb-anchoring check below still reads the FIRST
-// token as `grep`, not `hivecontrol`, so it still ALLOWS. NOT a shell parser —
-// no backslash-escape or parameter/command-substitution support, matching the
-// existing best-effort tokenization used throughout this file.
-function dequoteSegment(segment) {
-  return tokenizeQuoted(segment).join(' ');
-}
+// tokenizeQuoted()/dequoteSegment() are imported from ./lib/shell-scan.js
+// (shared with git-guard.js). dequoteSegment(segment) is the SHELL-EFFECTIVE
+// argv text: quote delimiters stripped, quoted/unquoted fragments WITHIN one
+// token concatenated (via tokenizeQuoted), tokens rejoined with single
+// spaces. Models what the shell actually passes as argv — quoting a bareword
+// does NOT change argv, the shell executes it identically — so
+// `"hivecontrol"`, `'message-parent'`, and `mes"sage-par"ent` all dequote to
+// the same literal text as their unquoted form (`hivecontrol`,
+// `message-parent`). Used (instead of neutralizeQuotedContents, which BLANKS
+// quoted content and was the source of a live-verified P0 bypass — quoting a
+// subcommand or the verb made the hivectl guards below miss it entirely) so
+// verb-anchoring and subcommand matching run against the same text the shell
+// would. Quoted DATA passed to an unrelated verb stays safe: `grep -n
+// "hivecontrol workspace message-parent" f` dequotes to `grep -n hivecontrol
+// workspace message-parent f`, but the verb-anchoring check below still reads
+// the FIRST token as `grep`, not `hivecontrol`, so it still ALLOWS. NOT a
+// shell parser — no backslash-escape or parameter/command-substitution
+// support, matching the existing best-effort tokenization used throughout
+// this file. tokenizeQuoted is also used by detectProtectedFileRead below to
+// recover a quoted path argument's real text.
 
 // detectProtectedFileRead(command, home, cwd, depth) -> 'deny-inbox' | 'deny-store' | null.
 // Parallels detectHivectlDestructiveRead: the SAME effectiveVerb command-position
@@ -807,19 +792,20 @@ function buildDevswarmReason(kind, env) {
     '0 there does NOT mean there are no pending messages when a durable inbox is in use.';
 }
 
-// Heredoc opener regex: <<[-]WORD, <<'WORD', <<"WORD", <<WORD. Captures the
-// dash (tab-stripping mode) and the terminator word (quoted or bare). Fixes
-// the confirmed root cause of P2 fp dd88d2a72562/b183a9f1bbd5: without
-// heredoc awareness, a heredoc BODY's own newlines are ordinary segment-split
-// points (see the `\n` case below), so a message body written as
-// `devswarm.js send ... <<'EOF' ... EOF` gets each body LINE parsed as its
-// own command segment. A body line that happens to START with a heavy word
-// ("make progress on X") then has effectiveVerb === 'make' (a HEAVY_VERB) and
-// is misclassified as an executed command, not prose. The fix: keep the
-// heredoc OPENER text (e.g. `<<'EOF'`) in the invoking segment so that
-// command's own verb is still classified normally, but SKIP the heredoc BODY
-// entirely — it is DATA, never re-parsed as segments/commands.
-const HEREDOC_RE = /^<<(-)?\s*("([^"]*)"|'([^']*)'|([A-Za-z_][A-Za-z0-9_]*))/;
+// Heredoc handling (opener kept, body skipped) fixes the confirmed root cause
+// of P2 fp dd88d2a72562/b183a9f1bbd5: without heredoc awareness, a heredoc
+// BODY's own newlines are ordinary segment-split points (see the `\n` case
+// below), so a message body written as `devswarm.js send ... <<'EOF' ... EOF`
+// gets each body LINE parsed as its own command segment. A body line that
+// happens to START with a heavy word ("make progress on X") then has
+// effectiveVerb === 'make' (a HEAVY_VERB) and is misclassified as an executed
+// command, not prose. The fix: keep the heredoc OPENER text (e.g. `<<'EOF'`)
+// in the invoking segment so that command's own verb is still classified
+// normally, but SKIP the heredoc BODY entirely — it is DATA, never re-parsed
+// as segments/commands. HEREDOC_RE/parseHeredocAt live in ./lib/shell-scan.js
+// (shared with git-guard.js — see that file's SCOPE DISCIPLINE note for why
+// only the low-level heredoc-construct parser is shared, not segmentation
+// itself).
 
 // Split a full command line into logical segments on the shell operators
 // ; && || | (and newlines), honoring single/double quotes so an operator inside
@@ -859,30 +845,12 @@ function splitSegments(cmd) {
 
     // Heredoc: consume the opener on the current segment, then skip the BODY
     // (up to and including the terminator line) without emitting it as
-    // segments. See HEREDOC_RE comment above.
+    // segments. See the heredoc-handling comment above splitSegments.
     if (c === '<' && c2 === '<') {
-      const m = HEREDOC_RE.exec(cmd.slice(i));
-      const word = m ? (m[3] !== undefined ? m[3] : (m[4] !== undefined ? m[4] : m[5])) : '';
-      if (m && word) {
-        const dashStrip = !!m[1];
-        cur += m[0];
-        i += m[0].length;
-        // Consume the rest of the opener line verbatim (e.g. trailing
-        // redirections) up to the newline that starts the heredoc body.
-        let lineEnd = cmd.indexOf('\n', i);
-        if (lineEnd === -1) lineEnd = n;
-        cur += cmd.slice(i, lineEnd);
-        i = lineEnd;
-        if (i < n && cmd[i] === '\n') i++;
-        // Skip body lines until the terminator line (tab-stripped if `<<-`).
-        while (i < n) {
-          const nextNl = cmd.indexOf('\n', i);
-          const lineRaw = nextNl === -1 ? cmd.slice(i) : cmd.slice(i, nextNl);
-          const line = dashStrip ? lineRaw.replace(/^\t+/, '') : lineRaw;
-          i += (nextNl === -1 ? (cmd.length - i) : (nextNl - i + 1));
-          if (line === word) break;
-          if (nextNl === -1) break; // unterminated heredoc: consumed to EOF
-        }
+      const parsed = parseHeredocAt(cmd, i);
+      if (parsed) {
+        cur += parsed.openerText;
+        i = parsed.end;
         // The heredoc construct closes the current logical command/segment.
         flush();
         continue;
@@ -907,13 +875,7 @@ function splitSegments(cmd) {
   return segments;
 }
 
-// Cross-platform basename: handle both / and \ path separators so /usr/bin/npm
-// and \npm resolve to npm (mirrors git-guard.js).
-function basename(p) {
-  if (!p) return p;
-  const parts = p.split(/[\\/]/);
-  return parts[parts.length - 1];
-}
+// basename() is imported from ./lib/shell-scan.js (shared with git-guard.js).
 
 // Wrapper words to skip when finding a segment's effective verb (mirrors
 // git-guard.js WRAPPERS, plus the shell control keywords that can lead a segment).
@@ -1071,91 +1033,28 @@ function isHeavySegment(segment) {
   return false;
 }
 
-// Extract nested command strings hidden inside a segment so they are evaluated
-// too (the original splitter treats $(...) / backticks as plain boundaries and
-// never inspects their CONTENTS, and never unwraps `bash -c '...'` payloads).
+// extractSubstitutions() and SHELL_VERBS are imported from
+// ./lib/shell-scan.js (shared with git-guard.js). extractSubstitutions finds
+// nested command strings hidden inside a segment so they are evaluated too
+// (the segment splitter treats $(...) / backticks as plain boundaries and
+// never inspects their CONTENTS):
 //   (a) command substitution: $( ... ) and ` ... ` -> the inner command text.
-//   (b) shell -c payloads: when the effective verb is bash/sh/zsh/dash and a
-//       -c flag is present, the QUOTED argument after -c is itself command(s).
-// Returns an array of inner command strings (possibly empty). Quote-aware for the
-// substitution scan; depth bounding is handled by the recursive caller below.
-const SHELL_VERBS = new Set(['bash', 'sh', 'zsh', 'dash', 'ksh', 'ash']);
-
-function extractSubstitutions(s) {
-  const found = [];
-  let i = 0;
-  const n = s.length;
-  let inSingle = false;
-  let inDouble = false;
-  while (i < n) {
-    const c = s[i];
-    const c2 = i + 1 < n ? s[i + 1] : '';
-    // Heredoc awareness (mirrors splitSegments's HEREDOC_RE handling). A
-    // QUOTED delimiter (<<'EOF', <<"EOF") means the body is INERT DATA in a
-    // real shell — no $(...)/backtick expansion inside it — so its body must
-    // be skipped from this substitution scan entirely, never treated as
-    // executable content. Root cause (field report): without this, a
-    // backtick-quoted span appearing as ordinary prose inside a `<<'EOF'`
-    // message body (e.g. `` `pytest tests -k <codebase>` `` inside a
-    // devswarm.js send message) was extracted as a real command substitution
-    // and recursed into isHeavyCommand, misclassifying quoted DATA as an
-    // executed command (verb: pytest). An UNQUOTED delimiter (<<EOF) DOES
-    // expand $(...)/backticks in a real shell, so its body is intentionally
-    // NOT skipped here — the scan falls through and continues over it
-    // normally, still catching substitutions inside.
-    if (!inSingle && !inDouble && c === '<' && c2 === '<') {
-      const m = HEREDOC_RE.exec(s.slice(i));
-      const word = m ? (m[3] !== undefined ? m[3] : (m[4] !== undefined ? m[4] : m[5])) : '';
-      if (m && word) {
-        const quoted = m[3] !== undefined || m[4] !== undefined;
-        const dashStrip = !!m[1];
-        i += m[0].length;
-        let lineEnd = s.indexOf('\n', i);
-        if (lineEnd === -1) lineEnd = n;
-        i = lineEnd;
-        if (i < n && s[i] === '\n') i++;
-        if (quoted) {
-          while (i < n) {
-            const nextNl = s.indexOf('\n', i);
-            const lineRaw = nextNl === -1 ? s.slice(i) : s.slice(i, nextNl);
-            const line = dashStrip ? lineRaw.replace(/^\t+/, '') : lineRaw;
-            i += (nextNl === -1 ? (n - i) : (nextNl - i + 1));
-            if (line === word) break;
-            if (nextNl === -1) break;
-          }
-        }
-        // Unquoted delimiter: body left unskipped on purpose (see comment above).
-        continue;
-      }
-    }
-    // Single quotes suppress $(...) but NOT — by POSIX — they also suppress
-    // backticks; inside single quotes nothing expands, so skip the whole span.
-    if (inSingle) { if (c === "'") inSingle = false; i++; continue; }
-    if (!inDouble && c === "'") { inSingle = true; i++; continue; }
-    if (c === '"') { inDouble = !inDouble; i++; continue; }
-    // $( ... ) — balance nested parens so $(echo $(date)) is captured whole.
-    if (c === '$' && c2 === '(') {
-      let depth = 1; let j = i + 2; let inner = '';
-      while (j < n && depth > 0) {
-        const cj = s[j];
-        if (cj === '(') depth++;
-        else if (cj === ')') { depth--; if (depth === 0) break; }
-        inner += cj; j++;
-      }
-      if (inner.trim()) found.push(inner);
-      i = j + 1; continue;
-    }
-    // ` ... ` backtick command substitution (active inside double quotes too).
-    if (c === '`') {
-      let j = i + 1; let inner = '';
-      while (j < n && s[j] !== '`') { inner += s[j]; j++; }
-      if (inner.trim()) found.push(inner);
-      i = j + 1; continue;
-    }
-    i++;
-  }
-  return found;
-}
+// It is heredoc-aware (mirrors splitSegments' handling): a QUOTED delimiter
+// (<<'EOF', <<"EOF") means the body is INERT DATA in a real shell — no
+// $(...)/backtick expansion inside it — so its body is skipped from this
+// substitution scan entirely, never treated as executable content. Root
+// cause (field report): without this, a backtick-quoted span appearing as
+// ordinary prose inside a `<<'EOF'` message body (e.g. `` `pytest tests -k
+// <codebase>` `` inside a devswarm.js send message) was extracted as a real
+// command substitution and recursed into isHeavyCommand, misclassifying
+// quoted DATA as an executed command (verb: pytest). An UNQUOTED delimiter
+// (<<EOF) DOES expand $(...)/backticks in a real shell, so its body is
+// intentionally NOT skipped — the scan falls through and continues over it
+// normally, still catching substitutions inside.
+//   (b) shell -c payloads (extractShellCPayload below): when the effective
+//       verb is a SHELL_VERBS member and a -c flag is present, the QUOTED
+//       argument after -c is itself command(s).
+// Depth bounding is handled by the recursive caller below (isHeavyCommand).
 
 // If a segment is `bash -c '<payload>'` (or sh/zsh/dash -c "..."), return the
 // unquoted payload command string, else ''. Best-effort tokenization.

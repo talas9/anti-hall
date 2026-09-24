@@ -43,6 +43,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { HEREDOC_RE, basename, parseHeredocAt, SHELL_VERBS } = require('./lib/shell-scan.js');
 
 function fail_open() {
   process.exit(0);
@@ -382,13 +383,10 @@ function effectiveVerb(tokens) {
   return { verb: basename(verbTok.text), args: tokens.slice(idx + 1) };
 }
 
-// Cross-platform basename: handle both / and \ path separators and leading-path
-// or `\git` forms so `/usr/bin/git` and `\git` resolve to `git` (F-01b).
-function basename(p) {
-  if (!p) return p;
-  const parts = p.split(/[\\/]/);
-  return parts[parts.length - 1];
-}
+// basename() is imported from ./lib/shell-scan.js (shared with
+// command-guard.js): cross-platform, handles both / and \ path separators and
+// leading-path or `\git` forms so `/usr/bin/git` and `\git` resolve to `git`
+// (F-01b).
 
 // Within a `git ... <subcmd> ...` arg list, find the git subcommand, skipping
 // git's global options (some of which take a separate value token).
@@ -685,12 +683,12 @@ function extractEvalPayload(segment) {
   return parts.join(' ');
 }
 
-// Shell interpreters whose `-c "<payload>"` argument is itself a shell command.
-// A `bash -c "git push --force"` wrapper's effective verb is `bash`, not `git`,
-// so without recursing the payload the git force/self-credit rules never run and
-// the wrapper is a TOTAL guard bypass (P0-1). Mirrors command-guard.js's
-// SHELL_VERBS.
-const SHELL_VERBS = new Set(['bash', 'sh', 'zsh', 'dash', 'ksh', 'ash']);
+// SHELL_VERBS is imported from ./lib/shell-scan.js (shared with
+// command-guard.js): shell interpreters whose `-c "<payload>"` argument is
+// itself a shell command. A `bash -c "git push --force"` wrapper's effective
+// verb is `bash`, not `git`, so without recursing the payload the git
+// force/self-credit rules never run and the wrapper is a TOTAL guard bypass
+// (P0-1).
 
 // If a segment is `bash -c '<payload>'` (or sh/zsh/dash/ksh/ash -c "...",
 // including bundled forms like `bash -lc "..."` and `--command`), return the
@@ -742,8 +740,11 @@ function fileCommitMessages(rest) {
 
 // Heredoc opener regex (mirrors command-guard.js's HEREDOC_RE): <<[-]WORD,
 // <<'WORD', <<"WORD", <<WORD. Captures the dash (tab-stripping mode) and the
-// terminator word (quoted or bare).
-const HEREDOC_RE = /^<<(-)?\s*("([^"]*)"|'([^']*)'|([A-Za-z_][A-Za-z0-9_]*))/;
+// terminator word (quoted or bare). HEREDOC_RE/parseHeredocAt are imported
+// from ./lib/shell-scan.js (shared with command-guard.js) — this file's own
+// use of parseHeredocAt below is the low-level heredoc-construct parser ONLY;
+// the SIDE-CHANNEL SCAN STRATEGY around it (see next comment) is unchanged
+// and NOT shared, per the P0 lesson below.
 
 // Extract every heredoc BODY appearing anywhere in the raw command string, as
 // a standalone SIDE-CHANNEL scan over the raw text. This is intentionally
@@ -786,38 +787,11 @@ function extractHeredocBodies(cmd) {
     if (c === '"') { inDouble = true; i++; continue; }
 
     if (c === '<' && c2 === '<') {
-      const m = HEREDOC_RE.exec(cmd.slice(i));
-      const word = m ? (m[3] !== undefined ? m[3] : (m[4] !== undefined ? m[4] : m[5])) : '';
-      if (m && word) {
-        const dashStrip = !!m[1];
-        const quoted = m[3] !== undefined || m[4] !== undefined;
-        i += m[0].length;
-        // Skip past the rest of the opener line (trailing redirections/
-        // operators are splitSegments' concern, untouched here) to the
-        // newline that starts the heredoc body.
-        let lineEnd = cmd.indexOf('\n', i);
-        if (lineEnd === -1) {
-          bodies.push({ word, quoted, body: '' }); // opener runs to EOF, no body
-          break;
-        }
-        i = lineEnd + 1;
-        const bodyLines = [];
-        let terminated = false;
-        while (i <= n) {
-          const nextNl = cmd.indexOf('\n', i);
-          const lineRaw = nextNl === -1 ? cmd.slice(i) : cmd.slice(i, nextNl);
-          const line = dashStrip ? lineRaw.replace(/^\t+/, '') : lineRaw;
-          if (line === word) {
-            terminated = true;
-            i = nextNl === -1 ? n : nextNl + 1;
-            break;
-          }
-          bodyLines.push(line);
-          if (nextNl === -1) { i = n; break; } // unterminated: to EOF
-          i = nextNl + 1;
-        }
-        bodies.push({ word, quoted, body: bodyLines.join('\n') });
-        if (!terminated) break; // consumed the rest of the command as body
+      const parsed = parseHeredocAt(cmd, i);
+      if (parsed) {
+        bodies.push({ word: parsed.word, quoted: parsed.quoted, body: parsed.body });
+        i = parsed.end;
+        if (!parsed.terminated) break; // consumed the rest of the command as body
         continue;
       }
     }
