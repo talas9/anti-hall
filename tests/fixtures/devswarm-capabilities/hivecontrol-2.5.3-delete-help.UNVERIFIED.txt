@@ -1,0 +1,8 @@
+Usage: hivecontrol workspace delete [options] <idOrBranch>
+
+Permanently delete an ARCHIVED workspace. Refuses the Primary and workspaces
+with uncommitted changes.
+
+Options:
+  -y, --yes   skip the confirmation prompt
+  -h, --help  display help for command

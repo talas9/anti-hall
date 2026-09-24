@@ -221,6 +221,12 @@ const { readDescriptors } = require('../companion/devswarm-supervisor.js');
 const { pokeOrEscalate, acquireLock } = require('../companion/lib/recovery.js');
 const migrate = require('../companion/devswarm-migrate.js');
 const pull = require('../companion/lib/devswarm-pull.js');
+// v0.108.0 — every hivecontrol call below goes through the capability gate
+// (companion/lib/devswarm-capabilities.js): a verb this DevSwarm build lacks is
+// refused without spawning; an absent binary passes through unchanged. Lazy on
+// pull.defaultRun so a test that swaps that export is still honoured.
+const devswarmCaps = require('../companion/lib/devswarm-capabilities.js');
+function hcRun(spec) { return devswarmCaps.gatedRun(pull.defaultRun)(spec); }
 const inst = require('../companion/install-devswarm-ingest.js');
 const repokey = require('../companion/lib/devswarm-repokey.js');
 const identity = require('../companion/lib/identity.js');
@@ -13572,7 +13578,7 @@ function fetchTrustedRepositoryId(ctx, run) {
 // failure.
 function fetchNativeChildren(ctx) {
   try {
-    const run = (ctx.io && ctx.io.run) || pull.defaultRun;
+    const run = (ctx.io && ctx.io.run) || hcRun;
     const res = run({ args: ['workspace', 'list', 'children'], env: ctx.env, timeout: LIST_CHILDREN_TIMEOUT_MS });
     if (!res || !res.ok) return [];
     const children = parseChildrenList(res.raw);
@@ -13647,7 +13653,7 @@ function fetchNativeChildren(ctx) {
 // collapsing to a bare 'hivecontrol-unavailable' reason with no detail.
 function fetchActiveWorkspaceRecords(ctx) {
   const c = ctx || {};
-  const run = (c.io && c.io.run) || pull.defaultRun;
+  const run = (c.io && c.io.run) || hcRun;
   let res;
   try {
     res = run({ args: ['workspace', 'list', 'all'], env: c.env, cwd: c.cwd || process.cwd(), timeout: LIST_CHILDREN_TIMEOUT_MS });
@@ -15074,7 +15080,7 @@ function cmdReconcile(flags, ctx) {
   try {
     const missingNames = targets.filter((d) => !names.readName(home, d.id));
     if (missingNames.length > 0) {
-      const listRun = (ctx.io && ctx.io.run) || pull.defaultRun;
+      const listRun = (ctx.io && ctx.io.run) || hcRun;
       const lr = listRun({ args: ['workspace', 'list', 'all'], env: ctx.env, cwd, timeout: LIST_CHILDREN_TIMEOUT_MS });
       if (lr && lr.ok) {
         const all = parseChildrenList(lr.raw); // reuses the SAME tolerant parse + label field
@@ -15809,7 +15815,7 @@ function cmdReconcileRegistry(flags, ctx) {
     return { ok: false, action: 'reconcile-registry', reason: 'no-project',
       error: 'reconcile-registry must run inside a git worktree (the mesh registry is per-project)' };
   }
-  const run = (ctx.io && ctx.io.run) || pull.defaultRun;
+  const run = (ctx.io && ctx.io.run) || hcRun;
   let res;
   try {
     res = run({ args: ['workspace', 'list', 'all'], env: ctx.env, cwd: ctx.cwd || process.cwd(), timeout: LIST_CHILDREN_TIMEOUT_MS });
@@ -15889,7 +15895,7 @@ function cmdSpawn(rest, ctx) {
   const branch = rest && rest[0];
   if (!branch) return { ok: false, error: 'spawn requires a branch name' };
   const cwd = ctx.cwd || process.cwd();
-  const run = (ctx.io && ctx.io.run) || pull.defaultRun;
+  const run = (ctx.io && ctx.io.run) || hcRun;
   const args = ['workspace', 'create'].concat(rest);
   // RECENCY FLOOR for the launch check below — captured BEFORE `create` so any
   // evidence produced during the create call still counts, while anything that
@@ -16028,7 +16034,7 @@ function cmdSpawn(rest, ctx) {
 // cwd) never masks the merge's own result.
 function cmdMergeVerb(rest, ctx) {
   const cwd = ctx.cwd || process.cwd();
-  const run = (ctx.io && ctx.io.run) || pull.defaultRun;
+  const run = (ctx.io && ctx.io.run) || hcRun;
 
   const checkRes = run({ args: ['workspace', 'check-merge'], env: ctx.env, cwd });
   let checkMerge = null;

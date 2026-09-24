@@ -6,6 +6,17 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## Unreleased
+
+- **New: DevSwarm capability gate** (`companion/lib/devswarm-capabilities.js`). Every
+  DevSwarm surface anti-hall uses (each `hivecontrol workspace` verb, plus app-DB
+  tables and columns) is now gated by a minimum version AND runtime detection: `--help`
+  parsing for verbs, `PRAGMA table_info` for columns, cached per installed hivecontrol
+  build. A surface this DevSwarm build lacks puts its feature to sleep, and doctor
+  lists it ("feature X needs DevSwarm >= Y, you have Z"). No DevSwarm installed means
+  everything sleeps silently. Every `hivecontrol` call in `scripts/devswarm.js` now
+  goes through the gate.
+
 ## 0.107.1 (2026-09-24)
 
 - **Fixed: phantom "N unread" on the Primary's own mailbox.** When a store's

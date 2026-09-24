@@ -572,6 +572,18 @@ function versionMismatchCheck(opts) {
   }
 }
 
+// capabilitiesCheck({home}) -> {status, message}. v0.108.0: reads the
+// capability gate's cache (companion/lib/devswarm-capabilities.js) — NO spawn —
+// and lists every feature put to sleep because this DevSwarm build lacks its
+// surface ("feature X needs DevSwarm >= Y, you have Z"). A sleeping feature is
+// expected on an older DevSwarm, so this is PASS (informational), never WARN.
+function capabilitiesCheck(opts) {
+  const o = opts || {};
+  const lines = require('./devswarm-capabilities.js').dormantLines(o.home || os.homedir());
+  if (!lines.length) return { status: PASS, message: 'devswarm-capabilities: no dormant features recorded' };
+  return { status: PASS, message: 'devswarm-capabilities: ' + lines.length + ' dormant feature(s) — ' + lines.join('; ') };
+}
+
 // legacyCursorShapeLeftovers(home) -> [names]. REPORT-ONLY (defect
 // 8b211241bbe9, R3 item 3). Earlier development builds of the per-instance
 // cursor feature used dot separators (`<id>.inst-<6hex>.json`,
@@ -728,6 +740,11 @@ function runChecks(opts) {
   } catch (e) {
     results.push({ status: WARN, message: 'devswarm-version check unavailable: ' + (e && e.message) });
   }
+  try {
+    results.push(capabilitiesCheck({ home }));
+  } catch (e) {
+    results.push({ status: WARN, message: 'devswarm-capabilities check unavailable: ' + (e && e.message) });
+  }
   // defect 8b211241bbe9 — the doctor half of the per-instance-cursor forward
   // migration. Report-only unless doctor is running in repair mode.
   try {
@@ -799,7 +816,7 @@ module.exports = {
   // wake-monitor (Monitor-based idle-wake) — exported individually for tests.
   wakeMonitorShipped, wakeMonitorSelfTest, wakeMonitorLiveCheck, wakeMonitorChecks,
   // version-mismatch (companion surface for hooks/devswarm-version.js) — exported for tests.
-  versionMismatchCheck,
+  versionMismatchCheck, capabilitiesCheck,
   // per-instance cursor hygiene (defect 8b211241bbe9) — exported for tests.
   cursorHygieneCheck, legacyCursorShapeLeftovers,
   // parked supervisor escalation notices (read-only).

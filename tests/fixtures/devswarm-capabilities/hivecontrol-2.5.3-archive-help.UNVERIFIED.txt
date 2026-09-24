@@ -1,0 +1,7 @@
+Usage: hivecontrol workspace archive [options] [idOrBranch]
+
+Archive a workspace (recoverable; the worktree is preserved). Defaults to the
+current workspace.
+
+Options:
+  -h, --help  display help for command

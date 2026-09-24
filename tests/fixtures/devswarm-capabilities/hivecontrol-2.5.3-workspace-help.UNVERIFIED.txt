@@ -1,0 +1,32 @@
+Usage: hivecontrol workspace [options] [command]
+
+Manage workspaces (isolated git worktrees with AI agents). Each workspace has
+its own branch, directory, and terminal.
+
+Options:
+  -h, --help                               display help for command
+
+Commands:
+  list                                     List workspaces. Use 'children' for your direct children (+ --tree for your subtree) or 'all' for everything in the repo (+ --tree for the full hierarchy).
+  info [idOrBranch]                        Get workspace details. Defaults to the current workspace; pass a workspace ID or branch name to look up a different one. Returns JSON with branch, path, agent, and terminal info.
+  create [options] <branch>                Create a new workspace. Uses current branch as source (establishing parent-child relationship).
+  update-title [options] <title>           Update the display title for a workspace
+  check-merge                              Check merge status and get paths to source/current directories. Returns JSON with isMergeable, hasConflicts, targetDirectoryClean, and file paths. Run from your workspace - do not cd elsewhere.
+  merge-from-source                        Merge source branch INTO current workspace. Run from your workspace - do not cd elsewhere. If WORKING_DIRECTORY_NOT_CLEAN, explain to user and ask before proceeding.
+  merge-into-source                        Merge current workspace INTO source branch. Run from your workspace - do not cd elsewhere. If WORKING_DIRECTORY_NOT_CLEAN, explain to user and ask before proceeding.
+  update-base [options]                    Update a workspace's recorded sourceBranch. Without --source, reads the workspace's open PR (if there's exactly one) and offers to apply its target. With --source <branch>, skips detection and writes the value directly (backend cycle check authoritative). Defaults to the current workspace.
+  archive [options] [idOrBranch]           Archive a workspace (recoverable; the worktree is preserved). Defaults to the current workspace.
+  delete [options] <idOrBranch>            Permanently delete an ARCHIVED workspace. Refuses the Primary and workspaces with uncommitted changes.
+  message-child <target-branch> <message>  Send a message to a child workspace
+  message-parent <message>                 Send a message to parent workspace
+  read-messages                            Read unread messages for current workspace (marks as read)
+  message-count                            Get unread message count (without marking as read)
+  monitor [options]                        Monitor for incoming messages. Polls until messages arrive, then exits with messages and instructions.
+  help [command]                           display help for command
+
+FOR AI AGENTS
+  A workspace can be both a parent and a child — check `workspace info` for
+  your sourceBranch (parent) and children. Message your parent at milestones
+  and when you need decisions; as a parent, merge completed child work and
+  tell other children to pull. After sending a message, run
+  `workspace monitor` to await the reply.
