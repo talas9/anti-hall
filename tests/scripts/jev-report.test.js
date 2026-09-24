@@ -226,6 +226,50 @@ test('buildReport: one fresh call + N cache hits sharing a hash count as ONE cha
   assert.ok(Math.abs(r.costEstimate - 0.01) < 1e-9, 'cost charged for the 1 fresh call only, cache hits are $0');
 });
 
+// ---------------------------------------------------------------------------
+// Real cost (gateway/price-table-reported costUsd on each row) — distinct
+// from the manual costEstimate/costPerCall fallback.
+// ---------------------------------------------------------------------------
+
+test('buildReport: realCostTotal/PerCall/PerChangedDecision computed from row.costUsd, cache hits contribute $0', () => {
+  const rows = [
+    row({ id: 'speculation', h: 'h1', backend: 'jev', changed: 'added', costUsd: 0.002, costSource: 'gateway' }),
+    row({ id: 'speculation', h: 'h1', backend: 'cache', changed: 'added', costUsd: 0, costSource: 'cache' }),
+    row({ id: 'speculation', h: 'h2', backend: 'jev', changed: null, costUsd: 0.001, costSource: 'gateway' }),
+  ];
+  const report = buildReport(rows, {});
+  const r = report.integrations.find((x) => x.id === 'speculation');
+  assert.ok(Math.abs(r.realCostTotal - 0.003) < 1e-9, 'sums real cost across all rows, cache contributes $0');
+  assert.strictEqual(r.freshCalls, 2);
+  assert.ok(Math.abs(r.realCostPerCall - 0.0015) < 1e-9, '0.003 / 2 fresh calls');
+  assert.ok(Math.abs(r.realCostPerChangedDecision - 0.003) < 1e-9, '0.003 / 1 unique changed decision (h1)');
+});
+
+test('buildReport: no row carries costUsd -> realCostTotal is null, not $0', () => {
+  const rows = [row({ id: 'x' })];
+  const report = buildReport(rows, {});
+  const r = report.integrations.find((i) => i.id === 'x');
+  assert.strictEqual(r.realCostTotal, null);
+  assert.strictEqual(r.realCostPerCall, null);
+  assert.strictEqual(r.realCostPerChangedDecision, null);
+});
+
+test('buildCostWindows: default windows are 24h and 7d, each re-running buildReport with its own cutoff', () => {
+  const { buildCostWindows } = require('../../plugins/anti-hall/scripts/jev-report.js');
+  const old = new Date(Date.now() - 3 * 86400000).toISOString(); // 3 days ago: in 7d, not 24h
+  const recent = new Date().toISOString();
+  const rows = [
+    row({ id: 'speculation', h: 'old', ts: old, backend: 'jev', changed: 'added', costUsd: 0.01 }),
+    row({ id: 'speculation', h: 'new', ts: recent, backend: 'jev', changed: 'added', costUsd: 0.02 }),
+  ];
+  const windows = buildCostWindows(rows, {});
+  assert.deepStrictEqual(Object.keys(windows).sort(), ['24h', '7d']);
+  const r24 = windows['24h'].integrations.find((i) => i.id === 'speculation');
+  const r7 = windows['7d'].integrations.find((i) => i.id === 'speculation');
+  assert.ok(Math.abs(r24.realCostTotal - 0.02) < 1e-9, '24h window excludes the 3-day-old row');
+  assert.ok(Math.abs(r7.realCostTotal - 0.03) < 1e-9, '7d window includes both rows');
+});
+
 test('buildTriageAnswerReport: separates urgent vs non-urgent time-to-answer', () => {
   const { buildTriageAnswerReport } = require('../../plugins/anti-hall/scripts/jev-report.js');
   const triageRows = [

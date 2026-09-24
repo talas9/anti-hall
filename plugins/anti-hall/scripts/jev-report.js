@@ -170,14 +170,31 @@ function percentile(sortedArr, p) {
   return sortedArr[idx];
 }
 
+const COST_WINDOWS = { '24h': 1, '7d': 7 };
+
 function parseArgs(argv) {
-  const opts = { days: null, json: false };
+  const opts = { days: null, json: false, window: null };
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--days') opts.days = Number(argv[++i]);
     else if (argv[i] === '--json') opts.json = true;
     else if (argv[i] === '--home') opts.home = argv[++i]; // test-only override
+    else if (argv[i] === '--window') opts.window = argv[++i];
   }
   return opts;
+}
+
+// buildCostWindows(rows, { costPerCall, windows }) -> { '24h': {generatedAt,
+// integrations}, '7d': {...} } -- reuses buildReport's own per-window cutoff
+// (`days`) so real-cost figures come from the exact same aggregation as the
+// main table, just re-run per window. `windows` defaults to both 24h and 7d;
+// pass a single-key object (e.g. {'--window 24h'}) to report just one.
+function buildCostWindows(rows, opts = {}) {
+  const windows = opts.windows || COST_WINDOWS;
+  const out = {};
+  for (const label of Object.keys(windows)) {
+    out[label] = buildReport(rows, { days: windows[label], costPerCall: opts.costPerCall });
+  }
+  return out;
 }
 
 // buildReport(rows, { days, costPerCall, budgetMsById }) -> { generatedAt, integrations: [...] }
@@ -225,6 +242,7 @@ function buildReport(rows, opts = {}) {
         changedHashByFresh: new Map(),
         failures: 0, latencies: [],
         labelCounts: new Map(), labeled: 0,
+        realCostSum: 0, realCostKnown: false,
       });
     }
     const bucket = byId.get(row.id);
@@ -232,6 +250,15 @@ function buildReport(rows, opts = {}) {
     if (row.backend === 'jev' || row.backend === 'cache') bucket.jevAnswered++;
     if (row.backend === 'cache') bucket.cacheHits++;
     if (row.backend === 'baseline-only' && isHttpFailure(row.reason)) bucket.failures++;
+    // Real (gateway/price-table-reported) cost, summed across every FRESH
+    // call in the window (never deduped -- two independent fresh calls for
+    // the same content each cost real money). A cache hit's costUsd is
+    // always 0 (see jev-assist.js's computeCostUsd), so including it is
+    // harmless.
+    if (Number.isFinite(row.costUsd)) {
+      bucket.realCostSum += row.costUsd;
+      bucket.realCostKnown = true;
+    }
     // Agreement is computed ONLY from the caller-supplied `compare` field
     // (an independent heuristic verdict), never from `base` (trust-rule
     // math, sometimes a hardcoded constant -- see the module comment above).
@@ -367,6 +394,12 @@ function buildReport(rows, opts = {}) {
       p95,
       // Cache hits cost $0 -- estimate from FRESH calls only.
       costEstimate: Number.isFinite(opts.costPerCall) ? freshCalls * opts.costPerCall : null,
+      // REAL cost (gateway-reported or price-table-computed, never a manual
+      // guess) -- null when no row in the window carried a costUsd at all.
+      realCostTotal: bucket.realCostKnown ? bucket.realCostSum : null,
+      realCostPerCall: (bucket.realCostKnown && freshCalls > 0) ? bucket.realCostSum / freshCalls : null,
+      realCostPerChangedDecision: (bucket.realCostKnown && totalChangedUnique > 0)
+        ? bucket.realCostSum / totalChangedUnique : null,
       suggestion,
     });
   }
@@ -420,6 +453,31 @@ function printTable(report) {
   }
 }
 
+// printCostWindows(costWindows) — real (gateway/price-table) cost per
+// integration for each window in `costWindows` ({'24h': report, '7d':
+// report, ...}). Separate from the main table's manual `costPerCall`
+// estimate: this is only ever populated from a real costUsd (see
+// hooks/lib/jev-assist.js's computeCostUsd), never fabricated.
+function printCostWindows(costWindows) {
+  const labels = Object.keys(costWindows);
+  if (labels.length === 0) return;
+  console.log('\nreal cost (gateway/price-table-reported, not the manual costPerCall estimate):');
+  for (const label of labels) {
+    const report = costWindows[label];
+    const known = report.integrations.filter((r) => r.realCostTotal !== null);
+    if (known.length === 0) {
+      console.log(`  ${label}: n/a — no row in this window carried a real cost (see jev-client.js's extractCostAndUsage, or set jev.json "prices").`);
+      continue;
+    }
+    console.log(`  ${label}:`);
+    for (const r of known) {
+      const perCall = r.realCostPerCall == null ? 'n/a' : `$${r.realCostPerCall.toFixed(4)}/call`;
+      const perChanged = r.realCostPerChangedDecision == null ? 'n/a' : `$${r.realCostPerChangedDecision.toFixed(4)}/changed`;
+      console.log(`    ${r.id}: calls=${r.freshCalls} $total=${r.realCostTotal.toFixed(4)} ${perCall} ${perChanged}`);
+    }
+  }
+}
+
 function main() {
   const opts = parseArgs(process.argv.slice(2));
   const home = opts.home;
@@ -427,14 +485,24 @@ function main() {
   const triageRows = readTriageLines(home);
   const costPerCall = readCostPerCall(home);
   const report = buildReport(rows, { days: opts.days, costPerCall, triageRows });
+
+  const windows = opts.window
+    ? { [opts.window]: COST_WINDOWS[opts.window] != null ? COST_WINDOWS[opts.window] : Number(opts.window) }
+    : COST_WINDOWS;
+  const costWindows = buildCostWindows(rows, { costPerCall, windows });
+
   if (opts.json) {
-    process.stdout.write(JSON.stringify(report, null, 2) + '\n');
+    process.stdout.write(JSON.stringify(Object.assign({}, report, { costWindows }), null, 2) + '\n');
   } else {
     printTable(report);
+    printCostWindows(costWindows);
   }
 }
 
-module.exports = { buildReport, readLines, readTriageLines, buildTriageAnswerReport, percentile };
+module.exports = {
+  buildReport, readLines, readTriageLines, buildTriageAnswerReport, percentile,
+  buildCostWindows, COST_WINDOWS,
+};
 
 if (require.main === module) {
   main();

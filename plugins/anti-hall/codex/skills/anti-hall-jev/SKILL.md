@@ -65,9 +65,16 @@ itself.
   integration's outcome; `shadow` consults+logs without changing anything (build
   up `jev report` data before trusting it); `off` skips it. `speculation`/`triage`
   default `on` once Jev is enabled; everything else defaults `shadow`.
-- `node "$ANTI_HALL_ROOT/scripts/jev-report.js"` — read-only KEEP/REVIEW/REMOVE
-  summary per integration. Costs are per-call gateway/provider pricing; set
-  `costPerCall` in `~/.anti-hall/jev.json` for an estimate, else it reports `n/a`.
+- `node "$ANTI_HALL_ROOT/scripts/jev-report.js" [--window 24h|7d]` — read-only
+  KEEP/REVIEW/REMOVE summary per integration. Two cost signals: `costPerCall` in
+  `~/.anti-hall/jev.json` for a manual estimate (else `n/a`), and an automatic
+  REAL cost parsed from each call's own response when the gateway reports one —
+  see `hooks/lib/jev-client.js`'s `extractCostAndUsage`
+  (https://vercel.com/docs/ai-gateway/sdks-and-apis/rest-api#look-up-a-generation).
+  The systemone endpoint this build calls does not currently return those
+  fields, so set `prices` (`{"<model>": {"inPerMTok", "outPerMTok"}}` or a
+  `"default"` entry) in `jev.json` to compute real cost from token counts when
+  present instead. Never an extra network call; never charges a cache hit.
 
 ## Never
 

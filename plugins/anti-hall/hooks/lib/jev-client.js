@@ -103,6 +103,53 @@ function loadJevConfig() {
   return { enabled, transport, timeoutMs, confidenceThreshold, keyFile, endpointOverride };
 }
 
+// extractCostAndUsage(json) -> {cost, tokensIn, tokensOut, model} — DEFENSIVE,
+// best-effort extraction of gateway-reported cost/usage from a systemone
+// response, never a guess. VERIFIED from Vercel's own docs:
+//   - https://vercel.com/docs/ai-gateway/sdks-and-apis/rest-api
+//     ("Look up a generation" response fields: total_cost, market_cost,
+//     gateway_cost, tokens_prompt, tokens_completion, model, id)
+//   - https://vercel.com/docs/ai-gateway/observability-and-spend/usage
+//     ("Every response includes its cost in providerMetadata.gateway.cost"
+//     -- true for the AI SDK's mapped result of a documented chat/
+//     completions-shaped request)
+// NEITHER page documents the `/typesafe/v1/systemone` passthrough this
+// module actually calls, and this module's own parsing above only ever
+// reads `json.answers.decision` -- there is NO evidence the systemone
+// response carries these fields today. This function checks for them
+// anyway (zero cost if absent, since `json` is already parsed) so a future
+// systemone response that DOES start including them is picked up
+// automatically; if none are present it returns nulls, and the caller must
+// never fabricate a cost from that.
+function extractCostAndUsage(json) {
+  const out = { cost: null, tokensIn: null, tokensOut: null, model: null };
+  if (!json || typeof json !== 'object') return out;
+
+  // Gateway "look up a generation" cost field names (REST API doc above).
+  // total_cost is the one actually debited (gateway_cost is identical per
+  // the same doc); market_cost is a secondary fallback.
+  for (const key of ['total_cost', 'gateway_cost', 'market_cost']) {
+    if (Number.isFinite(json[key])) { out.cost = json[key]; break; }
+  }
+
+  // Gateway "look up a generation" token field names.
+  if (Number.isFinite(json.tokens_prompt)) out.tokensIn = json.tokens_prompt;
+  if (Number.isFinite(json.tokens_completion)) out.tokensOut = json.tokens_completion;
+
+  // OpenAI-chat-completions-shaped `usage` object, in case the passthrough
+  // ever wraps one (never observed on this endpoint; defensive only).
+  if (json.usage && typeof json.usage === 'object') {
+    if (out.tokensIn === null && Number.isFinite(json.usage.prompt_tokens)) out.tokensIn = json.usage.prompt_tokens;
+    if (out.tokensIn === null && Number.isFinite(json.usage.promptTokens)) out.tokensIn = json.usage.promptTokens;
+    if (out.tokensOut === null && Number.isFinite(json.usage.completion_tokens)) out.tokensOut = json.usage.completion_tokens;
+    if (out.tokensOut === null && Number.isFinite(json.usage.completionTokens)) out.tokensOut = json.usage.completionTokens;
+  }
+
+  if (typeof json.model === 'string' && json.model) out.model = json.model;
+
+  return out;
+}
+
 function defaultKeyFilePath(transport) {
   return transport === 'typesafe'
     ? path.join(os.homedir(), '.config', 'typesafe', 'key')
@@ -231,12 +278,14 @@ async function jevDecide({ question, state, timeoutMs } = {}) {
       return { ok: false, reason: 'bad-response', ms };
     }
 
+    const { cost, tokensIn, tokensOut, model: usageModel } = extractCostAndUsage(json);
+
     if (question.type === 'choice') {
       if (typeof ans.choice !== 'string' || !ans.choice) {
         return { ok: false, reason: 'bad-response', ms };
       }
       const confidence = Number.isFinite(ans.confidence) ? ans.confidence : 0;
-      return { ok: true, answer: ans.choice, confidence, ms };
+      return { ok: true, answer: ans.choice, confidence, ms, cost, tokensIn, tokensOut, model: usageModel };
     }
 
     // noul: a probability-like value in [0,1]; >=0.5 is "true".
@@ -246,7 +295,7 @@ async function jevDecide({ question, state, timeoutMs } = {}) {
     const noul = ans.noul;
     const answer = noul >= 0.5;
     const confidence = Math.abs(noul - 0.5) * 2;
-    return { ok: true, answer, confidence, ms };
+    return { ok: true, answer, confidence, ms, cost, tokensIn, tokensOut, model: usageModel };
   } finally {
     clearTimeout(timer);
   }
@@ -386,6 +435,7 @@ module.exports = {
   loadJevConfig,
   defaultKeyFilePath,
   expandHome,
+  extractCostAndUsage,
   DEFAULT_TIMEOUT_MS,
   DEFAULT_CONFIDENCE_THRESHOLD,
   MAX_TIMEOUT_MS,

@@ -89,17 +89,31 @@ touching `jev.json`.
 ## Costs
 
 Jev is billed per call by the gateway/provider (Vercel AI Gateway passthrough
-pricing, or TypeSafe's own pricing for the direct transport) — this build does not
-know the exact rate. If the owner knows their per-call cost, they can set
-`costPerCall` in `~/.anti-hall/jev.json` so `jev report` (below) can estimate
-spend; otherwise it reports cost as `n/a`.
+pricing, or TypeSafe's own pricing for the direct transport). Two cost signals:
+
+- **Estimated** (manual): if the owner knows their per-call cost, they can set
+  `costPerCall` in `~/.anti-hall/jev.json` so `jev report` (below) can estimate
+  spend; otherwise it reports cost as `n/a`.
+- **Real** (automatic, when available): every Jev call already parses its own
+  response for a gateway-reported cost or token usage (see
+  `hooks/lib/jev-client.js`'s `extractCostAndUsage` — verified against Vercel AI
+  Gateway's docs at
+  https://vercel.com/docs/ai-gateway/sdks-and-apis/rest-api#look-up-a-generation).
+  The TypeSafe "systemone" endpoint this build calls does **not** currently return
+  those fields, so real cost is `n/a` out of the box. If the owner knows a
+  per-token rate instead, set `prices` in `jev.json`
+  (`{"typesafe-ai/jev": {"inPerMTok": 0.5, "outPerMTok": 1.5}}`, or a `"default"`
+  entry) and `jev report` computes real cost from actual token counts when the
+  response includes them. Real cost NEVER costs an extra network call and NEVER
+  charges a cache hit. `jev report --window 24h|7d` shows real cost totals,
+  $/call, and $/changed-decision per integration (default: both windows).
 
 ## "jev report"
 
-`node "${CLAUDE_PLUGIN_ROOT}/scripts/jev-report.js"` — a read-only per-integration
-summary (call volume, agreement %, decisions changed, good-outcome rate, latency,
-estimated cost) with a KEEP/REVIEW/REMOVE suggestion per integration. Never
-mutates state.
+`node "${CLAUDE_PLUGIN_ROOT}/scripts/jev-report.js" [--window 24h|7d]` — a
+read-only per-integration summary (call volume, agreement %, decisions changed,
+good-outcome rate, latency, estimated cost, real cost) with a KEEP/REVIEW/REMOVE
+suggestion per integration. Never mutates state.
 
 ## Per-integration modes
 

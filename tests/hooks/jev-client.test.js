@@ -217,6 +217,88 @@ test('jevDecide: noul happy path, high confidence (noul=0.95 -> answer true)', a
   }
 });
 
+// ---------------------------------------------------------------------------
+// extractCostAndUsage — pure function, defensive parsing per the doc-cited
+// field names (see the function's own comment for the two Vercel URLs).
+// ---------------------------------------------------------------------------
+
+test('extractCostAndUsage: none of the documented fields present -> all null (the observed systemone shape)', () => {
+  const { extractCostAndUsage } = freshLib();
+  const r = extractCostAndUsage({ answers: { decision: { noul: 0.9 } } });
+  assert.deepStrictEqual(r, { cost: null, tokensIn: null, tokensOut: null, model: null });
+});
+
+test('extractCostAndUsage: generation-lookup-shaped cost/token fields are picked up', () => {
+  const { extractCostAndUsage } = freshLib();
+  const r = extractCostAndUsage({
+    total_cost: 0.0012, tokens_prompt: 100, tokens_completion: 50, model: 'typesafe-ai/jev',
+  });
+  assert.strictEqual(r.cost, 0.0012);
+  assert.strictEqual(r.tokensIn, 100);
+  assert.strictEqual(r.tokensOut, 50);
+  assert.strictEqual(r.model, 'typesafe-ai/jev');
+});
+
+test('extractCostAndUsage: OpenAI-chat-completions-shaped usage object is a defensive fallback for tokens', () => {
+  const { extractCostAndUsage } = freshLib();
+  const r = extractCostAndUsage({ usage: { prompt_tokens: 10, completion_tokens: 4 } });
+  assert.strictEqual(r.tokensIn, 10);
+  assert.strictEqual(r.tokensOut, 4);
+  assert.strictEqual(r.cost, null, 'no cost field present -> null, never derived from tokens here');
+});
+
+test('extractCostAndUsage: null/non-object input -> all null, never throws', () => {
+  const { extractCostAndUsage } = freshLib();
+  assert.deepStrictEqual(extractCostAndUsage(null), { cost: null, tokensIn: null, tokensOut: null, model: null });
+  assert.deepStrictEqual(extractCostAndUsage(undefined), { cost: null, tokensIn: null, tokensOut: null, model: null });
+});
+
+test('jevDecide: when the response happens to carry cost/usage fields, they pass through on the result', async () => {
+  const h = makeHome();
+  try {
+    await withMockServer(async (req, res) => {
+      await readJsonBody(req);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        answers: { decision: { noul: 0.95 } },
+        total_cost: 0.0007, tokens_prompt: 42, tokens_completion: 7, model: 'typesafe-ai/jev',
+      }));
+    }, async (endpoint) => {
+      await withEnv({ HOME: h.home, ANTIHALL_JEV: '1', AI_GATEWAY_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
+        const { jevDecide } = freshLib();
+        const r = await jevDecide({ question: NOUL_QUESTION, state: 'hello' });
+        assert.strictEqual(r.cost, 0.0007);
+        assert.strictEqual(r.tokensIn, 42);
+        assert.strictEqual(r.tokensOut, 7);
+        assert.strictEqual(r.model, 'typesafe-ai/jev');
+      });
+    });
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('jevDecide: real (observed) response shape with no cost/usage fields -> cost/tokens/model all null', async () => {
+  const h = makeHome();
+  try {
+    await withMockServer(async (req, res) => {
+      await readJsonBody(req);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ answers: { decision: { noul: 0.95 } } }));
+    }, async (endpoint) => {
+      await withEnv({ HOME: h.home, ANTIHALL_JEV: '1', AI_GATEWAY_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
+        const { jevDecide } = freshLib();
+        const r = await jevDecide({ question: NOUL_QUESTION, state: 'hello' });
+        assert.strictEqual(r.cost, null);
+        assert.strictEqual(r.tokensIn, null);
+        assert.strictEqual(r.tokensOut, null);
+      });
+    });
+  } finally {
+    h.cleanup();
+  }
+});
+
 test('jevDecide: noul low confidence (noul=0.55 -> confidence 0.1)', async () => {
   const h = makeHome();
   try {

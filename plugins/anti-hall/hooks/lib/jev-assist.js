@@ -20,7 +20,11 @@
 //                                               // honored when "triage" is
 //                                               // absent from `integrations`.
 //     "confidenceThreshold": 0.85,
-//     "costPerCall": 0.0004                    // optional, consumed by jev-report
+//     "costPerCall": 0.0004,                   // optional, MANUAL fallback consumed by jev-report
+//     "prices": {                              // optional, PER-TOKEN fallback (see computeCostUsd)
+//       "typesafe-ai/jev": { "inPerMTok": 0.5, "outPerMTok": 1.5 },
+//       "default": { "inPerMTok": 0.5, "outPerMTok": 1.5 }
+//     }
 //   }
 //
 //   Unlisted integration defaults: "speculation" and "triage" default "on"
@@ -60,7 +64,14 @@
 // LOG: ~/.anti-hall/logs/jev-assist.ndjson, rotated at 1MB (keeps one .1
 // backup). One line per ask()/askSync() call:
 //   {ts, id, h, base, jev, conf, ms, backend, final, changed, cached, mode,
-//    reason?, compare?}
+//    reason?, compare?, costUsd?, costSource?, tokensIn?, tokensOut?}
+//   costUsd/costSource ('cache'|'gateway'|'price-table'|null) are written
+//   whenever a decision was actually evaluated (see computeCostUsd). A cache
+//   hit always costs $0; a gateway-reported cost (verified against Vercel's
+//   own docs, see jev-client.js's extractCostAndUsage) is preferred over the
+//   `prices` per-token table above; if neither is available, costUsd is
+//   null -- NEVER fabricated, and computing it never makes an extra network
+//   call.
 //   changed is 'added' | 'relaxed' | null. No message bodies, no credentials.
 //   `compare` (optional, boolean) is a caller-supplied INDEPENDENT verdict
 //   (e.g. a regex/lexical heuristic evaluated alongside Jev) used ONLY by
@@ -140,6 +151,42 @@ function getMode(id, fileCfg) {
   if (value === 'on' || value === 'shadow' || value === 'off') return value;
 
   return LEGACY_ON_DEFAULT.has(id) ? 'on' : 'shadow';
+}
+
+// readPrices(home) -> jev.json `prices` map: {model: {inPerMTok, outPerMTok}}.
+// Optional, owner-supplied, consumed ONLY when a call's response includes
+// real token counts but no gateway-reported cost (see computeCostUsd below
+// and jev-client.js's extractCostAndUsage doc comment for why that is the
+// common case on this endpoint today). Never throws.
+function readPrices(home) {
+  const cfg = readJevJson(home);
+  return (cfg.prices && typeof cfg.prices === 'object' && !Array.isArray(cfg.prices)) ? cfg.prices : {};
+}
+
+// computeCostUsd({r, cachedFlag, home}) -> {costUsd, costSource}
+//   'cache'       : a cache hit represents no new inference -- always $0.
+//   'gateway'     : the response itself carried a real cost (see
+//                   jev-client.js's extractCostAndUsage -- verified against
+//                   Vercel's docs, not guessed).
+//   'price-table' : the response carried real token counts but no cost, and
+//                   the owner configured a per-token price for this model
+//                   (or a "default" entry) in jev.json `prices`.
+//   null          : neither is available. NEVER fabricated, and NEVER an
+//                   extra network call -- this is pure arithmetic over data
+//                   the call already returned.
+function computeCostUsd({ r, cachedFlag, home }) {
+  if (cachedFlag) return { costUsd: 0, costSource: 'cache' };
+  if (!r || !r.ok) return { costUsd: null, costSource: null };
+  if (Number.isFinite(r.cost)) return { costUsd: r.cost, costSource: 'gateway' };
+  if (Number.isFinite(r.tokensIn) && Number.isFinite(r.tokensOut)) {
+    const prices = readPrices(home);
+    const entry = (r.model && prices[r.model]) || prices.default;
+    if (entry && Number.isFinite(entry.inPerMTok) && Number.isFinite(entry.outPerMTok)) {
+      const costUsd = (r.tokensIn / 1e6) * entry.inPerMTok + (r.tokensOut / 1e6) * entry.outPerMTok;
+      return { costUsd, costSource: 'price-table' };
+    }
+  }
+  return { costUsd: null, costSource: null };
 }
 
 function contentHash(parts) {
@@ -269,6 +316,7 @@ function finalize({ id, home, hash, mode, trust, baseline, judge, threshold, r, 
   const direction = directionFor(trust, changed);
 
   const backend = !r ? 'baseline-only' : (cachedFlag ? 'cache' : (r.ok ? 'jev' : 'baseline-only'));
+  const { costUsd, costSource } = r ? computeCostUsd({ r, cachedFlag, home }) : { costUsd: null, costSource: null };
 
   const entry = {
     ts: new Date().toISOString(),
@@ -285,6 +333,15 @@ function finalize({ id, home, hash, mode, trust, baseline, judge, threshold, r, 
     mode,
   };
   if (r && !r.ok && r.reason) entry.reason = r.reason;
+  // costUsd/costSource are only written when a decision was actually
+  // evaluated (r truthy) -- an 'off'/skipped call logs no cost fields at
+  // all, matching how it already logs no jev/conf. See computeCostUsd above.
+  if (r) {
+    entry.costUsd = costUsd;
+    entry.costSource = costSource;
+    if (Number.isFinite(r.tokensIn)) entry.tokensIn = r.tokensIn;
+    if (Number.isFinite(r.tokensOut)) entry.tokensOut = r.tokensOut;
+  }
   // `compare` is an OPTIONAL, caller-supplied independent verdict (e.g. a
   // regex/lexical heuristic run alongside Jev) for jev-report's agreement
   // metric -- distinct from `base`, which is trust-rule math (often a
@@ -305,6 +362,8 @@ function finalize({ id, home, hash, mode, trust, baseline, judge, threshold, r, 
     backend,
     reason: (r && !r.ok) ? r.reason : undefined,
     h: hash,
+    costUsd,
+    costSource,
   };
 }
 
@@ -454,6 +513,7 @@ module.exports = {
   getMode,
   envNameFor,
   computeFinal,
+  computeCostUsd,
   cachePath,
   logPath,
   CACHE_MAX_ENTRIES,

@@ -253,6 +253,17 @@ the update.
   content hash and computed from fresh (non-cached) rows only -- a cache hit is never a new
   decision and never costs anything. `jev report`'s `calls` column now shows
   `calls (fresh/cached)`.
+- **Added: real per-call Jev cost tracking.** `jevDecide` now defensively parses each response
+  for gateway-reported cost/token-usage fields (verified against Vercel AI Gateway's docs at
+  https://vercel.com/docs/ai-gateway/sdks-and-apis/rest-api#look-up-a-generation — the
+  `typesafe/v1/systemone` passthrough this build calls does not currently return them, so this
+  is forward-compatible parsing, not a guess). When real cost is unavailable but real token
+  counts are, `jev.json`'s new optional `prices` map (`{model: {inPerMTok, outPerMTok}}`, or a
+  `"default"` entry) computes it; a cache hit always costs $0; otherwise cost is logged as
+  `null`, never fabricated, and never an extra network call. `jev-assist.ndjson` rows gain
+  `costUsd`/`costSource`/`tokensIn`/`tokensOut`. `jev report --window 24h|7d` (default: both)
+  shows real cost totals, $/call, and $/changed-decision per integration, alongside the
+  existing manual `costPerCall` estimate.
 
 ## 0.107.0 (2026-09-24)
 

@@ -171,6 +171,60 @@ test('computeFinal advisory: final is jev when confident, else baseline', () => 
 });
 
 // ---------------------------------------------------------------------------
+// computeCostUsd — pure function
+// ---------------------------------------------------------------------------
+
+test('computeCostUsd: cache hit is always $0, regardless of anything else', () => {
+  const { computeCostUsd } = freshLib();
+  const r = computeCostUsd({ r: { ok: true, cost: 5 }, cachedFlag: true, home: '/nonexistent' });
+  assert.deepStrictEqual(r, { costUsd: 0, costSource: 'cache' });
+});
+
+test('computeCostUsd: gateway-reported cost wins over the price table', () => {
+  const { computeCostUsd } = freshLib();
+  const r = computeCostUsd({ r: { ok: true, cost: 0.002, tokensIn: 100, tokensOut: 50 }, cachedFlag: false, home: '/nonexistent' });
+  assert.deepStrictEqual(r, { costUsd: 0.002, costSource: 'gateway' });
+});
+
+test('computeCostUsd: no gateway cost, real tokens, price table configured -> computed from prices', () => {
+  const h = makeHome();
+  try {
+    h.writeState('jev.json', { prices: { 'typesafe-ai/jev': { inPerMTok: 1, outPerMTok: 2 } } });
+    const { computeCostUsd } = freshLib();
+    const r = computeCostUsd({
+      r: { ok: true, tokensIn: 1000000, tokensOut: 500000, model: 'typesafe-ai/jev' },
+      cachedFlag: false, home: h.home,
+    });
+    assert.strictEqual(r.costSource, 'price-table');
+    assert.ok(Math.abs(r.costUsd - (1 + 1)) < 1e-9, '1M in @ $1/MTok + 0.5M out @ $2/MTok = $2');
+  } finally { h.cleanup(); }
+});
+
+test('computeCostUsd: real tokens but no price table entry -> null, never fabricated', () => {
+  const h = makeHome();
+  try {
+    h.writeState('jev.json', {});
+    const { computeCostUsd } = freshLib();
+    const r = computeCostUsd({
+      r: { ok: true, tokensIn: 100, tokensOut: 50, model: 'typesafe-ai/jev' },
+      cachedFlag: false, home: h.home,
+    });
+    assert.deepStrictEqual(r, { costUsd: null, costSource: null });
+  } finally { h.cleanup(); }
+});
+
+test('computeCostUsd: no cost, no tokens -> null (the observed systemone shape)', () => {
+  const { computeCostUsd } = freshLib();
+  const r = computeCostUsd({ r: { ok: true }, cachedFlag: false, home: '/nonexistent' });
+  assert.deepStrictEqual(r, { costUsd: null, costSource: null });
+});
+
+test('computeCostUsd: no result at all (skipped call) -> null', () => {
+  const { computeCostUsd } = freshLib();
+  assert.deepStrictEqual(computeCostUsd({ r: null, cachedFlag: false, home: '/nonexistent' }), { costUsd: null, costSource: null });
+});
+
+// ---------------------------------------------------------------------------
 // ask() end-to-end (mock server)
 // ---------------------------------------------------------------------------
 
@@ -247,6 +301,41 @@ test('ask(): omitting `compare` writes no `compare` field (backward compatible)'
         assert.strictEqual(r.final, true);
         const log = readNdjson(path.join(h.home, '.anti-hall', 'logs', 'jev-assist.ndjson'));
         assert.ok(!('compare' in log[0]));
+      });
+    });
+  } finally { h.cleanup(); }
+});
+
+test('ask(): logs costUsd:null/costSource:null when the response carries no cost/usage (the observed default)', async () => {
+  const h = makeHome();
+  try {
+    h.writeState('jev.json', { enabled: true, timeoutMs: 3000 });
+    await withMockServer(noulHandler(0.95), async (endpoint) => {
+      await withEnv({ HOME: h.home, AI_GATEWAY_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
+        const { ask } = freshLib();
+        await ask({ id: 'speculation', question: NOUL_Q, state: 'hello', trust: 'add-block', baseline: false });
+        const log = readNdjson(path.join(h.home, '.anti-hall', 'logs', 'jev-assist.ndjson'));
+        assert.strictEqual(log[0].costUsd, null);
+        assert.strictEqual(log[0].costSource, null);
+      });
+    });
+  } finally { h.cleanup(); }
+});
+
+test('ask(): a cache hit logs costUsd:0, costSource:"cache" on the SECOND call', async () => {
+  const h = makeHome();
+  try {
+    h.writeState('jev.json', { enabled: true, timeoutMs: 3000 });
+    await withMockServer(noulHandler(0.95), async (endpoint) => {
+      await withEnv({ HOME: h.home, AI_GATEWAY_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
+        const { ask } = freshLib();
+        await ask({ id: 'speculation', question: NOUL_Q, state: 'same text', trust: 'add-block', baseline: false });
+        await ask({ id: 'speculation', question: NOUL_Q, state: 'same text', trust: 'add-block', baseline: false });
+        const log = readNdjson(path.join(h.home, '.anti-hall', 'logs', 'jev-assist.ndjson'));
+        assert.strictEqual(log.length, 2);
+        assert.strictEqual(log[1].backend, 'cache');
+        assert.strictEqual(log[1].costUsd, 0);
+        assert.strictEqual(log[1].costSource, 'cache');
       });
     });
   } finally { h.cleanup(); }
