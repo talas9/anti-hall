@@ -742,6 +742,7 @@ function main() {
         id: 'parentGateQuestion', home: p.h, hash: p.hash, mode: p.mode,
         trust: 'add-block', baseline: false, judge: () => true, threshold: p.threshold,
         r: { ok: true, answer: true, confidence: 1, ms: 0 }, cachedFlag: true, state: 'question-needs-answer',
+        sessionId: payload && payload.session_id ? String(payload.session_id) : undefined,
       });
       if (result.final === true) {
         added.push(cand);

@@ -45,6 +45,13 @@ const fs = require('fs');
 const path = require('path');
 const { HEREDOC_RE, basename, parseHeredocAt, SHELL_VERBS } = require('./lib/shell-scan.js');
 
+// currentSessionId — set once by main() from the PreToolUse payload's
+// session_id (if present), read by consultGitGuardSelfCreditJev so its
+// jev-assist.ndjson row can be grouped/filtered via `jev report --by
+// session`. Safe as a module-level value: one process handles exactly one
+// PreToolUse call, never concurrent invocations within a process.
+let currentSessionId = null;
+
 function fail_open() {
   process.exit(0);
 }
@@ -714,6 +721,7 @@ function consultGitGuardSelfCreditJev(text) {
       trust: 'add-block',
       baseline: false,
       budgetMs: 1500,
+      sessionId: currentSessionId || undefined,
     });
     return result.final === true;
   } catch (_) {
@@ -1064,6 +1072,12 @@ function main() {
     if (ti && typeof ti.command === 'string') {
       cmd = ti.command;
     }
+    // currentSessionId (module-scoped, set once per process here): a single
+    // git-guard invocation is one short-lived process handling ONE PreToolUse
+    // call, so a module-level value is safe (no concurrency within it) and
+    // avoids threading a param through scanCommand's recursive eval/`bash -c`
+    // unwrapping just for jev-assist.ndjson's optional sessionId tag.
+    if (payload && payload.session_id) currentSessionId = String(payload.session_id);
   } catch (_) {
     return fail_open(); // unparseable envelope -> allow (do not scan whole blob)
   }

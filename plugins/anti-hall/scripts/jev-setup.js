@@ -43,7 +43,11 @@ const VALID_MODES = new Set(['on', 'shadow', 'off']);
 // these even when jev.json says nothing about them yet (their effective
 // default per lib/jev-assist.js: speculation/triage -> "on", everything
 // else -> "shadow").
-const KNOWN_INTEGRATIONS = ['speculation', 'triage', 'modelRouting'];
+const KNOWN_INTEGRATIONS = [
+  'speculation', 'triage', 'modelRouting', 'claimLedger', 'mergeGateHedge',
+  'newRequest', 'outputVerifyGuard', 'gitGuardSelfCredit', 'parentGateQuestion',
+  'tasklistTrivial', 'supervisorBlockerLabel', 'codexNudgeSubstantial',
+];
 const LEGACY_ON_DEFAULT = new Set(['speculation', 'triage']);
 
 function jevConfigPath() {

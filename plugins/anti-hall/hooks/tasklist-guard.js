@@ -414,6 +414,7 @@ function main() {
         ' progressFresh=' + progressFresh + ' openTaskCount=' + openTaskIds.length,
       trust: 'relax-block',
       baseline: true,
+      sessionId: rawSessionId || undefined,
     });
   } catch (_) { /* best-effort — never affects the nudge below */ }
 

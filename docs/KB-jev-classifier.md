@@ -509,13 +509,32 @@ urgent-vs-non-urgent p50/p95 answer time from this data (§ below).
 backup). One line per `ask()`/`askSync()` call:
 
 ```json
-{"ts":"2026-09-24T12:00:00.000Z","id":"speculation","h":"7ec9db0d18c23962","base":false,"jev":true,"conf":0.9,"ms":26,"backend":"jev","final":true,"changed":"added","cached":false,"mode":"on"}
+{"ts":"2026-09-24T12:00:00.000Z","id":"speculation","h":"7ec9db0d18c23962","base":false,"jev":true,"conf":0.9,"ms":26,"backend":"jev","final":true,"changed":"added","cached":false,"mode":"on","project":"anti-hall"}
 ```
 
 `backend` is `jev` (a fresh call), `cache` (a cache hit), or `baseline-only` (disabled,
 off, not-applicable, or a jevDecide failure — see `reason`). `changed` is
 `"added"`/`"relaxed"`/`"changed"`/`null`. Never a message body, never a credential —
-same hygiene contract as `jev-judge.ndjson`/`jev-triage.ndjson`.
+same hygiene contract as `jev-judge.ndjson`/`jev-triage.ndjson`. `project` is always
+populated (`path.basename(process.cwd())` — a bare directory name, never an absolute
+path or repo URL, matching this codebase's "keep shipped files agnostic" convention);
+`sessionId` is written only when the calling hook has a session id to thread through
+(not every integration is session-scoped — `devswarm-supervisor.js`'s background sweep
+never has one). Both are read via `hooks/lib/jev-assist.js`'s `finalize()`/`ask()`/
+`askSync()`/`askDetached()` — a caller never has to compute `project` itself.
+`jev-report.js --by project|session` groups the WHOLE report by either field; `--project
+<name>` filters to one project first. A row missing the field (any row logged before
+this feature existed, or from a session-less integration) groups under `unknown`.
+
+**Two DISTINCT "latency" quantities — never conflate them in a report or a doc.** The
+per-integration table's `p50ms`/`p95ms` (this section, above) come from THIS log's own
+`ms` field — the real `POST /v1/systemone` call latency (typically hundreds of ms). The
+SEPARATE "triage answer-time" section below reports `jev-triage.ndjson`'s
+`{type:"answered", latencyMs}` rows — AGENT REPLY TURNAROUND (how long a Primary/child
+took to reply to a labelled message), typically minutes, and not a Jev call at all. A
+verified real-world example: classifier calls were 352-1313ms across 122 rows while the
+triage answer-time p95 was ~960s (16 min) in the same window — reporting either figure
+under the other's label is a real, previously-seen bug class, not a hypothetical one.
 
 `recordOutcome({id, h, outcome})` appends a second line shape —
 `{"ts":...,"type":"outcome","id":"speculation","h":"7ec9db0d18c23962","outcome":"evidence-added"}`
@@ -527,7 +546,8 @@ this release — the log format supports it for when it is.
 **`jev report`** (`scripts/jev-report.js`, read-only):
 
 ```
-node plugins/anti-hall/scripts/jev-report.js [--days 7] [--json]
+node plugins/anti-hall/scripts/jev-report.js [--days 7] [--json] [--window 24h|7d]
+  [--by project|session] [--project <name>]
 ```
 
 Per integration: calls, jev-answered %, cache hits, agreement % (Jev vs baseline, only

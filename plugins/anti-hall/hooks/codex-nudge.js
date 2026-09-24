@@ -162,6 +162,11 @@ function main() {
   if (scan.codeEdits < min) process.exit(0);
   if (scan.codexReview) process.exit(0);
 
+  // Session key (mirror speculation-guard). Computed here (moved up from
+  // below) so the JEV consult right below can tag its decision row with it.
+  const sessionId = (payload && payload.session_id && String(payload.session_id)) ||
+    crypto.createHash('sha1').update(transcriptPath).digest('hex').slice(0, 16);
+
   // JEV SHADOW (codexNudgeSubstantial, default mode "shadow" — see
   // hooks/lib/jev-assist.js): a file-edit COUNT treats every edit as equally
   // "substantial", but three edits that only touch comments/strings/log lines
@@ -192,12 +197,10 @@ function main() {
         '\nedits: ' + scan.codeEdits,
       trust: 'relax-block',
       baseline: true,
+      sessionId,
     });
   } catch (_) { /* best-effort — never affects the nudge below */ }
 
-  // Session key (mirror speculation-guard).
-  const sessionId = (payload && payload.session_id && String(payload.session_id)) ||
-    crypto.createHash('sha1').update(transcriptPath).digest('hex').slice(0, 16);
   const safeSession = sessionId.replace(/[^A-Za-z0-9_.-]/g, '_');
   const stateDir = path.join(os.homedir(), '.anti-hall');
   const stateFile = path.join(stateDir, 'codex-nudge-state-' + safeSession + '.json');

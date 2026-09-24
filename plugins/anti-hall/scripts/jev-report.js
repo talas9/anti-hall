@@ -4,8 +4,17 @@
 //
 // USAGE
 //   node plugins/anti-hall/scripts/jev-report.js [--days 7] [--json] [--window 24h|7d]
+//     [--by project|session] [--project <name>]
 //   node plugins/anti-hall/scripts/jev-report.js label <hash> [tp|fp]
 //   node plugins/anti-hall/scripts/jev-report.js prune-audit --days N
+//
+// --project <name> filters rows to that project (a cwd basename, e.g.
+// "anti-hall" -- see hooks/lib/jev-assist.js's defaultProject(); a row with no
+// project matches "unknown") BEFORE the rest of the report runs. --by
+// project|session instead prints (or --json returns) one full report PER
+// distinct value of that field, grouped by groupRowsBy() below -- 'unknown'
+// covers any row missing the field, including every row logged before this
+// feature existed.
 //
 // For each integration id seen in the log, reports: calls, jev-answered %
 // (backend 'jev' or 'cache' vs 'baseline-only'), cache hits, agreement %
@@ -478,8 +487,41 @@ function parseArgs(argv) {
     else if (argv[i] === '--json') opts.json = true;
     else if (argv[i] === '--home') opts.home = argv[++i]; // test-only override
     else if (argv[i] === '--window') opts.window = argv[++i];
+    else if (argv[i] === '--by') opts.by = argv[++i]; // 'project' | 'session'
+    else if (argv[i] === '--project') opts.project = argv[++i];
   }
   return opts;
+}
+
+// groupKeyOf(row, by) -> the row's project/session key, or 'unknown' when
+// absent — EVERY row missing the field (not just ones logged before this
+// feature existed) falls into 'unknown', so a caller that never threads a
+// project/session through (some integrations legitimately have no session,
+// e.g. devswarm-supervisor.js's background sweep) degrades the same way an
+// old pre-feature row would, rather than needing a special "legacy" bucket.
+function groupKeyOf(row, by) {
+  if (by === 'session') return (row && row.sessionId) || 'unknown';
+  return (row && row.project) || 'unknown'; // by === 'project' (default when --by is set at all)
+}
+
+// groupRowsBy(rows, by) -> Map<groupKey, rows[]>. Outcome rows (type:
+// 'outcome') carry no project/session of their own (recordOutcome never
+// receives one) but DO join to a decision row by hash; they are placed in
+// EVERY group whose id had rows in this window is not tractable cheaply, so
+// (documented, simple, and safe) they are instead grouped by their OWN
+// project/session fields exactly like a decision row -- 'unknown' when
+// absent, same as everything else. A human-labeled outcome that predates
+// project/session tracking simply reports under 'unknown', same as any
+// other pre-feature row.
+function groupRowsBy(rows, by) {
+  const groups = new Map();
+  for (const row of rows) {
+    if (!row || typeof row !== 'object') continue;
+    const key = groupKeyOf(row, by);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(row);
+  }
+  return groups;
 }
 
 // buildCostWindows(rows, { costPerCall, windows }) -> { '24h': {generatedAt,
@@ -897,10 +939,41 @@ async function main() {
 
   const opts = parseArgs(argv);
   const home = opts.home;
-  const rows = readLines(home);
+  let rows = readLines(home);
   const triageRows = readTriageLines(home);
   const costPerCall = readCostPerCall(home);
   const humanLabelByHash = latestHumanLabelByHash(readLabels(home));
+
+  // --project <name>: filter to rows tagged with that project key BEFORE
+  // anything else (report, cost windows, budget) -- 'unknown' matches rows
+  // that never got a project tagged (see groupKeyOf's own header).
+  if (opts.project) {
+    rows = rows.filter((r) => groupKeyOf(r, 'project') === opts.project);
+  }
+
+  // --by project|session: split the (already --project-filtered, if given)
+  // rows into one report PER distinct value and print/json each separately,
+  // instead of the single combined report below.
+  if (opts.by === 'project' || opts.by === 'session') {
+    const groups = groupRowsBy(rows, opts.by);
+    const byGroup = {};
+    for (const [key, groupRows] of groups) {
+      byGroup[key] = buildReport(groupRows, {
+        days: opts.days, costPerCall, triageRows, humanLabelByHash, windowLabel: 'window',
+      });
+    }
+    if (opts.json) {
+      process.stdout.write(JSON.stringify({ by: opts.by, groups: byGroup }, null, 2) + '\n');
+    } else {
+      for (const [key, groupRows] of groups) {
+        console.log(`\n=== ${opts.by}: ${key} (${groupRows.length} row(s)) ===`);
+        printTable(byGroup[key]);
+        printHeadlines(byGroup[key]);
+      }
+    }
+    return;
+  }
+
   const report = buildReport(rows, { days: opts.days, costPerCall, triageRows, humanLabelByHash, windowLabel: 'window' });
 
   const windows = opts.window
@@ -939,6 +1012,7 @@ module.exports = {
   buildCostWindows, COST_WINDOWS, readBudgetConfig, computeBudgetStatus,
   buildHeadline, labelsLogPath, readLabels, latestHumanLabelByHash, cmdLabel,
   auditLogPath, readAuditSnippet, cmdPruneAudit, maybeWarnLowCredit, budgetStatePath,
+  parseArgs, groupKeyOf, groupRowsBy,
 };
 
 if (require.main === module) {

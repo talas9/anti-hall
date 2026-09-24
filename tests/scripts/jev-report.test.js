@@ -582,3 +582,106 @@ test('buildTriageAnswerReport: separates urgent vs non-urgent time-to-answer', (
   assert.strictEqual(r.normal.n, 1);
   assert.ok(r.urgent.p50 <= r.normal.p50, 'urgent answers should be faster than non-urgent in this fixture');
 });
+
+// ---------------------------------------------------------------------------
+// No mixing between "Jev classifier latency" (jev-assist.ndjson decision
+// rows' `ms` field, backend:'jev'/'cache') and "reply turnaround" (jev-
+// triage.ndjson's separate recordAnswered `{type:'answered', latencyMs}`
+// rows -- agent reply time, NOT a Jev call at all). Verified against a real
+// log: classifier calls were 352-1313ms across 122 rows while the triage
+// answer-time p95 was ~960s (16 min) -- two very different quantities that
+// must never be reported under one ambiguous "latency" figure.
+// ---------------------------------------------------------------------------
+
+test('buildTriageAnswerReport: a REAL classification row (no `type` field at all -- jev-triage.js\'s actual appendTriageLog shape) is excluded, not just a fake "type:classification" row', () => {
+  const { buildTriageAnswerReport } = require('../../plugins/anti-hall/scripts/jev-report.js');
+  const triageRows = [
+    // Exactly what hooks/lib/jev-triage.js's appendTriageLog writes: NO
+    // `type` field at all (only recordAnswered rows carry type:'answered').
+    { ts: '2026-01-01T00:00:00.000Z', hash: 'h1', urgency: 'urgent', kind: 'blocker', backend: 'jev', ms: 352 },
+    { ts: '2026-01-01T00:00:01.000Z', hash: 'h2', urgency: 'normal', kind: 'fyi', backend: 'jev', ms: 1313 },
+    { type: 'answered', urgency: 'urgent', latencyMs: 960000 },
+  ];
+  const r = buildTriageAnswerReport(triageRows);
+  assert.strictEqual(r.urgent.n, 1, 'only the true answered row counts, not the classification rows');
+  assert.strictEqual(r.urgent.p50, 960000);
+});
+
+test('buildReport: per-integration p50/p95 (classifier `ms`) is computed ONLY from jev-assist.ndjson decision rows, even if triage answer-time rows are (incorrectly) mixed into the same array', () => {
+  const { buildReport } = require('../../plugins/anti-hall/scripts/jev-report.js');
+  const rows = [
+    { ts: '2026-01-01T00:00:00.000Z', id: 'speculation', h: 'a', base: false, jev: true, conf: 0.9, ms: 352, backend: 'jev', final: false, changed: null, cached: false, mode: 'shadow' },
+    { ts: '2026-01-01T00:00:01.000Z', id: 'speculation', h: 'b', base: false, jev: true, conf: 0.9, ms: 1313, backend: 'jev', final: false, changed: null, cached: false, mode: 'shadow' },
+    // A triage answered-latency row mistakenly handed to buildReport (real
+    // callers never do this -- triageRows is a SEPARATE opts field -- but
+    // this proves buildReport's OWN p50/p95 math has no path that could pick
+    // up a `latencyMs` field even if one leaked in).
+    { type: 'answered', urgency: 'urgent', latencyMs: 960000 },
+  ];
+  const report = buildReport(rows, {});
+  const spec = report.integrations.find((r) => r.id === 'speculation');
+  assert.ok(spec);
+  assert.ok([352, 1313].includes(spec.p50), `p50 must be a real classifier latency (352/1313), never the reply-turnaround figure; got ${spec.p50}`);
+  assert.ok([352, 1313].includes(spec.p95), `p95 must be a real classifier latency (352/1313), never the reply-turnaround figure; got ${spec.p95}`);
+});
+
+// ---------------------------------------------------------------------------
+// --by project|session and --project <name>: log rows carry a `project` key
+// (repoKey/cwd basename, agnostic -- see hooks/lib/jev-assist.js's
+// defaultProject()) and an optional `sessionId`. Rows missing either group
+// under 'unknown', including genuinely old pre-feature rows.
+// ---------------------------------------------------------------------------
+
+test('parseArgs: --by and --project are parsed', () => {
+  const { parseArgs } = require('../../plugins/anti-hall/scripts/jev-report.js');
+  const opts = parseArgs(['--by', 'session', '--project', 'anti-hall']);
+  assert.strictEqual(opts.by, 'session');
+  assert.strictEqual(opts.project, 'anti-hall');
+});
+
+test('groupKeyOf: falls back to "unknown" for a row missing the field (including a genuinely old pre-feature row)', () => {
+  const { groupKeyOf } = require('../../plugins/anti-hall/scripts/jev-report.js');
+  assert.strictEqual(groupKeyOf({ project: 'anti-hall' }, 'project'), 'anti-hall');
+  assert.strictEqual(groupKeyOf({}, 'project'), 'unknown');
+  assert.strictEqual(groupKeyOf({ id: 'speculation', base: false }, 'project'), 'unknown', 'an old row with no project field at all groups as unknown');
+  assert.strictEqual(groupKeyOf({ sessionId: 's1' }, 'session'), 's1');
+  assert.strictEqual(groupKeyOf({}, 'session'), 'unknown');
+});
+
+test('groupRowsBy: partitions rows into one bucket per distinct project/session value', () => {
+  const { groupRowsBy } = require('../../plugins/anti-hall/scripts/jev-report.js');
+  const rows = [
+    { id: 'speculation', project: 'anti-hall', sessionId: 's1' },
+    { id: 'speculation', project: 'anti-hall', sessionId: 's2' },
+    { id: 'speculation', project: 'other-repo', sessionId: 's3' },
+    { id: 'speculation' }, // no project/session at all
+  ];
+  const byProject = groupRowsBy(rows, 'project');
+  assert.deepStrictEqual(Array.from(byProject.keys()).sort(), ['anti-hall', 'other-repo', 'unknown']);
+  assert.strictEqual(byProject.get('anti-hall').length, 2);
+  assert.strictEqual(byProject.get('unknown').length, 1);
+
+  const bySession = groupRowsBy(rows, 'session');
+  assert.deepStrictEqual(Array.from(bySession.keys()).sort(), ['s1', 's2', 's3', 'unknown']);
+});
+
+test('jev-assist.js finalize(): auto-populates `project` from cwd basename when the caller supplies none, and logs `sessionId` only when provided', () => {
+  const jevAssist = require('../../plugins/anti-hall/hooks/lib/jev-assist.js');
+  const h = require('../helpers/fixtures.js').makeHome();
+  try {
+    jevAssist.ask({ id: 'speculation', question: null, state: 'x', trust: 'add-block', baseline: false, home: h.home });
+  } finally {
+    // ask() is async but its `off`-mode fast path (no jev.json here) resolves
+    // synchronously before any await point, so the log line is already on
+    // disk by the time this sync test reads it back -- same assumption
+    // tests/hooks/jev-assist.test.js's own off-mode tests already make.
+    const fs = require('node:fs');
+    const path = require('node:path');
+    const log = fs.readFileSync(path.join(h.home, '.anti-hall', 'logs', 'jev-assist.ndjson'), 'utf8')
+      .trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
+    assert.strictEqual(log.length, 1);
+    assert.strictEqual(log[0].project, path.basename(process.cwd()));
+    assert.strictEqual(Object.prototype.hasOwnProperty.call(log[0], 'sessionId'), false, 'no sessionId passed -> field omitted, not null');
+    h.cleanup();
+  }
+});

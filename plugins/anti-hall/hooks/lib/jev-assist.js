@@ -478,7 +478,17 @@ function jevDecideSync({ question, state, timeoutMs, home }) {
 // finalize(...) — the shared post-decision path for ask()/askSync(): mode
 // gating (shadow never changes the outcome), trust math, cache write, and the
 // one metrics line. Never throws.
-function finalize({ id, home, hash, mode, trust, baseline, judge, threshold, r, cachedFlag, compare, state }) {
+// defaultProject() -> path.basename(process.cwd()), best-effort, never throws.
+// The cwd-basename convention the whole codebase already uses for anything
+// project-agnostic (never an absolute path, never a repo URL/owner — see
+// CLAUDE.md's "keep shipped files agnostic" rule); a jev-report reader groups
+// by this value, not a resolved identity, so two different machines' checkouts
+// of the same repo name group together and a renamed checkout does not.
+function defaultProject() {
+  try { return path.basename(process.cwd()) || 'unknown'; } catch (_) { return 'unknown'; }
+}
+
+function finalize({ id, home, hash, mode, trust, baseline, judge, threshold, r, cachedFlag, compare, state, project, sessionId }) {
   const confident = !!(r && r.ok && Number.isFinite(r.confidence) && r.confidence >= threshold);
   const jevBool = (r && r.ok)
     ? (typeof judge === 'function' ? !!judge(r.answer) : r.answer)
@@ -505,7 +515,15 @@ function finalize({ id, home, hash, mode, trust, baseline, judge, threshold, r, 
     changed: direction,
     cached: !!cachedFlag,
     mode,
+    // project: always populated (cwd-basename fallback, `jev report --by
+    // project`); sessionId: only when the caller actually has one to thread
+    // through (not every integration is session-scoped, e.g.
+    // devswarm-supervisor.js's background sweep) -- omitted (not `null`)
+    // when absent, matching every other optional field's convention here.
+    // `jev report`'s groupKeyOf treats a missing value as 'unknown' either way.
+    project: (typeof project === 'string' && project) ? project : defaultProject(),
   };
+  if (typeof sessionId === 'string' && sessionId) entry.sessionId = sessionId;
   if (r && !r.ok && r.reason) entry.reason = r.reason;
   // costUsd/costSource are only written when a decision was actually
   // evaluated (r truthy) -- an 'off'/skipped call logs no cost fields at
@@ -573,11 +591,11 @@ function prepare({ id, home, trust, baseline, cacheKey, state }) {
 // ask({id, question, state, trust, baseline, judge, cacheKey, budgetMs, home})
 //   -> Promise<{final, jev, baseline, confidence, ms, backend, h}>
 async function ask(opts = {}) {
-  const { id, question, state, trust, baseline, judge, cacheKey, budgetMs, home, compare } = opts;
+  const { id, question, state, trust, baseline, judge, cacheKey, budgetMs, home, compare, project, sessionId } = opts;
   const { h, mode, hash, threshold, skip } = prepare({ id, home, trust, baseline, cacheKey, state });
 
   if (skip) {
-    return finalize({ id, home: h, hash, mode, trust, baseline, judge, threshold, r: null, cachedFlag: false, compare, state });
+    return finalize({ id, home: h, hash, mode, trust, baseline, judge, threshold, r: null, cachedFlag: false, compare, state, project, sessionId });
   }
 
   const cache = readCache(h);
@@ -599,7 +617,7 @@ async function ask(opts = {}) {
     }
   }
 
-  return finalize({ id, home: h, hash, mode, trust, baseline, judge, threshold, r, cachedFlag, compare, state });
+  return finalize({ id, home: h, hash, mode, trust, baseline, judge, threshold, r, cachedFlag, compare, state, project, sessionId });
 }
 
 // askSync(...) — same contract as ask(), but fully synchronous: the network
@@ -608,11 +626,11 @@ async function ask(opts = {}) {
 // uses. For callers (e.g. model-routing-guard) whose main() is synchronous
 // and cannot await.
 function askSync(opts = {}) {
-  const { id, question, state, trust, baseline, judge, cacheKey, budgetMs, home, compare } = opts;
+  const { id, question, state, trust, baseline, judge, cacheKey, budgetMs, home, compare, project, sessionId } = opts;
   const { h, mode, hash, threshold, skip } = prepare({ id, home, trust, baseline, cacheKey, state });
 
   if (skip) {
-    return finalize({ id, home: h, hash, mode, trust, baseline, judge, threshold, r: null, cachedFlag: false, compare, state });
+    return finalize({ id, home: h, hash, mode, trust, baseline, judge, threshold, r: null, cachedFlag: false, compare, state, project, sessionId });
   }
 
   const cache = readCache(h);
@@ -630,7 +648,7 @@ function askSync(opts = {}) {
     }
   }
 
-  return finalize({ id, home: h, hash, mode, trust, baseline, judge, threshold, r, cachedFlag, compare, state });
+  return finalize({ id, home: h, hash, mode, trust, baseline, judge, threshold, r, cachedFlag, compare, state, project, sessionId });
 }
 
 // askDetached(opts) — fire-and-forget variant for callers on the user's
@@ -652,7 +670,7 @@ function askSync(opts = {}) {
 // other I/O path in this file).
 function askDetached(opts = {}) {
   try {
-    const { id, question, state, trust, baseline, cacheKey, budgetMs, home, compare } = opts;
+    const { id, question, state, trust, baseline, cacheKey, budgetMs, home, compare, project, sessionId } = opts;
     // Check the integration mode BEFORE spawning — an 'off' integration (or
     // Jev disabled entirely, or a relax-block guard on a non-blocking
     // baseline) must cost this caller a single sync config read, never a
@@ -663,10 +681,10 @@ function askDetached(opts = {}) {
     // call to wait on either way, so a spawn would only add overhead.
     const { h, mode, hash, threshold, skip } = prepare({ id, home, trust, baseline, cacheKey, state });
     if (skip) {
-      finalize({ id, home: h, hash, mode, trust, baseline, judge: null, threshold, r: null, cachedFlag: false, compare, state });
+      finalize({ id, home: h, hash, mode, trust, baseline, judge: null, threshold, r: null, cachedFlag: false, compare, state, project, sessionId });
       return;
     }
-    const input = JSON.stringify({ id, question, state, trust, baseline, cacheKey, budgetMs, home, compare });
+    const input = JSON.stringify({ id, question, state, trust, baseline, cacheKey, budgetMs, home, compare, project, sessionId });
     const child = spawn(process.execPath, [DETACHED_WORKER_PATH], {
       detached: true,
       stdio: ['pipe', 'ignore', 'ignore'],
