@@ -60,7 +60,7 @@ daemon. The installer now bakes the **git marketplace clone's own copy** of
 `devswarm-ingest.js` (the exact path the update helper above just `git pull --ff-only`ed
 **in place**), so a fresh install never goes stale again.
 
-The update helper (`scripts/update.js`) ALSO attempts to heal an already-installed daemon
+The update helper (`skills/update/scripts/update.js`) ALSO attempts to heal an already-installed daemon
 in-process via `healIngestDaemon` — no separate step needed. **v0.86.0 — the heal fires
 when EITHER this run synced new bytes into the cache OR the installed unit fails to
 classify `ok`.** Gating it on a cache sync alone made it unreachable in exactly the state

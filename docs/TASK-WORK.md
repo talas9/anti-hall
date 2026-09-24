@@ -3,6 +3,10 @@
 > Knowledge base for the `anti-hall` tasklist-guard feature: enforced, self-refreshing
 > task discipline. Distills Claude Code's native task tooling, Anthropic's
 > long-running-agent guidance, and the hook model into implementation-ready facts.
+>
+> External facts (Claude Code task tooling, hook behaviour, the linked issues) are as
+> documented by Anthropic and the cited sources when this doc was written; they are
+> not re-verified on every release — check the current docs before relying on one.
 
 ## Overview
 
@@ -247,5 +251,3 @@ treated as a feature launch.
 - [Claude Code Stop Hook: force task completion — claudefa.st](https://claudefa.st/blog/tools/hooks/stop-hook-task-enforcement) — `decision:"block"` + `reason`, `stop_hook_active` loop guard.
 - [Stop hooks exit-2 plugin bug — anthropics/claude-code #10412](https://github.com/anthropics/claude-code/issues/10412) — plugin-packaged Stop hooks unreliable on exit 2.
 - [Stop/UserPromptSubmit cold-start timing — anthropics/claude-code #56631](https://github.com/anthropics/claude-code/issues/56631) — first-turn Stop miss; transcript not yet flushed.
-</content>
-</invoke>

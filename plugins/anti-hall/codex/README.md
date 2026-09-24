@@ -82,6 +82,10 @@ The Codex port exposes first-pass equivalents for the anti-hall skill surface:
 - `anti-hall-context-conserve` — context/usage conservation and model routing
 - `anti-hall-model-policy` — Codex model routing table
 - `anti-hall-doctor`, `anti-hall-update`, `anti-hall-debt`, `anti-hall-simplify`, `anti-hall-flutter-debug`, `anti-hall-install-statusline`, `anti-hall-omx`, `anti-hall-omc`
+- `anti-hall-defects` — file/list/show/rule on anti-hall defect reports
+- `anti-hall-devswarm` — DevSwarm integration: mesh CLI, recovery, auto-archive/prune, retention, app DB
+- `anti-hall-jev` — activate/configure/check the opt-in Jev classifier
+- `anti-hall-system-briefing` — live enumeration of every installed hook, skill and substrate
 - `anti-hall-settings` — show/change any anti-hall setting; numbered-choice menu fallback (Codex has no `AskUserQuestion`) and no `/config` panel equivalent — `scripts/settings.js` is the only front door
 - `anti-hall-handover` — comprehensive session handoff (index + per-session HANDOVER.md + detail files) so a fresh session can resume without re-deriving or guessing anything
 

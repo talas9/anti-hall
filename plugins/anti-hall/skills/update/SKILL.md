@@ -27,7 +27,7 @@ takes effect in-session — this skill does not over-promise.
   without crash-looping; see step 5's ingest-daemon heal below for the one-time repair of
   a daemon installed before this fix shipped.
 
-## What the helper does (`scripts/update.js`)
+## What the helper does (`skills/update/scripts/update.js`)
 
 Pure Node ≥ 22 built-ins, cross-platform (Windows included), fail-open
 (report-don't-break). It makes **no writes outside the marketplace clone and stdout** —
@@ -133,9 +133,9 @@ its own purposes).
    (both absent on a STOP/offline report — those paths never reach cache sync).
 
 Modes:
-- `node scripts/update.js --check` — `git fetch` + compare local vs remote
+- `node "${CLAUDE_PLUGIN_ROOT}/skills/update/scripts/update.js" --check` — `git fetch` + compare local vs remote
   `plugin.json` version. **No pull, no writes.** Answers "is anti-hall up to date?".
-- `node scripts/update.js` — the full update above.
+- `node "${CLAUDE_PLUGIN_ROOT}/skills/update/scripts/update.js"` — the full update above.
 
 ## Steps
 

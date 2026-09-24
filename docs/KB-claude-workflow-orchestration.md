@@ -1,5 +1,8 @@
 # KB — Claude Code multi-agent orchestration & the Workflow tool
 
+> Compiled 2026-06-29 (first commit of this file); external harness facts are as
+> documented then — re-verify before citing as current.
+
 > Reference knowledge base for **when and how** to use programmatic multi-agent
 > orchestration (Claude Code Dynamic Workflows / the `Workflow` tool) versus a single
 > agent or shallow subagent fan-out. Built from 14 sources (8 official Anthropic),

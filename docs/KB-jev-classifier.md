@@ -1,7 +1,9 @@
 # KB-jev-classifier.md — Jev (TypeSafe System One) as an opt-in classifier backend
 
-> Status: opt-in, **default OFF**. Currently wired into `speculation-guard.js` only (Tier 2
-> Stop hook), with the existing regex check as the fallback.
+> Status: opt-in, **default OFF**. Wired into `speculation-guard.js` (Tier 2 Stop hook,
+> regex fallback), `speculation-judge.js`, `model-routing-guard.js`, `claim-ledger.js`,
+> `merge-gate.js`, `task-tracker.js`, `output-verify-guard.js` and message triage — see
+> "All wired integrations" below for each one's trust rule and default mode.
 > Everything below is either **[measured]** (cite the source run/file) or **[design]**
 > (documented intent, not yet independently verified against a live call in every
 > environment). No number in this doc is invented.

@@ -17,7 +17,7 @@ surface (Codex CLI lifecycle hooks) — not covered by this document.
 **Verification status:** most rows below are doc-sourced only and have NOT all been
 empirically verified against live harness behavior — treat an un-annotated row as
 "per docs, unconfirmed live" rather than independently tested. Where this plugin's own
-68 hooks (`plugins/anti-hall/hooks/hooks.json`) demonstrate live, first-party behavior
+hooks (48 hook scripts registered in `plugins/anti-hall/hooks/hooks.json` as of v0.108.0) demonstrate live, first-party behavior
 that contradicts the docs for an event we actually register, the observed behavior is
 recorded alongside the doc claim in that row, with the disagreement stated plainly
 rather than one silently overriding the other.

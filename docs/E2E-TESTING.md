@@ -123,8 +123,8 @@ Node, not a discovery root.)
 `.github/workflows/test.yml` runs the suite on every push and pull request across
 the full matrix:
 
-- **OS:** `ubuntu-latest`, `macos-latest`, `windows-latest`
-- **Node:** `18.x`, `20.x`, `22.x`, `24.x`
+- **OS:** `ubuntu-latest`, `macos-latest` (Windows is not supported)
+- **Node:** `22.x`, `24.x` (Node 22 is the minimum)
 
 with `fail-fast: false` so one cell's failure does not mask the others. Each cell
 checks out, sets up Node, and runs `node --test`.

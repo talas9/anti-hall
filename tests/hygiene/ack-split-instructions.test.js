@@ -85,7 +85,7 @@ const KB = 'docs/KB-devswarm-hivecontrol.md';
 function kbGuidanceText() {
   const lines = fs.readFileSync(path.join(REPO, KB), 'utf8').split('\n');
   const end = lines.findIndex((l) => l.startsWith('## 12. Sources'));
-  const s47 = lines.findIndex((l) => l.startsWith('## §47'));
+  const s47 = lines.findIndex((l) => l.startsWith('## 47. '));
   assert.ok(end > 0 && s47 > end, 'KB section anchors moved — update the guidance ranges');
   return { current: lines.slice(0, end).join('\n'), s47: lines.slice(s47).join('\n') };
 }

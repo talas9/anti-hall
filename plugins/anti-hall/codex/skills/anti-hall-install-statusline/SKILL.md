@@ -20,11 +20,10 @@ ANTI_HALL_ROOT="$(cd "$(dirname "$SKILL_FILE")/../../.." && pwd)"
 test -f "$ANTI_HALL_ROOT/.codex-plugin/plugin.json" || { echo "anti-hall plugin root not found relative to $SKILL_FILE — aborting" >&2; exit 1; }
 ```
 
-The existing anti-hall statusline installer targets Claude Code `statusLine` settings:
-
-```bash
-node "$ANTI_HALL_ROOT/statusline/install-statusline.js" --help
-```
+The existing anti-hall statusline installer (`statusline/install-statusline.js`) targets
+Claude Code `statusLine` settings only. It has no `--help`: running it performs a LIVE
+install into `~/.claude/settings.json` (or `./.claude/settings.local.json` with
+`--project`). Do not run it for a Codex-only setup; its usage is in the file's header comment.
 
 Codex/OMX `[tui].status_line` uses documented built-in footer item IDs, not a command-backed renderer. Do **not** append an arbitrary `anti-hall-version` item unless Codex documents custom item support. For Codex, use these supported pieces:
 

@@ -30,13 +30,14 @@ a flat link index so nothing is missed. Start with [`KB.md`](./KB.md) →
 | [`KB-omc.md`](./KB-omc.md) | oh-my-claudecode (OMC) — Claude-side orchestration layer. |
 | [`KB-omx.md`](./KB-omx.md) | oh-my-codex (OMX) — Codex-side orchestration layer. |
 | [`KB-devswarm-hivecontrol.md`](./KB-devswarm-hivecontrol.md) | DevSwarm & the `hivecontrol` CLI — multi-workspace orchestration. |
+| [`KB-devswarm-app-db.md`](./KB-devswarm-app-db.md) | The DevSwarm desktop app's database: what anti-hall reads (read-only), field evidence, sync, screenshot sync, 2.5.3 notes. |
 | [`KB-cmux.md`](./KB-cmux.md) | cmux — terminal workspace for AI coding agents. |
 | [`KB-fable-5.md`](./KB-fable-5.md) | Claude Fable 5 model reference. |
 | [`KB-sonnet-5.md`](./KB-sonnet-5.md) | Claude Sonnet 5 + model routing, Claude and Codex tables. |
 | [`KB-gpt-5.6.md`](./KB-gpt-5.6.md) | GPT-5.6 (Sol/Terra/Luna) model reference. |
 | [`KB-model-modes.md`](./KB-model-modes.md) | Model operating modes — effort levels, Plan Mode, Workflow/ultracode, Codex reasoning tiers. |
 | [`KB-token-usage-models.md`](./KB-token-usage-models.md) | Token usage & cost mechanics across effort tiers, Claude + Codex. |
-| [`KB-jev-classifier.md`](./KB-jev-classifier.md) | Jev (TypeSafe System One) opt-in classifier backend for `speculation-guard.js`. |
+| [`KB-jev-classifier.md`](./KB-jev-classifier.md) | Jev (TypeSafe System One) opt-in classifier: every wired integration, metrics, cost and budget watch. |
 | [`KB-goal-setting.md`](./KB-goal-setting.md) | Goal setting theory + AI-agent goal misspecification as a reward-hacking cause. |
 | [`KB-false-completion.md`](./KB-false-completion.md) | False task completion — reward hacking, claimed-vs-verified gaps, mitigations. |
 | [`KB-overengineering.md`](./KB-overengineering.md) | Overengineering causes and measurement; anti-hall's scope-fidelity implications. |

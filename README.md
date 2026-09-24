@@ -57,13 +57,14 @@ install, no native deps, no other config.
 | **Guards** | Mechanical, always-on Node hooks — block AI self-credit/force-push (`git-guard`), fabricated stdlib/builtin APIs (`api-guard`), un-delegated heavy commands (`command-guard`), un-delegated direct edits (`edit-guard`), spawn-rate/memory fork-bombs (`swarm-guard`), stopping with open tasks (`task-guard`/`tasklist-guard`), and more. |
 | **Verify-first discipline** | Injects the Iron-Law + rationalization-table protocol at session start (survives compaction) and a rotating one-line nudge every turn; enforced, not just suggested. |
 | **Orchestration** | Non-blocking coordinator discipline: delegate heavy/broad work to subagents, verify delegated "done" claims against ground truth, live phase progress on the statusline. |
-| **DevSwarm mesh** | Optional, dormant unless a DevSwarm session is active — layered wake/recovery (self-report → poke → escalate, never auto-kill), one mailbox per session, per-turn mesh status. See [`docs/KB-devswarm-hivecontrol.md`](docs/KB-devswarm-hivecontrol.md). |
+| **Auto-handover** | On by default: at 85% context the agent writes a handover itself, tells you, and suggests `/compact` or `/clear`; short follow-up reminders after that. Configure via `/anti-hall:settings`. |
+| **DevSwarm mesh** | Optional, dormant unless a DevSwarm session is active — layered wake/recovery (self-report → poke → escalate, never auto-kill), one mailbox per session, per-turn mesh status. The DevSwarm app's own database is the ground truth for workspace state; done workspaces are auto-archived (DevSwarm ≥ 2.5.3), old message bodies are archived then pruned. See [`docs/KB-devswarm-hivecontrol.md`](docs/KB-devswarm-hivecontrol.md) and [`docs/KB-devswarm-app-db.md`](docs/KB-devswarm-app-db.md). |
 | **Jev classifier** | Optional LLM-backed speculation classifier ([`docs/KB-jev-classifier.md`](docs/KB-jev-classifier.md)) — per-integration on/shadow/off modes, metrics + `jev report` KEEP/REVIEW/REMOVE calls. |
 | **Statusline** | Live two-line statusline: git/model/context/cost on line 1, live orchestration/context gauge on line 2. Installable globally or per-repo, consolidates with an existing statusline (e.g. OMC HUD). |
-| **doctor / update** | `doctor` runs live behavioral self-tests on every guard and repairs safe drift; `update` pulls the latest release and shows the changelog delta. |
+| **doctor / update** | `doctor` runs live behavioral self-tests on every guard and repairs safe drift; `update` pulls the latest release and shows the changelog delta. Repairs also run by themselves after a plugin reload or on a new version. |
 | **Settings** | One place for every setting — `~/.anti-hall/settings.json`, browsable/editable via `/anti-hall:settings` or `scripts/settings.js`; a headline subset also shows in Claude Code's native `/config` panel. See [docs/GUIDE.md#settings-anti-hallsettings](docs/GUIDE.md#settings-anti-hallsettings). |
 
-Full per-hook reference (event, exact behavior, version history): [docs/GUIDE.md](docs/GUIDE.md#hook-reference-detailed).
+Full per-hook reference (event, exact behavior, version history): [docs/GUIDE.md](docs/GUIDE.md#hook-reference--plugin-features-table-detailed-per-hook).
 
 ## Skills
 

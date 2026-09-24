@@ -3329,7 +3329,7 @@ names rather than trusting line numbers verbatim after either file changes furth
 
 ---
 
-## §33 — `reap-orphans`: retiring stranded mesh partitions safely
+## 33. `reap-orphans`: retiring stranded mesh partitions safely
 
 An **orphaned mesh partition** is a partition that still holds unread mail but has no
 registry row, so nothing is ever going to read it. `computeSummary`'s A2 pass publishes
@@ -3380,7 +3380,7 @@ partition is a human decision, and a cron job, supervisor sweep, or subagent she
 business making it. A capped pass reports `capped:true` and `remaining:N` so it can never be
 mistaken for a complete one.
 
-## §34 — `reconcile-registry`: seeing mesh-vs-hivecontrol drift
+## 34. `reconcile-registry`: seeing mesh-vs-hivecontrol drift
 
 Drift between the mesh registry and hivecontrol runs in **both** directions (defect
 `d9a823ff1ca0`): a workspace archived in the registry but still open in the app, and a
@@ -3403,7 +3403,7 @@ and an unrecognised shape returns `ok:false, reason:'hivecontrol-shape-unrecogni
 with the keys actually seen — fail soft, never guess. An **empty** list is a valid answer (no
 workspaces), not a shape failure.
 
-## §35 — `--force-cross-project`: the one authority-gate escape hatch
+## 35. `--force-cross-project`: the one authority-gate escape hatch
 
 The v0.85.0 id-derived authority gate closed a real cross-project re-home/theft P0, but left
 no legitimate route to archive a workspace whose worktree lives under another project
@@ -3432,7 +3432,7 @@ Sections §33-§35 were verified 2026-09-05 from source at the versions on disk 
 checkout (anti-hall's own code, not vendor behavior — re-grep the cited function/symbol names
 rather than trusting line numbers verbatim after either file changes further).
 
-## §36 — Re-testing `0a668d81c0c6` in the field (cursor vs total, slug row and UUID row)
+## 36. Re-testing `0a668d81c0c6` in the field (cursor vs total, slug row and UUID row)
 
 The fold-cursor defect is about a read cursor being advanced past mail nobody consumed, so the
 field re-test is simply: read the cursor and the total before and after a read, on **both** id
@@ -3483,7 +3483,7 @@ the same rows and is never refused on ownership grounds. (Phase 5: `read-primary
 drains — it is read-only and returns an `ackCommand`; the drain is
 `inbox ack-primary <id> --receipt <rid>`.)
 
-## §37 — App-side archive detection: the active-cache, and `archivedRegistryRows`
+## 37. App-side archive detection: the active-cache, and `archivedRegistryRows`
 
 hivecontrol 2.5.1's `workspace list all` (measured on the maintainer machine) returns
 `{id, branch, sourceBranch, repositoryId, label, aiAgent, worktreePath, createdAt}` per row —
@@ -3561,7 +3561,7 @@ that exclusion leaves nothing live, the stored sender id is kept verbatim — th
 listed under its raw origin rather than being re-attributed to its own recipient. A sender
 matching no registry row at all is still dropped (the permanent-deadlock rule, unchanged).
 
-## §38 — Leaked test-fixture stores (defect f3c1bc827d89)
+## 38. Leaked test-fixture stores (defect f3c1bc827d89)
 
 A test suite that spawns a real subprocess with `env: { ...process.env }` and no `HOME`/
 `USERPROFILE` override leaks that subprocess's filesystem writes into the developer's REAL
@@ -3629,7 +3629,7 @@ that can register a real launchd/systemd/cron job: `install-devswarm-ingest.js`
 (plist/service writes AND the crontab fallback) and `install-reaper.js` (plist/service
 writes).
 
-## §39 — Sender attribution
+## 39. Sender attribution
 
 `pendingQuestions[].from` is resolved by `devswarm-store.js`'s `resolveSenderRegistryId`.
 Its final leg (leg C, when a worktree's meshId maps to more than one sibling registry
@@ -3671,7 +3671,7 @@ pending question rendered `from` as first one sibling, then the other, on unchan
 data. `pickAttributionRow` resolves both passes to the same row (the branch-slug row, via C2)
 regardless of which sibling most recently heartbeat.
 
-## §40 — `unclaimed:` promotion sources and `diagnose` fields (v0.95.0)
+## 40. `unclaimed:` promotion sources and `diagnose` fields (v0.95.0)
 
 `realSessionIdFrom(flags, ctx, id)` sources a caller's real session id from, in order:
 
@@ -3722,7 +3722,7 @@ between the two also reports the descriptor's own value under `descriptorSession
 so a caller can tell "the registry hasn't caught up yet" apart from "these two sources
 genuinely disagree" without opening the store directly.
 
-## §41 — Child-gate re-fire despite a satisfied heartbeat (defect a55d6b71a76f, v0.98.1)
+## 41. Child-gate re-fire despite a satisfied heartbeat (defect a55d6b71a76f, v0.98.1)
 
 `hooks/devswarm-child-gate.js`'s Stop hook could re-block a child EVERY turn even
 though the child ran the exact heartbeat command the gate's own reason text
@@ -3800,7 +3800,7 @@ present, alongside the per-writer-id directory scan above — additive only, no
 delete, no migration required. A record written by a process still on that
 older code path (or never touched since) is not silently orphaned.
 
-## §42 — Subagents never own the DevSwarm mailbox (defect f0958b13fe2b, v0.98.1)
+## 42. Subagents never own the DevSwarm mailbox (defect f0958b13fe2b, v0.98.1)
 
 Field-measured by SkyCrew (2026-09-08): inside a DevSwarm child workspace, the
 child's OWN Task-tool subagents ran `node .../scripts/devswarm.js inbox pull
@@ -3949,7 +3949,7 @@ Codex parity for `devswarm-child-drain.js`: see the consolidated "Codex
 parity, precisely stated" note above — registration is shared and unmodified,
 but its deny/no-op behavior for a Codex subagent specifically is unverified.
 
-## §43 — git-stash-guard: a mutating `git stash` is blocked once armed (defect b08b26566b92, v0.98.2)
+## 43. git-stash-guard: a mutating `git stash` is blocked once armed (defect b08b26566b92, v0.98.2)
 
 **Field incident:** two Sonnet workers ran `git stash push` over protected WIP
 stashes on `main` despite an explicit no-git-stash brief — nothing mechanical
@@ -3992,7 +3992,7 @@ Codex README's "Parity Notes"), so this branch auto-applies to Codex
 sessions with no separate adapter — it is not gated on any DevSwarm env var
 at all.
 
-## §44 — Orphaned launchd/systemd ingest registrations (defect ec33954162ef, v0.98.3)
+## 44. Orphaned launchd/systemd ingest registrations (defect ec33954162ef, v0.98.3)
 
 **Root cause of the leak, named honestly:** a test file
 (`tests/scripts/devswarm-fleet-2e8653787945.test.js`) built a `selfHeal` ctx
@@ -4108,7 +4108,7 @@ unforked files — this feature applies to Codex sessions identically; the
 `plugins/anti-hall/skills/devswarm/SKILL.md` and
 `plugins/anti-hall/codex/skills/anti-hall-devswarm/SKILL.md`.
 
-## §45 — Per-reader unread vs. the shared min-floor (defect f061789267c1 / a77b85571dfa, v0.99.2)
+## 45. Per-reader unread vs. the shared min-floor (defect f061789267c1 / a77b85571dfa, v0.99.2)
 
 **Symptom:** a Primary session's Stop-hook gate (`hooks/devswarm-parent-gate.js`)
 blocked turn-end on unread mail the session had already drained, live on a real
@@ -4174,7 +4174,7 @@ files — this fix applies to Codex sessions identically; documented in both
 `plugins/anti-hall/skills/devswarm/SKILL.md` and
 `plugins/anti-hall/codex/skills/anti-hall-devswarm/SKILL.md`.
 
-## §46 — Row state, read-only doctor, one migration registry (mesh redesign Phase 4)
+## 46. Row state, read-only doctor, one migration registry (mesh redesign Phase 4)
 
 **One row-state derivation.** "Is this workspace row archived?" used to be answered
 separately by the roster, `diagnose`, routing (`isRoutingLiveRow`), the parent Stop gate,
@@ -4240,7 +4240,7 @@ seeded sweep rarely archives.
 same behavior applies to Codex sessions; the Codex doctor skill documents the read-only
 default and `--repair`.
 
-## §47 — Delivery WAL, read/ack split, shared Stop policy, twin routing (mesh redesign Phase 5)
+## 47. Delivery WAL, read/ack split, shared Stop policy, twin routing (mesh redesign Phase 5)
 
 **Delivery WAL around the destructive native reads.** `hivecontrol workspace
 read-messages` (child `inbox pull`) and `workspace monitor` (ingest daemon) pop

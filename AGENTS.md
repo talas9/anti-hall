@@ -11,9 +11,15 @@ Keep this file under 32 KiB (Codex per-file cap). Verify it is loaded with:
 
     codex --ask-for-approval never "Summarize current instructions"
 
-<!-- 0.108: auto-handover, settings page, version-alert v2, Jev cost/efficiency,
-     and repair-on-reload are being built elsewhere — mirror the Codex-relevant
-     parts here once they ship. -->
+**Session hygiene (v0.108.0, hooks shared with Codex).** When `auto-handover.js` says
+context crossed the threshold (default 85%; on Codex the real window comes from the
+rollout's `model_context_window`), write the handover yourself right away (the
+`anti-hall-handover` skill; never delegate it), tell the user and list the saved paths,
+then suggest starting a fresh session. When `version-alert.js` says a newer anti-hall is
+available or already installed, tell the user (update via the `anti-hall-update` skill,
+then restart Codex). Repairs run by themselves after an update (`repair-on-reload.js`).
+Every setting lives in `~/.anti-hall/settings.json`; change it only through the
+`anti-hall-settings` skill / `scripts/settings.js`, never by hand.
 
 In the Claude Code plugin, the **root-cause** and **orchestration** disciplines below
 are enforced always-on via the hook layer (they fire every session/turn). **deadly-loop**

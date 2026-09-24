@@ -40,13 +40,15 @@ claude --plugin-dir /path/to/anti-hall
 | **Guards** | Always-on Node hooks: `git-guard` (AI self-credit / force-push), `api-guard` (fabricated stdlib/builtin APIs), `command-guard` (heavy commands → subagents), `edit-guard` (direct edits → subagents), `swarm-guard` (fork-bomb / memory), `task-guard`/`tasklist-guard` (stop with open work), `model-routing-guard` (cheapest fitting model), `merge-gate`/`ship-it-guard` (opt-in). |
 | **Verify-first discipline** | Full Iron-Law + rationalization-table protocol at session start (survives compaction), a rotating one-line nudge every turn, and the always-on scope-fidelity + anti-sycophancy rules. |
 | **Orchestration** | Coordinator discipline: delegate broad reads/heavy commands to subagents, independently verify a subagent's "done" claim before trusting it, live phase progress on the statusline. |
-| **DevSwarm mesh** | Optional, dormant unless a DevSwarm session is active. Layered recovery (self-report → poke → escalate, never auto-kill), one mailbox per session, per-turn mesh status table. Full reference: [`docs/KB-devswarm-hivecontrol.md`](https://github.com/talas9/anti-hall/blob/main/docs/KB-devswarm-hivecontrol.md). |
+| **DevSwarm mesh** | Optional, dormant unless a DevSwarm session is active. Layered recovery (self-report → poke → escalate, never auto-kill), one mailbox per session, per-turn mesh status table, the DevSwarm app database as ground truth, auto-archive of done workspaces (DevSwarm ≥ 2.5.3), message retention. Full reference: [`docs/KB-devswarm-hivecontrol.md`](https://github.com/talas9/anti-hall/blob/main/docs/KB-devswarm-hivecontrol.md). |
 | **Jev classifier** | Optional LLM-backed speculation classifier. [`docs/KB-jev-classifier.md`](https://github.com/talas9/anti-hall/blob/main/docs/KB-jev-classifier.md). |
+| **Auto-handover** | On by default: at 85% context the agent writes a handover itself, tells you, and suggests `/compact` or `/clear`. |
+| **Settings** | Every setting in one place, `~/.anti-hall/settings.json`, via `/anti-hall:settings` (or `scripts/settings.js`); a headline subset also appears in `/config`. |
 | **Statusline** | Live two-line bar — git/model/context/cost, plus live orchestration/context gauge. |
-| **doctor / update** | `doctor` runs live behavioral self-tests on every guard (`--repair` for safe fixes); `update` pulls the latest release and prints the changelog delta. |
+| **doctor / update** | `doctor` runs live behavioral self-tests on every guard (`--repair` for safe fixes); `update` pulls the latest release and prints the changelog delta. Repairs also run by themselves after a plugin reload or on a new version. |
 
 Full per-hook table (every hook, its event, exact behavior, and version history) moved
-to [`docs/GUIDE.md`](https://github.com/talas9/anti-hall/blob/main/docs/GUIDE.md#hook-reference-detailed) — nothing was deleted,
+to [`docs/GUIDE.md`](https://github.com/talas9/anti-hall/blob/main/docs/GUIDE.md#hook-reference--plugin-features-table-detailed-per-hook) — nothing was deleted,
 only relocated so this page stays a landing page.
 
 ## Codex port
@@ -80,6 +82,7 @@ Invoke as `/anti-hall:<name>`:
 | `handover` | end of session / before `/clear` | writes a lossless session handover for a cold-start resume |
 | `defects` | "file an anti-hall bug" | file/list/show/rule on anti-hall's own defect reports |
 | `jev` | "activate jev" | asks for your Vercel AI Gateway or TypeSafe key, installs it, enables and tests it |
+| `settings` | "anti-hall settings", "set auto-handover to 80%" | show or change any setting; one `~/.anti-hall/settings.json` |
 
 Full descriptions (arguments, env vars, version history) moved to
 [`docs/GUIDE.md`](https://github.com/talas9/anti-hall/blob/main/docs/GUIDE.md#skills-reference-detailed).
