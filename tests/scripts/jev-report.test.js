@@ -10,7 +10,17 @@ const { makeHome } = require('../helpers/fixtures.js');
 
 const {
   buildReport, buildHeadline, labelsLogPath, readLabels, latestHumanLabelByHash, cmdLabel,
+  auditLogPath, readAuditSnippet, cmdPruneAudit,
 } = require('../../plugins/anti-hall/scripts/jev-report.js');
+
+// writeAuditRow(home, {ts, id, h, snippet}) — test helper, writes directly to
+// jev-audit.ndjson the way hooks/lib/jev-assist.js's maybeWriteAuditSnippet
+// would (jev-report.js never writes this file itself, only reads/prunes it).
+function writeAuditRow(home, row) {
+  const p = auditLogPath(home);
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+  fs.appendFileSync(p, JSON.stringify(Object.assign({ ts: new Date().toISOString() }, row)) + '\n', 'utf8');
+}
 
 function row(overrides) {
   return Object.assign({
@@ -398,6 +408,82 @@ test('buildHeadline: cost/latency unknown -> "n/a" placeholders, never fabricate
   const line = buildHeadline(r, '7d');
   assert.match(line, /cost n\/a/);
   assert.match(line, /p50 n\/a/);
+});
+
+// ---------------------------------------------------------------------------
+// Audit snippets: read-only side (jev-report never WRITES jev-audit.ndjson,
+// only reads it for `label` and prunes it via `prune-audit`).
+// ---------------------------------------------------------------------------
+
+function captureLogs(fn) {
+  const lines = [];
+  const orig = console.log;
+  console.log = (...args) => lines.push(args.join(' '));
+  try { fn(); } finally { console.log = orig; }
+  return lines;
+}
+
+test('readAuditSnippet: null when nothing was ever stored for that hash (the common, off-by-default case)', () => {
+  const h = makeHome();
+  try {
+    assert.strictEqual(readAuditSnippet(h.home, 'nope'), null);
+  } finally { h.cleanup(); }
+});
+
+test('readAuditSnippet: returns the latest snippet stored for the hash', () => {
+  const h = makeHome();
+  try {
+    writeAuditRow(h.home, { id: 'speculation', h: 'abc', snippet: 'first' });
+    writeAuditRow(h.home, { id: 'speculation', h: 'abc', snippet: 'second (a correction)' });
+    writeAuditRow(h.home, { id: 'speculation', h: 'other', snippet: 'unrelated' });
+    assert.strictEqual(readAuditSnippet(h.home, 'abc'), 'second (a correction)');
+  } finally { h.cleanup(); }
+});
+
+test('cmdLabel <hash> (no verdict): read-only, prints unlabeled + no snippet, writes nothing', () => {
+  const h = makeHome();
+  try {
+    const lines = captureLogs(() => cmdLabel('abc', undefined, h.home));
+    assert.ok(!fs.existsSync(labelsLogPath(h.home)), 'read-only inspect must never write a label');
+    assert.ok(lines.some((l) => l.includes('unlabeled')));
+    assert.ok(lines.some((l) => l.includes('snippet: none')));
+  } finally { h.cleanup(); }
+});
+
+test('cmdLabel <hash> tp: writes the label AND prints the stored snippet as a courtesy', () => {
+  const h = makeHome();
+  try {
+    writeAuditRow(h.home, { id: 'speculation', h: 'abc', snippet: 'the plan is probably done' });
+    const lines = captureLogs(() => cmdLabel('abc', 'tp', h.home));
+    assert.ok(lines.some((l) => l.includes('labeled abc as tp')));
+    assert.ok(lines.some((l) => l.includes('the plan is probably done')));
+    assert.strictEqual(latestHumanLabelByHash(readLabels(h.home)).get('abc'), 'tp');
+  } finally { h.cleanup(); }
+});
+
+test('cmdPruneAudit: removes entries older than N days, keeps recent ones, never runs unless explicitly invoked', () => {
+  const h = makeHome();
+  const savedExitCode = process.exitCode;
+  try {
+    const old = new Date(Date.now() - 30 * 86400000).toISOString();
+    const recent = new Date().toISOString();
+    writeAuditRow(h.home, { ts: old, id: 'speculation', h: 'old1', snippet: 'stale' });
+    writeAuditRow(h.home, { ts: recent, id: 'speculation', h: 'new1', snippet: 'fresh' });
+    cmdPruneAudit(7, h.home);
+    assert.strictEqual(readAuditSnippet(h.home, 'old1'), null, 'pruned');
+    assert.strictEqual(readAuditSnippet(h.home, 'new1'), 'fresh', 'kept');
+  } finally { process.exitCode = savedExitCode; h.cleanup(); }
+});
+
+test('cmdPruneAudit: invalid --days -> error, exit code 1, file untouched', () => {
+  const h = makeHome();
+  const savedExitCode = process.exitCode;
+  try {
+    writeAuditRow(h.home, { id: 'speculation', h: 'x', snippet: 'keepme' });
+    cmdPruneAudit(NaN, h.home);
+    assert.strictEqual(process.exitCode, 1);
+    assert.strictEqual(readAuditSnippet(h.home, 'x'), 'keepme', 'a rejected call must never touch the file');
+  } finally { process.exitCode = savedExitCode; h.cleanup(); }
 });
 
 // ---------------------------------------------------------------------------

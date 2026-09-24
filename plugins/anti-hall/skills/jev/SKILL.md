@@ -146,7 +146,28 @@ hash. AUTO labels are derived, at report time, from the SAME mechanical outcome
 signal `recordOutcome()` already logs (e.g. the next main-thread turn citing a
 file/tool after a Jev-added speculation block) — never re-parsing transcripts,
 never treated as ground truth, and always reported separately from human
-labels (`N TP (H human, A auto)`).
+labels (`N TP (H human, A auto)`). Run `label <hash>` with no verdict to
+inspect a hash read-only (current label + stored snippet, if any) without
+writing anything.
+
+### Audit snippets (opt-in, OFF by default)
+
+Set `"audit": {"snippets": true}` in `~/.anti-hall/jev.json` to store a small,
+**redacted** local-only snippet for every decision that CHANGES an outcome
+(never for an unchanged call): the first ~200 characters of the text Jev
+judged, after scrubbing common secret shapes (Bearer tokens, known key
+prefixes, `key=`/`token=` assignments, emails, long base64/hex-looking runs).
+Stored separately, in `~/.anti-hall/logs/jev-audit.ndjson`, file mode `600`,
+keyed by the decision's hash. `label <hash>` prints it if one exists.
+Deletion is manual-only, never automatic:
+
+```
+node "${CLAUDE_PLUGIN_ROOT}/scripts/jev-report.js" prune-audit --days N
+```
+
+This is off by default precisely because it stores a piece of the actual
+judged text (redacted, but still real content) — only turn it on if you want
+that tradeoff for debugging/auditing precision labels.
 
 The report also prints a one-line **headline** per integration combining
 changed decisions, TP breakdown, cost efficiency ($/TP), latency, and the

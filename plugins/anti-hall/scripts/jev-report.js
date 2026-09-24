@@ -4,7 +4,8 @@
 //
 // USAGE
 //   node plugins/anti-hall/scripts/jev-report.js [--days 7] [--json] [--window 24h|7d]
-//   node plugins/anti-hall/scripts/jev-report.js label <hash> tp|fp
+//   node plugins/anti-hall/scripts/jev-report.js label <hash> [tp|fp]
+//   node plugins/anti-hall/scripts/jev-report.js prune-audit --days N
 //
 // For each integration id seen in the log, reports: calls, jev-answered %
 // (backend 'jev' or 'cache' vs 'baseline-only'), cache hits, agreement %
@@ -162,25 +163,122 @@ function latestHumanLabelByHash(labelRows) {
   return map;
 }
 
-// cmdLabel(hash, label, home) -> appends a human label. Never touches
-// jev-assist.ndjson. Validates the label value; does not require the hash to
-// already exist in the decision log (labeling ahead of a report run is
-// harmless -- it simply won't affect anything until that hash appears).
+// auditLogPath/readAuditSnippet mirror hooks/lib/jev-assist.js's own
+// auditLogPath so jev-report never has to import a hooks/ module -- same
+// path convention, read-only here.
+function auditLogPath(home) {
+  return path.join((home || os.homedir()), '.anti-hall', 'logs', 'jev-audit.ndjson');
+}
+
+// readAuditSnippet(home, hash) -> the LATEST stored snippet for `hash`, or
+// null if audit snippets were never on for that decision (the common case --
+// off by default). Reads both the live file and its .1 backup.
+function readAuditSnippet(home, hash) {
+  let latest = null;
+  for (const suffix of ['.1', '']) {
+    try {
+      const raw = fs.readFileSync(auditLogPath(home) + suffix, 'utf8');
+      for (const line of raw.split('\n')) {
+        const t = line.trim();
+        if (!t) continue;
+        try {
+          const row = JSON.parse(t);
+          if (row && row.h === hash) latest = row;
+        } catch (_) { /* skip a corrupt line */ }
+      }
+    } catch (_) {
+      // file doesn't exist -- fine
+    }
+  }
+  return latest ? latest.snippet : null;
+}
+
+// cmdLabel(hash, label, home) -> `jev-report label <hash>` (label omitted)
+// prints the current human label (if any) and the stored audit snippet (if
+// any) for that hash, read-only. `jev-report label <hash> tp|fp` appends a
+// human label -- never touches jev-assist.ndjson -- then prints the same
+// snippet as a courtesy so the caller can eyeball what they just labeled.
+// Does not require the hash to already exist in the decision log (labeling
+// ahead of a report run is harmless).
 function cmdLabel(hash, label, home) {
-  if (!hash || (label !== 'tp' && label !== 'fp')) {
+  if (!hash) {
+    console.error('label: usage is `jev-report label <hash> [tp|fp]`');
+    process.exitCode = 1;
+    return;
+  }
+  if (label !== undefined && label !== 'tp' && label !== 'fp') {
     console.error('label: usage is `jev-report label <hash> tp|fp`');
     process.exitCode = 1;
     return;
   }
-  const p = labelsLogPath(home);
+
+  if (label === undefined) {
+    const existing = latestHumanLabelByHash(readLabels(home)).get(hash);
+    console.log(`${hash}: ${existing ? `labeled ${existing} (human)` : 'unlabeled'}`);
+  } else {
+    const p = labelsLogPath(home);
+    try {
+      fs.mkdirSync(path.dirname(p), { recursive: true });
+      fs.appendFileSync(p, JSON.stringify({ ts: new Date().toISOString(), h: hash, label, source: 'human' }) + '\n', 'utf8');
+      console.log(`labeled ${hash} as ${label}`);
+    } catch (err) {
+      console.error(`label: failed to write ${p}: ${err && err.message}`);
+      process.exitCode = 1;
+      return;
+    }
+  }
+
+  const snippet = readAuditSnippet(home, hash);
+  console.log(snippet ? `snippet: ${snippet}` : 'snippet: none (audit.snippets is off, or this decision predates it)');
+}
+
+// cmdPruneAudit(days, home) -> MANUAL-ONLY deletion of jev-audit.ndjson
+// entries older than `days`. Never invoked automatically by anything in this
+// codebase -- the only way audit data is ever removed is this explicit
+// command.
+function cmdPruneAudit(days, home) {
+  if (!Number.isFinite(days) || days <= 0) {
+    console.error('prune-audit: usage is `jev-report prune-audit --days N` (N > 0)');
+    process.exitCode = 1;
+    return;
+  }
+  const cutoff = Date.now() - days * 86400000;
+  const p = auditLogPath(home);
+  let kept = 0; let removed = 0;
+  const lines = [];
+  for (const suffix of ['.1', '']) {
+    try {
+      const raw = fs.readFileSync(p + suffix, 'utf8');
+      for (const line of raw.split('\n')) {
+        const t = line.trim();
+        if (!t) continue;
+        try {
+          const row = JSON.parse(t);
+          const ts = row && row.ts ? Date.parse(row.ts) : NaN;
+          if (Number.isFinite(ts) && ts < cutoff) { removed++; continue; }
+          lines.push(t);
+          kept++;
+        } catch (_) { removed++; }
+      }
+    } catch (_) {
+      // file doesn't exist -- fine
+    }
+  }
   try {
     fs.mkdirSync(path.dirname(p), { recursive: true });
-    fs.appendFileSync(p, JSON.stringify({ ts: new Date().toISOString(), h: hash, label, source: 'human' }) + '\n', 'utf8');
-    console.log(`labeled ${hash} as ${label}`);
+    if (lines.length > 0) {
+      fs.writeFileSync(p, lines.join('\n') + '\n', { encoding: 'utf8', mode: 0o600 });
+      fs.chmodSync(p, 0o600);
+    } else {
+      fs.rmSync(p, { force: true });
+    }
+    fs.rmSync(p + '.1', { force: true });
   } catch (err) {
-    console.error(`label: failed to write ${p}: ${err && err.message}`);
+    console.error(`prune-audit: failed: ${err && err.message}`);
     process.exitCode = 1;
+    return;
   }
+  console.log(`prune-audit: kept ${kept}, removed ${removed} (older than ${days}d)`);
 }
 
 function jevConfigPath(home) {
@@ -702,11 +800,23 @@ function printHeadlines(report) {
 function main() {
   const argv = process.argv.slice(2);
 
-  // `label <hash> tp|fp [--home <dir>]` — the one write path. Dispatched
-  // before the read-only report so it never touches report state.
+  // `label <hash> [tp|fp] [--home <dir>]` — the one write path (verdict
+  // omitted = read-only inspect). Dispatched before the read-only report so
+  // it never touches report state. argv[2] is a verdict only when it's
+  // literally 'tp'/'fp' -- otherwise it's the start of flags (e.g. --home),
+  // and the label is treated as omitted.
   if (argv[0] === 'label') {
-    const opts = parseArgs(argv.slice(3));
-    cmdLabel(argv[1], argv[2], opts.home);
+    const hasVerdict = argv[2] === 'tp' || argv[2] === 'fp';
+    const opts = parseArgs(argv.slice(hasVerdict ? 3 : 2));
+    cmdLabel(argv[1], hasVerdict ? argv[2] : undefined, opts.home);
+    return;
+  }
+
+  // `prune-audit --days N [--home <dir>]` — the ONLY way jev-audit.ndjson
+  // entries are ever removed; never automatic.
+  if (argv[0] === 'prune-audit') {
+    const opts = parseArgs(argv.slice(1));
+    cmdPruneAudit(opts.days, opts.home);
     return;
   }
 
@@ -739,6 +849,7 @@ module.exports = {
   buildReport, readLines, readTriageLines, buildTriageAnswerReport, percentile,
   buildCostWindows, COST_WINDOWS, readBudgetConfig, computeBudgetStatus,
   buildHeadline, labelsLogPath, readLabels, latestHumanLabelByHash, cmdLabel,
+  auditLogPath, readAuditSnippet, cmdPruneAudit,
 };
 
 if (require.main === module) {

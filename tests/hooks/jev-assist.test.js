@@ -304,6 +304,80 @@ test('maybeWarnBudget: a new day resets spend and allows a fresh warning', () =>
 });
 
 // ---------------------------------------------------------------------------
+// Audit snippets (opt-in, OFF by default)
+// ---------------------------------------------------------------------------
+
+test('scrubSecrets: redacts Bearer tokens, known key prefixes, key= assignments, emails, and long alnum runs', () => {
+  const { scrubSecrets } = freshLib();
+  assert.strictEqual(scrubSecrets('Authorization: Bearer abc.def-123'), 'Authorization: Bearer [REDACTED]');
+  assert.strictEqual(scrubSecrets('key is sk-FAKEFAKEFAKEFAKE1234'), 'key is [REDACTED_KEY]');
+  assert.strictEqual(scrubSecrets('ghp_FAKEFAKEFAKEFAKE1234567890'), '[REDACTED_KEY]');
+  assert.strictEqual(scrubSecrets('api_key: "abcd1234efgh"'), 'api_key=[REDACTED]');
+  assert.strictEqual(scrubSecrets('contact mohammed@example.com for help'), 'contact [REDACTED_EMAIL] for help');
+  assert.strictEqual(scrubSecrets('token was ' + 'a'.repeat(40)), 'token was [REDACTED_TOKEN]');
+});
+
+test('scrubSecrets: ordinary text passes through unchanged', () => {
+  const { scrubSecrets } = freshLib();
+  const text = 'the fix is in speculation-guard.js:487, tests pass 12/12';
+  assert.strictEqual(scrubSecrets(text), text);
+});
+
+test('scrubSecrets: non-string input -> empty string, never throws', () => {
+  const { scrubSecrets } = freshLib();
+  assert.strictEqual(scrubSecrets(null), '');
+  assert.strictEqual(scrubSecrets(undefined), '');
+  assert.strictEqual(scrubSecrets(42), '');
+});
+
+test('readAuditConfig: defaults to snippets:false with no jev.json', () => {
+  const h = makeHome();
+  try {
+    const { readAuditConfig } = freshLib();
+    assert.deepStrictEqual(readAuditConfig(h.home), { snippets: false });
+  } finally { h.cleanup(); }
+});
+
+test('maybeWriteAuditSnippet: OFF by default -> never writes, even for a changed decision', () => {
+  const h = makeHome();
+  try {
+    const { maybeWriteAuditSnippet, auditLogPath } = freshLib();
+    maybeWriteAuditSnippet({ home: h.home, id: 'speculation', hash: 'h1', state: 'the secret plan', changed: 'added' });
+    assert.ok(!fs.existsSync(auditLogPath(h.home)));
+  } finally { h.cleanup(); }
+});
+
+test('maybeWriteAuditSnippet: ON, but decision did NOT change the outcome -> no snippet stored', () => {
+  const h = makeHome();
+  try {
+    h.writeState('jev.json', { audit: { snippets: true } });
+    const { maybeWriteAuditSnippet, auditLogPath } = freshLib();
+    maybeWriteAuditSnippet({ home: h.home, id: 'speculation', hash: 'h1', state: 'unchanged text', changed: null });
+    assert.ok(!fs.existsSync(auditLogPath(h.home)), 'only CHANGED decisions get a snippet');
+  } finally { h.cleanup(); }
+});
+
+test('maybeWriteAuditSnippet: ON + changed -> writes a redacted, <=200-char snippet, mode 600', () => {
+  const h = makeHome();
+  try {
+    h.writeState('jev.json', { audit: { snippets: true } });
+    const { maybeWriteAuditSnippet, auditLogPath } = freshLib();
+    const state = 'The key is sk-FAKEFAKEFAKEFAKE1234 and here is the rest. '.repeat(5);
+    maybeWriteAuditSnippet({ home: h.home, id: 'speculation', hash: 'abc123', state, changed: 'added' });
+    const p = auditLogPath(h.home);
+    const lines = fs.readFileSync(p, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+    assert.strictEqual(lines.length, 1);
+    assert.strictEqual(lines[0].h, 'abc123');
+    assert.strictEqual(lines[0].id, 'speculation');
+    assert.ok(lines[0].snippet.length <= 200);
+    assert.ok(!lines[0].snippet.includes('sk-FAKEFAKEFAKEFAKE1234'), 'the secret must be redacted, not stored raw');
+    assert.ok(lines[0].snippet.includes('[REDACTED_KEY]'));
+    const mode = fs.statSync(p).mode & 0o777;
+    assert.strictEqual(mode, 0o600, 'audit log must be mode 600');
+  } finally { h.cleanup(); }
+});
+
+// ---------------------------------------------------------------------------
 // ask() end-to-end (mock server)
 // ---------------------------------------------------------------------------
 
@@ -341,6 +415,27 @@ test('ask(): add-block, confident true -> block added, mode on', async () => {
         // no message body / credential in the log line
         assert.ok(!JSON.stringify(log[0]).includes('hello'));
         assert.ok(!JSON.stringify(log[0]).includes('k'.repeat(1)) || !('state' in log[0]));
+        // audit snippets are OFF by default -- ask() must not have written one
+        const { auditLogPath } = freshLib();
+        assert.ok(!fs.existsSync(auditLogPath(h.home)));
+      });
+    });
+  } finally { h.cleanup(); }
+});
+
+test('ask(): audit.snippets:true + a changed decision -> writes a snippet of the actual `state` sent to Jev', async () => {
+  const h = makeHome();
+  try {
+    h.writeState('jev.json', { enabled: true, timeoutMs: 3000, audit: { snippets: true } });
+    await withMockServer(noulHandler(0.95), async (endpoint) => {
+      await withEnv({ HOME: h.home, AI_GATEWAY_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
+        const { ask, auditLogPath } = freshLib();
+        const r = await ask({ id: 'speculation', question: NOUL_Q, state: 'the plan is probably done', trust: 'add-block', baseline: false });
+        assert.strictEqual(r.final, true);
+        const rows = fs.readFileSync(auditLogPath(h.home), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+        assert.strictEqual(rows.length, 1);
+        assert.strictEqual(rows[0].h, r.h);
+        assert.ok(rows[0].snippet.includes('the plan is probably done'));
       });
     });
   } finally { h.cleanup(); }

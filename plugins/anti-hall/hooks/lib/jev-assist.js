@@ -24,7 +24,8 @@
 //     "prices": {                              // optional, PER-TOKEN fallback (see computeCostUsd)
 //       "typesafe-ai/jev": { "inPerMTok": 0.5, "outPerMTok": 1.5 },
 //       "default": { "inPerMTok": 0.5, "outPerMTok": 1.5 }
-//     }
+//     },
+//     "audit": { "snippets": false }           // OFF by default; see maybeWriteAuditSnippet
 //   }
 //
 //   Unlisted integration defaults: "speculation" and "triage" default "on"
@@ -279,6 +280,87 @@ function contentHash(parts) {
   return crypto.createHash('sha256').update(parts.join('\u0001')).digest('hex').slice(0, 16);
 }
 
+// --- Audit snippets (opt-in, OFF by default) --------------------------------
+//
+// ~/.anti-hall/jev.json: {"audit": {"snippets": true}}. When on, a REDACTED
+// snippet (first ~200 chars of the judged `state`, after scrubbing) is
+// stored ONLY for a decision that actually CHANGED the outcome (added/
+// relaxed/changed -- never for an unchanged call), so this never accumulates
+// data for the common case. Stored separately from jev-assist.ndjson, in
+// ~/.anti-hall/logs/jev-audit.ndjson, mode 600, rotated like the other logs.
+// No scrubber existed anywhere in this codebase before this (checked: no
+// scrub/redact/mask utility in hooks/ or scripts/) -- scrubSecrets() below is
+// intentionally minimal and scoped to this one feature, not a new general
+// abstraction.
+function auditLogPath(home) {
+  return path.join(homeDir(home), '.anti-hall', 'logs', 'jev-audit.ndjson');
+}
+
+function readAuditConfig(home) {
+  const cfg = readJevJson(home);
+  return { snippets: !!(cfg.audit && cfg.audit.snippets === true) };
+}
+
+// scrubSecrets(text) -> text with common secret shapes replaced by a
+// bracketed placeholder. Best-effort, not a security boundary by itself --
+// combined with the 200-char cap and the opt-in default, it bounds what a
+// snippet can leak. Order matters: named shapes (Bearer tokens, known key
+// prefixes, key=/token= assignments, emails) are scrubbed BEFORE the generic
+// long-alnum-run catch-all, so their placeholders (short) never re-trigger it.
+function scrubSecrets(text) {
+  if (typeof text !== 'string') return '';
+  let s = text;
+  s = s.replace(/\bBearer\s+[A-Za-z0-9\-_.=]+/gi, 'Bearer [REDACTED]');
+  s = s.replace(/\b(sk|pk)-[A-Za-z0-9]{10,}\b/g, '[REDACTED_KEY]');
+  s = s.replace(/\bAIza[0-9A-Za-z_-]{10,}\b/g, '[REDACTED_KEY]');
+  s = s.replace(/\bgh[pousr]_[A-Za-z0-9]{10,}\b/g, '[REDACTED_KEY]');
+  s = s.replace(/\bxox[baprs]-[A-Za-z0-9-]{10,}\b/g, '[REDACTED_KEY]');
+  s = s.replace(/\b(api[_-]?key|access[_-]?key|secret|password|token)\s*[:=]\s*["']?[^\s"',}]{4,}["']?/gi, '$1=[REDACTED]');
+  s = s.replace(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, '[REDACTED_EMAIL]');
+  // Generic catch-all: any remaining long base64/hex-ish run (>=32 chars) is
+  // treated as a likely token/credential fragment, whatever it actually is.
+  s = s.replace(/\b[A-Za-z0-9+/=_-]{32,}\b/g, '[REDACTED_TOKEN]');
+  return s;
+}
+
+function rotateAuditIfNeeded(p) {
+  try {
+    const st = fs.statSync(p);
+    if (st.size > LOG_MAX_BYTES) {
+      const old = p + '.1';
+      try { fs.rmSync(old, { force: true }); } catch (_) { /* no prior backup */ }
+      fs.renameSync(p, old);
+    }
+  } catch (_) {
+    // file doesn't exist yet -- nothing to rotate
+  }
+}
+
+// maybeWriteAuditSnippet({home, id, hash, state, changed}) — best-effort,
+// never throws. Writes ONLY when jev.json audit.snippets is true AND this
+// decision actually changed the outcome (`changed` is the direction string,
+// e.g. 'added'/'relaxed'/'changed', or falsy for no change).
+function maybeWriteAuditSnippet({ home, id, hash, state, changed }) {
+  try {
+    if (!changed || typeof state !== 'string' || !state) return;
+    if (!readAuditConfig(home).snippets) return;
+    const scrubbed = scrubSecrets(state.slice(0, 2000));
+    const snippet = scrubbed.slice(0, 200);
+    const p = auditLogPath(home);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    rotateAuditIfNeeded(p);
+    const prevUmask = process.umask(0o077);
+    try {
+      fs.appendFileSync(p, JSON.stringify({ ts: new Date().toISOString(), id, h: hash, snippet }) + '\n', { encoding: 'utf8', mode: 0o600 });
+      fs.chmodSync(p, 0o600); // belt-and-suspenders: appendFileSync's mode only applies when it CREATES the file
+    } finally {
+      process.umask(prevUmask);
+    }
+  } catch (_) {
+    // best-effort only -- must never affect the caller's decision.
+  }
+}
+
 function readCache(home) {
   try {
     const raw = fs.readFileSync(cachePath(home), 'utf8');
@@ -390,7 +472,7 @@ function jevDecideSync({ question, state, timeoutMs, home }) {
 // finalize(...) — the shared post-decision path for ask()/askSync(): mode
 // gating (shadow never changes the outcome), trust math, cache write, and the
 // one metrics line. Never throws.
-function finalize({ id, home, hash, mode, trust, baseline, judge, threshold, r, cachedFlag, compare }) {
+function finalize({ id, home, hash, mode, trust, baseline, judge, threshold, r, cachedFlag, compare, state }) {
   const confident = !!(r && r.ok && Number.isFinite(r.confidence) && r.confidence >= threshold);
   const jevBool = (r && r.ok)
     ? (typeof judge === 'function' ? !!judge(r.answer) : r.answer)
@@ -439,6 +521,9 @@ function finalize({ id, home, hash, mode, trust, baseline, judge, threshold, r, 
   // Budget watch: best-effort, only touches disk when watch mode is on, and
   // never affects `final`/`entry` above -- see maybeWarnBudget's own comment.
   if (r) maybeWarnBudget({ home, costUsd });
+  // Audit snippet: opt-in, off by default, ONLY for a changed decision --
+  // see maybeWriteAuditSnippet's own comment.
+  maybeWriteAuditSnippet({ home, id, hash, state, changed: direction });
   appendLog(home, entry);
 
   return {
@@ -486,7 +571,7 @@ async function ask(opts = {}) {
   const { h, mode, hash, threshold, skip } = prepare({ id, home, trust, baseline, cacheKey, state });
 
   if (skip) {
-    return finalize({ id, home: h, hash, mode, trust, baseline, judge, threshold, r: null, cachedFlag: false, compare });
+    return finalize({ id, home: h, hash, mode, trust, baseline, judge, threshold, r: null, cachedFlag: false, compare, state });
   }
 
   const cache = readCache(h);
@@ -508,7 +593,7 @@ async function ask(opts = {}) {
     }
   }
 
-  return finalize({ id, home: h, hash, mode, trust, baseline, judge, threshold, r, cachedFlag, compare });
+  return finalize({ id, home: h, hash, mode, trust, baseline, judge, threshold, r, cachedFlag, compare, state });
 }
 
 // askSync(...) — same contract as ask(), but fully synchronous: the network
@@ -521,7 +606,7 @@ function askSync(opts = {}) {
   const { h, mode, hash, threshold, skip } = prepare({ id, home, trust, baseline, cacheKey, state });
 
   if (skip) {
-    return finalize({ id, home: h, hash, mode, trust, baseline, judge, threshold, r: null, cachedFlag: false, compare });
+    return finalize({ id, home: h, hash, mode, trust, baseline, judge, threshold, r: null, cachedFlag: false, compare, state });
   }
 
   const cache = readCache(h);
@@ -539,7 +624,7 @@ function askSync(opts = {}) {
     }
   }
 
-  return finalize({ id, home: h, hash, mode, trust, baseline, judge, threshold, r, cachedFlag, compare });
+  return finalize({ id, home: h, hash, mode, trust, baseline, judge, threshold, r, cachedFlag, compare, state });
 }
 
 // askDetached(opts) — fire-and-forget variant for callers on the user's
@@ -572,7 +657,7 @@ function askDetached(opts = {}) {
     // call to wait on either way, so a spawn would only add overhead.
     const { h, mode, hash, threshold, skip } = prepare({ id, home, trust, baseline, cacheKey, state });
     if (skip) {
-      finalize({ id, home: h, hash, mode, trust, baseline, judge: null, threshold, r: null, cachedFlag: false, compare });
+      finalize({ id, home: h, hash, mode, trust, baseline, judge: null, threshold, r: null, cachedFlag: false, compare, state });
       return;
     }
     const input = JSON.stringify({ id, question, state, trust, baseline, cacheKey, budgetMs, home, compare });
@@ -606,6 +691,10 @@ module.exports = {
   readBudgetConfig,
   budgetStatePath,
   maybeWarnBudget,
+  readAuditConfig,
+  scrubSecrets,
+  auditLogPath,
+  maybeWriteAuditSnippet,
   cachePath,
   logPath,
   CACHE_MAX_ENTRIES,

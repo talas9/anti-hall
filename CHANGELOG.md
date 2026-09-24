@@ -283,6 +283,15 @@ the update.
   timeouts, fallback count), and a one-line headline per integration extending the existing
   KEEP/REVIEW/REMOVE suggestion, e.g. `speculation: 6 changed/24h · 5 TP (3 human, 2 auto) ·
   $0.02/TP · p50=120ms · KEEP`.
+- **Added: opt-in Jev audit snippets.** `jev.json` `audit: {snippets: true}` (default `false`)
+  stores a REDACTED ~200-char snippet of the judged text, but ONLY for a decision that actually
+  changes an outcome, in a separate `~/.anti-hall/logs/jev-audit.ndjson`, file mode 600, keyed
+  by the decision's content hash. `scrubSecrets()` (new, minimal, scoped to this feature -- no
+  secret-scrubbing utility existed anywhere in this codebase before) redacts Bearer tokens,
+  known key prefixes (`sk-`, `AIza`, `ghp_`, `xox*-`), `key=`/`token=` assignments, emails, and
+  long base64/hex-looking runs (>=32 chars) before anything is written. `jev report label
+  <hash>` prints the stored snippet if one exists. Deletion is manual-only via `jev report
+  prune-audit --days N`; nothing in this codebase ever prunes it automatically.
 
 ## 0.107.0 (2026-09-24)
 
