@@ -328,6 +328,30 @@ the update.
   and never delete the legacy file. Codex gets a mirrored `anti-hall-settings` skill (numbered-
   choice menu in place of `AskUserQuestion`; no `/config` equivalent) driving the same CLI.
 
+- **Added: auto-handover trigger.** When the main agent's estimated context usage first
+  crosses 85% (configurable, `autoHandover` section of `~/.anti-hall/settings.json`, or
+  env `ANTIHALL_AUTO_HANDOVER_PCT`, `0` = off) a `UserPromptSubmit` hook
+  (`hooks/auto-handover.js`) tells the agent to, without asking the user first: self-write
+  an anti-hall handover (never delegate — the `/anti-hall:handover` skill's existing
+  self-write mandate), tell the user it did so and list the saved paths, and urge
+  `/compact`/`/clear`. Fires once per session at the crossing and re-arms once usage drops
+  back below threshold (in practice, a compact/clear). Follow-up reminders are on by
+  default: a short milestone nag every `nagStepPct` further points of growth (default 5),
+  and a `Stop`-time natural-pause nag (`hooks/auto-handover-pause-nag.js`) at most once per
+  `nagQuietMin` minutes (default 15) when there's no open TodoWrite work and no subagent
+  spawned in the last 2 minutes. Every message includes one line noting that context bloat
+  itself increases hallucination risk, not just the hard limit. Context % is ESTIMATED from
+  the transcript's own recorded token usage (`hooks/lib/context-pct.js`) rather than the
+  (optional, install-time) statusline, so it works with no setup. Settings are read/written
+  through a new shared, sectioned store (`hooks/lib/settings.js`,
+  `~/.anti-hall/settings.json`) via `scripts/auto-handover-config.js` and the
+  `auto-handover-config` skill ("turn off auto-handover", "set auto-handover to 80%").
+  Shared, unmodified files on the Codex port (`hooks/auto-handover.js` /
+  `auto-handover-pause-nag.js` registered in `codex/hooks/hooks.json` and
+  `codex/install-codex.js`) — Codex has no context-window telemetry of its own and no
+  `PreCompact`/`PostCompact` mapping yet, so it relies entirely on the transcript estimate;
+  see `codex/skills/anti-hall-auto-handover-config/SKILL.md` for that gap.
+
 ## 0.107.0 (2026-09-24)
 
 - **Fixed: phantom unread.** The v0.106.0 reader-position import had declared every live

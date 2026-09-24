@@ -96,6 +96,11 @@
       {
         "hooks": [
           { "type": "command", "command": "node \"${PLUGIN_ROOT}/hooks/repair-on-reload.js\"", "timeout": 10 }
+          ]
+        },
+        {
+          "hooks": [
+          { "type": "command", "command": "node \"${PLUGIN_ROOT}/hooks/auto-handover.js\"", "timeout": 10 }
         ]
       }
     ],
@@ -153,6 +158,11 @@
       {
         "hooks": [
           { "type": "command", "command": "node \"${PLUGIN_ROOT}/hooks/devswarm-child-gate.js\"", "timeout": 30 }
+        ]
+      },
+      {
+        "hooks": [
+          { "type": "command", "command": "node \"${PLUGIN_ROOT}/hooks/auto-handover-pause-nag.js\"", "timeout": 30 }
         ]
       }
     ],

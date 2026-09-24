@@ -93,6 +93,7 @@ const ANTI_HALL_HOOKS = {
     group(null, ['devswarm-parent-inbox.js'], 10),
     group(null, ['devswarm-child-turn.js'], 10),
     group(null, ['repair-on-reload.js'], 10),
+    group(null, ['auto-handover.js'], 10),
   ],
   PreToolUse: [
     group('Bash', ['git-guard.js'], 10),
@@ -107,6 +108,7 @@ const ANTI_HALL_HOOKS = {
     group(null, ['claim-ledger.js'], 30),
     group(null, ['devswarm-parent-gate.js'], 30),
     group(null, ['devswarm-child-gate.js'], 30),
+    group(null, ['auto-handover-pause-nag.js'], 30),
   ],
   PostToolUse: [
     group('Bash', ['devswarm-parent-reply-tracker.js'], 10),

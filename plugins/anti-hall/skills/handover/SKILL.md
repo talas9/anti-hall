@@ -5,6 +5,13 @@ description: Use when the user says "prepare a handover", "handover", "write a h
 
 # Handover
 
+**Triggered automatically, too.** `hooks/auto-handover.js` (UserPromptSubmit) watches the
+main agent's estimated context usage and, at 85% by default (`autoHandover` section of
+`~/.anti-hall/settings.json`, or `ANTIHALL_AUTO_HANDOVER_PCT`; `auto-handover-config` skill
+to change it), injects a directive to run THIS skill's contract yourself, right now,
+without asking the user first — same self-write mandate as below. If you're reading this
+skill because that directive fired, follow it exactly as written; nothing else changes.
+
 Prepares a session handover: perishable job state (goal, current position, next
 executable step, decisions, dead ends, verification status) written to disk so a
 fresh session — with no memory of this one — can resume correctly and completely.

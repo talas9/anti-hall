@@ -9,6 +9,14 @@ Codex-native mirror of the Claude `handover` skill — same artifact contract
 and templates; only platform phrasing differs (no `/compact` references,
 `AGENTS.md` instead of `CLAUDE.md`).
 
+**Triggered automatically, too.** `hooks/auto-handover.js` (UserPromptSubmit, shared
+verbatim with the Claude plugin) watches the main agent's estimated context usage and, at
+85% by default (`autoHandover` section of `~/.anti-hall/settings.json`, or
+`ANTIHALL_AUTO_HANDOVER_PCT`; `anti-hall-auto-handover-config` skill to change it), injects
+a directive to run THIS skill's contract yourself, right now, without asking the user
+first — same self-write mandate as below. If you're reading this skill because that
+directive fired, follow it exactly as written; nothing else changes.
+
 Prepares a session handover: perishable job state (goal, current position,
 next executable step, decisions, dead ends, verification status) written to
 disk so a fresh session — with no memory of this one — resumes correctly.
