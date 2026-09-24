@@ -22,9 +22,25 @@
 //     - good-outcome rate < 60% among changed decisions with a known outcome, OR
 //     - failure rate (backend baseline-only due to a real jevDecide error,
 //       i.e. NOT counting 'disabled'/'off'/'not-applicable') > 20%
-//   KEEP if changed-decision rate >= 5% AND good-outcome rate >= 80%
+//   KEEP if changed-decision rate >= 5% AND good-outcome rate >= 80% AND at
+//     least one outcome has actually been observed (a NULL good-outcome rate
+//     — no outcome signal at all yet — can NEVER earn KEEP, regardless of
+//     changed-decision rate; it earns REVIEW instead).
 //   REVIEW otherwise (includes: p95 latency > the integration's own configured
 //     budget, or anything not meeting KEEP/REMOVE above).
+//
+// LABEL-ONLY INTEGRATIONS (e.g. newRequest, a `choice` classifier with no
+// boolean baseline to agree/disagree against): `agreementPct` is n/a (no
+// baseline), so the table instead reports a `label%` column — the top Jev
+// answer's share of calls — with the full distribution available via --json.
+// These integrations report a suggestion of their own too, but per the KEEP
+// rule above can never reach KEEP until a human-supplied outcome exists.
+//
+// TRIAGE ANSWER-TIME (hooks/lib/jev-triage.js recordAnswered): a SEPARATE
+// section (not part of the per-integration table, since it's latency data
+// keyed by urgency label, not a jev-assist.ndjson decision row) reads
+// jev-triage.ndjson's {type:'answered', urgency, latencyMs} rows and reports
+// p50/p95 time-to-answer for urgent vs non-urgent labeled messages.
 //
 // This script only READS the log; it never mutates jev.json or any state.
 
@@ -55,6 +71,10 @@ function isHttpFailure(reason) {
 
 function logPath(home) {
   return path.join((home || os.homedir()), '.anti-hall', 'logs', 'jev-assist.ndjson');
+}
+
+function triageLogPath(home) {
+  return path.join((home || os.homedir()), '.anti-hall', 'logs', 'jev-triage.ndjson');
 }
 
 function jevConfigPath(home) {
@@ -89,6 +109,43 @@ function readLines(home) {
     }
   }
   return rows;
+}
+
+// readTriageLines(home) -> array of parsed jev-triage.ndjson rows (both the
+// per-message classification lines and the recordAnswered() 'answered'
+// lines), same live+.1-backup read as readLines() above.
+function readTriageLines(home) {
+  const rows = [];
+  for (const suffix of ['.1', '']) {
+    try {
+      const raw = fs.readFileSync(triageLogPath(home) + suffix, 'utf8');
+      for (const line of raw.split('\n')) {
+        const t = line.trim();
+        if (!t) continue;
+        try { rows.push(JSON.parse(t)); } catch (_) { /* skip a corrupt line */ }
+      }
+    } catch (_) {
+      // file doesn't exist — fine, nothing to add
+    }
+  }
+  return rows;
+}
+
+// buildTriageAnswerReport(triageRows) -> {urgent:{n,p50,p95}, normal:{n,p50,p95}}
+// from {type:'answered', urgency, latencyMs} rows. `normal` buckets every
+// non-'urgent' labeled answer (kind-only or urgency:'normal').
+function buildTriageAnswerReport(triageRows) {
+  const buckets = { urgent: [], normal: [] };
+  for (const row of triageRows) {
+    if (!row || row.type !== 'answered' || !Number.isFinite(row.latencyMs)) continue;
+    const bucket = row.urgency === 'urgent' ? 'urgent' : 'normal';
+    buckets[bucket].push(row.latencyMs);
+  }
+  const summarize = (arr) => {
+    const sorted = arr.slice().sort((a, b) => a - b);
+    return { n: sorted.length, p50: percentile(sorted, 0.50), p95: percentile(sorted, 0.95) };
+  };
+  return { urgent: summarize(buckets.urgent), normal: summarize(buckets.normal) };
 }
 
 function percentile(sortedArr, p) {
@@ -144,6 +201,7 @@ function buildReport(rows, opts = {}) {
       byId.set(row.id, {
         id: row.id, calls: 0, jevAnswered: 0, cacheHits: 0, agree: 0, agreeTotal: 0,
         changed: { added: 0, relaxed: 0, changed: 0 }, failures: 0, latencies: [], hashes: [],
+        labelCounts: new Map(), labeled: 0,
       });
     }
     const bucket = byId.get(row.id);
@@ -154,6 +212,15 @@ function buildReport(rows, opts = {}) {
     if (row.jev !== null && row.jev !== undefined && row.base !== null && row.base !== undefined) {
       bucket.agreeTotal++;
       if (row.jev === row.base) bucket.agree++;
+    }
+    // LABEL DISTRIBUTION: a non-boolean `jev` answer (a `choice` question,
+    // e.g. newRequest's new-request/follow-up/correction/question) has no
+    // boolean baseline to agree/disagree against, so it is tallied here
+    // instead — the top label's share becomes the table's `label%` column;
+    // the full distribution is available via --json.
+    if (typeof row.jev === 'string') {
+      bucket.labeled++;
+      bucket.labelCounts.set(row.jev, (bucket.labelCounts.get(row.jev) || 0) + 1);
     }
     if (row.changed === 'added') bucket.changed.added++;
     else if (row.changed === 'relaxed') bucket.changed.relaxed++;
@@ -204,13 +271,30 @@ function buildReport(rows, opts = {}) {
       suggestion = 'REMOVE';
     } else if (
       changedRate >= KEEP_CHANGED_RATE &&
-      (goodOutcomeRate === null || goodOutcomeRate >= KEEP_GOOD_OUTCOME_RATE)
+      goodOutcomeRate !== null && goodOutcomeRate >= KEEP_GOOD_OUTCOME_RATE
     ) {
+      // KEEP requires an ACTUAL outcome signal (goodOutcomeRate !== null) —
+      // a high changed-decision rate alone (Jev moving lots of decisions)
+      // proves nothing about whether those moves were good ones.
       suggestion = 'KEEP';
+    } else if (bucket.labeled > 0 && known === 0) {
+      // Label-only integration (a `choice` classifier, no boolean baseline)
+      // with zero human-supplied outcomes yet: never KEEP, always REVIEW.
+      suggestion = 'REVIEW (label-only, no outcome signal yet)';
     } else if (Number.isFinite(budgetMs) && Number.isFinite(p95) && p95 > budgetMs) {
       suggestion = 'REVIEW (p95 latency exceeds budget)';
     } else {
       suggestion = 'REVIEW';
+    }
+
+    let topLabel = null; let labelPct = null;
+    const labelDistribution = {};
+    if (bucket.labeled > 0) {
+      for (const [label, n] of bucket.labelCounts) {
+        labelDistribution[label] = n / bucket.labeled;
+        if (topLabel === null || n > bucket.labelCounts.get(topLabel)) topLabel = label;
+      }
+      labelPct = bucket.labelCounts.get(topLabel) / bucket.labeled;
     }
 
     integrations.push({
@@ -219,6 +303,9 @@ function buildReport(rows, opts = {}) {
       jevAnsweredPct: bucket.calls > 0 ? bucket.jevAnswered / bucket.calls : 0,
       cacheHits: bucket.cacheHits,
       agreementPct,
+      topLabel,
+      labelPct,
+      labelDistribution,
       changed: bucket.changed,
       changedRate,
       goodOutcomeRate,
@@ -233,7 +320,13 @@ function buildReport(rows, opts = {}) {
   }
 
   integrations.sort((a, b) => b.calls - a.calls);
-  return { generatedAt: new Date(now).toISOString(), costPerCallKnown: Number.isFinite(opts.costPerCall), integrations };
+  const triageAnswers = buildTriageAnswerReport(opts.triageRows || []);
+  return {
+    generatedAt: new Date(now).toISOString(),
+    costPerCallKnown: Number.isFinite(opts.costPerCall),
+    integrations,
+    triageAnswers,
+  };
 }
 
 function pct(n) {
@@ -246,9 +339,10 @@ function printTable(report) {
     console.log('No jev-assist.ndjson activity found for this window.');
     return;
   }
-  const header = ['integration', 'calls', 'jev%', 'cache', 'agree%', 'added', 'relaxed', 'changed%', 'good-outcome%', 'outcome(jev/regex)', 'p50ms', 'p95ms', 'cost', 'suggestion'];
+  const header = ['integration', 'calls', 'jev%', 'cache', 'agree%/label%', 'added', 'relaxed', 'changed%', 'good-outcome%', 'outcome(jev/regex)', 'p50ms', 'p95ms', 'cost', 'suggestion'];
   const rows = report.integrations.map((r) => [
-    r.id, String(r.calls), pct(r.jevAnsweredPct), String(r.cacheHits), pct(r.agreementPct),
+    r.id, String(r.calls), pct(r.jevAnsweredPct), String(r.cacheHits),
+    r.topLabel != null ? `${pct(r.labelPct)} (${r.topLabel})` : pct(r.agreementPct),
     String(r.changed.added), String(r.changed.relaxed), pct(r.changedRate), pct(r.goodOutcomeRate),
     `${pct(r.outcomeRateBySource.jev)}/${pct(r.outcomeRateBySource.regex)}`,
     r.p50 == null ? 'n/a' : String(r.p50), r.p95 == null ? 'n/a' : String(r.p95),
@@ -262,14 +356,22 @@ function printTable(report) {
   if (!report.costPerCallKnown) {
     console.log('\ncost: n/a — set jev.json "costPerCall" (owner-supplied $/call estimate) to enable.');
   }
+
+  const ta = report.triageAnswers;
+  if (ta && (ta.urgent.n > 0 || ta.normal.n > 0)) {
+    console.log('\ntriage answer-time (ms, time from a labeled inbound to the next outbound reply):');
+    console.log(`  urgent:     n=${ta.urgent.n}  p50=${ta.urgent.p50 == null ? 'n/a' : ta.urgent.p50}  p95=${ta.urgent.p95 == null ? 'n/a' : ta.urgent.p95}`);
+    console.log(`  non-urgent: n=${ta.normal.n}  p50=${ta.normal.p50 == null ? 'n/a' : ta.normal.p50}  p95=${ta.normal.p95 == null ? 'n/a' : ta.normal.p95}`);
+  }
 }
 
 function main() {
   const opts = parseArgs(process.argv.slice(2));
   const home = opts.home;
   const rows = readLines(home);
+  const triageRows = readTriageLines(home);
   const costPerCall = readCostPerCall(home);
-  const report = buildReport(rows, { days: opts.days, costPerCall });
+  const report = buildReport(rows, { days: opts.days, costPerCall, triageRows });
   if (opts.json) {
     process.stdout.write(JSON.stringify(report, null, 2) + '\n');
   } else {
@@ -277,7 +379,7 @@ function main() {
   }
 }
 
-module.exports = { buildReport, readLines, percentile };
+module.exports = { buildReport, readLines, readTriageLines, buildTriageAnswerReport, percentile };
 
 if (require.main === module) {
   main();

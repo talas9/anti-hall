@@ -453,6 +453,34 @@ try {
   let skipped = false;
   try { skipped = require('./skip-guard.js').isSkipped('task-tracker'); } catch (_) { skipped = false; }
 
+  // JEV SHADOW (newRequest, default mode "shadow"): fire-and-forget
+  // classification of the prompt into {new-request, follow-up, correction,
+  // question}. baseline = null/unknown — this NEVER affects the injected
+  // text below, and MUST add zero latency to this critical-path hook, so it
+  // is dispatched via askDetached (spawn detached + stdio ignore + unref) —
+  // the label lands in jev-assist.ndjson only, for `jev report` to show
+  // label distribution/agreement once a human has judged some outcomes.
+  if (!skipped && typeof payload.prompt === 'string' && payload.prompt.trim()) {
+    try {
+      require('./lib/jev-assist.js').askDetached({
+        id: 'newRequest',
+        question: {
+          type: 'choice',
+          instructions: 'Classify the user\'s message below.',
+          criteria: {
+            'new-request': 'a new, previously-unstated request or task',
+            'follow-up': 'continuing or elaborating on work already in progress',
+            correction: 'correcting or redirecting prior work',
+            question: 'a question seeking information, not asking for new work',
+          },
+        },
+        state: payload.prompt.slice(0, 4000),
+        trust: 'advisory',
+        baseline: null,
+      });
+    } catch (_) { /* best-effort — never affects the injected context */ }
+  }
+
   let text;
   if (skipped) {
     text = '';

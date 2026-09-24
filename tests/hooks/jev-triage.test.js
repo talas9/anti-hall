@@ -35,7 +35,7 @@ for (const k of Object.keys(process.env)) {
 }
 
 const LIB = require.resolve('../../plugins/anti-hall/hooks/lib/jev-triage.js');
-const { triageMessagesSync, loadTriageConfig, hashMessage } = require(LIB);
+const { triageMessagesSync, loadTriageConfig, hashMessage, noteLabeledInbound, recordAnswered } = require(LIB);
 
 function tmpHome() {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'jev-triage-test-'));
@@ -276,5 +276,59 @@ test('timeout: server never responds -> no label, run stays within the configure
       assert.deepStrictEqual(parsed, []);
       assert.ok(elapsed < 5000, `expected to stay well within budget, took ${elapsed}ms`);
     });
+  } finally { rm(home); }
+});
+
+// ---------------------------------------------------------------------------
+// noteLabeledInbound / recordAnswered — answer-latency tracking (outcome #4)
+// ---------------------------------------------------------------------------
+
+test('recordAnswered: logs time-to-answer + a joinable jev-assist outcome row when a pending labeled inbound exists', () => {
+  const home = tmpHome();
+  try {
+    noteLabeledInbound({ home, recipient: 'me', sender: 'them', label: { urgency: 'urgent' } });
+    recordAnswered({ home, from: 'me', to: 'them' });
+
+    const triageLogPath = path.join(home, '.anti-hall', 'logs', 'jev-triage.ndjson');
+    const rows = fs.readFileSync(triageLogPath, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+    const answered = rows.find((r) => r.type === 'answered');
+    assert.ok(answered, 'expected an {type:"answered"} row in jev-triage.ndjson');
+    assert.strictEqual(answered.urgency, 'urgent');
+    assert.ok(Number.isFinite(answered.latencyMs) && answered.latencyMs >= 0);
+
+    const assistLogPath = path.join(home, '.anti-hall', 'logs', 'jev-assist.ndjson');
+    const assistRows = fs.readFileSync(assistLogPath, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+    const outcome = assistRows.find((r) => r.type === 'outcome' && r.id === 'triage');
+    assert.ok(outcome, 'expected a joinable {type:"outcome", id:"triage"} row in jev-assist.ndjson');
+    assert.strictEqual(outcome.outcome, 'answered');
+  } finally { rm(home); }
+});
+
+test('recordAnswered: no pending inbound -> no-op, no files created', () => {
+  const home = tmpHome();
+  try {
+    recordAnswered({ home, from: 'me', to: 'nobody-ever-messaged' });
+    assert.strictEqual(fs.existsSync(path.join(home, '.anti-hall', 'logs', 'jev-triage.ndjson')), false);
+  } finally { rm(home); }
+});
+
+test('recordAnswered: clears the pending entry (a second send does not re-log)', () => {
+  const home = tmpHome();
+  try {
+    noteLabeledInbound({ home, recipient: 'me', sender: 'them', label: { kind: 'blocker' } });
+    recordAnswered({ home, from: 'me', to: 'them' });
+    recordAnswered({ home, from: 'me', to: 'them' });
+    const rows = fs.readFileSync(path.join(home, '.anti-hall', 'logs', 'jev-triage.ndjson'), 'utf8')
+      .trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
+    assert.strictEqual(rows.filter((r) => r.type === 'answered').length, 1, 'second send must not double-log');
+  } finally { rm(home); }
+});
+
+test('noteLabeledInbound: an unlabeled message (no urgency/kind) never creates a pending entry', () => {
+  const home = tmpHome();
+  try {
+    noteLabeledInbound({ home, recipient: 'me', sender: 'them', label: {} });
+    recordAnswered({ home, from: 'me', to: 'them' });
+    assert.strictEqual(fs.existsSync(path.join(home, '.anti-hall', 'logs', 'jev-triage.ndjson')), false);
   } finally { rm(home); }
 });

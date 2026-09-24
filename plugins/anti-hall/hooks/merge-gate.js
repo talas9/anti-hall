@@ -297,7 +297,36 @@ function main() {
 
   const hedge = firstHedge(text);
   if (!hedge) process.exit(0);           // no hedge -> allow
-  if (!isHedgeUnresolved(text)) process.exit(0); // hedge present but resolved (or resolution came after) -> allow
+  const unresolved = isHedgeUnresolved(text);
+
+  // JEV SHADOW (mergeGateHedge, default mode "shadow"): only on merge
+  // commands (already this gate's scope, reached above). baseline = the
+  // regex's own isHedgeUnresolved() verdict; trust 'relax-block' means an
+  // "on" promotion could let a confident Jev disagreement relax the block —
+  // but this hook is on the USER'S CRITICAL PATH (it gates a live Bash tool
+  // call), so shadow's ask must add ZERO latency: dispatched via
+  // askDetached (fire-and-forget), never askSync. NOTE: because of that,
+  // even a future "on" promotion of THIS id would not actually relax the
+  // exit code below (the caller never sees the answer) — an "on" mode for
+  // mergeGateHedge would need to switch back to askSync deliberately,
+  // trading latency for enforcement. Shadow logs to jev-assist.ndjson only.
+  try {
+    require('./lib/jev-assist.js').askDetached({
+      id: 'mergeGateHedge',
+      question: {
+        type: 'noul',
+        instructions: 'Does the recent reply text below contain an UNRESOLVED ' +
+          'self-hedge (e.g. "pending review", "first-pass", "do not merge") that ' +
+          'was never followed by a resolution/sign-off?',
+        criteria: { true: 'unresolved hedge present', false: 'no unresolved hedge' },
+      },
+      state: text.slice(-4000),
+      trust: 'relax-block',
+      baseline: unresolved,
+    });
+  } catch (_) { /* best-effort — never affects the gate's own decision */ }
+
+  if (!unresolved) process.exit(0); // hedge present but resolved (or resolution came after) -> allow
 
   // 6. Unresolved hedge + auto-merge -> BLOCK.
   // Report the LAST hedge that actually triggered the block (order-sensitive).

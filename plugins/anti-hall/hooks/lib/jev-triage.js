@@ -280,10 +280,100 @@ function triageMessagesSync(items, opts) {
   return results;
 }
 
+// pendingPath(home) — one small JSON map of (recipient, sender) pairs
+// awaiting a first reply, so recordAnswered() can compute time-to-answer.
+function pendingPath(home) {
+  return path.join(homeDir(home), '.anti-hall', 'state', 'jev-triage-pending.json');
+}
+
+function readPending(home) {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(pendingPath(home), 'utf8'));
+    return (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) ? parsed : {};
+  } catch (_) {
+    return {};
+  }
+}
+
+function writePending(home, all) {
+  try {
+    const p = pendingPath(home);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    const tmp = p + '.tmp.' + process.pid;
+    fs.writeFileSync(tmp, JSON.stringify(all), 'utf8');
+    fs.renameSync(tmp, p);
+  } catch (_) {
+    // best-effort only.
+  }
+}
+
+// noteLabeledInbound({home, recipient, sender, label}) — record that
+// `recipient` just received a labeled message (urgency and/or kind set) FROM
+// `sender`, so a later recordAnswered() call (when `recipient` next sends
+// `sender` a message) can log the time-to-answer. Only the most recent
+// unanswered inbound per (recipient, sender) pair is kept. Best-effort:
+// never throws, and a missing `home`/`recipient`/`sender`/`label` is a no-op.
+function noteLabeledInbound({ home, recipient, sender, label } = {}) {
+  if (!home || recipient == null || sender == null || !label || (!label.urgency && !label.kind)) return;
+  try {
+    const all = readPending(home);
+    const key = String(recipient) + '\u0001' + String(sender);
+    all[key] = { ts: Date.now(), urgency: label.urgency || null, kind: label.kind || null };
+    writePending(home, all);
+  } catch (_) { /* best-effort */ }
+}
+
+// recordAnswered({home, from, to}) — `from` is about to send a message TO
+// `to`. If `to` (as the earlier SENDER) previously sent `from` a labeled
+// message with no answer recorded yet (see noteLabeledInbound), log the
+// time-to-answer: appends {type:'answered', urgency, kind, latencyMs} to
+// jev-triage.ndjson (for `jev report`'s urgent-vs-non-urgent comparison) AND
+// a joinable outcome row via jev-assist's recordOutcome (id 'triage').
+// Best-effort, fail-open: never throws, never delays or blocks the send.
+function recordAnswered({ home, from, to } = {}) {
+  if (!home || from == null || to == null) return;
+  try {
+    const all = readPending(home);
+    // noteLabeledInbound stores keys as recipient+sep+sender; here `from` is
+    // the recipient of the ORIGINAL labeled message (about to answer) and
+    // `to` was its sender — same (recipient, sender) order, NOT reversed.
+    const key = String(from) + '\u0001' + String(to);
+    const pending = all[key];
+    if (!pending) return;
+    const latencyMs = Date.now() - pending.ts;
+    delete all[key];
+    writePending(home, all);
+
+    appendTriageLog(home, {
+      ts: new Date().toISOString(),
+      type: 'answered',
+      urgency: pending.urgency,
+      kind: pending.kind,
+      latencyMs,
+    });
+
+    try {
+      const { recordOutcome } = require('./jev-assist.js');
+      recordOutcome({
+        id: 'triage',
+        h: hashMessage(key + '\u0001' + pending.ts),
+        outcome: 'answered',
+        source: 'triage-answer-latency',
+        home,
+      });
+    } catch (_) { /* jev-assist unavailable — the ndjson row above still lands */ }
+  } catch (_) {
+    // best-effort only — a latency-tracking failure must never affect sending.
+  }
+}
+
 module.exports = {
   loadTriageConfig,
   hashMessage,
   triageMessagesSync,
+  noteLabeledInbound,
+  recordAnswered,
+  pendingPath,
   cachePath,
   logPath,
   MAX_CACHE_ENTRIES,

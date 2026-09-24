@@ -410,11 +410,20 @@ Any Jev failure (disabled, no key, timeout, bad response), low confidence, or
 `mode !== "on"` always resolves to the baseline — jev-assist never overrides a caller on
 its own authority.
 
-**Two APIs:** `ask(...)` (async, for callers that can `await`, e.g.
-speculation-guard's Stop hook) and `askSync(...)` (fully synchronous — the network call
+**Three APIs:** `ask(...)` (async, for callers that can `await`, e.g.
+speculation-guard's Stop hook), `askSync(...)` (fully synchronous — the network call
 runs in a subprocess, `jev-assist-worker.js`, spawned via `execFileSync` with its own
 hard timeout, the same pattern §9's `jev-triage-worker.js` uses — for callers like
-model-routing-guard's PreToolUse `main()` that cannot await).
+model-routing-guard's PreToolUse `main()` that cannot await), and `askDetached(...)`
+(fire-and-forget — spawns `jev-assist-detached-worker.js` DETACHED, `stdio: 'ignore'`,
+`unref()`'d, and returns immediately without waiting on the network call or even the
+child starting). `askDetached` is MANDATORY for any integration on the user's critical
+path (`UserPromptSubmit`, `PostToolUse`) — those hooks have a real latency budget and
+must never wait on Jev, even in shadow mode. `askSync`/`ask` remain fine for `Stop`
+hooks (their own turn is already ending) and for rare, already-gated paths (e.g. a
+merge command). Limit: `askDetached` cannot accept a `judge` function (it can't cross
+the stdin JSON boundary) — a caller needing custom answer normalization uses
+`ask`/`askSync` instead.
 
 **Wired integrations (2026-09):**
 
@@ -438,8 +447,32 @@ model-routing-guard's PreToolUse `main()` that cannot await).
   logged, so `jev report` can show whether promoting it to `"on"` is worth it before an
   owner does so. `command-guard`, `git-guard`, and `edit-guard` are NEVER wired to Jev —
   those stay pure, unconditional guards.
-- **Not yet wired (left `shadow`-only/future work, by design):** claim-ledger,
-  merge-gate, new-request capture. Do not wire these without a fresh owner sign-off.
+**All wired integrations:**
+
+| id | hook / event | trust | API used | default mode | outcome signal |
+|---|---|---|---|---|---|
+| `speculation` | speculation-guard.js (`Stop`) | `add-block` | `ask` | `on` (legacy) | none wired |
+| `triage` | jev-triage.js (`UserPromptSubmit`/CLI reads) | n/a (label-only, §9) | own client, not jev-assist | `on` (legacy) | `recordAnswered` — time-to-answer (below) |
+| `modelRouting` | model-routing-guard.js (`PreToolUse`) | `relax-block` | `askSync` | `shadow` | none wired |
+| `claimLedger` | claim-ledger.js (`Stop`, per flagged claim) | `relax-block` | `askSync` | `shadow` | none wired |
+| `mergeGateHedge` | merge-gate.js (`PreToolUse`, merge commands only) | `relax-block` | `askDetached` (critical-path — a Bash tool call is gating the user's turn) | `shadow` | none wired |
+| `newRequest` | task-tracker.js (`UserPromptSubmit`) | `advisory` (label-only: `new-request`/`follow-up`/`correction`/`question`) | `askDetached` (critical path) | `shadow`, baseline always `null` | none wired |
+| `outputVerifyGuard` | output-verify-guard.js (`PostToolUse`, test-runner commands only) | `advisory` | `askDetached` (critical path) | `shadow` | none wired |
+
+`claimLedger`/`mergeGateHedge`/`newRequest`/`outputVerifyGuard` were shipped
+shadow-only in this release specifically so `jev report` can show agreement/label
+distribution before any owner promotes one to `"on"`. Promoting `mergeGateHedge` to
+`"on"` would need switching it from `askDetached` back to `askSync` (a fire-and-forget
+call can never feed its answer back into a decision the caller already returned from).
+
+**Triage answer-time (`recordAnswered`, `hooks/lib/jev-triage.js`):** when a
+DevSwarm Primary/child reads a labeled inbound message (`noteLabeledInbound`, called
+from `scripts/devswarm.js`'s `cmdInboxMessagesInner`) and later sends that sender a
+reply (`recordAnswered`, called from `cmdSend`), the time-to-answer is appended to
+`jev-triage.ndjson` as `{"type":"answered","urgency","kind","latencyMs"}`, plus a
+joinable `{"type":"outcome","id":"triage",...}` row in `jev-assist.ndjson`. Best-effort
+and fail-open: a tracking failure never delays or blocks a send. `jev report` shows
+urgent-vs-non-urgent p50/p95 answer time from this data (§ below).
 
 **Cache:** `~/.anti-hall/cache/jev-assist.json`, keyed by
 `sha256(integrationId + questionVersion + (cacheKey ?? state))`, bounded to 500 entries
@@ -460,8 +493,9 @@ same hygiene contract as `jev-judge.ndjson`/`jev-triage.ndjson`.
 `recordOutcome({id, h, outcome})` appends a second line shape —
 `{"ts":...,"type":"outcome","id":"speculation","h":"7ec9db0d18c23962","outcome":"evidence-added"}`
 — so a later-observed result can be joined back to the decision that produced it, by
-hash, when a caller chooses to wire outcome capture (not yet wired for any integration
-in this release — the log format supports it for when it is).
+hash, when a caller chooses to wire outcome capture. Wired for `triage` (via
+`recordAnswered`'s time-to-answer, above); not yet wired for any other integration in
+this release — the log format supports it for when it is.
 
 **`jev report`** (`scripts/jev-report.js`, read-only):
 
@@ -470,14 +504,21 @@ node plugins/anti-hall/scripts/jev-report.js [--days 7] [--json]
 ```
 
 Per integration: calls, jev-answered %, cache hits, agreement % (Jev vs baseline, only
-where both exist), decisions changed (by direction), outcome rates (joined by hash),
-latency p50/p95, an ESTIMATED cost (`calls × jev.json "costPerCall"`, an owner-supplied
-constant — shows `n/a` if unset; this is a rough estimate, not a bill), and a
-KEEP/REVIEW/REMOVE suggestion. Thresholds (documented in the script's header, tune by
-editing them there): below 50 calls always `REVIEW (not enough data)`; `REMOVE` at ≥200
-calls when changed-rate <1%, or good-outcome-rate <60%, or failure-rate >20%; `KEEP`
-when changed-rate ≥5% AND good-outcome-rate ≥80%; `REVIEW` otherwise (including p95
-latency over the integration's configured budget).
+where both exist) OR, for a label-only `choice` integration (no boolean baseline, e.g.
+`newRequest`), the top label's share plus the full distribution via `--json`, decisions
+changed (by direction), outcome rates (joined by hash), latency p50/p95, an ESTIMATED
+cost (`calls × jev.json "costPerCall"`, an owner-supplied constant — shows `n/a` if
+unset; this is a rough estimate, not a bill), and a KEEP/REVIEW/REMOVE suggestion.
+Thresholds (documented in the script's header, tune by editing them there): below 50
+calls always `REVIEW (not enough data)`; `REMOVE` at ≥200 calls when changed-rate <1%,
+or good-outcome-rate <60%, or failure-rate >20%; `KEEP` when changed-rate ≥5% AND
+good-outcome-rate ≥80% — **and only when an outcome signal actually exists**: a `null`
+good-outcome-rate (no `recordOutcome` ever observed for this integration) can NEVER earn
+`KEEP`, no matter how high the changed-decision rate is; a label-only integration with
+zero outcomes reports `REVIEW (label-only, no outcome signal yet)`. `REVIEW` otherwise
+(including p95 latency over the integration's configured budget). A separate section
+(not per-integration, since it's latency keyed by urgency, not a decision row) reports
+`triage`'s urgent-vs-non-urgent time-to-answer p50/p95 from `recordAnswered`'s data.
 
 **Codex parity:** speculation-guard.js, speculation-judge.js, and model-routing-guard.js
 are all shared files under `plugins/anti-hall/hooks/` (§ codex/README.md) — the Codex

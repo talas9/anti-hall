@@ -118,6 +118,53 @@ test('non-Bash tool_name -> no annotation even with mixed text', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Test-runner scoping (deterministic fix): only a command whose COMMAND-
+// POSITION verb is an actual test runner is evaluated at all — a grep of
+// source code containing both words is not a test run.
+// ---------------------------------------------------------------------------
+
+test('grep of source containing PASS and FAIL -> no annotation (not a test-runner command)', () => {
+  const h = makeHome();
+  try {
+    const payload = postToolUsePayload(
+      { stdout: 'export const PASS = 1;\nexport const FAIL = 0;\n', exit_code: 0 },
+      { command: 'grep -n "PASS\\|FAIL" src/constants.js' }
+    );
+    const r = testHook(HOOK, payload, { home: h.home });
+    assert.strictEqual(r.status, 0);
+    assert.strictEqual(ctx(r), '', 'a plain grep is not a test runner; must never annotate');
+  } finally { h.cleanup(); }
+});
+
+test('real mixed test-runner output (pytest) -> annotation unchanged', () => {
+  const h = makeHome();
+  try {
+    const payload = postToolUsePayload(
+      { stdout: '2 failed, 8 passed in 1.23s\n', exit_code: 1 },
+      { command: 'pytest -q' }
+    );
+    const r = testHook(HOOK, payload, { home: h.home, expectJson: true });
+    assert.strictEqual(r.status, 0);
+    assert.ok(ctx(r).includes('output-verify-guard'), 'pytest mixed result must still annotate');
+  } finally { h.cleanup(); }
+});
+
+test('go test verb+subcommand recognized; npm run test recognized; plain npm not', () => {
+  const h = makeHome();
+  const mixed = { stdout: '--- FAIL: TestFoo\n--- PASS: TestBar\nFAIL\tpkg\t0.01s\n', exit_code: 1 };
+  try {
+    let r = testHook(HOOK, postToolUsePayload(mixed, { command: 'go test ./...' }), { home: h.home, expectJson: true });
+    assert.ok(ctx(r).length > 0, 'go test must be recognized as a runner');
+
+    r = testHook(HOOK, postToolUsePayload(mixed, { command: 'npm run test' }), { home: h.home, expectJson: true });
+    assert.ok(ctx(r).length > 0, 'npm run test must be recognized as a runner');
+
+    r = testHook(HOOK, postToolUsePayload(mixed, { command: 'npm run build' }), { home: h.home });
+    assert.strictEqual(ctx(r), '', 'npm run build (not test) must not be evaluated');
+  } finally { h.cleanup(); }
+});
+
+// ---------------------------------------------------------------------------
 // Fail-open: malformed / empty stdin must never block.
 // ---------------------------------------------------------------------------
 

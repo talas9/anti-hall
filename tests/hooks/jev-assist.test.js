@@ -377,3 +377,111 @@ test('askSync(): relax-block via subprocess, confident non-mechanical relaxes th
     });
   } finally { h.cleanup(); }
 });
+
+// ---------------------------------------------------------------------------
+// askDetached() — fire-and-forget path (UserPromptSubmit/PostToolUse callers)
+// ---------------------------------------------------------------------------
+
+// waitForLog(p, predicate) — poll a small number of times for the detached
+// child's own async write to land (it runs in a separate, unref()'d process
+// this test process does not otherwise wait on).
+async function waitForLog(p, predicate, attempts = 30) {
+  for (let i = 0; i < attempts; i++) {
+    const rows = readNdjson(p);
+    const hit = rows.find(predicate);
+    if (hit) return hit;
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  return null;
+}
+
+test('askDetached(): returns synchronously without waiting on the network call', async () => {
+  const h = makeHome();
+  try {
+    h.writeState('jev.json', { enabled: true, integrations: { newRequest: 'shadow' } });
+    await withMockServer((req, res) => {
+      let raw = '';
+      req.on('data', (c) => { raw += c; });
+      // Simulate a slow Jev backend; askDetached must not make the CALLER wait on this.
+      req.on('end', () => {
+        setTimeout(() => {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ answers: { decision: { choice: 'new-request', confidence: 0.9 } } }));
+        }, 800);
+      });
+    }, async (endpoint) => {
+      await withEnv({ HOME: h.home, AI_GATEWAY_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
+        const { askDetached } = freshLib();
+        const t0 = Date.now();
+        askDetached({ id: 'newRequest', question: CHOICE_Q, state: 'please fix the bug', trust: 'advisory', baseline: null });
+        const elapsed = Date.now() - t0;
+        assert.ok(elapsed < 200, `askDetached must return near-instantly; took ${elapsed}ms`);
+
+        const p = path.join(h.home, '.anti-hall', 'logs', 'jev-assist.ndjson');
+        const hit = await waitForLog(p, (r) => r.id === 'newRequest');
+        assert.ok(hit, 'the detached worker must still land a decision row eventually');
+        assert.strictEqual(hit.mode, 'shadow');
+        assert.strictEqual(hit.final, hit.base, 'shadow mode: final must equal baseline');
+        assert.strictEqual(hit.final, null);
+      });
+    });
+  } finally { h.cleanup(); }
+});
+
+test('askDetached(): mode off -> no network call (baseline-only), still returns instantly', async () => {
+  const h = makeHome();
+  try {
+    // no jev.json at all -> globally disabled (mode 'off'). A decision row
+    // still lands (every ask()/askSync()/askDetached() call always logs, per
+    // jev-assist.js's own contract — that's how call-volume/failure-rate
+    // tracking works uniformly) but backend must be 'baseline-only': no
+    // network call was ever attempted.
+    await withEnv({ HOME: h.home }, async () => {
+      const { askDetached } = freshLib();
+      const t0 = Date.now();
+      askDetached({ id: 'newRequest', question: CHOICE_Q, state: 'x', trust: 'advisory', baseline: null });
+      assert.ok(Date.now() - t0 < 100);
+      const p = path.join(h.home, '.anti-hall', 'logs', 'jev-assist.ndjson');
+      const hit = await waitForLog(p, (r) => r.id === 'newRequest');
+      assert.ok(hit, 'expected a baseline-only decision row even in mode off');
+      assert.strictEqual(hit.mode, 'off');
+      assert.strictEqual(hit.backend, 'baseline-only');
+      assert.strictEqual(hit.jev, null, 'mode off must never reach the network, so jev must be null');
+      assert.strictEqual(hit.final, hit.base);
+    });
+  } finally { h.cleanup(); }
+});
+
+// ---------------------------------------------------------------------------
+// Shadow-log row shape for the newly-wired integrations (claimLedger,
+// mergeGateHedge, newRequest): final MUST equal baseline in shadow mode.
+// ---------------------------------------------------------------------------
+
+test('ask()/askSync() shadow-log row: claimLedger and mergeGateHedge default to shadow -> final always equals baseline', async () => {
+  const h = makeHome();
+  try {
+    h.writeState('jev.json', { enabled: true }); // no explicit integrations map -> both default "shadow"
+    await withMockServer(noulHandler(0.99), async (endpoint) => {
+      await withEnv({ HOME: h.home, AI_GATEWAY_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
+        const { ask, getMode } = freshLib();
+        assert.strictEqual(getMode('claimLedger', { enabled: true }), 'shadow');
+        assert.strictEqual(getMode('mergeGateHedge', { enabled: true }), 'shadow');
+
+        const r1 = await ask({ id: 'claimLedger', question: NOUL_Q, state: 'claim: 12 files', trust: 'relax-block', baseline: true });
+        assert.strictEqual(r1.final, true, 'shadow: final must equal baseline (true) even though Jev said false at conf 0.99');
+        assert.strictEqual(r1.backend, 'jev');
+
+        const r2 = await ask({ id: 'mergeGateHedge', question: NOUL_Q, state: 'pending review', trust: 'relax-block', baseline: true });
+        assert.strictEqual(r2.final, true, 'shadow: final must equal baseline for mergeGateHedge too');
+
+        const log = readNdjson(path.join(h.home, '.anti-hall', 'logs', 'jev-assist.ndjson'));
+        const rows = log.filter((r) => r.id === 'claimLedger' || r.id === 'mergeGateHedge');
+        assert.strictEqual(rows.length, 2);
+        for (const row of rows) {
+          assert.strictEqual(row.mode, 'shadow');
+          assert.strictEqual(row.final, row.base, `row ${row.id}: final must equal base in shadow mode`);
+        }
+      });
+    });
+  } finally { h.cleanup(); }
+});

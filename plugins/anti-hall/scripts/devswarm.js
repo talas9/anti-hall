@@ -9455,12 +9455,20 @@ function cmdInboxMessagesInner(id, flags, ctx, opts) {
   // `total` above, all already computed. See hooks/lib/jev-triage.js.
   if (Array.isArray(messages) && messages.length) {
     try {
-      const { triageMessagesSync } = require('../hooks/lib/jev-triage.js');
+      const jevTriageLib = require('../hooks/lib/jev-triage.js');
+      const { triageMessagesSync } = jevTriageLib;
       const items = messages.map((m, i) => ({ key: i, text: m && m.body != null ? String(m.body) : '' }));
       const labels = triageMessagesSync(items, { home });
       if (labels.size) {
         messages = messages.map((m, i) => {
           const label = labels.get(i);
+          if (label) {
+            // JEV outcome tracking (best-effort, fail-open): remember that
+            // `id` (this reader) received a labeled message from m.sender,
+            // so a later cmdSend(from: id, to: sender) can log the
+            // time-to-answer. Never affects the returned row.
+            try { jevTriageLib.noteLabeledInbound({ home, recipient: id, sender: m && m.sender, label }); } catch (_) {}
+          }
           return label ? Object.assign({}, m, { triage: label }) : m;
         });
       }
@@ -12970,6 +12978,17 @@ function cmdSend(flags, ctx) {
     return { ok: false, error: 'send requires --to <meshId>, --to-primary, or --broadcast' };
   }
   const type = broadcastFlag ? 'broadcast' : 'direct';
+
+  // JEV outcome tracking (best-effort, fail-open, direct sends only — a
+  // broadcast has no single recipient's pending question to answer): `from`
+  // is about to send `toFlag` a message; if `toFlag` previously sent `from`
+  // a labeled (urgent/kind) message with no answer recorded yet (see
+  // hooks/lib/jev-triage.js noteLabeledInbound, called from
+  // cmdInboxMessagesInner), this logs the time-to-answer. NEVER affects the
+  // send itself — a tracking failure here must never block/delay a message.
+  if (type === 'direct' && toFlag !== undefined) {
+    try { require('../hooks/lib/jev-triage.js').recordAnswered({ home, from, to: toFlag }); } catch (_) {}
+  }
 
   // --question (D-devswarm-parent-decide-gate §4.1): marks this send as a
   // blocking question needing a reply (needs_reply); never valid on a broadcast.

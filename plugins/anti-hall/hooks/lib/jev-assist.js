@@ -72,13 +72,14 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
-const { execFileSync } = require('child_process');
+const { execFileSync, spawn } = require('child_process');
 const { jevDecide, loadJevConfig } = require('./jev-client.js');
 
 const CACHE_MAX_ENTRIES = 500;
 const LOG_MAX_BYTES = 1024 * 1024; // 1MB, one rotated backup kept (.1)
 const QUESTION_VERSION = 'v1';
 const WORKER_PATH = path.join(__dirname, 'jev-assist-worker.js');
+const DETACHED_WORKER_PATH = path.join(__dirname, 'jev-assist-detached-worker.js');
 const DEFAULT_SYNC_TIMEOUT_MS = 1500;
 
 // Integrations that predate the per-integration modes map and must keep
@@ -379,9 +380,49 @@ function askSync(opts = {}) {
   return finalize({ id, home: h, hash, mode, trust, baseline, judge, threshold, r, cachedFlag });
 }
 
+// askDetached(opts) — fire-and-forget variant for callers on the user's
+// CRITICAL PATH (UserPromptSubmit, PostToolUse) that must add ZERO latency.
+// Spawns jev-assist-detached-worker.js DETACHED (own process group), pipes
+// the (JSON-serializable) opts to its stdin, ignores its stdout/stderr, and
+// unref()s it immediately — this function returns synchronously without
+// ever waiting on the network call or even on the child starting up. The
+// worker performs the FULL ask() flow itself (mode/cache/trust/log) in its
+// own process, so a decision row still lands in jev-assist.ndjson exactly as
+// it would for ask()/askSync() — this caller just never sees the result.
+//
+// LIMIT: `judge` (a function) cannot cross the stdin JSON boundary, so
+// callers needing custom answer normalization must use ask()/askSync()
+// instead. Every other option (id, question, state, trust, baseline,
+// cacheKey, budgetMs, home) works exactly as documented above.
+//
+// Never throws; a spawn failure is swallowed (best-effort, matches every
+// other I/O path in this file).
+function askDetached(opts = {}) {
+  try {
+    const { id, question, state, trust, baseline, cacheKey, budgetMs, home } = opts;
+    const input = JSON.stringify({ id, question, state, trust, baseline, cacheKey, budgetMs, home });
+    const child = spawn(process.execPath, [DETACHED_WORKER_PATH], {
+      detached: true,
+      stdio: ['pipe', 'ignore', 'ignore'],
+      env: process.env,
+    });
+    // A spawn failure surfaces as an 'error' event, not a throw — swallow it
+    // so a broken/missing node binary can never crash the caller's hook.
+    child.on('error', () => {});
+    try {
+      child.stdin.write(input);
+      child.stdin.end();
+    } catch (_) { /* best-effort */ }
+    child.unref();
+  } catch (_) {
+    // best-effort only — this path must never affect the caller's own hook.
+  }
+}
+
 module.exports = {
   ask,
   askSync,
+  askDetached,
   recordOutcome,
   getMode,
   envNameFor,

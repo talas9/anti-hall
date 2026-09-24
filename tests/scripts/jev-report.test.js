@@ -120,3 +120,63 @@ test('buildReport: p50/p95 computed from latencies', () => {
   assert.strictEqual(r.p50, 30);
   assert.strictEqual(r.p95, 50);
 });
+
+// ---------------------------------------------------------------------------
+// New integrations: label distribution, no-KEEP-without-outcome, triage
+// answer-time (item 3 of the follow-up).
+// ---------------------------------------------------------------------------
+
+test('buildReport: label-only integration (choice answer, null baseline) reports label distribution, never agree%', () => {
+  const rows = [];
+  const labels = ['new-request', 'new-request', 'new-request', 'follow-up'];
+  for (let i = 0; i < 60; i++) {
+    rows.push(row({
+      id: 'newRequest', h: 'h' + i, base: null, jev: labels[i % 4], backend: 'jev', changed: null, mode: 'shadow',
+    }));
+  }
+  const report = buildReport(rows, {});
+  const r = report.integrations.find((x) => x.id === 'newRequest');
+  assert.strictEqual(r.agreementPct, null, 'no boolean baseline -> agreementPct must stay null');
+  assert.strictEqual(r.topLabel, 'new-request');
+  assert.ok(r.labelPct > 0.7 && r.labelPct < 0.8, `expected ~75% top label share, got ${r.labelPct}`);
+  assert.ok(r.labelDistribution['new-request'] > 0 && r.labelDistribution['follow-up'] > 0);
+});
+
+test('buildReport: high changed-decision rate but NO outcome signal -> never KEEP', () => {
+  const rows = [];
+  for (let i = 0; i < 200; i++) {
+    // every call relaxes a block (changedRate 100%) but NO outcome row exists
+    // anywhere in the log for any of these hashes.
+    rows.push(row({ id: 'mergeGateHedge', h: 'h' + i, base: true, jev: false, changed: 'relaxed', mode: 'on' }));
+  }
+  const report = buildReport(rows, {});
+  const r = report.integrations.find((x) => x.id === 'mergeGateHedge');
+  assert.strictEqual(r.goodOutcomeRate, null, 'no outcome rows -> goodOutcomeRate must be null');
+  assert.notStrictEqual(r.suggestion, 'KEEP', 'a null outcome signal must never earn KEEP, regardless of changed rate');
+});
+
+test('buildReport: changed-decision rate high AND a real outcome signal -> KEEP still reachable', () => {
+  const rows = [];
+  for (let i = 0; i < 200; i++) {
+    rows.push(row({ id: 'claimLedger', h: 'h' + i, base: true, jev: false, changed: 'relaxed', mode: 'on' }));
+    rows.push({ ts: new Date().toISOString(), type: 'outcome', id: 'claimLedger', h: 'h' + i, outcome: 'evidence-added' });
+  }
+  const report = buildReport(rows, {});
+  const r = report.integrations.find((x) => x.id === 'claimLedger');
+  assert.strictEqual(r.goodOutcomeRate, 1);
+  assert.strictEqual(r.suggestion, 'KEEP');
+});
+
+test('buildTriageAnswerReport: separates urgent vs non-urgent time-to-answer', () => {
+  const { buildTriageAnswerReport } = require('../../plugins/anti-hall/scripts/jev-report.js');
+  const triageRows = [
+    { type: 'answered', urgency: 'urgent', latencyMs: 1000 },
+    { type: 'answered', urgency: 'urgent', latencyMs: 2000 },
+    { type: 'answered', urgency: 'normal', latencyMs: 50000 },
+    { type: 'classification', urgency: 'urgent', kind: 'blocker' }, // not an 'answered' row -> ignored
+  ];
+  const r = buildTriageAnswerReport(triageRows);
+  assert.strictEqual(r.urgent.n, 2);
+  assert.strictEqual(r.normal.n, 1);
+  assert.ok(r.urgent.p50 <= r.normal.p50, 'urgent answers should be faster than non-urgent in this fixture');
+});

@@ -267,6 +267,35 @@ function main() {
 
   const flags = extractFlags(walked.lastText, walked.evidence, walked.toolsThisTurn);
 
+  // JEV SHADOW (claimLedger, default mode "shadow" — see jev-assist.js): for
+  // each flagged line, ask Jev whether the claim is unsupported by the
+  // session's own evidence. baseline = true (it's already flagged); trust
+  // 'relax-block' means an "on" promotion could let a confident Jev
+  // disagreement unflag a false positive, but in shadow (the default) this
+  // NEVER changes what gets written to the ledger below — it only logs to
+  // jev-assist.ndjson so `jev report` can show the would-be agreement rate
+  // before anyone trusts it. Best-effort; a Jev failure/timeout degrades to
+  // baseline (jev-assist's own contract) and never affects the ledger.
+  try {
+    const jevAssist = require('./lib/jev-assist.js');
+    for (const flag of flags) {
+      jevAssist.askSync({
+        id: 'claimLedger',
+        question: {
+          type: 'noul',
+          instructions: 'Is this claim unsupported by evidence in the message ' +
+            '(no matching value/SHA/state appears anywhere in the session\'s own ' +
+            'tool output and prior messages)?',
+          criteria: { true: 'unsupported by evidence', false: 'supported by evidence' },
+        },
+        state: 'claim: ' + flag.token + '\ncontext: ' + flag.context,
+        trust: 'relax-block',
+        baseline: true,
+        cacheKey: flag.kind + '\u0001' + flag.token + '\u0001' + flag.context,
+      });
+    }
+  } catch (_) { /* jev-assist unavailable — ledger-only behavior unaffected */ }
+
   try {
     fs.mkdirSync(ledgerDir, { recursive: true });
     fs.writeFileSync(lastFile, hash, 'utf8');

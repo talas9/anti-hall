@@ -88,6 +88,59 @@ const PASS_PATTERNS = [
   /\bAll tests passed\b/i,
 ];
 
+// Test-runner detection: only evaluate output for commands whose
+// COMMAND-POSITION verb (or verb+subcommand) is an actual test runner — not
+// a substring match anywhere in the command text. Fixes a false positive
+// where `grep PASS FAIL src/foo.js` (a plain source-code grep, not a test
+// run) tripped the mismatch below because both words appeared in ITS OWN
+// output (the matched source lines), not a runner's summary.
+//
+// Mirrors merge-gate.js's own isAutoMerge(): split on shell separators,
+// skip a leading env-assignment, use path.basename-style normalization
+// (shell-scan's basename) so `/usr/local/bin/pytest` still matches `pytest`.
+const { basename } = require('./lib/shell-scan.js');
+
+const RUNNER_VERBS = new Set(['pytest', 'jest', 'vitest', 'cargo']);
+// verb -> required first positional arg (subcommand-shaped runners).
+const RUNNER_SUBCOMMANDS = {
+  node: 'test',
+  go: 'test',
+  flutter: 'test',
+  dart: 'test',
+  npm: 'test',
+  yarn: 'test',
+  pnpm: 'test',
+};
+
+function splitSegments(cmd) {
+  return cmd.split(/&&|\|\||[;&|\n]/);
+}
+
+// isTestRunnerCommand(cmd): true if ANY segment's command-position verb is a
+// known test-runner invocation (`node --test`, `npm test`/`npm run test`,
+// `yarn test`, `pnpm test`, `pytest`, `jest`, `vitest`, `go test`,
+// `cargo test`, `flutter test`, `dart test`).
+function isTestRunnerCommand(cmd) {
+  if (typeof cmd !== 'string' || !cmd.trim()) return false;
+  for (const seg of splitSegments(cmd)) {
+    const words = seg.trim().split(/\s+/).filter(Boolean);
+    if (!words.length) continue;
+    let i = 0;
+    while (i < words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[i])) i++;
+    if (i >= words.length) continue;
+    const verb = basename(words[i]);
+    const rest = words.slice(i + 1);
+    if (RUNNER_VERBS.has(verb)) return true;
+    if (Object.prototype.hasOwnProperty.call(RUNNER_SUBCOMMANDS, verb)) {
+      const want = RUNNER_SUBCOMMANDS[verb];
+      // `npm test`/`npm run test` — allow an optional `run` before the verb.
+      if (rest[0] === want) return true;
+      if (rest[0] === 'run' && rest[1] === want) return true;
+    }
+  }
+  return false;
+}
+
 function firstMatch(patterns, text) {
   for (const re of patterns) {
     const m = text.match(re);
@@ -159,6 +212,14 @@ function main() {
   }
   if (!payload || payload.tool_name !== 'Bash') process.exit(0);
 
+  // DETERMINISTIC FIX: only evaluate output from an actual test-runner
+  // invocation (command-position verb, not a substring of the command or
+  // its output) — a `grep PASS FAIL <file>` on source code is not a test
+  // run and must never trigger this advisory.
+  const cmd = payload.tool_input && typeof payload.tool_input.command === 'string'
+    ? payload.tool_input.command : '';
+  if (!isTestRunnerCommand(cmd)) process.exit(0);
+
   const blob = buildBlob(payload);
   if (!blob) process.exit(0);
 
@@ -168,6 +229,29 @@ function main() {
   const nonZeroExit = typeof exitCode === 'number' && exitCode !== 0;
 
   const mismatch = Boolean(passHit) && (Boolean(failHit) || nonZeroExit);
+
+  // JEV SHADOW (outputVerifyGuard, default mode "shadow"): only on
+  // test-runner output (scope established above). Fire-and-forget — this is
+  // PostToolUse, a critical-path hook, so the ask MUST add zero latency;
+  // dispatched via askDetached. baseline = the regex mismatch verdict; the
+  // label lands in jev-assist.ndjson only and never changes the advisory
+  // emitted below.
+  try {
+    require('./lib/jev-assist.js').askDetached({
+      id: 'outputVerifyGuard',
+      question: {
+        type: 'noul',
+        instructions: 'Does this test-runner output show a GENUINELY mixed ' +
+          'pass/fail result (some tests failed alongside others passing), as ' +
+          'opposed to both words merely appearing in unrelated text?',
+        criteria: { true: 'genuinely mixed pass/fail', false: 'not a genuine mixed result' },
+      },
+      state: blob.slice(0, 4000),
+      trust: 'advisory',
+      baseline: mismatch,
+    });
+  } catch (_) { /* best-effort — never affects the advisory below */ }
+
   if (!mismatch) process.exit(0);
 
   const bits = [];
