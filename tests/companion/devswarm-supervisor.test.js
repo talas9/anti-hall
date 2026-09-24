@@ -719,3 +719,133 @@ test('single-flight: a live-holder sweep lock blocks a second acquire; a dead ho
     stolen();
   } finally { cleanup(); }
 });
+
+// ---------------------------------------------------------------------------
+// JEV ADVISORY: supervisorBlockerLabel — an advisory `blocker` field
+// ('waiting-on-parent' / 'wedged') attached to a sweep report row, sourced
+// ONLY from jev-triage.js's own already-populated pending-inbound cache
+// (~/.anti-hall/state/jev-triage-pending.json) — zero network, zero
+// subprocess. Default mode "shadow": the field must never appear until
+// promoted to "on". This can NEVER change poke/escalate (already decided by
+// the time jevBlockerLabel runs) — only the REPORT row gains a field.
+// ---------------------------------------------------------------------------
+
+function writeJevConfig(home, cfg) {
+  const dir = path.join(home, '.anti-hall');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'jev.json'), JSON.stringify(cfg));
+}
+
+function writeTriagePending(home, entries) {
+  const dir = path.join(home, '.anti-hall', 'state');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'jev-triage-pending.json'), JSON.stringify(entries));
+}
+
+test('jevBlockerLabel / sweepOnce: mode "off" (no jev.json) -> no `blocker` field, byte-identical report shape', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    writeDescriptor(home, { id: 'child-a', worktreePath: '/wt/a' });
+    writeTriagePending(home, { 'primary-1\u0001child-a': { ts: Date.now(), kind: 'blocker', urgency: 'urgent' } });
+    const res = M.sweepOnce({
+      home,
+      deps: {
+        computeLiveness: () => ({ status: 'alive', lastOutboundTs: 1, staleSince: null, nudgeAttempts: 0 }),
+        writeVerdict: () => {},
+        pokeOrEscalate: () => ({ action: 'nudged' }),
+      },
+    });
+    assert.strictEqual(res.length, 1);
+    assert.strictEqual(Object.prototype.hasOwnProperty.call(res[0], 'blocker'), false);
+  } finally { cleanup(); }
+});
+
+test('jevBlockerLabel / sweepOnce: mode "shadow" -> logs a decision row but STILL no `blocker` field on the report', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    writeJevConfig(home, { enabled: true, integrations: { supervisorBlockerLabel: 'shadow' } });
+    writeDescriptor(home, { id: 'child-a', worktreePath: '/wt/a' });
+    writeTriagePending(home, { 'primary-1\u0001child-a': { ts: Date.now(), kind: 'question-needs-answer', urgency: 'normal' } });
+    const res = M.sweepOnce({
+      home,
+      deps: {
+        computeLiveness: () => ({ status: 'stale', lastOutboundTs: 1, staleSince: 1, nudgeAttempts: 0 }),
+        writeVerdict: () => {},
+        pokeOrEscalate: () => ({ action: 'escalate', reason: 'poke-exhausted' }),
+      },
+    });
+    assert.strictEqual(Object.prototype.hasOwnProperty.call(res[0], 'blocker'), false, 'shadow must never change the report');
+    const log = fs.readFileSync(path.join(home, '.anti-hall', 'logs', 'jev-assist.ndjson'), 'utf8')
+      .trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
+    const row = log.find((r) => r.id === 'supervisorBlockerLabel');
+    assert.ok(row, 'expected a logged decision row even in shadow');
+    assert.strictEqual(row.mode, 'shadow');
+  } finally { cleanup(); }
+});
+
+test('jevBlockerLabel / sweepOnce: mode "on" -> `blocker` field attached, "waiting-on-parent" for a question, "wedged" for a blocker', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    writeJevConfig(home, { enabled: true, integrations: { supervisorBlockerLabel: 'on' } });
+    writeDescriptor(home, { id: 'child-question', worktreePath: '/wt/q' });
+    writeDescriptor(home, { id: 'child-blocker', worktreePath: '/wt/b' });
+    writeTriagePending(home, {
+      'primary-1\u0001child-question': { ts: Date.now(), kind: 'question-needs-answer', urgency: 'normal' },
+      'primary-1\u0001child-blocker': { ts: Date.now(), kind: 'blocker', urgency: 'urgent' },
+    });
+    const res = M.sweepOnce({
+      home,
+      deps: {
+        computeLiveness: () => ({ status: 'stale', lastOutboundTs: 1, staleSince: 1, nudgeAttempts: 0 }),
+        writeVerdict: () => {},
+        pokeOrEscalate: () => ({ action: 'escalate', reason: 'poke-exhausted' }),
+      },
+    });
+    const q = res.find((r) => r.id === 'child-question');
+    const b = res.find((r) => r.id === 'child-blocker');
+    assert.strictEqual(q.blocker, 'waiting-on-parent');
+    assert.strictEqual(b.blocker, 'wedged');
+    // Advisory only — never changed what pokeOrEscalate already decided.
+    assert.strictEqual(q.poke.action, 'escalate');
+    assert.strictEqual(b.poke.action, 'escalate');
+  } finally { cleanup(); }
+});
+
+test('jevBlockerLabel / sweepOnce: mode "on" but no pending-cache entry for this child -> no `blocker` field', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    writeJevConfig(home, { enabled: true, integrations: { supervisorBlockerLabel: 'on' } });
+    writeDescriptor(home, { id: 'child-a', worktreePath: '/wt/a' });
+    // no jev-triage-pending.json at all
+    const res = M.sweepOnce({
+      home,
+      deps: {
+        computeLiveness: () => ({ status: 'alive', lastOutboundTs: 1, staleSince: null, nudgeAttempts: 0 }),
+        writeVerdict: () => {},
+        pokeOrEscalate: () => ({ action: 'nudged' }),
+      },
+    });
+    assert.strictEqual(Object.prototype.hasOwnProperty.call(res[0], 'blocker'), false);
+  } finally { cleanup(); }
+});
+
+test('jevBlockerLabel / sweepOnce: mode "on" with a malformed pending-cache file -> fail-open, no crash, no field', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    writeJevConfig(home, { enabled: true, integrations: { supervisorBlockerLabel: 'on' } });
+    writeDescriptor(home, { id: 'child-a', worktreePath: '/wt/a' });
+    const dir = path.join(home, '.anti-hall', 'state');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'jev-triage-pending.json'), '{not json');
+    const res = M.sweepOnce({
+      home,
+      deps: {
+        computeLiveness: () => ({ status: 'alive', lastOutboundTs: 1, staleSince: null, nudgeAttempts: 0 }),
+        writeVerdict: () => {},
+        pokeOrEscalate: () => ({ action: 'nudged' }),
+      },
+    });
+    assert.strictEqual(res.length, 1);
+    assert.strictEqual(Object.prototype.hasOwnProperty.call(res[0], 'blocker'), false);
+  } finally { cleanup(); }
+});

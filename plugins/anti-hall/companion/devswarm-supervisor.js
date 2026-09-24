@@ -309,6 +309,58 @@ function isUrgentMesh(urgency) {
   return !!(urgency && (URGENT_TIERS.has(urgency.urgencyMax) || URGENT_TIERS.has(urgency.broadcastUrgencyMax)));
 }
 
+// jevBlockerLabel(childId, home) -> 'waiting-on-parent' | 'wedged' | null.
+//
+// JEV ADVISORY (supervisorBlockerLabel, default mode "shadow" — see
+// hooks/lib/jev-assist.js). Liveness here (computeLiveness above) is
+// TIMESTAMP-ONLY: a child that has gone idle right after asking the Primary a
+// question, or reporting a blocker, reads identically to a child that is
+// genuinely wedged — pokeOrEscalate above (already decided by the time this
+// runs) wastes an attempt/escalation on the former. This label is a REPORT
+// ANNOTATION ONLY: it is computed and attached AFTER poke/escalate have
+// already happened, so it can never change what this sweep just did.
+//
+// ZERO NETWORK: reads jev-triage.js's OWN existing pending-inbound cache
+// (~/.anti-hall/state/jev-triage-pending.json, written by
+// noteLabeledInbound() whenever the Primary last rendered a triage-labelled
+// message from this child — see scripts/devswarm.js's `inbox messages` path)
+// — never spawns a fresh classification. If the Primary has since replied,
+// recordAnswered() already cleared the entry, so a genuinely wedged/answered
+// distinction stays correct without this module re-deriving anything.
+//
+// Fail-open: any missing lib, unreadable cache, or jev-assist error -> null
+// (no label, no crash, no effect on the report's existing shape).
+function jevBlockerLabel(childId, home) {
+  try {
+    const jevTriage = require('../hooks/lib/jev-triage.js');
+    const jevAssist = require('../hooks/lib/jev-assist.js');
+    const pending = jevTriage.readPending(home);
+    const suffix = '\u0001' + String(childId);
+    let hit = null;
+    for (const key of Object.keys(pending)) {
+      if (key.endsWith(suffix)) { hit = pending[key]; break; }
+    }
+    if (!hit || (hit.kind !== 'blocker' && hit.kind !== 'question-needs-answer')) return null;
+    const label = hit.kind === 'blocker' ? 'wedged' : 'waiting-on-parent';
+
+    const p = jevAssist.prepare({
+      id: 'supervisorBlockerLabel', home, trust: 'advisory', baseline: null,
+      cacheKey: String(childId) + '\u0001' + String(hit.ts), state: label,
+    });
+    if (p.skip) return null; // mode "off" — no log line, no label (byte-identical to pre-Jev)
+    jevAssist.finalize({
+      id: 'supervisorBlockerLabel', home: p.h, hash: p.hash, mode: p.mode,
+      trust: 'advisory', baseline: null, judge: () => true, threshold: p.threshold,
+      r: { ok: true, answer: label, confidence: 1, ms: 0 }, cachedFlag: true, state: label,
+    });
+    // Shadow logs the decision above (for `jev report`) but NEVER changes the
+    // report — the label is only ever attached once promoted to mode "on".
+    return p.mode === 'on' ? label : null;
+  } catch (_) {
+    return null;
+  }
+}
+
 // readDescriptors(home, fsi) -> [{id, worktreePath, inboxPath, cursorPath, sessionId}].
 // Skips unreadable/malformed files (fail-open: one bad descriptor never stops the
 // sweep). Requires id + worktreePath + sessionId, AND a path-safe id (P1-7) so a
@@ -545,7 +597,8 @@ function sweepOnce(opts) {
           }
         }
       }
-      results.push({ id: d.id, verdict, poke });
+      const blockerLabel = jevBlockerLabel(d.id, home);
+      results.push(blockerLabel ? { id: d.id, verdict, poke, blocker: blockerLabel } : { id: d.id, verdict, poke });
     } catch (e) {
       results.push({ id: d && d.id, error: String(e && e.message) });
     }

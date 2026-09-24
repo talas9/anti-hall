@@ -381,6 +381,7 @@ module.exports = {
   triageMessagesSync,
   noteLabeledInbound,
   recordAnswered,
+  readPending,
   pendingPath,
   cachePath,
   logPath,
