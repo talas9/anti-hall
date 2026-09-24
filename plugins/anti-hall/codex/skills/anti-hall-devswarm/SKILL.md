@@ -1,6 +1,6 @@
 ---
 name: anti-hall-devswarm
-description: Explain anti-hall's optional DevSwarm integration from Codex — the hivecontrol reference KB, the workspace-tier orchestration doctrine (a Primary's top fan-out tier is a child workspace, not a subagent — doctrine + guard redirect shipped for both agents, no mechanical classifier), and the shipped layered recovery model (child self-report registered for both agents → Claude-only supervisor poke → Claude-only escalate-to-parent, automatic path NEVER kills, plus the on-demand devswarm-recover CLI — the only kill path). Use when the user asks about DevSwarm, hivecontrol, or the anti-hall liveness supervisor while working in Codex.
+description: Explain anti-hall's optional DevSwarm integration from Codex — the hivecontrol reference KB, the workspace-tier orchestration doctrine (a Primary's top fan-out tier is a child workspace, not a subagent — doctrine + guard redirect shipped for both agents, no mechanical classifier), and the shipped layered recovery model (child self-report registered for both agents → Claude-only supervisor poke → Claude-only escalate-to-parent, automatic path NEVER kills, plus the on-demand devswarm-recover CLI — the only kill path). Use when the user asks about DevSwarm, hivecontrol, the anti-hall liveness supervisor, the DevSwarm app state, or sends a screenshot of their DevSwarm workspaces to sync ("sync my workspaces") while working in Codex.
 ---
 
 # anti-hall DevSwarm integration (Codex view)
@@ -425,6 +425,43 @@ covers a Codex-run workspace — but do NOT claim the native messaging path stil
 them either; it does not. Full detail: `docs/KB-devswarm-hivecontrol.md` §8.7's "v0.57 mesh
 follow-up" and "v0.58 mesh-only messaging" notes.
 
+## DevSwarm app database + screenshot sync (v0.108.0 — applies to Codex too)
+
+anti-hall reads the DevSwarm desktop app's own database. It is read-only, capability-gated and fail-open, and it is the ground truth for workspace state. Full field-by-field evidence is in `docs/KB-devswarm-app-db.md`.
+
+What it gives you:
+- **Titles.** The roster and the per-turn table show the app's full title. Titles are no longer cut at 60 chars on spawn, and renames made in the app propagate.
+- **Order.** The roster follows the sidebar (`rank`); `[pinned]` is shown.
+- **Finish column.** It gains the app's pull-request record (`PR #N merged, checks failed`), shown only when the app synced after the branch last moved. It never overrides the completion gates.
+- **`[⚠ brief not delivered]` / `[⚠ brief withheld]`.** The spawned child never received its task. Resend it with `send --to <id>`.
+- **`[on screen]`.** The owner has that workspace focused in the app, so nags about it are suppressed while it stays focused (2 min, `ANTIHALL_DEVSWARM_FOCUS_MS`).
+- **Identity.** The app maps each Claude session to its worktree. Where Claude's own transcript confirms that mapping, it decides the Primary's self-identification (anchor ack, `register-primary` takeover). Otherwise the existing liveness rules decide.
+- **Runner.** The supervisor syncs every tick (see `app-sync`). `doctor` reports:
+  - schema drift ("DevSwarm app schema changed: <col>");
+  - briefs that were never delivered;
+  - drift and conflicts;
+  - message gaps (app messages to live targets that never reached the mesh store, as counts only).
+
+### Screenshot sync — when the app DB can't settle it
+
+The parent-inbox hook asks ONCE per session per set, in a line starting `DEVSWARM SYNC:`, when the app DB is unreadable or disagrees with anti-hall. Also run this flow when the owner says "here's a screenshot of my DevSwarm workspaces", "update your records" with an image, "sync my workspaces", or "which are finished so I can archive them".
+
+1. Transcribe every sidebar row **verbatim**, top to bottom. Keep any "…". Write a JSON array to a scratchpad file.
+2. `devswarm.js sync-ui --titles-json <file>`. This is a dry run.
+3. Show the owner the plan as a table: matched / ambiguous / unmatched / toArchive / titleUpdates / conflicts.
+4. If there are conflicts or ambiguous rows, ask the owner (one focused question). Never guess.
+5. `devswarm.js sync-ui --titles-json <file> --yes`. Add `--accept-conflicts` only after the owner confirmed.
+6. Show the `after` table and the `diff`.
+
+Safety rules, enforced in code:
+- it archives only app-archived workspaces that are absent from the screenshot;
+- it keeps workspaces that are app-active but missing from the screenshot (partial screenshots are normal);
+- if the app DB is unreadable, it archives nothing;
+- it never unarchives on its own;
+- it never deletes anything.
+
+Codex parity: the verbs and the parent-inbox hook are shared, so everything above applies to both agents. Not verified: how a pasted image reaches a Codex TUI session (`codex -i/--image` attaches one on the command line). The flow is triggered by what the owner writes, never by image detection.
+
 ## Operating the mesh: daemon + CLI reference
 
 The structured interface (CLI over MCP) is agent-agnostic — invokable identically from a
@@ -500,6 +537,9 @@ matching on `hash` (table-wide UNIQUE) when verifying a specific message landed.
 | `reconcile` | none | Drains every registered worktree's inbox once (per-id subprocess, cwd'd into that worktree), after first running a mis-keyed/stray-row heal pre-pass (`healRegistry`, see "Self-heal behavior" below). Does NOT dedup/fold registry rows (separate pass). Auto-run by `update`/`doctor --fix`, both DevSwarm-session-gated (see the auto-heal note below). **(v0.96.0, D11-C)** A worktree that exists on disk but fails `git rev-parse --show-toplevel` (a stale/broken git root) is skipped BEFORE spawning (`skippedNotGitRoot`, benign, zero budget cost). The wall-clock budget check now also runs BEFORE this git-root probe itself, not just before the resulting spawn, so N broken worktrees can no longer each burn a full probe timeout unaccounted-for before the first row is deferred. | Sweeping stranded per-worktree native queues into the shared store on demand. | **Writes** (drains messages; heals/rehomes mis-keyed rows). |
 | `reap-stale [--yes\|--confirm]` | project-scoped (git cwd required) | **PARENT-driven reaper (v0.62.0).** Scopes to this project's descriptors verdicted `stale`/`escalated`, gated by two safety checks (a fresh heartbeat or recent worktree git activity both mean never-reap). Dry-run by default (`{candidates, skipped}`); `--yes`/`--confirm` archives survivors via `cmdArchive`'s own pre-archive revalidation. | A parent clearing genuinely-abandoned child workspaces without hand-checking each one. | **Read-only in dry-run; writes with `--yes`/`--confirm`.** |
 | `reconcile-active [--active id,...] [--allow-empty] [--stdin] [--yes\|--confirm]` | `--active` required unless `--allow-empty` | **Parent-driven reconciliation against an explicit active set (v0.62.0)**. Never build the set from a screenshot. Since v0.107.1, a current workspace NOT named in `--active`/`--stdin` is archived ONLY when the DevSwarm app's database says it is archived (`isActive=0`, `isHidden=1`). Anything else is kept (`keptNotArchivedInApp`). If the app DB can't be read, nothing is archived. A prefix/substring match spares a workspace and never archives it; refuses an empty set unless `--allow-empty`. Dry-run by default; `--yes`/`--confirm` applies. | Reconciling the mesh against a known-good "what's actually still running" list. | **Read-only in dry-run; writes with `--yes`/`--confirm`.** |
+| `app-state [--json]` | none | **v0.108.0.** Read-only summary of the DevSwarm app's own database: open workspaces in sidebar order with the app title, PR signal, brief-delivery state, current Claude session (flagged unverified unless its transcript backs it), and on-screen focus. Also lists drift (open in the app but unknown to anti-hall), conflicts (open in the app but archived in anti-hall), entries pending app deletion, schema drift, and the last message-gap report. Never writes. | "What does the DevSwarm app itself say right now?" Use it before archiving, reconciling, or asking the owner. | **Read-only.** |
+| `app-sync [--dry-run]` | none | **v0.108.0.** Runs the supervisor's periodic app-DB sync now. It writes archived markers for workspaces the app archived or deleted (never deletes anything), refreshes the names cache from the app's titles, and writes `app-state.json` with the session map, drift and the message-gap report. | Normally automatic (every supervisor tick). Run it by hand after a bulk archive in the app. | **Writes markers + names cache + app-state.json.** |
+| `sync-ui --titles-json <file>\|--stdin [--yes] [--no-repair] [--accept-conflicts]` | a JSON array of sidebar titles, top-to-bottom | **v0.108.0 screenshot sync.** Plans the owner's transcribed sidebar against the app DB (see "Screenshot sync" below). It archives only what the app DB says is archived and the screenshot doesn't show. Title updates write the app's full label. Conflicts refuse `--yes` until `--accept-conflicts`. Dry run by default. | Only when the app DB can't settle archive state (unreadable, or conflicting) and the owner sent a screenshot. | **Read-only in dry run; `--yes` writes markers + names.** |
 | `spawn <branch> [hivecontrol create flags...]` | pass-through | Thin wrap of `hivecontrol workspace create`, then best-effort auto-registers the new worktree in the shared registry. | Primary creating a new child workspace. | **Writes.** |
 | `merge [hivecontrol merge-into-source flags...]` | pass-through | Thin wrap of `hivecontrol workspace check-merge` + `merge-into-source`, then broadcasts the outcome. | Child finishing / shipping upstream. | **Writes.** |
 | `auto-archive` | none | **v0.108.0.** Prints the supervisor's auto-archive plan: each tracked child with its proof or its blockers (a done … g idle). Archiving itself only happens in the supervisor sweep (default `devswarm.autoArchive.mode: "on"`) on DevSwarm >= 2.5.3. | "Which done workspaces would be archived, and why not the others?" | **Read-only.** |

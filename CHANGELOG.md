@@ -35,6 +35,50 @@ the update.
   `~/.anti-hall/logs/devswarm-prune.ndjson`, and tombstoned in anti-hall; no store rows are
   deleted. Needs DevSwarm >= 2.5.3.
 
+- **New: the DevSwarm app database is the ground truth for workspace state.** One
+  read-only snapshot of the desktop app's own DB (`companion/lib/devswarm-app-db.js`)
+  now feeds every surface: the per-turn table, `roster`, identity, `doctor` and the
+  supervisor. It never reads message bodies, brief text or credential tables. Every
+  table and column read goes through the DevSwarm capability gate and falls back to the
+  old behaviour if missing. A pinned schema makes `doctor` warn
+  `DevSwarm app schema changed: <table.column>` when the app drops something anti-hall
+  reads. Each field was proven on a live DB and against the app source before any
+  decision used it. The evidence, and the fields deliberately left unused, are in
+  `docs/KB-devswarm-app-db.md`.
+- **New: the supervisor syncs with the app every tick.** It writes archived markers for
+  workspaces the app archived *or deleted*, and never deletes anything. It refreshes
+  workspace titles when they change in the app. It writes `app-state.json`, which holds
+  the session map, open-but-unknown and open-but-archived drift, pending app deletions,
+  and a message cross-check (app messages to live targets that never reached the mesh
+  store, counted per branch and age, report only). Measured cost: about 0.1 s per sweep.
+  There is no file watcher, because the app's WAL changes about every 13 s from its own
+  background writes. `ANTIHALL_DEVSWARM_APP_SYNC=0` disables the sync.
+- **New: `devswarm.js app-state [--json]`** (read-only summary) and **`app-sync`** (run
+  the sync step now).
+- **Changed: spawn titles are no longer cut at 60 chars** (owner decision). The table and
+  roster show the app's full title, and renames made in the app propagate.
+- **New: app signals in the table and roster:**
+  - the sidebar order;
+  - `[pinned]`;
+  - `PR #N merged, checks failed` in the finish column, shown only when the app synced
+    the PR after the branch last moved, and never overriding the gates;
+  - `[⚠ brief not delivered]` / `[⚠ brief withheld]` for a spawned child that never
+    got its task;
+  - `[on screen]` for the workspace the owner has focused in the app. Nags about that
+    workspace are suppressed while it is focused (2 min, `ANTIHALL_DEVSWARM_FOCUS_MS`).
+- **Changed: self-identification uses the app's session map.** The Primary's anchor
+  self-ack and the `register-primary` takeover now follow the app's session-to-worktree
+  map, but only when Claude's own transcript for that session confirms the worktree.
+  Otherwise the v0.107.1 liveness rule decides, as before.
+- **New: screenshot sync (`devswarm.js sync-ui`).** When the app DB is unreadable or
+  disagrees with anti-hall, the per-turn hook asks once per session for a screenshot of
+  the DevSwarm sidebar. The skill transcribes it, `sync-ui` plans it against the app DB,
+  and the owner confirms. It archives only what the app DB says is archived, never
+  unarchives on its own, never deletes, and refuses conflicts until the owner confirms.
+- **New: hygiene test.** The build fails if any code line names a DevSwarm credential
+  table, a browser-profile store, or the app's unauthenticated internal HTTP, WebSocket
+  or MCP endpoints.
+
 ## 0.107.1 (2026-09-24)
 
 - **Fixed: phantom "N unread" on the Primary's own mailbox.** When a store's
