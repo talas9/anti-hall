@@ -358,6 +358,20 @@ the update.
   `PreCompact`/`PostCompact` mapping yet, so it relies entirely on the transcript estimate;
   see `codex/skills/anti-hall-auto-handover-config/SKILL.md` for that gap.
 
+- **Fixed: doc index + broken doc links.** The root and plugin READMEs linked only
+  9–10 of 48 `docs/**/*.md` files. Added a full `docs/README.md` index (Guides,
+  Knowledge base, Reference/design, Archive/history) and a "Documentation" section to
+  both READMEs; the plugin README uses absolute GitHub URLs for `docs/` links since it
+  ships inside the plugin cache where `../../docs/` doesn't resolve. Converted
+  remaining backticked (non-linked) doc paths in both READMEs, the Codex README, and
+  `docs/GUIDE.md` into real links. Fixed 6 links that pointed at the wrong path
+  (`docs/GUIDE.md`'s `../../docs/KB-jev-classifier.md`, `companion/README.md`, and
+  `plugins/anti-hall/README.md` all resolved one directory too high or too low; a
+  stale `docs/KB.md` row referenced a `session-handoff.md` file that no longer
+  exists). Added `tests/hygiene/docs-links.test.js`: every relative `.md` link in the
+  READMEs and `docs/**/*.md` must resolve, and every top-level `docs/*.md` must be
+  linked from `docs/README.md` or the root README.
+
 ## 0.107.0 (2026-09-24)
 
 - **Fixed: phantom unread.** The v0.106.0 reader-position import had declared every live

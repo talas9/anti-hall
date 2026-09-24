@@ -102,7 +102,7 @@ documented boundaries, not silent gaps.
   must be updated this session (default 30 min freshness window) to count. A running
   `.anti-hall/progress/INDEX.md` (and the history-side equivalent) is maintained via
   atomic single-line appends only — never a read-modify-rewrite. Fully fail-open.
-  See [`docs/TASKLIST-GUARD.md`](../../docs/TASKLIST-GUARD.md).
+  See [`TASKLIST-GUARD.md`](./TASKLIST-GUARD.md).
 
 ### User-override escape hatch (skip-guard)
 
@@ -241,7 +241,7 @@ or `ANTIHALL_JEV=1` (env). `ANTIHALL_JEV=0` always force-disables. Only a confid
 "speculative" answer blocks on Jev's word alone; a "grounded" answer, low confidence, or
 any Jev failure (no key, timeout, HTTP error, bad response) falls back to the regex check
 unchanged. Disabled (the default), the guard behaves exactly as the regex-only hook.
-Details: **[docs/KB-jev-classifier.md](../../docs/KB-jev-classifier.md)**.
+Details: **[docs/KB-jev-classifier.md](./KB-jev-classifier.md)**.
 
 Two more integrations share the same opt-in switch via `hooks/lib/jev-assist.js`, each
 with its own on/shadow/off mode and trust rule: `speculation-judge.js` skips its paid
@@ -249,7 +249,7 @@ Haiku call when `speculation` is fully trusted (`"on"`, not `"shadow"`), and
 `model-routing-guard.js` (default mode **shadow**) can let a confident non-mechanical
 classification downgrade a mechanical-flagship block to an advisory. Run
 `node plugins/anti-hall/scripts/jev-report.js` for a per-integration KEEP/REVIEW/REMOVE
-read on whether any of this is worth trusting. Details: **[docs/KB-jev-classifier.md §10](../../docs/KB-jev-classifier.md)**.
+read on whether any of this is worth trusting. Details: **[docs/KB-jev-classifier.md §10](./KB-jev-classifier.md)**.
 
 ## Skills
 
@@ -413,7 +413,7 @@ companions (the ingest daemon / the liveness supervisor) is installed; nothing e
 plugin depends on it.
 
 **All DevSwarm features, at a glance** (detail below; full reference:
-[`docs/KB-devswarm-hivecontrol.md`](docs/KB-devswarm-hivecontrol.md) §8):
+[`docs/KB-devswarm-hivecontrol.md`](./KB-devswarm-hivecontrol.md) §8):
 
 - **DevSwarm app database as ground truth (v0.108.0)** — one read-only, fail-open,
   capability-gated snapshot of the desktop app's own DB drives:
@@ -611,7 +611,7 @@ plugin depends on it.
   flag, a real union-unread backlog, an unreadable unread axis — fail-open toward
   blocking — or an unanswered question from that family) before it can drive a hard
   block; an uncorroborated status degrades to a one-time stderr advisory instead. A bare
-  verdict label is not evidence — see `docs/KB-devswarm-hivecontrol.md` for the
+  verdict label is not evidence — see [`docs/KB-devswarm-hivecontrol.md`](./KB-devswarm-hivecontrol.md) for the
   generalized invariant.
 - **Liveness's own union-unread signal no longer double-counts a caller's own outbound
   message as evidence a target is neglecting inbound work (v0.87.0)** — `resolveSelfId()`
@@ -799,7 +799,7 @@ default): `ANTIHALL_DEVSWARM_IDLE_SEC` (900), `ANTIHALL_DEVSWARM_COOLDOWN_SEC` (
 `ANTIHALL_DEVSWARM_NUDGE_MAX_ATTEMPTS` (2), `ANTIHALL_DEVSWARM_NUDGE_WINDOW_SEC` (180),
 `ANTIHALL_DEVSWARM_NUDGE_COOLDOWN_SEC` (120); the on-demand CLI resolves its own
 `ANTIHALL_DEVSWARM_MAX_RECOVERIES` (3) and `ANTIHALL_DEVSWARM_GRACE_SEC` (5). See
-[`plugins/anti-hall/README.md`](plugins/anti-hall/README.md#opt-in-companion-devswarm-layered-recovery-macos--linux-full-windows-detection-only).
+[`plugins/anti-hall/README.md`](../plugins/anti-hall/README.md#opt-in-companion-devswarm-layered-recovery-macos--linux-full-windows-detection-only).
 **v0.100.0** adds three more, all on the per-turn parent-inbox injection:
 `ANTIHALL_ROSTER_HIDE_ARCHIVED` (default on; `0` shows archived rows in the roster table
 again), `ANTIHALL_ROSTER_MAX_ROWS` (default 12, the roster table cap), and
@@ -849,7 +849,7 @@ journal; hooks read only its `summary.json` projection, never the DB), a structu
 intercepted BEFORE dispatch so it can no longer fall through to real execution —
 previously `migrate -h` ran the migration and `merge --help` sent a live mesh
 broadcast;
-see `docs/KB-devswarm-hivecontrol.md` §8.8 for the full reference), a PER-PROJECT ingest
+see [`docs/KB-devswarm-hivecontrol.md`](./KB-devswarm-hivecontrol.md) §8.8 for the full reference), a PER-PROJECT ingest
 daemon (`companion/devswarm-ingest.js`, the one native consumer wrapping `hivecontrol
 workspace monitor` into the store — install ONE per repo/worktree you want covered, via
 `companion/install-devswarm-ingest.js`; auto-installed/refreshed by `/anti-hall:update`
@@ -874,7 +874,7 @@ freshness + live-pid lock) health check backs both a stale-data banner and send-
 self-heal; a non-destructive migration folds old per-worktree stores into the new
 per-project one; and a #36-STRUCTURAL fix scopes `devswarm-parent-gate`/
 `devswarm-parent-inbox` to the caller's OWN project via `repoKey` (replacing a spoofable
-env-var filter). Full reference: `docs/KB-devswarm-hivecontrol.md` §8.7's "v0.57 mesh
+env-var filter). Full reference: [`docs/KB-devswarm-hivecontrol.md`](./KB-devswarm-hivecontrol.md) §8.7's "v0.57 mesh
 follow-up" note.
 
 **v0.58 mesh-only messaging (SHIPPED in v0.58.0).** The mesh above is now the **sole**
@@ -894,7 +894,7 @@ mechanism wakes a genuinely idle Claude Code session (`anthropics/claude-code#44
 a Tier-2 runner-wrap fallback is explicitly named as DEFERRED, not built. The liveness
 supervisor additionally escalates-to-parent on an urgent/high mesh unread (still never
 kills). The ingest daemon is unchanged; no MCP server was built (CLI-over-MCP stays the
-rationale). Full reference: `docs/KB-devswarm-hivecontrol.md` §8.7's "v0.58 mesh-only
+rationale). Full reference: [`docs/KB-devswarm-hivecontrol.md`](./KB-devswarm-hivecontrol.md) §8.7's "v0.58 mesh-only
 messaging" note.
 
 **v0.93.0 app-side archive detection + attribution fixes.** hivecontrol 2.5.1's
@@ -1012,7 +1012,7 @@ exclude it via `ANTIHALL_REAPER_EXCLUDE='name|name'`. Env knobs: `MCP_REAP_DRYRU
 `MCP_REAP_GRACE`, `ANTIHALL_REAPER_MATCH`, `ANTIHALL_REAPER_EXCLUDE`.
 **Windows is a documented no-op** — it has no parent-death
 reparenting and recycles PIDs, so external orphan detection is unsafe there; the correct
-fix is Job Objects set by the spawner. See [`companion/README.md`](companion/README.md).
+fix is Job Objects set by the spawner. See [`plugins/anti-hall/companion/README.md`](../plugins/anti-hall/companion/README.md).
 
 ### Opt-in companion: DevSwarm layered recovery (macOS + Linux full, Windows detection-only)
 
@@ -1150,8 +1150,8 @@ Moved from plugins/anti-hall/README.md "Features" (v0.107.0 doc sweep).
 | `skip-guard.js` | Escape hatch (shared primitive) | TTL'd `~/.anti-hall/skip.json` user-override read by the guards; granular per-guard, and a broad `all` skip excludes the destructive git-guard (must be named explicitly). |
 | `version-alert.js` | SessionStart (non-blocking) | Alerts when a newer anti-hall version is available. Reads running version vs a cached latest (`~/.anti-hall/version-check.json`); emits a one-line "vX available — /anti-hall:update" if behind. When the cache is absent/stale, spawns a DETACHED, unref'd `git ls-remote --tags` refresh and stays silent that session — never blocks on network. Off-switch: `ANTIHALL_VERSION_ALERT=off`; skip-guard hatch. |
 | `devswarm-version.js` (+ `devswarm-version-refresh.js`) | SessionStart (non-blocking) | **New in v0.76.0, OPTIONAL/feature-gated.** Probes the installed DevSwarm version and flags drift from the baseline anti-hall was verified against — `command-guard.js` matches DevSwarm subcommands by literal string, so a renamed verb in a future DevSwarm release would make a block silently stop matching with nothing to signal it. Mirrors `version-alert.js`'s shape: a fresh cache short-circuits, a stale/absent one spawns a detached, unref'd background probe (`devswarm-version-refresh.js`) and returns immediately so session start is never blocked. Drift classification is semver-aware — major/minor advises, patch-only stays silent, a downgrade is worded accordingly; the advisory dedupes on (installed, baseline) so it never nags twice for the same drift. Absent DevSwarm or unparseable output fails open and silent. Baseline lives in the shared `hooks/lib/devswarm-baseline.js` module, also consumed by the doctor check. Registered once, shared by both the Claude plugin and the Codex port. |
-| `claude-cli-version.js` (+ `claude-cli-version-refresh.js`) | SessionStart (non-blocking) | **New in v0.79.0.** Probe 2 of anti-hall's drift-probe family. Detects the installed Claude Code CLI version and flags major/minor drift from the version anti-hall's harness-feature KB (`docs/KB-claude-code-harness-features.md`) was last audited against. Mirrors `devswarm-version.js`'s shape: a fresh cache short-circuits, a stale/absent one spawns a detached, unref'd background probe (`claude-cli-version-refresh.js`) so session start is never blocked. Patch-only drift stays silent; deduped on the (installed, baseline) pair. CLI absent or unparseable fails open and silent. |
-| `repo-self-drift.js` | SessionStart (non-blocking) | **New in v0.79.0.** Probe 3 of anti-hall's drift-probe family — deterministic, no network. Two checks: (1) parses `docs/KB.md`'s own claimed hook/skill counts and compares against the actual count on disk, advising on either mismatch; (2) tracks the date the model KBs (`docs/opus-4-8-features.md` etc.) were last audited and advises past a 60-day threshold, since model facts aren't locally discoverable and a probe that can't verify would either invent an answer or fail constantly. Cached (<24h), deduped, fail-open and silent on any error. |
+| `claude-cli-version.js` (+ `claude-cli-version-refresh.js`) | SessionStart (non-blocking) | **New in v0.79.0.** Probe 2 of anti-hall's drift-probe family. Detects the installed Claude Code CLI version and flags major/minor drift from the version anti-hall's harness-feature KB ([`docs/KB-claude-code-harness-features.md`](./KB-claude-code-harness-features.md)) was last audited against. Mirrors `devswarm-version.js`'s shape: a fresh cache short-circuits, a stale/absent one spawns a detached, unref'd background probe (`claude-cli-version-refresh.js`) so session start is never blocked. Patch-only drift stays silent; deduped on the (installed, baseline) pair. CLI absent or unparseable fails open and silent. |
+| `repo-self-drift.js` | SessionStart (non-blocking) | **New in v0.79.0.** Probe 3 of anti-hall's drift-probe family — deterministic, no network. Two checks: (1) parses [`docs/KB.md`](./KB.md)'s own claimed hook/skill counts and compares against the actual count on disk, advising on either mismatch; (2) tracks the date the model KBs ([`docs/opus-4-8-features.md`](./opus-4-8-features.md) etc.) were last audited and advises past a 60-day threshold, since model facts aren't locally discoverable and a probe that can't verify would either invent an answer or fail constantly. Cached (<24h), deduped, fail-open and silent on any error. |
 | `fable-availability.js` | SessionStart (non-blocking) | Reads `~/.claude.json`'s `modelAccessCache`/`additionalModelOptionsCache` (the same cache Claude Code's own `/model` selector renders from) once per session — no live API probe, fail-open, silent unless Fable is actually available. When available, threads `args.fableAvailable=true` into ship-it/deadly-loop Workflow invocations so the Reviewer seat's fallback chain extends to Fable → Sonnet → Opus. |
 | `codex-availability.js` | SessionStart (non-blocking) | OS-agnostic PATH probe (Windows `PATHEXT`-aware) for a real `codex` executable; writes `~/.anti-hall/codex-availability.json` (`{available, checkedAt, source}`) once per session so coordinators/skills read the cached fact instead of re-probing. Proves reachability only, NOT authentication/readiness — a runtime spawn can still fail even when `available:true`. Registered on both the Claude plugin and the Codex port. Fail-open. |
 | `handover-resume.js` | SessionStart | On a fresh session (including after `/clear` or compaction), surfaces the latest `.anti-hall/handovers/` entry (if any) and guides a structured resume from it — supersedes the lossy default compact summary. Fail-open (silent no-op if no handover exists). Registered on both the Claude plugin and the Codex port. |
@@ -1166,7 +1166,7 @@ Moved from plugins/anti-hall/README.md "Features" (v0.107.0 doc sweep).
 | `merge-gate.js` | PreToolUse (Bash) | **OPT-IN, default OFF** — a backstop, not a guarantee. With `ANTIHALL_MERGE_GATE` ∈ {1,true,yes,on}, blocks an auto-merge (`gh pr merge` incl. `--auto`, `gh pr review --approve`, `git merge --no-ff/--ff` into main/master/develop, and `hivecontrol workspace merge-into-source`/`merge-from-source`) when the agent's own recent output carries an UNRESOLVED self-hedge ("pending review" / "first-pass" / "needs your eyes" / …) not followed by a resolution token. Keyword-heuristic, bypassable, fail-open, cannot hard-loop; no effect when unset. |
 | `root-cause` / `orchestration` / `ship-it` / `deadly-loop` (+ `deadly-loop-multi`, `install-statusline`, `doctor`, `system-briefing`, `update`, `flutter-debug`, `activate`, `simplify`, `debt`, `devswarm`, `handover`, `defects`) | Skills | Slash commands (see [Skills](#skills)). |
 | `statusline/` | Statusline | Rich line 1 for ANY repo (monorepo or simple); the monorepo/simple renderer is only a fallback if the rich renderer yields nothing. Line 2 is an always-on phase/context bar. |
-| `companion/mcp-reaper.js` (+ `install-reaper.js`) | Interval companion (not a hook) | **OPT-IN**, macOS + Linux. Kills ONLY orphaned MCP-server processes (parent already died). Install via `node companion/install-reaper.js` (`--uninstall` to remove); Windows is a documented no-op. See [`companion/README.md`](companion/README.md). |
+| `companion/mcp-reaper.js` (+ `install-reaper.js`) | Interval companion (not a hook) | **OPT-IN**, macOS + Linux. Kills ONLY orphaned MCP-server processes (parent already died). Install via `node companion/install-reaper.js` (`--uninstall` to remove); Windows is a documented no-op. See [`plugins/anti-hall/companion/README.md`](../plugins/anti-hall/companion/README.md). |
 | `companion/devswarm-supervisor.js` (+ `install-devswarm-supervisor.js`) | Interval companion (not a hook) | **OPT-IN and OPTIONAL** — dormant with zero effect unless DevSwarm is in use (feature-gated via `devswarm-detect.js`, same optionality model as the OMC/OMX integration). Detects a wedged/idle DevSwarm workspace agent from outbound activity (session transcript + git/worktree) and pokes it (an optional descriptor `nudgeCommand`) or escalates (log + optional `escalateCommand`) — **never kills**. Install via `node companion/install-devswarm-supervisor.js` (`--uninstall` to remove); macOS + Linux full, Windows detection-only. Workaround for claude-code#39755. **v0.66.0:** a cooldown-gated reconcile sweep now also runs on this existing supervisor, so stranded mesh messages self-recover instead of sitting until an update or a manual repair happens to invoke `reconcile` — it uses the same single-consumer lock as the drains, so it cannot race a live one. **v0.93.0:** hivecontrol 2.5.1's `workspace list all` carries no archive field, so the sweep now caches the ACTIVE set (`hivecontrol-active.json`) on every successful list call; a registry row absent from that cache by both id and worktree path, older than the snapshot by a 10-minute grace, reads as app-archived while the cache stays fresh (within 2x the reconcile cooldown) — liveness axis only, a genuine unread question still gates regardless. |
 | `companion/devswarm-recover.js` | On-demand CLI (not a hook) | **OPT-IN and OPTIONAL** — the ONLY path in DevSwarm that ever kills a process. `node companion/devswarm-recover.js <workspace-id>` resolves the one confirmed wedged `claude` target and kill+resumes it (`claude --resume`), headless or interactive (naming the id is the deliberate override). Same confirm-gate safety as the old always-on supervisor. Windows: escalate-only. |
 | `companion/lib/devswarm-store.js` | Substrate lib (not a hook) | **OPTIONAL** — the persistent write/derive side of the DevSwarm substrate. ONE API, TWO backends chosen by feature-detecting `node:sqlite` (→ WAL sqlite, else an append-only NDJSON journal — dependency-free, green on Node 18/20 through 22/24). **Hooks never open the DB**: it derives a `summary.json` projection (atomic tmp+rename) that hooks read. Tracks messages/registry/cursors + per-workspace append-only completion `gates`, and derives `archive_ready` when all required gates (configurable, default `done,merged,tests_passed`) are met. anti-hall stays agnostic about what any consumer gate means. **(v0.70.0)** New read-side filter `archivedOnlyIds` excludes a genuinely archived workspace (`archived/<id>.json` present, `workspaces/<id>.json` absent) from the LIVE per-turn projection immediately, without waiting for a `doctor`/`update` migration run — an archived workspace with real unread still surfaces via the `orphans[]` pass (no lost signal); structurally cannot hide a live row (a live workspace has its own descriptor by definition), fails open to an empty set on any read error. **v0.84.0:** `computeSummary`'s orphan pass no longer reports partitions nothing can ever read — an ARCHIVED workspace with no live identity-family survivor is exactly the shape `healOrphanPartitions` classifies as `unhealable/archived-no-family` and deliberately never heals, so its unread could never drain and warned on every Primary turn forever. Those ids are now excluded via `companion/lib/devswarm-orphan-policy.js` (`makeArchivedStrandedTest`), which CALLS heal's own exported helpers rather than re-implementing the rule — `tests/companion/devswarm-orphan-policy-equivalence.test.js` fails CI if the two predicates ever drift. The count is preserved in a new quiet `archivedStranded[]`, not dropped, and the classifier fails open (an unclassifiable id stays in `orphans[]`). **v0.93.0:** `computeSummary` now also projects `archivedRegistryRows` (always an array, additive) so gate/inbox callers can fold app-archived-but-still-live senders into their known-registry set without a second read. **v0.94.0:** `resolveSenderRegistryId`'s final leg now delegates to `devswarm-attribution.js`'s `pickAttributionRow` (pure, liveness-free) instead of the freshest-live picker, so `pendingQuestions[].from` can no longer flip between passes for the same stored message. |

@@ -146,7 +146,6 @@ into the `KB-claude-codex.md` synthesis (kept standalone for provenance + depth)
 | [`KB-goal-setting.md`](./KB-goal-setting.md) | **[APPENDED 2026-08-21] Goal-setting / acceptance-criteria wording** — classical theory + AI goal-misspecification as a reward-hacking root cause | 372 ln | **Living — snapshot** | (date unknown; not re-verified this pass) | see §3 topic-map entry |
 | [`CODEX-KB-MIGRATION-MAP.md`](./CODEX-KB-MIGRATION-MAP.md) | **[APPENDED 2026-08-21] Codex KB migration map** — cross-reference between Claude-side and Codex-side KB docs | 32 ln | **Reference** | (date unknown; not re-verified this pass) | this repo |
 | [`2026-06-06-context-opt-test-design.md`](./2026-06-06-context-opt-test-design.md) | **[APPENDED 2026-08-21] Context-optimization test design** — dated design artifact | 65 ln | **Historical — design doc** | 2026-06-06 | this repo |
-| [`2026-06-10-v0.32.0-session-handoff.md`](./2026-06-10-v0.32.0-session-handoff.md) | **[APPENDED 2026-08-21] v0.32.0 session handoff** — dated handoff artifact | 194 ln | **Historical — handoff record** | 2026-06-10 | this repo |
 | [`2026-06-10-v0.34.0-flutter-debug-plan.md`](./2026-06-10-v0.34.0-flutter-debug-plan.md) | **[APPENDED 2026-08-21] v0.34.0 Flutter debug plan** — dated design plan | 303 ln | **Historical — design plan** | 2026-06-10 | this repo |
 
 **Reading order for a new contributor:** `KB.md` → `KB-claude-codex.md` (the

@@ -58,7 +58,7 @@ install, no native deps, no other config.
 | **Verify-first discipline** | Injects the Iron-Law + rationalization-table protocol at session start (survives compaction) and a rotating one-line nudge every turn; enforced, not just suggested. |
 | **Orchestration** | Non-blocking coordinator discipline: delegate heavy/broad work to subagents, verify delegated "done" claims against ground truth, live phase progress on the statusline. |
 | **DevSwarm mesh** | Optional, dormant unless a DevSwarm session is active — layered wake/recovery (self-report → poke → escalate, never auto-kill), one mailbox per session, per-turn mesh status. See [`docs/KB-devswarm-hivecontrol.md`](docs/KB-devswarm-hivecontrol.md). |
-| **Jev classifier** | Optional LLM-backed speculation classifier (`docs/KB-jev-classifier.md`) — per-integration on/shadow/off modes, metrics + `jev report` KEEP/REVIEW/REMOVE calls. |
+| **Jev classifier** | Optional LLM-backed speculation classifier ([`docs/KB-jev-classifier.md`](docs/KB-jev-classifier.md)) — per-integration on/shadow/off modes, metrics + `jev report` KEEP/REVIEW/REMOVE calls. |
 | **Statusline** | Live two-line statusline: git/model/context/cost on line 1, live orchestration/context gauge on line 2. Installable globally or per-repo, consolidates with an existing statusline (e.g. OMC HUD). |
 | **doctor / update** | `doctor` runs live behavioral self-tests on every guard and repairs safe drift; `update` pulls the latest release and shows the changelog delta. |
 | **Settings** | One place for every setting — `~/.anti-hall/settings.json`, browsable/editable via `/anti-hall:settings` or `scripts/settings.js`; a headline subset also shows in Claude Code's native `/config` panel. See [docs/GUIDE.md#settings-anti-hallsettings](docs/GUIDE.md#settings-anti-hallsettings). |
@@ -93,6 +93,19 @@ Invoke any of these as `/anti-hall:<name>`:
 Codex mirrors live under `plugins/anti-hall/codex/skills/anti-hall-*`; full descriptions
 and the DevSwarm/statusline/context-protection detail behind each skill are in
 [docs/GUIDE.md](docs/GUIDE.md#skills-reference-detailed).
+
+## Documentation
+
+Full index: [`docs/README.md`](docs/README.md) (every doc, grouped, with a one-line
+description). Start here:
+
+| Doc | What it covers |
+|---|---|
+| [`docs/KB.md`](docs/KB.md) | Canonical knowledge-base index — current-plugin ground truth, topic → doc map. |
+| [`docs/GUIDE.md`](docs/GUIDE.md) | Extended guide — full hook/skills reference, statusline, config, contributing. |
+| [`docs/KB-devswarm-hivecontrol.md`](docs/KB-devswarm-hivecontrol.md) | DevSwarm mesh integration reference. |
+| [`docs/KB-jev-classifier.md`](docs/KB-jev-classifier.md) | Jev opt-in speculation classifier reference. |
+| [`plugins/anti-hall/codex/README.md`](plugins/anti-hall/codex/README.md) | Codex port — hook parity, install, skills. |
 
 ## Troubleshooting
 
