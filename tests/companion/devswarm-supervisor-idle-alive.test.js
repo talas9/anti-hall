@@ -179,12 +179,12 @@ test('D12 item 1: isSessionAliveRow is skipped once grace/archive-ready already 
 test('MUTATION: removing the idleAlive suppression restores poking an idle-alive row', () => {
   const SUPERVISOR = path.join(__dirname, '..', '..', 'plugins', 'anti-hall', 'companion', 'devswarm-supervisor.js');
   const src = fs.readFileSync(SUPERVISOR, 'utf8');
-  const target = "if (graced || done || idleAlive) {";
+  const target = "if (graced || done || idleAlive || isPrimaryRow) {";
   assert.ok(src.includes(target), 'mutant target string not found verbatim');
   const scratchDir = fs.mkdtempSync(path.join(os.tmpdir(), 'antihall-supervisor-mutant-'));
   const scratchFile = path.join(scratchDir, 'devswarm-supervisor.js');
   try {
-    fs.writeFileSync(scratchFile, src.replace(target, "if (graced || done) {"));
+    fs.writeFileSync(scratchFile, src.replace(target, "if (graced || done || isPrimaryRow) {"));
     // Symlink the sibling lib/ dir the module requires, module-identity-preserving.
     fs.symlinkSync(path.join(SUPERVISOR, '..', 'lib'), path.join(scratchDir, 'lib'), 'dir');
     delete require.cache[require.resolve(scratchFile)];

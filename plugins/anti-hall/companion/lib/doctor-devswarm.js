@@ -878,10 +878,45 @@ function runChecks(opts) {
   // listener-presence line (evidence something is consuming the inbox — see
   // listenerPresenceFor above) so a combined-verdict PASS can't hide a wedged
   // consumer that just hasn't been swept as stale yet.
+  //
+  // PRIMARY-ROW EXCLUSION (item F.2, v0.107.1 field report): a `register-
+  // primary`-registered `primary-<hash>` descriptor is not a child workspace
+  // — it structurally has no `nudgeCommand`, so devswarm-supervisor.js's
+  // sweep now excludes it from pokeOrEscalate entirely (see that file's own
+  // header on this same fix). Read-side must match: `statusForVerdict`
+  // mapping 'escalated'/'stale' to FAIL/WARN was written for CHILD rows and
+  // misclassifies a Primary's own row the same way (observed live: `workspace
+  // primary-<id>: escalated (nudgeAttempts=0)` for an actively-draining
+  // Primary that was never nudged because there was never a nudgeCommand to
+  // fire). A primary row is reported via listener-presence ONLY (still
+  // useful — proves something is consuming its inbox); its nudge/escalate
+  // verdict, if any (possibly stale from before this fix), is surfaced as an
+  // informational note, NEVER as FAIL/WARN, and — in `--repair` mode — the
+  // stale verdict file is cleared (idempotent: a missing file is a no-op) so
+  // it stops being read as terminal 'escalated' state on the next tick.
+  let primaryIdFor = null;
+  try { primaryIdFor = require('../install-devswarm-ingest.js').primaryWorkspaceId; } catch (_) { primaryIdFor = null; }
   for (const d of descriptors) {
+    const isPrimaryRow = !!(primaryIdFor && d.worktreePath
+      && (() => { try { return String(d.id) === String(primaryIdFor(d.worktreePath)); } catch (_) { return false; } })());
+
     let verdict = null;
     try { verdict = JSON.parse(F.readFileSync(livenessPathFor(d.id, home), 'utf8')); } catch (_) {}
-    if (!verdict) {
+
+    if (isPrimaryRow) {
+      if (verdict && (verdict.status === 'escalated' || verdict.status === 'nudged')) {
+        results.push({
+          status: PASS,
+          message: 'workspace ' + d.id + ': Primary row — nudge/escalate does not apply (no nudgeCommand); '
+            + 'stale verdict "' + verdict.status + '" ignored'
+            + (o.repair ? '; cleared' : ' (run doctor --repair to clear it)'),
+        });
+        if (o.repair) {
+          try { F.unlinkSync(livenessPathFor(d.id, home)); } catch (_) { /* already gone / unwritable — fail-open */ }
+        }
+      }
+      // else: no verdict, or a benign 'alive'/'stale' snapshot — nothing to say.
+    } else if (!verdict) {
       results.push({ status: WARN, message: 'workspace ' + d.id + ': no liveness verdict yet (sweep has not run)' });
     } else {
       const status = statusForVerdict(verdict);

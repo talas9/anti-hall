@@ -21,6 +21,21 @@ function makeFakeHome() {
   return { home, cleanup: () => { try { fs.rmSync(home, { recursive: true, force: true }); } catch (_) {} } };
 }
 
+// makeGitCwd() — a REAL git worktree (item F.1, v0.107.1): the
+// devswarm-parent-inbox self-test resolves its repoKey from the CALLER's cwd
+// (not the plugin's own install dir), so exercising it for real requires an
+// actual git repo, not a bare temp dir.
+function makeGitCwd() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'antihall-doctor-cwd-'));
+  cp.spawnSync('git', ['init', '-q'], { cwd: dir });
+  cp.spawnSync('git', ['config', 'user.email', 'test@example.com'], { cwd: dir });
+  cp.spawnSync('git', ['config', 'user.name', 'Test'], { cwd: dir });
+  fs.writeFileSync(path.join(dir, '.gitkeep'), '');
+  cp.spawnSync('git', ['add', '.'], { cwd: dir });
+  cp.spawnSync('git', ['commit', '-q', '-m', 'init'], { cwd: dir });
+  return dir;
+}
+
 // timeout: generous on purpose. spawnSync's timeout kills the child (SIGTERM) and
 // yields status=null on expiry — that is a legitimately-slow subprocess under
 // contention, NOT a wrong exit code, and asserting strictEqual(r.code, 0) against a
@@ -193,7 +208,11 @@ test('doctor: DevSwarm workspace descriptor with a caught-up inbox -> listener-p
 
 test('doctor: DevSwarm-active session -> the four Phase-1 hook self-tests all PASS (no FAIL)', () => {
   const { home, cleanup } = makeFakeHome();
-  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'antihall-doctor-cwd-'));
+  // item F.1 (v0.107.1): a real git worktree cwd — the devswarm-parent-inbox
+  // self-test's repoKey now resolves from THIS cwd, not the plugin's own
+  // install dir, so it must actually be a git repo for the self-test to run
+  // (rather than legitimately SKIP) and prove the PASS this test asserts.
+  const cwd = makeGitCwd();
   try {
     // Mode ON forces the section to surface even with no descriptors/installed
     // companion, so the always-run behavioral self-tests are printed and can be

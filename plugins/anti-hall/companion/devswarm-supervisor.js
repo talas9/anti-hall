@@ -453,8 +453,39 @@ function sweepOnce(opts) {
             (deps.rowLivenessState || rowLivenessState)(rowForLiveness, home, { now: nowTs }) === 'idle-alive'
             || (deps.isSessionAliveRow || isSessionAliveRow)(rowForLiveness, home, { now: nowTs })
           );
-        if (graced || done || idleAlive) {
-          poke = { action: 'suppressed', reason: graced ? 'post-spawn-grace' : (done ? 'archive-ready' : 'idle-alive') };
+        // PRIMARY-ROW EXCLUSION (item F.2, v0.107.1 field report): `register-
+        // primary` (a documented, recommended one-time setup step — see
+        // scripts/devswarm.js cmdRegisterPrimary / skills/devswarm/SKILL.md)
+        // writes a REAL descriptor for the Primary's own `primary-<hash>` id
+        // so `migrate` can fold its legacy inbox — that id then sits in
+        // readDescriptors() forever, alongside genuine CHILD descriptors, and
+        // was swept by this SAME nudge/escalate machinery. A Primary row
+        // structurally never has a `nudgeCommand` (there is no CLI verb to
+        // "nudge" your own top-level session), so pokeOrEscalate's own
+        // exhaustion branch (lib/recovery.js: `if (descriptor.nudgeCommand
+        // && ...)` false -> immediate escalate) fired on the FIRST stale
+        // tick with nudgeAttempts=0 EVERY time — observed live as `workspace
+        // primary-<id>: escalated (nudgeAttempts=0)` for an actively-
+        // draining Primary. A Primary isn't a child to nudge/escalate at
+        // all; its OWN mailbox activity is already covered by the separate
+        // listener-presence check (doctor-devswarm.js's listenerPresenceFor)
+        // and the read-side idleAlive/isSessionAliveRow signals used
+        // elsewhere. Checked cheaply (no I/O — pure string derivation from
+        // the descriptor's own worktreePath) alongside the other suppressors
+        // so it never reaches pokeOrEscalate.
+        const isPrimaryRow = (() => {
+          try {
+            return d.worktreePath
+              ? String(d.id) === String((deps.primaryWorkspaceId
+                || require('./install-devswarm-ingest.js').primaryWorkspaceId)(d.worktreePath))
+              : false;
+          } catch (_) { return false; }
+        })();
+        if (graced || done || idleAlive || isPrimaryRow) {
+          poke = {
+            action: 'suppressed',
+            reason: graced ? 'post-spawn-grace' : (done ? 'archive-ready' : (idleAlive ? 'idle-alive' : 'primary-row-not-nudgeable')),
+          };
         } else {
           poke = (deps.pokeOrEscalate || pokeOrEscalate)(d, verdict, {
             home, now: o.now, nudgeMaxAttempts: o.nudgeMaxAttempts, nudgeCooldownMs: o.nudgeCooldownMs,

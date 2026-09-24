@@ -423,8 +423,8 @@ if (!fs.existsSync(slScript)) {
 // The plugin injects text into the model's context. Measure it so the cost of
 // the guardrail is visible (bloated context is the exact failure it warns of).
 head('Context footprint (injected text)');
-function ctxBytes(file, payload, picker) {
-  const r = runHook(file, payload || {});
+function ctxBytes(file, payload, picker, env) {
+  const r = runHook(file, payload || {}, env);
   let txt = '';
   try {
     const o = JSON.parse((r.out || '').split('\n').find(Boolean) || '{}');
@@ -457,8 +457,17 @@ const ssFiles = sessionStartHookFiles(hooksConfig);
 const ssPayload = { hook_event_name: 'SessionStart', source: 'startup' };
 let ssB = 0;
 const ssParts = [];
+// NEVER-SIDE-EFFECTING PROBE (item E follow-up, v0.107.1): this loop spawns
+// EVERY registered SessionStart hook purely to measure its additionalContext
+// byte size — every hook here is expected to be a pure JSON emitter with no
+// real-world effect. repair-on-reload.js is the one exception (it can spawn a
+// detached `doctor.js --repair` child when a repair is pending) — spawning
+// THAT from inside doctor.js's own self-measurement would recursively launch
+// another doctor.js run on every `doctor` invocation. Disabled for this probe
+// only via its own documented escape hatch; every other hook is unaffected.
+const ssProbeEnv = { ANTIHALL_REPAIR_ON_RELOAD: 'off' };
 for (const f of (ssFiles.length ? ssFiles : ['verify-first-full.js'])) {
-  const b = ctxBytes(f, ssPayload);
+  const b = ctxBytes(f, ssPayload, null, ssProbeEnv);
   ssB += b;
   ssParts.push(`${f} ${b} B`);
 }
@@ -569,12 +578,21 @@ function devswarmHookSelfTests() {
     // checkout — always a real git worktree) and a shared-summary write at that
     // repoKey, not writeWorkspace()'s raw descriptor shape. Lazy/guarded
     // require (same D27 posture as the hooks themselves): an unresolvable
-    // repokey module fails this self-test to a single, clearly-labelled FAIL
+    // repokey module fails this self-test to a single, clearly-labelled SKIP
     // result rather than crashing doctor.js.
+    //
+    // ITEM F.1 FIX (v0.107.1 field report): this used to resolve the repoKey
+    // from `ROOT` (the PLUGIN's own install/cache dir, e.g. ~/.claude/
+    // plugins/cache/anti-hall/anti-hall/0.107.0/) instead of the CALLER's
+    // actual cwd — the plugin cache mirror is never itself a git worktree, so
+    // repoKeyForWorktree(ROOT) failed on every real invocation, even one run
+    // from inside a perfectly normal project repo, and the self-test always
+    // SKIPPED. Use process.cwd() (the directory doctor.js was actually
+    // invoked from) instead, matching what a real Primary session would have.
     let meshRepoKey = null;
     try {
       const repokey = require('../companion/lib/devswarm-repokey.js');
-      meshRepoKey = repokey.repoKeyForWorktree(ROOT);
+      meshRepoKey = repokey.repoKeyForWorktree(process.cwd());
     } catch (_) { meshRepoKey = null; }
     function writeSharedSummary(home, workspaces) {
       if (!meshRepoKey) return false;
@@ -638,9 +656,14 @@ function devswarmHookSelfTests() {
       const home = path.join(base, 'parent-inbox'); fs.mkdirSync(home, { recursive: true });
       const wrote = writeSharedSummary(home, { wsA: { total: 3, cursor: 0, unread: 3, directUnread: 3 } });
       if (!wrote) {
-        results.push({ ok: false, msg: 'devswarm-parent-inbox self-test SKIPPED: repoKey unresolvable for ' + ROOT });
+        // ITEM F.1 FIX: a SKIP is NOT a failure (doctor.js was invoked from a
+        // cwd repoKeyForWorktree could not resolve — e.g. not a git worktree
+        // at all). `skip: true` routes this through the neutral/informational
+        // path below instead of `bad()`, so a legitimately-inapplicable self-
+        // test can never inflate the failure count.
+        results.push({ ok: true, skip: true, msg: 'devswarm-parent-inbox self-test SKIPPED: repoKey unresolvable for ' + process.cwd() + ' (not a git worktree?)' });
       } else {
-        const r = runHook('devswarm-parent-inbox.js', { hook_event_name: 'UserPromptSubmit', session_id: 'pi', prompt: 'hi', cwd: ROOT }, PRIMARY_ENV(home));
+        const r = runHook('devswarm-parent-inbox.js', { hook_event_name: 'UserPromptSubmit', session_id: 'pi', prompt: 'hi', cwd: process.cwd() }, PRIMARY_ENV(home));
         const said = /DEVSWARM PARENT INBOX/.test(r.out) && /3 unread/.test(r.out);
         results.push({ ok: said, msg: said
           ? 'devswarm-parent-inbox surfaces a workspace unread backlog to the Primary'
@@ -734,14 +757,18 @@ function devswarmHookSelfTests() {
   // but stays QUIET when healthy: a FAILURE is always surfaced (loud, matching
   // the P2-12 syntax-error rule) so a broken Phase-1 hook can never hide.
   const hookTests = devswarmHookSelfTests();
-  const anyHookFail = hookTests.some((t) => !t.ok);
+  // ITEM F.1 FIX: a `skip:true` result (self-test not applicable — e.g. cwd
+  // is not a git worktree) is neither a pass nor a failure. Only an explicit
+  // `ok:false` (a self-test that actually RAN and found the hook broken)
+  // counts toward anyHookFail / the loud FAILURE path below.
+  const anyHookFail = hookTests.some((t) => t.ok === false);
 
   // Fully silent ONLY when dormant, not installed, every lib parses, AND every
   // Phase-1 hook self-test passed.
   if (!active && !installed && syntaxErrors.length === 0 && !anyHookFail) return;
   head('DevSwarm liveness supervisor (optional)');
   for (const se of syntaxErrors) bad('supervisor lib SYNTAX ERROR: ' + path.basename(se.f) + ' — ' + se.err);
-  for (const t of hookTests) (t.ok ? ok : bad)(t.msg);
+  for (const t of hookTests) (t.skip ? infol : (t.ok ? ok : bad))(t.msg);
   if (installed) ok(`supervisor companion INSTALLED (${process.platform === 'darwin' ? 'launchd' : 'systemd'} background sweep)`);
   else infol('supervisor companion not installed — background auto-recovery is off; the in-session checks below (if any) still run');
   if (active && report && dsd) {

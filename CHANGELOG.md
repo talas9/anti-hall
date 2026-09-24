@@ -143,6 +143,30 @@ the update.
   --repair` DETACHED — idempotent, fail-open, never blocking the turn, no-op
   path measured well under budget. Codex parity via its SessionStart/
   UserPromptSubmit equivalent (same shared hook script).
+- **Fixed: three `doctor.js` false failures** (field report, v0.107.0):
+  1. the `devswarm-parent-inbox` self-test resolved its repoKey from the
+     PLUGIN's own install dir instead of the caller's cwd, so it always
+     SKIPPED on a real machine — and a SKIP was counted as a FAILURE. Now
+     resolves from `process.cwd()`, and a skip is informational, never a
+     failure.
+  2. a `register-primary`-registered Primary row (a real, documented setup
+     step) was swept by the same nudge/escalate machinery as CHILD
+     workspaces; since a Primary structurally has no `nudgeCommand`, it
+     escalated on the very first stale tick with `nudgeAttempts=0` — for a
+     live, actively-draining Primary. The supervisor sweep now excludes
+     primary rows from pokeOrEscalate entirely, and `doctor --repair` clears
+     any already-stale escalated verdict for one.
+  3. (investigated, not independently reproducible beyond the two causes
+     above): a reported failure-count mismatch between `--repair`'s summary
+     and its printed ✗ lines. Fixes 1-2 remove the exact false-FAIL lines the
+     report showed; the counting mechanism itself (`bad()`) was verified
+     atomic (increment + print together, no cap/dedupe) against a clean
+     fixture, so no further divergence could be proven without the
+     reporter's own store contents.
+  Also: doctor's own context-footprint self-measurement (which spawns every
+  registered SessionStart hook) now disables `repair-on-reload` for that one
+  probe, so `doctor` measuring itself can never recursively spawn another
+  `doctor.js --repair`.
 - **Changed: `update.js`'s split-store-merge summary now explains re-delivery.**
   The v0.107.0 split-store merge re-delivers already-handled messages as unread
   by design (cursors are never copied across the two backends' independent
