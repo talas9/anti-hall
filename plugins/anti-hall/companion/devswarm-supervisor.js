@@ -1044,12 +1044,17 @@ function housekeepingSweepStatePath(home) {
 function housekeepingSweepEnabled(env) {
   const e = env || process.env;
   if (!supervisorEnabled(e)) return false;
-  return String(e.ANTIHALL_DEVSWARM_HOUSEKEEPING_SWEEP || 'auto').trim().toLowerCase() !== 'off';
+  try { return require('../hooks/lib/settings.js').getWithEnv('devswarm', 'housekeepingSweep', 'auto', e) !== 'off'; }
+  catch (_) { return String(e.ANTIHALL_DEVSWARM_HOUSEKEEPING_SWEEP || 'auto').trim().toLowerCase() !== 'off'; }
 }
 
 // resolveHousekeepingCooldownMs(env) -> ms, floor 5min (typo-safety, same
 // convention as resolveReconcileCooldownMs).
 function resolveHousekeepingCooldownMs(env) {
+  try {
+    const v = require('../hooks/lib/settings.js').getWithEnv('devswarm', 'housekeepingSweepSec', DEFAULT_HOUSEKEEPING_SWEEP_COOLDOWN_MS / 1000, env || process.env);
+    if (Number.isFinite(v)) return Math.max(300, v) * 1000;
+  } catch (_) { /* fall through */ }
   const sec = parseEnvNum(env || process.env, 'ANTIHALL_DEVSWARM_HOUSEKEEPING_SWEEP_SEC',
     DEFAULT_HOUSEKEEPING_SWEEP_COOLDOWN_MS / 1000, { min: 300 });
   return sec * 1000;
@@ -1133,6 +1138,10 @@ function supervisorLogPath(home) {
 }
 
 function resolveSupervisorLogRotateBytes(env) {
+  try {
+    const v = require('../hooks/lib/settings.js').getWithEnv('devswarm', 'supervisorLogRotateBytes', SUPERVISOR_LOG_ROTATE_BYTES_DEFAULT, env || process.env);
+    if (Number.isFinite(v) && v > 0) return v;
+  } catch (_) { /* fall through */ }
   const raw = (env || process.env || {}).ANTIHALL_DEVSWARM_SUPERVISOR_LOG_ROTATE_BYTES;
   const n = Number(raw);
   return Number.isFinite(n) && n > 0 ? n : SUPERVISOR_LOG_ROTATE_BYTES_DEFAULT;

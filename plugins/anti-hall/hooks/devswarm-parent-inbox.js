@@ -1052,6 +1052,10 @@ function broadcastMaxAgeMs(env) {
 // codebase).
 const DEFAULT_INBOX_GRACE_MS = 120 * 1000;
 function resolveInboxGraceMs(env) {
+  try {
+    const v = require('./lib/settings.js').getWithEnv('devswarm', 'inboxGraceSec', DEFAULT_INBOX_GRACE_MS / 1000, env || process.env);
+    if (Number.isFinite(v) && v >= 0) return v * 1000;
+  } catch (_) { /* fall through */ }
   const n = Number(env && env.ANTIHALL_DEVSWARM_INBOX_GRACE_SEC);
   return Number.isFinite(n) && n >= 0 ? n * 1000 : DEFAULT_INBOX_GRACE_MS;
 }

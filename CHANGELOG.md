@@ -125,6 +125,28 @@ the update.
   exist only in the new version run in the same update; any failure falls back to the
   local results with a note. `repair-on-reload` likewise uses the newest cached
   `doctor.js`.
+- **P0: the harness never loaded an updated build.** Claude Code loads anti-hall from
+  `installed_plugins.json`'s `installPath`, which `update` never touched. `update` now runs
+  `claude plugin update anti-hall@anti-hall` whenever that record is behind (reported as
+  `harnessRegistered`; never auto-accepts a confirmation — it prints the exact command
+  instead), and then says **RESTART** Claude Code (a registry change is not picked up by
+  `/reload-plugins`). The post-pull re-exec means the newly pulled `update.js` performs the
+  registration even when the running one predates it; a registration done by the parent is
+  never hidden by the child's no-op. `doctor` warns when `installed_plugins.json` lags the
+  newest cache/marketplace version.
+- **Stale-build children looked neglected.** `heartbeat`/`inbox tick` stamp the running
+  anti-hall version; the roster, parent-inbox table and nag, and `doctor` show
+  `stale anti-hall <v>: restart this session` instead of `not-draining` when a workspace
+  runs an older build than this machine has (an app-archived row stays plain `archived`).
+  `devswarm-wake-watch.js` exits with one line when a newer version is installed.
+- **The parent inbox flagged a just-sent message within seconds.** The unread-only nag now
+  waits for a grace window (`devswarm.inboxGraceSec`, 120 s) unless the child heartbeats
+  first; stuck/not-draining signals are unaffected.
+- **Three directories grew without bound** (measured 133 MB / 34k files, 62 MB, 27 MB):
+  per-session `devswarm/child-gate/` state is swept after `devswarm.childGateRetentionDays`
+  (14); that sweep and the existing `reaped/` sweep now also run from a periodic supervisor
+  housekeeping sweep (`devswarm.housekeepingSweep`, every `housekeepingSweepSec` = 1 h);
+  the supervisor rotates its own log at `supervisorLogRotateBytes` (10 MB, 2 generations).
 - **Version alert missed multi-release days**: the 24 h cache TTL served a stale `latest`
   all day; now 2 h, plus the network-free plugin-cache check above.
 - **`update.js --check` trusted a lagging `installed_plugins.json`**; it now takes the
@@ -187,19 +209,6 @@ the update.
 - Spawn titles are no longer truncated (the 60-char cap is gone).
 - Deleting DevSwarm workspaces is never automated: only `prune-archived` with an
   owner-approved exact list.
-
-- **Fixed: a stale-build child was misreported as "not-draining" instead of stale.**
-  A child auto-resumed before the harness re-registered a newer anti-hall build kept
-  running the old build (its wake-watch process had the old cache path baked in);
-  0.105.3 is NDJSON-only and cannot see store-side mesh mail, so the Primary saw it as
-  neglect rather than a version problem. `heartbeat`/`inbox tick` now stamp the calling
-  process's own running anti-hall version onto every heartbeat record; the roster
-  table, parent-inbox nag, and `doctor` now show `stale anti-hall <v>: restart this
-  session (or drain with <newest CLI path>)` instead of `not-draining` for a workspace
-  whose recorded version is older than the newest one registered/cached on this
-  machine. `devswarm-wake-watch.js` also now checks on every poll whether a newer
-  version is registered/cached and, if so, prints one line and exits cleanly instead of
-  running on as a silent stale watcher.
 
 ## 0.107.1 (2026-09-24)
 

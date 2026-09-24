@@ -94,7 +94,7 @@ for (const [parts, exportName, buildArgs] of DEVSWARM_CONSUMERS) {
 test('home-injection: companion/devswarm-supervisor.js resolvers(env with HOME) never call os.homedir()', () => {
   const mod = require(P('companion', 'devswarm-supervisor.js'));
   const home = isolatedHome();
-  const fns = ['resolveThresholdsFromEnv', 'resolvePostSpawnGraceMs', 'reconcileSweepEnabled', 'resolveReconcileCooldownMs', 'resolveSupervisorSweepBudgetMs'];
+  const fns = ['resolveThresholdsFromEnv', 'resolvePostSpawnGraceMs', 'reconcileSweepEnabled', 'resolveReconcileCooldownMs', 'resolveSupervisorSweepBudgetMs', 'housekeepingSweepEnabled', 'resolveHousekeepingCooldownMs', 'resolveSupervisorLogRotateBytes'];
   try {
     withPoisonedHomedir(() => {
       for (const name of fns) {

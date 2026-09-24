@@ -262,3 +262,12 @@ test('devswarm: every advanced tuning knob is marked advanced; headline knobs ar
     else assert.ok(s.advanced, s.key + ' should be marked advanced (tuning knob)');
   }
 });
+
+test('devswarm housekeeping / log-rotate / child-gate / inbox-grace knobs match their source constants', () => {
+  assert.strictEqual(find('devswarm', 'childGateRetentionDays').default, constFromSource(['hooks', 'lib', 'doctor-repair.js'], 'CHILD_GATE_RETENTION_DAYS_DEFAULT'));
+  assert.strictEqual(find('devswarm', 'housekeepingSweepSec').default, constFromSource(['companion', 'devswarm-supervisor.js'], 'DEFAULT_HOUSEKEEPING_SWEEP_COOLDOWN_MS') / 1000);
+  assert.strictEqual(find('devswarm', 'supervisorLogRotateBytes').default, constFromSource(['companion', 'devswarm-supervisor.js'], 'SUPERVISOR_LOG_ROTATE_BYTES_DEFAULT'));
+  assert.strictEqual(find('devswarm', 'inboxGraceSec').default, constFromSource(['hooks', 'devswarm-parent-inbox.js'], 'DEFAULT_INBOX_GRACE_MS') / 1000);
+  assert.strictEqual(find('devswarm', 'housekeepingSweep').default, 'auto');
+  for (const k of ['childGateRetentionDays', 'supervisorLogRotateBytes']) assert.strictEqual(find('devswarm', k).exclusiveMin, 0, k + ': a 0/negative value is rejected, never widens deletion');
+});

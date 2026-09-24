@@ -72,7 +72,7 @@ Env names are the per-hook switches; every user-facing one is also a setting (se
 | UserPromptSubmit | task-tracker.js | Task-list discipline directive plus a freshness note when tasks are open/stale. | ✓ | — |
 | UserPromptSubmit | limit-conserve-inject.js | Token-conservation nudge at the usage threshold (auto mode reads the OMC usage cache). | ✓ | `ANTIHALL_LIMIT_CONSERVE`, `ANTIHALL_LIMIT_THRESHOLD` |
 | UserPromptSubmit | auto-handover.js | At 85% context (known window) or 170k tokens: write a handover unasked, tell the user, urge `/compact`/`/clear`; milestone nags every +5 points; unknown window → one soft advisory only. | ✓ | `ANTIHALL_AUTO_HANDOVER_PCT` (`0` = off) |
-| UserPromptSubmit | devswarm-parent-inbox.js | DevSwarm Primary: per-turn workspace table (app titles, sidebar order, finish/PR state, unread) and neglect nags. | ✓ | — |
+| UserPromptSubmit | devswarm-parent-inbox.js | DevSwarm Primary: per-turn workspace table (app titles, sidebar order, finish/PR state, unread, `stale anti-hall <v>`) and neglect nags (after a 120 s grace for fresh unread). | ✓ | — |
 | UserPromptSubmit | devswarm-child-turn.js | DevSwarm child: turn-authored heartbeat, keep-parent-updated reminder, unread-inbox surfacing. | ✓ | — |
 | TaskCreated, TaskCompleted | task-lifecycle-log.js | Appends task events to `.anti-hall/history/<date>/<session>.md`. | — | — |
 | SubagentStart | verify-first-subagent.js | Re-injects the Iron Law and scope rules into every subagent (no orchestration block). | — | — |
@@ -177,10 +177,10 @@ Shared libraries (not hooks): `verify-first-core.js`, `coordinator-detect.js`, `
 | scripts/capability-scan.js | Harness capability scan (see the update skill). |
 | scripts/harvest-debt.js | Backs the debt skill. |
 | scripts/migrate-state.js | State-layout migration CLI (see the update skill). |
-| skills/update/scripts/update.js | The updater (`--check`); re-execs the freshly pulled version for post-pull stages. |
+| skills/update/scripts/update.js | The updater (`--check`); re-execs the freshly pulled version for post-pull stages; re-registers the plugin with the harness (`claude plugin update`) and then asks for a RESTART. |
 | hooks/doctor.js | Doctor (`--repair`, `--quiet`). |
 | companion/mcp-reaper.js + install-reaper.js | Opt-in interval job killing orphaned MCP servers (macOS LaunchAgent / systemd user timer). |
-| companion/devswarm-supervisor.js + install-devswarm-supervisor.js | Opt-in DevSwarm sweep: liveness poke/escalate (never kills), app-DB sync, auto-archive, message retention. |
+| companion/devswarm-supervisor.js + install-devswarm-supervisor.js | Opt-in DevSwarm sweep: liveness poke/escalate (never kills), app-DB sync, auto-archive, message retention, hourly housekeeping (child-gate/reaped sweeps), own log rotation. Installer dry-runs under tests or a temp HOME. |
 | companion/devswarm-ingest.js + install-devswarm-ingest.js | Opt-in per-project ingest daemon (`hivecontrol workspace monitor` → mesh store). |
 | companion/devswarm-migrate.js | Legacy DevSwarm state → store migration. |
 | companion/devswarm-recover.js | The only DevSwarm path that kills: on-demand, one named workspace. |

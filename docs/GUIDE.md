@@ -1376,6 +1376,11 @@ Generated from `hooks/lib/settings-schema.js` (a hygiene test keeps this table a
 | `devswarm.summaryRetentionDays` adv | `30` [0..] | `ANTIHALL_DEVSWARM_SUMMARY_RETENTION_DAYS` | Retention window (days) for summary records. |
 | `devswarm.wakeCron` adv | `*/30 * * * *` | `ANTIHALL_DEVSWARM_WAKE_CRON` | Wake-poll cron schedule override (treated as untrusted input). |
 | `devswarm.wakeWatchPollMs` adv | `2000` [250..60000] | `ANTIHALL_DEVSWARM_WAKE_WATCH_POLL_MS` | Poll interval (ms) for the wake-watch loop, clamped [250,60000]. |
+| `devswarm.childGateRetentionDays` adv | `14` (>0) | `ANTIHALL_DEVSWARM_CHILD_GATE_RETENTION_DAYS` | Days a per-session child-gate state file is kept before the housekeeping/doctor sweep removes it. |
+| `devswarm.housekeepingSweep` adv | `auto` (auto/off) | `ANTIHALL_DEVSWARM_HOUSEKEEPING_SWEEP` | Supervisor disk-hygiene sweep (reaped logs, child-gate state); only "off" disables it. |
+| `devswarm.housekeepingSweepSec` adv | `3600` [300..] | `ANTIHALL_DEVSWARM_HOUSEKEEPING_SWEEP_SEC` | Seconds between housekeeping sweeps, floor 300. |
+| `devswarm.supervisorLogRotateBytes` adv | `10485760` (>0) | `ANTIHALL_DEVSWARM_SUPERVISOR_LOG_ROTATE_BYTES` | Size at which the supervisor rotates its own log. |
+| `devswarm.inboxGraceSec` adv | `120` [0..] | `ANTIHALL_DEVSWARM_INBOX_GRACE_SEC` | Grace window (sec) before a child's fresh unread is flagged, unless it heartbeats first; 0 = no grace. |
 | `devswarm.supervisorSweepBudgetMs` adv | `20000` [0..] | `ANTIHALL_SUPERVISOR_SWEEP_BUDGET_MS` | Time budget (ms) for one supervisor sweep pass. |
 | `devswarm.autoArchive.mode` | `on` (on/dry-run/off) | `ANTIHALL_DEVSWARM_AUTO_ARCHIVE_MODE` | Auto-archive finished workspaces (needs DevSwarm ≥ 2.5.3). |
 | `devswarm.autoArchive.idleMin` adv | `30` [5..] | `ANTIHALL_DEVSWARM_AUTO_ARCHIVE_IDLE_MIN` | Minutes idle before a finished workspace is eligible for auto-archive. |

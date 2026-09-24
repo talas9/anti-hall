@@ -2604,6 +2604,7 @@ function promoteUnclaimedSessions(opts) {
 const RETENTION_SCHEMA_KEY = {
   ANTIHALL_DEVSWARM_REAPED_RETENTION_DAYS: 'reapedRetentionDays',
   ANTIHALL_DEVSWARM_SEND_RECEIPT_RETENTION_DAYS: 'sendReceiptRetentionDays',
+  ANTIHALL_DEVSWARM_CHILD_GATE_RETENTION_DAYS: 'childGateRetentionDays',
 };
 function retentionDays(env, varName, fallbackDays) {
   const e = env || process.env;

@@ -508,6 +508,11 @@ function harnessRegisterPostUpdate(opts) {
   if (!isSemver(installedVersion) || !isSemver(latest) || compareVersions(installedVersion, latest) >= 0) {
     return { attempted: false, ok: false, detail: 'harness already registered at latest (or version unknown) — nothing to do' };
   }
+  // Tests never spawn the real harness CLI (repo rule: tests never touch the
+  // real machine); a test that wants this path injects execFn.
+  if (!o.execFn && process.env.NODE_TEST_CONTEXT) {
+    return { attempted: false, ok: false, detail: 'skipped under node --test (no execFn injected; the real claude CLI is never spawned by tests)' };
+  }
   const run = o.execFn || ((args) => execFileSync('claude', args, {
     encoding: 'utf8', timeout: 20000, stdio: ['ignore', 'pipe', 'pipe'],
   }));
@@ -3234,7 +3239,11 @@ function runUpdate(opts) {
       wakeMonitor,
       codexGraphifyHooksMigrate,
       harnessRegistered,
-      action: updated ? 'run /reload-plugins' : 'already up to date',
+      // A harness re-registration needs a full RESTART (see
+      // harnessRegisterPostUpdate); a plain cache sync only needs a reload.
+      action: (harnessRegistered && harnessRegistered.ok)
+        ? 'RESTART Claude Code (exit and resume the session) — the harness now registers ' + latest + '; /reload-plugins is not enough'
+        : (updated ? 'run /reload-plugins' : 'already up to date'),
     },
     changelog,
     stop: false,
@@ -3302,7 +3311,22 @@ function runPostPullReexec(opts) {
     if (res.status === 0 && res.stdout) {
       const parsed = JSON.parse(res.stdout.split('\n').find(Boolean) || 'null');
       if (parsed && parsed.status && typeof parsed.status === 'object') {
-        return { status: mergeReexecStatus(Object.assign({}, status), parsed.status, ''), note: null };
+        const merged = mergeReexecStatus(Object.assign({}, status), parsed.status, '');
+        // The harness re-registration may already have happened in THIS
+        // (parent) process; the child then finds installed_plugins.json current
+        // and reports "nothing to do". Keep the record of the one that ran —
+        // and its RESTART action — rather than letting the no-op overwrite it.
+        const mine = status.harnessRegistered;
+        const theirs = parsed.status.harnessRegistered;
+        if (mine && mine.attempted && !(theirs && theirs.attempted)) {
+          merged.harnessRegistered = mine;
+          if (mine.ok) merged.action = status.action;
+        } else if (theirs && theirs.ok && typeof parsed.status.action === 'string') {
+          // The NEW version did the registration (the usual case when the
+          // parent predates it): its RESTART action replaces our reload one.
+          merged.action = parsed.status.action;
+        }
+        return { status: merged, note: null };
       }
       return { status, note: ' (post-pull re-exec of ' + status.latest + '\'s update.js produced no usable status — kept local stage results for ' + status.installed + ')' };
     }

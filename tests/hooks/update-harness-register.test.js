@@ -183,3 +183,49 @@ test('runUpdate: never writes installed_plugins.json directly (harness-owned con
     fs.rmSync(home, { recursive: true, force: true });
   }
 });
+
+// ---- v0.108.0 integration: harness registration x post-pull re-exec ----
+function reexecFixture() {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ah-reg-reexec-'));
+  const src = path.join(root, 'plugins', 'anti-hall');
+  const f = path.join(src, 'skills', 'update', 'scripts', 'update.js');
+  fs.mkdirSync(path.dirname(f), { recursive: true });
+  fs.writeFileSync(f, '// placeholder; spawnReexec is injected\n');
+  return { root, paths: { pluginSrcDir: src, marketplaceDir: root } };
+}
+function fakeChild(status) { return () => ({ status: 0, stdout: JSON.stringify({ status }) + '\n' }); }
+
+test('re-exec: the parent already re-registered -> the child\'s "nothing to do" never hides it; RESTART action kept', () => {
+  const fx = reexecFixture();
+  try {
+    const parentReg = { attempted: true, ok: true, detail: 'harness re-registered to 0.109.0 — RESTART' };
+    const local = { installed: '0.108.0', latest: '0.109.0', updated: true, harnessRegistered: parentReg, action: 'RESTART Claude Code …' };
+    const { status } = U.runPostPullReexec({
+      paths: fx.paths, status: local, env: {}, cwd: fx.root,
+      spawnReexec: fakeChild({ harnessRegistered: { attempted: false, ok: false, detail: 'nothing to do' }, newStage: { ran: true }, action: 'already up to date' }),
+    });
+    assert.deepStrictEqual(status.harnessRegistered, parentReg);
+    assert.strictEqual(status.action, 'RESTART Claude Code …');
+    assert.deepStrictEqual(status.newStage, { ran: true });
+  } finally { fs.rmSync(fx.root, { recursive: true, force: true }); }
+});
+
+test('re-exec: an older parent without registration -> the NEW update.js registers and its RESTART action wins', () => {
+  const fx = reexecFixture();
+  try {
+    const local = { installed: '0.107.1', latest: '0.108.0', updated: true, action: 'run /reload-plugins' };
+    const childReg = { attempted: true, ok: true, detail: 'harness re-registered to 0.108.0 — RESTART' };
+    const { status } = U.runPostPullReexec({
+      paths: fx.paths, status: local, env: {}, cwd: fx.root,
+      spawnReexec: fakeChild({ harnessRegistered: childReg, action: 'RESTART Claude Code (exit and resume the session) — the harness now registers 0.108.0; /reload-plugins is not enough' }),
+    });
+    assert.deepStrictEqual(status.harnessRegistered, childReg);
+    assert.match(status.action, /^RESTART Claude Code/);
+  } finally { fs.rmSync(fx.root, { recursive: true, force: true }); }
+});
+
+test('under node --test with no injected execFn the real claude CLI is never spawned', () => {
+  const r = U.harnessRegisterPostUpdate({ installedVersion: '0.1.0', latest: '9.9.9' });
+  assert.strictEqual(r.attempted, false);
+  assert.match(r.detail, /node --test/);
+});
