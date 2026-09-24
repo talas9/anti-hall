@@ -84,6 +84,16 @@ itself.
   explain KEEP (promote-worthy) / REMOVE (offer to set mode off) / REVIEW (not
   enough data, or p95 latency over budget). Mention the headline one-liner per
   integration for a quick summary.
+- `jev-report.js --weekly [--json]` — compact ALWAYS-7-day summary, one line
+  per integration (`[mode]`, suggestion, short reason, calls). A SessionStart
+  hook (`hooks/jev-weekly-scorecard.js`, shared with the Claude port) checks
+  this automatically at most once every 7 days (latch:
+  `~/.anti-hall/state/jev-weekly-notice.json`) and, ONLY in the interactive
+  Primary session (never a DevSwarm child workspace), injects one line when an
+  integration has earned KEEP/REMOVE but its `jev.json` mode hasn't caught up:
+  `Jev scorecard: <id> ready to switch ON/OFF — run /anti-hall:jev`. Never
+  changes any mode itself. Opt out with `jev.json` `"weeklyNotice": false`
+  (default `true`); silent whenever Jev is not `enabled` at all.
 - **Two different "latency" numbers** — never conflate them. The table's
   `p50ms`/`p95ms` are the Jev classifier CALL's own latency (`jev-assist.ndjson`
   decision rows' `ms` field, typically hundreds of ms). The separate "triage

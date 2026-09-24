@@ -685,3 +685,54 @@ test('jev-assist.js finalize(): auto-populates `project` from cwd basename when 
     h.cleanup();
   }
 });
+
+// ---------------------------------------------------------------------------
+// --weekly: a compact, always-7-day per-integration summary (verdict + reason)
+// for the weekly scorecard SessionStart notice (hooks/jev-weekly-scorecard.js).
+// ---------------------------------------------------------------------------
+
+function makeRows(id, n, { changed = false } = {}) {
+  const rows = [];
+  for (let i = 0; i < n; i++) {
+    rows.push({
+      ts: new Date().toISOString(), id, h: 'h' + i, base: false, jev: changed,
+      conf: 0.95, ms: 100, backend: 'jev', final: changed, changed: changed ? 'added' : null,
+      cached: false, mode: 'on',
+    });
+  }
+  return rows;
+}
+
+test('buildWeeklyScorecard: KEEP candidate gets a reason citing changed/good-outcome rates', () => {
+  const { buildWeeklyScorecard } = require('../../plugins/anti-hall/scripts/jev-report.js');
+  // 60 calls, all changed (100% >> 5%), each with a good outcome -> KEEP.
+  const rows = [];
+  for (let i = 0; i < 60; i++) {
+    rows.push({
+      ts: new Date().toISOString(), id: 'speculation', h: 'h' + i, base: false, jev: true,
+      conf: 0.95, ms: 100, backend: 'jev', final: true, changed: 'added', cached: false, mode: 'on',
+    });
+    rows.push({ type: 'outcome', id: 'speculation', h: 'h' + i, outcome: 'evidence-added' });
+  }
+  const scorecard = buildWeeklyScorecard(rows, { jevCfg: { enabled: true } });
+  const spec = scorecard.integrations.find((r) => r.id === 'speculation');
+  assert.strictEqual(spec.suggestion, 'KEEP');
+  assert.match(spec.reason, /changed 100\.0%/);
+  assert.match(spec.reason, /good-outcome 100\.0%/);
+  assert.strictEqual(spec.mode, 'on', 'mode is read live from the passed jevCfg via getMode');
+});
+
+test('buildWeeklyScorecard: REVIEW (not enough data) reason is extracted verbatim from the suggestion', () => {
+  const { buildWeeklyScorecard } = require('../../plugins/anti-hall/scripts/jev-report.js');
+  const scorecard = buildWeeklyScorecard(makeRows('modelRouting', 3), { jevCfg: {} });
+  const r = scorecard.integrations.find((x) => x.id === 'modelRouting');
+  assert.match(r.suggestion, /^REVIEW/);
+  assert.match(r.reason, /not enough data: 3 < 50 calls/);
+});
+
+test('buildWeeklyScorecard: mode defaults per getMode when jevCfg has no integrations map', () => {
+  const { buildWeeklyScorecard } = require('../../plugins/anti-hall/scripts/jev-report.js');
+  const scorecard = buildWeeklyScorecard(makeRows('speculation', 3), { jevCfg: { enabled: true } });
+  const r = scorecard.integrations.find((x) => x.id === 'speculation');
+  assert.strictEqual(r.mode, 'on', 'speculation is a LEGACY_ON_DEFAULT integration');
+});

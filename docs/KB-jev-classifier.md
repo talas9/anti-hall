@@ -547,8 +547,20 @@ this release — the log format supports it for when it is.
 
 ```
 node plugins/anti-hall/scripts/jev-report.js [--days 7] [--json] [--window 24h|7d]
-  [--by project|session] [--project <name>]
+  [--by project|session] [--project <name>] [--weekly]
 ```
+
+`--weekly` prints a compact, ALWAYS-7-day summary (one line per integration:
+mode/suggestion/reason/calls) instead of the full table — `buildWeeklyScorecard()`
+in `scripts/jev-report.js`. `hooks/jev-weekly-scorecard.js` (SessionStart, shared
+with the Codex port) reads the SAME data automatically, at most once every 7 days
+(latch: `~/.anti-hall/state/jev-weekly-notice.json`, consumed on every check
+regardless of outcome), and — only in the interactive Primary session, never a
+DevSwarm child workspace (`hooks/lib/devswarm-role.js`'s `isChildWorkspace`) —
+injects one line pointing at `/anti-hall:jev` when an integration has earned a
+KEEP/REMOVE verdict its `jev.json` mode hasn't caught up to yet. It NEVER changes
+a mode itself. `jev.json`'s `"weeklyNotice": false` opts out (default `true`);
+Jev not being `enabled` at all is also silent.
 
 Per integration: calls, jev-answered %, cache hits, agreement % (Jev vs baseline, only
 where both exist) OR, for a label-only `choice` integration (no boolean baseline, e.g.

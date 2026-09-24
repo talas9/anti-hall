@@ -4,7 +4,7 @@
 //
 // USAGE
 //   node plugins/anti-hall/scripts/jev-report.js [--days 7] [--json] [--window 24h|7d]
-//     [--by project|session] [--project <name>]
+//     [--by project|session] [--project <name>] [--weekly]
 //   node plugins/anti-hall/scripts/jev-report.js label <hash> [tp|fp]
 //   node plugins/anti-hall/scripts/jev-report.js prune-audit --days N
 //
@@ -15,6 +15,14 @@
 // distinct value of that field, grouped by groupRowsBy() below -- 'unknown'
 // covers any row missing the field, including every row logged before this
 // feature existed.
+//
+// --weekly prints a compact, ALWAYS-7-day per-integration summary (mode,
+// suggestion, a short reason, call count) instead of the full table -- see
+// buildWeeklyScorecard() below. This is the SAME data hooks/jev-weekly-
+// scorecard.js's SessionStart notice reads (at most once every 7 days,
+// main-thread-only, never changes a mode) to point the user at this report
+// when an integration has earned a KEEP/REMOVE verdict jev.json hasn't caught
+// up to yet.
 //
 // For each integration id seen in the log, reports: calls, jev-answered %
 // (backend 'jev' or 'cache' vs 'baseline-only'), cache hits, agreement %
@@ -294,6 +302,16 @@ function jevConfigPath(home) {
   return path.join((home || os.homedir()), '.anti-hall', 'jev.json');
 }
 
+function readJevJson(home) {
+  try {
+    const raw = fs.readFileSync(jevConfigPath(home), 'utf8');
+    const parsed = JSON.parse(raw);
+    return (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) ? parsed : {};
+  } catch (_) {
+    return {};
+  }
+}
+
 function readCostPerCall(home) {
   try {
     const raw = fs.readFileSync(jevConfigPath(home), 'utf8');
@@ -489,6 +507,7 @@ function parseArgs(argv) {
     else if (argv[i] === '--window') opts.window = argv[++i];
     else if (argv[i] === '--by') opts.by = argv[++i]; // 'project' | 'session'
     else if (argv[i] === '--project') opts.project = argv[++i];
+    else if (argv[i] === '--weekly') opts.weekly = true;
   }
   return opts;
 }
@@ -813,6 +832,59 @@ function pct(n) {
   return n === null || n === undefined ? 'n/a' : `${(n * 100).toFixed(1)}%`;
 }
 
+// weeklyReason(r) -> a short human-readable reason string for r.suggestion,
+// built from the SAME numbers buildReport already computed (changedRate/
+// goodOutcomeRate/failureRate/calls) — never re-derives the KEEP/REVIEW/
+// REMOVE thresholds themselves (those live only in buildReport, above).
+function weeklyReason(r) {
+  if (r.suggestion.startsWith('REVIEW')) {
+    const m = /\((.+)\)$/.exec(r.suggestion);
+    return m ? m[1] : 'not enough data yet';
+  }
+  if (r.suggestion === 'KEEP') {
+    return `changed ${pct(r.changedRate)}, good-outcome ${pct(r.goodOutcomeRate)} over ${r.calls} calls`;
+  }
+  if (r.suggestion === 'REMOVE') {
+    const reasons = [];
+    if (r.changedRate < 0.01) reasons.push(`changed ${pct(r.changedRate)} < 1%`);
+    if (r.goodOutcomeRate !== null && r.goodOutcomeRate < 0.60) reasons.push(`good-outcome ${pct(r.goodOutcomeRate)} < 60%`);
+    if (r.failureRate > 0.20) reasons.push(`failure-rate ${pct(r.failureRate)} > 20%`);
+    return reasons.length ? reasons.join(', ') : `${r.calls} calls`;
+  }
+  return r.suggestion;
+}
+
+// buildWeeklyScorecard(rows) -> {generatedAt, integrations: [{id, calls,
+// suggestion, reason, mode}]}. Always the LAST 7 DAYS (the "weekly" in the
+// name), reusing buildReport's own thresholds/aggregation verbatim — no
+// separate logic to drift. `mode` is read live from jev.json (not from the
+// log) so the CLI caller (or a human reading it) can see whether a
+// KEEP/REMOVE verdict has already been acted on.
+function buildWeeklyScorecard(rows, opts = {}) {
+  const report = buildReport(rows, { days: 7, costPerCall: opts.costPerCall, humanLabelByHash: opts.humanLabelByHash, windowLabel: '7d' });
+  const { getMode } = require('../hooks/lib/jev-assist.js');
+  const cfg = opts.jevCfg || {};
+  const integrations = report.integrations.map((r) => ({
+    id: r.id,
+    calls: r.calls,
+    suggestion: r.suggestion,
+    reason: weeklyReason(r),
+    mode: getMode(r.id, cfg),
+  }));
+  return { generatedAt: report.generatedAt, integrations };
+}
+
+function printWeekly(scorecard) {
+  console.log(`jev weekly scorecard — generated ${scorecard.generatedAt} (last 7 days)`);
+  if (scorecard.integrations.length === 0) {
+    console.log('No jev-assist.ndjson activity in the last 7 days.');
+    return;
+  }
+  for (const r of scorecard.integrations) {
+    console.log(`  ${r.id} [${r.mode}]: ${r.suggestion} — ${r.reason} (${r.calls} calls)`);
+  }
+}
+
 function printTable(report) {
   console.log(`jev report — generated ${report.generatedAt}`);
   if (report.integrations.length === 0) {
@@ -951,6 +1023,19 @@ async function main() {
     rows = rows.filter((r) => groupKeyOf(r, 'project') === opts.project);
   }
 
+  // --weekly: a compact, ALWAYS-7-day per-integration summary (verdict +
+  // reason), independent of --days/--window (which stay for the full table).
+  if (opts.weekly) {
+    const jevCfg = readJevJson(home);
+    const scorecard = buildWeeklyScorecard(rows, { costPerCall, humanLabelByHash, jevCfg });
+    if (opts.json) {
+      process.stdout.write(JSON.stringify(scorecard, null, 2) + '\n');
+    } else {
+      printWeekly(scorecard);
+    }
+    return;
+  }
+
   // --by project|session: split the (already --project-filtered, if given)
   // rows into one report PER distinct value and print/json each separately,
   // instead of the single combined report below.
@@ -1012,7 +1097,7 @@ module.exports = {
   buildCostWindows, COST_WINDOWS, readBudgetConfig, computeBudgetStatus,
   buildHeadline, labelsLogPath, readLabels, latestHumanLabelByHash, cmdLabel,
   auditLogPath, readAuditSnippet, cmdPruneAudit, maybeWarnLowCredit, budgetStatePath,
-  parseArgs, groupKeyOf, groupRowsBy,
+  parseArgs, groupKeyOf, groupRowsBy, buildWeeklyScorecard, weeklyReason, readJevJson,
 };
 
 if (require.main === module) {

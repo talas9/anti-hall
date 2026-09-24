@@ -202,6 +202,32 @@ one to thread through (not every integration is session-scoped — e.g.
 this feature existed, or from an integration that genuinely has no session,
 groups under `unknown` — not an error, not dropped.
 
+### Weekly scorecard (automatic + on-demand)
+
+`node "${CLAUDE_PLUGIN_ROOT}/scripts/jev-report.js" --weekly [--json]` — a
+compact, ALWAYS-7-day summary: one line per integration with its current
+`[mode]`, KEEP/REVIEW/REMOVE suggestion, a short reason, and call count. Same
+thresholds as the full report, just condensed.
+
+Separately, a SessionStart hook (`hooks/jev-weekly-scorecard.js`) checks this
+automatically, AT MOST once every 7 days (a latch at
+`~/.anti-hall/state/jev-weekly-notice.json` enforces the cadence — the check
+runs at most once per week regardless of outcome, so a quiet week doesn't
+trigger a re-check sooner), and — only in the interactive Primary/ordinary
+session, never a DevSwarm child workspace's automated session — injects ONE
+line when an integration has earned a KEEP or REMOVE verdict that its
+`jev.json` mode has not caught up to yet:
+
+```
+Jev scorecard: modelRouting ready to switch ON — run /anti-hall:jev
+```
+
+This NEVER changes any mode itself — it is a pointer back to this skill (which
+you'd then walk through as described in "how is Jev doing" above). Opt out
+entirely with `"weeklyNotice": false` in `~/.anti-hall/jev.json` (default
+`true` — opt-out, not opt-in). It is also silent whenever Jev itself is not
+`enabled` at all.
+
 ### Two DIFFERENT "latency" numbers — do not conflate them
 
 The per-integration table's `p50ms`/`p95ms` columns are the **Jev classifier
