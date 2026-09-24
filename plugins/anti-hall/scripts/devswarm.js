@@ -645,6 +645,17 @@ function siblingAckGate(storeHandle, callerId, partId, home, now, opts) {
   try { registry = storeHandle.listRegistry() || []; } catch (_) { registry = []; }
   const row = registry.find((r) => r && String(r.id) === String(partId));
   if (!row) return true; // vanished from the registry read -> undetermined -> fail toward live
+  // PROCESS SELF (dual-partition defect): callerId and partId are the invoking
+  // process's two names — its declared DEVSWARM_BUILDER_ID row on its own
+  // worktree (declaredSelfId) and its cwd-derived id. Not a sibling: ack it,
+  // with the same delivered-prefix arithmetic as every other partition.
+  if (opts && callerId != null) {
+    const selfId = declaredSelfId(opts.env, opts.cwd, registry);
+    if (selfId) {
+      const names = new Set([selfId, String(callerIdentity(opts.env, opts.cwd))]);
+      if (names.size === 2 && names.has(String(callerId)) && names.has(String(partId))) return false;
+    }
+  }
   if (idFam && callerId != null) {
     try {
       const callerRow = registry.find((r) => r && String(r.id) === String(callerId));
@@ -763,6 +774,48 @@ function callerIdentity(env, cwd) {
   // a deterministic id derived from the raw cwd (fail-open, never null).
   if (bid) return bid;
   return inst.primaryWorkspaceId(c);
+}
+// declaredSelfId(env, cwd, registry) -> the caller's DECLARED id
+// (DEVSWARM_BUILDER_ID) when it names a registry row on the caller's OWN
+// worktree, else null (dual-partition defect, 0.106.0 field report).
+//
+// ROOT CAUSE this closes: a DevSwarm-launched Primary is ONE process with TWO
+// names — its cwd-derived `primary-<hash>` (callerIdentity, what register-primary
+// registers) and the hivecontrol workspace UUID in DEVSWARM_BUILDER_ID (what its
+// children address it by and what its wake cron ticks). callerIdentity ignores a
+// mismatching env id (the spoof guard), so to every ack path the UUID row was a
+// FOREIGN LIVE sibling (its heartbeat is kept fresh by this same process's
+// `inbox tick`): read-primary delivered its rows through the mesh union but
+// siblingAckGate refused the ack, so they stayed unread there forever (parent
+// table "CHILD NOT DRAINING" about the Primary itself, wake-watch totals that
+// read-primary could not reproduce) and `read-primary <uuid>` was refused as
+// ownership-mismatch whenever pickFreshestLive ranked the other row first.
+//
+// The env id is honoured ONLY with worktree ground truth: the named row must
+// sit on the worktree the caller's cwd resolves to. A process can therefore
+// only claim a row registered on its own worktree under the exact id it was
+// launched with — two live children on one worktree carry two different
+// DEVSWARM_BUILDER_IDs and still never ack each other (Wave 6), and no process
+// outside the row's worktree gains anything. Fail-closed: any throw -> null.
+function declaredSelfId(env, cwd, registry) {
+  try {
+    const bid = env && env.DEVSWARM_BUILDER_ID ? String(env.DEVSWARM_BUILDER_ID) : '';
+    if (!bid) return null;
+    const callerWt = canonicalWorktreeRealPath(resolveCallerWorktree(cwd || process.cwd()));
+    if (!callerWt) return null;
+    const row = (registry || []).find((r) => r && String(r.id) === bid);
+    if (!row || !row.worktreePath) return null;
+    return canonicalWorktreeRealPath(String(row.worktreePath)) === callerWt ? bid : null;
+  } catch (_) { return null; }
+}
+// ownsAsDeclaredSelf(s, ctx, id) -> bool: `id` is the caller's declared self
+// row (declaredSelfId). The ownership leg every read/ack gate adds beside
+// `caller === id || ownEntry.id === id`.
+function ownsAsDeclaredSelf(s, ctx, id) {
+  let registry = [];
+  try { registry = s.listRegistry() || []; } catch (_) { return false; }
+  const self = declaredSelfId(ctx && ctx.env, ctx && ctx.cwd, registry);
+  return self != null && self === String(id);
 }
 // ownershipRefusalCause(callerKind, ownEntry) -> a stable reason string naming
 // WHICH leg of the ownership check failed (A7): the caller's own identity had
@@ -1470,7 +1523,7 @@ function applyReadAckOps(s, home, id, reader, ops, o) {
       acked = Number.isFinite(committed.instance) ? committed.instance : Math.max(committed.floor || 0, op.target);
     } else if (op.k === 'sibling') {
       const notAckable = o.revalidate
-        ? siblingAckGate(s, id, op.partition, home, ctx.now, { cwd: ctx && ctx.cwd })
+        ? siblingAckGate(s, id, op.partition, home, ctx.now, { cwd: ctx && ctx.cwd, env: ctx && ctx.env })
         : op.notAckable;
       if (notAckable) {
         // Live sibling: never touch its own cursors; record how far THIS caller
@@ -1536,7 +1589,7 @@ function cmdInboxAckPrimary(id, flags, ctx) {
     if (!flags['ack-as-owner']) {
       const callerInfo = callerIdentityDetailed(ctx.env, ctx.cwd);
       const ownEntry = resolveMeshTarget(s, callerInfo.identity, home);
-      if (!(callerInfo.identity === id || (ownEntry && ownEntry.id === id))) {
+      if (!(callerInfo.identity === id || (ownEntry && ownEntry.id === id) || ownsAsDeclaredSelf(s, ctx, id))) {
         return refuse(ownershipRefusalCause(callerInfo.kind, ownEntry), 'ack-primary refused: this caller does not own ' + JSON.stringify(id) + ' (use --ack-as-owner to override)');
       }
     }
@@ -5246,6 +5299,106 @@ function repairReaderFloorsAllStores(home, ctx) {
   return out;
 }
 
+// sendContentHash(row) -> the hash of the SEND a row carries, independent of
+// which partition it was addressed to: meshMessageHash with `to` blanked and
+// the archived-forward envelope stripped. A forwarded copy and its original,
+// or one send fanned out to two addresses, share it. Never throws (null).
+function sendContentHash(row) {
+  try {
+    if (!row || typeof row !== 'object') return null;
+    return store.meshMessageHash({
+      from: row.sender, to: '', type: row.mtype, urgency: row.urgency,
+      message: stripArchivedForwardPrefix(row.body).body, timestamp: row.ts, needsReply: row.needsReply,
+    });
+  } catch (_) { return null; }
+}
+
+// reconcileDualPartitionAcks(home, ctx) — FORWARD-MIGRATION for the
+// dual-partition defect (see declaredSelfId). Before the fix, one identity's
+// two partitions — a worktree's anchor row (id === its canonical meshId,
+// `primary-<hash>`) and the DEVSWARM_BUILDER_ID row on the SAME worktree — held
+// the same sends (fold forwards, or one send addressed to both) but only the
+// partition the reader acked moved; the other kept them unread forever.
+//
+// For every such anchor/partner pair: walk a partition from its floor and
+// raise it through the CONTIGUOUS prefix of rows whose send (sendContentHash,
+// or the exact hash/origHash link of a forward) sits BELOW the other
+// partition's floor — i.e. already consumed by every reader there. Stops at
+// the first row that is not, so no row that is unacked elsewhere is ever
+// skipped. MAX-only (raiseAllLossFree, the fold's own loss-free raise), no
+// delete, idempotent (a second run finds nothing past the floor to match).
+// Pairs of two NON-anchor rows (two live children on one worktree) are never
+// touched. dryRun (or ANTIHALL_INGEST_DRY_RUN=1) counts only. Fail-open: a
+// per-store error is counted, never thrown.
+// -> { ok, dryRun, stores, pairs, partitions, raised, wouldRaise, rows, errors, results[] }
+function reconcileDualPartitionAcks(s, home, dryRun, out) {
+  const registry = s.listRegistry() || [];
+  const groups = new Map();
+  for (const d of registry) {
+    if (!d || !d.worktreePath || !isSafeId(String(d.id))) continue;
+    let key = null;
+    try { key = canonicalMeshId(d.worktreePath); } catch (_) { key = null; }
+    if (!key) continue;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(String(d.id));
+  }
+  for (const [meshId, ids] of groups) {
+    if (ids.length < 2 || ids.indexOf(meshId) === -1) continue;
+    const view = new Map(); // id -> { floor, rows, consumed:Set }
+    for (const id of ids) {
+      const rows = s.listMessages(id) || [];
+      const floor = floorCursor(s, id, home);
+      const consumed = new Set();
+      for (let i = 0; i < Math.min(floor, rows.length); i++) {
+        for (const k of [rows[i].hash, forwardedOrigHashOf(rows[i]), sendContentHash(rows[i])]) if (k) consumed.add(String(k));
+      }
+      view.set(id, { floor, rows, consumed });
+    }
+    const pairOf = (a, b) => a === meshId || b === meshId;
+    for (const id of ids) {
+      const me = view.get(id);
+      const others = ids.filter((o) => o !== id && pairOf(id, o)).map((o) => view.get(o));
+      if (!others.length) continue;
+      out.pairs++;
+      const ackedElsewhere = (row) => {
+        const keys = [row.hash, forwardedOrigHashOf(row), sendContentHash(row)].filter(Boolean).map(String);
+        return others.some((o) => keys.some((k) => o.consumed.has(k)));
+      };
+      let to = me.floor;
+      while (to < me.rows.length && ackedElsewhere(me.rows[to])) to++;
+      if (to <= me.floor) continue;
+      out.partitions++;
+      out.rows += to - me.floor;
+      if (dryRun) { out.wouldRaise++; out.results.push({ id, from: me.floor, to, dryRun: true }); continue; }
+      readerCursors.raiseAllLossFree(s, { partition: id, ns: 'store', value: to, home });
+      try { logCursorWrite(home, { id, partition: id, ns: 'reader_cursors:store', from: me.floor, to, delivered: null, gate: 'dual-partition-reconcile', verb: 'migrate', cwd: null, repoKey: null }); } catch (_) {}
+      out.raised++;
+      out.results.push({ id, from: me.floor, to });
+    }
+  }
+}
+function reconcileDualPartitionAcksAllStores(home, ctx) {
+  const c = ctx || {};
+  const env = c.env || process.env;
+  const dryRun = !!c.dryRun || String((env && env.ANTIHALL_INGEST_DRY_RUN) || '') === '1';
+  const out = { ok: true, dryRun, stores: 0, pairs: 0, partitions: 0, raised: 0, wouldRaise: 0, rows: 0, errors: 0, results: [] };
+  let hashes = [];
+  try { hashes = store.listStoreHashes(home) || []; } catch (_) { hashes = []; }
+  for (const repoKey of hashes) {
+    let s = null;
+    try {
+      s = store.openStore({ home, hash: repoKey, backend: c.backend, env, readOnly: dryRun });
+      if (!s) continue;
+      out.stores++;
+      reconcileDualPartitionAcks(s, home, dryRun, out);
+    } catch (e) {
+      out.errors++;
+      out.results.push({ repoKey, error: String((e && e.message) || e) });
+    } finally { if (s) { try { s.close(); } catch (_) {} } }
+  }
+  return out;
+}
+
 // reRetireResurrectedRows(home, ctx) — item 6, defect df54edf54804 field
 // aftermath: SkyCrew's `roster --json` on 0.99.0 showed ~43 legacy-slug
 // registry rows the migration had resurrected (the four lost ids' twins plus
@@ -8459,7 +8612,7 @@ function cmdInboxMessagesInner(id, flags, ctx, opts) {
           meshGroupUnresolved: false, meshGroupError: null, totalsPartial: true,
         };
       }
-      const owns = caller === id || (ownEntry && ownEntry.id === id);
+      const owns = caller === id || (ownEntry && ownEntry.id === id) || ownsAsDeclaredSelf(s, ctx, id);
       if (!owns) {
         // A7: name WHICH leg failed (same classification as the heartbeat
         // --summary refusal above).
@@ -8599,7 +8752,7 @@ function cmdInboxMessagesInner(id, flags, ctx, opts) {
         // Ackability decided BEFORE the window is sized (it was computed after,
         // below) — it now selects the cursor namespace this window is measured
         // against, not just how the cap slices.
-        const pAckable = doAck && !siblingAckGate(s, id, pid, home, ctx.now, { cwd: ctx && ctx.cwd });
+        const pAckable = doAck && !siblingAckGate(s, id, pid, home, ctx.now, { cwd: ctx && ctx.cwd, env: ctx && ctx.env });
         // LIVE-SIBLING WATERMARK (P0): a sibling this caller may not ack
         // advances NO cursor at all, so its unread backlog was re-delivered
         // identically on every read, forever. This caller-scoped watermark
@@ -9010,7 +9163,7 @@ function cmdInboxMessagesInner(id, flags, ctx, opts) {
         // caller-scoped watermark file. Computed from the SAME physical
         // `part.sinceCursor + physicalConsumed` arithmetic the real ack below
         // uses — never a second derivation.
-        const notAckable = siblingAckGate(s, id, part.id, home, ctx.now, { cwd: ctx && ctx.cwd });
+        const notAckable = siblingAckGate(s, id, part.id, home, ctx.now, { cwd: ctx && ctx.cwd, env: ctx && ctx.env });
         if (notAckable) liveSiblingsSkipped.push(part.id);
         const fullDeliveredCount = Number.isFinite(part.deliveredCount) ? part.deliveredCount : part.messages.length; // fold's own full, pre-cap count — never mutated below
         let deliveredCount = fullDeliveredCount;
@@ -10044,7 +10197,7 @@ function cmdInbox(sub, id, flags, ctx) {
             const pBase = siblingBaseCursor(storeHandle, home, pid, callerReader);
             let pCursor = pBase;
             try {
-              if (siblingAckGate(storeHandle, id, pid, home, ctx.now, { cwd: ctx && ctx.cwd })) {
+              if (siblingAckGate(storeHandle, id, pid, home, ctx.now, { cwd: ctx && ctx.cwd, env: ctx && ctx.env })) {
                 pCursor = Math.max(pBase, readSiblingSeenCursor(home, id, pid));
               }
             } catch (_) { pCursor = pBase; }
@@ -10447,7 +10600,7 @@ function cmdInbox(sub, id, flags, ctx) {
           const callerInfo = callerIdentityDetailed(ctx.env, ctx.cwd);
           const caller = callerInfo.identity;
           const ownEntry = resolveMeshTarget(probeStore, caller, home);
-          ownsSurvivor = caller === id || !!(ownEntry && ownEntry.id === id);
+          ownsSurvivor = caller === id || !!(ownEntry && ownEntry.id === id) || ownsAsDeclaredSelf(probeStore, ctx, id);
         } finally { probeStore.close(); }
       } catch (_) { ownsSurvivor = false; }
       if (!ownsSurvivor) {
@@ -10530,7 +10683,7 @@ function cmdInbox(sub, id, flags, ctx) {
       const callerInfo = callerIdentityDetailed(ctx.env, ctx.cwd);
       const caller = callerInfo.identity;
       const ownEntry = resolveMeshTarget(storeHandle, caller, home);
-      const owns = caller === id || (ownEntry && ownEntry.id === id);
+      const owns = caller === id || (ownEntry && ownEntry.id === id) || ownsAsDeclaredSelf(storeHandle, ctx, id);
       ackOwns = owns;
       if (!owns && ownEntry) {
         const cause = ownershipRefusalCause(callerInfo.kind, ownEntry);
@@ -10681,7 +10834,7 @@ function cmdInbox(sub, id, flags, ctx) {
               // used to have none at all, which is exactly what let a live
               // sibling sharing this worktree get its cursor driven forward
               // and its backlog consumed undelivered by a plain `inbox ack`.
-              if (siblingAckGate(storeHandle, id, part.id, home, ctx.now, { cwd: ctx && ctx.cwd })) { liveSiblingsSkipped.push(part.id); continue; }
+              if (siblingAckGate(storeHandle, id, part.id, home, ctx.now, { cwd: ctx && ctx.cwd, env: ctx && ctx.env })) { liveSiblingsSkipped.push(part.id); continue; }
               // Fix Wave 3 G1/G2 (P0/P1): `part.physicalConsumed` (set
               // above alongside `part.deliveredCount` — see the cap-step
               // comment ~line 4682) is the PHYSICAL row count to advance
@@ -16350,6 +16503,7 @@ module.exports = {
   // mesh redesign B5 / Phase 3 — THE nonce every production site uses, plus the
   // reader_cursors adapters:
   deriveReaderNonce, callerReaderKey, commitNdAck, floorCursor, importReaderCursorsAllStores, repairReaderFloorsAllStores,
+  reconcileDualPartitionAcksAllStores, declaredSelfId,
   // instanceNonce CONSUMERS (defect d3d571495bf6, items a/b/c — exported for
   // direct unit testing, same pattern as deriveInstanceNonce above):
   shortInstanceNonce, computeInstanceNonceCounts,

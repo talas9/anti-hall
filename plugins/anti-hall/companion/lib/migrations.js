@@ -280,6 +280,25 @@ const MIGRATIONS = [
     },
   },
   {
+    // Dual-partition defect: an identity's anchor row and its DEVSWARM_BUILDER_ID
+    // row on the same worktree hold the same sends, acked in only one of them.
+    // Raises the other partition's floor through its contiguous prefix of sends
+    // already consumed there — MAX-only, no delete.
+    id: 'reconcile-dual-partition-acks',
+    key: 'reconcileDualPartitionAcks',
+    fn: 'reconcileDualPartitionAcksAllStores',
+    detect(dw, home, ctx) {
+      const r = dw.reconcileDualPartitionAcksAllStores(home, Object.assign({}, ctx, { dryRun: true })) || {};
+      return {
+        pending: (r.wouldRaise || 0) > 0,
+        raw: r,
+        detail: (r.rows || 0) + ' already-acked duplicate row(s) unread in ' + (r.wouldRaise || 0)
+          + ' twin partition(s) across ' + (r.stores || 0) + ' store(s)'
+          + (r.errors ? ' (' + r.errors + ' store error(s), fail-open)' : ''),
+      };
+    },
+  },
+  {
     // DELETION-CLASS: removes registry rows (forwarding first where it can).
     // Opt-in ONLY via `doctor --repair-resurrected [--apply]`; update reports it
     // (dry-run) once per version. Never run by runMigrations().

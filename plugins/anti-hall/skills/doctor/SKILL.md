@@ -149,8 +149,8 @@ Flags:
   timer) — doctor only prints how to enable it.
 
 **One migration registry.** The all-store DevSwarm forward-migrations (fold-all-stores,
-heal-orphan-partitions, fold-archived-rows, fold-archived-family-descriptors) are listed
-once in `companion/lib/migrations.js` and shared by `doctor --repair`, `update` and the
+heal-orphan-partitions, fold-archived-rows, fold-archived-family-descriptors,
+reconcile-dual-partition-acks) are listed once in `companion/lib/migrations.js` and shared by `doctor --repair`, `update` and the
 supervisor. Each is stamped done per plugin version in `~/.anti-hall/update-sweep-state.json`
 after one clean pass, so a repeat `--repair` skips it with a single marker read instead of
 re-scanning every store. Deletion-class repairs (`--repair-resurrected`) are never in that

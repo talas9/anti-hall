@@ -1647,6 +1647,57 @@ function readerFloorRepairPostUpdate(opts) {
 }
 
 /**
+ * dualPartitionAcksPostUpdate({ paths, env, cwd, home, devswarm, version }) ->
+ *   { attempted, stores, raised, rows, errors, detail }
+ * Forward-migration for the dual-partition defect (devswarm.js
+ * reconcileDualPartitionAcksAllStores; registry entry
+ * 'reconcile-dual-partition-acks'): raise a twin partition's floor through
+ * sends already consumed in its anchor/partner partition. IDEMPOTENT, FAIL-OPEN,
+ * NO-DELETE, MAX-only. Stamped once per version; not stamped on any error.
+ */
+function dualPartitionAcksPostUpdate(opts) {
+  const o = opts || {};
+  const env = o.env || process.env;
+  const cwd = o.cwd || process.cwd();
+  const home = o.home || os.homedir();
+  const paths = o.paths;
+  try {
+    const detectPath = path.join(paths.pluginSrcDir, 'hooks', 'lib', 'devswarm-detect.js');
+    const devswarmPath = path.join(paths.pluginSrcDir, 'scripts', 'devswarm.js');
+    if (!fs.existsSync(detectPath) || !fs.existsSync(devswarmPath)) {
+      return { attempted: false, detail: 'dual-partition-acks skipped: expected plugin files not found under ' + paths.pluginSrcDir };
+    }
+    const { isDevswarmActive } = require(detectPath);
+    if (typeof isDevswarmActive !== 'function' || !isDevswarmActive(env)) {
+      return { attempted: false, detail: 'not a DevSwarm session - dual-partition-acks skipped (gate closed)' };
+    }
+    const devswarm = o.devswarm || require(devswarmPath);
+    if (typeof devswarm.reconcileDualPartitionAcksAllStores !== 'function') {
+      return { attempted: false, detail: 'dual-partition-acks skipped: this devswarm.js build has no reconcileDualPartitionAcksAllStores' };
+    }
+    const version = o.version || null;
+    const sweepState = readSweepState(home);
+    if (version && sweepState.reconcileDualPartitionAcks && sweepState.reconcileDualPartitionAcks.completedVersion === version) {
+      return {
+        attempted: true, stores: 0, raised: 0, rows: 0, errors: 0, skippedAlreadyDone: true,
+        detail: 'dual-partition-acks: already completed for ' + version + ' - skipped (one-time per-version migration)',
+      };
+    }
+    const r = devswarm.reconcileDualPartitionAcksAllStores(home, { env, cwd }) || {};
+    const errCount = r.errors || 0;
+    try { migrationsLib().recordRun(home, 'reconcileDualPartitionAcks', version, { errors: errCount, pendingRows: r.dryRun ? (r.wouldRaise || 0) : 0 }); } catch (_) { /* fail-open */ }
+    return {
+      attempted: true, stores: r.stores || 0, raised: r.raised || 0, rows: r.rows || 0, errors: errCount,
+      detail: 'dual-partition-acks: ' + (r.dryRun ? 'dry run, would raise ' + (r.wouldRaise || 0) : 'raised ' + (r.raised || 0))
+        + ' twin partition(s) past ' + (r.rows || 0) + ' already-acked duplicate row(s) across ' + (r.stores || 0) + ' store(s)'
+        + (errCount ? ' (' + errCount + ' error(s), fail-open - retried next run)' : ''),
+    };
+  } catch (e) {
+    return { attempted: false, detail: 'dual-partition-acks raised: ' + (e && e.message ? e.message : String(e)) };
+  }
+}
+
+/**
  * codexGraphifyHooksMigratePostUpdate({ paths, env, cwd, home }) →
  *   { attempted, targets, changed, removed, errors, detail }
  *
@@ -2777,6 +2828,9 @@ function runUpdate(opts) {
   // v0.106.1: repair the reader floors the v0.106.0 import pinned. Same gate +
   // fail-open posture; never affects the update.
   const readerFloorRepair = runPostPullStage('reader-floor-repair', () => readerFloorRepairPostUpdate({ paths, env: opts.env, cwd: opts.cwd, home: opts.home, devswarm: opts.devswarm, version: latest }));
+  // Dual-partition defect: raise a twin partition past sends already acked in
+  // its anchor/partner partition. Same gate + fail-open posture.
+  const dualPartitionAcks = runPostPullStage('dual-partition-acks', () => dualPartitionAcksPostUpdate({ paths, env: opts.env, cwd: opts.cwd, home: opts.home, devswarm: opts.devswarm, version: latest }));
   // devswarm-parent-gate.js stated-intent shape: normalize every gate-loop-
   // state file to carry intents/intentAcks. Same gate + fail-open posture;
   // never affects the update's own success.
@@ -2822,6 +2876,7 @@ function runUpdate(opts) {
         cursorHygiene,
         readerCursorsImport,
         readerFloorRepair,
+        dualPartitionAcks,
         replyStateMigrate,
         gateIntentsMigrate,
         healRegistryRows,
@@ -2863,6 +2918,7 @@ function runUpdate(opts) {
       cursorHygiene,
       readerCursorsImport,
       readerFloorRepair,
+      dualPartitionAcks,
       replyStateMigrate,
       gateIntentsMigrate,
       healRegistryRows,
@@ -2938,6 +2994,9 @@ function renderHuman(status, changelog) {
   }
   if (status.readerFloorRepair && status.readerFloorRepair.attempted) {
     lines.push('  reader-floor-repair: ' + status.readerFloorRepair.detail);
+  }
+  if (status.dualPartitionAcks && status.dualPartitionAcks.attempted) {
+    lines.push('  dual-partition-acks: ' + status.dualPartitionAcks.detail);
   }
   if (status.cursorHygiene && status.cursorHygiene.attempted) {
     lines.push('  cursor-hygiene: ' + status.cursorHygiene.detail);
@@ -3016,6 +3075,7 @@ module.exports = {
   cursorHygienePostUpdate,
   readerCursorsImportPostUpdate,
   readerFloorRepairPostUpdate,
+  dualPartitionAcksPostUpdate,
   healRegistryPostUpdate,
   wakeMonitorPostUpdate,
   codexGraphifyHooksMigratePostUpdate,
