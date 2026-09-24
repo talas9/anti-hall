@@ -148,7 +148,7 @@ function hasOpenTasks(lines) {
           : inp.id != null ? String(inp.id)
           : inp.task_id != null ? String(inp.task_id) : null;
         if (id != null && inp.status) {
-          const key = taskMap.has('task:' + id) ? 'task:' + id : 'task:' + id; // see KNOWN LIMITATION above
+          const key = 'task:' + id; // see KNOWN LIMITATION above
           taskMap.set(key, inp.status);
         }
       }
