@@ -66,6 +66,7 @@ Env names are the per-hook switches; every user-facing one is also a setting (se
 | SessionStart | progress-prune.js | Archives stale per-session progress files into the history ledger, deleting only after the append succeeds; throttled per cwd. | ✓ | — |
 | SessionStart | handover-resume.js | Surfaces the latest `.anti-hall/handovers/` entry after startup, `/clear` or compaction. | ✓ | — |
 | SessionStart | emit-dedupe-reset.js | Marks a context loss so repeated per-turn blocks are re-emitted. | ✓ | — |
+| SessionStart | jev-weekly-scorecard.js | Jev enabled only: once a week names one integration worth promoting (KEEP) or turning off (REMOVE). | ✓ | jev.weeklyNotice |
 | SessionStart | defect-nudge.js | Once-a-day count of open defect reports (counts only, never reporter text). | ✓ | — |
 | SessionStart + UserPromptSubmit | repair-on-reload.js | When any repair migration isn't stamped for the running version, spawns one detached `doctor.js --repair --quiet` (lock-guarded). | ✓ | `ANTIHALL_REPAIR_ON_RELOAD=off` |
 | UserPromptSubmit | verify-first.js | Short rotating one-line verify-first nudge. | ✓ | — |
@@ -171,7 +172,7 @@ Shared libraries (not hooks): `verify-first-core.js`, `coordinator-detect.js`, `
 | scripts/devswarm.js | The DevSwarm mesh CLI (JSON out): register/ensure, register-primary, primary status/takeover, heartbeat, send, inbox, roster, mesh, gate, spawn, merge, archive, reconcile, diagnose, healthcheck, app-state, app-sync, sync-ui, auto-archive, prune-archived, retention, … (`help` lists all). |
 | scripts/devswarm-store-leak-report.js | Read-only audit of DevSwarm store growth/leaks. |
 | scripts/jev-setup.js | `status \| enable \| disable \| set-key \| test \| mode` (`--transport vercel\|typesafe`). |
-| scripts/jev-report.js | Per-integration calls, precision, cost/efficiency, budget status, credit balance; `label`, `prune-audit`. |
+| scripts/jev-report.js | Per-integration calls, precision, cost/efficiency, budget status, credit balance; `--by project\|session`, `--project`, `--weekly`; `label`, `prune-audit`. |
 | scripts/defect.js | `report \| list \| show \| rule \| archive` for the defect channel. |
 | scripts/briefing.js | Backs system-briefing. |
 | scripts/capability-scan.js | Harness capability scan (see the update skill). |
@@ -205,6 +206,7 @@ until the one-time migration is stamped. Numbers clamp to schema bounds.
 | jev.enabled / transport / judgeModel / semanticJudge | false / vercel / claude-haiku-4-5 / false | `ANTIHALL_JEV`, `ANTIHALL_JUDGE_MODEL`, `ANTIHALL_SEMANTIC_JUDGE` |
 | jev.budget.mode / usdPerDay / usdPerWeek / minCreditUsd | unlimited / — / — / — | — (watch only warns; never disables Jev) |
 | jev.audit.snippets, jev.prices (advanced) | false, — | `ANTIHALL_JEV_AUDIT_SNIPPETS` |
+| jev.integrations.gitGuardSelfCredit / parentGateQuestion / tasklistTrivial / supervisorBlockerLabel / codexNudgeSubstantial (advanced); jev.weeklyNotice | shadow; true | `ANTIHALL_JEV_<ID>=0` forces an integration off |
 | devswarm.hivecontrol / supervisorMode / requiredGates / inboxCmd | "" / auto / done,merged,tests_passed / "" | `ANTIHALL_DEVSWARM_*` |
 | devswarm.autoArchive.mode (+ idleMin, maxPerSweep advanced) | on (30, 3) | `ANTIHALL_DEVSWARM_AUTO_ARCHIVE_MODE` |
 | devswarm.retention.days / maxStoreMB / keepPerPartition / archive / archiveMaxMB (advanced) | 30 / 100 / 200 / true / 200 | `ANTIHALL_DEVSWARM_RETENTION_*` |

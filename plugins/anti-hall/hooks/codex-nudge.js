@@ -167,19 +167,16 @@ function main() {
   const sessionId = (payload && payload.session_id && String(payload.session_id)) ||
     crypto.createHash('sha1').update(transcriptPath).digest('hex').slice(0, 16);
 
-  // JEV SHADOW (codexNudgeSubstantial, default mode "shadow" — see
-  // hooks/lib/jev-assist.js): a file-edit COUNT treats every edit as equally
-  // "substantial", but three edits that only touch comments/strings/log lines
-  // are not review-worthy. baseline = true (this nudge is about to fire);
-  // trust 'relax-block' means an eventual "on" promotion could let a confident
-  // Jev disagreement suppress a low-value nudge — but askDetached is
-  // fire-and-forget (spawns a detached worker and returns immediately), so
-  // even at "on" this call cannot itself change the nudge that is about to be
-  // written below; it only logs to jev-assist.ndjson so `jev report` can show
-  // the would-be relax rate before this is ever wired to actually suppress.
-  // Zero latency added to this Stop hook's own budget.
+  // JEV (codexNudgeSubstantial, default "shadow" — hooks/lib/jev-assist.js consultRelax): a
+  // raw count treats every edit the same, so a small bounded chore can trip
+  // this nudge. In shadow/off the consult is fire-and-forget (logged for
+  // `jev report`, zero latency). In "on" it is asked SYNCHRONOUSLY with a
+  // 1.5 s cap: a confident "trivial" verdict (final === false under
+  // relax-block trust) skips the nudge; a timeout or failure keeps today's
+  // verdict (fail-open to nudging).
+  let jevRelax = null;
   try {
-    require('./lib/jev-assist.js').askDetached({
+    jevRelax = require('./lib/jev-assist.js').consultRelax({
       id: 'codexNudgeSubstantial',
       question: {
         type: 'noul',
@@ -200,6 +197,7 @@ function main() {
       sessionId,
     });
   } catch (_) { /* best-effort — never affects the nudge below */ }
+  if (jevRelax && jevRelax.final === false) process.exit(0); // on + confident "trivial" -> no nudge
 
   const safeSession = sessionId.replace(/[^A-Za-z0-9_.-]/g, '_');
   const stateDir = path.join(os.homedir(), '.anti-hall');

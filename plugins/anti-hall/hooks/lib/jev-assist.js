@@ -133,7 +133,19 @@ function envNameFor(id) {
 }
 
 // getMode(id, fileCfg) -> 'on' | 'shadow' | 'off'. Never throws.
-function getMode(id, fileCfg) {
+// A 0.108 integration id with a settings-schema entry (jev.integrations.<id>)
+// resolves through the unified settings store (env > settings.json > legacy
+// jev.json "integrations" map > default); older ids keep reading jev.json.
+function schemaIntegrationMode(id, home) {
+  try {
+    const schema = require('./settings-schema.js');
+    if (!schema.findSetting('jev', 'integrations.' + id)) return undefined;
+    return require('./settings.js').get('jev', 'integrations.' + id, undefined, { home: homeDir(home) });
+  } catch (_) { return undefined; }
+}
+
+// getMode(id, fileCfg, home) -> 'on' | 'shadow' | 'off'. Never throws.
+function getMode(id, fileCfg, home) {
   const cfg = fileCfg || {};
   let jevEnabled = cfg.enabled === true || process.env.ANTIHALL_JEV === '1';
   if (process.env.ANTIHALL_JEV === '0') jevEnabled = false;
@@ -143,7 +155,8 @@ function getMode(id, fileCfg) {
 
   const integrations = (cfg.integrations && typeof cfg.integrations === 'object' &&
     !Array.isArray(cfg.integrations)) ? cfg.integrations : {};
-  const value = integrations[id];
+  const schemaValue = schemaIntegrationMode(id, home);
+  const value = schemaValue !== undefined ? schemaValue : integrations[id];
 
   // Legacy pre-integrations-map switch: {"triage": false} alone still
   // disables triage when the new map says nothing about it.
@@ -572,7 +585,7 @@ function finalize({ id, home, hash, mode, trust, baseline, judge, threshold, r, 
 function prepare({ id, home, trust, baseline, cacheKey, state }) {
   const h = homeDir(home);
   const fileCfg = readJevJson(h);
-  const mode = getMode(id, fileCfg);
+  const mode = getMode(id, fileCfg, h);
   const hash = contentHash([id, QUESTION_VERSION, cacheKey != null ? String(cacheKey) : String(state)]);
 
   const cfg = loadJevConfig();
@@ -703,10 +716,29 @@ function askDetached(opts = {}) {
   }
 }
 
+// consultRelax(opts) -> the askSync decision when the integration is `on`,
+// else null (after logging via askDetached, zero latency). For a relax-block
+// consult inside a hook that is ABOUT to nudge/block: `on` asks synchronously
+// with a hard cap (budgetMs <= 1500) so the answer can actually change the
+// outcome; a timeout/failure falls back to the baseline (fail-open to
+// today's verdict). shadow/off never wait on the network.
+const RELAX_SYNC_CAP_MS = 1500;
+function consultRelax(opts) {
+  const o = opts || {};
+  try {
+    const h = homeDir(o.home);
+    if (getMode(o.id, readJevJson(h), h) !== 'on') { askDetached(o); return null; }
+    const budgetMs = Math.min(Number.isFinite(o.budgetMs) ? o.budgetMs : RELAX_SYNC_CAP_MS, RELAX_SYNC_CAP_MS);
+    return askSync(Object.assign({}, o, { budgetMs }));
+  } catch (_) { return null; }
+}
+
 module.exports = {
   ask,
   askSync,
   askDetached,
+  consultRelax,
+  RELAX_SYNC_CAP_MS,
   // finalize is exported for the small set of callers that already HAVE a
   // Jev answer from a cache another feature populated (e.g. jev-triage.js's
   // own confidence-gated kind/urgency cache) and want the SAME mode-gating +

@@ -111,7 +111,10 @@ function main() {
   const home = os.homedir();
   const cfg = readJevJson(home);
   if (cfg.enabled !== true) return; // Jev off entirely — nothing to check.
-  if (cfg.weeklyNotice === false) return; // explicit opt-out (default true).
+  // Setting jev.weeklyNotice (default true; legacy jev.json weeklyNotice still read).
+  let weekly = cfg.weeklyNotice !== false;
+  try { weekly = require('./lib/settings.js').get('jev', 'weeklyNotice', true, { home }) !== false; } catch (_) { /* keep legacy */ }
+  if (!weekly) return; // explicit opt-out
 
   // "main-thread-only": never nag a DevSwarm child workspace's automated
   // session — only the interactive Primary/ordinary session.

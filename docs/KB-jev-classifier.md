@@ -476,9 +476,9 @@ the stdin JSON boundary) — a caller needing custom answer normalization uses
 | `outputVerifyGuard` | output-verify-guard.js (`PostToolUse`, test-runner commands only) | `advisory` | `askDetached` (critical path) | `shadow` | none wired |
 | `gitGuardSelfCredit` | git-guard.js (`PreToolUse`, commit messages / gh pr-issue-release bodies only) | `add-block` **only** (never relax) | `askSync`, 1.5s cap, hash-cached | `shadow` | none wired |
 | `parentGateQuestion` | devswarm-parent-gate.js (`Stop`) | `add-block` | none — cache-only decision via `jev-assist.js`'s `finalize()`/`prepare()`, reusing `hooks/lib/jev-triage.js`'s own already-populated cache (zero network) | `shadow` | none wired |
-| `tasklistTrivial` | tasklist-guard.js (`Stop`) | `relax-block` | `askDetached` (structurally shadow-forever until rewired to `askSync` — same limitation as `mergeGateHedge` below) | `shadow` | none wired |
+| `tasklistTrivial` | tasklist-guard.js (`Stop`) | `relax-block` | `consultRelax`: `askDetached` in shadow; `askSync` (1.5 s cap, fail-open to the nudge) in `on`, where a confident "trivial" skips the nudge | `shadow` | none wired |
 | `supervisorBlockerLabel` | devswarm-supervisor.js (periodic sweep, Claude-only) | `advisory` | none — cache-only decision via `jev-assist.js`'s `finalize()`/`prepare()`, reusing `hooks/lib/jev-triage.js`'s own pending-inbound cache (zero network) | `shadow` | none wired |
-| `codexNudgeSubstantial` | codex-nudge.js (`Stop`, Claude-only, no Codex mirror) | `relax-block` | `askDetached` (structurally shadow-forever until rewired to `askSync`) | `shadow` | none wired |
+| `codexNudgeSubstantial` | codex-nudge.js (`Stop`, Claude-only, no Codex mirror) | `relax-block` | `consultRelax`: `askDetached` in shadow; `askSync` (1.5 s cap, fail-open to the nudge) in `on`, where a confident "trivial" skips the nudge | `shadow` | none wired |
 
 `claimLedger`/`mergeGateHedge`/`newRequest`/`outputVerifyGuard`/`tasklistTrivial`/
 `codexNudgeSubstantial` were shipped shadow-only in this release specifically so

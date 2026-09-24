@@ -327,11 +327,10 @@ other integration defaults to `shadow` until promoted.
 `parentGateQuestion`/`supervisorBlockerLabel` never make a network call at all —
 both reuse an ALREADY-cached `hooks/lib/jev-triage.js` label populated by a
 different surface that classified the same message earlier, so promoting either
-to `on` is a config change only, no extra cost. `tasklistTrivial`/
-`codexNudgeSubstantial`/`mergeGateHedge` use `askDetached` (fire-and-forget):
-promoting them to `on` only changes what gets LOGGED for now — the calling hook
-doesn't yet read the answer back, so `jev report` can build confidence before
-that plumbing is added. See `docs/KB-jev-classifier.md` §10 for the full table
+to `on` is a config change only, no extra cost. `mergeGateHedge` uses `askDetached` (fire-and-forget): promoting it to `on` only
+changes what gets LOGGED for now. `tasklistTrivial`/`codexNudgeSubstantial` log
+fire-and-forget in shadow, but in `on` they ask synchronously (1.5 s cap,
+fail-open to the nudge) and a confident "trivial" verdict skips the nudge. See `docs/KB-jev-classifier.md` §10 for the full table
 with hook/event/API details.
 
 ## Never do this

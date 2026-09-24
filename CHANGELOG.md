@@ -70,6 +70,25 @@ the update.
   (`jev.budget.mode=watch` + `usdPerDay`/`usdPerWeek`/`minCreditUsd`) only warns and never
   disables Jev. Opt-in audit snippets (`jev.audit.snippets`) keep a redacted ~200-char
   snippet for decisions Jev changed; `jev-report.js prune-audit --days N` trims them.
+- **Jev: five more integrations** (settings `jev.integrations.<id>`, default `shadow`;
+  `jev-setup.js mode <id> on|shadow|off`):
+  - `gitGuardSelfCredit` (git-guard): paraphrased AI self-credit in commit/PR text the
+    regex misses ("written with help from Claude"); `askSync` 1.5 s, add-block only — it
+    can never relax git-guard.
+  - `parentGateQuestion` (parent gate): an unread child message triage already labelled a
+    question counts as awaiting a reply; cache-only, no network.
+  - `supervisorBlockerLabel` (supervisor report): waiting-on-parent vs wedged from cached
+    triage labels; advisory, after poke/escalate already ran.
+  - `tasklistTrivial` (tasklist-guard) and `codexNudgeSubstantial` (codex-nudge): is the
+    nudge about to fire worth it? Logged fire-and-forget in shadow; in `on` asked
+    synchronously (1.5 s cap, fail-open to the nudge) and a confident "trivial" skips it.
+- **Jev report:** `--by project|session` and `--project <name>` (rows carry the cwd
+  basename and session id); `--weekly` compact 7-day scorecard; the classifier-call
+  latency (p50/p95 ms) and the triage reply turnaround are separate figures, locked by
+  tests. **Weekly notice:** `hooks/jev-weekly-scorecard.js` (SessionStart, Claude + Codex,
+  Jev enabled only, never in a DevSwarm child) names, at most once a week, one integration
+  whose report says KEEP or REMOVE but whose mode does not match yet; it never changes a
+  mode (`jev.weeklyNotice`, default true). `jev-setup.js status` lists every integration.
 - **DevSwarm: the app database is the ground truth.** One read-only snapshot of the
   DevSwarm app's own SQLite DB (`companion/lib/devswarm-app-db.js`) feeds the per-turn
   table, `roster`, identity, `doctor` and the supervisor: archived/open state, full titles

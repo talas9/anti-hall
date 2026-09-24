@@ -812,6 +812,12 @@ Generated from `hooks/lib/settings-schema.js` (a hygiene test keeps this table a
 | `jev.budget.mode` | `unlimited` (unlimited/watch) | — | Jev spend: no limit, or warn when over budget (never auto-disables). |
 | `jev.budget.usdPerDay` | — (>0) | — | optional: daily USD spend threshold, used only when budget.mode=watch. |
 | `jev.budget.usdPerWeek` | — (>0) | — | optional: weekly USD spend threshold, used only when budget.mode=watch. |
+| `jev.integrations.gitGuardSelfCredit` adv | `shadow` (on/shadow/off) | — | Jev check for paraphrased AI self-credit in commit/PR text (add-block only; never relaxes git-guard). |
+| `jev.integrations.parentGateQuestion` adv | `shadow` (on/shadow/off) | — | Parent gate: treat an unread child message Jev already labelled a question as awaiting a reply (cache-only, no network). |
+| `jev.integrations.tasklistTrivial` adv | `shadow` (on/shadow/off) | — | tasklist-guard: when on, a confident "small bounded chore" verdict (asked synchronously, 1.5 s cap, fail-open) skips the task-tracking nudge. |
+| `jev.integrations.supervisorBlockerLabel` adv | `shadow` (on/shadow/off) | — | Supervisor report label: waiting-on-parent vs wedged, from cached triage labels (advisory, no network). |
+| `jev.integrations.codexNudgeSubstantial` adv | `shadow` (on/shadow/off) | — | codex-nudge: when on, a confident "edits are trivial" verdict (asked synchronously, 1.5 s cap, fail-open) skips the Codex-review nudge. |
+| `jev.weeklyNotice` | `true` | — | Once-a-week SessionStart scorecard notice naming one integration worth promoting or turning off (Jev enabled only). |
 | `jev.audit.snippets` adv | `false` | `ANTIHALL_JEV_AUDIT_SNIPPETS` | Store a redacted ~200-char snippet for decisions Jev changed (off by default: privacy). |
 | `jev.budget.minCreditUsd` | — (>0) | — | optional: warn (once a day, budget.mode=watch only) when the gateway credit balance drops below this USD amount. |
 | `jev.prices` adv | — | — | computed: per-model USD price table {model: {inPerMTok, outPerMTok}} (or a "default" entry), used only when the gateway reports tokens but no cost. File-only (no env, no CLI set) — edit ~/.anti-hall/settings.json directly. |

@@ -209,8 +209,12 @@ async function cmdStatus() {
   ]));
   const modes = {};
   for (const id of integrationIds) {
+    // Same resolution the hooks use (settings.json > jev.json > default).
+    let resolved;
+    try { resolved = require('../hooks/lib/jev-assist.js').getMode(id, Object.assign({}, cfg, { enabled: true })); } catch (_) { resolved = undefined; }
     const configured = cfg.integrations && cfg.integrations[id];
-    if (VALID_MODES.has(configured)) modes[id] = configured;
+    if (VALID_MODES.has(resolved)) modes[id] = resolved;
+    else if (VALID_MODES.has(configured)) modes[id] = configured;
     else modes[id] = LEGACY_ON_DEFAULT.has(id) ? 'on' : 'shadow';
   }
 
@@ -338,6 +342,16 @@ function cmdMode(opts) {
     cfg.integrations = Object.assign({}, cfg.integrations, { [integration]: value });
     return cfg;
   });
+  // A 0.108 integration with a settings key (jev.integrations.<id>) is also
+  // written to ~/.anti-hall/settings.json, which outranks jev.json — otherwise
+  // an earlier settings value would silently mask this change.
+  try {
+    const schema = require('../hooks/lib/settings-schema.js');
+    if (schema.findSetting('jev', 'integrations.' + integration)) {
+      const r = require('../hooks/lib/settings.js').set('jev', 'integrations.' + integration, value);
+      if (!r.ok) console.error('warning: settings.json not updated: ' + r.error);
+    }
+  } catch (_) { /* jev.json write above still applies */ }
   console.log(`${integration} mode set to ${value}`);
 }
 

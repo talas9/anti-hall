@@ -78,7 +78,9 @@ itself.
   `outputVerifyGuard`, `gitGuardSelfCredit` (add-block, never relaxes),
   `parentGateQuestion` (cache-only, zero network), `tasklistTrivial`,
   `supervisorBlockerLabel` (cache-only, zero network), `codexNudgeSubstantial` —
-  all default `shadow`. Full per-id trust/hook/API table:
+  all default `shadow` (settings `jev.integrations.<id>` for the 0.108 ones). In `on`,
+  `tasklistTrivial`/`codexNudgeSubstantial` ask synchronously (1.5 s cap, fail-open)
+  and a confident "trivial" verdict skips the nudge. Full per-id trust/hook/API table:
   `docs/KB-jev-classifier.md` §10.
 - "how is jev doing" / "jev scorecard": run `jev-report.js`, then for each row
   explain KEEP (promote-worthy) / REMOVE (offer to set mode off) / REVIEW (not
