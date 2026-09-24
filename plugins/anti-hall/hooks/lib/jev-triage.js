@@ -80,27 +80,35 @@ function loadTriageConfig(home) {
   } catch (_) {
     fileCfg = {};
   }
+  // v0.108.0 unified settings: ~/.anti-hall/settings.json's jev.* values win
+  // over jev.json's own fields when present (jev.json is never deleted/
+  // written to, only read as a fallback — see hooks/lib/settings.js).
+  let settingsCfg = {};
+  try {
+    settingsCfg = require('./settings.js').load({ home }).jev || {};
+  } catch (_) { /* settings.js unavailable/corrupt -> fall back to jev.json only */ }
+  const cfg = Object.assign({}, fileCfg, settingsCfg);
 
-  let jevEnabled = fileCfg.enabled === true || process.env.ANTIHALL_JEV === '1';
+  let jevEnabled = cfg.enabled === true || process.env.ANTIHALL_JEV === '1';
   if (process.env.ANTIHALL_JEV === '0') jevEnabled = false;
 
   // triage defaults to true once Jev itself is enabled; an explicit
   // `"triage": false` opts a jev.json-enabled user out of THIS feature only.
-  const triageEnabled = jevEnabled && fileCfg.triage !== false;
+  const triageEnabled = jevEnabled && cfg.triage !== false;
 
-  const confidenceThreshold = (Number.isFinite(fileCfg.confidenceThreshold) &&
-    fileCfg.confidenceThreshold >= 0 && fileCfg.confidenceThreshold <= 1)
-    ? fileCfg.confidenceThreshold : 0.85;
+  const confidenceThreshold = (Number.isFinite(cfg.confidenceThreshold) &&
+    cfg.confidenceThreshold >= 0 && cfg.confidenceThreshold <= 1)
+    ? cfg.confidenceThreshold : 0.85;
 
-  const urgentThreshold = (Number.isFinite(fileCfg.triageUrgentThreshold) &&
-    fileCfg.triageUrgentThreshold >= 0 && fileCfg.triageUrgentThreshold <= 1)
-    ? fileCfg.triageUrgentThreshold : DEFAULT_URGENT_THRESHOLD;
+  const urgentThreshold = (Number.isFinite(cfg.triageUrgentThreshold) &&
+    cfg.triageUrgentThreshold >= 0 && cfg.triageUrgentThreshold <= 1)
+    ? cfg.triageUrgentThreshold : DEFAULT_URGENT_THRESHOLD;
 
-  const timeoutMs = (Number.isFinite(fileCfg.timeoutMs) && fileCfg.timeoutMs > 0)
-    ? fileCfg.timeoutMs : 1500;
+  const timeoutMs = (Number.isFinite(cfg.timeoutMs) && cfg.timeoutMs > 0)
+    ? cfg.timeoutMs : 1500;
 
-  const budgetMs = (Number.isFinite(fileCfg.triageBudgetMs) && fileCfg.triageBudgetMs > 0)
-    ? fileCfg.triageBudgetMs : DEFAULT_BUDGET_MS;
+  const budgetMs = (Number.isFinite(cfg.triageBudgetMs) && cfg.triageBudgetMs > 0)
+    ? cfg.triageBudgetMs : DEFAULT_BUDGET_MS;
 
   return { enabled: triageEnabled, confidenceThreshold, urgentThreshold, timeoutMs, budgetMs };
 }

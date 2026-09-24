@@ -66,10 +66,15 @@
 const fs = require('fs');
 const path = require('path');
 
-// ON only when the env var is an explicit affirmative. Anything else = off.
+// ON only when explicitly enabled — env var (highest precedence) or
+// ~/.anti-hall/settings.json guards.shipitGate (v0.108.0 unified settings; see
+// hooks/lib/settings.js). Fail-open to disabled on any error.
 function gateEnabled() {
-  const v = process.env.ANTIHALL_SHIPIT_GATE;
-  return typeof v === 'string' && /^(1|true|yes|on)$/i.test(v.trim());
+  try {
+    return require('./lib/settings.js').get('guards', 'shipitGate') === true;
+  } catch (_) {
+    return false;
+  }
 }
 
 // HARD-RISK path heuristics — the L-tier forcing triggers from the ship-it skill

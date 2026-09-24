@@ -6,7 +6,7 @@ description: Show or change any anti-hall setting. Use when the user says "anti-
 # Settings
 
 anti-hall keeps every user-facing setting in ONE place: `~/.anti-hall/settings.json`,
-organized into sections (autoHandover, guards, jev, limitConserve, devswarm,
+organized into sections (autoHandover, guards, jev, limitConserve,
 statusline, ...). `scripts/settings.js` is the only thing that reads or writes it —
 this skill is the conversational front door.
 
@@ -40,7 +40,7 @@ menu below. Confirm by re-running `get` on that one key afterward.
    `show --section <key> --all` for one section) if the user asks for more detail.
 
 2. Use `AskUserQuestion` to let the user pick a **section** (autoHandover, guards,
-   jev, limitConserve, devswarm, statusline, codexNudge, versionAlerts, updates,
+   jev, limitConserve, statusline, codexNudge, versionAlerts, updates,
    defects), then a **setting** within it, then a **value**:
    - For a `boolean` or `enum` setting, offer its allowed values as multiple-choice
      options (an `enum`'s options come straight from the schema's `values` list;

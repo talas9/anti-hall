@@ -37,10 +37,15 @@ const fs = require('fs');
 // about lives in the last assistant turn(s), not megabytes back.
 const SCAN_WINDOW = 128 * 1024;
 
-// ON only when the env var is an explicit affirmative. Anything else = off.
+// ON only when explicitly enabled — env var (highest precedence) or
+// ~/.anti-hall/settings.json guards.mergeGate (v0.108.0 unified settings; see
+// hooks/lib/settings.js). Fail-open to disabled on any error.
 function gateEnabled() {
-  const v = process.env.ANTIHALL_MERGE_GATE;
-  return typeof v === 'string' && /^(1|true|yes|on)$/i.test(v.trim());
+  try {
+    return require('./lib/settings.js').get('guards', 'mergeGate') === true;
+  } catch (_) {
+    return false;
+  }
 }
 
 // Self-hedge phrases (case-insensitive). Each entry may be a string or a RegExp

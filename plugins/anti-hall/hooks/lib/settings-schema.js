@@ -45,7 +45,7 @@ const SECTIONS = [
     description: 'Automatic session-handover writing as context fills up.',
     settings: [
       { key: 'enabled', type: 'boolean', default: true, pluginOption: 'auto_handover_enabled', description: 'Write an automatic handover before context runs out.' },
-      { key: 'pct', type: 'number', min: 1, max: 99, default: 85, pluginOption: 'auto_handover_pct', description: 'Context-usage percent that triggers an automatic handover.' },
+      { key: 'pct', type: 'number', min: 1, max: 99, default: 85, env: 'ANTIHALL_AUTO_HANDOVER_PCT', pluginOption: 'auto_handover_pct', description: 'Context-usage percent that triggers an automatic handover.' },
       { key: 'nag', type: 'boolean', default: true, pluginOption: 'auto_handover_nag', description: 'Nag (remind) the user when a handover is due but not yet written.' },
       { key: 'nagStepPct', type: 'number', min: 1, max: 100, default: 5, description: 'Percent increments between successive handover nags.' },
       { key: 'nagQuietMin', type: 'number', min: 1, default: 15, description: 'Minutes to wait before repeating a handover nag.' },
@@ -56,20 +56,20 @@ const SECTIONS = [
     label: 'Guards',
     description: 'On/off switches and tuning for the always-on safety guard hooks.',
     settings: [
-      { key: 'mergeGate', type: 'boolean', default: false, env: 'ANTIHALL_MERGE_GATE', pluginOption: 'guards_merge_gate', description: 'Enable merge-readiness gate checks before merging.' },
-      { key: 'shipitGate', type: 'boolean', default: false, env: 'ANTIHALL_SHIPIT_GATE', description: 'Enable the ship-it workflow gate.' },
-      { key: 'outputVerifyGuard', type: 'boolean', default: true, env: 'ANTIHALL_OUTPUT_VERIFY_GUARD', description: 'Output-verification guard (blocks unverified completion claims).' },
-      { key: 'failureRootCauseNudge', type: 'boolean', default: true, env: 'ANTIHALL_FAILURE_ROOT_CAUSE_NUDGE', description: 'Nudge toward root-cause analysis after a failure.' },
-      { key: 'repoSelfDrift', type: 'boolean', default: true, env: 'ANTIHALL_REPO_SELF_DRIFT', description: "anti-hall's own repo-drift self-check hook." },
-      { key: 'stashGuard', type: 'boolean', default: false, env: 'ANTIHALL_STASH_GUARD', description: 'Arm stash-protection warnings in git-guard (also armed per-repo via .anti-hall/protected-stashes).' },
-      { key: 'emitDedupe', type: 'boolean', default: true, env: 'ANTIHALL_EMIT_DEDUPE', description: 'Deduplicate repeated hook-emit output.' },
-      { key: 'editGuardAllow', type: 'csv', default: '', env: 'ANTIHALL_EDIT_GUARD_ALLOW', advanced: true, description: 'Extra allowed file globs for edit-guard (comma/colon separated).' },
-      { key: 'allowSubagentMailbox', type: 'boolean', default: false, env: 'ANTIHALL_ALLOW_SUBAGENT_MAILBOX', advanced: true, description: 'One-off allow for the subagent-mailbox command pattern.' },
-      { key: 'reaperMatch', type: 'string', default: '', env: 'ANTIHALL_REAPER_MATCH', advanced: true, description: 'Extra process-name pattern for the MCP session-end reaper.' },
-      { key: 'reaperExclude', type: 'string', default: '', env: 'ANTIHALL_REAPER_EXCLUDE', advanced: true, description: 'Excludes matching processes from the MCP reaper.' },
-      { key: 'tasklistWorkThreshold', type: 'number', min: 1, default: 3, env: 'ANTIHALL_TASKLIST_WORK_THRESHOLD', advanced: true, description: 'Minimum work items before tasklist-guard fires.' },
-      { key: 'progressFreshMs', type: 'number', min: 0, default: 900000, env: 'ANTIHALL_PROGRESS_FRESH_MS', advanced: true, description: 'Freshness window (ms) for the progress file in tasklist-guard.' },
-      { key: 'apiGuardThirdparty', type: 'boolean', default: false, env: 'ANTIHALL_API_GUARD_THIRDPARTY', advanced: true, description: 'Also verify installed 3rd-party package APIs, not just stdlib/builtins.' },
+      { key: 'mergeGate', type: 'boolean', default: false, env: 'ANTIHALL_MERGE_GATE', pluginOption: 'guards_merge_gate', description: 'Enable merge-readiness gate checks before merging. [verified: hooks/merge-gate.js:42 — default off, opt-in via =on]' },
+      { key: 'shipitGate', type: 'boolean', default: false, env: 'ANTIHALL_SHIPIT_GATE', description: 'Enable the ship-it workflow gate. [verified: hooks/ship-it-guard.js:71 — default off, opt-in via =on]' },
+      { key: 'outputVerifyGuard', type: 'boolean', default: true, env: 'ANTIHALL_OUTPUT_VERIFY_GUARD', description: 'Output-verification guard (blocks unverified completion claims). [verified: hooks/output-verify-guard.js:198 — default on, =off disables]' },
+      { key: 'failureRootCauseNudge', type: 'boolean', default: true, env: 'ANTIHALL_FAILURE_ROOT_CAUSE_NUDGE', description: 'Nudge toward root-cause analysis after a failure. [verified: hooks/failure-root-cause-nudge.js:49 — default on, =off disables]' },
+      { key: 'repoSelfDrift', type: 'boolean', default: true, env: 'ANTIHALL_REPO_SELF_DRIFT', description: "anti-hall's own repo-drift self-check hook. [verified: hooks/repo-self-drift.js:159 — default on, =off disables]" },
+      { key: 'stashGuard', type: 'boolean', default: false, env: 'ANTIHALL_STASH_GUARD', description: 'Arm stash-protection warnings in git-guard (also armed per-repo via .anti-hall/protected-stashes). [verified: hooks/command-guard.js:1333 — default off, =1 arms]' },
+      { key: 'emitDedupe', type: 'boolean', default: true, env: 'ANTIHALL_EMIT_DEDUPE', description: 'Deduplicate repeated hook-emit output. [verified: hooks/lib/emit-dedupe.js:129 — default on, =0 disables]' },
+      { key: 'editGuardAllow', type: 'csv', default: '', env: 'ANTIHALL_EDIT_GUARD_ALLOW', advanced: true, description: 'Extra allowed file globs for edit-guard (comma/colon separated). [verified: hooks/edit-guard.js — no built-in default, empty means none]' },
+      { key: 'allowSubagentMailbox', type: 'boolean', default: false, env: 'ANTIHALL_ALLOW_SUBAGENT_MAILBOX', advanced: true, description: 'One-off allow for the subagent-mailbox command pattern. [verified: hooks/command-guard.js:1298 — default off, =1 allows]' },
+      { key: 'reaperMatch', type: 'string', default: '', env: 'ANTIHALL_REAPER_MATCH', advanced: true, description: 'Extra process-name pattern for the MCP session-end reaper. [verified: hooks/session-end-mcp-reaper.js — no built-in default, empty means none]' },
+      { key: 'reaperExclude', type: 'string', default: '', env: 'ANTIHALL_REAPER_EXCLUDE', advanced: true, description: 'Excludes matching processes from the MCP reaper. [verified: hooks/session-end-mcp-reaper.js — no built-in default, empty means none]' },
+      { key: 'tasklistWorkThreshold', type: 'number', min: 1, default: 3, env: 'ANTIHALL_TASKLIST_WORK_THRESHOLD', advanced: true, description: 'Minimum work items before tasklist-guard fires. [verified: hooks/tasklist-guard.js:45 DEFAULT_WORK_THRESHOLD = 3]' },
+      { key: 'progressFreshMs', type: 'number', min: 0, default: 1800000, env: 'ANTIHALL_PROGRESS_FRESH_MS', advanced: true, description: 'Freshness window (ms) for the progress file in tasklist-guard. [verified: hooks/tasklist-guard.js:46 DEFAULT_PROGRESS_FRESH_MS = 30*60*1000]' },
+      { key: 'apiGuardThirdparty', type: 'boolean', default: false, env: 'ANTIHALL_API_GUARD_THIRDPARTY', advanced: true, description: 'Also verify installed 3rd-party package APIs, not just stdlib/builtins. [verified: hooks/api-guard.js:84 — default off, =1/true/yes/on enables]' },
     ],
   },
   {
@@ -77,9 +77,9 @@ const SECTIONS = [
     label: 'Version Alerts',
     description: 'Update-available nudges for anti-hall, Claude CLI, and DevSwarm.',
     settings: [
-      { key: 'antiHall', type: 'boolean', default: true, env: 'ANTIHALL_VERSION_ALERT', description: 'Alert when a newer anti-hall version is available.' },
-      { key: 'claudeCli', type: 'boolean', default: true, env: 'ANTIHALL_CLAUDE_CLI_VERSION_ALERT', description: 'Alert when a newer Claude CLI version is available.' },
-      { key: 'devswarm', type: 'boolean', default: true, env: 'ANTIHALL_DEVSWARM_VERSION_ALERT', description: 'Alert when a newer DevSwarm/hivecontrol version is available.' },
+      { key: 'antiHall', type: 'boolean', default: true, env: 'ANTIHALL_VERSION_ALERT', description: 'Alert when a newer anti-hall version is available. [verified: hooks/version-alert.js:93 — default on, =off disables]' },
+      { key: 'claudeCli', type: 'boolean', default: true, env: 'ANTIHALL_CLAUDE_CLI_VERSION_ALERT', description: 'Alert when a newer Claude CLI version is available. [verified: hooks/claude-cli-version.js:54 — default on, =off disables]' },
+      { key: 'devswarm', type: 'boolean', default: true, env: 'ANTIHALL_DEVSWARM_VERSION_ALERT', description: 'Alert when a newer DevSwarm/hivecontrol version is available. [verified: hooks/devswarm-version.js:157 — default on, =off disables]' },
     ],
   },
   {
@@ -87,10 +87,10 @@ const SECTIONS = [
     label: 'Updates / Maintenance',
     description: '`/anti-hall:update` and its background sweep.',
     settings: [
-      { key: 'quiet', type: 'boolean', default: false, env: 'ANTIHALL_UPDATE_QUIET', description: 'Suppress update output (for scripted capture).' },
-      { key: 'reconcileBudgetMs', type: 'number', min: 0, default: 20000, env: 'ANTIHALL_RECONCILE_BUDGET_MS', advanced: true, description: 'Time budget (ms) for the reconcile step during update; 0 = unlimited.' },
-      { key: 'postpullBudgetMs', type: 'number', min: 0, default: 90000, env: 'ANTIHALL_UPDATE_POSTPULL_BUDGET_MS', advanced: true, description: 'Time budget (ms) for the post-pull update sweep; 0 = unlimited.' },
-      { key: 'sweepBudgetMs', type: 'number', min: 0, default: 20000, env: 'ANTIHALL_UPDATE_SWEEP_BUDGET_MS', advanced: true, description: 'Overall time budget (ms) for the update sweep.' },
+      { key: 'quiet', type: 'boolean', default: false, env: 'ANTIHALL_UPDATE_QUIET', description: 'Suppress update output (for scripted capture). [verified: skills/update/scripts/update.js:2687 — default off, =1 suppresses]' },
+      { key: 'reconcileBudgetMs', type: 'number', min: 0, default: 60000, env: 'ANTIHALL_RECONCILE_BUDGET_MS', advanced: true, description: 'Time budget (ms) for the reconcile step during update; 0 = unlimited. [verified: scripts/devswarm.js DEFAULT_RECONCILE_BUDGET_MS = 60000]' },
+      { key: 'postpullBudgetMs', type: 'number', min: 0, default: 90000, env: 'ANTIHALL_UPDATE_POSTPULL_BUDGET_MS', advanced: true, description: 'Time budget (ms) for the post-pull update sweep; 0 = unlimited. [verified: skills/update/scripts/update.js DEFAULT_POSTPULL_BUDGET_MS = 90000]' },
+      { key: 'sweepBudgetMs', type: 'number', min: 0, default: 20000, env: 'ANTIHALL_UPDATE_SWEEP_BUDGET_MS', advanced: true, description: 'Overall time budget (ms) for the update sweep. [verified: skills/update/scripts/update.js DEFAULT_SWEEP_BUDGET_MS = 20000]' },
     ],
   },
   {
@@ -99,8 +99,8 @@ const SECTIONS = [
     description: 'Auto-downshift behavior as usage approaches plan limits.',
     settings: [
       { key: 'mode', type: 'enum', values: ['auto', 'on', 'off'], default: 'auto', env: 'ANTIHALL_LIMIT_CONSERVE', pluginOption: 'limit_conserve_mode', description: 'Force conservation mode on/off, or auto-detect from the OMC usage cache.' },
-      { key: 'threshold', type: 'number', min: 1, max: 99, default: 85, env: 'ANTIHALL_LIMIT_THRESHOLD', pluginOption: 'limit_conserve_threshold', description: 'Usage percent that triggers conservation mode.' },
-      { key: 'accountCheck', type: 'boolean', default: true, env: 'ANTIHALL_LIMIT_ACCOUNT_CHECK', advanced: true, description: 'Guard against stale usage-cache readings after an account switch.' },
+      { key: 'threshold', type: 'number', min: 1, max: 99, default: 85, env: 'ANTIHALL_LIMIT_THRESHOLD', pluginOption: 'limit_conserve_threshold', description: 'Usage percent that triggers conservation mode. [verified: hooks/limit-conserve.js:59 THRESHOLD = parseInt(...) || 85]' },
+      { key: 'accountCheck', type: 'boolean', default: true, env: 'ANTIHALL_LIMIT_ACCOUNT_CHECK', advanced: true, description: 'Guard against stale usage-cache readings after an account switch. [verified: hooks/limit-conserve.js:111 — only the literal "off" disables it]' },
     ],
   },
   {
@@ -116,48 +116,29 @@ const SECTIONS = [
       { key: 'timeoutMs', type: 'number', min: 1, max: 3000, default: 1500, legacy: { file: 'jev.json', key: 'timeoutMs' }, advanced: true, description: 'Per-call timeout (ms), capped at 3000.' },
       { key: 'confidenceThreshold', type: 'number', min: 0, max: 1, default: 0.85, legacy: { file: 'jev.json', key: 'confidenceThreshold' }, advanced: true, description: 'Minimum confidence for a Jev answer to be trusted by callers.' },
       { key: 'triage', type: 'boolean', default: true, legacy: { file: 'jev.json', key: 'triage' }, advanced: true, description: 'Message-triage labeling once Jev is enabled.' },
-      { key: 'triageUrgentThreshold', type: 'number', min: 0, max: 1, default: 0.9, legacy: { file: 'jev.json', key: 'triageUrgentThreshold' }, advanced: true, description: 'Confidence threshold for the urgent triage label.' },
+      { key: 'triageUrgentThreshold', type: 'number', min: 0, max: 1, default: 0.9, legacy: { file: 'jev.json', key: 'triageUrgentThreshold' }, advanced: true, description: 'Confidence threshold for the urgent triage label. [verified: hooks/lib/jev-triage.js:51 DEFAULT_URGENT_THRESHOLD = 0.9]' },
+      // jev-assist budget (0.108.0) — spend tracking, added alongside this schema;
+      // behavior implemented separately in hooks/lib/jev-assist*.js. `watch` only
+      // ever warns; it never auto-disables Jev (see budget.mode's description).
+      { key: 'budget.mode', type: 'enum', values: ['unlimited', 'watch'], default: 'unlimited', pluginOption: 'jev_budget_mode', description: 'Jev spend: no limit, or warn when over budget (never auto-disables). [source: jev-assist budget (0.108.0)]' },
+      { key: 'budget.usdPerDay', type: 'number', exclusiveMin: 0, default: null, optional: true, pluginOption: 'jev_budget_usd_per_day', description: 'optional: daily USD spend threshold, used only when budget.mode=watch. [source: jev-assist budget (0.108.0)]' },
+      { key: 'budget.usdPerWeek', type: 'number', exclusiveMin: 0, default: null, optional: true, pluginOption: 'jev_budget_usd_per_week', description: 'optional: weekly USD spend threshold, used only when budget.mode=watch. [source: jev-assist budget (0.108.0)]' },
     ],
   },
-  {
-    key: 'devswarm',
-    label: 'DevSwarm',
-    description: 'Multi-workspace mesh orchestration, liveness, and supervisor tuning.',
-    settings: [
-      { key: 'hivecontrol', type: 'string', default: '', env: 'ANTIHALL_DEVSWARM_HIVECONTROL', pluginOption: 'devswarm_hivecontrol', description: 'Explicit path to the hivecontrol CLI binary (default: PATH lookup).' },
-      { key: 'supervisorMode', type: 'enum', values: ['auto', 'on', 'off'], default: 'auto', env: 'ANTIHALL_DEVSWARM_SUPERVISOR', pluginOption: 'devswarm_supervisor_mode', description: 'Force the DevSwarm supervisor context on/off, or auto-detect.' },
-      { key: 'requiredGates', type: 'csv', default: 'done,merged,tests_passed', env: 'ANTIHALL_DEVSWARM_REQUIRED_GATES', description: 'Merge gates required for DevSwarm tasks.' },
-      { key: 'inboxCmd', type: 'string', default: '', env: 'ANTIHALL_DEVSWARM_INBOX_CMD', description: 'Consumer-configured command to read pending mesh messages.' },
-      { key: 'childGateStrict', type: 'boolean', default: true, env: 'ANTIHALL_DEVSWARM_CHILD_GATE_STRICT', advanced: true, description: 'Strict child-gate enforcement.' },
-      { key: 'parentGateCap', type: 'number', min: 1, default: 10, env: 'ANTIHALL_DEVSWARM_PARENT_GATE_CAP', advanced: true, description: 'Caps the parent-gate wait/child count.' },
-      { key: 'activeFloorPct', type: 'number', min: 0, max: 100, default: 50, env: 'ANTIHALL_DEVSWARM_ACTIVE_FLOOR_PCT', advanced: true, description: 'Min percent of active workspaces kept in the archived cache (0 disables the floor).' },
-      { key: 'archivedCacheMaxAgeMs', type: 'number', min: 0, default: 0, env: 'ANTIHALL_DEVSWARM_ARCHIVED_CACHE_MAX_AGE_MS', advanced: true, description: 'Max age (ms) for archived-workspace cache entries (default: 2x sweep interval).' },
-      { key: 'archivedGraceMs', type: 'number', min: 0, default: 600000, env: 'ANTIHALL_DEVSWARM_ARCHIVED_GRACE_MS', advanced: true, description: 'Grace period (ms) before a workspace is considered archived.' },
-      { key: 'cooldownSec', type: 'number', min: 0, default: 600, env: 'ANTIHALL_DEVSWARM_COOLDOWN_SEC', advanced: true, description: 'Supervisor cooldown (sec) between recovery actions.' },
-      { key: 'idleSec', type: 'number', min: 60, default: 900, env: 'ANTIHALL_DEVSWARM_IDLE_SEC', advanced: true, description: 'Supervisor idle threshold (sec).' },
-      { key: 'dormantMs', type: 'number', min: 0, default: 0, env: 'ANTIHALL_DEVSWARM_DORMANT_MS', advanced: true, description: 'Dormant-workspace threshold (ms).' },
-      { key: 'drainTtlMs', type: 'number', min: 0, default: 600000, env: 'ANTIHALL_DEVSWARM_DRAIN_TTL_MS', advanced: true, description: 'TTL (ms) for the drain marker.' },
-      { key: 'graceSec', type: 'number', min: 1, max: 60, default: 30, env: 'ANTIHALL_DEVSWARM_GRACE_SEC', advanced: true, description: 'Grace window (sec) before recovery in devswarm-recover.' },
-      { key: 'maxRecoveries', type: 'number', min: 1, max: 20, default: 5, env: 'ANTIHALL_DEVSWARM_MAX_RECOVERIES', advanced: true, description: 'Max auto-recovery attempts.' },
-      { key: 'intervalSec', type: 'number', min: 60, max: 120, default: 90, env: 'ANTIHALL_DEVSWARM_INTERVAL', advanced: true, description: 'Sweep interval (sec) used at supervisor install time.' },
-      { key: 'migrateMarkRead', type: 'boolean', default: false, env: 'ANTIHALL_DEVSWARM_MIGRATE_MARK_READ', advanced: true, description: 'Mark migrated messages as read during state migration.' },
-      { key: 'monitorTimeoutSec', type: 'number', min: 0, default: 0, env: 'ANTIHALL_DEVSWARM_MONITOR_TIMEOUT_SEC', advanced: true, description: 'Bounded cadence (sec) for monitor timeout in devswarm-ingest.' },
-      { key: 'nudgeCooldownSec', type: 'number', min: 0, default: 120, env: 'ANTIHALL_DEVSWARM_NUDGE_COOLDOWN_SEC', advanced: true, description: 'Cooldown (sec) between supervisor nudges.' },
-      { key: 'nudgeMaxAttempts', type: 'number', min: 1, max: 20, default: 2, env: 'ANTIHALL_DEVSWARM_NUDGE_MAX_ATTEMPTS', advanced: true, description: 'Max nudge attempts before escalation.' },
-      { key: 'nudgeWindowSec', type: 'number', min: 1, default: 180, env: 'ANTIHALL_DEVSWARM_NUDGE_WINDOW_SEC', advanced: true, description: 'Window (sec) for counting nudge attempts.' },
-      { key: 'postSpawnGraceSec', type: 'number', min: 0, default: 0, env: 'ANTIHALL_DEVSWARM_POST_SPAWN_GRACE_SEC', advanced: true, description: 'Grace period (sec) right after spawning a child workspace.' },
-      { key: 'reapedRetentionDays', type: 'number', min: 0, default: 0, env: 'ANTIHALL_DEVSWARM_REAPED_RETENTION_DAYS', advanced: true, description: 'Retention window (days) for reaped-workspace logs.' },
-      { key: 'receiptWindowMs', type: 'number', min: 0, default: 0, env: 'ANTIHALL_DEVSWARM_RECEIPT_WINDOW_MS', advanced: true, description: 'Window (ms) for parent-reply receipt tracking.' },
-      { key: 'reconcileSweep', type: 'enum', values: ['auto', 'off'], default: 'auto', env: 'ANTIHALL_DEVSWARM_RECONCILE_SWEEP', advanced: true, description: 'Enable/disable the periodic reconcile sweep in the supervisor.' },
-      { key: 'reconcileSweepSec', type: 'number', min: 0, default: 0, env: 'ANTIHALL_DEVSWARM_RECONCILE_SWEEP_SEC', advanced: true, description: 'Interval (sec) for the reconcile sweep.' },
-      { key: 'rowStaleMs', type: 'number', min: 0, default: 0, env: 'ANTIHALL_DEVSWARM_ROW_STALE_MS', advanced: true, description: 'Staleness threshold (ms) for workspace row selection.' },
-      { key: 'sendReceiptRetentionDays', type: 'number', min: 0, default: 7, env: 'ANTIHALL_DEVSWARM_SEND_RECEIPT_RETENTION_DAYS', advanced: true, description: 'Retention window (days) for send-receipt records.' },
-      { key: 'summaryRetentionDays', type: 'number', min: 0, default: 0, env: 'ANTIHALL_DEVSWARM_SUMMARY_RETENTION_DAYS', advanced: true, description: 'Retention window (days) for summary records.' },
-      { key: 'wakeCron', type: 'string', default: '', env: 'ANTIHALL_DEVSWARM_WAKE_CRON', advanced: true, description: 'Wake-poll cron schedule override (treated as untrusted input).' },
-      { key: 'wakeWatchPollMs', type: 'number', min: 0, default: 0, env: 'ANTIHALL_DEVSWARM_WAKE_WATCH_POLL_MS', advanced: true, description: 'Poll interval (ms) for the wake-watch loop.' },
-      { key: 'supervisorSweepBudgetMs', type: 'number', min: 0, default: 0, env: 'ANTIHALL_SUPERVISOR_SWEEP_BUDGET_MS', advanced: true, description: 'Time budget (ms) for one supervisor sweep pass.' },
-    ],
-  },
+  // REMOVED (v0.108.0 hardening pass): a `devswarm` section — hivecontrol,
+  // supervisor mode, required gates, and ~25 mesh/supervisor tuning knobs
+  // (cooldownSec, idleSec, nudge*, retention days, wake cadence, etc.) — was
+  // drafted here with every default hand-verified against its source
+  // constant, then removed before ship. Every one of those ANTIHALL_DEVSWARM_*
+  // consumers takes an explicit `env` PARAMETER (for testability) rather than
+  // reading `process.env` directly, so wiring settings.get() into them safely
+  // requires threading a `home` parameter through each resolver first — their
+  // default `os.homedir()` fallback would otherwise risk a unit test that
+  // passes a synthetic env object silently reading the REAL developer
+  // machine's ~/.anti-hall/settings.json. Showing them on the settings page
+  // as controllable without that wiring would be a fake control. The real
+  // ANTIHALL_DEVSWARM_* env vars are unaffected and keep working exactly as
+  // before; re-add this section once each resolver accepts an injectable home.
   {
     key: 'statusline',
     label: 'Statusline',
@@ -173,7 +154,7 @@ const SECTIONS = [
     description: 'Hand-off nudge suggesting Codex for review/diagnosis.',
     settings: [
       { key: 'enabled', type: 'boolean', default: true, env: 'ANTIHALL_CODEX_NUDGE', description: 'Enable the Codex hand-off nudge hook.' },
-      { key: 'min', type: 'number', min: 1, default: 3, env: 'ANTIHALL_CODEX_NUDGE_MIN', advanced: true, description: 'Minimum substantial code-file edits before the nudge fires.' },
+      { key: 'min', type: 'number', min: 1, default: 3, env: 'ANTIHALL_CODEX_NUDGE_MIN', advanced: true, description: 'Minimum substantial code-file edits before the nudge fires. [verified: hooks/codex-nudge.js:48 DEFAULT_MIN = 3]' },
     ],
   },
   {

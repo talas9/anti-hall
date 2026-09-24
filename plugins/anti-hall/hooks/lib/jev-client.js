@@ -69,27 +69,36 @@ function expandHome(p) {
   return p;
 }
 
-// loadJevConfig() — resolve the effective config from jev.json + env. Never
-// throws; missing/malformed jev.json is treated as {} (disabled).
+// loadJevConfig() — resolve the effective config from settings.json (jev
+// section) + jev.json (legacy) + env. Never throws; missing/malformed config
+// is treated as {} (disabled). settings.json's jev.* values, when present,
+// win over jev.json's own fields (v0.108.0 unified settings — jev.json is
+// never deleted or written to, only read as a fallback; see
+// hooks/lib/settings.js / settings-schema.js).
 function loadJevConfig() {
   const fileCfg = readJevConfigFile();
+  let settingsCfg = {};
+  try {
+    settingsCfg = require('./settings.js').load().jev || {};
+  } catch (_) { /* settings.js unavailable/corrupt -> fall back to jev.json only */ }
+  const cfg = Object.assign({}, fileCfg, settingsCfg);
 
-  let enabled = fileCfg.enabled === true || process.env.ANTIHALL_JEV === '1';
+  let enabled = cfg.enabled === true || process.env.ANTIHALL_JEV === '1';
   if (process.env.ANTIHALL_JEV === '0') enabled = false;
 
-  const transport = fileCfg.transport === 'typesafe' ? 'typesafe' : 'vercel';
+  const transport = cfg.transport === 'typesafe' ? 'typesafe' : 'vercel';
 
-  const timeoutMs = (Number.isFinite(fileCfg.timeoutMs) && fileCfg.timeoutMs > 0)
-    ? Math.min(fileCfg.timeoutMs, MAX_TIMEOUT_MS)
+  const timeoutMs = (Number.isFinite(cfg.timeoutMs) && cfg.timeoutMs > 0)
+    ? Math.min(cfg.timeoutMs, MAX_TIMEOUT_MS)
     : DEFAULT_TIMEOUT_MS;
 
-  const confidenceThreshold = (Number.isFinite(fileCfg.confidenceThreshold) &&
-    fileCfg.confidenceThreshold >= 0 && fileCfg.confidenceThreshold <= 1)
-    ? fileCfg.confidenceThreshold
+  const confidenceThreshold = (Number.isFinite(cfg.confidenceThreshold) &&
+    cfg.confidenceThreshold >= 0 && cfg.confidenceThreshold <= 1)
+    ? cfg.confidenceThreshold
     : DEFAULT_CONFIDENCE_THRESHOLD;
 
-  const keyFile = (typeof fileCfg.keyFile === 'string' && fileCfg.keyFile.trim())
-    ? expandHome(fileCfg.keyFile.trim())
+  const keyFile = (typeof cfg.keyFile === 'string' && cfg.keyFile.trim())
+    ? expandHome(cfg.keyFile.trim())
     : null;
 
   // Test-only escape hatch: point at a local mock server instead of the real

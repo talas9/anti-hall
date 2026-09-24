@@ -45,6 +45,11 @@ const {
   extractSubstitutions,
   SHELL_VERBS,
 } = require('./lib/shell-scan.js');
+// v0.108.0 unified settings (env > ~/.anti-hall/settings.json > default);
+// fail-open to `undefined` (never the value that would arm/allow a guard).
+function settingsGet(section, key) {
+  try { return require('./lib/settings.js').get(section, key); } catch (_) { return undefined; }
+}
 
 // Commands whose FIRST WORD (verb) are always heavy in coordinator context.
 const HEAVY_VERBS = new Set([
@@ -1295,7 +1300,7 @@ function main() {
   try {
     const { isSubagentByPayload } = require('./coordinator-detect.js');
     if (isSubagentByPayload(payload)
-      && process.env.ANTIHALL_ALLOW_SUBAGENT_MAILBOX !== '1'
+      && settingsGet('guards', 'allowSubagentMailbox') !== true
       && !isSkipped('devswarm-subagent-mailbox-guard')
       && detectSubagentMailboxTouch(command)) {
       fs.writeSync(1, JSON.stringify({ decision: 'block', reason: buildSubagentMailboxReason() }) + '\n');
@@ -1330,7 +1335,7 @@ function main() {
       const stashSub = detectMutatingGitStash(command);
       if (stashSub) {
         const cwd = (payload && payload.cwd) || '';
-        const armed = hasProtectedStashesMarker(cwd) || process.env.ANTIHALL_STASH_GUARD === '1';
+        const armed = hasProtectedStashesMarker(cwd) || settingsGet('guards', 'stashGuard') === true;
         if (armed) {
           const { isSubagentByPayload } = require('./coordinator-detect.js');
           const subagent = isSubagentByPayload(payload);

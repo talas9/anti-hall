@@ -34,6 +34,11 @@
 'use strict';
 
 const path = require('path');
+// v0.108.0 unified settings (env > ~/.anti-hall/settings.json > default);
+// fail-open to `undefined` (never the value that would disable a guard).
+function settingsGet(section, key) {
+  try { return require('./lib/settings.js').get(section, key); } catch (_) { return undefined; }
+}
 const {
   cacheFilePath,
   classifyVersionDrift,
@@ -51,7 +56,7 @@ const CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
 const BASELINE = CLAUDE_CLI_BASELINE;
 
 function main() {
-  if ((process.env.ANTIHALL_CLAUDE_CLI_VERSION_ALERT || '').toLowerCase() === 'off') return;
+  if (settingsGet('versionAlerts', 'claudeCli') === false) return;
 
   try {
     const sg = require('./skip-guard.js');

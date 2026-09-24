@@ -309,10 +309,20 @@ the update.
   `~/.anti-hall/settings.json`, browsable and editable via the new `/anti-hall:settings`
   skill or `node plugins/anti-hall/scripts/settings.js show|get|set|reset` (`--json`
   everywhere). Backed by a declarative registry (`hooks/lib/settings-schema.js`) covering
-  auto-handover, guards, Jev, limit-conservation, DevSwarm, the statusline, and more, with
-  a precedence chain of env var → settings.json → Claude Code's native `/config` panel
-  (a headline subset is also declared in `plugin.json`'s `userConfig`) → legacy per-feature
-  config file (e.g. `~/.anti-hall/jev.json`) → default. `doctor --repair` and
+  auto-handover, guards, Jev (including a new opt-in spend-budget watch), limit-
+  conservation, the statusline, and more — each REAL, ACTUALLY WIRED into the hook/module
+  that reads it (jev-client, jev-triage, limit-conserve, the statusline, and every simple
+  boolean guard now resolve through `settings.get()`, not raw `process.env`). A `devswarm`
+  section was deliberately NOT shipped: its ~30 knobs' consumers take an explicit `env`
+  parameter rather than reading `process.env` directly, so wiring them safely needs a
+  `home` parameter threaded through first — those env vars keep working, just not yet via
+  settings.json. Precedence: env var → settings.json → a plugin-option value that actually
+  differs from its `plugin.json` `userConfig` manifest default (a value merely sitting at
+  the default is treated as unset, so it can never mask a real legacy value) → legacy
+  per-feature config file (e.g. `~/.anti-hall/jev.json`, ranked ABOVE the plugin-option tier
+  until the one-time migration below is stamped for this version) → default. A corrupt
+  `settings.json` is backed up to `settings.json.corrupt-<ts>` (never silently clobbered)
+  before any write. `doctor --repair` and
   `/anti-hall:update` forward-migrate legacy config into `settings.json` once, idempotently,
   and never delete the legacy file. Codex gets a mirrored `anti-hall-settings` skill (numbered-
   choice menu in place of `AskUserQuestion`; no `/config` equivalent) driving the same CLI.

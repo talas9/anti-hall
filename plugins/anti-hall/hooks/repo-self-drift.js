@@ -44,6 +44,11 @@
 
 const fs = require('fs');
 const path = require('path');
+// v0.108.0 unified settings (env > ~/.anti-hall/settings.json > default);
+// fail-open to `undefined` (never the value that would disable a guard).
+function settingsGet(section, key) {
+  try { return require('./lib/settings.js').get(section, key); } catch (_) { return undefined; }
+}
 const {
   cacheFilePath,
   readCache,
@@ -156,7 +161,7 @@ function scan(hooksDir) {
 }
 
 function main() {
-  if ((process.env.ANTIHALL_REPO_SELF_DRIFT || '').toLowerCase() === 'off') return;
+  if (settingsGet('guards', 'repoSelfDrift') === false) return;
 
   try {
     const sg = require('./skip-guard.js');

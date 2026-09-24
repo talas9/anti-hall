@@ -81,7 +81,10 @@ const JS_GLOBALS = new Set([
 // package, by contrast, REQUIRES importing it — which runs its top-level code at
 // edit time (a confirmed RCE vector). So 3rd-party checking is OPT-IN only:
 //   ANTIHALL_API_GUARD_THIRDPARTY=1  -> also check installed 3rd-party packages.
-const THIRDPARTY = /^(1|true|yes|on)$/i.test(String(process.env.ANTIHALL_API_GUARD_THIRDPARTY || ''));
+// v0.108.0 unified settings: env > ~/.anti-hall/settings.json > default false.
+const THIRDPARTY = (() => {
+  try { return require('./lib/settings.js').get('guards', 'apiGuardThirdparty') === true; } catch (_) { return false; }
+})();
 
 const PY_STDLIB = new Set([
   'os', 'sys', 'math', 'cmath', 'random', 'json', 're', 'collections', 'itertools',

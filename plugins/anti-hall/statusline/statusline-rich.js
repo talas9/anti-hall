@@ -534,9 +534,12 @@ function getCostFromStdin() {
 // Written by: install-statusline.js --consolidate
 
 function getConsolidatedBase() {
-  // Priority 1: env var inline in the statusLine command (POSIX-friendly)
-  const envCmd = (process.env.ANTIHALL_STATUSLINE_BASE || '').trim();
-  if (envCmd) return envCmd;
+  // Priority 1: env var inline in the statusLine command (POSIX-friendly), or
+  // ~/.anti-hall/settings.json's statusline.base (v0.108.0 unified settings —
+  // see hooks/lib/settings.js; env still wins when both are set).
+  let settingsCmd = '';
+  try { settingsCmd = String(require('../hooks/lib/settings.js').get('statusline', 'base') || '').trim(); } catch (_) { /* fail-open */ }
+  if (settingsCmd) return settingsCmd;
   // Priority 2: config file written by install-statusline.js --consolidate
   try {
     const cfgPath = path.join(os.homedir(), '.anti-hall', 'consolidated-base.json');
@@ -682,9 +685,11 @@ function generateStatusline() {
   if (ahChip) header += ahChip;
   // Account email chip — shows the signed-in email WHEN AVAILABLE (read from
   // ~/.claude.json). Dim, last segment. Opt-out: set ANTIHALL_STATUSLINE_NO_EMAIL=1
-  // (or any non-'0'/'false' value) to hide it, e.g. for screenshots/screen-shares.
-  const noEmail = process.env.ANTIHALL_STATUSLINE_NO_EMAIL;
-  if (!(noEmail && noEmail !== '0' && noEmail !== 'false')) {
+  // or statusline.noEmail in ~/.anti-hall/settings.json (v0.108.0 unified
+  // settings — see hooks/lib/settings.js) to hide it, e.g. for screenshots.
+  let noEmail = false;
+  try { noEmail = require('../hooks/lib/settings.js').get('statusline', 'noEmail') === true; } catch (_) { /* fail-open: show email */ }
+  if (!noEmail) {
     const email = getClaudeEmail();
     if (email) {
       header += '  ' + c.dim + '│' + c.reset + '  ' + c.dim + '✉ ' + email + c.reset;

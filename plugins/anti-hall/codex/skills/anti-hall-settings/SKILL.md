@@ -48,7 +48,7 @@ re-running `get` on that one key afterward.
 2. Codex has no `AskUserQuestion` tool, so present choices as a **numbered list**
    in prose instead:
    - First, number the sections (autoHandover, guards, jev, limitConserve,
-     devswarm, statusline, codexNudge, versionAlerts, updates, defects) and ask
+     statusline, codexNudge, versionAlerts, updates, defects) and ask
      the user to pick one by number.
    - Then number that section's settings and ask again.
    - Then, for a `boolean` or `enum` setting, number its allowed values (an

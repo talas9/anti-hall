@@ -45,6 +45,7 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const settings = require('./lib/settings.js');
 
 const CACHE_FILE = path.join(
   os.homedir(), '.claude', 'plugins', 'oh-my-claudecode', '.usage-cache-anthropic.json'
@@ -54,9 +55,12 @@ const ACCOUNT_STATE_FILE = path.join(os.homedir(), '.anti-hall', 'limit-conserve
 
 const STALE_MS = 15 * 60 * 1000;
 
-// Compute THRESHOLD at load time from the child process env (each spawned hook
-// process reads its own env). parseInt('', 10) is NaN so || 85 fires correctly.
-const THRESHOLD = parseInt(process.env.ANTIHALL_LIMIT_THRESHOLD, 10) || 85;
+// Compute THRESHOLD at load time via the unified settings store (v0.108.0):
+// env override > ~/.anti-hall/settings.json > default 85. Same effective
+// value as the old bare `parseInt(process.env.ANTIHALL_LIMIT_THRESHOLD, 10)
+// || 85` when nothing but env/default is in play; settings.json now also
+// takes effect, which the old code could never see.
+const THRESHOLD = settings.get('limitConserve', 'threshold');
 
 // readCurrentUserID(): bounded read of ~/.claude.json's top-level `userID`
 // field only. Never touches the keychain or any token. null on any error.
@@ -108,7 +112,7 @@ function writeAccountState(userID, usageCacheMtime) {
 // reflects the OLD account. Updates the stored state whenever a fresh
 // reading (matching account, or an advanced mtime post-switch) is observed.
 function isAccountSwitchStale(cacheMtimeMs) {
-  if ((process.env.ANTIHALL_LIMIT_ACCOUNT_CHECK || '').toLowerCase().trim() === 'off') {
+  if (settings.get('limitConserve', 'accountCheck') === false) {
     return false;
   }
 
@@ -167,29 +171,34 @@ const ABSENT = {
  */
 function isConserving() {
   try {
-    const envVal = (process.env.ANTIHALL_LIMIT_CONSERVE || '').toLowerCase().trim();
+    // Layer 1 & 2: explicit override — env > settings.json > default 'auto'
+    // (v0.108.0 unified settings; see hooks/lib/settings.js). `source` still
+    // reports 'env' only when the value actually came from the env var, so
+    // existing env-driven assertions are unaffected; a settings.json-driven
+    // override reports 'settings' instead.
+    const mode = settings.get('limitConserve', 'mode');
+    const modeSource = settings.source('limitConserve', 'mode') === 'env' ? 'env' : 'settings';
 
-    // --- Layer 1 & 2: explicit env override ---
-    if (envVal === 'on') {
+    if (mode === 'on') {
       return {
         active: true,
         reason: 'manual-on',
         weekly: null,
         fiveHour: null,
         sonnetWeekly: null,
-        source: 'env',
+        source: modeSource,
         stale: false,
         resetsAt: null,
       };
     }
-    if (envVal === 'off') {
+    if (mode === 'off') {
       return {
         active: false,
         reason: '',
         weekly: null,
         fiveHour: null,
         sonnetWeekly: null,
-        source: 'env',
+        source: modeSource,
         stale: false,
         resetsAt: null,
       };

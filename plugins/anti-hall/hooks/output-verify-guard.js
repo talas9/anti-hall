@@ -99,6 +99,11 @@ const PASS_PATTERNS = [
 // skip a leading env-assignment, use path.basename-style normalization
 // (shell-scan's basename) so `/usr/local/bin/pytest` still matches `pytest`.
 const { basename } = require('./lib/shell-scan.js');
+// v0.108.0 unified settings (env > ~/.anti-hall/settings.json > default);
+// fail-open to `undefined` (never the value that would disable a guard).
+function settingsGet(section, key) {
+  try { return require('./lib/settings.js').get(section, key); } catch (_) { return undefined; }
+}
 
 const RUNNER_VERBS = new Set(['pytest', 'jest', 'vitest', 'cargo']);
 // verb -> required first positional arg (subcommand-shaped runners).
@@ -195,7 +200,7 @@ function main() {
     raw = '';
   }
 
-  if (String(process.env.ANTIHALL_OUTPUT_VERIFY_GUARD || '').toLowerCase() === 'off') {
+  if (settingsGet('guards', 'outputVerifyGuard') === false) {
     process.exit(0);
   }
 

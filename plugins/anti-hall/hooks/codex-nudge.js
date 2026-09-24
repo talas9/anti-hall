@@ -38,6 +38,11 @@
 
 const fs = require('fs');
 const path = require('path');
+// v0.108.0 unified settings (env > ~/.anti-hall/settings.json > default);
+// fail-open to `undefined` (never the value that would disable a guard).
+function settingsGet(section, key) {
+  try { return require('./lib/settings.js').get(section, key); } catch (_) { return undefined; }
+}
 const os = require('os');
 const crypto = require('crypto');
 
@@ -134,7 +139,7 @@ function main() {
   try { raw = fs.readFileSync(0, 'utf8'); } catch (_) { process.exit(0); }
 
   // Env off-switch.
-  if (String(process.env.ANTIHALL_CODEX_NUDGE || '').toLowerCase() === 'off') process.exit(0);
+  if (settingsGet('codexNudge', 'enabled') === false) process.exit(0);
 
   // Escape hatch: shared user-consented skip (~/.anti-hall/skip.json). No inner
   // try/catch — the outer main() try/catch fails OPEN (exit 0) on any skip-guard
@@ -152,7 +157,7 @@ function main() {
   if (!scan) process.exit(0);
 
   // Not substantial, or Codex already consulted -> nothing to nudge.
-  let min = parseInt(process.env.ANTIHALL_CODEX_NUDGE_MIN, 10);
+  let min = settingsGet('codexNudge', 'min');
   if (!Number.isFinite(min) || min < 1) min = DEFAULT_MIN;
   if (scan.codeEdits < min) process.exit(0);
   if (scan.codexReview) process.exit(0);

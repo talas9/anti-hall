@@ -1240,11 +1240,16 @@ See `statusline/STATUSLINE.md` for details and how to revert.
 ## Settings (`/anti-hall:settings`)
 
 Every user-facing anti-hall setting lives in ONE place: `~/.anti-hall/settings.json`,
-organized into sections (`autoHandover`, `guards`, `jev`, `limitConserve`, `devswarm`,
+organized into sections (`autoHandover`, `guards`, `jev`, `limitConserve`,
 `statusline`, `codexNudge`, `versionAlerts`, `updates`, `defects`). The declarative
 registry of every setting (key, type, allowed values, default, env-var override, legacy
 source, description) is `hooks/lib/settings-schema.js`; the read/write API is
-`hooks/lib/settings.js`.
+`hooks/lib/settings.js`. (There is deliberately no `devswarm` section yet — its
+~30 `ANTIHALL_DEVSWARM_*` tuning knobs remain real, working env vars, but their
+consumer functions take an explicit `env` parameter rather than reading
+`process.env` directly, which makes wiring `settings.get()` into them safely
+require threading a `home` parameter through each one first; shipping them as
+settings-page-controllable without that would be a fake control.)
 
 - **Ask for it** — say "show my anti-hall settings", "turn off the merge gate", or
   "set auto-handover to 80%" and the `settings` skill walks you through it (or applies a

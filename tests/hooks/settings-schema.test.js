@@ -37,9 +37,23 @@ test('every setting has a valid type, a unique key within its section, and a def
         assert.ok(st.values.includes(st.default), id + " default must be one of its own enum's values");
       }
       if (st.type === 'number') {
-        assert.strictEqual(typeof st.default, 'number', id + ' number default must be a number');
-        if (Number.isFinite(st.min)) assert.ok(st.default >= st.min, id + ' default below its own min');
-        if (Number.isFinite(st.max)) assert.ok(st.default <= st.max, id + ' default above its own max');
+        if (st.computed) {
+          // No single real-world default exists (it's derived at call time from
+          // other, themselves-overridable settings) — default MUST be null, not
+          // a made-up literal, and the description must say so explicitly.
+          assert.strictEqual(st.default, null, id + ' computed numeric setting must declare default: null, not a guessed literal');
+          assert.match(st.description, /^computed:/, id + ' computed setting description must start with "computed:"');
+        } else if (st.optional) {
+          // Genuinely has no default (only meaningful when another setting
+          // enables it) — default MUST be null, and the description must say so.
+          assert.strictEqual(st.default, null, id + ' optional numeric setting must declare default: null, not a guessed literal');
+          assert.match(st.description, /^optional:/, id + ' optional setting description must start with "optional:"');
+        } else {
+          assert.strictEqual(typeof st.default, 'number', id + ' number default must be a number');
+          if (Number.isFinite(st.min)) assert.ok(st.default >= st.min, id + ' default below its own min');
+          if (Number.isFinite(st.max)) assert.ok(st.default <= st.max, id + ' default above its own max');
+          if (Number.isFinite(st.exclusiveMin)) assert.ok(st.default > st.exclusiveMin, id + ' default not above its own exclusiveMin');
+        }
       }
       if (st.type === 'boolean') {
         assert.strictEqual(typeof st.default, 'boolean', id + ' boolean default must be a boolean');

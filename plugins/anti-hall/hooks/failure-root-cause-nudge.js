@@ -28,6 +28,11 @@
 'use strict';
 
 const fs = require('fs');
+// v0.108.0 unified settings (env > ~/.anti-hall/settings.json > default);
+// fail-open to `undefined` (never the value that would disable a guard).
+function settingsGet(section, key) {
+  try { return require('./lib/settings.js').get(section, key); } catch (_) { return undefined; }
+}
 
 const MAX_CMD_LEN = 80;
 
@@ -46,7 +51,7 @@ function main() {
     raw = '';
   }
 
-  if (String(process.env.ANTIHALL_FAILURE_ROOT_CAUSE_NUDGE || '').toLowerCase() === 'off') {
+  if (settingsGet('guards', 'failureRootCauseNudge') === false) {
     process.exit(0);
   }
 

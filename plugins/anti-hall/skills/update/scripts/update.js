@@ -2006,25 +2006,6 @@ function replyStateMigratePostUpdate(opts) {
  * prerequisite: the hook itself already defaults a missing
  * `intents`/`intentAcks` to `{}`/`0` on read.
  */
-// v0.108.0: forward-migrate legacy per-feature config (jev.json, ...) into
-// the unified ~/.anti-hall/settings.json. Backed by companion/lib/migrations.js
-// migrateSettingsFromLegacy — a single-home JSON merge, idempotent, fail-open,
-// NO-DELETE of the legacy file. Runs on EVERY update (not DevSwarm-gated).
-function settingsMigratePostUpdate(opts) {
-  const o = opts || {};
-  const home = o.home || os.homedir();
-  try {
-    const lib = migrationsLib();
-    if (typeof lib.runSettingsMigration !== 'function') {
-      return { attempted: false, detail: 'settings migrate skipped: this build has no runSettingsMigration' };
-    }
-    const r = lib.runSettingsMigration(home, { version: o.version });
-    return { attempted: true, status: r.status, detail: r.msg };
-  } catch (e) {
-    return { attempted: false, error: (e && e.message) || String(e), detail: 'settings migrate raised: ' + ((e && e.message) || String(e)) };
-  }
-}
-
 function gateIntentsMigratePostUpdate(opts) {
   const o = opts || {};
   const env = o.env || process.env;
@@ -2057,6 +2038,30 @@ function gateIntentsMigratePostUpdate(opts) {
     };
   } catch (e) {
     return { attempted: false, detail: 'gate-intents migrate raised: ' + (e && e.message ? e.message : String(e)) };
+  }
+}
+
+/**
+ * settingsMigratePostUpdate({ home, version }) → { attempted, status, detail }
+ *
+ * v0.108.0: forward-migrate legacy per-feature config (jev.json, ...) into the
+ * unified ~/.anti-hall/settings.json. Backed by companion/lib/migrations.js's
+ * migrateSettingsFromLegacy — a single-home JSON merge, idempotent, fail-open,
+ * NO-DELETE of the legacy file. Runs on EVERY update (not DevSwarm-gated —
+ * unlike the migration above, this has nothing to do with the mesh).
+ */
+function settingsMigratePostUpdate(opts) {
+  const o = opts || {};
+  const home = o.home || os.homedir();
+  try {
+    const lib = migrationsLib();
+    if (typeof lib.runSettingsMigration !== 'function') {
+      return { attempted: false, detail: 'settings migrate skipped: this build has no runSettingsMigration' };
+    }
+    const r = lib.runSettingsMigration(home, { version: o.version });
+    return { attempted: true, status: r.status, detail: r.msg };
+  } catch (e) {
+    return { attempted: false, error: (e && e.message) || String(e), detail: 'settings migrate raised: ' + ((e && e.message) || String(e)) };
   }
 }
 
