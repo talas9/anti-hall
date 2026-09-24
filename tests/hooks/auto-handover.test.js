@@ -11,7 +11,12 @@ const { testHook, HOOKS_DIR } = require('../helpers/spawn-hook.js');
 const { makeHome } = require('../helpers/fixtures.js');
 
 const HOOK = 'auto-handover.js';
-const NO_DEDUPE = { ANTIHALL_EMIT_DEDUPE: '0' };
+// Most of these tests exercise fire/latch/milestone/threshold behavior, not
+// the window-known-vs-unknown gating itself (see the dedicated tests near the
+// bottom of this file) — an explicit ANTIHALL_CONTEXT_WINDOW_TOKENS keeps the
+// window KNOWN so the mandatory directive fires as these tests expect,
+// instead of the soft advisory a genuinely unknown window now produces.
+const NO_DEDUPE = { ANTIHALL_EMIT_DEDUPE: '0', ANTIHALL_CONTEXT_WINDOW_TOKENS: '200000' };
 
 function ctx(r) {
   return (r.json && r.json.hookSpecificOutput && r.json.hookSpecificOutput.additionalContext) || '';
@@ -197,6 +202,72 @@ test('nag:false in settings silences the milestone nag but the initial fire stil
     const tp2 = writeUsage(h, 95);
     const r2 = testHook(HOOK, payload({ transcript_path: tp2 }), { home: h.home, env: NO_DEDUPE, expectJson: true });
     assert.strictEqual(ctx(r2), '', `expected no nag with nag:false; got: ${ctx(r2)}`);
+  } finally {
+    h.cleanup();
+  }
+});
+
+// --- window-known gating (P1 hardening: never fire the mandatory directive
+// from an estimate whose window is genuinely unknown) --------------------
+
+const DEDUPE_ONLY = { ANTIHALL_EMIT_DEDUPE: '0' }; // deliberately WITHOUT ANTIHALL_CONTEXT_WINDOW_TOKENS
+
+test('unknown window (no statusline, no env, usage never exceeded 200k) -> soft advisory, NOT the mandatory directive', () => {
+  const h = makeHome();
+  try {
+    const tp = writeUsage(h, 90); // 90% of the assumed 200k -> 180000 tokens, well under 200000
+    const r = testHook(HOOK, payload({ transcript_path: tp }), { home: h.home, env: DEDUPE_ONLY, expectJson: true });
+    assert.strictEqual(r.status, 0);
+    assert.ok(!/AUTO-HANDOVER REQUIRED/.test(ctx(r)), `must not fire the mandatory directive; got: ${ctx(r)}`);
+    assert.ok(/soft heads-up/.test(ctx(r)), `expected the soft advisory; got: ${ctx(r)}`);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('unknown window: the soft advisory fires only once per arm, not every turn', () => {
+  const h = makeHome();
+  try {
+    const tp1 = writeUsage(h, 90);
+    const r1 = testHook(HOOK, payload({ transcript_path: tp1 }), { home: h.home, env: DEDUPE_ONLY, expectJson: true });
+    assert.ok(/soft heads-up/.test(ctx(r1)));
+    const tp2 = writeUsage(h, 92);
+    const r2 = testHook(HOOK, payload({ transcript_path: tp2 }), { home: h.home, env: DEDUPE_ONLY, expectJson: true });
+    assert.strictEqual(ctx(r2), '', `expected silence on the second unknown-window turn; got: ${ctx(r2)}`);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('observed usage exceeding 200k with no known window -> inferred 1M latch, mandatory directive DOES fire', () => {
+  const h = makeHome();
+  try {
+    // 900000 tokens: > the 200000 standard window (proves the window isn't
+    // 200k) AND >= 85% of the inferred 1,000,000 window, so it also crosses
+    // the fire threshold under that inferred window.
+    const p = h.writeTranscript([]);
+    fs.writeFileSync(p, assistantUsageLine(900000) + '\n', 'utf8');
+
+    const r = testHook(HOOK, payload({ transcript_path: p }), { home: h.home, env: DEDUPE_ONLY, expectJson: true });
+    assert.ok(/AUTO-HANDOVER REQUIRED/.test(ctx(r)), `expected the mandatory directive; got: ${ctx(r)}`);
+    assert.ok(/inferred 1M window/.test(ctx(r)), `expected the inferred-1m label; got: ${ctx(r)}`);
+
+    const store = require('../../plugins/anti-hall/hooks/lib/context-pct-store.js');
+    const tag = store.tagFromSessionId('s1');
+    assert.strictEqual(store.readInferred1m(h.home, tag), true, 'expected the inferred-1m latch to persist');
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('a KNOWN window (ANTIHALL_CONTEXT_WINDOW_TOKENS) fires the mandatory directive normally, no soft-advisory wording', () => {
+  const h = makeHome();
+  try {
+    const tp = writeUsage(h, 90);
+    const r = testHook(HOOK, payload({ transcript_path: tp }),
+      { home: h.home, env: Object.assign({ ANTIHALL_CONTEXT_WINDOW_TOKENS: '200000' }, DEDUPE_ONLY), expectJson: true });
+    assert.ok(/AUTO-HANDOVER REQUIRED/.test(ctx(r)));
+    assert.ok(!/soft heads-up/.test(ctx(r)));
   } finally {
     h.cleanup();
   }

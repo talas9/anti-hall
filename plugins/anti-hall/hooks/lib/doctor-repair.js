@@ -1805,6 +1805,8 @@ function runRepairs(opts) {
       ['promote-unclaimed', () => promoteUnclaimedSessions({ home, mode: sweepMode, cwd, env })],
       ['sweep-reaped-logs', () => sweepReapedLogs({ home, mode: sweepMode, env, io: o.io })],
       ['sweep-send-receipts', () => sweepSendReceipts({ home, mode: sweepMode, env, io: o.io })],
+      ['sweep-auto-handover-state', () => sweepAutoHandoverState({ home, mode: sweepMode, env, io: o.io })],
+      ['sweep-context-pct-state', () => sweepContextPctState({ home, mode: sweepMode, env, io: o.io })],
       ['sweep-sibling-watermarks', () => sweepOrphanedSiblingWatermarks({ home, mode: sweepMode, env, io: o.io })],
       ['reconcile-nd-cursors', () => reconcileStuckNdCursors({ home, mode: sweepMode, io: o.io })],
       ['gc-stale-summaries', () => {
@@ -2692,6 +2694,47 @@ function sweepSendReceipts(opts) {
   });
 }
 
+const AUTO_HANDOVER_STATE_RETENTION_DAYS_DEFAULT = 30;
+const CONTEXT_PCT_STATE_RETENTION_DAYS_DEFAULT = 30;
+
+// sweepAutoHandoverState({home, mode, env, io}) — retention sweep for
+// <home>/.anti-hall/auto-handover/<tag>.json, the per-session fire/nag latch
+// (hooks/lib/auto-handover-state.js). Never read again after the session ends
+// (a session's own tag is unique per session_id/transcript-path hash), so
+// nothing accumulated here has any long-term value — window:
+// ANTIHALL_AUTO_HANDOVER_STATE_RETENTION_DAYS (default 30 days).
+function sweepAutoHandoverState(opts) {
+  const o = opts || {};
+  const home = o.home || os.homedir();
+  return sweepAgedFiles({
+    dir: path.join(home, '.anti-hall', 'auto-handover'),
+    suffix: '.json',
+    days: retentionDays(o.env, 'ANTIHALL_AUTO_HANDOVER_STATE_RETENTION_DAYS', AUTO_HANDOVER_STATE_RETENTION_DAYS_DEFAULT),
+    mode: o.mode, io: o.io,
+  });
+}
+
+// sweepContextPctState({home, mode, env, io}) — retention sweep for
+// <home>/.anti-hall/context-pct/<tag>.json (+ <tag>.inferred-1m.json), the
+// statusline-bridge reading and inferred-1m latch (hooks/lib/
+// context-pct-store.js). Same "never read again after the session ends"
+// reasoning as sweepAutoHandoverState — window:
+// ANTIHALL_CONTEXT_PCT_STATE_RETENTION_DAYS (default 30 days). NOTE: this
+// sweep matches BOTH `<tag>.json` and `<tag>.inferred-1m.json` (no `suffix`
+// filter — both are plain `.json`-named but with different multi-part
+// extensions, and `sweepAgedFiles`'s suffix check is a plain endsWith so
+// `.json` alone already matches both).
+function sweepContextPctState(opts) {
+  const o = opts || {};
+  const home = o.home || os.homedir();
+  return sweepAgedFiles({
+    dir: path.join(home, '.anti-hall', 'context-pct'),
+    suffix: '.json',
+    days: retentionDays(o.env, 'ANTIHALL_CONTEXT_PCT_STATE_RETENTION_DAYS', CONTEXT_PCT_STATE_RETENTION_DAYS_DEFAULT),
+    mode: o.mode, io: o.io,
+  });
+}
+
 // sweepOrphanedSiblingWatermarks({home, mode, io}) — R14 F3 (P3) hygiene for
 // the LIVE-SIBLING WATERMARK files (`cursors/<callerId>.seen-<siblingId>.json`,
 // scripts/devswarm.js).
@@ -2953,6 +2996,10 @@ module.exports = {
   promoteUnclaimedSessions,
   // R12 hygiene — bounded retention for the two append-only diagnostic dirs:
   sweepAgedFiles, sweepReapedLogs, sweepSendReceipts,
+  // v0.108.0 — bounded retention for the auto-handover feature's two
+  // per-session state dirs (never re-read after the session ends):
+  sweepAutoHandoverState, sweepContextPctState,
+  AUTO_HANDOVER_STATE_RETENTION_DAYS_DEFAULT, CONTEXT_PCT_STATE_RETENTION_DAYS_DEFAULT,
   // R14 F3 — existence-based (never age-based) hygiene for sibling watermarks:
   sweepOrphanedSiblingWatermarks,
   // D1 forward migration — raise a stuck per-instance ND cursor to min(descriptor, inbox lines), never lowers, never skips mail:

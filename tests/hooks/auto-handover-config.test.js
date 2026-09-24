@@ -78,7 +78,11 @@ test('resolveEffective(): settings.enabled=false disables (persists across "sess
 test('resolveEffective(): out-of-range file pct (0, negative, >99, non-numeric) falls back to default, never disables', () => {
   const h = makeHome();
   try {
-    for (const bad of [0, -5, 100, 'nope', 3.5]) {
+    // Note: the canonical settings-schema.js `pct` entry only bounds by
+    // range (min:1, max:99), not integer-ness, so a non-integer WITHIN range
+    // (e.g. 3.5) is a legitimately valid value there now, not a "bad" one —
+    // excluded from this list accordingly.
+    for (const bad of [0, -5, 100, 'nope']) {
       settings.set('autoHandover', 'pct', bad, { home: h.home });
       const r = resolveEffective({ home: h.home, env: {} });
       assert.strictEqual(r.enabled, true, `bad=${bad}`);
@@ -103,10 +107,15 @@ test('resolveEffective(): invalid env value (not 0, not 1-99) falls through to f
 test('writeConfig(): read-modify-write never clobbers sibling settings sections', () => {
   const h = makeHome();
   try {
-    settings.set('otherFeature', 'flag', true, { home: h.home });
+    // A real, schema-declared sibling setting (settings.set rejects unknown
+    // section/key pairs outright, so this must be a setting the canonical
+    // settings-schema.js actually declares — see plugins/anti-hall/hooks/lib/
+    // settings-schema.js's "guards" section).
+    const r = settings.set('guards', 'mergeGate', true, { home: h.home });
+    assert.strictEqual(r.ok, true, r.error);
     writeConfig(h.home, (cfg) => { cfg.pct = 55; return cfg; });
     const all = settings.load({ home: h.home });
-    assert.deepStrictEqual(all.otherFeature, { flag: true });
+    assert.strictEqual(all.guards.mergeGate, true);
     assert.strictEqual(all.autoHandover.pct, 55);
   } finally {
     h.cleanup();

@@ -87,6 +87,19 @@ function read(home, tag, maxAgeMs) {
   };
 }
 
+// readSticky(home, tag) -> { maxTokens, ts } | null. Like read(), but IGNORES
+// the freshness cutoff — only maxTokens needs to be present and numeric. The
+// window size a statusline last reported does not change mid-session just
+// because the statusline stopped rendering (an idle gap); hooks/lib/
+// context-pct.js's transcript-estimate fallback uses this as a REAL, sticky
+// lower-risk substitute for its own 200k-default guess.
+function readSticky(home, tag) {
+  if (!tag) return null;
+  const raw = readRaw(home, tag);
+  if (!raw || typeof raw.maxTokens !== 'number' || !Number.isFinite(raw.maxTokens) || raw.maxTokens <= 0) return null;
+  return { maxTokens: raw.maxTokens, ts: typeof raw.ts === 'number' ? raw.ts : null };
+}
+
 // write(home, tag, { pct, usedTokens, maxTokens }, now) — throttled, atomic,
 // best-effort. Returns true if it actually wrote, false if throttled/failed.
 function write(home, tag, data, now) {
@@ -116,4 +129,49 @@ function write(home, tag, data, now) {
   }
 }
 
-module.exports = { statePath, read, write, tagFromSessionId, WRITE_INTERVAL_MS, WRITE_MIN_DELTA };
+// --- Inferred-1M-window latch (transcript-estimate fallback ONLY) ----------
+// A separate file/path from the statusline bridge above (never touched by
+// statusline/phase-bar.js's write()) — owned by hooks/lib/context-pct.js's
+// estimate path: when the observed main-thread token usage for a session
+// ever exceeds the standard 200k window, the window CANNOT be 200k, so the
+// rest of that session's estimate treats it as 1,000,000 instead. Latched so
+// a later turn whose usage happens to read back under 200k (a fresh
+// transcript segment, a momentary dip) doesn't flip back to the wrong
+// window. Cleared only by a fresh session (a new tag) — there is no
+// re-arm/expiry, matching "for the session" in the spec.
+
+function inferredPath(home, tag) {
+  return path.join(home, '.anti-hall', 'context-pct', tag + '.inferred-1m.json');
+}
+
+// readInferred1m(home, tag) -> true | false. Fail-open: false on any error
+// (never blocks the estimate; worst case it re-detects on the next call that
+// actually exceeds 200k again).
+function readInferred1m(home, tag) {
+  if (!tag) return false;
+  try {
+    const obj = JSON.parse(fs.readFileSync(inferredPath(home, tag), 'utf8'));
+    return !!(obj && obj.inferred === true);
+  } catch (_) {
+    return false;
+  }
+}
+
+// writeInferred1m(home, tag) — best-effort, idempotent, atomic.
+function writeInferred1m(home, tag) {
+  if (!tag) return;
+  try {
+    const p = inferredPath(home, tag);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    const tmp = p + '.' + process.pid + '.' + crypto.randomBytes(4).toString('hex') + '.tmp';
+    fs.writeFileSync(tmp, JSON.stringify({ inferred: true, ts: Date.now() }));
+    fs.renameSync(tmp, p);
+  } catch (_) {
+    /* best-effort */
+  }
+}
+
+module.exports = {
+  statePath, read, readSticky, write, tagFromSessionId, WRITE_INTERVAL_MS, WRITE_MIN_DELTA,
+  inferredPath, readInferred1m, writeInferred1m,
+};

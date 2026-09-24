@@ -5,9 +5,12 @@
 // NATURAL-PAUSE reminder: once the fire directive has already gone out this
 // session and context is still over threshold, this fires (at most once per
 // `nagQuietMin` minutes, default 15) when the turn is ending at a genuinely
-// quiet point — no pending/in-progress TodoWrite tasks and no subagent
-// spawned in the last 2 minutes (phase-tracker.js's own activity window). A
-// turn with open work or a running swarm is never interrupted for this.
+// quiet point — no pending/in-progress task work (TodoWrite AND anti-hall's
+// own TaskCreate/TaskUpdate lifecycle — see hasOpenTasks()) and no subagent
+// spawn recorded in the last 2 minutes (phase-tracker.js's own activity
+// window; this is a RECENCY heuristic, not a live liveness check — a swarm
+// that spawned longer ago but is still genuinely running is not detected
+// here, so "never interrupted" only holds for spawns within that window).
 //
 // MECHANISM: Stop hooks have no non-blocking "informational" output in this
 // harness — every other advisory Stop hook (task-guard.js, tasklist-guard.js)
@@ -22,6 +25,10 @@
 // threshold (also re-arms the shared latch, mirroring auto-handover.js),
 // within the quiet window of the last nag (of EITHER kind), with open tasks,
 // or with a recent subagent spawn.
+//
+// I/O: reads the transcript tail ONCE (hooks/lib/transcript-tail.js, capped)
+// and shares it between the context-pct lookup and hasOpenTasks() — this used
+// to be two independent (up to 4MB-widened) reads on a single Stop call.
 //
 // Contract (Claude Code Stop hook):
 //   stdin  : JSON { session_id, transcript_path, cwd, stop_hook_active, ... }
@@ -42,6 +49,7 @@ const { stopHookActive } = require('./lib/stop-policy.js');
 const { getContextPct } = require('./lib/context-pct.js');
 const { resolveEffective } = require('./lib/auto-handover-config.js');
 const { sessionTag, readLatch, writeLatch } = require('./lib/auto-handover-state.js');
+const { readTail } = require('./lib/transcript-tail.js');
 
 const BLOAT_SENTENCE =
   'As context grows the model gets less efficient and more prone to hallucination, ' +
@@ -60,9 +68,11 @@ function buildPauseNag(pct) {
 // hasRecentSpawn(tag, now) -> true if agent-spawns.log has an entry for this
 // session tag within the last SPAWN_ACTIVITY_MS. Mirrors statusline/
 // phase-bar.js's recentSpawns() exactly (same log, same window, same "<ms>
-// <tag>" line shape) so "no running background agents" agrees with what the
-// statusline would show as active. Fail-open: unreadable log -> false (never
-// blocks the nag on a missing/corrupt log).
+// <tag>" line shape) so "recent activity" agrees with what the statusline
+// would show. This is a RECENCY window, not a live process check — it cannot
+// see a subagent spawned longer than SPAWN_ACTIVITY_MS ago that is still
+// genuinely running. Fail-open: unreadable log -> false (never blocks the
+// nag on a missing/corrupt log).
 function hasRecentSpawn(tag, now) {
   if (!tag) return false;
   try {
@@ -79,57 +89,80 @@ function hasRecentSpawn(tag, now) {
   }
 }
 
-// readTailLines — same small tail-read shape as hooks/lib/context-pct.js
-// (kept local/duplicated rather than shared: this file only needs the LAST
-// TodoWrite call, a different scan than context-pct's usage lookup).
-function readTailLines(transcriptPath, bytes) {
-  let fd = null;
-  try {
-    const size = fs.statSync(transcriptPath).size;
-    if (size <= 0) return null;
-    const n = Math.min(size, bytes);
-    const buf = Buffer.alloc(n);
-    fd = fs.openSync(transcriptPath, 'r');
-    const got = fs.readSync(fd, buf, 0, n, size - n);
-    let lines = buf.toString('utf8', 0, got).split('\n');
-    if (size > n) lines = lines.slice(1);
-    return lines;
-  } catch (_) {
-    return null;
-  } finally {
-    if (fd !== null) { try { fs.closeSync(fd); } catch (_) { /* best-effort */ } }
-  }
-}
+// hasOpenTasks(lines) -> true | false | null. Scans the SHARED tail (see
+// main()) FORWARD/chronologically — task state accumulates across multiple
+// calls, unlike a single "last call wins" lookup — for:
+//   - TodoWrite: replaces the whole tracked list (id/content/status)
+//   - TaskCreate / TaskUpdate: anti-hall's own Task-tool lifecycle
+//     (tasklist-guard.js:466-844 tracks the same three tool names for its
+//     own open-task gate; that file exports NOTHING to require — it is a
+//     standalone Stop-hook script, not a library — so this mirrors its field
+//     conventions (input.status, input.taskId/id/task_id) rather than
+//     importing them). KNOWN LIMITATION vs tasklist-guard.js's fuller parser:
+//     a TaskUpdate that targets a task by its harness-assigned NUMERIC id
+//     (only knowable from the TaskCreate tool_result, which this scan does
+//     NOT follow) won't match the TaskCreate call's tool_use id key here, so
+//     that update can be missed. Acceptable for an ADVISORY nag suppressor
+//     (worst case: an occasional extra/missed nag), not acceptable for a hard
+//     gate — this file only ever softly reminds, never blocks real work.
+// null when NEITHER TodoWrite nor TaskCreate/TaskUpdate ever appeared in the
+// visible tail (nothing tracked at all) -> caller still allows the nag (many
+// short sessions never track tasks; "untracked" must not mean "assume open
+// forever" or this nag would never fire for them).
+function hasOpenTasks(lines) {
+  if (!lines) return null;
+  let sawAny = false;
+  const taskMap = new Map(); // key -> status
 
-// hasOpenTasks(transcriptPath) -> true | false | null. Finds the LAST
-// main-thread TodoWrite tool_use call in the tail (widened once) and checks
-// whether any of its todos are pending/in_progress. null (no TodoWrite call
-// found at all) is treated by the caller the SAME as false: a session that
-// never tracked tasks with TodoWrite has nothing recorded as open — the safe
-// direction here is to still allow the pause nag (many short sessions never
-// call TodoWrite at all; treating "untracked" as "assume open forever" would
-// mean this nag never fires for them).
-function hasOpenTasks(transcriptPath) {
-  if (!transcriptPath || typeof transcriptPath !== 'string') return null;
-  for (const bytes of [256 * 1024, 4 * 1024 * 1024]) {
-    const lines = readTailLines(transcriptPath, bytes);
-    if (!lines) return null;
-    for (let i = lines.length - 1; i >= 0; i--) {
-      const line = lines[i];
-      if (!line || line.indexOf('TodoWrite') === -1) continue;
-      let e;
-      try { e = JSON.parse(line); } catch (_) { continue; }
-      if (!e || e.type !== 'assistant' || e.isSidechain === true) continue;
-      const content = e.message && Array.isArray(e.message.content) ? e.message.content : [];
-      for (let j = content.length - 1; j >= 0; j--) {
-        const item = content[j];
-        if (!item || item.type !== 'tool_use' || item.name !== 'TodoWrite') continue;
+  for (const line of lines) {
+    if (!line) continue;
+    if (line.indexOf('TodoWrite') === -1 && line.indexOf('TaskCreate') === -1 && line.indexOf('TaskUpdate') === -1) continue;
+    let e;
+    try { e = JSON.parse(line); } catch (_) { continue; }
+    if (!e || e.type !== 'assistant' || e.isSidechain === true) continue;
+    const content = e.message && Array.isArray(e.message.content) ? e.message.content : [];
+    for (const item of content) {
+      if (!item || item.type !== 'tool_use') continue;
+
+      if (item.name === 'TodoWrite') {
         const todos = item.input && Array.isArray(item.input.todos) ? item.input.todos : [];
-        return todos.some((t) => t && (t.status === 'pending' || t.status === 'in_progress'));
+        taskMap.clear();
+        sawAny = true;
+        let i = 0;
+        for (const t of todos) {
+          const id = (t && (t.id || t.content)) || String(i++);
+          taskMap.set('todo:' + id, (t && t.status) || 'pending');
+        }
+        continue;
+      }
+
+      if (item.name === 'TaskCreate') {
+        sawAny = true;
+        const inp = item.input || {};
+        const toolUseId = item.id || '';
+        if (toolUseId) taskMap.set('task:' + toolUseId, inp.status || 'pending');
+        continue;
+      }
+
+      if (item.name === 'TaskUpdate') {
+        sawAny = true;
+        const inp = item.input || {};
+        const id = inp.taskId != null ? String(inp.taskId)
+          : inp.id != null ? String(inp.id)
+          : inp.task_id != null ? String(inp.task_id) : null;
+        if (id != null && inp.status) {
+          const key = taskMap.has('task:' + id) ? 'task:' + id : 'task:' + id; // see KNOWN LIMITATION above
+          taskMap.set(key, inp.status);
+        }
       }
     }
   }
-  return null; // no TodoWrite call found in either tail -> unknown
+
+  if (!sawAny) return null;
+  for (const status of taskMap.values()) {
+    if (status === 'pending' || status === 'in_progress') return true;
+  }
+  return false;
 }
 
 function main() {
@@ -154,7 +187,8 @@ function main() {
     if (latch.fired !== true) { emit(); return; } // nothing fired yet this arm
 
     const transcriptPath = typeof payload.transcript_path === 'string' ? payload.transcript_path : null;
-    const result = getContextPct(transcriptPath, env, { home, sessionId: payload.session_id });
+    const lines = transcriptPath ? readTail(transcriptPath) : null; // ONE shared read
+    const result = getContextPct(transcriptPath, env, { home, sessionId: payload.session_id, lines: lines || undefined });
     if (!result || !Number.isFinite(result.pct)) { emit(); return; }
 
     const now = Date.now();
@@ -167,10 +201,10 @@ function main() {
     const lastNagAt = Number.isFinite(latch.lastNagAt) ? latch.lastNagAt : 0;
     if ((now - lastNagAt) < settings.nagQuietMin * 60 * 1000) { emit(); return; }
 
-    const open = hasOpenTasks(transcriptPath);
+    const open = hasOpenTasks(lines);
     if (open === true) { emit(); return; } // KNOWN open work -> don't interrupt it
 
-    if (hasRecentSpawn(tag, now)) { emit(); return; } // a subagent is still running
+    if (hasRecentSpawn(tag, now)) { emit(); return; } // a subagent spawned recently
 
     writeLatch(home, tag, Object.assign({}, latch, { lastNagAt: now }));
     emit(buildPauseNag(result.pct));

@@ -198,6 +198,61 @@ test('does not nag while a subagent spawned in the last 2 minutes', () => {
   }
 });
 
+test('does not nag while a TaskCreate/TaskUpdate task is pending/in_progress (not just TodoWrite)', () => {
+  const h = makeHome();
+  try {
+    const tag = sessionTag({ session_id: SESSION });
+    writeLatch(h.home, tag, firedLatch({ lastNagAt: Date.now() - 16 * 60 * 1000 }));
+    const lines = [
+      assistantUsageLine(pctToTokens(90)),
+      JSON.stringify({
+        type: 'assistant', isSidechain: false,
+        message: {
+          role: 'assistant',
+          content: [{ type: 'tool_use', id: 'toolu_1', name: 'TaskCreate', input: { subject: 'do the thing', status: 'pending' } }],
+        },
+      }),
+    ];
+    const tp = h.writeTranscript([]);
+    fs.writeFileSync(tp, lines.join('\n') + '\n', 'utf8');
+    const r = testHook(HOOK, payload({ transcript_path: tp }), { home: h.home, expectJson: true });
+    assert.strictEqual(decision(r), null);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('nags once a TaskCreate task is later marked completed via TaskUpdate', () => {
+  const h = makeHome();
+  try {
+    const tag = sessionTag({ session_id: SESSION });
+    writeLatch(h.home, tag, firedLatch({ lastNagAt: Date.now() - 16 * 60 * 1000 }));
+    const lines = [
+      assistantUsageLine(pctToTokens(90)),
+      JSON.stringify({
+        type: 'assistant', isSidechain: false,
+        message: {
+          role: 'assistant',
+          content: [{ type: 'tool_use', id: 'toolu_1', name: 'TaskCreate', input: { subject: 'do the thing', status: 'pending' } }],
+        },
+      }),
+      JSON.stringify({
+        type: 'assistant', isSidechain: false,
+        message: {
+          role: 'assistant',
+          content: [{ type: 'tool_use', id: 'toolu_2', name: 'TaskUpdate', input: { taskId: 'toolu_1', status: 'completed' } }],
+        },
+      }),
+    ];
+    const tp = h.writeTranscript([]);
+    fs.writeFileSync(tp, lines.join('\n') + '\n', 'utf8');
+    const r = testHook(HOOK, payload({ transcript_path: tp }), { home: h.home, expectJson: true });
+    assert.ok(decision(r), 'expected the nag once the only tracked task is completed');
+  } finally {
+    h.cleanup();
+  }
+});
+
 test('fail-open: malformed stdin -> exit 0, no block', () => {
   const { testHookRaw } = require('../helpers/spawn-hook.js');
   const h = makeHome();
