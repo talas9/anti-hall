@@ -267,3 +267,95 @@ test('never spawns a cache doctor.js OLDER than the running version (falls back 
     assert.match(fs.readFileSync(path.join(logsDir(h.home), logName), 'utf8'), /"action":"migrations-only"/);
   } finally { h.cleanup(); }
 });
+
+// ---- P1b (0.108.0 audit): the reload loop ---------------------------------
+// The hook checked stamps against ITS version but spawned the NEWEST cache's
+// doctor, which stamps a NEWER version — so every prompt respawned doctor, with
+// no cooldown and one leaked log per spawn.
+
+function bumpMinor(v) { const p = v.split('.').map(Number); return p[0] + '.' + (p[1] + 1) + '.0'; }
+
+// fakeDoctor(dir, counter, stampVersion): a doctor.js that counts its runs and
+// (when stampVersion is set) stamps every default migration at that version,
+// like a real newer doctor would.
+function fakeDoctor(dir, counter, stampVersion) {
+  fs.mkdirSync(path.join(dir, 'hooks'), { recursive: true });
+  const keys = migrations.defaultMigrations().map((m) => m.key);
+  fs.writeFileSync(path.join(dir, 'hooks', 'doctor.js'),
+    "const fs=require('fs'),path=require('path'),os=require('os');\n"
+    + 'fs.appendFileSync(' + JSON.stringify(counter) + ", 'run\\n');\n"
+    + (stampVersion
+      ? 'const st={};for(const k of ' + JSON.stringify(keys) + ')st[k]={completedVersion:' + JSON.stringify(stampVersion) + ',completedTs:Date.now()};\n'
+        + "fs.writeFileSync(path.join(os.homedir(),'.anti-hall','update-sweep-state.json'),JSON.stringify(st));\n"
+      : ''),
+    'utf8');
+}
+function runs(counter) { try { return fs.readFileSync(counter, 'utf8').split('\n').filter(Boolean).length; } catch (_) { return 0; } }
+function waitChild(home) {
+  let pid = null;
+  try { pid = JSON.parse(fs.readFileSync(lockFile(home), 'utf8')).pid; } catch (_) { return; }
+  waitFor(() => { try { process.kill(pid, 0); return false; } catch (_) { return true; } }, 10000);
+}
+
+test('P1b: cache dirs <running> + <newer>, 3 hook runs -> exactly 1 doctor spawn', () => {
+  const h = makeHome();
+  try {
+    const cacheRoot = path.join(h.home, '.claude', 'plugins', 'cache', 'anti-hall', 'anti-hall');
+    const counter = path.join(h.home, 'doctor-runs.txt');
+    const newer = bumpMinor(RUNNING_VERSION);
+    fakeDoctor(path.join(cacheRoot, RUNNING_VERSION), counter, RUNNING_VERSION);
+    fakeDoctor(path.join(cacheRoot, newer), counter, newer);
+    for (let i = 0; i < 3; i++) {
+      const r = testHook(HOOK, userPromptPayload(), { home: h.home });
+      assert.strictEqual(r.status, 0, `stderr: ${r.stderr}`);
+      waitChild(h.home);
+    }
+    assert.strictEqual(runs(counter), 1, 'three prompts must spawn doctor exactly once');
+  } finally { h.cleanup(); }
+});
+
+test('P1b: stamps at a NEWER version than the running one count as done (no spawn, no cooldown needed)', () => {
+  const h = makeHome();
+  try {
+    const state = {};
+    for (const m of migrations.defaultMigrations()) state[m.key] = { completedVersion: bumpMinor(RUNNING_VERSION), completedTs: Date.now() };
+    fs.writeFileSync(path.join(h.home, '.anti-hall', 'update-sweep-state.json'), JSON.stringify(state), 'utf8');
+    const r = testHook(HOOK, userPromptPayload(), { home: h.home });
+    assert.strictEqual(r.status, 0, `stderr: ${r.stderr}`);
+    assert.strictEqual(fs.existsSync(lockFile(h.home)), false, 'a newer stamp is done: no lock, no spawn');
+    assert.strictEqual(fs.existsSync(logsDir(h.home)), false);
+  } finally { h.cleanup(); }
+});
+
+test('P1b: a repair that never completes spawns at most once per hour (cooldown after any run)', () => {
+  const h = makeHome();
+  try {
+    const cacheRoot = path.join(h.home, '.claude', 'plugins', 'cache', 'anti-hall', 'anti-hall');
+    const counter = path.join(h.home, 'doctor-runs.txt');
+    fakeDoctor(path.join(cacheRoot, RUNNING_VERSION), counter, null); // stamps nothing
+    for (let i = 0; i < 2; i++) { testHook(HOOK, userPromptPayload(), { home: h.home }); waitChild(h.home); }
+    assert.strictEqual(runs(counter), 1, 'second prompt within the hour must not respawn');
+    // An hour later the cooldown has elapsed.
+    const cd = path.join(h.home, '.anti-hall', 'repair-on-reload.last.json');
+    fs.writeFileSync(cd, JSON.stringify({ ts: Date.now() - 61 * 60 * 1000 }), 'utf8');
+    testHook(HOOK, userPromptPayload(), { home: h.home }); waitChild(h.home);
+    assert.strictEqual(runs(counter), 2, 'after the cooldown a still-pending repair runs again');
+  } finally { h.cleanup(); }
+});
+
+test('P1b: only the newest 5 repair-on-reload logs are kept; other logs untouched', () => {
+  const h = makeHome();
+  try {
+    const dir = logsDir(h.home);
+    fs.mkdirSync(dir, { recursive: true });
+    for (let i = 1; i <= 7; i++) fs.writeFileSync(path.join(dir, 'repair-on-reload-' + (1000 + i) + '.log'), 'old');
+    fs.writeFileSync(path.join(dir, 'other.log'), 'keep');
+    const cacheRoot = path.join(h.home, '.claude', 'plugins', 'cache', 'anti-hall', 'anti-hall');
+    fakeDoctor(path.join(cacheRoot, RUNNING_VERSION), path.join(h.home, 'c.txt'), null);
+    testHook(HOOK, userPromptPayload(), { home: h.home }); waitChild(h.home);
+    const left = fs.readdirSync(dir).filter((f) => f.startsWith('repair-on-reload-')).sort();
+    assert.strictEqual(left.length, 5, 'exactly 5 logs remain: ' + left.join(','));
+    assert.ok(!left.includes('repair-on-reload-1001.log') && !left.includes('repair-on-reload-1003.log'), 'the oldest are pruned');
+    assert.ok(fs.existsSync(path.join(dir, 'other.log')), 'unrelated logs are never touched');
+  } finally { h.cleanup(); }
+});

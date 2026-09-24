@@ -27,7 +27,8 @@
 //   - "Repair pending" is derived from the SAME per-migration marker store
 //     migrations.js/update.js/doctor already share (~/.anti-hall/update-
 //     sweep-state.json): any DEFAULT (non-optIn) migration not yet marked
-//     completedVersion === running version is pending. This is ONE small JSON
+//     completedVersion >= running version is pending (>=: the spawned doctor
+//     is the newest cached version's and stamps ITS version). This is ONE small JSON
 //     read + an in-memory array walk over ~10 entries — no detect() calls, no
 //     store scan — so the no-op path (nothing pending) stays well under the
 //     50ms budget.
@@ -50,6 +51,9 @@
 //     that migration's apply+re-scan both report complete — "stamp only after
 //     success" falls out of reusing that existing contract rather than this
 //     hook inventing a second one.
+//   - Cooldown: at most one spawn per hour after ANY run
+//     (~/.anti-hall/repair-on-reload.last.json); only the newest 5
+//     repair-on-reload-*.log files are kept; the child runs at nice 19.
 //   - The lock file is intentionally left behind after the child exits (dead
 //     pid, harmless) — the NEXT invocation's pidIsAlive check reclaims it.
 //
@@ -81,6 +85,14 @@ const DOCTOR_JS_FALLBACK = path.join(__dirname, 'doctor.js');
 function antiHallDir(home) { return path.join(home || os.homedir(), '.anti-hall'); }
 function lockPath(home) { return path.join(antiHallDir(home), 'repair-on-reload.lock'); }
 function logsDir(home) { return path.join(antiHallDir(home), 'logs'); }
+function cooldownPath(home) { return path.join(antiHallDir(home), 'repair-on-reload.last.json'); }
+
+// P1b (0.108.0 audit): at most one spawn per COOLDOWN_MS after ANY run, and
+// only the newest KEEP_LOGS logs survive. Without these a migration that never
+// completes (or a stamp this hook could not read as done) respawned doctor on
+// every prompt and leaked one log per spawn.
+const COOLDOWN_MS = 60 * 60 * 1000;
+const KEEP_LOGS = 5;
 
 function readRunningVersion() {
   const raw = fs.readFileSync(PLUGIN_JSON, 'utf8');
@@ -133,10 +145,50 @@ function resolveDoctorJs(home, runningVersion) {
 // (migrations.js's own marker store) + an in-memory walk of the default
 // migration list. NEVER calls a migration's own detect() (which can scan
 // stores) — that is exactly the per-run cost this hook must stay under.
+//
+// A stamp at the running version OR NEWER counts as done: the spawned doctor is
+// the NEWEST cached version's (resolveDoctorJs), which stamps ITS version — an
+// exact-match check here would read 0.109.0 stamps as "pending" under a 0.108.0
+// hook and respawn on every prompt (P1b reload loop).
 function repairPending(home, version) {
   const migrations = require('../companion/lib/migrations.js');
   const state = migrations.readMarkers(home);
-  return migrations.defaultMigrations().some((m) => !migrations.isApplied(state, m.key, version));
+  return migrations.defaultMigrations().some((m) => {
+    const s = state && state[m.key];
+    const v = s && s.completedVersion;
+    return !(typeof v === 'string' && /^\d+\.\d+\.\d+$/.test(v) && semverCmp(v, version) >= 0);
+  });
+}
+
+function inCooldown(home, now) {
+  try {
+    const last = JSON.parse(fs.readFileSync(cooldownPath(home), 'utf8'));
+    return Number.isFinite(last.ts) && now - last.ts >= 0 && now - last.ts < COOLDOWN_MS;
+  } catch (_) { return false; }
+}
+
+function markRun(home, now, version) {
+  try {
+    const p = cooldownPath(home);
+    const tmp = p + '.' + process.pid + '.tmp';
+    fs.writeFileSync(tmp, JSON.stringify({ ts: now, version }));
+    fs.renameSync(tmp, p);
+  } catch (_) {}
+}
+
+// pruneLogs(home): keep the newest KEEP_LOGS repair-on-reload-<ms>.log files.
+// Only this hook's own logs, matched by exact name shape.
+function pruneLogs(home) {
+  try {
+    const dir = logsDir(home);
+    const logs = fs.readdirSync(dir)
+      .map((f) => { const m = /^repair-on-reload-(\d+)\.log$/.exec(f); return m ? { f, ts: Number(m[1]) } : null; })
+      .filter(Boolean)
+      .sort((a, b) => b.ts - a.ts);
+    for (const { f } of logs.slice(KEEP_LOGS)) {
+      try { fs.unlinkSync(path.join(dir, f)); } catch (_) {}
+    }
+  } catch (_) {}
 }
 
 // acquireLock(home) -> true (acquired) | false (held by a live process).
@@ -193,6 +245,8 @@ function spawnDetachedRepair(home, runningVersion) {
       env: process.env,
     });
     child.unref();
+    // Lowest CPU priority for the detached repair (cross-platform, built-in).
+    if (Number.isInteger(child.pid)) { try { os.setPriority(child.pid, 19); } catch (_) {} }
     try { fs.closeSync(fd); } catch (_) {} // the child holds its own fd via dup; safe to close here
     // Re-point the lock at the CHILD's pid (acquireLock() wrote THIS process's
     // own pid as a placeholder to win the atomic-create race) — the hook exits
@@ -241,9 +295,14 @@ function main() {
 
   if (!repairPending(home, version)) return; // fast path: nothing to do
 
+  const now = Date.now();
+  if (inCooldown(home, now)) return; // ran within the last hour
+
   if (!acquireLock(home)) return; // another repair already in flight
 
+  markRun(home, now, version);
   spawnDetachedRepair(home, version);
+  pruneLogs(home);
 }
 
 try {
