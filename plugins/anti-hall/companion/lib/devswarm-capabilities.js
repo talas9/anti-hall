@@ -13,6 +13,7 @@
 //     flags) so callers build argv from what the binary actually documents.
 //     ONLY `--version` and `--help` are ever spawned here — both read-only.
 //   - columns: `PRAGMA table_info(<table>)` on the app DB, opened readOnly.
+//   - appfs: existence of an app-owned file/dir (next to the DB, or under home).
 //
 // DORMANCY:
 //   - hivecontrol absent (DevSwarm not installed) -> every verb capability is
@@ -63,6 +64,12 @@ function columnCap(table, col) {
 function tableCap(table) {
   return { name: 'appdb.' + table, kind: 'table', table, minVersion: null };
 }
+// appfs.<name>: a file/dir the DevSwarm app keeps on disk (never its content
+// unless the reader documents otherwise). `base` = 'db' (next to the app DB)
+// or 'home' (under the caller's home); `rel` = path segments below it.
+function appFsCap(name, base, rel) {
+  return { name: 'appfs.' + name, kind: 'appfs', base, rel, minVersion: null };
+}
 
 // minVersion null = present in every build anti-hall has observed (verified in
 // 2.5.2); the floor is unknown, so detection alone gates it.
@@ -76,17 +83,38 @@ const CAPABILITIES = Object.freeze([
   // delete (archived-only, Primary-protected, refuses uncommitted work).
   verbCap('archive', '2.5.3', 'auto-archive of done workspaces'),
   verbCap('delete', '2.5.3', 'prune of old archived workspaces'),
+  // App-DB tables/columns: every column companion/lib/devswarm-app-db.js SCHEMA
+  // reads is registered here (a test pins SCHEMA ⊆ registry).
   tableCap('builders'),
+  columnCap('builders', 'id'), columnCap('builders', 'terminalId'), columnCap('builders', 'createdAt'),
+  columnCap('builders', 'lastAccessed'), columnCap('builders', 'isPinned'),
   columnCap('builders', 'isActive'), columnCap('builders', 'isHidden'), columnCap('builders', 'label'),
   columnCap('builders', 'rank'), columnCap('builders', 'lastSelectedAt'), columnCap('builders', 'builderType'),
   columnCap('builders', 'branchName'), columnCap('builders', 'sourceBranch'), columnCap('builders', 'worktreePath'),
   columnCap('builders', 'repositoryId'), columnCap('builders', 'pullRequestId'),
   tableCap('builder_terminals'),
+  columnCap('builder_terminals', 'id'), columnCap('builder_terminals', 'builderId'),
+  columnCap('builder_terminals', 'terminalId'), columnCap('builder_terminals', 'terminalType'),
+  columnCap('builder_terminals', 'aiAgent'), columnCap('builder_terminals', 'isActive'),
+  columnCap('builder_terminals', 'createdAt'), columnCap('builder_terminals', 'lastViewedAt'),
+  columnCap('builder_terminals', 'initialPromptDeliveredAt'), columnCap('builder_terminals', 'initialPromptWithheldAt'),
   columnCap('builder_terminals', 'ai_session_config'), columnCap('builder_terminals', 'initialPrompt'),
   columnCap('builder_terminals', 'panelStatus'),
   tableCap('pull_requests'),
+  columnCap('pull_requests', 'id'), columnCap('pull_requests', 'repositoryId'), columnCap('pull_requests', 'number'),
+  columnCap('pull_requests', 'isDraft'), columnCap('pull_requests', 'url'), columnCap('pull_requests', 'checkStatus'),
+  columnCap('pull_requests', 'reviewStatus'), columnCap('pull_requests', 'lastSyncedAt'),
   columnCap('pull_requests', 'state'), columnCap('pull_requests', 'branchName'), columnCap('pull_requests', 'targetBranch'),
+  tableCap('repositories'),
+  columnCap('repositories', 'id'), columnCap('repositories', 'path'), columnCap('repositories', 'name'),
+  columnCap('repositories', 'defaultBaseBranch'),
   tableCap('workspace_messages'),
+  columnCap('workspace_messages', 'repositoryId'), columnCap('workspace_messages', 'toBranch'),
+  columnCap('workspace_messages', 'createdAt'),
+  // App files outside the DB (stat / names only — see devswarm-app-db.js).
+  appFsCap('terminal-scrollback', 'db', ['terminal-scrollback']),
+  appFsCap('sentry-session', 'db', ['sentry', 'session.json']),
+  appFsCap('scheduled-for-deletion', 'home', ['.devswarm', 'scheduled-for-deletion']),
 ]);
 const BY_NAME = new Map(CAPABILITIES.map((c) => [c.name, c]));
 
@@ -318,7 +346,18 @@ function can(name, opts) {
       }
       return Object.assign(base, { ok: true, reason: null, detail: v });
     }
-    const file = appDbFile(o);
+    if (cap.kind === 'appfs') {
+      let base = null;
+      if (cap.base === 'home') base = o.home || null;
+      else { const f = o.appDbFile || appDbFile(o); base = f ? path.dirname(f) : null; }
+      if (!base) return { ok: false, reason: 'app-path-unavailable', version: null, minVersion: null, silent: true };
+      const p = path.join(base, ...cap.rel);
+      if (!fs.existsSync(p)) return { ok: false, reason: 'app path ' + cap.rel.join('/') + ' missing', version: null, minVersion: null, silent: true };
+      return { ok: true, reason: null, version: null, minVersion: null };
+    }
+    // opts.appDbFile: the DB the caller already has open (so the gate checks
+    // THAT file, not one re-derived from env/home).
+    const file = o.appDbFile || appDbFile(o);
     if (!file) return { ok: false, reason: 'app-db-unavailable', version: null, minVersion: null, silent: true };
     const cols = tableColumns(file, cap.table);
     if (!cols) return { ok: false, reason: 'app-db table ' + cap.table + ' missing', version: null, minVersion: null };

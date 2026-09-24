@@ -14,6 +14,7 @@ const path = require('node:path');
 
 const REPO = path.join(__dirname, '..', '..');
 const SELF = path.resolve(__filename);
+const HYGIENE_DIR = path.join(REPO, 'tests', 'hygiene') + path.sep;
 const DENY = [
   'github_auth', 'jira_auth', 'user_session',
   'Cookies', 'Session Storage', 'WebStorage', 'Trust Tokens', 'SingletonSocket',
@@ -35,7 +36,9 @@ function walk(dir, out) {
 
 test('no code file names a DevSwarm credential table or browser-profile store', () => {
   const files = [...walk(path.join(REPO, 'plugins'), []), ...walk(path.join(REPO, 'tests'), [])]
-    .filter((p) => path.resolve(p) !== SELF);
+    // tests/hygiene/* are the other deny-list guards: they must name the
+    // forbidden surface in their own patterns.
+    .filter((p) => path.resolve(p) !== SELF && !path.resolve(p).startsWith(HYGIENE_DIR));
   assert.ok(files.length > 50, 'scanned the codebase (' + files.length + ' files)');
   const hits = [];
   for (const f of files) {

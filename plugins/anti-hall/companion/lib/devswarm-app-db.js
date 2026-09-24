@@ -59,22 +59,19 @@ const fs = require('fs');
 const path = require('path');
 
 // Capability gate (companion/lib/devswarm-capabilities.js: DevSwarm version +
-// runtime detection). Every table and column read below asks
-// can('appdb.<table>') / can('appdb.<table>.<column>'); a gated read degrades
-// exactly like a missing column (fail-open, listed in `gated`). A name the
-// registry does not carry ('unknown-capability') or a gate that cannot locate
-// the DB ('app-db-unavailable') is not a verdict — this module's own PRAGMA
-// detection still gates it. Absent module -> ungated.
+// runtime detection). Every table, column and app-file read below asks
+// can('appdb.<table>') / can('appdb.<table>.<column>') / can('appfs.<name>');
+// every name is in the gate's registry (tests pin SCHEMA ⊆ registry). A gated
+// read degrades exactly like a missing column (fail-open, listed in `gated`).
+// `file` = the DB this module already opened, so the gate checks the same file.
+// Absent module -> ungated.
 let caps = null;
 try { caps = require('./devswarm-capabilities.js'); } catch (_) { caps = null; }
-function capOk(name, env, home) {
+function capOk(name, env, home, file) {
   if (!caps || typeof caps.can !== 'function') return true;
   try {
-    const r = caps.can(name, { env, home });
-    if (r && r.ok) return true;
-    // Not verdicts: a name outside the registry, or the gate failing to locate
-    // the DB this module already has open.
-    return !!(r && (r.reason === 'unknown-capability' || r.reason === 'app-db-unavailable'));
+    const r = caps.can(name, { env, home, appDbFile: file || undefined });
+    return !!(r && r.ok);
   } catch (_) { return false; }
 }
 
@@ -133,18 +130,18 @@ function tableColumns(db, table) {
   } catch (_) { return null; }
 }
 
-// selectPresent(db, table, missing, gated, env) -> rows[] with every SCHEMA column
+// selectPresent(db, table, missing, gated, env, home, file) -> rows[] with every SCHEMA column
 // as a key (null when absent or capability-gated). `initialPrompt` is read as
 // presence + length only.
-function selectPresent(db, table, missing, gated, env, home) {
+function selectPresent(db, table, missing, gated, env, home, file) {
   const cols = tableColumns(db, table);
   if (!cols) { missing.push(table + ' (table)'); return []; }
-  if (!capOk('appdb.' + table, env, home)) { gated.push('appdb.' + table); return []; }
+  if (!capOk('appdb.' + table, env, home, file)) { gated.push('appdb.' + table); return []; }
   const exprs = [];
   const nulls = [];
   for (const c of SCHEMA[table]) {
     if (!cols.has(c)) { missing.push(table + '.' + c); nulls.push(c); continue; }
-    if (!capOk('appdb.' + table + '.' + c, env, home)) { gated.push('appdb.' + table + '.' + c); nulls.push(c); continue; }
+    if (!capOk('appdb.' + table + '.' + c, env, home, file)) { gated.push('appdb.' + table + '.' + c); nulls.push(c); continue; }
     if (c === 'initialPrompt') exprs.push('length(initialPrompt) AS initialPromptLen');
     else exprs.push('"' + c + '"');
   }
@@ -195,13 +192,13 @@ function readSnapshot(file, opts) {
     db = new sqlite.DatabaseSync(file, { readOnly: true });
     const bcols = tableColumns(db, 'builders');
     if (!bcols) return null;
-    for (const c of CORE.builders) if (!bcols.has(c) || !capOk('appdb.builders.' + c, env, home)) return null;
+    for (const c of CORE.builders) if (!bcols.has(c) || !capOk('appdb.builders.' + c, env, home, file)) return null;
     const missing = [];
     const gated = [];
-    const builders = selectPresent(db, 'builders', missing, gated, env, home);
-    const terminals = selectPresent(db, 'builder_terminals', missing, gated, env, home);
-    const prs = selectPresent(db, 'pull_requests', missing, gated, env, home);
-    const repos = selectPresent(db, 'repositories', missing, gated, env, home);
+    const builders = selectPresent(db, 'builders', missing, gated, env, home, file);
+    const terminals = selectPresent(db, 'builder_terminals', missing, gated, env, home, file);
+    const prs = selectPresent(db, 'pull_requests', missing, gated, env, home, file);
+    const repos = selectPresent(db, 'repositories', missing, gated, env, home, file);
     // workspace_messages is only schema-checked here (counts are a separate read).
     const wm = tableColumns(db, 'workspace_messages');
     if (!wm) missing.push('workspace_messages (table)');
@@ -245,7 +242,7 @@ function readSnapshot(file, opts) {
       if (!termsByBuilder.has(k)) termsByBuilder.set(k, []);
       termsByBuilder.get(k).push(v);
     }
-    const hasHidden = bcols.has('isHidden') && capOk('appdb.builders.isHidden', env, home);
+    const hasHidden = bcols.has('isHidden') && capOk('appdb.builders.isHidden', env, home, file);
     const workspaces = [];
     for (const b of builders) {
       if (!b || b.id == null) continue;
@@ -277,11 +274,11 @@ function readSnapshot(file, opts) {
         createdAt: tsMs(b.createdAt), lastAccessed: tsMs(b.lastAccessed), lastSelectedAt: tsMs(b.lastSelectedAt),
         pullRequest: pr, terminals: terms,
         sessionId: aiActive ? aiActive.sessionId : null,
-        scrollback: active && aiActive && capOk('appfs.terminal-scrollback', env, home) ? scrollbackStat(file, aiActive.terminalId) : null,
+        scrollback: active && aiActive && capOk('appfs.terminal-scrollback', env, home, file) ? scrollbackStat(file, aiActive.terminalId) : null,
       });
     }
     return {
-      ok: true, file, appVersion: capOk('appfs.sentry-session', env, home) ? appVersion(file) : null, missing, gated, deliveryTrackedSince,
+      ok: true, file, appVersion: capOk('appfs.sentry-session', env, home, file) ? appVersion(file) : null, missing, gated, deliveryTrackedSince,
       repositories, workspaces,
     };
   } catch (_) {
@@ -510,9 +507,9 @@ function messageTimestamps(opts) {
     if (!fs.statSync(file).isFile()) return null;
     db = new sqlite.DatabaseSync(file, { readOnly: true });
     const env = o.env || process.env;
-    if (!capOk('appdb.workspace_messages', env, o.home)) return null;
+    if (!capOk('appdb.workspace_messages', env, o.home, file)) return null;
     const cols = tableColumns(db, 'workspace_messages');
-    if (!cols || !SCHEMA.workspace_messages.every((c) => cols.has(c) && capOk('appdb.workspace_messages.' + c, env, o.home))) return null;
+    if (!cols || !SCHEMA.workspace_messages.every((c) => cols.has(c) && capOk('appdb.workspace_messages.' + c, env, o.home, file))) return null;
     const since = new Date(Number.isFinite(o.sinceMs) ? o.sinceMs : 0).toISOString();
     const until = new Date(Number.isFinite(o.untilMs) ? o.untilMs : Date.now()).toISOString();
     const rows = db.prepare('SELECT repositoryId, toBranch, createdAt FROM workspace_messages WHERE createdAt >= ? AND createdAt < ?').all(since, until);

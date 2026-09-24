@@ -133,15 +133,15 @@ test('(e) messageTimestamps: window-bounded, no bodies', { skip }, () => {
   } finally { rmFixture(f); }
 });
 
-test('(f) capability gate: a gated column/table sleeps (null + listed), a gated core column -> null; unknown names pass', { skip }, () => {
+test('(f) capability gate: a gated column/table sleeps (null + listed), a gated core column -> null', { skip }, () => {
   const caps = require(path.join(ROOT, 'companion', 'lib', 'devswarm-capabilities.js'));
   const realCan = caps.can;
   const f = buildAppDb();
-  const gateOff = (off) => { caps.can = (name) => (off.includes(name) ? { ok: false, reason: 'test-gated' } : { ok: false, reason: 'unknown-capability' }); };
+  const gateOff = (off) => { caps.can = (name) => (off.includes(name) ? { ok: false, reason: 'test-gated' } : { ok: true, reason: null }); };
   try {
     gateOff(['appdb.pull_requests', 'appdb.builder_terminals.ai_session_config']);
     const s = appDb.readSnapshot(f.dbFile, { env: f.env, home: f.home });
-    assert.ok(s && s.ok, 'unknown-capability names are not a verdict');
+    assert.ok(s && s.ok, 'only the gated names sleep');
     assert.deepStrictEqual(s.gated.sort(), ['appdb.builder_terminals.ai_session_config', 'appdb.pull_requests']);
     assert.strictEqual(s.workspaces.find((w) => w.id === 'b-a').pullRequest, null);
     assert.strictEqual(appDb.sessionOwner(s, 'sess-a'), null);
@@ -152,4 +152,28 @@ test('(f) capability gate: a gated column/table sleeps (null + listed), a gated 
     caps.can = () => { throw new Error('boom'); };
     assert.strictEqual(appDb.readSnapshot(f.dbFile, { env: f.env, home: f.home }), null, 'a throwing gate never throws out');
   } finally { caps.can = realCan; rmFixture(f); }
+});
+
+test('(g) every app-DB column/table and app file this module reads is in the capability registry', () => {
+  const caps = require(path.join(ROOT, 'companion', 'lib', 'devswarm-capabilities.js'));
+  const names = new Set(caps.CAPABILITIES.map((c) => c.name));
+  for (const [table, cols] of Object.entries(appDb.SCHEMA)) {
+    assert.ok(names.has('appdb.' + table), 'appdb.' + table);
+    for (const c of cols) assert.ok(names.has('appdb.' + table + '.' + c), 'appdb.' + table + '.' + c);
+  }
+  const src = require('fs').readFileSync(path.join(ROOT, 'companion', 'lib', 'devswarm-app-db.js'), 'utf8');
+  const used = new Set([...src.matchAll(/capOk\('((?:appdb|appfs)\.[\w.-]*\w)',/g)].map((m) => m[1]));
+  assert.ok(used.size >= 5);
+  for (const n of used) assert.ok(names.has(n), n + ' used but not registered');
+});
+
+test('(h) real gate end-to-end: fixture DB reads fully ungated (no unknown names)', { skip }, () => {
+  const caps = require(path.join(ROOT, 'companion', 'lib', 'devswarm-capabilities.js'));
+  caps.resetCache();
+  const f = buildAppDb();
+  try {
+    const s = appDb.readSnapshot(f.dbFile, { env: f.env, home: f.home });
+    assert.ok(s && s.ok);
+    assert.deepStrictEqual(s.gated, []);
+  } finally { caps.resetCache(); rmFixture(f); }
 });
