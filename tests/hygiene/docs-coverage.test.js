@@ -146,3 +146,21 @@ test('the SessionStart foundation points agents at the operator guide by name', 
   const src = read('plugins', 'anti-hall', 'hooks', 'verify-first-full.js');
   assert.match(src, /\/anti-hall:system-briefing \(Codex: anti-hall-system-briefing\)/);
 });
+
+test('(7) AGENTS.md carries the generated component catalog, current, and fits the Codex 32 KiB cap', () => {
+  const gen = require(path.join(REPO, 'tools', 'gen-agents-catalog.js'));
+  const agents = read('AGENTS.md');
+  const cur = gen.current(agents);
+  assert.ok(cur, 'AGENTS.md has no catalog block — run node tools/gen-agents-catalog.js');
+  assert.strictEqual(cur, gen.build(), 'AGENTS.md catalog is stale — run node tools/gen-agents-catalog.js');
+  assert.ok(Buffer.byteLength(agents) < 32768, 'AGENTS.md is ' + Buffer.byteLength(agents) + ' bytes; Codex truncates at 32 KiB');
+  // Spot-check the derived content covers every hook script and every setting key.
+  const all = new Set([...hookScripts('plugins/anti-hall/hooks/hooks.json'), ...hookScripts('plugins/anti-hall/codex/hooks/hooks.json')]);
+  const missingHooks = [...all].filter((h) => !cur.includes(h.replace(/\.js$/, '')));
+  const missingKeys = [];
+  for (const sec of schema.SECTIONS) {
+    const line = cur.split('\n').find((l) => l.startsWith('- ' + sec.key + ': ')) || '';
+    for (const s of sec.settings) if (!new RegExp('(^|[ ,|:])' + s.key.replace(/\./g, '\\.') + '(=|,|$)').test(line)) missingKeys.push(sec.key + '.' + s.key);
+  }
+  assert.deepStrictEqual({ missingHooks, missingKeys }, { missingHooks: [], missingKeys: [] });
+});
