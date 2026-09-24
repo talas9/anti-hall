@@ -20,6 +20,12 @@ const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 
+// Many runUpdate() calls below pass no `home`, so every post-pull stage falls
+// back to os.homedir(). Point HOME at a throwaway dir BEFORE anything runs so
+// no stage can ever read or write the real ~/.anti-hall (a v0.108.0 store
+// repair stage mutated a real store through exactly this gap).
+process.env.HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'update-skill-home-'));
+
 const U = require('../../plugins/anti-hall/skills/update/scripts/update.js');
 const devswarmCli = require('../../plugins/anti-hall/scripts/devswarm.js');
 const devswarmStore = require('../../plugins/anti-hall/companion/lib/devswarm-store.js');

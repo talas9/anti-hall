@@ -1819,6 +1819,8 @@ function childSenderLabelsPostUpdate(opts) {
   const o = opts || {};
   const env = o.env || process.env;
   const cwd = o.cwd || process.cwd();
+  // A test that forgot `home` must never repair the real store.
+  if (!o.home && process.env.NODE_TEST_CONTEXT) return { attempted: false, detail: 'child-sender-labels skipped: no explicit home under node --test' };
   const home = o.home || os.homedir();
   const paths = o.paths;
   try {
