@@ -3378,6 +3378,18 @@ function runUpdate(opts) {
 // error, a non-zero exit, or unparseable stdout all keep the ORIGINAL
 // `status` unchanged and return a `note` describing why (main() appends it
 // to `status.action`); a successful re-exec returns `note: null`.
+// reexecTimeoutMs(env) (P2b): the --post-pull-only child runs the whole
+// post-pull stage chain (bounded by postPullBudgetMs, checked BEFORE each stage,
+// so one stage may still overrun it) plus the harness registration. The old
+// fixed GIT_EXEC_TIMEOUT_MS * 6 (120 s) was below the 90 s default budget + the
+// 20 s registration + node start, so a slow but healthy child was killed and its
+// results (the registration among them) discarded. Margin: 60 s for one
+// overrunning stage and process start.
+const REEXEC_MARGIN_MS = 60000;
+function reexecTimeoutMs(env) {
+  return postPullBudgetMs(env) + HARNESS_REGISTER_TIMEOUT_MS + REEXEC_MARGIN_MS;
+}
+
 function runPostPullReexec(opts) {
   const o = opts || {};
   const paths = o.paths;
@@ -3394,7 +3406,7 @@ function runPostPullReexec(opts) {
     const res = spawnReexec(process.execPath, [newUpdateJs, '--post-pull-only'], {
       cwd: o.cwd || process.cwd(),
       encoding: 'utf8',
-      timeout: GIT_EXEC_TIMEOUT_MS * 6, // the full stage chain, not just one git call
+      timeout: reexecTimeoutMs(env), // the child's whole post-pull chain + registration
       env: Object.assign({}, process.env, env, {
         ANTIHALL_UPDATE_REEXEC: '1',
         ANTIHALL_MARKETPLACE_DIR: paths.marketplaceDir,
@@ -3596,6 +3608,7 @@ module.exports = {
   ingestUnitNeedsHeal,
   harnessRegisterPostUpdate,
   harnessAction,
+  reexecTimeoutMs,
   reconcilePostUpdate,
   foldMeshPostUpdate,
   foldAllStoresPostUpdate,

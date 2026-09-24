@@ -177,7 +177,9 @@ the update.
   or earlier (that `update.js` has no re-exec) — see the upgrade note above.
   When `claude` is not on `PATH` it retries with `CLAUDE_CODE_EXECPATH` (the running
   Claude Code binary); if registration still fails, `action` gives the exact manual
-  command plus a restart instead of `/reload-plugins`. `doctor` warns when `installed_plugins.json` lags the
+  command plus a restart instead of `/reload-plugins`. The re-exec child's timeout is now the post-pull
+  budget + the registration timeout + a 60 s margin (was a fixed 120 s, below the
+  default 90 s budget + 20 s registration). `doctor` warns when `installed_plugins.json` lags the
   newest cache/marketplace version.
 - **Identity: a child's messages were labelled as a Primary.** Every sender's `from` was
   `primary-<worktree hash>`, children included, so a resumed Primary could see another

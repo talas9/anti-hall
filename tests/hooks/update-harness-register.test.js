@@ -278,3 +278,19 @@ test('P2a: a registration that FAILED in the re-exec child -> its manual-command
     assert.match(status.action, /^run manually: claude plugin update anti-hall@anti-hall/);
   } finally { fs.rmSync(fx.root, { recursive: true, force: true }); }
 });
+
+// --- P2b: the re-exec child timeout covers the post-pull budget + registration
+test('P2b: re-exec child timeout = post-pull budget + registration timeout + margin (and is what the spawn gets)', () => {
+  const env = { ANTIHALL_UPDATE_POSTPULL_BUDGET_MS: '90000' };
+  const t = U.reexecTimeoutMs(env);
+  assert.ok(t >= 90000 + 20000 + 30000, 'timeout ' + t + ' must exceed the 90 s budget + 20 s registration with a margin');
+  const fx = reexecFixture();
+  try {
+    let seen = null;
+    U.runPostPullReexec({
+      paths: fx.paths, status: { installed: '0.108.0', latest: '0.109.0', updated: true, action: 'run /reload-plugins' }, env, cwd: fx.root,
+      spawnReexec: (_bin, _args, opts) => { seen = opts.timeout; return { status: 0, stdout: JSON.stringify({ status: {} }) + '\n' }; },
+    });
+    assert.strictEqual(seen, t);
+  } finally { fs.rmSync(fx.root, { recursive: true, force: true }); }
+});
