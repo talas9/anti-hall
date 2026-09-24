@@ -41,6 +41,13 @@ const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 
+// runUpdate()'s post-pull stages resolve their home via os.homedir(): isolate
+// it BEFORE anything runs (repo rule: tests never touch the real home; the
+// runUpdate test-home guard refuses otherwise).
+{
+  const isolated = require('node:fs').mkdtempSync(require('node:path').join(require('node:os').tmpdir(), 'update-test-home-'));
+  process.env.HOME = isolated; process.env.USERPROFILE = isolated;
+}
 const U = require('../../plugins/anti-hall/skills/update/scripts/update.js');
 const installer = require('../../plugins/anti-hall/companion/install-devswarm-ingest.js');
 

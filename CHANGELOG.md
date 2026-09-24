@@ -207,6 +207,10 @@ the update.
 - **DevSwarm 2.5.3**: `workspace archive|delete [idOrBranch]` default to the CURRENT
   workspace and have no `--yes`; anti-hall now always passes the explicit workspace id and
   makes no call without one. Help fixtures are the real 2.5.3 text.
+- **Tests could touch the real home.** `update.js` `runUpdate`, doctor's `runRepairs` and
+  `runMigrations` now refuse (throw) under `node --test` when their home is the real
+  user home (`companion/lib/test-home-guard.js`); this caught two more test files calling
+  `runUpdate` against the real home, now isolated.
 - **Docs**: full `docs/README.md` index and link check (`tests/hygiene/docs-links.test.js`);
   `llms.txt` is now the condensed catalog of every hook, skill, script and setting;
   `tests/hygiene/docs-coverage.test.js` fails the build when anything shipped is

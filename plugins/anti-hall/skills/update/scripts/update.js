@@ -2949,6 +2949,12 @@ function mergeReexecStatus(baseStatus, reexecStatus, reexecNote) {
 }
 
 function runUpdate(opts) {
+  // Tests never touch the real home: every post-pull stage resolves its home
+  // through os.homedir(), so refuse outright when that is the real one.
+  {
+    const thg = require(path.join(__dirname, '..', '..', '..', 'companion', 'lib', 'test-home-guard.js'));
+    if (thg.realHomeUnderTest(os.homedir(), opts && opts.env)) throw new Error(thg.refusalMessage('update.js runUpdate', os.homedir()));
+  }
   const { paths, exec, fsImpl } = opts;
   const e = exec || defaultExec;
   const env = opts.env || process.env;

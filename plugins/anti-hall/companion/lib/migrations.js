@@ -450,6 +450,8 @@ function runSettingsMigration(home, opts) {
 function runMigrations(opts) {
   const o = opts || {};
   const home = o.home || os.homedir();
+  const thg = require('./test-home-guard.js');
+  if (thg.realHomeUnderTest(home, o.env)) throw new Error(thg.refusalMessage('migrations runMigrations', home));
   const version = o.version !== undefined ? o.version : pluginVersion();
   const dryRun = !!o.dryRun;
   const env = o.env || process.env;

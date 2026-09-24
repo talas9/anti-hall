@@ -1128,6 +1128,8 @@ function runRepairs(opts) {
   const cwd = o.cwd || process.cwd();
   const env = o.env || process.env;
   const home = o.home || os.homedir();
+  const thg = require('../../companion/lib/test-home-guard.js');
+  if (thg.realHomeUnderTest(home, env)) throw new Error(thg.refusalMessage('doctor-repair runRepairs', home));
   const dryRun = !!o.dryRun;
   const platform = o.platform || process.platform;
   const results = [];

@@ -50,6 +50,10 @@ const STALE_CONFIG = {
     PostToolUse: [
       { matcher: 'Bash', hooks: [{ type: 'command', command: 'node /x/plugins/anti-hall/hooks/devswarm-parent-reply-tracker.js', timeout: 10 }] },
     ],
+    // v0.108.0: PreCompact joined ANTI_HALL_HOOKS (precompact-snapshot.js).
+    PreCompact: [
+      { hooks: [{ type: 'command', command: 'node /x/plugins/anti-hall/hooks/precompact-snapshot.js', timeout: 10 }] },
+    ],
   },
 };
 
