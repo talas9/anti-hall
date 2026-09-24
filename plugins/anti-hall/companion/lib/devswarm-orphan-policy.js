@@ -66,7 +66,14 @@ const archiveGateLib = require('./devswarm-archive-gate.js');
 let devswarmMod = null;
 let devswarmTried = false;
 function loadDevswarm() {
-  if (!devswarmTried) {
+  // Only memoize a USABLE load. A require() that returns a module missing the
+  // functions this classifier needs (e.g. a still-empty exports object from a
+  // circular self-require while devswarm.js is mid-initialization as the CLI
+  // entrypoint) must NOT be cached forever as `{}` — that would fail this
+  // classifier open for the lifetime of the process. Retry on the next call
+  // instead; require()'s own module cache makes the retry cheap once the
+  // target module has finished initializing.
+  if (!devswarmTried || !(devswarmMod && typeof devswarmMod.readDescriptorFile === 'function')) {
     devswarmTried = true;
     try { devswarmMod = require('../../scripts/devswarm.js'); } catch (_) { devswarmMod = null; }
   }

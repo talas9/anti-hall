@@ -16036,10 +16036,6 @@ function main() {
   process.exit(code);
 }
 
-if (require.main === module) {
-  main();
-}
-
 module.exports = {
   run, parseArgs, one, many, csvList,
   emitKnownWarning, resolveReadArgToId,
@@ -16126,3 +16122,7 @@ module.exports = {
   // for direct unit testing, same convention as this file's other internals:
   resolveCallerWorktree,
 };
+
+if (require.main === module) {
+  main();
+}
