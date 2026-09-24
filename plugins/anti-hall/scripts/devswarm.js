@@ -7099,7 +7099,10 @@ function precreateCursorAndInbox(desc) {
 // archive's inode check, and ensure never interleaves with a re-home.
 function cmdRegister(id, flags, ctx, { requireNew } = {}) {
   const home = ctx.home;
-  return withIdLock(id, home, () => {
+  // withIdLockHeld: register-primary / seat adoption hold this id's lock
+  // around their check-then-write and call in here (the lock file is not
+  // re-entrant; HELD_ID_LOCKS verifies this process holds it).
+  return withIdLockHeld(id, home, () => {
   let existing = readDescriptorFile(home, id);
   // RESERVED-TOKEN IDS (R2 Auditor item 13). Refuse a FRESH registration whose
   // id carries a token this file's cursor namespaces use. `#` separators already
@@ -10470,13 +10473,19 @@ function refreshAnchorSession(ctx) {
     const ic = identityContext(ctx.cwd || process.cwd(), CALLER_CWD);
     if (!ic.worktreeRoot || !isPrimaryCheckout(ic.worktreeRoot, ic.mainWorktree, ctx.home, env)) return null;
     const id = ic.meshId;
-    const desc = readDescriptorFile(ctx.home, id);
-    if (!desc || !desc.sessionId || String(desc.sessionId) === sid) return null;
+    const pre = readDescriptorFile(ctx.home, id);
+    if (!pre || !pre.sessionId || String(pre.sessionId) === sid) return null;
     if (!isSessionAliveRow({ sessionId: sid }, ctx.home)) return null;
-    const flags = { worktree: [ic.worktreeRoot] };
-    if (desc.cursorPath) flags.cursor = [String(desc.cursorPath)];
-    const r = cmdRegisterPrimary(flags, Object.assign({}, ctx, { cwd: ic.worktreeRoot }));
-    return r && r.ok ? { refreshed: true, id, from: String(desc.sessionId), to: sid } : { refreshed: false, reason: (r && (r.reason || r.error)) || 'unknown' };
+    // Re-read + write under the id lock (identity review: no check-then-write race).
+    const out = withIdLock(id, ctx.home, () => {
+      const desc = readDescriptorFile(ctx.home, id);
+      if (!desc || !desc.sessionId || String(desc.sessionId) === sid) return null;
+      const flags = { worktree: [ic.worktreeRoot] };
+      if (desc.cursorPath) flags.cursor = [String(desc.cursorPath)];
+      const r = cmdRegisterPrimary(flags, Object.assign({}, ctx, { cwd: ic.worktreeRoot }));
+      return r && r.ok ? { refreshed: true, id, from: String(desc.sessionId), to: sid } : { refreshed: false, reason: (r && (r.reason || r.error)) || 'unknown' };
+    });
+    return out && out.lockBusy ? { refreshed: false, reason: 'lock-busy' } : out;
   } catch (_) { return null; }
 }
 
@@ -10522,13 +10531,25 @@ function seatRefusal(ctx) {
 function adoptPrimarySeat(ctx, flags) {
   const seat = require('../companion/lib/primary-seat.js');
   const sid = seatSessionId(ctx, flags);
-  const v = seat.seatVerdict({ home: ctx.home, env: ctx.env, cwd: ctx.cwd || process.cwd(), sessionId: sid });
-  if (v.state !== 'adopt') return { verdict: v, adopted: false };
-  const desc = readDescriptorFile(ctx.home, v.id);
-  const regFlags = { worktree: [v.worktree], session: [sid] };
-  if (desc && desc.cursorPath) regFlags.cursor = [String(desc.cursorPath)];
-  const r = cmdRegisterPrimary(regFlags, Object.assign({}, ctx, { cwd: v.worktree }));
-  return { verdict: v, adopted: !!(r && r.ok), register: r };
+  const verdict = () => seat.seatVerdict({ home: ctx.home, env: ctx.env, cwd: ctx.cwd || process.cwd(), sessionId: sid });
+  const v0 = verdict();
+  if (v0.state !== 'adopt') return { verdict: v0, adopted: false };
+  // Check-then-write under the Primary id's lock (identity review): two
+  // sessions adopting at once serialize; the second re-reads the seat AFTER
+  // the first's write and gets the conflict verdict (and its notice), never a
+  // silent overwrite or a silent block.
+  const res = withIdLock(v0.id, ctx.home, () => {
+    const v = verdict();
+    if (v.state !== 'adopt') return { verdict: v, adopted: false };
+    const desc = readDescriptorFile(ctx.home, v.id);
+    const regFlags = { worktree: [v.worktree], session: [sid] };
+    if (desc && desc.cursorPath) regFlags.cursor = [String(desc.cursorPath)];
+    const r = cmdRegisterPrimary(regFlags, Object.assign({}, ctx, { cwd: v.worktree }));
+    if (r && r.ok) return { verdict: v, adopted: true, register: r };
+    return { verdict: verdict(), adopted: false, register: r };
+  });
+  if (res && res.lockBusy) return { verdict: Object.assign({}, v0, { state: 'unknown', lockBusy: true }), adopted: false };
+  return res;
 }
 // cmdPrimary(sub, flags, ctx) — `primary status` (read-only seat verdict) and
 // `primary takeover` (the explicit "continue here": re-register the anchor to
@@ -10543,10 +10564,12 @@ function cmdPrimary(sub, flags, ctx) {
   if (v.state === 'n/a') return { ok: false, action: 'primary-takeover', reason: 'not-primary-checkout', error: 'primary takeover must run in the project\'s Primary checkout' };
   if (!sid) return { ok: false, action: 'primary-takeover', reason: 'no-session', error: 'primary takeover needs this session\'s id (CLAUDE_CODE_SESSION_ID or --session)' };
   if (v.state === 'own') return { ok: true, action: 'primary-takeover', id: v.id, already: true, session: sid };
-  const desc = readDescriptorFile(ctx.home, v.id);
-  const regFlags = { worktree: [v.worktree], session: [sid], force: [true] };
-  if (desc && desc.cursorPath) regFlags.cursor = [String(desc.cursorPath)];
-  const r = cmdRegisterPrimary(regFlags, Object.assign({}, ctx, { cwd: v.worktree }));
+  const r = withIdLock(v.id, ctx.home, () => {
+    const desc = readDescriptorFile(ctx.home, v.id);
+    const regFlags = { worktree: [v.worktree], session: [sid], force: [true] };
+    if (desc && desc.cursorPath) regFlags.cursor = [String(desc.cursorPath)];
+    return cmdRegisterPrimary(regFlags, Object.assign({}, ctx, { cwd: v.worktree }));
+  });
   if (!r || !r.ok) return Object.assign({ action: 'primary-takeover' }, r || { ok: false });
   return { ok: true, action: 'primary-takeover', id: v.id, from: v.holder, to: sid, demoted: v.state === 'conflict' ? v.holder : null };
 }
@@ -11924,6 +11947,14 @@ function cmdRegisterPrimary(flags, ctx) {
   // conflict" -> proceeds exactly as before this fix (never a false refusal
   // from a store-open failure).
   const forceFlag = !!(flags && flags.force && flags.force.length); // bare boolean flag: `one()` returns undefined for `true` values, so it cannot be used here
+  // v0.108.0 (identity review): the live-holder check and the write run under
+  // the Primary id's lock, so two sessions adopting / refreshing / taking over
+  // at once serialize — the second re-checks against the first's write and is
+  // refused (live-primary-conflict) instead of silently overwriting it.
+  return withIdLockHeld(id, home, () => registerPrimaryLocked(id, worktree, session, cursor, inbox, forceFlag, ctx, home));
+}
+
+function registerPrimaryLocked(id, worktree, session, cursor, inbox, forceFlag, ctx, home) {
   if (!forceFlag) {
     let conflict = null;
     try {

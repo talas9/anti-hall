@@ -156,3 +156,40 @@ test('child worktree and non-Primary sessions are untouched (n/a)', () => {
     } finally { rm(child); }
   } finally { f.cleanup(); }
 });
+
+// Identity review (race): adoption is check-then-write under the Primary id's
+// lock. Two sessions adopting a closed seat AT THE SAME TIME (two real
+// processes) -> exactly one adopts; the other re-reads the seat after the
+// winner's write and gets the conflict notice, never a silent overwrite.
+test('concurrent adoption: two live sessions race for a closed seat -> exactly one adopts, the loser gets the conflict notice', async () => {
+  const f = fixture();
+  try {
+    sessionFile(f, 'sess-A');
+    assert.equal(cli.run(['register-primary'], f.ctx('sess-A')).result.ok, true);
+    endSession(f, 'sess-A');
+    sessionFile(f, 'sess-B');
+    sessionFile(f, 'sess-D');
+    const hook = path.join(ROOT, 'hooks', 'devswarm-child-role.js');
+    const runOne = (sid) => new Promise((resolve) => {
+      const p = cp.spawn(process.execPath, [hook], {
+        env: Object.assign({}, process.env, { HOME: f.home, USERPROFILE: f.home }, HOOK_ENV),
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+      let out = '';
+      p.stdout.on('data', (d) => { out += d; });
+      p.on('close', () => {
+        let ctx = '';
+        try { ctx = JSON.parse(out).hookSpecificOutput.additionalContext || ''; } catch (_) { ctx = out; }
+        resolve({ sid, ctx });
+      });
+      p.stdin.end(JSON.stringify({ hook_event_name: 'SessionStart', session_id: sid, cwd: f.repo, source: 'resume' }));
+    });
+    const results = await Promise.all([runOne('sess-B'), runOne('sess-D')]);
+    const adopted = results.filter((r) => /adopted Primary /.test(r.ctx));
+    assert.equal(adopted.length, 1, 'exactly one adopter: ' + JSON.stringify(results.map((r) => r.ctx.slice(0, 200))));
+    const winner = adopted[0].sid;
+    const loser = results.find((r) => r.sid !== winner);
+    assert.match(loser.ctx, new RegExp('Another live Primary session ' + winner + ' owns this worktree'), 'the loser is told, not silently blocked: ' + loser.ctx.slice(0, 400));
+    assert.equal(anchorSid(f), winner);
+  } finally { f.cleanup(); }
+});
