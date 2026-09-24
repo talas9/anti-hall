@@ -6,35 +6,14 @@
 // state. Hooks/scripts are exercised as REAL subprocesses (spawnSync), the
 // same way Claude Code invokes them, with a fixture HOME.
 //
-// FEATURE-PRESENCE GATING: several v0.108.0 features are not yet integrated
-// into this working tree (auto-handover, the new version-alert two-message
-// contract, repair-on-reload, jev-report changed-dedup). Per the coordinator's
-// instructions, tests against those contracts are written now and gated so
-// they self-enable the moment the feature lands, rather than skipped
-// unconditionally. Two gating mechanisms are used, both driven by checking
-// something concrete on disk (never a guess/assumption):
+// Every v0.108.0 feature this suite covers is integrated, so no test is
+// gated or skipped. Exception to "nothing installs companions": the
+// repair-on-reload tests let the hook spawn its real detached
+// `doctor.js --repair` against the fixture HOME (the installers dry-run under
+// a tmp HOME, and a fresh fixture home has the DevSwarm install gate closed);
+// each such test kills the child it started.
 //
-//   1. hookExists(name)      — true "file exists" check for a brand-new hook
-//                               file the feature is expected to ship as
-//                               (auto-handover.js, auto-handover-pause-nag.js,
-//                               repair-on-reload.js). This is the strong,
-//                               literal form the coordinator asked for.
-//
-//   2. sourceHasMarker(...)  — for a contract that extends an EXISTING file
-//                               in place (version-alert.js gets a second
-//                               message; jev-report.js gets changed-dedupe),
-//                               there is no new filename to check. We instead
-//                               grep that file's own source for a marker
-//                               string documented in each test file's header
-//                               (e.g. 'reload-plugins', a dedupe constant
-//                               name). This is still a concrete, mechanical
-//                               file-content check — never a behavioral
-//                               "run it and see" probe — so it cannot produce
-//                               a false pass; it only flips a real test on
-//                               once the expected code is actually present.
-//
-// See tests/e2e/v0108/README.md for the full scenario -> requirement map and
-// exactly which marker each gated test is waiting on.
+// See tests/e2e/v0108/README.md for the scenario -> requirement map.
 
 const { spawnSync } = require('node:child_process');
 const fs = require('node:fs');
@@ -45,46 +24,6 @@ const REPO_ROOT = path.join(__dirname, '..', '..', '..');
 const PLUGIN_ROOT = path.join(REPO_ROOT, 'plugins', 'anti-hall');
 const HOOKS_DIR = path.join(PLUGIN_ROOT, 'hooks');
 const SCRIPTS_DIR = path.join(PLUGIN_ROOT, 'scripts');
-const CHANGELOG_PATH = path.join(REPO_ROOT, 'CHANGELOG.md');
-
-function hookExists(name) {
-  return fs.existsSync(path.join(HOOKS_DIR, name));
-}
-
-function scriptExists(name) {
-  return fs.existsSync(path.join(SCRIPTS_DIR, name));
-}
-
-// sourceHasMarker(relPathFromPluginRoot, marker) -> true when the given
-// plugin-relative file exists AND its source text contains `marker`
-// (case-sensitive substring). Fail-closed: a missing file or read error
-// reads as "marker absent" (never throws — a gate must never crash the run).
-function sourceHasMarker(relPath, marker) {
-  try {
-    const text = fs.readFileSync(path.join(PLUGIN_ROOT, relPath), 'utf8');
-    return text.includes(marker);
-  } catch (_) {
-    return false;
-  }
-}
-
-// unreleasedMentions(keyword) -> true when CHANGELOG.md's "## Unreleased"
-// section (this repo's convention: every landed behavior change gets an
-// Unreleased bullet before it is versioned) contains `keyword`. Used as a
-// secondary corroborating signal alongside sourceHasMarker for in-place
-// behavior changes, never as the sole gate.
-function unreleasedMentions(keyword) {
-  try {
-    const text = fs.readFileSync(CHANGELOG_PATH, 'utf8');
-    const start = text.indexOf('## Unreleased');
-    if (start === -1) return false;
-    const nextHeading = text.indexOf('\n## ', start + 1);
-    const section = nextHeading === -1 ? text.slice(start) : text.slice(start, nextHeading);
-    return section.includes(keyword);
-  } catch (_) {
-    return false;
-  }
-}
 
 // makeHome() -> fresh temp HOME with <home>/.anti-hall created. Always
 // cleaned up by the caller's finally block.
@@ -172,7 +111,7 @@ function runMigrationsLib(fnName, home, extraArgObj) {
 
 // buildTranscriptLine helpers for auto-handover fixtures (main-thread vs
 // sidechain assistant usage entries), matching the Claude Code transcript
-// JSONL shape auto-handover.js (once shipped) is contracted to parse.
+// JSONL shape auto-handover.js parses.
 function mainAssistantUsageLine({ inputTokens, outputTokens, cacheReadTokens, model, ts }) {
   return {
     type: 'assistant',
@@ -203,7 +142,6 @@ function writeTranscript(home, lines) {
 
 module.exports = {
   REPO_ROOT, PLUGIN_ROOT, HOOKS_DIR, SCRIPTS_DIR,
-  hookExists, scriptExists, sourceHasMarker, unreleasedMentions,
   makeHome, rm, antiHallDir, settingsPath, readJson, writeJson,
   isolatedEnv, runHook, runCliScript, runMigrationsLib,
   mainAssistantUsageLine, sidechainAssistantUsageLine, writeTranscript,

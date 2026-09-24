@@ -6,39 +6,36 @@
 // /anti-hall:update; up-to-date or stale/absent cache => silent; never
 // crashes offline (fail-open).
 //
-// v0.108.0 EXTENDS this contract (not yet in this working tree — see the
-// gate below): the ONE alert message must fork into two distinct directives
-// depending on WHICH version is ahead of what: (a) remote > running =>
-// "/anti-hall:update then /reload-plugins"; (b) the local plugin CACHE
-// (already pulled/installed) is newer than the currently-loaded running
-// version => just "/reload-plugins" (no need to re-pull anything); (c) once
-// per session (a second SessionStart in the same session must stay silent
-// even if the condition still holds); (d) a stale installed_plugins.json is
-// ignored for purposes of (b) — only a FRESH read counts.
-//
-// GATE: sourceHasMarker checks hooks/version-alert.js's own source for the
-// 'reload-plugins' string, which only exists once the two-message contract
-// above lands (today's shipped hook only ever emits '/anti-hall:update').
-// This is a concrete file-content check, not a guess — it flips on the
-// instant the real code changes, with no behavioral pre-run involved.
+// v0.108.0 extends it (exercised live below): (a) remote > running =>
+// "/anti-hall:update, then /reload-plugins"; (b) the local plugin-cache mirror
+// (~/.claude/plugins/cache/anti-hall/anti-hall/<version>/) already holds a
+// version newer than the running one => "/reload-plugins" only; (c) once per
+// session per (case, versions); (d) the harness-owned installed_plugins.json
+// is never consulted (it can lag), so it alone never produces a reload nudge.
 
 const { test } = require('node:test');
 const assert = require('node:assert');
 const path = require('node:path');
-const { makeHome, rm, writeJson, antiHallDir, runHook, sourceHasMarker } = require('./lib.js');
+const fs = require('node:fs');
+const { makeHome, rm, writeJson, antiHallDir, runHook } = require('./lib.js');
 
 const HOOK = 'version-alert.js';
 const PAYLOAD = { hook_event_name: 'SessionStart', session_id: 'sess-v0108-1' };
 const NOW = Date.now();
-const DAY_MS = 24 * 60 * 60 * 1000;
-
-const HAS_RELOAD_PLUGINS_CONTRACT = sourceHasMarker('hooks/version-alert.js', 'reload-plugins');
 
 function writeVersionCache(home, obj) {
   writeJson(path.join(antiHallDir(home), 'version-check.json'), obj);
 }
-function writeInstalledPlugins(home, obj) {
-  writeJson(path.join(antiHallDir(home), 'installed_plugins.json'), obj);
+// The harness's own record (never read by the hook — see (d) above).
+function writeHarnessInstalledPlugins(home, version) {
+  writeJson(path.join(home, '.claude', 'plugins', 'installed_plugins.json'),
+    { version: 2, plugins: { 'anti-hall@anti-hall': [{ scope: 'user', version, installPath: '/nonexistent' }] } });
+}
+// A version `/anti-hall:update` already mirrored into the plugin cache.
+function mirrorVersion(home, version) {
+  const dir = path.join(home, '.claude', 'plugins', 'cache', 'anti-hall', 'anti-hall', version);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'CHANGELOG.md'), '# Changelog\n\n## ' + version + '\n\n- **New: something.**\n');
 }
 function hasContext(r) {
   return !!(r.json && r.json.hookSpecificOutput && typeof r.json.hookSpecificOutput.additionalContext === 'string' && r.json.hookSpecificOutput.additionalContext.length > 0);
@@ -88,10 +85,9 @@ test('BASE: settings off (ANTIHALL_VERSION_ALERT=off) => silent even with a newe
   } finally { rm(home); }
 });
 
-// ── v0.108.0 extension: gated on the two-message contract landing ────────
+// ── v0.108.0 extension ──────────────────────────────────────────────────
 test(
   'v0.108.0: remote newer than running => directive names BOTH /anti-hall:update and /reload-plugins',
-  { skip: HAS_RELOAD_PLUGINS_CONTRACT ? false : 'feature not in base: version-alert two-message contract (marker "reload-plugins" absent from hooks/version-alert.js)' },
   () => {
     const home = makeHome();
     try {
@@ -108,7 +104,6 @@ test(
 
 test(
   'v0.108.0: installed plugin cache newer than the currently-running version => "/reload-plugins" only (no /anti-hall:update)',
-  { skip: HAS_RELOAD_PLUGINS_CONTRACT ? false : 'feature not in base: version-alert two-message contract (marker "reload-plugins" absent from hooks/version-alert.js)' },
   () => {
     const home = makeHome();
     try {
@@ -116,7 +111,7 @@ test(
       // (already pulled into the plugin cache dir) is ahead of what THIS
       // session is currently running.
       writeVersionCache(home, { latest: '0.0.1', checkedAt: NOW });
-      writeInstalledPlugins(home, { 'anti-hall': { version: '999.0.0' }, checkedAt: NOW });
+      mirrorVersion(home, '999.0.0');
       const r = runHook(HOOK, PAYLOAD, home);
       assert.strictEqual(r.status, 0, r.stderr);
       assert.ok(hasContext(r), `expected additionalContext; stdout: ${r.stdout}`);
@@ -129,7 +124,6 @@ test(
 
 test(
   'v0.108.0: fires at most once per session — a second SessionStart in the same session is silent',
-  { skip: HAS_RELOAD_PLUGINS_CONTRACT ? false : 'feature not in base: version-alert two-message contract (marker "reload-plugins" absent from hooks/version-alert.js)' },
   () => {
     const home = makeHome();
     try {
@@ -145,18 +139,17 @@ test(
 );
 
 test(
-  'v0.108.0: a STALE installed_plugins.json is ignored for the cache-newer-than-running check',
-  { skip: HAS_RELOAD_PLUGINS_CONTRACT ? false : 'feature not in base: version-alert two-message contract (marker "reload-plugins" absent from hooks/version-alert.js)' },
+  'v0.108.0: installed_plugins.json alone (no mirrored cache dir) never triggers the reload nudge',
   () => {
     const home = makeHome();
     try {
       writeVersionCache(home, { latest: '0.0.1', checkedAt: NOW });
-      // installed_plugins.json claims a newer version, but its own
-      // checkedAt/mtime is stale (>24h) — must not trigger the reload-only alert.
-      writeInstalledPlugins(home, { 'anti-hall': { version: '999.0.0' }, checkedAt: NOW - DAY_MS - 1 });
+      // The harness record claims a newer version, but nothing was mirrored
+      // into the plugin cache — the hook trusts only the on-disk mirror.
+      writeHarnessInstalledPlugins(home, '999.0.0');
       const r = runHook(HOOK, PAYLOAD, home);
       assert.strictEqual(r.status, 0, r.stderr);
-      assert.ok(!hasContext(r), `stale installed_plugins.json must not alert; stdout: ${r.stdout}`);
+      assert.ok(!hasContext(r), `installed_plugins.json must not alert; stdout: ${r.stdout}`);
     } finally { rm(home); }
   },
 );

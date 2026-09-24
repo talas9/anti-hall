@@ -206,13 +206,31 @@ test('precedence: legacy jev.json is used when settings.json has no override', (
   } finally { rm(home); }
 });
 
-test('precedence: /config (pluginConfigs in ~/.claude/settings.json) beats legacy but loses to settings.json', () => {
+test('precedence: until the settings migration is stamped, legacy jev.json outranks /config (a pre-existing jev.json is never masked)', () => {
   const home = makeHome();
   try {
     writeJson(path.join(antiHallDir(home), 'jev.json'), { enabled: false });
     writeJson(path.join(home, '.claude', 'settings.json'), {
       pluginConfigs: { 'anti-hall': { options: { jev_enabled: true } } },
     });
+    const r = runSettings(home, ['get', 'jev.enabled', '--json']);
+    const out = JSON.parse(r.stdout);
+    assert.strictEqual(out.value, false);
+    assert.strictEqual(out.source, 'legacy');
+  } finally { rm(home); }
+});
+
+test('precedence: once the migration is stamped, /config beats legacy but loses to settings.json', () => {
+  const home = makeHome();
+  try {
+    writeJson(path.join(home, '.claude', 'settings.json'), {
+      pluginConfigs: { 'anti-hall': { options: { jev_enabled: true } } },
+    });
+    // Stamp the migration for the RUNNING version (nothing to migrate yet).
+    const version = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', '..', 'plugins', 'anti-hall', '.claude-plugin', 'plugin.json'), 'utf8')).version;
+    const m = runMigrationsLib('runSettingsMigration', home, { version });
+    assert.strictEqual(m.status, 0, m.stderr);
+    writeJson(path.join(antiHallDir(home), 'jev.json'), { enabled: false });
     let r = runSettings(home, ['get', 'jev.enabled', '--json']);
     let out = JSON.parse(r.stdout);
     assert.strictEqual(out.value, true);

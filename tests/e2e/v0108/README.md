@@ -11,48 +11,35 @@ Run just this suite:
 taskpolicy -c utility nice -n 19 node --test --test-concurrency=2 tests/e2e/v0108/*.test.js
 ```
 
-## Feature-presence gating
+## No gating
 
-Some v0.108.0 contracts are not yet integrated into this working tree
-(auto-handover, the version-alert two-message contract, repair-on-reload,
-jev-report changed-dedup/budget-mode). Those tests are written now, against
-the agreed contract below, and gated with `node:test`'s `{ skip: '...' }`
-driven by a concrete on-disk check — never an unconditional skip:
-
-- **New hook file expected** (`auto-handover.js`, `auto-handover-pause-nag.js`,
-  `repair-on-reload.js`): gated on `fs.existsSync(hooks/<name>.js)` —
-  `lib.js`'s `hookExists()`.
-- **Behavior change to an EXISTING file** (version-alert.js's second
-  message, jev-report.js's hash-dedup / budget mode): there is no new
-  filename to check existence of, so the gate instead greps that file's own
-  source for a marker string (`sourceHasMarker()`), or checks this repo's
-  own "every landed change gets an `## Unreleased` CHANGELOG bullet before
-  it is versioned" convention (`unreleasedMentions()`). Both are mechanical
-  file-content checks, never a behavioral pre-run — they cannot produce a
-  false pass, only flip a real test on once the described code actually
-  lands.
-
-Every gated test's `skip` message states exactly which marker is missing.
+Every feature this suite covers is integrated in v0.108.0, so nothing is
+skipped. The tests were first written against a draft contract before the
+features landed; at integration each was re-checked against the shipped code
+and, where the draft guessed wrong (file names, settings keys, the Stop-hook
+output shape), rewritten to the real contract. The rows below describe what
+is tested now.
 
 ## Scenario -> requirement map
 
-### 1. Auto-handover (`auto-handover.test.js`) — fully gated, 0/9 live
+### 1. Auto-handover (`auto-handover.test.js`) — 12 live
 
 | Scenario | Requirement |
 |---|---|
 | below 85% => silent | context% below threshold is silent |
-| crossing 85% => directive once | writes handover unasked, explains hallucination risk, urges /compact or /clear, fires once |
+| crossing 85%, known window => mandatory directive once | writes handover unasked, explains hallucination risk, urges /compact or /clear |
 | sidechain/subagent transcript => silent | subagent usage never drives main-thread % |
 | milestone nag only at +5 | re-nag only at nagStepPct increments |
 | drop below threshold re-arms | a later crossing fires fresh |
-| 1M-window model | 85% computed against 1,000,000, not 200,000 |
+| 1M window from the statusline (sticky max_tokens) | % computed against 1,000,000 |
+| usage > 200k with no window info => inferred 1M | directive labelled "inferred 1M window" |
+| unknown window => one soft advisory, never mandatory | no false mandatory fire on an undetected 1M session |
 | settings off => silent | autoHandover.enabled=false silences the hook |
 | ANTIHALL_AUTO_HANDOVER_PCT override | env overrides configured/default pct |
-| pause-nag once per 15 min | auto-handover-pause-nag.js (Stop) cooldown |
+| pause-nag quiet window | Stop nag only past nagQuietMin since the last nag, once |
+| pause-nag before any directive => silent | nothing fired this arm |
 
-Gate: `hookExists('auto-handover.js') && hookExists('auto-handover-pause-nag.js')`.
-
-### 2. Settings (`settings.test.js`) — fully live, 24/24
+### 2. Settings (`settings.test.js`) — 25 live
 
 | Scenario | Requirement |
 |---|---|
@@ -61,7 +48,7 @@ Gate: `hookExists('auto-handover.js') && hookExists('auto-handover-pause-nag.js'
 | set (valid / out-of-range / bad enum / bad boolean) | validation rejects bad input, never writes on rejection |
 | set preserves other sections | atomic read-modify-write |
 | reset (overridden key / never-overridden key) | reset clears an override, no-op otherwise |
-| precedence: file > legacy, legacy fallback, /config vs file, env wins all, plugin-option env vs settings-file scan | full precedence chain |
+| precedence: file > legacy, legacy fallback, legacy > /config until the migration is stamped, /config > legacy after, env wins all, plugin-option env vs settings-file scan | full precedence chain |
 | default with nothing set | correct fallback |
 | migration forward-migrates jev.json, legacy untouched | `runSettingsMigration` via `companion/lib/migrations.js` |
 | migration never copies an undeclared/secret-shaped field | schema-only migration surface |
@@ -78,44 +65,38 @@ session regardless of a `HOME` env override, since launchd operates on the
 user session, not `$HOME`. That surface is unsafe for an automated test and
 out of scope for this contract.
 
-### 3. Version alert (`version-alert.test.js`) — 4 live, 4 gated
-
-| Scenario | Requirement | Status |
-|---|---|---|
-| fresh cache, remote newer => `/anti-hall:update` | base directive | live |
-| fresh cache, not newer => silent | base silent | live |
-| offline / no cache => silent, fast, no crash | fail-open | live |
-| settings off => silent | ANTIHALL_VERSION_ALERT=off | live |
-| remote newer => names BOTH `/anti-hall:update` and `/reload-plugins` | two-message contract | gated |
-| cache newer than running => `/reload-plugins` only | two-message contract | gated |
-| once per session | dedupe | gated |
-| stale installed_plugins.json ignored | freshness check | gated |
-
-Gate: `sourceHasMarker('hooks/version-alert.js', 'reload-plugins')`.
-
-### 4. Repair-on-reload (`repair-on-reload.test.js`) — fully gated, 0/3 live
+### 3. Version alert (`version-alert.test.js`) — 8 live
 
 | Scenario | Requirement |
 |---|---|
-| new version since last repair => one detached repair | trigger condition |
-| same version => no-op, <50ms | no-op perf budget |
-| no marker yet => repair + record version | first-session bootstrap |
+| fresh cache, remote newer => `/anti-hall:update` | base directive |
+| fresh cache, not newer => silent | base silent |
+| offline / no cache => silent, fast, no crash | fail-open |
+| settings off => silent | ANTIHALL_VERSION_ALERT=off |
+| remote newer => names BOTH `/anti-hall:update` and `/reload-plugins` | update then reload |
+| plugin-cache mirror newer than running => `/reload-plugins` only | reload-only case |
+| once per session | dedupe |
+| harness `installed_plugins.json` alone never triggers a reload nudge | only the on-disk mirror counts |
 
-Gate: `hookExists('repair-on-reload.js')`.
+### 4. Repair-on-reload (`repair-on-reload.test.js`) — 5 live
 
-### 5. Jev report (`jev-report.test.js`) — 4 live, 4 gated
+| Scenario | Requirement |
+|---|---|
+| markers stamped for an older version => one detached repair, fast return | trigger condition, never inline |
+| no marker store at all (first session) => repair | first-session bootstrap |
+| UserPromptSubmit takes the same path | `/reload-plugins` fallback |
+| all migrations stamped for the running version => no lock, no spawn, cheap | no-op path (budgeted over a bare `node` start) |
+| `ANTIHALL_REPAIR_ON_RELOAD=off` | escape hatch |
 
-| Scenario | Requirement | Status |
-|---|---|---|
-| calls/jevAnsweredPct/cacheHits for one id | base aggregation | live |
-| costEstimate null with no costPerCall | base cost field | live |
-| costEstimate = calls * costPerCall | base cost field | live |
-| documents today's 6x over-count for 1 fresh + 5 cached rows of one hash | pins the pre-fix gap | live |
-| 1 fresh + 5 cached rows of one hash => changed counted once | changed-decision hash-dedup | gated |
-| two different hashes each changed => counted as 2 | dedup keyed correctly | gated |
-| budget mode unlimited => no warning | budget mode | gated |
-| budget mode watch => flags over-budget | budget mode | gated |
+### 5. Jev report (`jev-report.test.js`) — 8 live
 
-Gates: `unreleasedMentions('dedupe') && unreleasedMentions('jev report')` (or
-`'changed-decision dedup'`) for hash-dedup; `unreleasedMentions('budget
-mode')` (or `'unlimited'` + `'watch'`) for budget mode.
+| Scenario | Requirement |
+|---|---|
+| calls/jevAnsweredPct/cacheHits for one id | base aggregation |
+| costEstimate null with no costPerCall | base cost field |
+| costEstimate = calls * costPerCall | base cost field |
+| 1 fresh + 5 cached rows of one hash => changed counted once | changed-decision hash-dedup |
+| two different hashes each changed => counted as 2 | dedup keyed correctly |
+| budget mode unlimited (default) => no budget status | budget watch off |
+| budget mode watch => 24h spend over usdPerDay flagged | budget watch (settings `jev.budget.*`) |
+| legacy jev.json `budget` still drives watch | settings legacy fallback |

@@ -6,39 +6,20 @@
 // reports calls/jevAnsweredPct/cacheHits/changed/costEstimate, and honors
 // jev.json's costPerCall for an estimated cost field (null when unset).
 //
-// v0.108.0 EXTENDS this contract with two pieces not yet in this working
-// tree:
-//   (a) CHANGED-DEDUPE: today, `buildReport` increments `changed.<direction>`
-//       once per LOG ROW. A single logical decision that is looked up 1 time
-//       fresh + 5 times from cache (same content hash `h`, same direction)
-//       currently counts as 6 "changed" events — confirmed by reading
-//       scripts/jev-report.js's per-row accumulation loop, which has no
-//       hash-based dedup. The agreed v0.108.0 contract is that a fresh call
-//       plus its cache hits for the SAME hash counts as exactly ONE changed
-//       decision. GATED below.
-//   (b) BUDGET MODE (unlimited vs watch): no `budget`/`unlimited`/`watch`
-//       concept exists anywhere in jev-report.js or jev.json today (grepped,
-//       zero hits). GATED below.
-//
-// GATE: unreleasedMentions() checks CHANGELOG.md's "## Unreleased" section,
-// this repo's own convention for a landed-but-not-yet-versioned change, for
-// the keyword naming each sub-feature. This is a concrete file-content
-// check (never a behavioral pre-run) and flips on the moment the change is
-// documented as landed, per this repo's own documented convention (see
-// CHANGELOG.md's header: "Every behavioral change MUST bump plugin.json
-// version" — paired with an Unreleased bullet first).
+// v0.108.0 adds (exercised live below):
+//   (a) CHANGED-DEDUPE: a fresh call plus its cache hits for the SAME content
+//       hash counts as exactly ONE changed decision (calls still count every
+//       row).
+//   (b) BUDGET WATCH: settings jev.budget.mode "watch" + usdPerDay/usdPerWeek
+//       compare the real per-call `costUsd` logged by jev-assist against the
+//       budget and report `budgetStatus` (observability only — Jev is never
+//       disabled). "unlimited" (the default) reports no budget status.
 
 const { test } = require('node:test');
 const assert = require('node:assert');
 const path = require('node:path');
 const fs = require('node:fs');
-const { makeHome, rm, antiHallDir, writeJson, runCliScript, unreleasedMentions } = require('./lib.js');
-
-const HAS_CHANGED_DEDUPE = unreleasedMentions('changed-decision dedup') || unreleasedMentions('dedupe') && unreleasedMentions('jev report');
-const HAS_BUDGET_MODE = unreleasedMentions('budget mode') || (unreleasedMentions('unlimited') && unreleasedMentions('watch'));
-
-const DEDUPE_GATE = { skip: HAS_CHANGED_DEDUPE ? false : 'feature not in base: jev-report changed-decision hash-dedup (CHANGELOG "## Unreleased" has no matching entry)' };
-const BUDGET_GATE = { skip: HAS_BUDGET_MODE ? false : 'feature not in base: jev-report budget mode (unlimited vs watch) (CHANGELOG "## Unreleased" has no matching entry)' };
+const { makeHome, rm, antiHallDir, writeJson, runCliScript } = require('./lib.js');
 
 function logPath(home) { return path.join(antiHallDir(home), 'logs', 'jev-assist.ndjson'); }
 function writeLog(home, rows) {
@@ -120,26 +101,9 @@ test('BASE: costEstimate = calls * jev.json costPerCall when set', () => {
   } finally { rm(home); }
 });
 
-test('BASE (documents the pre-v0.108.0 gap): 1 fresh + 5 cached rows of ONE hash currently count as 6 changed events, not 1', () => {
-  // This test pins down TODAY's real (undesired) behavior so the gap is
-  // visible and the DEDUPE_GATE test above it flips the moment the fix
-  // lands — it is not the target contract itself.
-  const home = makeHome();
-  try {
-    const rows = [decisionRow({ id: 'claimLedger', h: 'shared-hash', backend: 'jev', cached: false })];
-    for (let i = 0; i < 5; i++) rows.push(decisionRow({ id: 'claimLedger', h: 'shared-hash', backend: 'cache', cached: true }));
-    writeLog(home, rows);
-    const r = runReport(home, ['--json']);
-    assert.strictEqual(r.status, 0, r.stderr);
-    const claimLedger = r.json.integrations.find((i) => i.id === 'claimLedger');
-    assert.strictEqual(claimLedger.changed.added, 6, 'pre-v0.108.0 behavior: no hash dedup, every row counts');
-  } finally { rm(home); }
-});
-
-// ── v0.108.0: changed-decision hash-dedupe (gated) ────────────────────────
+// ── v0.108.0: changed-decision hash-dedupe ────────────────────────────────
 test(
   'v0.108.0: 1 fresh + 5 cached rows of ONE hash => changed counted ONCE',
-  DEDUPE_GATE,
   () => {
     const home = makeHome();
     try {
@@ -157,7 +121,6 @@ test(
 
 test(
   'v0.108.0: two DIFFERENT hashes each changed => counted as 2, not collapsed together',
-  DEDUPE_GATE,
   () => {
     const home = makeHome();
     try {
@@ -174,37 +137,48 @@ test(
   },
 );
 
-// ── v0.108.0: budget mode unlimited vs watch (gated) ──────────────────────
-test(
-  'v0.108.0: budget mode "unlimited" => no budget warning regardless of cost/call volume',
-  BUDGET_GATE,
-  () => {
-    const home = makeHome();
-    try {
-      writeJson(path.join(antiHallDir(home), 'jev.json'), { costPerCall: 1.0, budgetMode: 'unlimited', budgetMonthly: 1 });
-      const rows = [];
-      for (let i = 0; i < 500; i++) rows.push(decisionRow({ id: 'claimLedger', h: `h${i}` }));
-      writeLog(home, rows);
-      const r = runReport(home, ['--json']);
-      assert.strictEqual(r.status, 0, r.stderr);
-      assert.doesNotMatch(r.stdout, /budget exceeded|over budget/i);
-    } finally { rm(home); }
-    },
-);
+// ── v0.108.0: budget watch (settings jev.budget.*) ───────────────────────
+function costRows(n, costUsd) {
+  const rows = [];
+  for (let i = 0; i < n; i++) rows.push(Object.assign(decisionRow({ id: 'claimLedger', h: `h${i}` }), { costUsd }));
+  return rows;
+}
 
-test(
-  'v0.108.0: budget mode "watch" => flags when estimated cost exceeds the configured monthly budget',
-  BUDGET_GATE,
-  () => {
-    const home = makeHome();
-    try {
-      writeJson(path.join(antiHallDir(home), 'jev.json'), { costPerCall: 1.0, budgetMode: 'watch', budgetMonthly: 1 });
-      const rows = [];
-      for (let i = 0; i < 500; i++) rows.push(decisionRow({ id: 'claimLedger', h: `h${i}` }));
-      writeLog(home, rows);
-      const r = runReport(home, ['--json']);
-      assert.strictEqual(r.status, 0, r.stderr);
-      assert.match(r.stdout + JSON.stringify(r.json), /budget/i);
-    } finally { rm(home); }
-  },
-);
+test('v0.108.0: budget mode "unlimited" (default) => no budget status, whatever the spend', () => {
+  const home = makeHome();
+  try {
+    writeJson(path.join(antiHallDir(home), 'settings.json'), { jev: { 'budget.usdPerDay': 0.01 } });
+    writeLog(home, costRows(50, 0.5));
+    const r = runReport(home, ['--json']);
+    assert.strictEqual(r.status, 0, r.stderr);
+    assert.strictEqual(r.json.budget.mode, 'unlimited');
+    assert.strictEqual(r.json.budgetStatus, null);
+    const human = runReport(home, []);
+    assert.doesNotMatch(human.stdout, /OVER BUDGET|exceeded/i);
+  } finally { rm(home); }
+});
+
+test('v0.108.0: budget mode "watch" => 24h spend over usdPerDay is flagged exceeded; under is not', () => {
+  const home = makeHome();
+  try {
+    writeJson(path.join(antiHallDir(home), 'settings.json'), { jev: { 'budget.mode': 'watch', 'budget.usdPerDay': 1, 'budget.usdPerWeek': 100 } });
+    writeLog(home, costRows(4, 0.5)); // $2.00 today
+    const r = runReport(home, ['--json']);
+    assert.strictEqual(r.status, 0, r.stderr);
+    assert.strictEqual(r.json.budget.mode, 'watch');
+    assert.strictEqual(r.json.budgetStatus['24h'].exceeded, true);
+    assert.ok(Math.abs(r.json.budgetStatus['24h'].spentUsd - 2) < 1e-9);
+    assert.strictEqual(r.json.budgetStatus['7d'].exceeded, false);
+  } finally { rm(home); }
+});
+
+test('v0.108.0: legacy jev.json {"budget": {...}} still drives budget watch when settings.json has none', () => {
+  const home = makeHome();
+  try {
+    writeJson(path.join(antiHallDir(home), 'jev.json'), { budget: { mode: 'watch', usdPerDay: 1 } });
+    writeLog(home, costRows(3, 0.5));
+    const r = runReport(home, ['--json']);
+    assert.strictEqual(r.status, 0, r.stderr);
+    assert.strictEqual(r.json.budgetStatus['24h'].exceeded, true);
+  } finally { rm(home); }
+});
