@@ -217,17 +217,48 @@ function versionFromMarketplace(pluginJsonPath) {
 
 /**
  * resolveInstalledVersion(paths) → semver string | null.
- * Order: installed_plugins.json → newest cache dir → marketplace plugin.json.
- * Every step is isSemver-gated, so a non-semver value at any step falls through
- * to the next; null means GENUINELY unknown (callers must report
+ *
+ * installed_plugins.json is HARNESS-OWNED and can LAG a real cache sync: a
+ * prior `update.js` run (or a supervisor-driven post-pull sweep) writes a new
+ * version dir under the plugin cache immediately, but the harness's own
+ * registry file is only refreshed on the NEXT `/reload-plugins` or session
+ * restart — so a live machine can show installed_plugins.json still reporting
+ * an old version while the cache (what will actually load next reload) is
+ * already newer (defect: --check reported 0.105.3 while cache held 0.107.0).
+ * The reverse also happens (the plugin manager updates the registry without
+ * ever running our own update.js, so the cache lags instead).
+ *
+ * Neither source is unconditionally authoritative, so when BOTH resolve to a
+ * valid semver, the HIGHER of the two wins — that is always the more-current
+ * value either source has observed. `installedVersionLag()` (below) reports
+ * the disagreement so callers can surface it, but resolution itself never
+ * throws that information away by picking the stale one.
+ * Falls back to the marketplace clone's own plugin.json only when NEITHER
+ * source yields a semver. null means GENUINELY unknown (callers must report
  * 'unknown-installed-version', never 'already up to date').
  */
 function resolveInstalledVersion(paths) {
-  return (
-    versionFromInstalledJson(paths.installedJson) ||
-    newestCacheVersion(paths.cacheRoot) ||
-    versionFromMarketplace(paths.pluginJson)
-  );
+  const cacheVersion = newestCacheVersion(paths.cacheRoot);
+  const jsonVersion = versionFromInstalledJson(paths.installedJson);
+  if (isSemver(cacheVersion) && isSemver(jsonVersion)) {
+    return compareVersions(cacheVersion, jsonVersion) >= 0 ? cacheVersion : jsonVersion;
+  }
+  return cacheVersion || jsonVersion || versionFromMarketplace(paths.pluginJson);
+}
+
+/**
+ * installedVersionLag(paths) → { jsonVersion, cacheVersion } | null.
+ * Non-null ONLY when installed_plugins.json and the newest cache dir are both
+ * valid semvers that DISAGREE — i.e. exactly the harness-registry-lag shape
+ * this function exists to flag. Read-only; never throws.
+ */
+function installedVersionLag(paths) {
+  const cacheVersion = newestCacheVersion(paths.cacheRoot);
+  const jsonVersion = versionFromInstalledJson(paths.installedJson);
+  if (isSemver(cacheVersion) && isSemver(jsonVersion) && compareVersions(cacheVersion, jsonVersion) !== 0) {
+    return { jsonVersion, cacheVersion };
+  }
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -2678,14 +2709,19 @@ function runCheck(opts) {
     };
   }
   const cmp = compareVersions(installed, remote.version || '0');
+  const lag = installedVersionLag(paths);
+  const lagNote = lag
+    ? ' [installed_plugins.json reports ' + lag.jsonVersion + ', cache shows ' + lag.cacheVersion
+      + ' — run /reload-plugins]'
+    : '';
   return {
     installed,
     latest: remote.version,
     updated: false,
     cacheSynced: false,
-    action: cmp < 0
+    action: (cmp < 0
       ? 'update available (' + installed + ' → ' + remote.version + ') — run without --check to apply'
-      : 'already up to date',
+      : 'already up to date') + lagNote,
   };
 }
 
@@ -3162,6 +3198,7 @@ module.exports = {
   newestCacheVersion,
   versionFromMarketplace,
   resolveInstalledVersion,
+  installedVersionLag,
   extractChangelog,
   syncCache,
   gitState,

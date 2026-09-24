@@ -158,6 +158,66 @@ test('resolveInstalledVersion: missing installed_plugins.json → newest cache d
   } finally { t.cleanup(); }
 });
 
+// --- item C (v0.107.1): installed_plugins.json is harness-owned and can LAG
+// a cache already synced by a prior update.js run. resolveInstalledVersion
+// must report the HIGHER of the two, not blindly trust the registry file.
+test('resolveInstalledVersion: installed_plugins.json LAGS a newer cache dir → cache wins (defect: --check reported 0.105.3 while cache held 0.107.0)', () => {
+  const t = makeTree();
+  try {
+    writePluginJson(t.marketplaceDir, '0.107.0');
+    writeInstalled(t.root, '0.105.3');
+    const cacheRoot = path.join(t.root, 'cache', 'anti-hall', 'anti-hall');
+    fs.mkdirSync(path.join(cacheRoot, '0.106.0'), { recursive: true });
+    fs.mkdirSync(path.join(cacheRoot, '0.107.0'), { recursive: true });
+    assert.strictEqual(U.resolveInstalledVersion(pathsFor(t)), '0.107.0');
+  } finally { t.cleanup(); }
+});
+
+test('resolveInstalledVersion: installed_plugins.json AHEAD of cache (plugin manager updated without update.js) → registry wins', () => {
+  const t = makeTree();
+  try {
+    writePluginJson(t.marketplaceDir, '0.107.0');
+    writeInstalled(t.root, '0.107.0');
+    const cacheRoot = path.join(t.root, 'cache', 'anti-hall', 'anti-hall');
+    fs.mkdirSync(path.join(cacheRoot, '0.105.3'), { recursive: true });
+    assert.strictEqual(U.resolveInstalledVersion(pathsFor(t)), '0.107.0');
+  } finally { t.cleanup(); }
+});
+
+test('installedVersionLag: disagreement reported; agreement/absence → null', () => {
+  const t = makeTree();
+  try {
+    writePluginJson(t.marketplaceDir, '0.107.0');
+    writeInstalled(t.root, '0.105.3');
+    const cacheRoot = path.join(t.root, 'cache', 'anti-hall', 'anti-hall');
+    fs.mkdirSync(path.join(cacheRoot, '0.107.0'), { recursive: true });
+    assert.deepStrictEqual(U.installedVersionLag(pathsFor(t)), { jsonVersion: '0.105.3', cacheVersion: '0.107.0' });
+  } finally { t.cleanup(); }
+});
+
+test('installedVersionLag: no cache dirs → null (nothing to disagree with)', () => {
+  const t = makeTree();
+  try {
+    writePluginJson(t.marketplaceDir, '0.107.0');
+    writeInstalled(t.root, '0.107.0');
+    assert.strictEqual(U.installedVersionLag(pathsFor(t)), null);
+  } finally { t.cleanup(); }
+});
+
+test('runCheck: installed_plugins.json lag surfaces a /reload-plugins note in action', () => {
+  const t = makeTree();
+  try {
+    writePluginJson(t.marketplaceDir, '0.107.0');
+    writeInstalled(t.root, '0.105.3');
+    const cacheRoot = path.join(t.root, 'cache', 'anti-hall', 'anti-hall');
+    fs.mkdirSync(path.join(cacheRoot, '0.107.0'), { recursive: true });
+    const exec = execStub({ fetch: '', 'rev-parse': 'origin/main\n', show: JSON.stringify({ version: '0.107.0' }) });
+    const s = U.runCheck({ paths: pathsFor(t), exec });
+    assert.strictEqual(s.installed, '0.107.0');
+    assert.strictEqual(s.action, "already up to date [installed_plugins.json reports 0.105.3, cache shows 0.107.0 — run /reload-plugins]");
+  } finally { t.cleanup(); }
+});
+
 test('versionFromInstalledJson: wrong key → null', () => {
   const t = makeTree();
   try {
