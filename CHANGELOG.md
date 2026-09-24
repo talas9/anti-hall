@@ -214,7 +214,8 @@ the update.
 - **Docs**: full `docs/README.md` index and link check (`tests/hygiene/docs-links.test.js`);
   `llms.txt` is now the condensed catalog of every hook, skill, script and setting;
   `tests/hygiene/docs-coverage.test.js` fails the build when anything shipped is
-  undocumented.
+  undocumented. GUIDE's 560-line DevSwarm version history moved to
+  `docs/archive/devswarm-layered-recovery-history.md`; GUIDE keeps a current-state summary.
 
 ### Data repairs (update + `doctor --repair`, idempotent, never delete)
 

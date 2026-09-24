@@ -78,5 +78,6 @@ session artifacts (dated design plans, audits) kept for provenance only; read
 | [`2026-06-06-context-opt-test-design.md`](./2026-06-06-context-opt-test-design.md) | Dated context-optimization test-harness design. |
 | [`2026-06-10-v0.32.0-fable5-model-routing-plan.md`](./2026-06-10-v0.32.0-fable5-model-routing-plan.md) | Dated v0.32.0 design plan (Fable 5 support, model-routing guard). |
 | [`2026-06-10-v0.34.0-flutter-debug-plan.md`](./2026-06-10-v0.34.0-flutter-debug-plan.md) | Dated v0.34.0 design plan (flutter-debug agent + skill). |
+| [`archive/devswarm-layered-recovery-history.md`](./archive/devswarm-layered-recovery-history.md) | DevSwarm layered-recovery version history (v0.54–v0.107), moved out of GUIDE in v0.108.0. |
 
 MIT © Mohammed Talas.
