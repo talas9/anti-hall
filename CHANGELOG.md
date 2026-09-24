@@ -6,6 +6,36 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.107.0 (2026-09-24)
+
+- **Fixed: phantom unread.** The v0.106.0 reader-position import had declared every live
+  session on the machine a reader of every partition, and the DevSwarm gate double-counted
+  the Primary's own mailbox against that; an updater repair now retires the affected floors
+  on already-updated stores.
+- **Fixed: one mailbox for a session's two partitions**, with a repair for stores where the
+  split had already duplicated acks.
+- **Changed: one persisted storage backend per store**, plus a merge of any store that had
+  already split before that marker fix shipped (so a child on the non-chosen backend could
+  not see broadcasts) — `doctor` (plain) now reports split stores found; `--repair` /
+  `update` merge them. Children now wake on broadcasts.
+- **Changed: no more archive-ready nag when only your own request is outstanding**, plus an
+  ignore list; spawn titles are applied to new workspaces.
+- **Fixed: an app-archived workspace stops reading as active**; a dead archive-ready
+  workspace is now archived directly instead of nagged forever.
+- **Changed: per-turn hook blocks (urgent/archive-ready/stale/limit-conservation) are
+  re-emitted only when their content changes**, not every turn.
+- **Fixed: tasklist-guard no longer re-nags after a real progress update** — a scratchpad
+  write never counts as project work, but a transcript-observed progress write always does,
+  regardless of file mtime.
+- **Changed: edit-guard allows the session's own tmpdir scratchpad.**
+- **Changed: output-verify is scoped to test runners.**
+- **Added: Jev**, a shared LLM-assist layer with shadow metrics and a `jev` skill
+  ("activate jev") that asks for a Vercel AI Gateway or TypeSafe key, installs it, enables
+  Jev, and runs a test call (also: status / disable / mode). Ships shadow integrations for
+  the claim ledger, merge-gate hedges, new-request classification, and output-verify
+  (scoped to test runners), speculation-outcome tracking, model-routing in relax-only
+  (shadow) mode, and a `jev report` command (KEEP / REVIEW / REMOVE) over the metrics log.
+
 ## 0.106.0 (2026-09-24)
 
 - **Changed: DevSwarm reader positions live in one SQLite table** with one unread count and
