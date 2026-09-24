@@ -6,6 +6,21 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.105.3 (2026-09-24)
+
+- **Fixed: the optional Jev check now backs speculation-guard** (the always-on hedge
+  check) instead of the opt-in LLM judge, and is trusted only to block. Its question was
+  worded so a hedged guess could never count as speculative, so a clearly speculative
+  reply got a confident allow; with the corrected question it scored 10/10 on labelled
+  replies (8/10 confidently). Any other Jev outcome falls through to the regex check;
+  with Jev off, the hedge check sees exactly the same text as before (the de-duplicated
+  text extraction is used only as Jev's input, not the regex path). The LLM judge
+  (`ANTIHALL_SEMANTIC_JUDGE`) is back to its pre-Jev form.
+- **Fixed: Jev's time limit (default 1.5s, clamped to at most 3s) now covers the whole
+  response, including the body** — previously the deadline only bounded the initial
+  request/headers, so a server that stalled after sending headers could hang past the
+  configured timeout.
+
 ## 0.105.2 (2026-09-24)
 
 - **Changed: command-guard and git-guard share one shell-scanning library**
