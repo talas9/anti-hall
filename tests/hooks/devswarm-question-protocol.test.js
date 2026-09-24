@@ -10,6 +10,7 @@
 
 const { test } = require('node:test');
 const assert = require('node:assert');
+const path = require('node:path');
 const { testHook } = require('../helpers/spawn-hook.js');
 const { makeHome } = require('../helpers/fixtures.js');
 
@@ -18,6 +19,15 @@ const HOOK = 'devswarm-child-role.js';
 // plugins/anti-hall/hooks/verify-first-full.js header comment). Assert well
 // under it, not just under it, so there is real headroom for future growth.
 const INJECTION_CAP = 10000;
+// The payload embeds absolute CLI paths under the plugin root (devswarm.js,
+// devswarm-wake-watch.js), so its raw length depends on where the checkout
+// lives — a deep scratch clone pushed it past the headroom check (#48). Size
+// assertions measure the payload with the plugin root replaced by a
+// representative installed root (plugin cache dir, 65 chars), so the result
+// is the same in any checkout and matches what installed users actually get.
+const PLUGIN_ROOT = path.resolve(__dirname, '..', '..', 'plugins', 'anti-hall');
+const INSTALLED_ROOT = '/Users/someuser/.claude/plugins/cache/anti-hall/anti-hall/0.108.0';
+function normalizedLength(c) { return c.split(PLUGIN_ROOT).join(INSTALLED_ROOT).length; }
 
 function sessionPayload() {
   return { hook_event_name: 'SessionStart', source: 'startup', session_id: 't' };
@@ -80,10 +90,11 @@ test('CAP: worst-case injected payload (child + Claude wake directive) stays wel
   const h = makeHome();
   try {
     const c = ctx(testHook(HOOK, sessionPayload(), { home: h.home, expectJson: true, env: CHILD_ENV }));
-    assert.ok(c.length < INJECTION_CAP, `child payload ${c.length} chars must stay under the ${INJECTION_CAP}-char cap`);
+    const n = normalizedLength(c);
+    assert.ok(n < INJECTION_CAP, `child payload ${n} chars (installed-path normalized) must stay under the ${INJECTION_CAP}-char cap`);
     // Real headroom check, not just "under the line" — this addition must be
     // TIGHT, not merely non-fatal.
-    assert.ok(c.length < INJECTION_CAP * 0.5, `child payload ${c.length} chars should stay well under half the cap; ctx.length=${c.length}`);
+    assert.ok(n < INJECTION_CAP * 0.5, `child payload ${n} chars (installed-path normalized; raw ${c.length}) should stay well under half the cap`);
   } finally {
     h.cleanup();
   }
@@ -93,7 +104,8 @@ test('CAP: Primary worst-case payload also stays well under the cap', () => {
   const h = makeHome();
   try {
     const c = ctx(testHook(HOOK, sessionPayload(), { home: h.home, expectJson: true, env: PRIMARY_ENV }));
-    assert.ok(c.length < INJECTION_CAP, `Primary payload ${c.length} chars must stay under the ${INJECTION_CAP}-char cap`);
+    const n = normalizedLength(c);
+    assert.ok(n < INJECTION_CAP, `Primary payload ${n} chars (installed-path normalized) must stay under the ${INJECTION_CAP}-char cap`);
   } finally {
     h.cleanup();
   }
