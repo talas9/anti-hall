@@ -98,6 +98,32 @@ test('doctor: installed_plugins.json already at the newest version -> OK, no war
   }
 });
 
+test('doctor: installed_plugins.json AHEAD of the running session\'s own version -> WARN to restart (not /reload-plugins)', () => {
+  const { home, cleanup } = makeFakeHome();
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'antihall-doctor-harnessver-cwd-'));
+  try {
+    // Registered ahead of THIS repo's own running plugin.json version
+    // (0.107.1 at the time this test was written) — simulates: `claude
+    // plugin update` already ran and updated the registry, but the CURRENT
+    // session (this doctor.js process) has not restarted, so it is still
+    // executing the OLD build. cacheVersions matches the registered version
+    // too, so the SEPARATE "harness not re-registered" warning must not
+    // also fire — this is exclusively the restart-needed case.
+    layoutPlugins(home, { installedVersion: '9.9.9', cacheVersions: ['9.9.9'] });
+    const r = runDoctor({ home, cwd });
+    assert.match(r.out, /installed_plugins\.json is registered at 9\.9\.9, but this session is still running/,
+      'must name both the registered version and the version this session is actually running:\n' + r.out);
+    assert.match(r.out, /RESTART Claude Code/, 'must say RESTART, not merely suggest it:\n' + r.out);
+    assert.doesNotMatch(r.out, /\/reload-plugins is enough|or \/reload-plugins\)/,
+      'must never imply /reload-plugins alone is sufficient after a harness registry update:\n' + r.out);
+    assert.doesNotMatch(r.out, /has not re-registered this build/,
+      'the registry WAS updated — this is the restart-needed case, not the not-registered case:\n' + r.out);
+  } finally {
+    cleanup();
+    try { fs.rmSync(cwd, { recursive: true, force: true }); } catch (_) {}
+  }
+});
+
 test('doctor: no installed_plugins.json at all -> fails open, no crash, no false warning', () => {
   const { home, cleanup } = makeFakeHome();
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'antihall-doctor-harnessver-cwd-'));

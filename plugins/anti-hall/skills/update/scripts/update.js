@@ -525,7 +525,13 @@ function harnessRegisterPostUpdate(opts) {
     }
     return {
       attempted: true, ok: true,
-      detail: 'harness re-registered to ' + latest + ' — restart Claude Code (or /reload-plugins) to load it',
+      // Field-verified (2026-09-24): after `claude plugin update` the registry
+      // is updated immediately, but a SESSION ALREADY RUNNING keeps executing
+      // hooks from the OLD install path until it restarts — `claude plugin
+      // update --help` itself says "restart required to apply". /reload-plugins
+      // is NOT sufficient for this path (unlike a fresh cache-dir sync, which
+      // /reload-plugins alone can pick up) — never tell the user it might be.
+      detail: 'harness re-registered to ' + latest + ' — RESTART Claude Code (exit and resume the session) to load it; /reload-plugins is not enough after a harness registry update',
     };
   } catch (e) {
     const stderr = e && (e.stderr || (e.output && e.output[2]));

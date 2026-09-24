@@ -65,7 +65,10 @@ test('harnessRegisterPostUpdate: stale installed_plugins -> runs `claude plugin 
   assert.deepStrictEqual(calls[0], ['plugin', 'update', 'anti-hall@anti-hall']);
   assert.strictEqual(out.attempted, true);
   assert.strictEqual(out.ok, true);
-  assert.match(out.detail, /restart Claude Code|\/reload-plugins/);
+  assert.match(out.detail, /RESTART Claude Code/,
+    'field-verified: /reload-plugins does not pick up a harness registry update, only a real restart does');
+  assert.doesNotMatch(out.detail, /\/reload-plugins is enough|or \/reload-plugins\)/,
+    'must never imply /reload-plugins alone is sufficient after a harness registry update');
 });
 
 test('harnessRegisterPostUpdate: command failure is fail-open and reports the manual command (never throws)', () => {

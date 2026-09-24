@@ -167,14 +167,23 @@ try { version = require(path.join(ROOT, '.claude-plugin', 'plugin.json')).versio
 ok(`anti-hall plugin version ${version}`);
 
 // installed_plugins.json is HARNESS-OWNED (see skills/update/scripts/update.js's
-// own header) — this only ever READS it, never writes it. When its own recorded
-// version is older than the newest version actually mirrored into the cache/
-// marketplace, every session (including after a restart) keeps loading a STALE
-// build until the harness itself re-registers it — `update.js`'s
-// harnessRegisterPostUpdate now attempts that automatically on a version bump,
-// but this check surfaces the gap plainly for a machine where that auto-heal
-// hasn't run yet (or failed / needs a manual confirmation). Read-only — never
-// part of the repair pass.
+// own header) — this only ever READS it, never writes it. Two DISTINCT gaps,
+// checked separately because they need different fixes:
+//   1. installed_plugins.json itself is behind the newest version actually
+//      mirrored into cache/marketplace -> the harness has not re-registered
+//      this build at all. Fix: `claude plugin update anti-hall@anti-hall`.
+//      `update.js`'s harnessRegisterPostUpdate now attempts this automatically
+//      on a version bump; this check surfaces the gap for a machine where
+//      that auto-heal hasn't run yet (or failed / needs a manual
+//      confirmation).
+//   2. installed_plugins.json is AHEAD of the version this doctor.js process
+//      is itself running (`version`, read above from THIS process's own
+//      plugin.json under ROOT) -> the harness registry was already updated,
+//      but the CURRENT session's hooks are still executing the OLD build
+//      because it has not restarted. Field-verified (2026-09-24): `claude
+//      plugin update --help` itself documents "restart required to apply" —
+//      /reload-plugins does NOT pick this up, only a full restart does.
+// Both are read-only — never part of the repair pass.
 try {
   const upd = require(path.join(ROOT, 'skills', 'update', 'scripts', 'update.js'));
   const home = os.homedir();
@@ -182,9 +191,11 @@ try {
   const harnessVersion = upd.versionFromInstalledJson(updPaths.installedJson);
   const newest = upd.newestCacheVersion(updPaths.cacheRoot) || upd.versionFromMarketplace(updPaths.pluginJson);
   if (upd.isSemver(harnessVersion) && upd.isSemver(newest) && upd.compareVersions(harnessVersion, newest) < 0) {
-    warnl(`installed_plugins.json reports ${harnessVersion}, but ${newest} is available in cache/marketplace — the harness has not re-registered this build. Fix: claude plugin update anti-hall@anti-hall (then restart Claude Code, or try /reload-plugins first).`);
+    warnl(`installed_plugins.json reports ${harnessVersion}, but ${newest} is available in cache/marketplace — the harness has not re-registered this build. Fix: claude plugin update anti-hall@anti-hall.`);
+  } else if (upd.isSemver(harnessVersion) && upd.isSemver(version) && upd.compareVersions(version, harnessVersion) < 0) {
+    warnl(`installed_plugins.json is registered at ${harnessVersion}, but this session is still running ${version} — RESTART Claude Code (exit and resume the session) to load ${harnessVersion}; /reload-plugins is not enough after a harness registry update.`);
   } else if (upd.isSemver(harnessVersion)) {
-    ok(`installed_plugins.json harness registration is current (${harnessVersion})`);
+    ok(`installed_plugins.json harness registration is current (${harnessVersion}) and this session is running it`);
   }
 } catch (e) {
   infol(`harness registration check skipped: ${e.message}`);

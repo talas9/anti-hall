@@ -98,11 +98,16 @@ its own purposes).
      any reason, the helper does **not** retry with `--accept-command` — it
      reports the exact command for a human to run. Reported as
      `harnessRegistered: {attempted, ok, detail}` on the JSON status line and
-     in the human summary. On success, tell the user to **restart Claude Code
-     (or run `/reload-plugins`)** to load it — restart is the harness's own
-     stated requirement for this path, `/reload-plugins` is the lighter-weight
-     thing to try first. `installed_plugins.json` itself is still never
-     written directly by this helper.
+     in the human summary. **On success, tell the user to RESTART Claude Code
+     (exit and resume the session) to load it — field-verified (2026-09-24):
+     after `claude plugin update` the registry updates immediately, but a
+     session ALREADY RUNNING keeps executing hooks from the OLD install path
+     until it restarts (`claude plugin update --help` itself says "restart
+     required to apply"). `/reload-plugins` is NOT sufficient for this path —
+     unlike a fresh cache-dir sync (step 5 above), which `/reload-plugins`
+     alone can pick up — never tell the user it might be enough here.**
+     `installed_plugins.json` itself is still never written directly by this
+     helper.
    - **Reconcile (auto, DevSwarm-session-only, fail-open — `reconcilePostUpdate`,
      v0.58.1):** every update run ALSO drains `node scripts/devswarm.js reconcile`
      in-process — no separate agent step needed for this part. `reconcile` (v0.58.0)
