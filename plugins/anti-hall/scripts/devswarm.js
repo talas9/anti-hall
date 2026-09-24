@@ -931,6 +931,53 @@ function registrySnapshot(ctx, repoKey) {
     return s.listRegistry() || [];
   } catch (_) { return []; } finally { try { if (s) s.close(); } catch (_) {} }
 }
+// childLabelRefusal(id, flags, ctx) -> null | refusal result (v0.108.0).
+// `primary-<hash>` of a CHILD worktree is not an identity anyone owns: spawn
+// seeds it as a placeholder, and a heartbeat/register under it (field repro: the
+// Primary ran `heartbeat primary-<childhash>` from its own cwd) makes a twin row
+// of the real child look live. Resolved from the registry row for `id` (or, for
+// a caller's own label, its cwd; or --worktree). Refused when the child has a
+// registered id (named in `resolvedTo`), or when the caller is the Primary
+// checkout. Never mints or writes anything. Fail-open null.
+function childLabelRefusal(id, flags, ctx) {
+  try {
+    if (!/^primary-[0-9a-f]{8}$/.test(String(id))) return null;
+    const env = (ctx && ctx.env) || {};
+    const home = ctx && ctx.home;
+    const cwd = (ctx && ctx.cwd) || process.cwd();
+    const repoKey = repokey.repoKeyForWorktree(cwd);
+    const registry = repoKey ? registrySnapshot(ctx, repoKey) : [];
+    const row = registry.find((r) => r && String(r.id) === String(id));
+    let wt = null;
+    const wtFlag = flags ? one(flags, 'worktree') : undefined;
+    if (row && row.worktreePath) wt = canonicalWorktreeRealPath(String(row.worktreePath));
+    else if (wtFlag && canonicalMeshId(String(wtFlag)) === String(id)) wt = canonicalWorktreeRealPath(String(wtFlag));
+    else if (callerIdentity(env, cwd) === String(id)) wt = resolveCallerWorktree(cwd);
+    if (!wt) return null;
+    const ic = identityContext(wt);
+    if (isPrimaryCheckout(ic.worktreeRoot, ic.mainWorktree, home, env)) return null;
+    const kids = Array.from(new Set(registry.filter((r) => r && r.id != null && !/^primary-/.test(String(r.id))
+      && r.worktreePath && canonicalWorktreeRealPath(String(r.worktreePath)) === wt).map((r) => String(r.id))));
+    let app = null;
+    try { app = require('../companion/lib/devswarm-app-db.js').builderForWorktree({ home, env, worktreePath: wt }); } catch (_) { app = null; }
+    const childId = app && kids.includes(String(app.id)) ? String(app.id) : (kids.length === 1 ? kids[0] : null);
+    if (!childId) {
+      // No registered child id: the label is still the only identity that
+      // worktree has (legacy/non-DevSwarm children) — allowed, EXCEPT from the
+      // Primary checkout, which never heartbeats/registers a child's label.
+      const callerIc = identityContext(cwd, CALLER_CWD);
+      const fromPrimary = callerIc.worktreeRoot && callerIc.worktreeRoot !== wt
+        && isPrimaryCheckout(callerIc.worktreeRoot, callerIc.mainWorktree, home, env);
+      if (!fromPrimary) return null;
+    }
+    return {
+      ok: false, reason: 'child-label-id', id: String(id), resolvedTo: childId, worktree: wt,
+      error: JSON.stringify(String(id)) + ' is the worktree label of a CHILD workspace (' + wt + '), not an identity — '
+        + (childId ? 'use its workspace id ' + JSON.stringify(childId) : 'the child has not registered its workspace id yet')
+        + '. Nothing was written. A child heartbeats its own DEVSWARM_BUILDER_ID; the Primary never heartbeats a child.',
+    };
+  } catch (_) { return null; }
+}
 // declaredSelfId(env, cwd, registry) -> the caller's DECLARED id
 // (DEVSWARM_BUILDER_ID) when it names a registry row on the caller's OWN
 // worktree, else null (dual-partition defect, 0.106.0 field report).
@@ -3953,7 +4000,7 @@ function foldGroupIntoSurvivor(s, home, survivorId, candidates, opts) {
             beating = hasFreshHeartbeat(d.id, home, { now: opts && opts.now });
           } catch (_) { beating = false; } // unreadable heartbeat is NOT positive proof of a live reader
           isMeshAnchor = readerEvidence || beating;
-          if (childLabel) isMeshAnchor = beating; // one identity: only a live heartbeat protects
+          if (childLabel) isMeshAnchor = isSessionAliveRow(d, home); // one identity: only a running session protects
         } else {
           let live = false;
           try {
@@ -3963,7 +4010,10 @@ function foldGroupIntoSurvivor(s, home, survivorId, candidates, opts) {
             );
           } catch (_) { live = true; } // undetermined -> fail toward attended (loss-free), matching isSiblingPartitionLive's own posture
           isMeshAnchor = live || !!readDescriptorFile(home, d.id) || readerEvidence;
-          if (childLabel) isMeshAnchor = live; // one identity: only liveness protects
+          // One identity: only a positively RUNNING session protects a child
+          // label. A heartbeat file is not proof — anyone can write one (field
+          // repro: the Primary heartbeated a child's label from its own cwd).
+          if (childLabel) isMeshAnchor = isSessionAliveRow(d, home);
         }
       }
     } catch (_) { isMeshAnchor = false; }
@@ -16687,8 +16737,9 @@ function cmdSpawn(rest, ctx) {
     launchHint: launch.launched === true ? undefined
       : 'created, but NO session has registered/heartbeated for ' + String(meshId || branch)
         + ' yet (checked ' + launch.waitedMs + 'ms). This is normal right after a spawn — a launch takes '
-        + 'longer than this verb may block for. Confirm with `devswarm roster` or `devswarm heartbeat '
-        + String(meshId || '<meshId>') + '` in a minute; a row still showing sessionId null with a 0-byte '
+        + 'longer than this verb may block for. Confirm with `devswarm roster` in a minute — the child '
+        + 'registers under its OWN workspace id; never heartbeat ' + String(meshId || '<meshId>')
+        + ' yourself (a worktree label, not an identity). A row still showing sessionId null with a 0-byte '
         + 'heartbeat log after several minutes never launched.',
     raw: res.raw,
   };
@@ -16997,6 +17048,8 @@ function run(argv, ctx0) {
       case 'register': {
         const id = positionals[1];
         if (!isSafeId(id)) return { code: 2, result: { ok: false, error: 'invalid or missing workspace id' } };
+        const labelRefusal = childLabelRefusal(id, flags, ctx);
+        if (labelRefusal) return { code: 2, result: Object.assign({ action: 'register' }, labelRefusal) };
         const r = cmdRegister(id, flags, ctx);
         logVerbOutcome('register', id, r, ctx);
         return { code: r.ok ? 0 : 2, result: r };
@@ -17004,6 +17057,8 @@ function run(argv, ctx0) {
       case 'ensure': {
         const id = positionals[1];
         if (!isSafeId(id)) return { code: 2, result: { ok: false, error: 'invalid or missing workspace id' } };
+        const labelRefusal = childLabelRefusal(id, flags, ctx);
+        if (labelRefusal) return { code: 2, result: Object.assign({ action: 'ensure' }, labelRefusal) };
         const r = cmdRegister(id, flags, ctx, { requireNew: true });
         logVerbOutcome('ensure', id, r, ctx);
         return { code: r.ok ? 0 : 2, result: r };
@@ -17011,6 +17066,8 @@ function run(argv, ctx0) {
       case 'heartbeat': {
         const id = positionals[1];
         if (!isSafeId(id)) return { code: 2, result: { ok: false, error: 'invalid or missing workspace id' } };
+        const labelRefusal = childLabelRefusal(id, flags, ctx);
+        if (labelRefusal) return { code: 2, result: Object.assign({ action: 'heartbeat' }, labelRefusal) };
         const r = cmdHeartbeat(id, flags, ctx);
         // A5(b)/(d) + P1 fix: the exit code derives from `r.ok` (every other
         // verb already does this) instead of a hardcoded 0. This is NO LONGER
@@ -17478,6 +17535,7 @@ module.exports = {
   deriveReaderNonce, callerReaderKey, commitNdAck, floorCursor, importReaderCursorsAllStores, repairReaderFloorsAllStores, markAppArchivedDescriptors, deriveTitleFromBrief, appSessionOnWorktree, refreshNamesFromApp, syncAppState, messageGaps, appStatePath, cmdAppState, cmdSyncUi, repairChildSenderLabelsAllStores,
   senderIdentityDetailed, childSenderId, isPrimaryCheckout,
   refreshAnchorSession,
+  childLabelRefusal,
   reconcileDualPartitionAcksAllStores, declaredSelfId,
   mergeSplitBackendStoresAllStores,
   // instanceNonce CONSUMERS (defect d3d571495bf6, items a/b/c — exported for

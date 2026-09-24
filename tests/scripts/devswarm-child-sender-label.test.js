@@ -135,9 +135,11 @@ function seedPhantom(f, opts) {
     storeLib.appendMeshMessage(s, Object.assign({}, fields, { hash: storeLib.meshMessageHash(fields) }));
   });
   if (o.live) {
-    const p = liveness.heartbeatPathFor(f.LABEL, f.home);
-    fs.mkdirSync(path.dirname(p), { recursive: true });
-    fs.writeFileSync(p, JSON.stringify({ id: f.LABEL, ts: Date.now(), state_ts: Date.now(), source: 'inbox-tick', sessionId: null }));
+    // A RUNNING session holds the label (positive pid proof), not a mere heartbeat file.
+    withStore(f, (s) => s.upsertRegistry({ id: f.LABEL, worktreePath: f.child, sessionId: 'sess-label-live' }));
+    const dir = path.join(f.home, '.claude', 'sessions');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'sess-label-live.json'), JSON.stringify({ pid: process.pid, sessionId: 'sess-label-live' }));
   }
 }
 
@@ -207,5 +209,45 @@ test('register-primary from a corroborated DevSwarm CHILD worktree is refused (n
     assert.equal(forced.result.ok, true, JSON.stringify(forced.result));
     // The Primary checkout itself is never refused.
     registerPrimary(f);
+  } finally { cleanup(f); }
+});
+
+test('field sequence: spawn seeds primary-<childhash>, child registers its id, Primary heartbeats the label -> refused, nothing written; repair folds the seed twin', () => {
+  const f = fixture();
+  try {
+    registerPrimary(f);
+    const penv = Object.assign({ ANTIHALL_DEVSWARM_SPAWN_LAUNCH_WAIT_MS: '0' }, f.env);
+    const io = { run: () => ({ ok: true, raw: JSON.stringify({ branch: 'fix-child', path: f.child }) }) };
+    const sp = cli.run(['spawn', 'fix-child'], { home: f.home, env: penv, cwd: f.repo, io });
+    assert.equal(sp.result.ok, true, JSON.stringify(sp.result));
+    assert.equal(sp.result.meshId, f.LABEL);
+    assert.doesNotMatch(String(sp.result.launchHint || ''), /devswarm heartbeat primary-/, 'spawn no longer tells the Primary to heartbeat the label');
+    registerChildRow(f); // the child launches and registers under its own id
+    // The Primary heartbeats the child's label from its OWN cwd (the field repro).
+    const hb = cli.run(['heartbeat', f.LABEL], { home: f.home, env: f.env, cwd: f.repo });
+    assert.equal(hb.code, 2);
+    assert.equal(hb.result.reason, 'child-label-id');
+    assert.equal(hb.result.resolvedTo, CHILD);
+    assert.ok(!fs.existsSync(liveness.heartbeatPathFor(f.LABEL, f.home)), 'no heartbeat written under the label');
+    // register/ensure under the label are refused the same way; nothing minted.
+    const before = withStore(f, (s) => s.listRegistry().length);
+    assert.equal(cli.run(['register', f.LABEL, '--worktree', f.child], { home: f.home, env: f.env, cwd: f.repo }).result.reason, 'child-label-id');
+    assert.equal(cli.run(['ensure', f.LABEL, '--worktree', f.child], { home: f.home, env: f.env, cwd: f.repo }).result.reason, 'child-label-id');
+    assert.equal(withStore(f, (s) => s.listRegistry().length), before, 'no row minted');
+    // A child heartbeating its own label from its worktree is also refused, with its real id.
+    const own = cli.run(['heartbeat', f.LABEL], { home: f.home, env: Object.assign({ DEVSWARM_BUILDER_ID: CHILD }, f.env), cwd: f.child });
+    assert.equal(own.result.resolvedTo, CHILD);
+    // The real id and the Primary's own id still heartbeat normally.
+    assert.equal(cli.run(['heartbeat', CHILD], { home: f.home, env: f.env, cwd: f.child }).result.ok, true);
+    assert.equal(cli.run(['heartbeat', f.PRIMARY], { home: f.home, env: f.env, cwd: f.repo }).result.ok, true);
+    // Even a stale forged heartbeat file does not protect the seed: repair folds it into the child.
+    const p = liveness.heartbeatPathFor(f.LABEL, f.home);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, JSON.stringify({ id: f.LABEL, ts: Date.now(), state_ts: Date.now(), source: 'cli-heartbeat', sessionId: null }));
+    const res = cli.repairChildSenderLabelsAllStores(f.home, { env: f.env });
+    assert.equal(res.retired, 1, JSON.stringify(res));
+    const reg = withStore(f, (s) => s.listRegistry().map((r) => r.id));
+    assert.ok(!reg.includes(f.LABEL) && reg.includes(CHILD), 'twin folded into the real child id');
+    assert.equal(JSON.parse(fs.readFileSync(path.join(f.home, '.anti-hall', 'devswarm', 'retired', f.LABEL + '.json'), 'utf8')).retiredTo, CHILD);
   } finally { cleanup(f); }
 });
