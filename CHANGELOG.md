@@ -23,8 +23,8 @@ the update.
   says merged); its worktree is clean; it has no unread mail in either direction; it isn't
   the Primary; the owner hasn't viewed it in the app for 10 minutes; and it has been idle
   for `idleMin`. Settings `devswarm.autoArchive.{mode,idleMin,maxPerSweep}` go in
-  `~/.anti-hall/settings.json`. The default `mode` is `"dry-run"`, which only reports and
-  writes nothing; set `"on"` to act. Each archive tells the Primary with an undo hint, and
+  `~/.anti-hall/settings.json`. The default `mode` is `"on"`. Set it to `"dry-run"`
+  to report only (writes nothing), or `"off"` to disable. Each archive tells the Primary with an undo hint, and
   it replaces the "archive-ready" reminder for those workspaces. `devswarm.js auto-archive`
   shows the plan. Needs DevSwarm >= 2.5.3 and stays dormant on older versions.
 - **New: `devswarm.js prune-archived`.** The dry run (`--older-than <days>`) lists archived

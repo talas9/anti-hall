@@ -973,8 +973,8 @@ function main() {
     // Deferred post-update sweep backstop (task #40) — rides inside this SAME
     // single-flight sweep-lock hold, one bounded stage-slot per pass.
     const deferredSweep = deferredSweepIfDue({ home });
-    // v0.108.0 auto-archive (devswarm-lifecycle.js): default mode "dry-run"
-    // only REPORTS (in this stdout line); "on" archives proven-done children.
+    // v0.108.0 auto-archive (devswarm-lifecycle.js): default mode "on" archives
+    // proven-done children (dormant below DevSwarm 2.5.3); "dry-run" only reports.
     let autoArchive = null;
     try { autoArchive = require('./lib/devswarm-lifecycle.js').autoArchiveSweep({ home }); } catch (_) { autoArchive = null; }
     // `sweepFamilies` (identity-family collapsed) rides ALONGSIDE the existing

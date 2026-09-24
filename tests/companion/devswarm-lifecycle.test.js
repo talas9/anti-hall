@@ -187,14 +187,18 @@ test('mode off: nothing planned, nothing spawned', { skip }, () => {
   assert.deepStrictEqual(readCalls(fx.bin.callsFile), []);
 });
 
-test('settings: default dry-run; file overrides; junk falls back', () => {
+test('settings: default ON; dry-run/off selectable; junk falls back to on', () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ah-lc-set-'));
-  assert.deepStrictEqual(L.readSettings(home), { mode: 'dry-run', idleMin: 30, maxPerSweep: 3 });
+  assert.deepStrictEqual(L.readSettings(home), { mode: 'on', idleMin: 30, maxPerSweep: 3 });
   fs.mkdirSync(path.join(home, '.anti-hall'));
   fs.writeFileSync(path.join(home, '.anti-hall', 'settings.json'), JSON.stringify({ devswarm: { autoArchive: { mode: 'on', idleMin: 45, maxPerSweep: 99 } } }));
   assert.deepStrictEqual(L.readSettings(home), { mode: 'on', idleMin: 45, maxPerSweep: 20 });
   fs.writeFileSync(path.join(home, '.anti-hall', 'settings.json'), JSON.stringify({ devswarm: { autoArchive: { mode: 'yes', idleMin: 1 } } }));
-  assert.deepStrictEqual(L.readSettings(home), { mode: 'dry-run', idleMin: 30, maxPerSweep: 3 });
+  assert.deepStrictEqual(L.readSettings(home), { mode: 'on', idleMin: 30, maxPerSweep: 3 });
+  fs.writeFileSync(path.join(home, '.anti-hall', 'settings.json'), JSON.stringify({ devswarm: { autoArchive: { mode: 'dry-run' } } }));
+  assert.strictEqual(L.readSettings(home).mode, 'dry-run');
+  fs.writeFileSync(path.join(home, '.anti-hall', 'settings.json'), JSON.stringify({ devswarm: { autoArchive: { mode: 'off' } } }));
+  assert.strictEqual(L.readSettings(home).mode, 'off');
 });
 
 // ---------------- prune ----------------
@@ -294,4 +298,22 @@ test('notifyPrimary lands ONE line in the Primary partition through the partitio
   s2.close();
   assert.strictEqual(rows.length, 1);
   assert.match(rows[0].body, /undo: unarchive/);
+});
+
+test('DEFAULT (no settings file) + 2.5.3 fake: archives and reports with an undo hint', { skip }, () => {
+  const fx = fixture(V253, [{ id: 'c1' }]);
+  const r = L.autoArchiveSweep(opts(fx)); // no `settings` override -> reads the (absent) file -> default
+  assert.strictEqual(r.mode, 'on');
+  assert.deepStrictEqual(r.archived, ['c1']);
+  assert.strictEqual(fx.notified.length, 1);
+  assert.match(fx.notified[0].text, /undo: unarchive/);
+});
+
+test('DEFAULT (no settings file) + 2.5.2: dormant, nothing archived', { skip }, () => {
+  const fx = fixture(V252, [{ id: 'c1' }]);
+  const r = L.autoArchiveSweep(opts(fx));
+  assert.strictEqual(r.mode, 'on');
+  assert.match(r.dormant, /requires DevSwarm >= 2\.5\.3/);
+  assert.deepStrictEqual(r.archived, []);
+  assert.ok(!readCalls(fx.bin.callsFile).some((c) => c.argv[1] === 'archive'));
 });

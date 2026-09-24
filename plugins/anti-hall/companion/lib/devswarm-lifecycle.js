@@ -19,7 +19,7 @@
 //     (g) idle      — last heartbeat/transcript activity >= idleMin ago
 //   Any fact that cannot be READ counts as not proven -> no archive.
 //   Settings (<home>/.anti-hall/settings.json):
-//     devswarm.autoArchive.mode        "dry-run" (default) | "on" | "off"
+//     devswarm.autoArchive.mode        "on" (default, owner decision) | "dry-run" | "off"
 //     devswarm.autoArchive.idleMin     30   (min 5)
 //     devswarm.autoArchive.maxPerSweep 3    (1..20)
 //   dry-run writes NOTHING and spawns nothing mutating: the plan rides the
@@ -61,7 +61,7 @@ const PLAN_TTL_MS = 15 * 60 * 1000;
 const GIT_TIMEOUT_MS = 10000;
 const HC_TIMEOUT_MS = 60000;
 const SIZE_WALK_CAP = 200000;
-const DEFAULT_SETTINGS = Object.freeze({ mode: 'dry-run', idleMin: 30, maxPerSweep: 3 });
+const DEFAULT_SETTINGS = Object.freeze({ mode: 'on', idleMin: 30, maxPerSweep: 3 });
 const UNDO_HINT = 'undo: unarchive it from the archived workspaces list in the DevSwarm app';
 
 function devswarmDir(home) { return path.join(home, '.anti-hall', 'devswarm'); }

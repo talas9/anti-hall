@@ -197,7 +197,7 @@ fail-open (any probe error → not blocked).
 
 ## Archive flow — both roles
 
-anti-hall never archives a workspace mechanically, except the opt-in auto-archive below (`mode: "on"`, DevSwarm >= 2.5.3, every precondition proven). Teardown is always a two-sided, human-confirmed
+anti-hall never archives a workspace mechanically, except the auto-archive below (on by default, DevSwarm >= 2.5.3, every precondition proven). Teardown is always a two-sided, human-confirmed
 handoff:
 
 - **PARENT role.** Before asking a child to tear down, the Primary must VERIFY the workspace is
@@ -298,12 +298,12 @@ worktree. Settings live in `~/.anti-hall/settings.json`:
 
 | Key | Values | Default |
 |---|---|---|
-| `devswarm.autoArchive.mode` | `"dry-run"` / `"on"` / `"off"` | `"dry-run"` (reports what WOULD be archived; writes nothing) |
+| `devswarm.autoArchive.mode` | `"on"` / `"dry-run"` / `"off"` | `"on"` (`"dry-run"` only reports what WOULD be archived and writes nothing; `"off"` disables) |
 | `devswarm.autoArchive.idleMin` | minutes, >= 5 | `30` |
 | `devswarm.autoArchive.maxPerSweep` | 1..20 | `3` |
 
 `node scripts/devswarm.js auto-archive` prints the current plan (read-only), with the proof
-or the blockers for each workspace. With `mode: "on"`, each archive sends the Primary one line
+or the blockers for each workspace. Each archive (default `mode: "on"`) sends the Primary one line
 with an undo hint (unarchive it from the DevSwarm app's archived list) and is logged to
 `~/.anti-hall/logs/devswarm-auto-archive.ndjson`. The "archive-ready" reminder is then
 skipped for the workspaces the sweep owns. Archive is recoverable: the worktree is kept.
@@ -464,7 +464,7 @@ matching on `hash` (table-wide UNIQUE) when verifying a specific message landed.
 | `reconcile-active [--active id,...] [--allow-empty] [--stdin] [--yes\|--confirm]` | `--active` required unless `--allow-empty`; ids match by full id or a >=4-char prefix/>=8-char embedded-hex substring (roster-display-friendly) | **Parent-driven reconciliation against an explicit "still active" set (v0.62.0)**. Never build the set from a screenshot, because a scrolled or partial list would look like archived workspaces. Since v0.107.1, a current workspace of THIS project that is NOT in `--active` (or piped via `--stdin`) is archived ONLY when the DevSwarm app's own database says it is archived (`isActive=0`, `isHidden=1`). An absent workspace the app shows as active, or has no record of, is kept and listed in `keptNotArchivedInApp`. If the app DB can't be read, nothing is archived and the output says why (`ANTIHALL_DEVSWARM_APP_DB` points at it). A match always SPARES a workspace, which is the safe direction. Refuses an empty active set unless `--allow-empty` is passed explicitly (guards against accidentally archiving everything). Dry-run by default; `--yes`/`--confirm` applies. | Reconciling the mesh against a known-good "what's actually still running" list. | **Read-only in dry-run; writes (archives) with `--yes`/`--confirm`.** |
 | `spawn <branch> [hivecontrol create flags...]` | pass-through — hivecontrol's own flags, unparsed | Thin wrap of `hivecontrol workspace create` (every flag forwards byte-for-byte), then best-effort auto-registers the new worktree in the shared registry (a phantom row, `sessionId:null`, filled in by the child's own first self-register). | Primary creating a new child workspace — this is the workspace-tier spawn command. | **Writes** (hivecontrol side-effects + a registry phantom row). |
 | `merge [hivecontrol merge-into-source flags...]` | pass-through | Thin wrap of `hivecontrol workspace check-merge` + `merge-into-source` (pass-through, never re-parsed), then `send --broadcast`s the outcome to the mesh. | Child finishing / shipping upstream. | **Writes.** |
-| `auto-archive` | none | **v0.108.0.** Prints the supervisor's auto-archive plan: each tracked child with its proof or its blockers (a done … g idle). Archiving itself only happens in the supervisor sweep with `devswarm.autoArchive.mode: "on"` on DevSwarm >= 2.5.3. | "Which done workspaces would be archived, and why not the others?" | **Read-only.** |
+| `auto-archive` | none | **v0.108.0.** Prints the supervisor's auto-archive plan: each tracked child with its proof or its blockers (a done … g idle). Archiving itself only happens in the supervisor sweep (default `devswarm.autoArchive.mode: "on"`) on DevSwarm >= 2.5.3. | "Which done workspaces would be archived, and why not the others?" | **Read-only.** |
 | `prune-archived --older-than <days>` / `--confirm-ids <ids> --plan <nonce>` | `--older-than` (dry run) or both confirm flags | **v0.108.0.** The dry run lists archived workspaces with evidence and stores a 15-min plan nonce. `--confirm-ids` DELETES exactly the plan's eligible ids through `hivecontrol workspace delete` (DevSwarm >= 2.5.3). Only after the owner approves that exact list; refuses automated callers. | Cleaning up old archived workspaces, following the owner-approved flow in "Auto-archive and prune". | **Dry run writes a plan file; `--confirm-ids` is destructive.** |
 
 `roster`, `diagnose`, and `healthcheck` are the three pure-read, no-id, project-scoped
