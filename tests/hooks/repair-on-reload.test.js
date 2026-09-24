@@ -359,3 +359,28 @@ test('P1b: only the newest 5 repair-on-reload logs are kept; other logs untouche
     assert.ok(fs.existsSync(path.join(dir, 'other.log')), 'unrelated logs are never touched');
   } finally { h.cleanup(); }
 });
+
+test('P1b: a cooldown stamped under a DIFFERENT running version does not hold back this version', () => {
+  const h = makeHome();
+  try {
+    const cacheRoot = path.join(h.home, '.claude', 'plugins', 'cache', 'anti-hall', 'anti-hall');
+    const counter = path.join(h.home, 'doctor-runs.txt');
+    fakeDoctor(path.join(cacheRoot, RUNNING_VERSION), counter, null);
+    fs.writeFileSync(path.join(h.home, '.anti-hall', 'repair-on-reload.last.json'), JSON.stringify({ ts: Date.now() - 1000, version: '0.0.1' }), 'utf8');
+    testHook(HOOK, userPromptPayload(), { home: h.home }); waitChild(h.home);
+    assert.strictEqual(runs(counter), 1, 'a version change since the last run must repair now');
+    const last = JSON.parse(fs.readFileSync(path.join(h.home, '.anti-hall', 'repair-on-reload.last.json'), 'utf8'));
+    assert.strictEqual(last.version, RUNNING_VERSION, 'the cooldown is re-stamped for the running version');
+  } finally { h.cleanup(); }
+});
+
+test('P1b: a spawn that fails never stamps the cooldown (the next prompt retries)', () => {
+  const h = makeHome();
+  try {
+    // A FILE where the logs dir must go makes the spawn path throw before any child starts.
+    fs.writeFileSync(logsDir(h.home), 'not a dir', 'utf8');
+    const r = testHook(HOOK, userPromptPayload(), { home: h.home });
+    assert.strictEqual(r.status, 0, `stderr: ${r.stderr}`);
+    assert.strictEqual(fs.existsSync(path.join(h.home, '.anti-hall', 'repair-on-reload.last.json')), false, 'no cooldown after a failed spawn');
+  } finally { h.cleanup(); }
+});

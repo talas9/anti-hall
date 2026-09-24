@@ -51,7 +51,8 @@
 //     that migration's apply+re-scan both report complete — "stamp only after
 //     success" falls out of reusing that existing contract rather than this
 //     hook inventing a second one.
-//   - Cooldown: at most one spawn per hour after ANY run
+//   - Cooldown: at most one spawn per hour after a STARTED run at the same
+//     running version (a version change or a failed spawn never waits)
 //     (~/.anti-hall/repair-on-reload.last.json); only the newest 5
 //     repair-on-reload-*.log files are kept; the child runs at nice 19.
 //   - The lock file is intentionally left behind after the child exits (dead
@@ -160,9 +161,12 @@ function repairPending(home, version) {
   });
 }
 
-function inCooldown(home, now) {
+// The cooldown binds to the version that ran: a run under a DIFFERENT running
+// version (an update or reload landed since) never waits out the old hour.
+function inCooldown(home, now, version) {
   try {
     const last = JSON.parse(fs.readFileSync(cooldownPath(home), 'utf8'));
+    if (last.version !== version) return false;
     return Number.isFinite(last.ts) && now - last.ts >= 0 && now - last.ts < COOLDOWN_MS;
   } catch (_) { return false; }
 }
@@ -263,8 +267,10 @@ function spawnDetachedRepair(home, runningVersion) {
         fs.renameSync(tmp, p);
       } catch (_) {}
     }
+    return Number.isInteger(child.pid); // no pid = the spawn itself failed
   } catch (_) {
     // fail-open: spawn failed (missing doctor.js, sandboxed env, etc.) — silent.
+    return false;
   }
 }
 
@@ -296,12 +302,13 @@ function main() {
   if (!repairPending(home, version)) return; // fast path: nothing to do
 
   const now = Date.now();
-  if (inCooldown(home, now)) return; // ran within the last hour
+  if (inCooldown(home, now, version)) return; // ran within the last hour at this version
 
   if (!acquireLock(home)) return; // another repair already in flight
 
-  markRun(home, now, version);
-  spawnDetachedRepair(home, version);
+  // Stamp the cooldown only for a spawn that actually started: a failed spawn
+  // must not make the next prompt wait an hour.
+  if (spawnDetachedRepair(home, version)) markRun(home, now, version);
   pruneLogs(home);
 }
 
