@@ -71,6 +71,7 @@ const DISCIPLINES_INDEX = [
   '  - /anti-hall:orchestration - full swarm playbook when a task is large enough to plan a fan-out.',
   '  - /anti-hall:deadly-loop - HARDEN risky changes BEFORE merge: cross-file/cross-PR coordination, security-sensitive changes, schema/production-data touches, shell scripts, CI/workflow YAML, LLM-prompt work. Iterative Reviewer+Critic debate + fix waves until zero NEW P0s.',
   '  - /anti-hall:ship-it - ship any change correctly, S/M/L scaled to blast radius: brainstorm + plan IN PLAN MODE (ExitPlanMode is the gate), harden the plan with the deadly-loop BEFORE code, fan large work out as a Workflow swarm, verify each phase with fresh evidence + a vacuous-test guard until zero NEW P0s.',
+  '  - /anti-hall:system-briefing (Codex: anti-hall-system-briefing) - the anti-hall operator guide: every term, rule, skill, CLI verb and setting with its default. Read it before operating anti-hall or when a term/option is unclear.',
 ];
 
 // Foundation payload: the core protocol + the discipline/skill index. Identical in

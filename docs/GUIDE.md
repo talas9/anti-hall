@@ -1293,6 +1293,102 @@ wired resolver.
   and no `/config` panel — `~/.anti-hall/settings.json` via this CLI is the only front
   door there, and it's the same file Claude Code's fallback path reads too.
 
+### Every setting
+
+Generated from `hooks/lib/settings-schema.js` (a hygiene test keeps this table and the schema in sync). "adv" = advanced (shown by `show --all`).
+
+| Setting | Default | Env | Notes |
+|---|---|---|---|
+| `autoHandover.enabled` | `true` | — | Write an automatic handover before context runs out. |
+| `autoHandover.pct` | `85` [1..99] | `ANTIHALL_AUTO_HANDOVER_PCT` | Context-usage percent that triggers an automatic handover. |
+| `autoHandover.nag` | `true` | — | Nag (remind) the user when a handover is due but not yet written. |
+| `autoHandover.nagStepPct` | `5` [1..100] | — | Percent increments between successive handover nags. |
+| `autoHandover.nagQuietMin` | `15` [1..] | — | Minutes to wait before repeating a handover nag. |
+| `guards.mergeGate` | `false` | `ANTIHALL_MERGE_GATE` | Enable merge-readiness gate checks before merging. |
+| `guards.shipitGate` | `false` | `ANTIHALL_SHIPIT_GATE` | Enable the ship-it workflow gate. |
+| `guards.outputVerifyGuard` | `true` | `ANTIHALL_OUTPUT_VERIFY_GUARD` | Output-verification guard (blocks unverified completion claims). |
+| `guards.failureRootCauseNudge` | `true` | `ANTIHALL_FAILURE_ROOT_CAUSE_NUDGE` | Nudge toward root-cause analysis after a failure. |
+| `guards.repoSelfDrift` | `true` | `ANTIHALL_REPO_SELF_DRIFT` | anti-hall's own repo-drift self-check hook. |
+| `guards.stashGuard` | `false` | `ANTIHALL_STASH_GUARD` | Arm stash-protection warnings in git-guard (also armed per-repo via .anti-hall/protected-stashes). |
+| `guards.emitDedupe` | `true` | `ANTIHALL_EMIT_DEDUPE` | Deduplicate repeated hook-emit output. |
+| `guards.editGuardAllow` adv | — | `ANTIHALL_EDIT_GUARD_ALLOW` | Extra allowed file globs for edit-guard (comma/colon separated). |
+| `guards.allowSubagentMailbox` adv | `false` | `ANTIHALL_ALLOW_SUBAGENT_MAILBOX` | One-off allow for the subagent-mailbox command pattern. |
+| `guards.reaperMatch` adv | — | `ANTIHALL_REAPER_MATCH` | Extra process-name pattern for the MCP session-end reaper. |
+| `guards.reaperExclude` adv | — | `ANTIHALL_REAPER_EXCLUDE` | Excludes matching processes from the MCP reaper. |
+| `guards.tasklistWorkThreshold` adv | `3` [1..] | `ANTIHALL_TASKLIST_WORK_THRESHOLD` | Minimum work items before tasklist-guard fires. |
+| `guards.progressFreshMs` adv | `1800000` [0..] | `ANTIHALL_PROGRESS_FRESH_MS` | Freshness window (ms) for the progress file in tasklist-guard. |
+| `guards.apiGuardThirdparty` adv | `false` | `ANTIHALL_API_GUARD_THIRDPARTY` | Also verify installed 3rd-party package APIs, not just stdlib/builtins. |
+| `versionAlerts.antiHall` | `true` | `ANTIHALL_VERSION_ALERT` | Alert when a newer anti-hall version is available. |
+| `versionAlerts.claudeCli` | `true` | `ANTIHALL_CLAUDE_CLI_VERSION_ALERT` | Alert when a newer Claude CLI version is available. |
+| `versionAlerts.devswarm` | `true` | `ANTIHALL_DEVSWARM_VERSION_ALERT` | Alert when a newer DevSwarm/hivecontrol version is available. |
+| `updates.quiet` | `false` | `ANTIHALL_UPDATE_QUIET` | Suppress update output (for scripted capture). |
+| `updates.reconcileBudgetMs` adv | `60000` [0..] | `ANTIHALL_RECONCILE_BUDGET_MS` | Time budget (ms) for the reconcile step during update; 0 = unlimited. |
+| `updates.postpullBudgetMs` adv | `90000` [0..] | `ANTIHALL_UPDATE_POSTPULL_BUDGET_MS` | Time budget (ms) for the post-pull update sweep; 0 = unlimited. |
+| `updates.sweepBudgetMs` adv | `20000` [0..] | `ANTIHALL_UPDATE_SWEEP_BUDGET_MS` | Overall time budget (ms) for the update sweep. |
+| `limitConserve.mode` | `auto` (auto/on/off) | `ANTIHALL_LIMIT_CONSERVE` | Force conservation mode on/off, or auto-detect from the OMC usage cache. |
+| `limitConserve.threshold` | `85` [1..99] | `ANTIHALL_LIMIT_THRESHOLD` | Usage percent that triggers conservation mode. |
+| `limitConserve.accountCheck` adv | `true` | `ANTIHALL_LIMIT_ACCOUNT_CHECK` | Guard against stale usage-cache readings after an account switch. |
+| `jev.enabled` | `false` | `ANTIHALL_JEV` | Enable Jev (ANTIHALL_JEV=0 always force-disables regardless of this). |
+| `jev.transport` | `vercel` (vercel/typesafe) | — | Vercel AI Gateway passthrough (default) or a direct TypeSafe API call. |
+| `jev.judgeModel` | `claude-haiku-4-5` | `ANTIHALL_JUDGE_MODEL` | Model used for speculation-judge / jev-triage LLM calls. |
+| `jev.semanticJudge` | `false` | `ANTIHALL_SEMANTIC_JUDGE` | Enable the semantic speculation-judge hook (off = hook no-ops). |
+| `jev.keyFile` adv | — | — | Credential key-file path (default depends on transport). |
+| `jev.timeoutMs` adv | `1500` [1..3000] | — | Per-call timeout (ms), capped at 3000. |
+| `jev.confidenceThreshold` adv | `0.85` [0..1] | — | Minimum confidence for a Jev answer to be trusted by callers. |
+| `jev.triage` adv | `true` | — | Message-triage labeling once Jev is enabled. |
+| `jev.triageUrgentThreshold` adv | `0.9` [0..1] | — | Confidence threshold for the urgent triage label. |
+| `jev.budget.mode` | `unlimited` (unlimited/watch) | — | Jev spend: no limit, or warn when over budget (never auto-disables). |
+| `jev.budget.usdPerDay` | — | — | optional: daily USD spend threshold, used only when budget.mode=watch. |
+| `jev.budget.usdPerWeek` | — | — | optional: weekly USD spend threshold, used only when budget.mode=watch. |
+| `jev.audit.snippets` adv | `false` | `ANTIHALL_JEV_AUDIT_SNIPPETS` | Store a redacted ~200-char snippet for decisions Jev changed (off by default: privacy). |
+| `jev.budget.minCreditUsd` | — | — | optional: warn (once a day, budget.mode=watch only) when the gateway credit balance drops below this USD amount. |
+| `jev.prices` adv | — | — | computed: per-model USD price table {model: {inPerMTok, outPerMTok}} (or a "default" entry), used only when the gateway reports tokens but no cost. File-only (no env, no CLI set) — edit ~/.anti-hall/settings.json directly. |
+| `devswarm.hivecontrol` | — | `ANTIHALL_DEVSWARM_HIVECONTROL` | Explicit path to the hivecontrol CLI binary (default: PATH lookup — no single default value; empty means "look it up"). |
+| `devswarm.supervisorMode` | `auto` (auto/on/off) | `ANTIHALL_DEVSWARM_SUPERVISOR` | Force the DevSwarm supervisor context on/off, or auto-detect. |
+| `devswarm.requiredGates` | `done,merged,tests_passed` | `ANTIHALL_DEVSWARM_REQUIRED_GATES` | Merge gates required for DevSwarm tasks. |
+| `devswarm.inboxCmd` | — | `ANTIHALL_DEVSWARM_INBOX_CMD` | Consumer-configured command to read pending mesh messages (no built-in default). |
+| `devswarm.childGateStrict` adv | `true` | `ANTIHALL_DEVSWARM_CHILD_GATE_STRICT` | Strict child-gate enforcement. |
+| `devswarm.parentGateCap` adv | `3` [2..5] | `ANTIHALL_DEVSWARM_PARENT_GATE_CAP` | Caps the parent-gate wait/child count, clamped to [2,5]. |
+| `devswarm.activeFloorPct` adv | `50` [0..100] | `ANTIHALL_DEVSWARM_ACTIVE_FLOOR_PCT` | Min percent of active workspaces kept in the archived cache (0 disables the floor). |
+| `devswarm.archivedCacheMaxAgeMs` adv | — [0..] | `ANTIHALL_DEVSWARM_ARCHIVED_CACHE_MAX_AGE_MS` | computed: no fixed default — 2x the reconcile sweep’s own resolved cooldown (itself env/default-derived), not a literal constant. |
+| `devswarm.archivedGraceMs` adv | `600000` [0..] | `ANTIHALL_DEVSWARM_ARCHIVED_GRACE_MS` | Grace period (ms) before a workspace is considered archived. |
+| `devswarm.cooldownSec` adv | `600` [0..] | `ANTIHALL_DEVSWARM_COOLDOWN_SEC` | Supervisor cooldown (sec) between recovery actions. |
+| `devswarm.idleSec` adv | `900` [60..] | `ANTIHALL_DEVSWARM_IDLE_SEC` | Supervisor idle threshold (sec). |
+| `devswarm.dormantMs` adv | `1800000` [0..] | `ANTIHALL_DEVSWARM_DORMANT_MS` | Dormant-workspace threshold (ms). |
+| `devswarm.drainTtlMs` adv | `600000` [0..] | `ANTIHALL_DEVSWARM_DRAIN_TTL_MS` | TTL (ms) for the drain marker. |
+| `devswarm.graceSec` adv | `5` [1..60] | `ANTIHALL_DEVSWARM_GRACE_SEC` | Grace window (sec) before recovery in devswarm-recover. |
+| `devswarm.maxRecoveries` adv | `3` [1..20] | `ANTIHALL_DEVSWARM_MAX_RECOVERIES` | Max auto-recovery attempts. |
+| `devswarm.intervalSec` adv | `90` [60..120] | `ANTIHALL_DEVSWARM_INTERVAL` | Sweep interval (sec) used at supervisor install time, clamped [60,120]. |
+| `devswarm.migrateMarkRead` adv | `false` | `ANTIHALL_DEVSWARM_MIGRATE_MARK_READ` | Mark migrated messages as read during state migration. |
+| `devswarm.monitorTimeoutSec` adv | `30` [0..] | `ANTIHALL_DEVSWARM_MONITOR_TIMEOUT_SEC` | Bounded cadence (sec) for monitor timeout in devswarm-ingest. |
+| `devswarm.nudgeCooldownSec` adv | `120` [0..] | `ANTIHALL_DEVSWARM_NUDGE_COOLDOWN_SEC` | Cooldown (sec) between supervisor nudges. |
+| `devswarm.nudgeMaxAttempts` adv | `2` [1..20] | `ANTIHALL_DEVSWARM_NUDGE_MAX_ATTEMPTS` | Max nudge attempts before escalation. |
+| `devswarm.nudgeWindowSec` adv | `180` [1..] | `ANTIHALL_DEVSWARM_NUDGE_WINDOW_SEC` | Window (sec) for counting nudge attempts. |
+| `devswarm.postSpawnGraceSec` adv | `120` [0..1800] | `ANTIHALL_DEVSWARM_POST_SPAWN_GRACE_SEC` | Grace period (sec) right after spawning a child workspace, clamped [0,1800]. |
+| `devswarm.reapedRetentionDays` adv | `30` [0..] | `ANTIHALL_DEVSWARM_REAPED_RETENTION_DAYS` | Retention window (days) for reaped-workspace logs. |
+| `devswarm.receiptWindowMs` adv | `300000` [0..] | `ANTIHALL_DEVSWARM_RECEIPT_WINDOW_MS` | Window (ms) for parent-reply receipt tracking. |
+| `devswarm.reconcileSweep` adv | `auto` (auto/off) | `ANTIHALL_DEVSWARM_RECONCILE_SWEEP` | Enable/disable the periodic reconcile sweep in the supervisor. |
+| `devswarm.reconcileSweepSec` adv | `900` [300..] | `ANTIHALL_DEVSWARM_RECONCILE_SWEEP_SEC` | Interval (sec) for the reconcile sweep, floor 300s. |
+| `devswarm.rowStaleMs` adv | `86400000` [0..] | `ANTIHALL_DEVSWARM_ROW_STALE_MS` | Staleness threshold (ms) for workspace row selection. |
+| `devswarm.sendReceiptRetentionDays` adv | `7` [0..] | `ANTIHALL_DEVSWARM_SEND_RECEIPT_RETENTION_DAYS` | Retention window (days) for send-receipt records. |
+| `devswarm.summaryRetentionDays` adv | `30` [0..] | `ANTIHALL_DEVSWARM_SUMMARY_RETENTION_DAYS` | Retention window (days) for summary records. |
+| `devswarm.wakeCron` adv | `*/30 * * * *` | `ANTIHALL_DEVSWARM_WAKE_CRON` | Wake-poll cron schedule override (treated as untrusted input). |
+| `devswarm.wakeWatchPollMs` adv | `2000` [250..60000] | `ANTIHALL_DEVSWARM_WAKE_WATCH_POLL_MS` | Poll interval (ms) for the wake-watch loop, clamped [250,60000]. |
+| `devswarm.supervisorSweepBudgetMs` adv | `20000` [0..] | `ANTIHALL_SUPERVISOR_SWEEP_BUDGET_MS` | Time budget (ms) for one supervisor sweep pass. |
+| `devswarm.autoArchive.mode` | `on` (on/dry-run/off) | `ANTIHALL_DEVSWARM_AUTO_ARCHIVE_MODE` | Auto-archive finished workspaces (needs DevSwarm ≥ 2.5.3). |
+| `devswarm.autoArchive.idleMin` adv | `30` [5..] | `ANTIHALL_DEVSWARM_AUTO_ARCHIVE_IDLE_MIN` | Minutes idle before a finished workspace is eligible for auto-archive. |
+| `devswarm.autoArchive.maxPerSweep` adv | `3` [1..20] | `ANTIHALL_DEVSWARM_AUTO_ARCHIVE_MAX_PER_SWEEP` | Max workspaces auto-archived in one sweep. |
+| `devswarm.retention.days` adv | `30` [0..] | `ANTIHALL_DEVSWARM_RETENTION_DAYS` | Days of message bodies kept before archive+prune; 0 = retention off. |
+| `devswarm.retention.maxStoreMB` adv | `100` [0..] | `ANTIHALL_DEVSWARM_RETENTION_MAX_STORE_MB` | Store size limit (MB): above it, oldest bodies are pruned regardless of age; 0 = no limit. |
+| `devswarm.retention.keepPerPartition` adv | `200` [0..] | `ANTIHALL_DEVSWARM_RETENTION_KEEP_PER_PARTITION` | Newest messages per partition that are never pruned (age or size). |
+| `devswarm.retention.archive` adv | `true` | `ANTIHALL_DEVSWARM_RETENTION_ARCHIVE` | Write pruned bodies to the gzip archive first (restorable via `devswarm.js retention restore`). |
+| `devswarm.retention.archiveMaxMB` adv | `200` [0..] | `ANTIHALL_DEVSWARM_RETENTION_ARCHIVE_MAX_MB` | Archive size cap (MB); oldest archive months are dropped above it; 0 = no cap. |
+| `statusline.base` | — | `ANTIHALL_STATUSLINE_BASE` | Shell command run as the line-1 base in consolidated statusline mode. |
+| `statusline.noEmail` | `false` | `ANTIHALL_STATUSLINE_NO_EMAIL` | Suppress the email segment in the statusline. |
+| `codexNudge.enabled` | `true` | `ANTIHALL_CODEX_NUDGE` | Enable the Codex hand-off nudge hook. |
+| `codexNudge.min` adv | `3` [1..] | `ANTIHALL_CODEX_NUDGE_MIN` | Minimum substantial code-file edits before the nudge fires. |
+| `defects.defaultProj` | — | `ANTIHALL_DEFECT_PROJ` | Default project tag used when filing an anti-hall defect (max 64 chars). |
+
 ## Configuration / tuning
 
 - **Verify-first wording** — edit `hooks/verify-first-full.js` (the full SessionStart

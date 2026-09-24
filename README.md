@@ -79,7 +79,7 @@ Invoke any of these as `/anti-hall:<name>`:
 | `ship-it` | One workflow, scaled to size: plan in plan mode, deadly-loop-harden, build, verify each phase. |
 | `install-statusline` | Installs the two-line statusline (global or per-repo), with backup/restore. |
 | `doctor` | "Is anti-hall working?" — live self-tests on every guard, `--repair` for safe auto-fixes. |
-| `system-briefing` | Derived live inventory of every hook/skill this build actually ships. |
+| `system-briefing` | The agent-facing operator guide (terms, rules, every verb and setting) plus a live inventory of what this build ships. |
 | `update` | Updates anti-hall and prints the changelog delta. |
 | `flutter-debug` | Agent-driven Flutter debug loop with hot reload and visual verification. |
 | `activate` | One-shot first-run setup (statusline, model routing, sentinel). |

@@ -71,6 +71,9 @@ itself.
   integration's outcome; `shadow` consults+logs without changing anything (build
   up `jev report` data before trusting it); `off` skips it. `speculation`/`triage`
   default `on` once Jev is enabled; everything else defaults `shadow`.
+  Integrations: `speculation`, `triage` (default `on`); `modelRouting`, `claimLedger`,
+  `mergeGateHedge`, `newRequest`, `outputVerifyGuard` (default `shadow`) — see
+  `docs/KB-jev-classifier.md` for each one's trust rule.
 - `node "$ANTI_HALL_ROOT/scripts/jev-report.js" [--window 24h|7d]` — read-only
   KEEP/REVIEW/REMOVE summary per integration. Two cost signals: `costPerCall` in
   `~/.anti-hall/jev.json` for a manual estimate (else `n/a`), and an automatic
@@ -78,11 +81,13 @@ itself.
   see `hooks/lib/jev-client.js`'s `extractCostAndUsage`
   (https://vercel.com/docs/ai-gateway/sdks-and-apis/rest-api#look-up-a-generation).
   The systemone endpoint this build calls does not currently return those
-  fields, so set `prices` (`{"<model>": {"inPerMTok", "outPerMTok"}}` or a
-  `"default"` entry) in `jev.json` to compute real cost from token counts when
-  present instead. Never an extra network call; never charges a cache hit.
-- Budget watch (opt-in): `jev.json` `"budget": {"mode": "watch", "usdPerDay": 5,
-  "usdPerWeek": 25, "minCreditUsd": 10}` (default mode `"unlimited"`, no
+  fields, so set the `jev.prices` setting (`{"<model>": {"inPerMTok", "outPerMTok"}}` or a
+  `"default"` entry; file-only, edit `~/.anti-hall/settings.json`; a legacy `jev.json`
+  `prices` is still read) to compute real cost from token counts when present instead. Never an extra network call; never charges a cache hit.
+- Budget watch (opt-in): settings `jev.budget.mode` (`unlimited`/`watch`), `jev.budget.usdPerDay`,
+  `jev.budget.usdPerWeek`, `jev.budget.minCreditUsd` via the `anti-hall-settings` skill; a legacy
+  `jev.json` `"budget": {"mode": "watch", "usdPerDay": 5,
+  "usdPerWeek": 25, "minCreditUsd": 10}` is still read. Default mode `"unlimited"` (no
   watching). Over `usdPerDay`, the assist layer logs ONE
   `type:"budget-warning"` row per calendar day to `jev-assist.ndjson` -- no
   existing user-facing Jev notice path exists in this build, so it surfaces
@@ -99,8 +104,8 @@ itself.
   reported separately as "N TP (H human, A auto)"). The report also prints a
   one-line headline per integration, e.g. `speculation: 6 changed/24h · 5 TP
   (3 human, 2 auto) · $0.02/TP · p50=120ms · KEEP`.
-- Audit snippets (opt-in, OFF by default): `jev.json` `"audit": {"snippets":
-  true}` stores a REDACTED ~200-char snippet (secrets scrubbed: Bearer
+- Audit snippets (opt-in, OFF by default): setting `jev.audit.snippets` (env
+  `ANTIHALL_JEV_AUDIT_SNIPPETS`; legacy `jev.json` `"audit": {"snippets": true}` still read) stores a REDACTED ~200-char snippet (secrets scrubbed: Bearer
   tokens, known key prefixes, key=/token= assignments, emails, long
   base64/hex runs) for every decision that CHANGES an outcome, in a separate
   `~/.anti-hall/logs/jev-audit.ndjson`, mode 600, keyed by hash. `label

@@ -108,20 +108,22 @@ pricing, or TypeSafe's own pricing for the direct transport). Two cost signals:
   https://vercel.com/docs/ai-gateway/sdks-and-apis/rest-api#look-up-a-generation).
   The TypeSafe "systemone" endpoint this build calls does **not** currently return
   those fields, so real cost is `n/a` out of the box. If the owner knows a
-  per-token rate instead, set `prices` in `jev.json`
-  (`{"typesafe-ai/jev": {"inPerMTok": 0.5, "outPerMTok": 1.5}}`, or a `"default"`
-  entry) and `jev report` computes real cost from actual token counts when the
+  per-token rate instead, set `jev.prices` in `~/.anti-hall/settings.json`
+  (`{"jev": {"prices": {"typesafe-ai/jev": {"inPerMTok": 0.5, "outPerMTok": 1.5}}}}`,
+  or a `"default"` entry; file-only — there is no CLI `set` for it; a `prices` key in
+  the legacy `jev.json` is still read) and `jev report` computes real cost from actual token counts when the
   response includes them. Real cost NEVER costs an extra network call and NEVER
   charges a cache hit. `jev report --window 24h|7d` shows real cost totals,
   $/call, and $/changed-decision per integration (default: both windows).
 
 ## Budget watch (opt-in, observability only)
 
-Set `budget` in `~/.anti-hall/jev.json` to watch real spend against a cap:
-
-```json
-{ "budget": { "mode": "watch", "usdPerDay": 5, "usdPerWeek": 25, "minCreditUsd": 10 } }
-```
+Set the `jev.budget.*` settings to watch real spend against a cap (via
+`/anti-hall:settings`, e.g. `set jev.budget.mode watch`, `set jev.budget.usdPerDay 5`):
+`jev.budget.mode` (`unlimited`/`watch`), `jev.budget.usdPerDay`,
+`jev.budget.usdPerWeek`, `jev.budget.minCreditUsd`. A legacy `jev.json`
+`{"budget": {"mode": "watch", "usdPerDay": 5, ...}}` still works and is migrated into
+`settings.json` once.
 
 `mode` defaults to `"unlimited"` (no watching, no warnings). In `"watch"` mode,
 `usdPerDay` is required and `usdPerWeek`/`minCreditUsd` are optional. When the
@@ -162,7 +164,9 @@ writing anything.
 
 ### Audit snippets (opt-in, OFF by default)
 
-Set `"audit": {"snippets": true}` in `~/.anti-hall/jev.json` to store a small,
+Set `jev.audit.snippets` to true (`/anti-hall:settings`, or env
+`ANTIHALL_JEV_AUDIT_SNIPPETS=1`; a legacy `jev.json` `{"audit": {"snippets": true}}`
+still works) to store a small,
 **redacted** local-only snippet for every decision that CHANGES an outcome
 (never for an unchanged call): the first ~200 characters of the text Jev
 judged, after scrubbing common secret shapes (Bearer tokens, known key
@@ -194,7 +198,19 @@ speculation: 6 changed/24h · 5 TP (3 human, 2 auto) · $0.02/TP · p50=120ms ·
 trust rule), `shadow` consults and logs Jev but never changes the result (useful to
 gather `jev report` data before trusting it), `off` skips it entirely. `speculation`
 and `triage` default to `on` once Jev is enabled (pre-existing behavior); every
-other integration (e.g. `modelRouting`) defaults to `shadow` until promoted.
+other integration defaults to `shadow` until promoted.
+
+| Integration | Hook | What Jev may do when `on` |
+|---|---|---|
+| `speculation` | speculation-guard.js (Stop) | add a speculation block the regex missed; lets speculation-judge skip its paid call |
+| `triage` | jev-triage.js (inbox reads) | label messages (urgent/…); label-only |
+| `modelRouting` | model-routing-guard.js | downgrade a mechanical-flagship block to an advisory on a confident non-mechanical classification |
+| `claimLedger` | claim-ledger.js (Stop) | relax a flagged claim it judges supported |
+| `mergeGateHedge` | merge-gate.js (merge commands) | relax a hedge-based merge block |
+| `newRequest` | task-tracker.js | label the prompt new-request/follow-up/correction/question (advisory) |
+| `outputVerifyGuard` | output-verify-guard.js (test runners) | advisory label on runner output |
+
+Details and trust rules: `docs/KB-jev-classifier.md` ("All wired integrations").
 
 ## Never do this
 

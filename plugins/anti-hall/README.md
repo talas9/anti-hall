@@ -72,7 +72,7 @@ Invoke as `/anti-hall:<name>`:
 | `ship-it` | any change, small fix to multi-phase feature | plan-in-plan-mode → deadly-loop harden → build → verify each phase |
 | `install-statusline` | "install the statusline" | writes the statusline setting, wraps any existing one, backup/restore |
 | `doctor` | "is anti-hall working?" | live self-tests on every guard; `--repair` for safe auto-fixes |
-| `system-briefing` | "brief me on anti-hall" | derived (never hardcoded) live inventory of every hook/skill shipped |
+| `system-briefing` | "brief me on anti-hall", "what does X mean" | operator guide (terms, rules, verbs, settings) + live inventory of every hook/skill shipped |
 | `update` | "update anti-hall" | pulls latest, shows changelog delta, prompts `/reload-plugins` |
 | `flutter-debug` | debugging a running Flutter app | agent-driven hot-reload + visual-verification debug loop |
 | `activate` | first-time setup | one-shot idempotent install of statusline + model-routing state |

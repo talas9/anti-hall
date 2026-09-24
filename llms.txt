@@ -127,7 +127,7 @@ Shared libraries (not hooks): `verify-first-core.js`, `coordinator-detect.js`, `
 | activate | One-shot first-run setup. |
 | install-statusline | Installs the two-line statusline. |
 | settings | Show/change any setting (`~/.anti-hall/settings.json`), including auto-handover. |
-| system-briefing | Live enumeration of every installed hook, skill and substrate. |
+| system-briefing | The operator guide: glossary, hard rules, every skill/CLI verb/setting with defaults, plus a live inventory of what is installed. SessionStart points agents at it. |
 | devswarm | DevSwarm integration: mesh CLI, recovery, auto-archive/prune, retention, app DB, screenshot sync. |
 | jev | Jev classifier activation, modes per integration, report. |
 | defects | File/list/show/rule on anti-hall defect reports. |

@@ -541,3 +541,30 @@ are all shared files under `plugins/anti-hall/hooks/` (§ codex/README.md) — t
 port gets this integration for free with no separate implementation. `jev-assist.js`/
 `jev-assist-worker.js`/`jev-report.js` live under the same shared `hooks/lib/` and
 `scripts/` directories.
+
+## 11. Real cost, precision, budget watch, credit balance, audit snippets (v0.108.0)
+
+- **Real cost per call.** `jev-client.js` `extractCostAndUsage` reads a gateway-reported
+  cost or token usage from each response; `jev-assist.js` `computeCostUsd` logs
+  `costUsd` + `costSource`: `gateway` (reported), `price-table` (tokens × the owner's
+  `jev.prices` setting — `{model: {inPerMTok, outPerMTok}}` or a `default` entry; the
+  legacy `jev.json` `prices` is still read), `cache` ($0 for a cache hit), or null
+  (never invented, never an extra network call). The TypeSafe systemone endpoint
+  currently returns neither, so real cost needs `jev.prices`.
+- **Report.** `jev-report.js [--window 24h|7d] [--json]` adds cost windows ($/call,
+  $/changed decision), precision from labels (`jev-report.js label <hash> tp|fp`; human
+  labels win over AUTO labels derived from recorded outcomes), yield, cost efficiency,
+  overhead and a one-line headline per integration. Changed decisions are counted once
+  per content hash (a fresh call plus its cache hits = one decision).
+- **Budget watch** (opt-in; settings `jev.budget.mode` `unlimited`/`watch`,
+  `jev.budget.usdPerDay`, `jev.budget.usdPerWeek`, `jev.budget.minCreditUsd`; legacy
+  `jev.json` `budget` still read). Over `usdPerDay` the assist layer logs one
+  `budget-warning` row per day; `jev-report` shows `budgetStatus` (24h/7d spent vs
+  budget). **Jev is never auto-disabled.**
+- **Credit balance** (vercel transport + key): `GET https://ai-gateway.vercel.sh/v1/credits`,
+  report/status time only, 15-minute cache (`~/.anti-hall/cache/jev-credits.json`);
+  below `minCreditUsd` in watch mode → one warning per day.
+- **Audit snippets** (opt-in, `jev.audit.snippets`, env `ANTIHALL_JEV_AUDIT_SNIPPETS`):
+  a redacted ~200-char snippet for decisions that changed an outcome, in
+  `~/.anti-hall/logs/jev-audit.ndjson` (mode 600); `jev-report.js prune-audit --days N`
+  trims it (manual only).
