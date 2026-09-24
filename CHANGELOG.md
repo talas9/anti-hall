@@ -200,6 +200,39 @@ the update.
   the disagreement in `--check`'s action text ("... — run /reload-plugins") instead
   of silently reporting the stale one. Never writes `installed_plugins.json`.
 
+- **Fixed: `version-alert` (SessionStart) went silent on multi-release days.** ROOT CAUSE
+  (proven against the real `~/.anti-hall/version-check.json` on the machine that reported
+  it): the old 24h cache TTL let a genuinely-fresh cache serve a STALE `latest` for the
+  rest of the day — the cache read `{"latest":"v0.104.0","checkedAt":<2026-09-24T07:21Z>}`,
+  correct at that instant, but v0.105.0 through v0.107.0 (six releases) all shipped in the
+  following ~10 hours and the alert never fired for any of them, since the cache "wasn't
+  stale yet" per the old TTL. TTL shortened to 2h. Added a SECOND, independent, network-free
+  case: if the local version-pinned plugin cache
+  (`~/.claude/plugins/cache/anti-hall/anti-hall/<version>/`) already holds a newer version
+  than the one actually running — an update was fetched (`/anti-hall:update` or Codex's
+  update path) but the session was never reloaded — the hook now tells the user to
+  `/reload-plugins` (or restart Codex), independent of the remote-cache TTL, and includes a
+  one-line changelog headline read straight off the already-on-disk mirrored copy. Both
+  cases now emit an explicit ACTION directive ("Tell the user now: ...") instead of a bare
+  fact, since additionalContext reaches the model, not the user, and the model must be told
+  to relay it. Running version is (and always was) read from the plugin.json next to the
+  executing hook (`CLAUDE_PLUGIN_ROOT`-relative), never from
+  `~/.claude/plugins/installed_plugins.json` — confirmed harness-owned and laggy (observed
+  reporting 0.105.3 while 0.107.0 was actually loaded). Alerts are now deduped once per
+  session (a resume/compact/clear/fork re-fire of SessionStart for an already-checked
+  session is silent; a different session is told again) via `hooks/lib/drift-baseline.js`'s
+  existing key-based dedupe, with a dedicated marker file for the reload case so it dedupes
+  even when no remote cache has ever been written. `version-alert.js` is registered under
+  `SessionStart` only (never `SubagentStart`), so a subagent/sidechain never triggers this
+  hook at all; a defensive in-code check also skips a payload carrying a subagent marker.
+  Settings key `versionAlert.enabled` (default true) is documented as the intended
+  long-term off-switch pending `hooks/lib/settings.js`, which does not exist in this
+  codebase yet; `ANTIHALL_VERSION_ALERT=off` and the `version-alert` skip-guard hatch are
+  unchanged. Codex parity: same shared `hooks/version-alert.js` file (already registered in
+  `codex/hooks/hooks.json`); both directive strings name the Codex-side update path (the
+  `anti-hall-update` skill) and reload step (restart Codex / start a fresh session) inline.
+  19 tests.
+
 ## 0.107.0 (2026-09-24)
 
 - **Fixed: phantom unread.** The v0.106.0 reader-position import had declared every live
