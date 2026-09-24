@@ -371,24 +371,43 @@ test('JEV: credential never appears in stdout, stderr, or the log', async () => 
 const { execFileSync } = require('node:child_process');
 const os = require('node:os');
 
-const LEGACY_BASE_REF = '3e72bf3^';
+// Full SHA on purpose: `git fetch origin <rev>` (the shallow-clone fallback
+// below) only accepts a full object id — GitHub's upload-pack refuses an
+// abbreviated one ("couldn't find remote ref") even when the full SHA fetches
+// fine. This is the parent of 3e72bf3 (the pre-3e72bf3 speculation-guard.js).
+const LEGACY_BASE_REF = process.env.SPEC_GUARD_LEGACY_BASE_REV || 'b2d368a2382a40b3227235dcb70a7e6040c51e3e';
 
 // buildLegacyHookCopy() -> absolute path to a standalone copy of the
 // pre-3e72bf3 speculation-guard.js, with its own (unchanged since that
 // commit) skip-guard.js and lib/state-prune.js dependencies alongside it so
-// its relative requires resolve.
+// its relative requires resolve. Returns null (with a reason) when the base
+// rev isn't reachable — CI checkouts (actions/checkout@v4) default to
+// fetch-depth: 1, so history this test needs may not be present locally yet.
 function buildLegacyHookCopy() {
   const repoRoot = path.join(__dirname, '..', '..');
-  const oldSrc = execFileSync(
-    'git', ['show', `${LEGACY_BASE_REF}:plugins/anti-hall/hooks/speculation-guard.js`],
-    { cwd: repoRoot, encoding: 'utf8' }
-  );
+  let oldSrc;
+  try {
+    oldSrc = execFileSync(
+      'git', ['show', `${LEGACY_BASE_REF}:plugins/anti-hall/hooks/speculation-guard.js`],
+      { cwd: repoRoot, encoding: 'utf8' }
+    );
+  } catch (_) {
+    try {
+      execFileSync('git', ['-C', repoRoot, 'fetch', '--depth=1', 'origin', LEGACY_BASE_REF]);
+      oldSrc = execFileSync(
+        'git', ['show', `${LEGACY_BASE_REF}:plugins/anti-hall/hooks/speculation-guard.js`],
+        { cwd: repoRoot, encoding: 'utf8' }
+      );
+    } catch (fetchErr) {
+      return { path: null, reason: `base rev ${LEGACY_BASE_REF} unavailable (offline/shallow): duplicate-text-boundary equivalence is covered by this file's other Jev-off cases` };
+    }
+  }
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'antihall-legacy-spec-guard-'));
   fs.writeFileSync(path.join(dir, 'speculation-guard.js'), oldSrc, 'utf8');
   fs.copyFileSync(path.join(HOOKS_DIR, 'skip-guard.js'), path.join(dir, 'skip-guard.js'));
   fs.mkdirSync(path.join(dir, 'lib'));
   fs.copyFileSync(path.join(HOOKS_DIR, 'lib', 'state-prune.js'), path.join(dir, 'lib', 'state-prune.js'));
-  return path.join(dir, 'speculation-guard.js');
+  return { path: path.join(dir, 'speculation-guard.js'), reason: null };
 }
 
 function readState(home) {
@@ -399,8 +418,13 @@ function readState(home) {
   }
 }
 
-test('P1-a: duplicate-text boundary — current hook regex verdict + stored hash match the pre-3e72bf3 hook byte-for-byte (Jev off)', () => {
-  const legacyHook = buildLegacyHookCopy();
+test('P1-a: duplicate-text boundary — current hook regex verdict + stored hash match the pre-3e72bf3 hook byte-for-byte (Jev off)', (t) => {
+  const legacy = buildLegacyHookCopy();
+  if (!legacy.path) {
+    t.skip(legacy.reason);
+    return;
+  }
+  const legacyHook = legacy.path;
   // assistantMessage() emits { message: { role, content: [...] } } with no
   // top-level `content` — the real transcript shape that triggered the
   // pre-3e72bf3 duplication (see header comment above).
