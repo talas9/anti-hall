@@ -3350,7 +3350,9 @@ DIFFERENT registered row now refuses the whole verb (neither the NDJSON nor the 
 cursor moves), where it previously half-acked (NDJSON drained, store side silently
 skipped, `ok:true`). `read-primary` DRAINS `id`'s cursor exactly like `inbox ack` and is
 refused the same way on a genuine mismatch; `peek-primary` is the non-mutating view of
-the same rows and is never refused on ownership grounds.
+the same rows and is never refused on ownership grounds. (Phase 5: `read-primary` no longer
+drains — it is read-only and returns an `ackCommand`; the drain is
+`inbox ack-primary <id> --receipt <rid>`.)
 
 ## §37 — App-side archive detection: the active-cache, and `archivedRegistryRows`
 

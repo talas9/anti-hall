@@ -3633,7 +3633,7 @@ function foldGroupIntoSurvivor(s, home, survivorId, candidates, opts) {
     // third, INDEPENDENT positive signal closes that: proof that something has
     // ACTUALLY DRAINED this partition — a store cursor > 0 (s.cursorValue),
     // or an on-disk read-path ack file at primaryCursorPath(home,id)
-    // (cursors/<id>.json, the file `read-primary` acks through). Either one
+    // (cursors/<id>.json, the file the primary ack path — `ack-primary` — acks through). Either one
     // means a reader exists (or existed and holds a frontier), and sweeping
     // that frontier forward is exactly the loss this guard exists to prevent.
     //
@@ -7929,7 +7929,7 @@ const NEVER_READ_SIBLING_CAP = 200;
 //
 // THE GAP: `inbox messages` returned an EARLIEST-FIRST prefix bounded only by
 // `--limit`, so the only ways to see RECENT mail were (a) the destructive
-// `read-primary` (which acks and consumes) or (b) dumping the whole store. And
+// `read-primary` (which then acked and consumed; read-only since Phase 5) or (b) dumping the whole store. And
 // a `--tail 3` typed against it today is SILENTLY DROPPED — this file never
 // rejects unknown flags, so the caller gets the earliest rows back believing
 // they got the newest. Silent-drop is the actual defect; honoring the flag on

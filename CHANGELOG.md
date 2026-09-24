@@ -6,6 +6,34 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.106.0 (2026-09-24)
+
+- **Changed: DevSwarm reader positions live in one SQLite table** with one unread count and
+  one writer. This retires the phantom-unread and floor-drift class of defects, and closes
+  several pre-existing message-loss paths: a rehome/fold race, the orphan forward, a torn
+  journal import, and a lock steal.
+- **Changed: row state comes from one reducer**; every surface derives it the same way.
+- **Changed: `doctor` is read-only by default** — repairs run only with `--repair` / `--fix`.
+  One migration registry now owns every one-time sweep and never stamps a version done
+  while work is left (errors, deferred stores, pending rows, forward failures).
+- **Added: advisory Jev triage labels** for mesh messages (opt-in via `~/.anti-hall/jev.json`);
+  labels are advisory only and never change delivery or any unread count.
+- **Added: crash-safe delivery through a read WAL.** Every destructive native read is
+  fsynced before it is ingested and replayed until closed, closing the pull-crash and ingest
+  lock-contention losses. The remaining native-dequeue window is documented.
+- **Changed (action needed): `inbox read-primary` no longer acks.** After handling the mail,
+  run the `ackCommand` it returns (`inbox ack-primary <id> --receipt <rid>`).
+  `inbox drain-primary-legacy` keeps the old read-and-ack behavior for one release.
+- **Changed: one shared Stop policy** for the gates, honoring `stop_hook_active`, with
+  per-kind caps.
+- **Changed: a send to a stale twin is rerouted only on proof** that the twin is stale.
+- **Fixed: a torn journal row no longer corrupts the next append.**
+- **Fixed: heal-orphan-partitions no longer stamps a pass done** when its deadline deferred
+  orphans; the deferred ids count as pending and the next run finishes them.
+- **Fixed: the ingest daemon writes through the locked partition door** (the per-id lock
+  plus a registration recheck). A busy or unregistered partition leaves the batch pending
+  in the WAL for replay instead of writing unlocked.
+
 ## 0.105.3 (2026-09-24)
 
 - **Fixed: the optional Jev check now backs speculation-guard** (the always-on hedge
