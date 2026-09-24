@@ -104,7 +104,7 @@ test('(4) every devswarm.js / jev-report.js / settings.js verb is documented in 
   const devswarmDocs = read('plugins/anti-hall/skills/devswarm/SKILL.md') + '\n' + read('docs/KB-devswarm-hivecontrol.md');
   const jevDocs = read('plugins/anti-hall/skills/jev/SKILL.md') + '\n' + read('docs/KB-jev-classifier.md');
   const settingsDocs = read('plugins/anti-hall/skills/settings/SKILL.md');
-  const dv = switchVerbs('plugins/anti-hall/scripts/devswarm.js', 'function run(argv, ctx0)');
+  const dv = switchVerbs('plugins/anti-hall/scripts/devswarm.js', 'function runArmed(');
   const jv = jevReportVerbs();
   const sv = switchVerbs('plugins/anti-hall/scripts/settings.js', 'function main(');
   assert.ok(dv.length > 30 && jv.length >= 2 && sv.length >= 4, 'parsed the verb lists: ' + [dv.length, jv.length, sv.length]);
@@ -129,7 +129,7 @@ test('(5) every Jev integration id is in docs/KB-jev-classifier.md and skills/je
 });
 
 test('(6) the system-briefing operator guide (Claude + Codex) lists every setting key and every CLI verb', () => {
-  const dv = switchVerbs('plugins/anti-hall/scripts/devswarm.js', 'function run(argv, ctx0)');
+  const dv = switchVerbs('plugins/anti-hall/scripts/devswarm.js', 'function runArmed(');
   const jv = jevReportVerbs();
   const sv = switchVerbs('plugins/anti-hall/scripts/settings.js', 'function main(');
   const out = [];

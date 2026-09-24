@@ -156,7 +156,9 @@ the update.
   holder has closed, and is told which handover to read. While the holder is still live
   nothing is taken over; the conflicting session is warned and its `send`, `inbox ack`,
   `ack-primary`, `spawn` and `merge` are refused (`primary-seat-conflict`) until
-  `devswarm.js primary takeover`; `primary status` shows the seat. Liveness: harness
+  `devswarm.js primary takeover`; `primary status` shows the seat. The refusal sits on the cursor-write
+  doors themselves, so no path (`drain-primary-legacy`, `--legacy-ack-now`, `mesh read`,
+  `roster --ack`, …) lets a non-holder advance the Primary's read positions. Liveness: harness
   session pid, then the app's active terminal, then heartbeat age; unknown → warn only.
 - **Stale-build children looked neglected.** `heartbeat`/`inbox tick` stamp the running
   anti-hall version; the roster, parent-inbox table and nag, and `doctor` show

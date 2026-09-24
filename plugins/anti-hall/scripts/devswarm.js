@@ -1601,7 +1601,30 @@ function parseNdCursorName(filename) {
 // are deleted — the NDJSON read position is the reader_cursors 'nd' row, and the
 // descriptor cursor is only the one-release upward dual-write of its floor.)
 
+// ---- Primary-seat guard at the cursor doors (v0.108.0 review P1) -----------
+// EVERY reader-cursor advance goes through one of three doors:
+// commitInstanceAck (store namespace), commitNdAck (NDJSON namespace) and the
+// store's advanceBroadcastCursor (mesh read / roster --ack). run() arms the
+// guard with the invocation's ctx; each door asks seatRefusal once per
+// invocation and THROWS before writing, so a session that does not hold a
+// live-held Primary seat can never advance the Primary's cursors — whichever
+// verb or flag combination (drain-primary-legacy, --legacy-ack-now,
+// messages --ack, inbox ack/pull, mesh read, ...) led there. run() turns the
+// throw into the standard { reason: 'primary-seat-conflict' } refusal.
+let seatGuardCtx = null;
+let seatGuardVerdict;
+function assertSeatAllowsCursorWrite() {
+  if (!seatGuardCtx) return;
+  if (seatGuardVerdict === undefined) seatGuardVerdict = seatRefusal(seatGuardCtx) || null;
+  if (seatGuardVerdict) {
+    const e = new Error(seatGuardVerdict.error || 'primary-seat-conflict');
+    e.seatRefusal = seatGuardVerdict;
+    throw e;
+  }
+}
+
 function commitInstanceAck(storeHandle, home, id, reader, target, meta) {
+  assertSeatAllowsCursorWrite();
   // Phase 3: ONE transaction — the caller's own row (declared readers only) and
   // the floor recompute (max(F, MIN(live declared)); a headless ack moves F to its
   // target only when no live declared reader exists). Legacy shared pair is
@@ -1629,6 +1652,7 @@ function commitInstanceAck(storeHandle, home, id, reader, target, meta) {
 // position countFor reads for a store-less partition. THROWS on a failed ack so
 // the caller reports it (re-delivery, never a silent half-ack).
 function commitNdAck(storeHandle, home, id, reader, target, descCursorPath, inboxPath, meta) {
+  assertSeatAllowsCursorWrite();
   const m = meta || {};
   let t = Math.max(0, Math.floor(Number(target) || 0));
   if (inboxPath) t = Math.min(t, inboxCursor.countMessages(inboxPath));
@@ -15499,7 +15523,7 @@ function cmdMeshRead(flags, ctx) {
       });
     const newCursor = peek
       ? cursor
-      : (typeof s.advanceBroadcastCursor === 'function' ? s.advanceBroadcastCursor(cursorKey) : cursor);
+      : (typeof s.advanceBroadcastCursor === 'function' ? (assertSeatAllowsCursorWrite(), s.advanceBroadcastCursor(cursorKey)) : cursor);
     // deriveSummary is a pure projection refresh (re-scans the bounded
     // broadcast tail) — skipped on a peek so a non-mutating read has zero
     // side effects, matching `peek-primary`'s own contract on the direct-
@@ -17074,7 +17098,7 @@ const VERB_HELP = {
 // `wake-directive` are real, dispatched verbs missing from it) so this list
 // can never go stale again.
 function verbListFromSwitch() {
-  const src = run.toString();
+  const src = runArmed.toString(); // the dispatch switch (run() is the guard wrapper)
   const seen = [];
   const re = /case '([a-z][a-z0-9-]*)':/g;
   let m;
@@ -17161,6 +17185,19 @@ function run(argv, ctx0) {
     const verb = cmd === 'help' ? positionals[1] : (cmd === '-h' ? undefined : cmd);
     return { code: 0, result: buildHelpResult(verb) };
   }
+  // Arm the cursor-door seat guard for THIS invocation (see
+  // assertSeatAllowsCursorWrite); disarmed again when run() returns.
+  // Re-entrant: a nested run() restores the outer invocation's guard.
+  const prevCtx = seatGuardCtx; const prevVerdict = seatGuardVerdict;
+  seatGuardCtx = ctx; seatGuardVerdict = undefined;
+  try { return runArmed(cmd, positionals, flags, ctx, argv); }
+  catch (e) {
+    if (e && e.seatRefusal) return { code: 2, result: Object.assign({ action: cmd }, e.seatRefusal) };
+    throw e;
+  } finally { seatGuardCtx = prevCtx; seatGuardVerdict = prevVerdict; }
+}
+
+function runArmed(cmd, positionals, flags, ctx, argv) {
   // v0.108.0 Primary seat: a session that does not hold a LIVE-held seat may
   // not send, ack, spawn or merge-broadcast as the Primary.
   if (cmd === 'send' || cmd === 'spawn' || cmd === 'merge'
@@ -17464,6 +17501,7 @@ function run(argv, ctx0) {
           ' (register|register-primary|ensure|heartbeat|inbox|workspaces|gate|gate-intent|nudge|archive|unarchive|archive-ignore|archive-unignore|archive-request|migrate|migrate-owner-keys|logs|send|roster|app-state|app-sync|sync-ui|diagnose|healthcheck|mesh|reconcile|reap-stale|reconcile-active|spawn|merge|skip|auto-archive|prune-archived|retention)' } };
     }
   } catch (e) {
+    if (e && e.seatRefusal) throw e; // run() reports it as primary-seat-conflict
     // Csh: an internal exception used to be swallowed silently into { ok:false }.
     // Log it (fail-open, control flow unchanged) so a Primary can surface it via
     // `devswarm logs`. Best-effort repoKey from cwd; op = the verb that threw.
