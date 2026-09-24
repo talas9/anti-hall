@@ -164,3 +164,12 @@ test('(7) AGENTS.md carries the generated component catalog, current, and fits t
   }
   assert.deepStrictEqual({ missingHooks, missingKeys }, { missingHooks: [], missingKeys: [] });
 });
+
+test('(8) docs/KB.md component counts are generated from disk (tools/gen-kb-counts.js) and still parse for repo-self-drift', () => {
+  const gen = require(path.join(REPO, 'tools', 'gen-kb-counts.js'));
+  const kb = read('docs', 'KB.md');
+  assert.strictEqual(kb, gen.build(kb), 'docs/KB.md counts are stale — run node tools/gen-kb-counts.js');
+  const drift = require(path.join(REPO, 'plugins', 'anti-hall', 'hooks', 'repo-self-drift.js'));
+  const c = gen.counts();
+  assert.deepStrictEqual(drift.parseClaims(kb), { claimedHooks: c.hooks, claimedSkills: c.claudeSkills });
+});
