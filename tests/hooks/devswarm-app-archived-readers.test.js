@@ -162,10 +162,15 @@ test('TABLE: a row PRESENT in the active set stays escalated', () => {
 test('TABLE M4: a row OUTSIDE the DevSwarm repos root is never app-archived', () => {
   const h = makeHome();
   try {
-    // REPO_CWD is the Primary's own checkout — the app never managed it, so its
-    // absence from `workspace list all` carries no archive meaning.
-    writeSummary(h.home, { wsA: wsEntry({ worktreePath: REPO_CWD }) });
-    seedDescriptorAge(h.home, 'wsA', REPO_CWD);
+    // A row under some OTHER, unmanaged directory — outside the DevSwarm repos
+    // root AND not the Primary's own checkout (P0 fix: a row whose worktree IS
+    // the Primary's own checkout is now folded into the own-unread path
+    // instead of the table — see the dedicated own-checkout-fold tests — so
+    // this M4 case needs a genuinely third-party worktree to stay meaningful).
+    const outsideWt = path.join(h.home, 'unmanaged-other-project');
+    fs.mkdirSync(outsideWt, { recursive: true });
+    writeSummary(h.home, { wsA: wsEntry({ worktreePath: outsideWt }) });
+    seedDescriptorAge(h.home, 'wsA', outsideWt);
     writeVerdict(h.home, 'wsA', { status: 'escalated' });
     writeCache(h.home, ['wsA'], 60_000);
     assert.match(tableRow(runInbox(h.home), 'wsA'), /escalated/);
@@ -184,7 +189,17 @@ test('TABLE: a STALE cache changes nothing', () => {
   } finally { h.cleanup(); }
 });
 
-test('TABLE: LIVENESS AXIS ONLY — not-draining still outranks an app-archived row', () => {
+// P0 FOLLOW-UP (field bug, supersedes the old "not-draining still outranks an
+// app-archived row" contract): the "+N archived" table-collapsing display
+// hides rows labeled exactly 'archived' — a not-draining label on an
+// app-archived row bypassed that hide entirely, so a workspace the owner
+// already archived through the DevSwarm app sat in the loud table forever.
+// A LOCALLY-archived row (anti-hall's own archived/<id>.json marker) keeps
+// the OLD not-draining-wins behavior — see devswarm-parent-inbox-archived-
+// notdraining.test.js's R15 P2 contract, unaffected by this fix. Only the
+// APP-archived axis is forced plain 'archived' so the hide/collapse can
+// always catch it.
+test('TABLE: an APP-archived row with a stored notDraining verdict is HIDDEN by default (the collapse now catches it)', () => {
   const h = makeHome();
   try {
     const wt = appWorktree(h.home);
@@ -192,9 +207,26 @@ test('TABLE: LIVENESS AXIS ONLY — not-draining still outranks an app-archived 
     seedDescriptorAge(h.home, 'wsA', wt);
     writeVerdict(h.home, 'wsA', { status: 'escalated', notDraining: true });
     writeCache(h.home, ['wsA'], 60_000);
-    const row = tableRow(runInbox(h.home), 'wsA');
-    assert.match(row, /not-draining/,
-      'archiving answers the liveness axis, never a real aging backlog');
+    const r = runInbox(h.home);
+    const c = (r.json && r.json.hookSpecificOutput && r.json.hookSpecificOutput.additionalContext) || '';
+    const t = c.split('\n\n').find((s) => s.startsWith('DEVSWARM WORKSPACES')) || '';
+    assert.ok(!t.includes('wsA'), `an app-archived row (even with notDraining) must be hidden by default; t=${t}`);
+    assert.ok(t.includes('+1 archived (done; set ANTIHALL_ROSTER_HIDE_ARCHIVED=0 to show)'), t);
+  } finally { h.cleanup(); }
+});
+
+test('TABLE: an APP-archived row with a stored notDraining verdict renders plain "archived" when unhidden, never "not-draining"', () => {
+  const h = makeHome();
+  try {
+    const wt = appWorktree(h.home);
+    writeSummary(h.home, { wsA: wsEntry({ worktreePath: wt, total: 3, cursor: 0, unread: 3, directUnread: 3 }) });
+    seedDescriptorAge(h.home, 'wsA', wt);
+    writeVerdict(h.home, 'wsA', { status: 'escalated', notDraining: true });
+    writeCache(h.home, ['wsA'], 60_000);
+    const row = tableRow(runInbox(h.home, { ANTIHALL_ROSTER_HIDE_ARCHIVED: '0' }), 'wsA');
+    assert.match(row, /archived/);
+    assert.doesNotMatch(row, /not-draining/,
+      'an app-archived row must never render not-draining — that would defeat the "+N archived" collapse');
   } finally { h.cleanup(); }
 });
 

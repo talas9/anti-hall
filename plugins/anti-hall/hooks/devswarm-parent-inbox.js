@@ -1657,8 +1657,20 @@ function main() {
       // it when present, exactly as it already wins over every other liveness
       // label in displayStatus's own rank order.
       const notDrainingFlag = !!(verdict && verdict.notDraining);
+      // APP-ARCHIVED FIX (P0 field bug, follow-up to R15 P2 above): the "+N
+      // archived" table-collapsing display elsewhere hides rows whose label
+      // is exactly 'archived' — an app-archived row (archived via the
+      // DevSwarm app UI, never anti-hall's own archived/<id>.json marker; see
+      // appArchivedRow's own header) that ALSO carries a stored notDraining
+      // verdict kept rendering 'not-draining' and so was NEVER collapsed,
+      // sitting in the loud table forever for a workspace the owner already
+      // put away through the app. A LOCALLY-archived row (archivedRow true,
+      // appArchivedRow false) keeps R15 P2's behavior unchanged — its
+      // not-draining backlog is real, actionable coordination-neglect signal
+      // this hook must never hide. Only the app-archived case is forced
+      // plain 'archived' regardless of notDrainingFlag.
       const ds = archivedRow
-        ? (notDrainingFlag ? { label: 'not-draining', rank: 1.5 } : { label: 'archived', rank: 6 })
+        ? (appArchivedRow ? { label: 'archived', rank: 6 } : (notDrainingFlag ? { label: 'not-draining', rank: 1.5 } : { label: 'archived', rank: 6 }))
         : archivedSuperseded
           ? (notDrainingFlag ? { label: 'not-draining', rank: 1.5 } : { label: 'archived-superseded (live child)', rank: 5.5 })
           : displayStatus(archiveReady, status, activityTs, now, dormant, notDrainingFlag, idleAlive);
