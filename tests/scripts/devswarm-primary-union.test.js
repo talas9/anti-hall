@@ -78,9 +78,9 @@ test('read-primary sees mail from BOTH channels; total matches `inbox count` (th
     assert.equal(count.result.ok, true, JSON.stringify(count.result));
     assert.equal(count.result.unreadTotal, 4, 'sanity: count sees all 4 across both channels');
 
-    const rp = cli.run(['inbox', 'read-primary', id], selfCtx(home, id));
+    const rp = cli.run(['inbox', 'drain-primary-legacy', id], selfCtx(home, id));
     assert.equal(rp.result.ok, true, JSON.stringify(rp.result));
-    assert.equal(rp.result.action, 'read-primary');
+    assert.equal(rp.result.action, 'drain-primary-legacy');
     assert.equal(rp.result.count, 4, 'read-primary must see all 4 messages, not just the store\'s 2');
     assert.equal(rp.result.total, count.result.unreadTotal, 'read-primary total must match `inbox count` unreadTotal — the regression this defect describes');
 
@@ -129,7 +129,7 @@ test('read-primary ack advances BOTH the NDJSON descriptor cursor and the store-
 
     assert.equal(fs.readFileSync(ndjsonCursorPath, 'utf8').trim(), '0', 'NDJSON cursor starts at 0 (cursor init on register)');
 
-    const rp = cli.run(['inbox', 'read-primary', id], selfCtx(home, id));
+    const rp = cli.run(['inbox', 'drain-primary-legacy', id], selfCtx(home, id));
     assert.equal(rp.result.ok, true, JSON.stringify(rp.result));
     assert.equal(rp.result.count, 3);
 
@@ -141,7 +141,7 @@ test('read-primary ack advances BOTH the NDJSON descriptor cursor and the store-
     assert.equal(fs.readFileSync(storeCursorPath, 'utf8').trim(), '1', 'store-side primary cursor must advance to the store channel\'s own total');
 
     // A second read-primary sees nothing new (both cursors fully consumed).
-    const rp2 = cli.run(['inbox', 'read-primary', id], selfCtx(home, id));
+    const rp2 = cli.run(['inbox', 'drain-primary-legacy', id], selfCtx(home, id));
     assert.equal(rp2.result.count, 0, 'both channels fully acked — nothing left unread');
   } finally { rm(home); }
 });
@@ -181,7 +181,7 @@ test('a message present in BOTH channels (same content hash) is delivered ONCE v
       { body: 'unique store message', hash: 'unique-store-1' },
     ]);
 
-    const rp = cli.run(['inbox', 'read-primary', id], selfCtx(home, id));
+    const rp = cli.run(['inbox', 'drain-primary-legacy', id], selfCtx(home, id));
     assert.equal(rp.result.ok, true, JSON.stringify(rp.result));
     assert.equal(rp.result.count, 2, 'the duplicate-hash message must be counted once (1 dedup\'d + 1 unique), not 3');
     const hashes = rp.result.messages.map((m) => m.hash).sort();
@@ -198,7 +198,7 @@ test('read-primary: store-only setup (no descriptor) still works exactly as befo
   const id = 'w-store-only';
   try {
     seedStore(home, id, [{ body: 'solo store msg', hash: 'solo-1' }]);
-    const rp = cli.run(['inbox', 'read-primary', id], selfCtx(home, id));
+    const rp = cli.run(['inbox', 'drain-primary-legacy', id], selfCtx(home, id));
     assert.equal(rp.result.ok, true, JSON.stringify(rp.result));
     assert.equal(rp.result.count, 1);
     assert.equal(rp.result.messages[0].body, 'solo store msg');
@@ -215,7 +215,7 @@ test('read-primary: NDJSON-only setup (descriptor exists, empty store partition)
     register(home, id, inbox, cursor);
     writeNdjson(inbox, [{ _h: 'solo-nd-1', message: 'solo ndjson msg', createdAt: 500 }]);
 
-    const rp = cli.run(['inbox', 'read-primary', id], selfCtx(home, id));
+    const rp = cli.run(['inbox', 'drain-primary-legacy', id], selfCtx(home, id));
     assert.equal(rp.result.ok, true, JSON.stringify(rp.result));
     assert.equal(rp.result.count, 1);
     assert.equal(rp.result.messages[0].body, 'solo ndjson msg');

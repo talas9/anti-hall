@@ -246,7 +246,7 @@ test('3 PARENT-GATE: blocks on unread, then CLEARS after `devswarm inbox ack` ad
   } finally { H.rm(home); }
 });
 
-test('3 PARENT-GATE: per-SET cap goes quiet, then a CHANGED unread set re-opens the budget', () => {
+test('3 PARENT-GATE: stable-kind cap goes quiet, stays quiet while mail grows, re-opens once the condition clears (Phase 5 #14)', () => {
   const home = H.makeHome();
   try {
     const { inboxPath } = H.seedWorkspace(home, 'ws1', { inbox: ['a', 'b'], cursor: 0 }); // 2 unread
@@ -266,11 +266,22 @@ test('3 PARENT-GATE: per-SET cap goes quiet, then a CHANGED unread set re-opens 
     const b4 = testHookRaw('devswarm-parent-gate.js', stop, { home, env });
     assert.strictEqual(b4.stdout, '', 'capped: same set goes quiet the pass AFTER the escalation');
 
-    // A new message changes the unread SET signature -> cap resets -> re-block.
+    // Phase 5 shared Stop policy (#14): mail landing while the SAME kind of
+    // neglect persists no longer re-opens the budget (that was the
+    // self-amplification behind 369 Stop blocks in one field transcript).
     fs.appendFileSync(inboxPath, 'c\n');
+    const grown = testHookRaw('devswarm-parent-gate.js', stop, { home, env });
+    assert.strictEqual(grown.stdout, '', 'same kind, grown count: stays quiet');
+
+    // The condition CLEARS (real ack-all) -> state reset -> new mail re-blocks.
+    const ack = H.runCli(home, ['inbox', 'ack', 'ws1']);
+    assert.ok(ack.json && ack.json.ok, 'ack ok');
+    const clear = testHookRaw('devswarm-parent-gate.js', stop, { home, env });
+    assert.strictEqual(clear.stdout, '', 'nothing pending -> allow');
+    fs.appendFileSync(inboxPath, 'd\n');
     const after = testHookRaw('devswarm-parent-gate.js', stop, { home, env });
-    assert.ok(after.json && after.json.decision === 'block', 'changed set must re-block');
-    assert.match(after.json.reason, /3 unread/);
+    assert.ok(after.json && after.json.decision === 'block', 'new neglect after a clear gets a fresh budget');
+    assert.match(after.json.reason, /1 unread/);
   } finally { H.rm(home); }
 });
 

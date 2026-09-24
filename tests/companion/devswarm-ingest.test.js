@@ -1139,12 +1139,20 @@ test('runIngestLoop LOGS-AND-CONTINUES on a store-lock ELOCKFS/ELOCKUNAVAIL inst
       });
     }, 'a store-lock fail-closed error must not crash the loop out');
     assert.equal(summary.started, true);
-    assert.equal(summary.stats.iterations, 3);
     assert.equal(summary.stats.errors, 2, 'both lock errors are counted, not fatal');
-    assert.equal(summary.stats.inserted, 1, 'the subsequent poll still ingests (idempotent replay)');
-    // The subsequent poll's row is durable in the store — a later poll genuinely works.
+    // Phase 5 delivery WAL: poll 1's batch (already POPPED from the destructive
+    // native queue) is kept pending in the WAL and replayed — the pre-WAL
+    // "replay next poll" silently lost m1. Iteration 2's replay hits the second
+    // lock error, so NO new destructive monitor read runs (admission control);
+    // iteration 3 replays m1, then polls m2.
+    assert.equal(summary.stats.iterations, 2, 'no monitor read while a WAL batch is pending');
+    assert.equal(summary.stats.walReplayed, 1);
+    assert.equal(summary.stats.inserted, 2, 'm1 (replayed from the WAL) and m2 both land');
     const s = storeLib.openStore({ home, workspaceId: 'p', backend: 'journal' });
-    try { assert.equal(s.messageCount('p'), 1); } finally { s.close(); }
+    try {
+      assert.equal(s.messageCount('p'), 2);
+      assert.deepEqual(s.listMessages('p').map((r) => r.body), ['m1', 'm2'], 'the popped-then-lock-failed batch is recovered');
+    } finally { s.close(); }
   } finally { rm(home); }
 });
 
@@ -1605,5 +1613,85 @@ test('runIngestLoop logs a transient heartbeat error ONCE (not per-cycle) and do
     const transientLines = log.split('\n').filter((l) => l.includes('heartbeat failed transiently'));
     assert.equal(transientLines.length, 1, 'the transient-error line is logged exactly once, not once per cycle');
     assert.doesNotMatch(log, /lock was reclaimed by another consumer/, 'a transient error must never log the lock-lost line');
+  } finally { rm(home); }
+});
+
+// Phase 5 (Codex P0 on Phase 3): a REAL live holder of the journal messages
+// lock while ingest processes a popped monitor batch. Pre-WAL, the batch was
+// skipped on ELOCKUNAVAIL after the destructive read — permanent loss. Now it
+// stays pending in the delivery WAL, no new destructive read runs while the
+// lock is held, and once the holder releases, every message is in the store.
+test('runIngestLoop: a live messages-lock holder during ingest loses nothing — the WAL batch lands after release', () => {
+  const home = tmpHome();
+  try {
+    const reg = storeLib.openStore({ home, workspaceId: 'p', backend: 'journal' });
+    let lockPath;
+    try {
+      reg.upsertRegistry({ id: 'p', worktreePath: '/wt/p', sessionId: 's', inboxPath: null, cursorPath: null, nudgeCommand: null });
+    } finally { reg.close(); }
+    lockPath = path.join(storeLib.journalDir(home, 'p'), 'messages.lock');
+    // A LIVE holder (this very process's pid, fresh ts) — never stolen.
+    fs.writeFileSync(lockPath, JSON.stringify({ pid: process.pid, ts: Date.now(), token: 'held-by-test' }));
+    // Short contention budget so the test does not wait the production ~20s.
+    const io = { openStore: (args) => storeLib.openStore(Object.assign({}, args, { lock: { maxTries: 2, appendRetries: 1 } })) };
+    const batch = JSON.stringify([
+      { fromBranch: 'c', message: 'held-1', createdAt: '2026-01-01T00:00:01Z' },
+      { fromBranch: 'c', message: 'held-2', createdAt: '2026-01-01T00:00:02Z' },
+    ]);
+    let polls = 0;
+    const run = () => { polls++; return { ok: true, raw: polls === 1 ? batch : '', error: null }; };
+    const held = ingest.runIngestLoop({ home, backend: 'journal', workspaceId: 'p', worktree: null, maxIterations: 3, run, sleep: () => {}, restartBackoffMs: 0, io });
+    assert.equal(held.started, true);
+    assert.equal(polls, 1, 'no second destructive read while the popped batch cannot be stored');
+    assert.equal(held.stats.inserted, 0);
+    fs.unlinkSync(lockPath); // the holder releases
+    const after = ingest.runIngestLoop({ home, backend: 'journal', workspaceId: 'p', worktree: null, maxIterations: 1, run, sleep: () => {}, restartBackoffMs: 0, io });
+    assert.equal(after.stats.walReplayed, 1);
+    const s = storeLib.openStore({ home, workspaceId: 'p', backend: 'journal' });
+    try {
+      assert.deepEqual(s.listMessages('p').map((r) => r.body).sort(), ['held-1', 'held-2'], 'every popped message is in the store');
+    } finally { s.close(); }
+  } finally { rm(home); }
+});
+
+// Phase 5 review (P0 b): the monitor path fails CLOSED on an unwritable WAL.
+test('runIngestLoop: an unwritable WAL path -> no destructive monitor read at all', () => {
+  const home = tmpHome();
+  try {
+    fs.mkdirSync(path.join(home, '.anti-hall', 'devswarm'), { recursive: true });
+    fs.writeFileSync(path.join(home, '.anti-hall', 'devswarm', 'wal'), 'not-a-directory');
+    let polls = 0;
+    const run = () => { polls++; return { ok: true, raw: '[]', error: null }; };
+    const r = ingest.runIngestLoop({ home, backend: 'journal', workspaceId: 'p', worktree: null, maxIterations: 3, run, sleep: () => {}, restartBackoffMs: 0 });
+    assert.equal(r.started, true);
+    assert.equal(polls, 0, 'never pop the native queue into a WAL that cannot be written');
+    assert.equal(r.stats.walBlocked, true);
+  } finally { rm(home); }
+});
+
+test('runIngestLoop: a WAL batch-write failure spills the raw batch and blocks reads until it is absorbed', () => {
+  const home = tmpHome();
+  try {
+    const readWal = require('../../plugins/anti-hall/companion/lib/devswarm-read-wal.js');
+    const batch = JSON.stringify([{ fromBranch: 'c', message: 'spilled-1', createdAt: '2026-01-01T00:00:01Z' }]);
+    const badFs = Object.assign({}, fs, {
+      writeSync(fd, data, ...rest) {
+        if (typeof data === 'string' && data.includes('"t":"batch"')) throw new Error('EIO simulated');
+        return fs.writeSync(fd, data, ...rest);
+      },
+    });
+    let polls = 0;
+    const run = () => { polls++; return { ok: true, raw: polls === 1 ? batch : '', error: null }; };
+    const bad = ingest.runIngestLoop({ home, backend: 'journal', workspaceId: 'p', worktree: null, maxIterations: 3, run, sleep: () => {}, restartBackoffMs: 0, io: { storeFs: badFs } });
+    assert.equal(polls, 1, 'after the spill, no further destructive read');
+    assert.equal(bad.stats.walBlocked, true);
+    const walFile = fs.readdirSync(path.join(home, '.anti-hall', 'devswarm', 'wal')).map((n) => path.join(home, '.anti-hall', 'devswarm', 'wal', n)).find((f) => f.includes('monitor-'));
+    const spilled = readWal.spillPending(fs, walFile);
+    assert.equal(spilled.length, 1);
+    assert.equal(JSON.parse(fs.readFileSync(spilled[0], 'utf8')).raw, batch, 'byte-exact raw in the spill');
+    const good = ingest.runIngestLoop({ home, backend: 'journal', workspaceId: 'p', worktree: null, maxIterations: 1, run, sleep: () => {}, restartBackoffMs: 0 });
+    assert.equal(good.stats.walReplayed, 1, 'the spilled batch is absorbed and replayed');
+    assert.deepEqual(readWal.spillPending(fs, walFile), []);
+    assert.deepEqual(readWal.pending(fs, walFile), []);
   } finally { rm(home); }
 });

@@ -230,76 +230,65 @@ test('CAP: consecutive stops within the window block MAX_BLOCKS times then yield
   }
 });
 
-test('RESET: after the window elapses, the cap re-arms and forces a fresh heartbeat', () => {
-  const h = makeHome();
-  seedAllTestDescriptors(h.home);
-  try {
-    // Prime state as if the cap was already reached long ago (>5min).
-    const p = stateFile(h.home, 's1');
-    fs.mkdirSync(path.dirname(p), { recursive: true });
-    fs.writeFileSync(p, JSON.stringify({ blocks: 5, lastBlockAt: Date.now() - (6 * 60 * 1000) }));
-    const r = testHook(HOOK, stopPayload(), { home: h.home, expectJson: true, env: CHILD_ENV });
-    assert.strictEqual(r.json && r.json.decision, 'block', 'stale cap must re-arm and block again');
-  } finally {
-    h.cleanup();
-  }
-});
-
 // ---------------------------------------------------------------------------
-// defect a55d6b71a76f fix (root cause B): the per-window cap (MAX_BLOCKS=2)
-// fully resets every RESET_MS, so it could re-arm indefinitely across a long
-// session. MAX_BLOCKS_PER_SESSION=6 is a SEPARATE, never-reset lifetime bound.
+// Phase 5 shared Stop policy (#14, hooks/lib/stop-policy.js): replaces the
+// RESET_MS re-arming window AND the defect-a55d6b71a76f lifetime-6 counter.
+// Budget = MAX_BLOCKS per STABLE kind per session; it re-opens only when the
+// condition is observed CLEARED, never because time passed.
 // ---------------------------------------------------------------------------
 
-test('LIFETIME CAP: totalBlocks already at MAX_BLOCKS_PER_SESSION (6) -> no block even though the per-window cap just re-armed', () => {
-  const h = makeHome();
-  seedAllTestDescriptors(h.home);
-  try {
-    // Prime state as if 6 forced-acks already happened this SESSION, and the
-    // per-window RESET_MS has long since elapsed (so `blocks` would re-arm to 0
-    // — proving the lifetime bound is a genuinely SEPARATE, non-resetting cap).
-    const p = stateFile(h.home, 's1');
-    fs.mkdirSync(path.dirname(p), { recursive: true });
-    fs.writeFileSync(p, JSON.stringify({ blocks: 2, lastBlockAt: Date.now() - (6 * 60 * 1000), totalBlocks: 6 }));
-    const r = testHook(HOOK, stopPayload(), { home: h.home, env: CHILD_ENV });
-    assert.strictEqual(r.status, 0, 'must exit 0');
-    assert.strictEqual(r.stdout, '', `lifetime cap must yield even after the per-window cap re-arms; got: ${r.stdout}`);
-  } finally {
-    h.cleanup();
-  }
-});
+function writeFreshZeroTick(home) {
+  const p = path.join(home, '.anti-hall', 'devswarm', 'wake-tick', DEFAULT_CHILD_ID + '.json');
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+  fs.writeFileSync(p, JSON.stringify({ ts: Date.now(), unreadTotal: 0, meshGapWithheld: false, known: true }));
+  return p;
+}
 
-test('LIFETIME CAP: reaching totalBlocks=6 across real stops, then a further stop AFTER RESET_MS still does not block', () => {
+test('STOP POLICY: time passing does NOT re-arm an exhausted kind (no timer re-arm)', () => {
   const h = makeHome();
   seedAllTestDescriptors(h.home);
   try {
-    // Drive 6 real forced-acks across 3 re-armed windows (2 per window, the
-    // per-window MAX_BLOCKS), each window primed as already-elapsed so the
-    // per-window cap keeps re-arming — proving the lifetime cap accumulates
-    // ACROSS windows, not just within one.
-    for (let window = 0; window < 3; window++) {
-      const p = stateFile(h.home, 's1');
-      // The first window has no state file yet (this is the very first Stop of
-      // the session) — only re-arm an EXISTING window's lastBlockAt.
-      if (fs.existsSync(p)) {
-        const prior = JSON.parse(fs.readFileSync(p, 'utf8'));
-        fs.writeFileSync(p, JSON.stringify(Object.assign({}, prior, { lastBlockAt: Date.now() - (6 * 60 * 1000) })));
-      }
-      const r1 = testHook(HOOK, stopPayload(), { home: h.home, expectJson: true, env: CHILD_ENV });
-      assert.strictEqual(r1.json && r1.json.decision, 'block', `window ${window} stop 1 must block`);
-      const r2 = testHook(HOOK, stopPayload(), { home: h.home, expectJson: true, env: CHILD_ENV });
-      assert.strictEqual(r2.json && r2.json.decision, 'block', `window ${window} stop 2 must block`);
-    }
-    const final = JSON.parse(fs.readFileSync(stateFile(h.home, 's1'), 'utf8'));
-    assert.strictEqual(final.totalBlocks, 6, 'lifetime counter must have accumulated to exactly 6');
-    // Re-arm the per-window cap once more (elapsed RESET_MS) — the lifetime
-    // bound must STILL suppress blocking even though the window itself is fresh.
+    testHook(HOOK, stopPayload(), { home: h.home, expectJson: true, env: CHILD_ENV });
+    testHook(HOOK, stopPayload(), { home: h.home, expectJson: true, env: CHILD_ENV });
+    // The old gate re-armed once lastBlockAt was >5min old — prime exactly that.
     const p = stateFile(h.home, 's1');
     const prior = JSON.parse(fs.readFileSync(p, 'utf8'));
     fs.writeFileSync(p, JSON.stringify(Object.assign({}, prior, { lastBlockAt: Date.now() - (6 * 60 * 1000) })));
-    const rFinal = testHook(HOOK, stopPayload(), { home: h.home, env: CHILD_ENV });
-    assert.strictEqual(rFinal.status, 0);
-    assert.strictEqual(rFinal.stdout, '', `after 6 lifetime blocks, a re-armed window must still not block; got: ${rFinal.stdout}`);
+    const r = testHook(HOOK, stopPayload(), { home: h.home, env: CHILD_ENV });
+    assert.strictEqual(r.status, 0);
+    assert.strictEqual(r.stdout, '', `an exhausted kind stays quiet until its condition clears; got: ${r.stdout}`);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('STOP POLICY: a cleared condition (fresh zero tick) re-opens the budget', () => {
+  const h = makeHome();
+  seedAllTestDescriptors(h.home);
+  try {
+    testHook(HOOK, stopPayload(), { home: h.home, expectJson: true, env: CHILD_ENV });
+    testHook(HOOK, stopPayload(), { home: h.home, expectJson: true, env: CHILD_ENV });
+    const tick = writeFreshZeroTick(h.home);
+    const satisfied = testHook(HOOK, stopPayload(), { home: h.home, env: CHILD_ENV });
+    assert.strictEqual(satisfied.stdout, '', 'a fresh zero tick satisfies the gate');
+    fs.unlinkSync(tick);
+    const r = testHook(HOOK, stopPayload(), { home: h.home, expectJson: true, env: CHILD_ENV });
+    assert.strictEqual(r.json && r.json.decision, 'block', 'after the condition cleared, a new episode is forced again');
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('STOP POLICY: stop_hook_active === true -> allow immediately, consuming no budget', () => {
+  const h = makeHome();
+  seedAllTestDescriptors(h.home);
+  try {
+    const active = testHook(HOOK, stopPayload({ stop_hook_active: true }), { home: h.home, env: CHILD_ENV });
+    assert.strictEqual(active.stdout, '', 'never re-block a Stop that is already continuing because of a block');
+    const r1 = testHook(HOOK, stopPayload(), { home: h.home, expectJson: true, env: CHILD_ENV });
+    const r2 = testHook(HOOK, stopPayload(), { home: h.home, expectJson: true, env: CHILD_ENV });
+    assert.strictEqual(r1.json && r1.json.decision, 'block');
+    assert.strictEqual(r2.json && r2.json.decision, 'block', 'the stop_hook_active pass consumed nothing: still 2 blocks available');
   } finally {
     h.cleanup();
   }
@@ -329,9 +318,10 @@ test('FAIL-OPEN: cap state unwritable -> exit 0, does NOT block (never fail-clos
     // Scoped to devswarm/child-gate specifically (not the whole devswarm/ root)
     // so it does NOT also clobber the sibling workspaces/ descriptor dir that
     // seedAllTestDescriptors above needs for role corroboration.
-    const dsw = path.join(h.home, '.anti-hall', 'devswarm', 'child-gate');
+    // Phase 5: the cap counter lives in the shared stop-policy state dir.
+    const dsw = path.join(h.home, '.anti-hall', 'devswarm', 'stop-policy');
     fs.mkdirSync(path.dirname(dsw), { recursive: true });
-    fs.writeFileSync(dsw, 'not-a-directory'); // child-gate/<session>.json lives under here
+    fs.writeFileSync(dsw, 'not-a-directory'); // stop-policy/<session>.json lives under here
     const r = testHook(HOOK, stopPayload(), { home: h.home, env: CHILD_ENV });
     assert.strictEqual(r.status, 0, 'must exit 0');
     assert.strictEqual(r.stdout, '', `unwritable cap state must NOT block; got: ${r.stdout}`);
@@ -1369,6 +1359,56 @@ test('NONCE FAIL-CLOSED: instance nonce cannot be derived -> logs ONE stderr dia
     assert.strictEqual(r2.status, 0);
     assert.ok(!/instance nonce could not be derived/.test(r2.stderr),
       `second Stop in the same session must not re-log; stderr=${r2.stderr}`);
+  } finally {
+    h.cleanup();
+  }
+});
+
+// Phase 5 review (P1): the satisfaction paths (a real report / drop attempt /
+// fresh zero tick) used to return after the cheap DURABLE check only, so mail
+// still sitting in the NATIVE queue (never pulled) was waved through. The
+// native message-count probe now runs before the condition is cleared.
+test('STOP POLICY: a satisfied episode (fresh zero tick) still blocks on NATIVE-only unread', () => {
+  const h = makeHome();
+  seedAllTestDescriptors(h.home);
+  try {
+    writeFreshZeroTick(h.home);
+    const binDir = fs.mkdtempSync(path.join(os.tmpdir(), 'anti-hall-fakehc-'));
+    const sentinel = path.join(binDir, 'invoked.log');
+    writeFakeHivecontrol(binDir, { count: 3, sentinelFile: sentinel });
+    try {
+      const env = Object.assign({}, CHILD_ENV, { PATH: binDir + path.delimiter + NO_NATIVE_BIN_PATH });
+      const r = testHook(HOOK, stopPayload(), { home: h.home, expectJson: true, env });
+      assert.strictEqual(r.json && r.json.decision, 'block', `native-only unread must not be waved through; got: ${r.stdout}`);
+      assert.match(r.json.reason, /inbox pull/);
+      assert.ok(fs.existsSync(sentinel), 'the native message-count probe actually ran');
+    } finally { fs.rmSync(binDir, { recursive: true, force: true }); }
+  } finally {
+    h.cleanup();
+  }
+});
+
+// Phase 5 review round 2 (P1): a native message-count probe that FAILS (non-zero
+// exit / timeout) is UNKNOWN, not "no unread" — a satisfied episode must still
+// block (capped, kind inbox-unknown), never clear.
+test('STOP POLICY: native probe FAILURE is unknown -> blocks with a warning, capped, never clears', () => {
+  const h = makeHome();
+  seedAllTestDescriptors(h.home);
+  try {
+    writeFreshZeroTick(h.home);
+    const binDir = fs.mkdtempSync(path.join(os.tmpdir(), 'anti-hall-fakehc-fail-'));
+    const p = path.join(binDir, 'hivecontrol');
+    fs.writeFileSync(p, '#!/bin/sh\necho "DevSwarm is not running" >&2\nexit 1\n');
+    fs.chmodSync(p, 0o755);
+    try {
+      const env = Object.assign({}, CHILD_ENV, { PATH: binDir + path.delimiter + NO_NATIVE_BIN_PATH });
+      const r1 = testHook(HOOK, stopPayload(), { home: h.home, expectJson: true, env });
+      assert.strictEqual(r1.json && r1.json.decision, 'block', `unknown native unread must not be waved through; got: ${r1.stdout}`);
+      assert.match(r1.json.reason, /UNKNOWN/);
+      testHook(HOOK, stopPayload(), { home: h.home, expectJson: true, env });
+      const r3 = testHook(HOOK, stopPayload(), { home: h.home, env });
+      assert.strictEqual(r3.stdout, '', 'capped: the unknown warning does not loop');
+    } finally { fs.rmSync(binDir, { recursive: true, force: true }); }
   } finally {
     h.cleanup();
   }

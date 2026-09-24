@@ -88,7 +88,7 @@ test('D1: after read-primary acks, `inbox tick` on the SAME id agrees (no phanto
     const t0 = cli.run(['inbox', 'tick', id], ctx(home, { cwd: repo })).result;
     assert.equal(t0.unreadTotal, 3, 'precondition: 3 unread before any ack');
 
-    const rRead = cli.run(['inbox', 'read-primary', id], ctx(home, { cwd: repo })).result;
+    const rRead = cli.run(['inbox', 'drain-primary-legacy', id], ctx(home, { cwd: repo })).result;
     assert.equal((rRead.messages || []).length, 3, 'read-primary must deliver all 3');
     assert.equal(rRead.messages.map((m) => m.body).sort().join(','), 'msg-0,msg-1,msg-2');
 
@@ -103,7 +103,7 @@ test('D1: after read-primary acks, `inbox tick` on the SAME id agrees (no phanto
     assert.equal(c1.unreadTotal, 0);
 
     // A second read-primary call must not re-deliver anything already acked.
-    const rRead2 = cli.run(['inbox', 'read-primary', id], ctx(home, { cwd: repo })).result;
+    const rRead2 = cli.run(['inbox', 'drain-primary-legacy', id], ctx(home, { cwd: repo })).result;
     assert.equal((rRead2.messages || []).length, 0, 'an already-acked message must not reappear');
   } finally { rm(home); rm(repo); }
 });
@@ -146,7 +146,7 @@ test('D1: the descriptor cursor still receives the MIN projection after a read-p
     } finally { s0.close(); }
 
     // This caller's read-primary acks all 5 through its OWN per-instance file.
-    const rRead = cli.run(['inbox', 'read-primary', id], ctx(home, { cwd: repo })).result;
+    const rRead = cli.run(['inbox', 'drain-primary-legacy', id], ctx(home, { cwd: repo })).result;
     assert.equal((rRead.messages || []).length, 5);
 
     // The descriptor cursor must NOT jump to 5 (this caller's position) — it

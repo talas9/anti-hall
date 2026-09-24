@@ -56,12 +56,12 @@
 // the SAME MAX_BLOCKS-bounded forced-ack this file already has. Claude-only (a
 // Codex workspace has no CronCreate tool, so it never gets the line).
 //
-// CAPPED + SELF-RESETTING (loop-safe): we block at most MAX_BLOCKS times inside a
-// single stop episode, then yield (allow the stop) so we can NEVER hard-loop the
-// child. The cap is tracked in this hook's OWN DISTINCT state file (separate from
-// task-guard's last-stop-taskset-* and from the liveness verdict). It resets after
-// RESET_MS of no forced block — i.e. once the child has done real work and reaches
-// a genuinely new stop episode, the heartbeat forcing re-arms.
+// CAPPED (loop-safe, shared Stop policy hooks/lib/stop-policy.js, Phase 5 #14):
+// `stop_hook_active` allows immediately; otherwise at most MAX_BLOCKS blocks
+// per STABLE kind ('heartbeat-report', 'inbox') per session. A kind's budget
+// re-opens only when its condition is observed cleared (a real report lands /
+// the inbox is drained), never on a timer and never because a count changed.
+// RESET_MS survives only as the "this stop episode" window for the report check.
 //
 // Gates (identical role detection to devswarm-child-role.js):
 //   - liveness supervisor ACTIVE (devswarm-detect: DEVSWARM_REPO_ID / mode), AND
@@ -90,6 +90,8 @@ const { isSkipped } = require('./skip-guard.js');
 const { devswarmRoot, isSafeId } = require('../companion/lib/liveness.js');
 const { readUnread } = require('../companion/lib/devswarm-inbox-cursor.js');
 const devswarmUnread = require('../companion/lib/devswarm-unread.js');
+// Shared Stop policy (Phase 5, #14) — stop_hook_active + stable-kind caps.
+const stopPolicy = require('./lib/stop-policy.js');
 
 // CLI — the ABSOLUTE path to anti-hall's DevSwarm CLI wrapper, resolved ONCE
 // from this hook's own on-disk location (never a relative "scripts/devswarm.js"
@@ -438,27 +440,18 @@ function describeDropAttempt(dropAttempt, env) {
   return 'your last heartbeat summary was dropped (reason not recognized)';
 }
 
-// How many times a single stop episode may be forced to heartbeat before we
-// yield. One forced-ack is usually enough; a small budget lets a child that
+// How many times each stable block kind may be forced (per session, until its
+// condition clears) before we yield. One forced-ack is usually enough; a small budget lets a child that
 // didn't actually report on the first bounce get one more chance, and the cap
 // then guarantees the child is never hard-looped.
 const MAX_BLOCKS = 2;
 
-// After this long with no forced block, the cap re-arms: a genuinely new stop
-// episode (the child worked for a while, then stopped again) gets a fresh
-// heartbeat forcing. Within a tight bounce-loop this window has NOT elapsed, so
-// the cap holds and the loop terminates.
+// "This stop episode" for alreadyReportedThisEpisode: the more recent of the
+// last forced block and RESET_MS ago. (No longer a cap re-arm timer.)
 const RESET_MS = 5 * 60 * 1000;
 
-// defect a55d6b71a76f fix (root cause B): the per-window cap above resets
-// unconditionally once RESET_MS elapses, so MAX_BLOCKS re-arms every window
-// forever — a child stuck in the SAME failing state (e.g. its heartbeat keeps
-// getting benignly dropped, see root cause A) gets blocked without limit over
-// a long session, never just capped-then-yielded. This SEPARATE, NEVER-RESET
-// lifetime bound stops that: once a session's forced-acks (state.totalBlocks,
-// tracked across every window) reach this count, the gate stops blocking for
-// the REST of the session, even after RESET_MS re-arms the per-window cap.
-const MAX_BLOCKS_PER_SESSION = 6;
+// (defect a55d6b71a76f's lifetime-6 counter and the RESET_MS re-arming window
+// are replaced by the shared Stop policy's stable-kind cap — see main().)
 
 // D13 (v0.97.0): a fresh, zero-unread mailbox-wake TICK marker (written by
 // `devswarm.js inbox tick <id>` — the cron prompt's own drain step, see
@@ -613,6 +606,10 @@ function probeNativeMessageCount(env) {
       encoding: 'utf8', timeout: MESSAGE_COUNT_TIMEOUT_MS, env,
       shell: process.platform === 'win32',
     });
+    // Tri-state (Phase 5 review): binary not installed (ENOENT) = no native
+    // channel to read ('absent'); any other failure (timeout, non-zero exit,
+    // signal, unparseable) = UNKNOWN (null) — never "0 unread".
+    if (r.error && r.error.code === 'ENOENT') return 'absent';
     if (r.error || r.status !== 0 || r.signal) return null;
     const m = String(r.stdout || '').trim().match(/-?\d+/);
     if (!m) return null;
@@ -627,12 +624,15 @@ function probeNativeMessageCount(env) {
 // it shows nothing AND STRICT mode is enabled, a bounded native message-count
 // probe catches a backlog the child has never `inbox pull`ed. Fail-open: any probe
 // error -> false (never blocks on an unknown state).
+// -> true | false | 'unknown' (the native probe failed: never read as "no unread").
 function hasUnreadParentMessages(env, home) {
   const durable = readDurableUnread(env, home);
   if (durable.known && durable.count > 0) return true;
   if (!strictEnabled(env)) return false;
   const native = probeNativeMessageCount(env);
-  return Number.isFinite(native) && native > 0;
+  if (native === 'absent') return false;
+  if (native === null) return 'unknown';
+  return native > 0;
 }
 
 // tickMarkerFreshZero(env, home, now) -> bool. D13: true iff `inbox tick`'s own
@@ -703,6 +703,10 @@ function main() {
   } catch (_) {
     return; // malformed stdin -> fail-open (never block on a parse error)
   }
+
+  // SHARED STOP POLICY: already continuing because of a Stop block -> allow,
+  // before any state write or probe (never re-block back to back).
+  if (stopPolicy.stopHookActive(payload)) return;
 
   const now = Date.now();
 
@@ -790,8 +794,13 @@ function main() {
   if (reported || dropAttempt) {
     const durable = readDurableUnread(process.env, os.homedir());
     // Phase 3: an UNKNOWN unread (store read error) is NOT satisfaction — the
-    // gate blocks with the reason (bounded by the caps below).
-    if (!(durable.known && durable.count > 0) && !durable.unknown) return;
+    // gate blocks with the reason (bounded by the caps below). Phase 5: the
+    // NATIVE queue is probed too (hasUnreadParentMessages) before the condition
+    // is cleared — never-pulled mail must not be waved through.
+    if (!durable.unknown && hasUnreadParentMessages(process.env, os.homedir()) === false) {
+      stopPolicy.clear(os.homedir(), sessionId, 'child-gate'); // condition CLEARED -> fresh budget next time
+      return;
+    }
   }
 
   // D13 (v0.97.0): a fresh, zero-unread `inbox tick` marker is ITSELF a
@@ -804,54 +813,42 @@ function main() {
   // spawn cost just to re-evaluate this).
   if (tickMarkerFreshZero(process.env, os.homedir(), now)) {
     const durable = readDurableUnread(process.env, os.homedir());
-    if (!(durable.known && durable.count > 0) && !durable.unknown) return;
+    if (!durable.unknown && hasUnreadParentMessages(process.env, os.homedir()) === false) {
+      stopPolicy.clear(os.homedir(), sessionId, 'child-gate');
+      return;
+    }
   }
 
-  // Cap reset: once RESET_MS has elapsed since the last forced block, treat this
-  // as a genuinely new stop episode and re-arm the heartbeat forcing. lastBlockAt
-  // defaults to 0, so the very first Stop always arms.
-  let blocks = state.blocks;
-  if ((now - state.lastBlockAt) >= RESET_MS) blocks = 0;
-
-  // Cap: after MAX_BLOCKS forced-acks in this episode, yield — allow the stop.
-  // Do NOT rewrite lastBlockAt here, so the RESET_MS window keeps measuring from
-  // the last ACTUAL block and can still re-arm later (never a hard loop).
-  if (blocks >= MAX_BLOCKS) return;
-
-  // defect a55d6b71a76f fix (root cause B): the per-window cap above resets
-  // every RESET_MS, so a child stuck in the same failing state gets blocked
-  // without limit across a long session. This lifetime bound (never reset)
-  // stops that once and for all for the rest of the session — logged once
-  // (stderr; this gate has no dedicated diagnostic log file of its own, and
-  // never writes to another hook's log).
-  if (state.totalBlocks >= MAX_BLOCKS_PER_SESSION) {
-    if (!state.lifetimeCapLogged) {
-      writeState(stateFile, { blocks, lastBlockAt: state.lastBlockAt, totalBlocks: state.totalBlocks, lifetimeCapLogged: true, nonceFailClosedLogged: state.nonceFailClosedLogged, mismatchLogged: state.mismatchLogged });
+  // SHARED STOP POLICY cap (Phase 5, #14): MAX_BLOCKS per STABLE kind per
+  // session — 'heartbeat-report' (always owed here) and 'inbox' (known unread
+  // or UNKNOWN unread, the cheap durable check). Replaces the 5-min re-arming
+  // window + lifetime-6 counter: a kind's budget re-opens only when its
+  // condition is observed cleared (the satisfaction paths above), never
+  // because time passed or new mail changed a count.
+  const durablePre = readDurableUnread(process.env, os.homedir());
+  const kinds = ['heartbeat-report'];
+  const unreadPendingPre = hasUnreadParentMessages(process.env, os.homedir());
+  if (unreadPendingPre === true) kinds.push('inbox');
+  else if (durablePre.unknown || unreadPendingPre === 'unknown') kinds.push('inbox-unknown');
+  const decision = stopPolicy.consume(os.homedir(), sessionId, 'child-gate', kinds, MAX_BLOCKS, now);
+  if (!decision.block) {
+    if (decision.persisted && !state.lifetimeCapLogged) {
+      writeState(stateFile, Object.assign({}, state, { lifetimeCapLogged: true }));
       try {
-        process.stderr.write('[anti-hall] devswarm-child-gate: lifetime forced-ack cap ('
-          + MAX_BLOCKS_PER_SESSION + ') reached for session ' + JSON.stringify(sessionId)
-          + ' — no further Stop blocks this session.\n');
+        process.stderr.write('[anti-hall] devswarm-child-gate: forced-ack cap (' + MAX_BLOCKS
+          + ' per kind) reached for session ' + JSON.stringify(sessionId)
+          + ' — no further Stop blocks until the condition clears (a report lands / inbox drained).\n');
       } catch (_) { /* best-effort diagnostic only */ }
     }
-    return;
+    return; // cap exhausted, or cap state unpersistable -> fail open
   }
+  // lastBlockAt bounds "this stop episode" for the report-satisfaction check.
+  writeState(stateFile, Object.assign({}, state, { lastBlockAt: now, lifetimeCapLogged: false }));
 
-  // Force the heartbeat: persist the cap BEFORE blocking so it is honored even if
-  // the child re-stops. If the cap state can't be persisted (e.g. unwritable HOME),
-  // FAIL OPEN — do NOT block. A guard that blocks while unable to track its own cap
-  // would block EVERY Stop forever (fail-closed). Mirrors devswarm-parent-gate.js.
-  if (!writeState(stateFile, {
-    blocks: blocks + 1,
-    lastBlockAt: now,
-    totalBlocks: state.totalBlocks + 1,
-    lifetimeCapLogged: state.lifetimeCapLogged,
-    nonceFailClosedLogged: state.nonceFailClosedLogged,
-    mismatchLogged: state.mismatchLogged,
-  })) return;
-
-  // INBOUND check only now that we are actually about to block (never on the
-  // cap-exhausted yield path above) — a healthy child never pays the probe cost.
-  const unreadPending = hasUnreadParentMessages(process.env, os.homedir());
+  // INBOUND state: probed ONCE above (durable, then the native message-count)
+  // so the 'inbox' kind and this reason text agree.
+  const unreadPending = unreadPendingPre === true;
+  const nativeUnknown = unreadPendingPre === 'unknown';
   const durableNow = unreadPending ? null : readDurableUnread(process.env, os.homedir());
   const inboundPrefix = unreadPending
     ? 'DEVSWARM CHILD INBOX — you have unpulled/unread parent message(s): run ' +
@@ -861,6 +858,10 @@ function main() {
     ? 'DEVSWARM CHILD INBOX — your unread count is UNKNOWN (' + String(durableNow.reason || 'store-read-error') +
       '): the store could not be read, so this gate cannot prove your inbox is empty. Run `node ' + CLI +
       ' inbox count ' + resolvedIdSafe(process.env) + '` and read any mail BEFORE you stop. '
+    : nativeUnknown
+    ? 'DEVSWARM CHILD INBOX — your NATIVE unread count is UNKNOWN (the `hivecontrol workspace message-count` '
+      + 'probe failed or timed out), so this gate cannot prove your native queue is empty. Run `node ' + CLI
+      + ' inbox pull ' + resolvedIdSafe(process.env) + '` and handle any mail BEFORE you stop. '
     : '';
 
   // WAKE RE-VERIFY (v0.59, reused not re-invented — see header): rides along on

@@ -351,7 +351,7 @@ test('item 3: the drain marker records sessionId null rather than inheriting the
       return realMark.call(this, h, id, o);
     };
     try {
-      cli.run(['inbox', 'read-primary', 'w-drain'], ctx(home, { cwd: repo, env: {} }));
+      cli.run(['inbox', 'drain-primary-legacy', 'w-drain'], ctx(home, { cwd: repo, env: {} }));
     } finally { drainMarker.markDrainStart = realMark; }
     assert.strictEqual(observed, null,
       'THE FIX: a value equal to the row id is not a session id — the marker must claim none');
@@ -370,7 +370,7 @@ test('item 3: the drain marker records sessionId null for the synthetic unclaime
       return realMark.call(this, h, id, o);
     };
     try {
-      cli.run(['inbox', 'read-primary', 'w-du'], ctx(home, { cwd: repo, env: {} }));
+      cli.run(['inbox', 'drain-primary-legacy', 'w-du'], ctx(home, { cwd: repo, env: {} }));
     } finally { drainMarker.markDrainStart = realMark; }
     assert.strictEqual(observed, null, 'the unclaimed: marker is not a session id either');
   } finally { rm(home); rm(repo); }
@@ -388,7 +388,7 @@ test('item 3: a GENUINE session id is still recorded verbatim (the fix narrows n
       return realMark.call(this, h, id, o);
     };
     try {
-      cli.run(['inbox', 'read-primary', 'w-real-drain'], ctx(home, { cwd: repo, env: {} }));
+      cli.run(['inbox', 'drain-primary-legacy', 'w-real-drain'], ctx(home, { cwd: repo, env: {} }));
     } finally { drainMarker.markDrainStart = realMark; }
     assert.equal(observed, 'sess-real-xyz', 'a real descriptor session id must still reach the marker');
   } finally { rm(home); rm(repo); }

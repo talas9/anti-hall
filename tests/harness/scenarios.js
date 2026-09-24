@@ -223,6 +223,15 @@ function scenarioI3PullCrash() {
 // one-shot readers' MIN floor instead of converging toward the real reader's
 // own (0) unread.
 // ---------------------------------------------------------------------------
+// readThenAck(id, ctx) — the Phase 5 drain: read-only `read-primary`, then
+// the explicit `ack-primary --receipt` it hands back (same reader ctx).
+function readThenAck(id, ctx) {
+  const r = ops.cli.run(['inbox', 'read-primary', id], ctx);
+  const rid = r && r.result && r.result.readReceiptId;
+  if (rid) ops.cli.run(['inbox', 'ack-primary', id, '--receipt', rid], ctx);
+  return r;
+}
+
 function scenarioI2I3CursorConvergence() {
   const fixture = ops.makeMeshFixture(['r1', 'sender'], 'i2i3-cursor');
   try {
@@ -240,7 +249,7 @@ function scenarioI2I3CursorConvergence() {
     const N = 3;
     for (let i = 0; i < N; i++) {
       const ctxOneShot = ops.baseCtx(fixture, readerId, t++, { instanceNonce: 'oneshot-' + i + ':' + t });
-      ops.cli.run(['inbox', 'read-primary', readerId], ctxOneShot);
+      readThenAck(readerId, ctxOneShot);
     }
 
     // More mail arrives after the one-shot readers are gone.
@@ -248,7 +257,7 @@ function scenarioI2I3CursorConvergence() {
 
     // The REAL, persistent reader reads everything (its own stable instance).
     const ctxReal = ops.baseCtx(fixture, readerId, t++, { instanceNonce: 'real-reader-stable' });
-    const realResult = ops.cli.run(['inbox', 'read-primary', readerId], ctxReal);
+    const realResult = readThenAck(readerId, ctxReal);
 
     // Shared/summary-projected unread for this workspace (store.cursorValue(id)
     // is the floor — see devswarm-store.js computeSummary's own comment: "the

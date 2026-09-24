@@ -101,7 +101,7 @@ test('(c) an ACKING read of a LIVE (non-ackable) sibling is capped to a PREFIX a
     markLive(home, 'live-sib'); // LIVE -> siblingAckGate always skips its ack
     seedPartition(home, repo, 'live-sib', rowsFor(250));
 
-    const r1 = cli.run(['inbox', 'read-primary', 'caller-x', '--ack-as-owner'], ctx(home, { cwd: repo }));
+    const r1 = cli.run(['inbox', 'drain-primary-legacy', 'caller-x', '--ack-as-owner'], ctx(home, { cwd: repo }));
     assert.equal(r1.result.ok, true, JSON.stringify(r1.result));
     const got1 = bodies(r1);
     assert.equal(got1.length, 200, 'still bounded to NEVER_READ_SIBLING_CAP');
@@ -124,12 +124,12 @@ test('(c) an ACKING read of a LIVE (non-ackable) sibling is capped to a PREFIX a
     assert.ok(!got1.includes('row-249'), 'and the NEWEST rows are this call\'s withheld end — reachable on the very next read');
 
     // CONVERGENCE — the property the tail form could never provide.
-    const r2 = cli.run(['inbox', 'read-primary', 'caller-x', '--ack-as-owner'], ctx(home, { cwd: repo }));
+    const r2 = cli.run(['inbox', 'drain-primary-legacy', 'caller-x', '--ack-as-owner'], ctx(home, { cwd: repo }));
     const got2 = bodies(r2);
     assert.equal(got2.length, 50, 'the NEXT read delivers exactly the remaining 50, never the same 200 again');
     assert.ok(got2.includes('row-249'));
     assert.equal(cursorOf(home, repo, 'live-sib'), 0, 'and the live sibling\'s OWN cursor is STILL untouched');
-    const r3 = cli.run(['inbox', 'read-primary', 'caller-x', '--ack-as-owner'], ctx(home, { cwd: repo }));
+    const r3 = cli.run(['inbox', 'drain-primary-legacy', 'caller-x', '--ack-as-owner'], ctx(home, { cwd: repo }));
     assert.equal(bodies(r3).length, 0, 'THE P0 FIX: the drain converges instead of re-delivering forever');
 
     assert.equal(r1.result.meshNeverReadCapped, true, 'the cap is reported');
@@ -172,7 +172,7 @@ test('(c) NOTHING IS LOST: every withheld row on a non-ackable partition is stil
     markLive(home, 'live-sib-y');
     seedPartition(home, repo, 'live-sib-y', rowsFor(250));
 
-    cli.run(['inbox', 'read-primary', 'caller-y', '--ack-as-owner'], ctx(home, { cwd: repo }));
+    cli.run(['inbox', 'drain-primary-legacy', 'caller-y', '--ack-as-owner'], ctx(home, { cwd: repo }));
     const direct = cli.run(['inbox', 'messages', 'live-sib-y', '--limit', '5000'], ctx(home, { cwd: repo }));
     assert.equal(direct.result.ok, true, JSON.stringify(direct.result));
     const seen = new Set(bodies(direct));
@@ -191,14 +191,14 @@ test('(c) the cap is gated on BACKLOG SIZE, not first-read: call #2 on an alread
     register(home, repo, 'orphan-sib', 'unclaimed:orphan-sib');
     seedPartition(home, repo, 'orphan-sib', rowsFor(250));
 
-    const r1 = cli.run(['inbox', 'read-primary', 'caller-z', '--ack-as-owner'], ctx(home, { cwd: repo }));
+    const r1 = cli.run(['inbox', 'drain-primary-legacy', 'caller-z', '--ack-as-owner'], ctx(home, { cwd: repo }));
     assert.equal(bodies(r1).length, 200, 'call #1 capped');
     assert.equal(cursorOf(home, repo, 'orphan-sib'), 200, 'an ackable partition IS drained to exactly the delivered prefix');
 
     // Now pile on a fresh backlog well past the cap. pCursor is no longer 0,
     // so the OLD `pCursor === 0` gate did not fire at all and dumped all 300.
     seedPartition(home, repo, 'orphan-sib', rowsFor(300, 1000));
-    const r2 = cli.run(['inbox', 'read-primary', 'caller-z', '--ack-as-owner'], ctx(home, { cwd: repo }));
+    const r2 = cli.run(['inbox', 'drain-primary-legacy', 'caller-z', '--ack-as-owner'], ctx(home, { cwd: repo }));
     const got2 = bodies(r2);
     assert.equal(got2.length, 200, 'THE FIX: call #2 is bounded by the same cap — the hazard is backlog size, not whether this is the first read');
     assert.equal(r2.result.meshNeverReadCapped, true, 'and the cap is reported on call #2 as well');
@@ -206,7 +206,7 @@ test('(c) the cap is gated on BACKLOG SIZE, not first-read: call #2 on an alread
     // LOSS-FREE on the ackable path: the cursor advanced by exactly what was
     // delivered, so the withheld remainder is delivered next call.
     assert.equal(cursorOf(home, repo, 'orphan-sib'), 400, 'cursor advanced to exactly the delivered prefix (200 + 200), never past the withheld rows');
-    const r3 = cli.run(['inbox', 'read-primary', 'caller-z', '--ack-as-owner'], ctx(home, { cwd: repo }));
+    const r3 = cli.run(['inbox', 'drain-primary-legacy', 'caller-z', '--ack-as-owner'], ctx(home, { cwd: repo }));
     const got3 = bodies(r3);
     assert.ok(got3.length > 0, 'the withheld remainder makes forward progress on the next call');
     assert.ok(got3.includes('row-1299'), 'and the whole backlog is eventually drained, nothing dropped');
@@ -222,7 +222,7 @@ test('(c) an ackable partition still gets a PREFIX (the ack arithmetic depends o
     register(home, repo, 'orphan-p', 'unclaimed:orphan-p');
     seedPartition(home, repo, 'orphan-p', rowsFor(250));
 
-    const r = cli.run(['inbox', 'read-primary', 'caller-p', '--ack-as-owner'], ctx(home, { cwd: repo }));
+    const r = cli.run(['inbox', 'drain-primary-legacy', 'caller-p', '--ack-as-owner'], ctx(home, { cwd: repo }));
     const got = bodies(r);
     assert.ok(got.includes('row-0') && got.includes('row-199'), 'an ACKABLE partition keeps the structural PREFIX — its cursor advances, so the tail must stay the withheld end');
     assert.ok(!got.includes('row-249'), 'and the newest rows are the withheld end there');
@@ -236,7 +236,7 @@ test('(c) an ackable partition still gets a PREFIX (the ack arithmetic depends o
       register(home2, repo2, 'live-s');
       markLive(home2, 'live-s');
       seedPartition(home2, repo2, 'live-s', rowsFor(5));
-      const rs = cli.run(['inbox', 'read-primary', 'caller-s', '--ack-as-owner'], ctx(home2, { cwd: repo2 }));
+      const rs = cli.run(['inbox', 'drain-primary-legacy', 'caller-s', '--ack-as-owner'], ctx(home2, { cwd: repo2 }));
       assert.equal(bodies(rs).length, 5, 'a small backlog is delivered whole');
       assert.equal(rs.result.meshNeverReadCapped, undefined, 'and nothing is reported as capped');
       assert.equal(rs.result.neverReadCapHint, undefined, 'no hint when nothing was withheld');
@@ -294,7 +294,7 @@ function runDisagreementFixture(mutatedCli, tag) {
     register(home, repo, 'orphan-d', 'unclaimed:orphan-d');
     seedPartition(home, repo, 'orphan-d', rowsFor(250));
 
-    const r = mutatedCli.run(['inbox', 'read-primary', 'caller-d', '--ack-as-owner'], ctx(home, { cwd: repo }));
+    const r = mutatedCli.run(['inbox', 'drain-primary-legacy', 'caller-d', '--ack-as-owner'], ctx(home, { cwd: repo }));
     assert.equal(r.result.ok, true, JSON.stringify(r.result));
     const got = r.result.messages.filter((m) => m.body && m.body.startsWith('row-')).map((m) => m.body);
     assert.equal(got.length, 200, 'precondition: the partition was capped');

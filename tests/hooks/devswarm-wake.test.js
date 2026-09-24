@@ -100,18 +100,20 @@ function nonClaudeGolden(agent, cli, isChild) {
   const storeUnavailableClause = ' — if that reports `ok:false`, '
     + 'report the `reason` (and `storeUnavailableReason`/`storeUnavailableDetail` when present) '
     + 'in one line and stop (do not loop, do not spawn a subagent)';
+  // Phase 5 ack split: read-primary is read-only; the prompt names the ack step.
+  const ackAfterRead = ' (read-only; after handling, run the `ackCommand` it returns)';
   const drain = isChild
     ? 'first run `node ' + cli + ' inbox pull ' + id + '` (cheap, inline — imports ' +
       'anything waiting in your native queue) then `node ' + cli + ' inbox count ' + id +
       '`; ' + stopCond + ', say so and stop — do NOT spawn a subagent; otherwise (' +
       otherwise + '), run `node ' + cli +
-      ' inbox read-primary ' + id + '` (delegate to a subagent only if the payload is large ' +
-      '— this is the cursor-advancing verb, matching devswarm-child-turn.js\'s own ' +
+      ' inbox read-primary ' + id + '`' + ackAfterRead + ' (delegate to a subagent only if the payload is large ' +
+      '— its ackCommand is the cursor-advancing step, matching devswarm-child-turn.js\'s own ' +
       'mesh-direct instruction; `inbox read` is a non-mutating peek and cannot clear the ' +
       'withheld gap)' + storeUnavailableClause
     : 'first run `node ' + cli + ' inbox count ' + id + '`; ' + stopCond + ', say so ' +
       'and stop — do NOT spawn a subagent; otherwise (' + otherwise + '), run `node ' + cli +
-      ' inbox read-primary ' + id + '` (delegate to a subagent only if the payload is large)' + storeUnavailableClause;
+      ' inbox read-primary ' + id + '`' + ackAfterRead + ' (delegate to a subagent only if the payload is large)' + storeUnavailableClause;
   return ' MAILBOX WAKE: this workspace runs `' + agent + '`, which has NO idle-wake ' +
     'primitive — once you go idle, nothing can wake you, so a message that lands after ' +
     'you stop waits for your next turn. Drain your mailbox at the START of every turn ' +

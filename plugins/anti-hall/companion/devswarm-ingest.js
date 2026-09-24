@@ -33,6 +33,8 @@ const { spawnSync } = require('child_process');
 
 const store = require('./lib/devswarm-store.js');
 const { devswarmRoot } = require('./lib/liveness.js');
+// Phase 5 delivery WAL around the destructive `monitor` read.
+const readWal = require('./lib/devswarm-read-wal.js');
 // The installer OWNS per-worktree identity (worktreeHash / labelForWorktree / …). The
 // daemon reuses those exact helpers so its lock + workspaceId agree byte-for-byte
 // with what install-devswarm-ingest.js baked into the unit. Requiring the installer
@@ -1463,8 +1465,89 @@ function runIngestLoop(opts) {
       } while (remaining > 0);
     }
 
+    // DELIVERY WAL (Phase 5): every non-empty monitor stdout is fsynced to
+    // wal/monitor-<hash>.ndjson BEFORE ingestPayload; a batch left open (crash,
+    // store-lock failure) is replayed before the next destructive monitor call.
+    const walF = (o.io && o.io.storeFs) || fs;
+    const walFile = readWal.walPath(home, 'monitor', hbHash);
+    let walReplayNeeded = true; // startup: replay whatever a previous run left open
+    const walNow = () => (Number.isFinite(o.now) ? o.now : Date.now());
+    // replayWal() -> true when nothing is left pending (safe to read again).
+    const walMeta = { worktree: worktree || null };
+    let walBlockedLogged = false;
+    function replayWal() {
+      // Spilled batches (WAL was unwritable) go back into the WAL first; while
+      // that fails the reader stays blocked (fail closed).
+      const absorbed = readWal.absorbSpill(walF, walFile, walNow());
+      if (absorbed.error) {
+        stats.walBlocked = true;
+        if (!walBlockedLogged) {
+          walBlockedLogged = true;
+          appendLog(home, 'WARN: delivery WAL not writable (' + absorbed.error + ') — spilled batch(es) kept in '
+            + readWal.spillDir(walFile) + '; no destructive monitor read until the WAL is writable', logFs);
+        }
+        return false;
+      }
+      let open;
+      try {
+        open = readWal.pending(walF, walFile).map((b) => ({ file: walFile, e: b.e, raw: b.raw }))
+          .concat(readWal.adoptForWorktree(walF, home, 'monitor', walMeta.worktree, walFile)); // same-worktree monitor readers share this daemon's ingest lock
+      } catch (e) {
+        stats.walBlocked = true;
+        appendLog(home, 'WARN: delivery WAL unreadable (' + ((e && e.code) || e) + ') at ' + walFile
+          + ' — no new destructive monitor read until it is readable', logFs);
+        return false;
+      }
+      for (const entry of open) {
+        let ing;
+        try { ing = ingestPayload(s, entry.raw, { workspaceId, now: o.now }); } catch (e) {
+          if (e && (e.code === 'ELOCKFS' || e.code === 'ELOCKUNAVAIL')) return false; // stays pending
+          throw e;
+        }
+        stats.inserted += ing.inserted;
+        stats.duplicate += ing.duplicate;
+        stats.walReplayed = (stats.walReplayed || 0) + 1;
+        if (ing.inserted > 0) store.deriveSummary(s, { home, env: o.env, now: o.now });
+        try {
+          readWal.closeBatch(walF, entry.file, entry.e, ing.lossy
+            ? { t: 'quarantine', reason: 'unparseable' }
+            : { t: 'done', inserted: ing.inserted, duplicate: ing.duplicate }, walNow());
+        } catch (_) { return false; }
+      }
+      readWal.maybeRotate(walF, walFile, walNow());
+      return true;
+    }
+
     for (let i = 0; i < maxIterations; i++) {
       if (o.shouldStop && o.shouldStop()) break;
+      // WAL admission control: never issue a new destructive read while an
+      // earlier captured batch is not durably ingested.
+      if (walReplayNeeded) {
+        if (!replayWal()) {
+          stats.errors++;
+          if (i + 1 < maxIterations) sleep(backoffMs);
+          continue;
+        }
+        walReplayNeeded = false;
+      }
+      // FAIL CLOSED: never issue a destructive monitor read into a WAL that
+      // cannot be appended + fsynced right now.
+      {
+        const notWritable = readWal.preflight(walF, walFile);
+        if (notWritable) {
+          stats.errors++;
+          stats.walBlocked = true;
+          if (!walBlockedLogged) {
+            walBlockedLogged = true;
+            appendLog(home, 'WARN: delivery WAL not writable (' + notWritable + ') at ' + walFile
+              + ' — destructive monitor read refused until it is writable', logFs);
+          }
+          walReplayNeeded = true;
+          if (i + 1 < maxIterations) sleep(backoffMs);
+          continue;
+        }
+        walBlockedLogged = false;
+      }
       // Heartbeat our lock each iteration so this live, long-lived consumer keeps
       // its timestamp fresh and can never be mistaken for a stale holder + stolen.
       checkHeartbeat();
@@ -1502,6 +1585,25 @@ function runIngestLoop(opts) {
       // next poll cannot re-observe them). The attempt still counts as a failure
       // for backoff purposes afterward (see the `!res.ok` check below).
       if (res.raw) {
+        // WAL FIRST (Phase 5): the RAW bytes are fsynced the moment spawnSync
+        // returns — before the ok-check, before any parse. The remaining
+        // native-dequeue window is a documented limitation (devswarm-read-wal.js).
+        // A WAL write failure spills the bytes and blocks further reads; the
+        // in-memory batch is still ingested (idempotent by hash).
+        let walEntry = null;
+        const rawForWal = typeof res.raw === 'string' ? res.raw : stableJson(res.raw);
+        {
+          // FAIL CLOSED: WAL, else spill, else stderr + os.tmpdir() last-resort;
+          // anything but a WAL entry blocks further destructive reads.
+          const cap = readWal.captureRaw(walF, walFile, rawForWal, walNow(), walMeta);
+          walEntry = cap.entryId || null;
+          if (!walEntry) {
+            appendLog(home, 'WARN: delivery WAL write failed (' + (cap.error || 'unknown') + ') — batch kept in '
+              + (cap.spillPath || cap.lastResortPath || 'stderr only') + '; destructive reads blocked until the WAL is writable', logFs);
+            walReplayNeeded = true;
+            stats.walBlocked = true;
+          }
+        }
         let ing;
         try {
           ing = ingestPayload(s, res.raw, { workspaceId, now: o.now });
@@ -1516,7 +1618,14 @@ function runIngestLoop(opts) {
           // error still propagates (fail-open is only for the lock signals, not arbitrary bugs).
           if (e && (e.code === 'ELOCKFS' || e.code === 'ELOCKUNAVAIL')) {
             stats.errors++;
-            try { fs.writeSync(2, 'devswarm-ingest: store lock ' + e.code + ' — skipping this batch, replaying next poll (idempotent by hash)\n'); } catch (_) {}
+            // The native queue already POPPED this batch, so "replay next poll"
+            // is only true because the batch sits (pending) in the WAL.
+            if (walEntry) walReplayNeeded = true;
+            try {
+              fs.writeSync(2, 'devswarm-ingest: store lock ' + e.code + ' — batch '
+                + (walEntry ? 'kept pending in the delivery WAL, replayed before the next monitor read (idempotent by hash)\n'
+                  : 'NOT in the WAL (WAL write failed) — may be lost\n'));
+            } catch (_) {}
             alog.logError('ingest', 'ingest-payload-retryable', e, { workspaceId, code: e.code });
             if (i + 1 < maxIterations) sleep(backoffMs);
             continue;
@@ -1526,6 +1635,17 @@ function runIngestLoop(opts) {
         stats.inserted += ing.inserted;
         stats.duplicate += ing.duplicate;
         if (ing.inserted > 0) store.deriveSummary(s, { home, env: o.env, now: o.now });
+        // Close the WAL entry: `done`, or `quarantine` for a lossy batch — the
+        // raw bytes stay in the WAL uncapped (the rate-limited file quarantine
+        // below is diagnostics only). A failed close leaves it pending -> the
+        // next iteration replays it (dedupe by hash).
+        if (walEntry) {
+          try {
+            readWal.closeBatch(walF, walFile, walEntry, ing.lossy
+              ? { t: 'quarantine', reason: 'unparseable' }
+              : { t: 'done', inserted: ing.inserted, duplicate: ing.duplicate }, walNow());
+          } catch (_) { walReplayNeeded = true; }
+        }
         // B1 LOSS EVENT: `raw` was substantive (not the ordinary empty/
         // whitespace quiet-poll case — see ingestPayload's own doc) but
         // normalized to ZERO messages. The native queue already popped these

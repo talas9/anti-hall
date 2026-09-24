@@ -717,6 +717,21 @@ function runChecks(opts) {
     results.push({ status: WARN, message: 'escalation-pending check unavailable: ' + (e && e.message) });
   }
 
+  // Phase 5 delivery WAL health (report-only): pending batches past the
+  // age/size threshold, spilled batches (WAL unwritable -> reads blocked), or an
+  // unreadable WAL. Never drops anything.
+  try {
+    const walHealth = require('./devswarm-read-wal.js').health(F, home, now);
+    const alerts = walHealth.filter((h) => h.alert);
+    if (alerts.length) {
+      for (const a of alerts) results.push({ status: WARN, message: 'delivery WAL ' + a.file + ': ' + a.reason });
+    } else {
+      results.push({ status: PASS, message: 'delivery WAL: nothing stuck (' + walHealth.length + ' reader(s) with open batches)' });
+    }
+  } catch (e) {
+    results.push({ status: WARN, message: 'delivery WAL health unavailable: ' + (e && e.message) });
+  }
+
   // Descriptor-store integrity (companion/lib/doctor-descriptors.js): a
   // REPORT-ONLY scan for malformed ids and for archived ids that strict-prefix a
   // live one (the phantom-roster-row signature). It lives in its own module

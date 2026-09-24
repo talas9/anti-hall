@@ -743,7 +743,7 @@ test('a broadcast appears in every workspace\'s broadcastUnread; after mesh read
     assert.equal(peerRowBefore.broadcastUnread, 1, 'peer-1 has not acked yet');
 
     // The SENDER acks via `roster --ack` (alias of `mesh read`, D23).
-    const acked = cli.run(['roster', '--ack'], ctx(home, { cwd: repo }));
+    const acked = cli.run(['roster', '--ack', '--legacy-ack-now'], ctx(home, { cwd: repo }));
     assert.equal(acked.result.ok, true);
     assert.equal(acked.result.acked, true);
     assert.equal(acked.result.count, 1);
@@ -803,7 +803,7 @@ test('inbox read-primary: a CHILD (registered under a DEVSWARM_BUILDER_ID differ
     // The exact command buildMeshDirectSegment (devswarm-child-turn.js, D26)
     // nudges: `devswarm.js inbox read-primary <DEVSWARM_BUILDER_ID>`.
     const r = cli.run(
-      ['inbox', 'read-primary', builderId],
+      ['inbox', 'drain-primary-legacy', builderId],
       ctx(home, { cwd: childWt, env: { DEVSWARM_BUILDER_ID: builderId } })
     );
     assert.equal(r.code, 0, 'the child must be able to read+ack its own inbox via the exact D26-nudged command');
@@ -874,7 +874,7 @@ test('roster --ack (mesh read) for a CHILD registered under a DEVSWARM_BUILDER_I
     assert.equal(childRowBefore.broadcastUnread, 1, 'the child has not acked yet');
 
     const acked = cli.run(
-      ['roster', '--ack'],
+      ['roster', '--ack', '--legacy-ack-now'],
       ctx(home, { cwd: childWt, env: { DEVSWARM_BUILDER_ID: builderId } })
     );
     assert.equal(acked.result.ok, true, JSON.stringify(acked.result));
@@ -1246,7 +1246,7 @@ test('P1-1/P1-2: send --to-primary RE-HOMES a hash-bucket Primary into the repoK
       assert.ok(!sHash.listRegistry().some((w) => w.id === primaryId), 'hash-bucket registry row must be tombstoned after re-home');
     } finally { sHash.close(); }
     // And the Primary is now readable via the Primary's real read verb (no black hole).
-    const rr = cli.run(['inbox', 'read-primary', primaryId], ctx(home, { cwd: mainRepo }));
+    const rr = cli.run(['inbox', 'drain-primary-legacy', primaryId], ctx(home, { cwd: mainRepo }));
     assert.equal(rr.result.ok, true);
     assert.ok(rr.result.messages.some((m) => m.body === 'healed status'), 'read-primary must surface the re-homed message');
   } finally { rm(home); rm(mainRepo); if (childWt) rm(childWt); }

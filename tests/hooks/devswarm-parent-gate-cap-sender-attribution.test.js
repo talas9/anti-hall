@@ -1,19 +1,14 @@
 'use strict';
 // hooks/devswarm-parent-gate.js — own-outbound (D3) fix + D6 attribution.
 //
-// CAP SIGNATURE — a fix was ATTEMPTED here (drop `b.unread` from the cap/
-// bypass signature, so a raw unread-count change alone would no longer
-// re-arm the cap, only a genuine id/unknown/status change) and REVERTED per
-// owner decision: `tests/e2e/devswarm-substrate.e2e.test.js`'s "3 PARENT-GATE:
-// per-SET cap goes quiet, then a CHANGED unread set re-opens the budget"
-// encodes a DOCUMENTED requirement (§4.4 requirement D) that a genuinely
-// growing backlog on the SAME workspace must re-block. Dropping the count
-// from the signature silenced that. D3 (own outbound miscounted as neglect)
-// does not need this — its root cause is fixed structurally below (the
-// `sender` filter removes the Primary's own outbound from the COUNT itself,
-// so it never reaches the signature as phantom growth). The signature is
-// therefore UNCHANGED from before this task: `b.id + b.unread + b.unknown +
-// b.status`.
+// CAP SIGNATURE — history: dropping `b.unread` from the cap signature was
+// attempted here once and reverted (then: §4.4 requirement D, "a growing
+// backlog on the SAME workspace must re-block"). The Phase 5 mesh redesign
+// (#14, shared Stop policy — plan decision 2026-09-23) supersedes that: the cap
+// is keyed by STABLE block kinds, because a count-keyed budget re-opened on
+// every message landing mid-drain (369 Stop blocks in one field transcript).
+// A growing backlog is still reported (the reason names the current count);
+// the budget re-opens when the condition clears or a new kind appears.
 //
 // D3 (own outbound miscounted as neglect, NDJSON path): a row this Primary
 // itself sent lands in the recipient's own NDJSON inbox awaiting THEIR read,
@@ -121,15 +116,10 @@ function seedArchived(home, id, worktreePath) {
 }
 
 // ---------------------------------------------------------------------------
-// Cap signature: UNCHANGED contract (owner-reverted) — a changed unread
-// COUNT alone still resets the cap. See devswarm-parent-gate.test.js's own
-// "CAP RESET: a CHANGED unread set re-opens the budget after being capped"
-// for the canonical, more thorough version of this; this one just pins the
-// same contract at the raw gate-state level to protect against the fix-2
-// attempt above ever silently reappearing.
+// Cap signature (Phase 5 #14): a changed unread COUNT alone does NOT reset.
 // ---------------------------------------------------------------------------
 
-test('cap DOES reset when the unread COUNT changes (same id/status) — owner-reverted contract', () => {
+test('cap does NOT reset when only the unread COUNT changes (stable block kind, Phase 5 #14)', () => {
   const h = makeHome();
   const a = makeWorktree();
   try {
@@ -139,17 +129,16 @@ test('cap DOES reset when the unread COUNT changes (same id/status) — owner-re
     const state1 = JSON.parse(fs.readFileSync(stateFileFor('sess-1', h.home), 'utf8'));
     assert.strictEqual(state1.blocks, 1);
 
-    // Add a SECOND real message -> unread count changes 1 -> 2, id/status
-    // unchanged -> this IS a new signature (b.unread is back in the hash) ->
-    // the budget resets, `blocks` starts over at 1, not 2.
+    // A SECOND real message lands mid-drain -> same kind -> same signature ->
+    // the budget ACCUMULATES (no self-amplification); the reason still shows 2.
     seedDescriptor(h.home, 'ws1', a.wt, { messages: ['first real message here', 'second real message here'] });
     const r2 = run(h.home, a.wt);
     assert.strictEqual(r2.json && r2.json.decision, 'block');
     assert.match(r2.json.reason, /2 unread/);
 
     const state2 = JSON.parse(fs.readFileSync(stateFileFor('sess-1', h.home), 'utf8'));
-    assert.strictEqual(state2.blocks, 1, `a changed unread COUNT must reset the budget, not accumulate; state=${JSON.stringify(state2)}`);
-    assert.notStrictEqual(state2.sig, state1.sig, 'the signature itself must differ once the count changes');
+    assert.strictEqual(state2.blocks, 2, `a changed unread COUNT must accumulate, not reset; state=${JSON.stringify(state2)}`);
+    assert.strictEqual(state2.sig, state1.sig, 'the signature is the stable kind set, not the count');
   } finally { a.cleanup(); h.cleanup(); }
 });
 

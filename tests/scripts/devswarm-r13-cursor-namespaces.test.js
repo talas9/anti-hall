@@ -78,7 +78,7 @@ function register(home, repo, id, sessionId) {
 }
 // The caller identity this cwd actually produces — the Primary's own row id.
 function callerIdFor(home, repo) {
-  return cli.run(['inbox', 'read-primary', 'probe-only'], mkCtx(home, repo)).result.callerIdentity;
+  return cli.run(['inbox', 'drain-primary-legacy', 'probe-only'], mkCtx(home, repo)).result.callerIdentity;
 }
 
 // ---------------------------------------------------------------------------
@@ -112,7 +112,7 @@ test('R13 item 7: store=N/json=0 -> count 0 AND read 0 (the store cursor is hono
 
     const c = cli.run(['inbox', 'count', P], mkCtx(home, repo)).result;
     assert.equal(c.unreadTotal, 0, 'count sees the store cursor');
-    const r = cli.run(['inbox', 'read-primary', P], mkCtx(home, repo)).result;
+    const r = cli.run(['inbox', 'drain-primary-legacy', P], mkCtx(home, repo)).result;
     assert.equal((r.messages || []).length, 0,
       'THE FIX: read-primary sizes from MAX(json, store) too — pre-fix it re-delivered all 6 forever');
   } finally { rm(home); rm(repo); }
@@ -144,7 +144,7 @@ test('R13 item 7: store=0/json=N -> count 0 AND read 0 (symmetric — count hono
 
     const c = cli.run(['inbox', 'count', P], mkCtx(home, repo)).result;
     assert.equal(c.unreadTotal, 0, 'THE FIX: count sizes from MAX too — pre-fix it reported 6');
-    const r = cli.run(['inbox', 'read-primary', P], mkCtx(home, repo)).result;
+    const r = cli.run(['inbox', 'drain-primary-legacy', P], mkCtx(home, repo)).result;
     assert.equal((r.messages || []).length, 0);
   } finally { rm(home); rm(repo); }
 });
@@ -240,7 +240,7 @@ test('R13 item 10: a LIVE twin\'s backlog converges instead of re-delivering for
 
     const batches = [];
     for (let i = 0; i < 8; i++) {
-      const r = cli.run(['inbox', 'read-primary', P], mkCtx(home, repo)).result;
+      const r = cli.run(['inbox', 'drain-primary-legacy', P], mkCtx(home, repo)).result;
       const n = (r.messages || []).length;
       batches.push(n);
       assert.ok((r.liveSiblingsSkipped || []).includes(T),
@@ -428,7 +428,7 @@ function twinFixture(home, repo, repoKey, n) {
 }
 function drain(home, repo, P) {
   for (let i = 0; i < 10; i++) {
-    const r = cli.run(['inbox', 'read-primary', P, '--ack-as-owner'], mkCtx(home, repo)).result;
+    const r = cli.run(['inbox', 'drain-primary-legacy', P, '--ack-as-owner'], mkCtx(home, repo)).result;
     if (!(r.messages || []).length) return;
   }
   throw new Error('drain did not converge');
@@ -461,7 +461,7 @@ test('R13 item 11: after a converged union drain, the fold forwards ZERO and the
       assert.equal(s1.messageCount(P), pTotalBefore, 'the survivor\'s partition did not grow');
     } finally { s1.close(); }
 
-    const r = cli.run(['inbox', 'read-primary', P, '--ack-as-owner'], mkCtx(home, repo)).result;
+    const r = cli.run(['inbox', 'drain-primary-legacy', P, '--ack-as-owner'], mkCtx(home, repo)).result;
     assert.equal((r.messages || []).length, 0,
       'and the survivor\'s next read returns nothing — pre-fix it re-delivered all 20');
   } finally { rm(home); rm(repo); }
@@ -526,7 +526,7 @@ test('R13 item 11: a fold copy and its sibling original are delivered ONCE, not 
     // partition and as the original still in T's partition, which P also reads
     // through the sibling union. The copy was RE-ADDRESSED, so its own hash
     // cannot match the original's — only the origHash stamp can.
-    const r = cli.run(['inbox', 'read-primary', P, '--ack-as-owner'], mkCtx(home, repo)).result;
+    const r = cli.run(['inbox', 'drain-primary-legacy', P, '--ack-as-owner'], mkCtx(home, repo)).result;
     const bodies = (r.messages || []).map((m) => String(m.body));
     assert.deepEqual(bodies.slice().sort(), ['new-0', 'new-1', 'new-2', 'new-3', 'new-4'],
       'THE FIX: each message once. Pre-fix this returned all five TWICE (own copy + sibling original) because the '

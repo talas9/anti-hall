@@ -1206,8 +1206,8 @@ test('inbox read-primary advances the durable ACK cursor (under cursors/, not st
   const selfCtx = ctx(home, { env: { DEVSWARM_BUILDER_ID: 'primary-x' }, cwd: fakeCwd(home) });
   try {
     seedStore(home, 'primary-x', ['a', 'b']);
-    const r = cli.run(['inbox', 'read-primary', 'primary-x'], selfCtx);
-    assert.equal(r.result.action, 'read-primary');
+    const r = cli.run(['inbox', 'drain-primary-legacy', 'primary-x'], selfCtx);
+    assert.equal(r.result.action, 'drain-primary-legacy');
     assert.equal(r.result.count, 2, 'first read-primary returns both unread');
     assert.equal(r.result.cursor, 2, 'cursor advanced to the total');
     // The ACK cursor is a file under cursors/, NOT under store/ or inbox/.
@@ -1244,7 +1244,7 @@ test('inbox read-primary drops the PERSISTED projected unread (store cursor, not
     // Self-ack: caller identity must equal id (bug #2 ownership check). cwd is
     // the fake, non-existent `wt` itself — it resolves to no real git worktree,
     // so the declared DEVSWARM_BUILDER_ID is a trusted declaration, not a spoof.
-    const rp = cli.run(['inbox', 'read-primary', id], ctx(home, { env: { DEVSWARM_BUILDER_ID: id }, cwd: wt }));
+    const rp = cli.run(['inbox', 'drain-primary-legacy', id], ctx(home, { env: { DEVSWARM_BUILDER_ID: id }, cwd: wt }));
     assert.equal(rp.result.ok, true);
     assert.equal(rp.result.cursor, 2);
 
@@ -1536,7 +1536,7 @@ test('inbox messages --ack: caller acks its OWN id (via DEVSWARM_BUILDER_ID, cwd
   const home = tmpHome();
   try {
     seedStore(home, 'primary-x', ['a', 'b']);
-    const r = cli.run(['inbox', 'messages', 'primary-x', '--ack'],
+    const r = cli.run(['inbox', 'messages', 'primary-x', '--ack', '--legacy-ack-now'],
       ctx(home, { env: { DEVSWARM_BUILDER_ID: 'primary-x' }, cwd: fakeCwd(home) }));
     assert.equal(r.code, 0);
     assert.equal(r.result.ok, true);
@@ -1549,7 +1549,7 @@ test('inbox messages --ack: caller acks a DIFFERENT id -> refused (ok:false, exi
   const home = tmpHome();
   try {
     seedStore(home, 'primary-y', ['a', 'b']);
-    const r = cli.run(['inbox', 'messages', 'primary-y', '--ack'],
+    const r = cli.run(['inbox', 'messages', 'primary-y', '--ack', '--legacy-ack-now'],
       ctx(home, { env: { DEVSWARM_BUILDER_ID: 'primary-x' }, cwd: fakeCwd(home) }));
     assert.equal(r.code, 2);
     assert.equal(r.result.ok, false);
@@ -1585,7 +1585,7 @@ test('inbox messages --ack --ack-as-owner on a DIFFERENT id -> allowed (explicit
   const home = tmpHome();
   try {
     seedStore(home, 'primary-y', ['a', 'b', 'c']);
-    const r = cli.run(['inbox', 'messages', 'primary-y', '--ack', '--ack-as-owner'],
+    const r = cli.run(['inbox', 'messages', 'primary-y', '--ack', '--ack-as-owner', '--legacy-ack-now'],
       ctx(home, { env: { DEVSWARM_BUILDER_ID: 'primary-x' }, cwd: fakeCwd(home) }));
     assert.equal(r.code, 0);
     assert.equal(r.result.ok, true);
@@ -1625,7 +1625,7 @@ test('inbox messages --ack: a REAL resolvable cwd wins over a mismatching DEVSWA
     // REAL cwd-derived identity instead.
     const selfId = inst.primaryWorkspaceId(inst.resolveWorktree(REPO_ROOT));
     seedStore(home, 'primary-x', ['a', 'b']);
-    const r = cli.run(['inbox', 'messages', 'primary-x', '--ack'],
+    const r = cli.run(['inbox', 'messages', 'primary-x', '--ack', '--legacy-ack-now'],
       ctx(home, { env: { DEVSWARM_BUILDER_ID: 'primary-x' }, cwd: REPO_ROOT }));
     assert.equal(r.result.ok, false, 'env-spoof must NOT override a real, resolvable cwd');
     assert.equal(r.result.callerIdentity, selfId, 'caller identity is the REAL cwd-derived id, not the spoofed env value');
@@ -1645,13 +1645,13 @@ test('callerIdentity falls back to primary-<worktreeHash(cwd)> (git toplevel) wh
     // Own id, invoked from a SUBDIRECTORY of the worktree -> still resolves to the
     // same toplevel-derived id, so a self-ack from any subdir succeeds.
     const subdir = path.join(REPO_ROOT, 'plugins');
-    const ok = cli.run(['inbox', 'messages', selfId, '--ack'], ctx(home, { env: {}, cwd: subdir }));
+    const ok = cli.run(['inbox', 'messages', selfId, '--ack', '--legacy-ack-now'], ctx(home, { env: {}, cwd: subdir }));
     assert.equal(ok.result.ok, true);
     assert.equal(ok.result.cursor, 2);
 
     // A different id, with no DEVSWARM_BUILDER_ID -> refused using the same cwd-derived identity.
     seedStore(home, 'primary-someone-else', ['x'], { hash: repoKey });
-    const refused = cli.run(['inbox', 'messages', 'primary-someone-else', '--ack'], ctx(home, { env: {}, cwd: REPO_ROOT }));
+    const refused = cli.run(['inbox', 'messages', 'primary-someone-else', '--ack', '--legacy-ack-now'], ctx(home, { env: {}, cwd: REPO_ROOT }));
     assert.equal(refused.result.ok, false);
     assert.equal(refused.result.callerIdentity, selfId);
   } finally { rm(home); }

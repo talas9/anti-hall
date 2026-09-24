@@ -481,8 +481,10 @@ plugin depends on it.
 - **Mesh messaging CLI** (`scripts/devswarm.js`) — `send --to <meshId>|--to-primary|
   --broadcast [--urgency low|normal|high|urgent] [--question]`, `roster` (also folds in
   unregistered native `hivecontrol` children), `mesh read`, `heartbeat --summary`, `inbox
-  pull/read/read-primary/peek-primary` (`peek-primary` is the non-acking counterpart to
-  `read-primary` — same read, no cursor advance, for checking status without clearing it).
+  pull/read/read-primary/ack-primary/peek-primary` (`read-primary` is read-only and returns
+  a `readReceiptId` + `ackCommand`; `ack-primary --receipt <rid>` is the ack, run after the
+  mail is handled — drain = read, consume, ack; `drain-primary-legacy` keeps the old one-call
+  read-and-ack for one release; `peek-primary` is the plain non-acking unread view).
   Every message row carries `{from, to, type, message, timestamp,
   urgency}`. `--question` marks a direct send as a blocking decision-request — rejected on
   `--broadcast`. The blocking/reply-tracking guarantee (Stop-gate + `recordReply`) is
@@ -674,7 +676,7 @@ dual-backend store
 (`companion/lib/devswarm-store.js` — feature-detects `node:sqlite`, else an NDJSON
 journal; hooks read only its `summary.json` projection, never the DB), a structured CLI
 (`scripts/devswarm.js` — register/register-primary/heartbeat/inbox
-[pull/read/count/ack/messages/read-primary/peek-primary]/workspaces/gate/nudge/archive/archive-request/migrate;
+[pull/read/count/ack/messages/read-primary/ack-primary/peek-primary/drain-primary-legacy]/workspaces/gate/nudge/archive/archive-request/migrate;
 **v0.100.0:** every verb now recognizes `--help`/`-h` (and a bare `help [verb]`),
 intercepted BEFORE dispatch so it can no longer fall through to real execution —
 previously `migrate -h` ran the migration and `merge --help` sent a live mesh
@@ -765,7 +767,7 @@ caller's parent-pid chain, gated by a cwd-in-worktree check and a pid-reuse/stal
 liveness guard. Descriptor/registry divergence is repaired in both directions, and a
 registry write failure during promotion is now reported as `promotion.registryWriteError`
 on `inbox pull`/`read-primary`/`inbox messages` JSON output (plus a stderr line) instead of
-being swallowed silently — the next read repairs the registry from the descriptor.
+being swallowed silently — the next read repairs the registry from the descriptor. (Phase 5: `read-primary` / `messages --ack` are read-only — after handling the mail run the returned `ackCommand`, i.e. `inbox ack-primary <id> --receipt <rid>`.)
 
 **v0.96.0 heartbeat-aware routing, ack ownership, post-pull budget.** `send`/fold target
 selection (`resolveMeshTarget`/`pickSurvivor`) now uses a strict, heartbeat-aware liveness

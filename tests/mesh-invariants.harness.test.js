@@ -198,7 +198,11 @@ test('I2 checker self-test: the tracker fails on a lowered reader_cursors readin
     const env = { ANTIHALL_INGEST_DRY_RUN: '1' };
     ops.opRegister(fixture, 'r1', BASE_NOW);
     ops.opSend(fixture, 'sender', 'r1', 'one', BASE_NOW + 1);
-    ops.cli.run(['inbox', 'read-primary', 'r1'], ops.baseCtx(fixture, 'r1', BASE_NOW + 2));
+    {
+      const rctx = ops.baseCtx(fixture, 'r1', BASE_NOW + 2);
+      const rd = ops.cli.run(['inbox', 'read-primary', 'r1'], rctx);
+      ops.cli.run(['inbox', 'ack-primary', 'r1', '--receipt', rd.result.readReceiptId], rctx);
+    }
     const i2 = inv.createI2Tracker();
     assert.deepStrictEqual(i2.check(fixture, ['r1'], env), { ok: true });
     const s = ops.storeLib.openStore({ home: fixture.home, hash: fixture.repoKey, backend: 'journal', env });
@@ -231,11 +235,42 @@ test('I2 every reader_cursors row is monotone non-decreasing across a seeded run
   }
 });
 
-test.todo('I3 delivered+unread==total per reader, no loss — devswarm-pull.js:28 '
-  + 'destructive-read-before-append loss window (plan §Evidence "Delivery")');
+// Phase 5 flipped this from todo to a REAL test (the pull-window half is the
+// injected-crash scenario below; this is the seeded per-reader accounting).
+test('I3 delivered+unread==total per reader, no loss across a seeded run', () => {
+  for (const seed of SEEDS) {
+    const failures = runOneSeed(seed, { checkTodos: true });
+    assert.equal(failures.I3.length, 0, 'seed=' + seed + ' ' + JSON.stringify(failures.I3[0]));
+  }
+});
 
-test.todo('I3 read-primary acks in the same call as the read (re-delivery-vs-loss '
-  + 'undercounted) — cmdInbox sub="read-primary"');
+// Phase 5 ack split (shared by the normal-mode test and its STRICT twin):
+// read-primary is read-only — a re-read before the ack returns the SAME unread
+// set (re-delivery, never loss) — and only the explicit ack-primary advances.
+function checkReadThenExplicitAck(tag) {
+  const fixture = makeFixture(['r1', 'r2'], tag);
+  try {
+    ops.opRegister(fixture, 'r1', BASE_NOW);
+    ops.opRegister(fixture, 'r2', BASE_NOW + 1);
+    ops.opSend(fixture, 'r1', 'r2', 'hello', BASE_NOW + 2);
+    const ctx = ops.baseCtx(fixture, 'r2', BASE_NOW + 3);
+    const r1 = ops.cli.run(['inbox', 'read-primary', 'r2'], ctx).result;
+    const r2 = ops.cli.run(['inbox', 'read-primary', 'r2'], ctx).result;
+    assert.deepStrictEqual(r2.messages.map((m) => m.body), ['hello'], 'unacked re-read re-delivers');
+    assert.deepStrictEqual(r1.messages.map((m) => m.body), r2.messages.map((m) => m.body));
+    const ack = ops.cli.run(['inbox', 'ack-primary', 'r2', '--receipt', r1.readReceiptId], ctx).result;
+    assert.strictEqual(ack.ok, true, JSON.stringify(ack));
+    const r3 = ops.cli.run(['inbox', 'read-primary', 'r2'], ctx).result;
+    assert.deepStrictEqual(r3.messages, [], 'the explicit ack consumed exactly the read set');
+  } finally {
+    fixture.cleanup();
+  }
+}
+
+// Phase 5 flipped this from todo to a REAL test (ack split).
+test('I3 read-primary is read-only; delivery is read -> consume -> explicit ack-primary', () => {
+  checkReadThenExplicitAck('i3-readack');
+});
 
 // Phase 4 flipped I4 and I5 from todo to REAL tests. I4: every live descriptor
 // has a registry row and the shared fields agree. I5: every archive source and
@@ -293,8 +328,11 @@ test('I3 checker self-test: send 2 / ack 0 -> measured unread == 2 and I3 holds'
   }
 });
 
-test.todo('I3 loss under an injected pull crash — devswarm-pull.js ~21-28 destructive native '
-  + 'read succeeds, durable NDJSON append throws, recovery pull cannot recover the lost messages');
+// Phase 5 flipped this from todo to a REAL test (delivery WAL + replay).
+test('I3 no loss under an injected pull crash — WAL replay recovers the popped batch', () => {
+  const r = scenarios.scenarioI3PullCrash();
+  assert.ok(r.ok, 'I3 pull-crash: ' + JSON.stringify(r.detail));
+});
 
 // Phase 3 flipped this from todo to a REAL test: one reader_cursors table, a
 // headless ack moves the stored floor when no live declared reader pins it.
@@ -325,21 +363,8 @@ if (STRICT) {
     }
   });
 
-  test('[STRICT] I3 read-primary acks in the same call as the read', () => {
-    const fixture = makeFixture(['r1', 'r2'], 'i3-readprimary');
-    try {
-      ops.opRegister(fixture, 'r1', BASE_NOW);
-      ops.opRegister(fixture, 'r2', BASE_NOW + 1);
-      ops.opSend(fixture, 'r1', 'r2', 'hello', BASE_NOW + 2);
-      const ctx = ops.baseCtx(fixture, 'r2', BASE_NOW + 3);
-      // read-primary acks in the SAME call — no separate read-then-ack step to
-      // distinguish a genuine loss from a re-delivery.
-      const r1 = ops.cli.run(['inbox', 'read-primary', 'r2'], ctx);
-      const r2 = ops.cli.run(['inbox', 'read-primary', 'r2'], ctx);
-      assert.notDeepStrictEqual(r1.result, r2.result, 'read-primary should distinguish first-read from a re-read, but acks same-call');
-    } finally {
-      fixture.cleanup();
-    }
+  test('[STRICT] I3 read-primary is read-only; explicit ack-primary advances', () => {
+    checkReadThenExplicitAck('i3-readprimary');
   });
 
   test('[STRICT] I3 loss under an injected pull crash', () => {

@@ -422,23 +422,27 @@ DevSwarm's Primary orchestrator currently wakes via a **CronCreate mailbox-read 
 // when that tick actually found something (see devswarm-wake.js's drainCmd).
 CronCreate({
   expression: '*/30 * * * *',
-  prompt: 'node scripts/devswarm.js inbox read-primary <id>'
+  prompt: 'node scripts/devswarm.js inbox read-primary <id> — read-only: after handling the mail run the ackCommand it returns (inbox ack-primary <id> --receipt <rid>)'
 })
 ```
 
-This cron job intentionally reads-and-acks in one call — `inbox read-primary` **always**
-mutates (see the forbidden-verbs warning below) — because the *timer itself* is the wake
+(Phase 5: `inbox read-primary` is now read-only and returns an `ackCommand`; the turn this
+cron wakes runs that command after handling the mail — or `inbox drain-primary-legacy <id>`
+for the one-release one-call form.) This cron job intentionally reads-and-acks in the same
+turn — because the *timer itself* is the wake
 trigger here, not message arrival: it fires unconditionally on schedule, so consuming the
 mailbox in the same turn it wakes for costs nothing; there is no separate "a message just
 arrived" signal for it to erase. That is a fundamentally different shape from a Monitor
 watcher (below), whose entire job is to *detect* that a message arrived — a script that
 consumes what it exists to detect breaks itself.
 
-> **Forbidden verbs — never call these from inside a Monitor watcher.** Five DevSwarm
+> **Forbidden verbs — never call these from inside a Monitor watcher.** These DevSwarm
 > CLI verbs mutate a cursor as a side effect of reading, and every one of them breaks a
 > watcher the same way: it consumes the very unread signal the watcher exists to surface,
 > so the agent never learns anything happened.
-> - `inbox read-primary` — unconditionally acks the Primary's own inbox cursor.
+> - `inbox ack-primary` / `inbox drain-primary-legacy` — ack the Primary's own inbox cursor
+>   (`inbox read-primary` itself is read-only since Phase 5, but its receipt exists to be acked
+>   by the agent, not by a watcher).
 > - `inbox pull` — drains a child's native reception queue (auto-ensures + consumes it).
 > - `mesh read` (a.k.a. `roster --ack`) — reads the caller's mesh row and acks it.
 > - `roster --ack` — the same mesh-read-and-ack path, invoked via its `roster` alias.
@@ -512,7 +516,7 @@ no delay. There is deliberately no illustrative bash sketch here: earlier drafts
 section leaned on `inbox read-primary` (or a `--since` flag that does not exist in the
 real CLI) inside the watcher loop — exactly the forbidden pattern called out above. The
 real mechanism (below) reads an already-derived, read-only projection instead of calling
-any mutating verb.
+any mutating verb. (Phase 5: `read-primary` / `messages --ack` are read-only — after handling the mail run the returned `ackCommand`, i.e. `inbox ack-primary <id> --receipt <rid>`.)
 
 **Re-arm on `SessionStart` only.** Given §6's conflict, the safe assumption is that
 Monitor does not survive compaction, and cron's own resume-durability is unconfirmed. The

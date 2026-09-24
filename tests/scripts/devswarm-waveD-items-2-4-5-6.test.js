@@ -156,7 +156,7 @@ test('item 5: after a live twin is drained via the watermark and then DIES, the 
 
     // Read #1 — twin is LIVE, so its own cursor may not be acked; the caller's
     // watermark is what records what it was shown.
-    const r1 = cli.run(['inbox', 'read-primary', 'primary-f1', '--ack-as-owner'], ctx(home, { cwd: repo, now }));
+    const r1 = cli.run(['inbox', 'drain-primary-legacy', 'primary-f1', '--ack-as-owner'], ctx(home, { cwd: repo, now }));
     const bodies1 = (r1.result.messages || []).map((m) => m.body);
     assert.deepStrictEqual(bodies1.filter((b) => /^old-/.test(b)), ['old-1', 'old-2', 'old-3'],
       'read #1 must deliver the live twin\'s backlog');
@@ -169,7 +169,7 @@ test('item 5: after a live twin is drained via the watermark and then DIES, the 
     seedPartition(home, repo, 'twin-f1', [{ body: 'new-1', ts: 3000 }]);
 
     // Read #2 — the twin is now ackable. ONLY the new row may come back.
-    const r2 = cli.run(['inbox', 'read-primary', 'primary-f1', '--ack-as-owner'], ctx(home, { cwd: repo, now }));
+    const r2 = cli.run(['inbox', 'drain-primary-legacy', 'primary-f1', '--ack-as-owner'], ctx(home, { cwd: repo, now }));
     const bodies2 = (r2.result.messages || []).map((m) => m.body);
     assert.deepStrictEqual(bodies2.filter((b) => /^(old|new)-/.test(b)), ['new-1'],
       'the watermarked backlog must NOT be re-delivered at the live->dead transition');
@@ -196,7 +196,7 @@ test('item 5: no row is ever delivered twice across the whole transition', () =>
     setupTwin(home, repo, 'primary-f1b', 'twin-f1b', now);
     const seen = [];
     const grab = () => {
-      const r = cli.run(['inbox', 'read-primary', 'primary-f1b', '--ack-as-owner'], ctx(home, { cwd: repo, now }));
+      const r = cli.run(['inbox', 'drain-primary-legacy', 'primary-f1b', '--ack-as-owner'], ctx(home, { cwd: repo, now }));
       for (const m of (r.result.messages || [])) if (/^(old|new)-/.test(m.body)) seen.push(m.body);
     };
     grab();
@@ -232,10 +232,10 @@ test('MUTATION (item 5, half A): reverting pSeen to `pAckable ? 0 : ...` re-deli
         register(home, repo, 't-mA', undefined);
         seedPartition(home, repo, 't-mA', [{ body: 'old-1', ts: 1000 }, { body: 'old-2', ts: 1100 }]);
         markLive(home, 't-mA', now);
-        mutated.run(['inbox', 'read-primary', 'p-mA', '--ack-as-owner'], ctx(home, { cwd: repo, now }));
+        mutated.run(['inbox', 'drain-primary-legacy', 'p-mA', '--ack-as-owner'], ctx(home, { cwd: repo, now }));
         markDead(home, 't-mA', now);
         seedPartition(home, repo, 't-mA', [{ body: 'new-1', ts: 3000 }]);
-        const r2 = mutated.run(['inbox', 'read-primary', 'p-mA', '--ack-as-owner'], ctx(home, { cwd: repo, now }));
+        const r2 = mutated.run(['inbox', 'drain-primary-legacy', 'p-mA', '--ack-as-owner'], ctx(home, { cwd: repo, now }));
         const bodies = (r2.result.messages || []).map((m) => m.body).filter((b) => /^(old|new)-/.test(b));
         assert.ok(bodies.includes('old-1'),
           'MUTANT must re-deliver the watermarked backlog — this is the defect the fix closes');
@@ -257,10 +257,10 @@ test('MUTATION (item 5, half B): anchoring the ack on part.cursor under-acks the
         register(home, repo, 't-mB', undefined);
         seedPartition(home, repo, 't-mB', [{ body: 'old-1', ts: 1000 }, { body: 'old-2', ts: 1100 }, { body: 'old-3', ts: 1200 }]);
         markLive(home, 't-mB', now);
-        mutated.run(['inbox', 'read-primary', 'p-mB', '--ack-as-owner'], ctx(home, { cwd: repo, now }));
+        mutated.run(['inbox', 'drain-primary-legacy', 'p-mB', '--ack-as-owner'], ctx(home, { cwd: repo, now }));
         markDead(home, 't-mB', now);
         seedPartition(home, repo, 't-mB', [{ body: 'new-1', ts: 3000 }]);
-        mutated.run(['inbox', 'read-primary', 'p-mB', '--ack-as-owner'], ctx(home, { cwd: repo, now }));
+        mutated.run(['inbox', 'drain-primary-legacy', 'p-mB', '--ack-as-owner'], ctx(home, { cwd: repo, now }));
         assert.notStrictEqual(storeCursor(home, repo, 't-mB'), 4,
           'MUTANT must UNDER-ack (cursor short of watermark+new) — the defect half B closes');
       } finally { rm(home); rm(repo); }

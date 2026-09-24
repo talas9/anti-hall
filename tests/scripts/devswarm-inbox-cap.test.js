@@ -78,7 +78,7 @@ test('cap: a read with more messages than the cap returns exactly the cap, flags
     for (let i = 0; i < 7; i++) rows.push({ body: 'm' + i, ts: 1000 + i * 10 });
     seedPartition(home, repo, 'primary-cap', rows);
 
-    const r = cli.run(['inbox', 'read-primary', 'primary-cap', '--ack-as-owner', '--limit', '3'], ctx(home, { cwd: repo }));
+    const r = cli.run(['inbox', 'drain-primary-legacy', 'primary-cap', '--ack-as-owner', '--limit', '3'], ctx(home, { cwd: repo }));
     assert.equal(r.result.ok, true, JSON.stringify(r.result));
     assert.equal(r.result.count, 3, 'exactly the cap must be returned');
     assert.equal(r.result.messages.length, 3);
@@ -102,13 +102,13 @@ test('cap: an under-cap read behaves exactly as before — no truncated field, e
     seedPartition(home, repo, 'primary-under', [
       { body: 'a', ts: 1000 }, { body: 'b', ts: 2000 }, { body: 'c', ts: 3000 },
     ]);
-    const r = cli.run(['inbox', 'read-primary', 'primary-under', '--ack-as-owner'], ctx(home, { cwd: repo }));
+    const r = cli.run(['inbox', 'drain-primary-legacy', 'primary-under', '--ack-as-owner'], ctx(home, { cwd: repo }));
     assert.equal(r.result.ok, true, JSON.stringify(r.result));
     assert.equal(r.result.count, 3);
     assert.equal(r.result.truncated, undefined, 'an under-cap read must not carry a truncated flag at all');
     assert.equal(r.result.truncatedCount, undefined);
     // Fully acked: a second read sees nothing left.
-    const r2 = cli.run(['inbox', 'read-primary', 'primary-under', '--ack-as-owner'], ctx(home, { cwd: repo }));
+    const r2 = cli.run(['inbox', 'drain-primary-legacy', 'primary-under', '--ack-as-owner'], ctx(home, { cwd: repo }));
     assert.equal(r2.result.count, 0, 'everything was delivered and acked on the first (uncapped) read');
   } finally { rm(home); rm(repo); }
 });
@@ -145,7 +145,7 @@ test('cursor invariant under the cap: withheld messages are NEVER marked read, e
       { body: 'sib-pos0-latets', ts: 9000 }, { body: 'sib-pos1-earlyts', ts: 500 },
     ]);
 
-    const first = cli.run(['inbox', 'read-primary', 'primary-inv', '--ack-as-owner', '--limit', '4'], ctx(home, { cwd: repo }));
+    const first = cli.run(['inbox', 'drain-primary-legacy', 'primary-inv', '--ack-as-owner', '--limit', '4'], ctx(home, { cwd: repo }));
     assert.equal(first.result.ok, true, JSON.stringify(first.result));
     assert.equal(first.result.truncated, true, JSON.stringify(first.result));
     // The structural prefix guarantee forces BOTH sibling rows out this call
@@ -171,7 +171,7 @@ test('cursor invariant under the cap: withheld messages are NEVER marked read, e
     // A second read must return BOTH sibling messages now (still unread) —
     // proving nothing was lost, and delivered in the correct positional
     // order (pos0 before pos1), not silently skipped.
-    const second = cli.run(['inbox', 'read-primary', 'primary-inv', '--ack-as-owner', '--limit', '4'], ctx(home, { cwd: repo }));
+    const second = cli.run(['inbox', 'drain-primary-legacy', 'primary-inv', '--ack-as-owner', '--limit', '4'], ctx(home, { cwd: repo }));
     assert.equal(second.result.ok, true, JSON.stringify(second.result));
     assert.equal(second.result.truncated, undefined, 'well under the cap on the second read');
     assert.equal(second.result.count, 2, 'both previously-withheld sibling messages must resurface: ' + JSON.stringify(second.result.messages));

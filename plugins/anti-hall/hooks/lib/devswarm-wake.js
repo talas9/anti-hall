@@ -144,6 +144,10 @@ function resolvedId(env) {
   return '<DEVSWARM_BUILDER_ID>';
 }
 
+// Phase 5 ack split: `inbox read-primary` is READ-ONLY; it returns an exact
+// `ackCommand` (inbox ack-primary <id> --receipt <rid>). Every drain prompt says so.
+const ACK_AFTER_READ = ' (read-only; after handling, run the `ackCommand` it returns)';
+
 // drainCmd(cli, isChild, useTick, id) -> the mailbox-drain instruction text
 // for this role. `id` (new, optional 4th param — defect 735b179362e8) is the
 // value to embed in place of the literal placeholder; every PRODUCTION call
@@ -276,7 +280,7 @@ function drainCmd(cli, isChild, useTick, id) {
       '`inbox count` does, and writes a liveness marker + refreshes your heartbeat — one ' +
       'command instead of pull+count); ' + stopCond + ', say so and stop — do NOT spawn a ' +
       'subagent; otherwise (' + otherwise + '), run `node ' + cli +
-      ' inbox read-primary ' + id + '` (delegate to a subagent only if the payload is large' + childNote + storeUnavailableClause;
+      ' inbox read-primary ' + id + '`' + ACK_AFTER_READ + ' (delegate to a subagent only if the payload is large' + childNote + storeUnavailableClause;
   }
   const countCmd = '`node ' + cli + ' inbox count ' + id + '`';
   if (isChild) {
@@ -284,13 +288,13 @@ function drainCmd(cli, isChild, useTick, id) {
       'anything waiting in your native queue) then ' + countCmd + '; ' + stopCond + ', ' +
       'say so and stop — do NOT spawn a subagent; otherwise (' + otherwise + '), run `node ' +
       cli + ' inbox read-primary ' + id +
-      '` (delegate to a subagent only if the payload is large — this is the cursor-advancing ' +
-      'verb, matching devswarm-child-turn.js\'s own mesh-direct instruction; `inbox read` is a ' +
+      '`' + ACK_AFTER_READ + ' (delegate to a subagent only if the payload is large — its ackCommand is the cursor-advancing ' +
+      'step, matching devswarm-child-turn.js\'s own mesh-direct instruction; `inbox read` is a ' +
       'non-mutating peek and cannot clear the withheld gap)' + storeUnavailableClause;
   }
   return 'first run ' + countCmd + '; ' + stopCond + ', say so and stop — do NOT spawn a ' +
     'subagent; otherwise (' + otherwise + '), run `node ' + cli + ' inbox read-primary ' + id +
-    '` (delegate to a subagent only if the payload is large)' + storeUnavailableClause;
+    '`' + ACK_AFTER_READ + ' (delegate to a subagent only if the payload is large)' + storeUnavailableClause;
 }
 
 // monitorArmLine(watcher) -> the Monitor-arm addition to the Claude-branch wake
@@ -485,4 +489,4 @@ function wakeReassert(env, cli, isChild, watcher) {
   }
 }
 
-module.exports = { WAKE_CRON_DEFAULT, wakeCron, isClaudeAgent, wakeDirective, wakeReassert, drainCmd, resolvedId };
+module.exports = { WAKE_CRON_DEFAULT, wakeCron, isClaudeAgent, wakeDirective, wakeReassert, drainCmd, resolvedId, ACK_AFTER_READ };

@@ -1079,6 +1079,9 @@ function rowToDescriptor(r) {
 // Journal backend (append-only NDJSON). Dependency-free; the guaranteed-green
 // path on node 18/20. fs is injectable for isolation/testing.
 // ============================================================================
+// lacksTrailingNewline (#26) — shared with the delivery WAL.
+const { lacksTrailingNewline } = require('./devswarm-read-wal.js');
+
 function openJournal(home, workspaceId, fsi, lockOpts, opts) {
   const o = opts || {};
   const hash = o.hash != null ? String(o.hash) : hashFromWorkspaceId(workspaceId);
@@ -1107,9 +1110,14 @@ function openJournal(home, workspaceId, fsi, lockOpts, opts) {
     // value = MAX per key; retiredLine last-write-wins. Additive: old builds ignore it.
     readerCursors: path.join(dir, 'reader_cursors.ndjson'),
   };
+  // append — #26: a crash mid-append can leave a torn final row with no '\n'.
+  // A plain append would then GLUE the next record onto it, and readAll would
+  // skip the glued line as torn — losing a good row alongside the torn one.
+  // Lead with '\n' when the file does not already end in one, so the torn
+  // bytes stay an isolated (skipped) line and the new row lands whole.
   function append(file, obj) {
     F.mkdirSync(dir, { recursive: true });
-    F.appendFileSync(file, JSON.stringify(obj) + '\n');
+    F.appendFileSync(file, (lacksTrailingNewline(F, file) ? '\n' : '') + JSON.stringify(obj) + '\n');
   }
   // withMessagesLock(fn) — serialize the messages dedupe check+append across
   // processes. The journal has no UNIQUE(hash) constraint (unlike sqlite), so a

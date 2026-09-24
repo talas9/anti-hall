@@ -133,10 +133,16 @@ test('1 RECEPTION ROUND-TRIP: stubbed ingest -> inbox messages -> read-primary -
     // ignored here anyway once cwd genuinely resolves to a workspace — see that
     // file's env-spoof-closed test — so this deliberately proves identity via
     // cwd alone, no env declaration at all).
+    // Phase 5 ack split: read-primary is read-only (returns a receipt); the
+    // explicit ack-primary --receipt is what advances the cursor.
     const readPrimary = H.runCli(home, ['inbox', 'read-primary', id], JOURNAL_ENV, { cwd: worktree });
     assert.strictEqual(readPrimary.status, 0);
     assert.strictEqual(readPrimary.json.action, 'read-primary');
-    assert.strictEqual(readPrimary.json.cursor, 1, 'ack cursor advanced to the current total');
+    assert.strictEqual(readPrimary.json.cursor, 0, 'read-only: nothing acked yet');
+    assert.match(readPrimary.json.readReceiptId, /^r[a-z0-9]+$/);
+    const ackPrimary = H.runCli(home, ['inbox', 'ack-primary', id, '--receipt', readPrimary.json.readReceiptId], JOURNAL_ENV, { cwd: worktree });
+    assert.strictEqual(ackPrimary.status, 0, JSON.stringify(ackPrimary.json));
+    assert.strictEqual(ackPrimary.json.acked, 1, 'ack cursor advanced to the current total');
 
     // summary.json — the projection the parent-inbox hook reads — must now show
     // 0 unread. This is the actual proof of the #22 cursor-reconcile. PER-PROJECT:

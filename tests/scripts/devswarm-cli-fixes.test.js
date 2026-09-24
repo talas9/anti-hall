@@ -140,7 +140,7 @@ test('FIX 2: `inbox messages` returns unreadOnly:bool + unreadCount:number, dist
     assert.strictEqual(unreadOnlyRead.result.unreadCount, 2);
 
     // Ack path (read-primary).
-    const acked = cli.run(['inbox', 'read-primary', id, '--ack-as-owner'], ctx(home, { cwd: repo }));
+    const acked = cli.run(['inbox', 'drain-primary-legacy', id, '--ack-as-owner'], ctx(home, { cwd: repo }));
     assert.equal(acked.result.ok, true, JSON.stringify(acked.result));
     assert.strictEqual(acked.result.unreadOnly, true, 'read-primary is inherently unread-then-ack');
     assert.strictEqual(typeof acked.result.unreadCount, 'number');
@@ -248,7 +248,7 @@ test('FIX 4: both --message and --message-file given -> clear error; neither giv
 test('FIX 5: read-primary on an id with no registry row AND no descriptor fails closed, does NOT return ok:true, and writes NO cursor', () => {
   const home = tmpHome();
   try {
-    const r = cli.run(['inbox', 'read-primary', 'no-such-workspace-xyz', '--ack-as-owner'], ctx(home, { cwd: fakeCwd(home) }));
+    const r = cli.run(['inbox', 'drain-primary-legacy', 'no-such-workspace-xyz', '--ack-as-owner'], ctx(home, { cwd: fakeCwd(home) }));
     assert.notStrictEqual(r.result.ok, true, 'a totally unregistered id must never report ok:true: ' + JSON.stringify(r.result));
     assert.strictEqual(r.result.reason, 'unregistered-workspace');
     const cursorFile = cli.primaryCursorPath(home, 'no-such-workspace-xyz');
@@ -265,7 +265,7 @@ test('FIX 5: an ack that moves the cursor 0->0 reports acked:0, distinguishable 
     // Registered (so FIX 5's existence guard passes) but with ZERO messages.
     seedRegistry(home, repoKey, { id, worktreePath: repo, sessionId: 's' });
 
-    const zeroAck = cli.run(['inbox', 'read-primary', id], ctx(home, { cwd: repo }));
+    const zeroAck = cli.run(['inbox', 'drain-primary-legacy', id], ctx(home, { cwd: repo }));
     assert.strictEqual(zeroAck.result.ok, true, JSON.stringify(zeroAck.result));
     assert.strictEqual(zeroAck.result.ackedFrom, 0);
     assert.strictEqual(zeroAck.result.acked, 0, 'zero-progress ack must report acked:0, not just a bare ok:true');
@@ -276,7 +276,7 @@ test('FIX 5: an ack that moves the cursor 0->0 reports acked:0, distinguishable 
     // is about the ack/cursor mechanics, not send's addressing rules).
     const seedS = storeLib.openStore({ home, hash: repoKey, backend: 'journal' });
     try { seedS.appendMessage({ workspaceId: id, body: 'hi', hash: 'fix5b-h0' }); } finally { seedS.close(); }
-    const realAck = cli.run(['inbox', 'read-primary', id], ctx(home, { cwd: repo }));
+    const realAck = cli.run(['inbox', 'drain-primary-legacy', id], ctx(home, { cwd: repo }));
     assert.strictEqual(realAck.result.ok, true, JSON.stringify(realAck.result));
     assert.strictEqual(realAck.result.ackedFrom, 0);
     assert.strictEqual(realAck.result.acked, 1);

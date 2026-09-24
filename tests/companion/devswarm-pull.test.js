@@ -516,3 +516,271 @@ test('count-gate blast radius: a FAILING message-count is ok:false, never a sile
       'a failed count-gate must NOT fall through to the destructive read-messages');
   } finally { rm(home); }
 });
+
+// ---------------------------------------------------------------------------
+// Phase 5 delivery WAL (simplified): raw batch fsynced before parse, replay
+// before any new destructive read, idempotent by content hash.
+// ---------------------------------------------------------------------------
+function walRecords(home, id) {
+  try {
+    return fs.readFileSync(pull.walPath(home, id), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
+  } catch (_) { return []; }
+}
+
+test('WAL: the raw batch is fsynced to the WAL BEFORE the durable inbox append', () => {
+  const home = tmpHome();
+  try {
+    const { inboxPath } = seedDescriptor(home, 'child-1');
+    const order = [];
+    const spyFs = Object.assign({}, fs, {
+      fsyncSync(fd) { order.push('fsync'); return fs.fsyncSync(fd); },
+      appendFileSync(p, d) { order.push(p === inboxPath ? 'inbox-append' : 'append:' + p); return fs.appendFileSync(p, d); },
+    });
+    const res = pull.pullOnce({ home, id: 'child-1', backend: 'journal', io: { run: makeRun({ count: 2, batch: TWO }).run, fs: spyFs } });
+    assert.equal(res.ok, true);
+    assert.ok(order.indexOf('fsync') >= 0 && order.indexOf('fsync') < order.indexOf('inbox-append'),
+      'WAL fsync must precede the inbox append: ' + JSON.stringify(order));
+    const recs = walRecords(home, 'child-1');
+    assert.deepEqual(recs.map((r) => r.t), ['batch', 'done']);
+    assert.equal(recs[0].raw, TWO, 'the WAL keeps the exact raw stdout');
+    assert.deepEqual(pull.walPending(fs, pull.walPath(home, 'child-1')), []);
+  } finally { rm(home); }
+});
+
+test('WAL: crash after the destructive read -> next pull replays BEFORE message-count/read-messages', () => {
+  const home = tmpHome();
+  try {
+    const { inboxPath, cursorPath } = seedDescriptor(home, 'child-1');
+    const crashFs = Object.assign({}, fs, { appendFileSync(p, d) { if (p === inboxPath) throw new Error('SIMULATED CRASH'); return fs.appendFileSync(p, d); } });
+    const first = pull.pullOnce({ home, id: 'child-1', backend: 'journal', io: { run: makeRun({ count: 2, batch: TWO }).run, fs: crashFs } });
+    assert.equal(first.ok, false);
+    assert.equal(pull.walPending(fs, pull.walPath(home, 'child-1')).length, 1, 'the popped batch stays pending in the WAL');
+    // Native queue is now EMPTY (the read was destructive).
+    const R = makeRun({ count: 0, batch: '[]' });
+    const second = pull.pullOnce({ home, id: 'child-1', backend: 'journal', io: { run: R.run } });
+    assert.equal(second.ok, true);
+    assert.equal(second.walReplayed, 1);
+    assert.equal(second.walReplayImported, 2);
+    assert.equal(readUnread(inboxPath, cursorPath).count, 2, 'both messages recovered into the durable inbox');
+    assert.deepEqual(pull.walPending(fs, pull.walPath(home, 'child-1')), []);
+  } finally { rm(home); }
+});
+
+test('WAL: crash after the inbox append but before `done` -> replay dedupes (no duplicate rows)', () => {
+  const home = tmpHome();
+  try {
+    const { inboxPath, cursorPath } = seedDescriptor(home, 'child-1');
+    const wal = pull.walPath(home, 'child-1');
+    // Let the writability probe + batch append + inbox fsync succeed, then fail
+    // the WAL write that carries the `done` record.
+    const crashFs = Object.assign({}, fs, {
+      writeSync(fd, data, ...rest) {
+        if (typeof data === 'string' && data.includes('"t":"done"')) throw new Error('SIMULATED CRASH before done');
+        return fs.writeSync(fd, data, ...rest);
+      },
+    });
+    pull.pullOnce({ home, id: 'child-1', backend: 'journal', io: { run: makeRun({ count: 2, batch: TWO }).run, fs: crashFs } });
+    assert.equal(readUnread(inboxPath, cursorPath).count, 2);
+    assert.equal(pull.walPending(fs, wal).length, 1, 'no done record -> still pending');
+    const again = pull.pullOnce({ home, id: 'child-1', backend: 'journal', io: { run: makeRun({ count: 0, batch: '[]' }).run } });
+    assert.equal(again.ok, true);
+    assert.equal(again.walReplayed, 1);
+    assert.equal(again.walReplayImported, 0, 'replay is idempotent by content hash');
+    assert.equal(readUnread(inboxPath, cursorPath).count, 2, 'exactly two rows, no duplicates');
+  } finally { rm(home); }
+});
+
+test('WAL admission control: a batch that cannot be replayed blocks any NEW destructive read', () => {
+  const home = tmpHome();
+  try {
+    const { inboxPath } = seedDescriptor(home, 'child-1');
+    const crashFs = Object.assign({}, fs, { appendFileSync(p, d) { if (p === inboxPath) throw new Error('disk full'); return fs.appendFileSync(p, d); } });
+    pull.pullOnce({ home, id: 'child-1', backend: 'journal', io: { run: makeRun({ count: 2, batch: TWO }).run, fs: crashFs } });
+    const R = makeRun({ count: 5, batch: TWO });
+    const blocked = pull.pullOnce({ home, id: 'child-1', backend: 'journal', io: { run: R.run, fs: crashFs } });
+    assert.equal(blocked.ok, false);
+    assert.match(blocked.error, /WAL replay failed/);
+    assert.equal(R.calls.length, 0, 'no native call (count or read) while a WAL batch is unreplayable');
+  } finally { rm(home); }
+});
+
+test('WAL: an unparseable batch is quarantined in the WAL (raw bytes kept), not replayed forever', () => {
+  const home = tmpHome();
+  try {
+    seedDescriptor(home, 'child-1');
+    const res = pull.pullOnce({ home, id: 'child-1', backend: 'journal', io: { run: makeRun({ count: 1, batch: 'garbage-not-json' }).run } });
+    assert.equal(res.ok, false, 'a shortfall still surfaces ok:false');
+    const recs = walRecords(home, 'child-1');
+    assert.equal(recs[0].raw, 'garbage-not-json', 'raw bytes preserved');
+    assert.equal(recs[1].t, 'quarantine');
+    assert.deepEqual(pull.walPending(fs, pull.walPath(home, 'child-1')), []);
+  } finally { rm(home); }
+});
+
+test('#26 analog: a torn inbox tail does not swallow the next pulled row', () => {
+  const home = tmpHome();
+  try {
+    const { inboxPath } = seedDescriptor(home, 'child-1');
+    fs.mkdirSync(path.dirname(inboxPath), { recursive: true });
+    fs.writeFileSync(inboxPath, '{"_h":"torn","message":"cut');
+    const res = pull.pullOnce({ home, id: 'child-1', backend: 'journal', io: { run: makeRun({ count: 2, batch: TWO }).run } });
+    assert.equal(res.ok, true);
+    const parsed = fs.readFileSync(inboxPath, 'utf8').split('\n').filter(Boolean).map((l) => { try { return JSON.parse(l); } catch (_) { return null; } });
+    assert.deepEqual(parsed.filter(Boolean).map((r) => r.message), ['rebase now', 'status?']);
+  } finally { rm(home); }
+});
+
+// ---------------------------------------------------------------------------
+// Phase 5 review fixes: fail CLOSED on an unwritable WAL, raw-first WAL write,
+// prior-reader-key replay.
+// ---------------------------------------------------------------------------
+test('WAL fail-closed: an unwritable WAL path -> NO destructive read at all', () => {
+  const home = tmpHome();
+  try {
+    seedDescriptor(home, 'child-1');
+    fs.writeFileSync(path.join(dsw(home), 'wal'), 'not-a-directory'); // WAL dir cannot exist
+    const R = makeRun({ count: 2, batch: TWO });
+    const res = pull.pullOnce({ home, id: 'child-1', backend: 'journal', io: { run: R.run } });
+    assert.equal(res.ok, false);
+    assert.equal(res.walBlocked, true);
+    assert.equal(R.calls.filter((c) => c.args[1] === 'read-messages').length, 0, 'no destructive read into an unwritable WAL');
+  } finally { rm(home); }
+});
+
+test('WAL fail-closed: a batch-write failure spills the raw bytes, blocks further reads, and recovers once writable', () => {
+  const home = tmpHome();
+  try {
+    const { inboxPath, cursorPath } = seedDescriptor(home, 'child-1');
+    const badFs = Object.assign({}, fs, {
+      writeSync(fd, data, ...rest) {
+        if (typeof data === 'string' && data.includes('"t":"batch"')) throw new Error('EIO simulated WAL write failure');
+        return fs.writeSync(fd, data, ...rest);
+      },
+      appendFileSync(p) { if (p === inboxPath) throw new Error('inbox append also fails'); return fs.appendFileSync.apply(fs, arguments); },
+    });
+    const first = pull.pullOnce({ home, id: 'child-1', backend: 'journal', io: { run: makeRun({ count: 2, batch: TWO }).run, fs: badFs } });
+    assert.equal(first.ok, false);
+    const spilled = require('../../plugins/anti-hall/companion/lib/devswarm-read-wal.js').spillPending(fs, pull.walPath(home, 'child-1'));
+    assert.equal(spilled.length, 1, 'the popped batch is recoverable from the spill quarantine');
+    assert.equal(JSON.parse(fs.readFileSync(spilled[0], 'utf8')).raw, TWO, 'byte-exact raw');
+    // Still broken: the spill cannot be absorbed -> no new destructive read.
+    const R2 = makeRun({ count: 5, batch: TWO });
+    const blocked = pull.pullOnce({ home, id: 'child-1', backend: 'journal', io: { run: R2.run, fs: badFs } });
+    assert.equal(blocked.ok, false);
+    assert.equal(blocked.walBlocked, true);
+    assert.equal(R2.calls.length, 0, 'no native call while a spilled batch is unabsorbed');
+    // WAL writable again -> absorbed, replayed, delivered.
+    const ok = pull.pullOnce({ home, id: 'child-1', backend: 'journal', io: { run: makeRun({ count: 0, batch: '[]' }).run } });
+    assert.equal(ok.ok, true, JSON.stringify(ok));
+    assert.equal(ok.walReplayed, 1);
+    assert.equal(readUnread(inboxPath, cursorPath).count, 2, 'both messages recovered');
+  } finally { rm(home); }
+});
+
+test('WAL raw-first: a FAILED read-messages that still printed popped stdout is kept and replayed', () => {
+  const home = tmpHome();
+  try {
+    const { inboxPath, cursorPath } = seedDescriptor(home, 'child-1');
+    const run = (s) => (s.args[1] === 'message-count' ? { ok: true, raw: '2' } : { ok: false, raw: TWO, error: 'killed by signal SIGTERM' });
+    const first = pull.pullOnce({ home, id: 'child-1', backend: 'journal', io: { run } });
+    assert.equal(first.ok, false);
+    const again = pull.pullOnce({ home, id: 'child-1', backend: 'journal', io: { run: makeRun({ count: 0, batch: '[]' }).run } });
+    assert.equal(again.walReplayed, 1);
+    assert.equal(readUnread(inboxPath, cursorPath).count, 2);
+  } finally { rm(home); }
+});
+
+test('WAL prior reader key: an open batch in another pull WAL for the SAME worktree is replayed, not stranded', () => {
+  const home = tmpHome();
+  try {
+    const { inboxPath, cursorPath } = seedDescriptor(home, 'child-new');
+    const readWal = require('../../plugins/anti-hall/companion/lib/devswarm-read-wal.js');
+    const oldWal = pull.walPath(home, 'child-old');
+    readWal.appendBatch(fs, oldWal, TWO, 1, { worktree: '/wt/child-new' });
+    readWal.appendBatch(fs, pull.walPath(home, 'child-other'), TWO, 1, { worktree: '/wt/somewhere-else' });
+    const res = pull.pullOnce({ home, id: 'child-new', backend: 'journal', io: { run: makeRun({ count: 0, batch: '[]' }).run } });
+    assert.equal(res.ok, true);
+    assert.equal(res.walReplayed, 1, 'only the same-worktree batch is adopted');
+    assert.equal(readUnread(inboxPath, cursorPath).count, 2);
+    assert.deepEqual(readWal.pending(fs, oldWal), [], 'the prior-key batch is closed in its own WAL');
+    assert.equal(readWal.pending(fs, pull.walPath(home, 'child-other')).length, 1, 'a different worktree is untouched');
+  } finally { rm(home); }
+});
+
+test('WAL double failure: WAL AND spill fail mid-operation -> last-resort file in os.tmpdir(), reader stays blocked, recovers once writable', () => {
+  const home = tmpHome();
+  const readWal = require('../../plugins/anti-hall/companion/lib/devswarm-read-wal.js');
+  const wal = pull.walPath(home, 'child-1');
+  try {
+    const { inboxPath, cursorPath } = seedDescriptor(home, 'child-1');
+    // Preflight passes (opens + fsync only); then the disk "dies": every WAL
+    // batch write and every spill create fails.
+    const deadFs = Object.assign({}, fs, {
+      writeSync(fd, data, ...rest) {
+        if (typeof data === 'string' && data.includes('"t":"batch"')) throw new Error('EIO disk died');
+        return fs.writeSync(fd, data, ...rest);
+      },
+      openSync(p, flags) {
+        if (flags === 'wx' && p.startsWith(readWal.spillDir(wal))) throw new Error('EIO disk died (spill)');
+        return fs.openSync(p, flags);
+      },
+      appendFileSync(p) { if (p === inboxPath) throw new Error('EIO'); return fs.appendFileSync.apply(fs, arguments); },
+    });
+    const first = pull.pullOnce({ home, id: 'child-1', backend: 'journal', io: { run: makeRun({ count: 2, batch: TWO }).run, fs: deadFs } });
+    assert.equal(first.ok, false);
+    assert.equal(first.walBlocked, true);
+    assert.ok(first.lastResortPath && first.lastResortPath.startsWith(require('node:os').tmpdir()), JSON.stringify(first));
+    assert.equal(JSON.parse(fs.readFileSync(first.lastResortPath, 'utf8')).raw, TWO, 'byte-exact raw in the last-resort file');
+    assert.ok(readWal.health(fs, home, Date.now()).some((h) => h.alert), 'loud alert');
+    const R2 = makeRun({ count: 5, batch: TWO });
+    const blocked = pull.pullOnce({ home, id: 'child-1', backend: 'journal', io: { run: R2.run, fs: deadFs } });
+    assert.equal(blocked.walBlocked, true);
+    assert.equal(R2.calls.length, 0, 'no destructive read while the last-resort batch is unabsorbed');
+    const ok = pull.pullOnce({ home, id: 'child-1', backend: 'journal', io: { run: makeRun({ count: 0, batch: '[]' }).run } });
+    assert.equal(ok.ok, true, JSON.stringify(ok));
+    assert.equal(readUnread(inboxPath, cursorPath).count, 2);
+    assert.deepEqual(readWal.lastResortPending(fs, wal), []);
+  } finally {
+    // Test-owned temp artifacts only: this home's last-resort files (any state).
+    const tmp = require('node:os').tmpdir();
+    const mine = readWal.lastResortPending(fs, wal).concat(readWal.lastResortPending(fs, wal).map((p) => p + '.absorbed'));
+    for (const n of fs.readdirSync(tmp)) {
+      const full = path.join(tmp, n);
+      if (n.startsWith('anti-hall-wal-lastresort-') && n.endsWith('.absorbed')) {
+        try { if (JSON.parse(fs.readFileSync(full, 'utf8')).wal === path.resolve(wal)) mine.push(full); } catch (_) {}
+      }
+    }
+    for (const p of mine) { try { fs.rmSync(p, { force: true }); } catch (_) {} }
+    rm(home);
+  }
+});
+
+test('WAL adoption race: two same-worktree readers adopting one prior-key WAL -> exactly one applies', () => {
+  const home = tmpHome();
+  const readWal = require('../../plugins/anti-hall/companion/lib/devswarm-read-wal.js');
+  try {
+    const a = seedDescriptor(home, 'child-a');
+    const b = seedDescriptor(home, 'child-b');
+    for (const id of ['child-a', 'child-b']) {
+      const p = path.join(dsw(home), 'workspaces', id + '.json');
+      const d = JSON.parse(fs.readFileSync(p, 'utf8'));
+      d.worktreePath = '/wt/shared';
+      fs.writeFileSync(p, JSON.stringify(d));
+    }
+    readWal.appendBatch(fs, pull.walPath(home, 'child-old'), TWO, 1, { worktree: '/wt/shared' });
+    let raced = null;
+    // Adopter A: at the exact moment it claims, adopter B runs a full pull.
+    const racingFs = Object.assign({}, fs, {
+      renameSync(from, to) {
+        if (!raced && from.endsWith('pull-child-old.ndjson')) {
+          raced = pull.pullOnce({ home, id: 'child-b', backend: 'journal', io: { run: makeRun({ count: 0, batch: '[]' }).run } });
+        }
+        return fs.renameSync(from, to);
+      },
+    });
+    const ra = pull.pullOnce({ home, id: 'child-a', backend: 'journal', io: { run: makeRun({ count: 0, batch: '[]' }).run, fs: racingFs } });
+    assert.ok(raced, 'the concurrent adopter actually ran inside the claim window');
+    const total = readUnread(a.inboxPath, a.cursorPath).count + readUnread(b.inboxPath, b.cursorPath).count;
+    assert.equal(total, 2, 'the two messages were applied exactly once across both readers: ' + JSON.stringify({ ra, raced }));
+  } finally { rm(home); }
+});

@@ -153,7 +153,7 @@ test('Item 1 RED/GREEN: a plain `inbox ack <sibling>` must not clobber a DIFFERE
     assert.deepEqual(r.result.liveSiblingsSkipped, ['p-item1'], 'the skip must be observable, not silent');
 
     // p's own backlog must still be fully there.
-    const ownRead = cli.run(['inbox', 'read-primary', 'p-item1', '--ack-as-owner'], ctx(home, { cwd: repo }));
+    const ownRead = cli.run(['inbox', 'drain-primary-legacy', 'p-item1', '--ack-as-owner'], ctx(home, { cwd: repo }));
     assert.deepEqual(ownRead.result.messages.map((m) => m.body), ['p-own-row'], 'p\'s own backlog must still be intact — nothing silently consumed out from under it');
   } finally { rm(home); rm(repo); }
 });
@@ -196,7 +196,7 @@ test('Item 2 RED/GREEN: a genuinely live but never-heartbeated sibling must not 
     seedPartition(home, repo, 'live-sib-item2', [{ body: 'live-sib-row', ts: 2000 }]);
     seedPartition(home, repo, 'orphan-sib-item2', [{ body: 'orphan-sib-row', ts: 3000 }]);
 
-    const r = cli.run(['inbox', 'read-primary', 'p-item2', '--ack-as-owner'], ctx(home, { cwd: repo }));
+    const r = cli.run(['inbox', 'drain-primary-legacy', 'p-item2', '--ack-as-owner'], ctx(home, { cwd: repo }));
     assert.equal(r.result.ok, true, JSON.stringify(r.result));
 
     // Both messages are still DELIVERED (the gate only ever protects the
@@ -231,7 +231,7 @@ test('Item 2 mutation check: reverting the gate to hasFreshHeartbeat-only reprod
       register(home, repo, 'p-item2m');
       register(home, repo, 'live-sib-item2m'); // real session, never heartbeated
       seedPartition(home, repo, 'live-sib-item2m', [{ body: 'live-sib-row', ts: 2000 }]);
-      mutatedCli.run(['inbox', 'read-primary', 'p-item2m', '--ack-as-owner'], ctx(home, { cwd: repo }));
+      mutatedCli.run(['inbox', 'drain-primary-legacy', 'p-item2m', '--ack-as-owner'], ctx(home, { cwd: repo }));
       const after = readCursorFile(home, repo, 'live-sib-item2m');
       assert.notEqual(after, 0, 'BUGGY (hasFreshHeartbeat-only): the never-heartbeated LIVE sibling IS acked — reproduces the misread');
     } finally { rm(home); rm(repo); }

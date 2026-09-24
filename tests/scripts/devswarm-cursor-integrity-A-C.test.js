@@ -154,7 +154,7 @@ test('(A) RED/GREEN: a never-read sibling\'s history is capped to a bounded pref
     for (let i = 0; i < 250; i++) rows.push({ body: 'row-' + i, ts: 1000 + i });
     seedPartition(home, repo, 'sib-a1', rows);
 
-    const r = cli.run(['inbox', 'read-primary', 'caller-a1', '--ack-as-owner'], ctx(home, { cwd: repo }));
+    const r = cli.run(['inbox', 'drain-primary-legacy', 'caller-a1', '--ack-as-owner'], ctx(home, { cwd: repo }));
     assert.equal(r.result.ok, true, JSON.stringify(r.result));
 
     // THE FIX: only the first 200 rows are delivered this call.
@@ -171,7 +171,7 @@ test('(A) RED/GREEN: a never-read sibling\'s history is capped to a bounded pref
 
     // Reading again (same caller) must make forward progress on the
     // withheld tail — nothing is permanently stuck or dropped.
-    const r2 = cli.run(['inbox', 'read-primary', 'caller-a1', '--ack-as-owner'], ctx(home, { cwd: repo }));
+    const r2 = cli.run(['inbox', 'drain-primary-legacy', 'caller-a1', '--ack-as-owner'], ctx(home, { cwd: repo }));
     assert.equal(r2.result.ok, true, JSON.stringify(r2.result));
     const delivered2 = r2.result.messages.filter((m) => m.body && m.body.startsWith('row-'));
     assert.ok(delivered2.length > 0, 'the previously-withheld tail must be delivered on a subsequent read, never dropped');
@@ -204,7 +204,7 @@ test('(A) mutation check: removing the NEVER_READ_SIBLING_CAP slice reproduces t
       const rows = [];
       for (let i = 0; i < 250; i++) rows.push({ body: 'row-' + i, ts: 1000 + i });
       seedPartition(home, repo, 'sib-am', rows);
-      const r = mutatedCli.run(['inbox', 'read-primary', 'caller-am', '--ack-as-owner'], ctx(home, { cwd: repo }));
+      const r = mutatedCli.run(['inbox', 'drain-primary-legacy', 'caller-am', '--ack-as-owner'], ctx(home, { cwd: repo }));
       const delivered = r.result.messages.filter((m) => m.body && m.body.startsWith('row-'));
       assert.equal(delivered.length, 250, 'BUGGY (cap removed): the never-read sibling\'s FULL history is dumped in one call — reproduces the unbounded read');
     } finally { rm(home); rm(repo); }
@@ -222,10 +222,10 @@ test('(A) does not regress an already-read sibling (pCursor > 0): no cap applies
     for (let i = 0; i < 210; i++) rows.push({ body: 'row-' + i, ts: 1000 + i });
     seedPartition(home, repo, 'sib-a2', rows);
     // First read establishes a non-zero cursor for sib-a2 (still capped, since it starts at 0).
-    cli.run(['inbox', 'read-primary', 'caller-a2', '--ack-as-owner'], ctx(home, { cwd: repo }));
+    cli.run(['inbox', 'drain-primary-legacy', 'caller-a2', '--ack-as-owner'], ctx(home, { cwd: repo }));
     // Second call: sib-a2's cursor is now > 0 — NOT "never read" anymore — its
     // remaining backlog (10 rows) must be delivered uncapped this call.
-    const r2 = cli.run(['inbox', 'read-primary', 'caller-a2', '--ack-as-owner'], ctx(home, { cwd: repo }));
+    const r2 = cli.run(['inbox', 'drain-primary-legacy', 'caller-a2', '--ack-as-owner'], ctx(home, { cwd: repo }));
     assert.equal(r2.result.meshNeverReadCapped, undefined, 'a partition already past its first read must not be reported as never-read-capped');
     const delivered2 = r2.result.messages.filter((m) => m.body && m.body.startsWith('row-'));
     assert.equal(delivered2.length, 10, 'the remaining 10 rows (210 - 200 capped) must all be delivered once the sibling is no longer "never read"');
@@ -269,7 +269,7 @@ test('(C) RED/GREEN: a UUID twin row of the CALLER itself is acked BY THE CALLER
     const before = readCursorFile(home, repo, 'twin-uuid-c1');
     assert.equal(before, 0, 'sanity: twin starts unread');
 
-    const r = cli.run(['inbox', 'read-primary', 'caller-primary-c1', '--ack-as-owner'], ctx(home, { cwd: repo }));
+    const r = cli.run(['inbox', 'drain-primary-legacy', 'caller-primary-c1', '--ack-as-owner'], ctx(home, { cwd: repo }));
     assert.equal(r.result.ok, true, JSON.stringify(r.result));
 
     // Delivery is unaffected either way — only the cursor WRITE is gated.
@@ -282,7 +282,7 @@ test('(C) RED/GREEN: a UUID twin row of the CALLER itself is acked BY THE CALLER
     assert.equal(after, 1, 'a same-agent UUID twin IS acked by its own agent\'s read, to the delivered prefix (was: stuck at ' + before + ' forever)');
     assert.ok(!(r.result.liveSiblingsSkipped || []).includes('twin-uuid-c1'), 'and it is NOT reported as a skipped live sibling — it is SELF, and it was acked');
     // The re-delivery loop is closed.
-    const r2 = cli.run(['inbox', 'read-primary', 'caller-primary-c1', '--ack-as-owner'], ctx(home, { cwd: repo }));
+    const r2 = cli.run(['inbox', 'drain-primary-legacy', 'caller-primary-c1', '--ack-as-owner'], ctx(home, { cwd: repo }));
     assert.ok(!r2.result.messages.some((m) => m.body === 'twin-own-row'), 'the twin\'s row must not be re-delivered on the next read');
   } finally { rm(home); rm(repo); }
 });
@@ -309,7 +309,7 @@ test('(C) RED/GREEN: a partition whose OWN cross-linked twin is live reads as li
     markLive(home, 'caller-c2');
     seedPartition(home, repo, 'foreign-uuid-c2', [{ body: 'foreign-row', ts: 2000 }]);
 
-    const r = cli.run(['inbox', 'read-primary', 'caller-c2', '--ack-as-owner'], ctx(home, { cwd: repo }));
+    const r = cli.run(['inbox', 'drain-primary-legacy', 'caller-c2', '--ack-as-owner'], ctx(home, { cwd: repo }));
     assert.equal(r.result.ok, true, JSON.stringify(r.result));
     assert.ok(r.result.messages.some((m) => m.body === 'foreign-row'), 'delivery unaffected');
 
@@ -328,7 +328,7 @@ test('(C) constraint preserved: a genuinely orphaned partition with NO live twin
     register(home, repo, 'orphan-c3', 'unclaimed:orphan-c3');
     seedPartition(home, repo, 'orphan-c3', [{ body: 'orphan-row', ts: 3000 }]);
 
-    const r = cli.run(['inbox', 'read-primary', 'caller-c3', '--ack-as-owner'], ctx(home, { cwd: repo }));
+    const r = cli.run(['inbox', 'drain-primary-legacy', 'caller-c3', '--ack-as-owner'], ctx(home, { cwd: repo }));
     assert.equal(r.result.ok, true, JSON.stringify(r.result));
     const after = readCursorFile(home, repo, 'orphan-c3');
     assert.equal(after, 1, 'a genuinely orphaned partition (no live twin, no cross-link to the caller) must still be ack-drainable — the extension must not over-protect');
@@ -384,7 +384,7 @@ test('(C) mutation check: removing the SELF cross-link check restores the twin\'
       registerDirect(home, repo, 'twin-uuid-cm', 'unclaimed:twin-uuid-cm');
       markLive(home, 'caller-primary-cm');
       seedPartition(home, repo, 'twin-uuid-cm', [{ body: 'twin-own-row', ts: 2000 }]);
-      const r = mutatedCli.run(['inbox', 'read-primary', 'caller-primary-cm', '--ack-as-owner'], ctx(home, { cwd: repo }));
+      const r = mutatedCli.run(['inbox', 'drain-primary-legacy', 'caller-primary-cm', '--ack-as-owner'], ctx(home, { cwd: repo }));
       assert.ok(r.result.messages.some((m) => m.body === 'twin-own-row'), 'sanity: the twin\'s row is delivered on the mutant too');
       const after = readCursorFile(home, repo, 'twin-uuid-cm');
       assert.equal(after, 0, 'BUGGY (SELF check removed): the caller\'s own UUID twin is never acked — its own cursor stays stranded at 0');
@@ -400,7 +400,7 @@ test('(C) mutation check: removing the SELF cross-link check restores the twin\'
       // refuses. Defence in depth — the SELF branch is still the fix (without
       // it the twin's OWN cursor is stranded, above), but the re-delivery
       // symptom is no longer the way to observe its absence.
-      const r2 = mutatedCli.run(['inbox', 'read-primary', 'caller-primary-cm', '--ack-as-owner'], ctx(home, { cwd: repo }));
+      const r2 = mutatedCli.run(['inbox', 'drain-primary-legacy', 'caller-primary-cm', '--ack-as-owner'], ctx(home, { cwd: repo }));
       assert.ok(!r2.result.messages.some((m) => m.body === 'twin-own-row'),
         'the P0 watermark stops the re-delivery even on this mutant — the stranded cursor above is what still exposes the missing SELF branch');
       assert.equal(readCursorFile(home, repo, 'twin-uuid-cm'), 0,
@@ -433,7 +433,7 @@ test('(C) mutation check: removing the TWIN-OF-LIVE check reproduces the misread
       registerDirect(home, repo, 'foreign-uuid-cm2', 'unclaimed:foreign-uuid-cm2');
       markLive(home, 'caller-cm2');
       seedPartition(home, repo, 'foreign-uuid-cm2', [{ body: 'foreign-row', ts: 2000 }]);
-      mutatedCli.run(['inbox', 'read-primary', 'caller-cm2', '--ack-as-owner'], ctx(home, { cwd: repo }));
+      mutatedCli.run(['inbox', 'drain-primary-legacy', 'caller-cm2', '--ack-as-owner'], ctx(home, { cwd: repo }));
       const after = readCursorFile(home, repo, 'foreign-uuid-cm2');
       assert.notEqual(after, 0, 'BUGGY (twin-of-live check removed): a live agent registered under a different id IS ack-drained — reproduces the misread');
     } finally { rm(home); rm(repo); }

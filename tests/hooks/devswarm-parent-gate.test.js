@@ -372,7 +372,11 @@ test('LOOP-SAFE: same blocking SET escalates at the cap, then goes quiet (bounde
   } finally { h.cleanup(); }
 });
 
-test('CAP RESET: a CHANGED unread set re-opens the budget after being capped', () => {
+// Phase 5 shared Stop policy (#14): the cap is keyed by STABLE block kinds.
+// A changed unread COUNT (mail landing mid-drain) no longer re-opens the
+// budget — that was the self-amplification (369 blocks in one transcript).
+// The budget re-opens when the condition CLEARS, or a new KIND appears.
+test('CAP (stable kind): a changed unread COUNT does NOT re-open the budget; clearing the condition does', () => {
   const h = makeHome();
   try {
     const seeded = seedWorkspace(h.home, 'ws1', { messages: ['a', 'b'], cursor: 0 });
@@ -384,11 +388,31 @@ test('CAP RESET: a CHANGED unread set re-opens the budget after being capped', (
     assert.match(escalated.json && escalated.json.reason, /DEVSWARM ESCALATION/, 'pass #3 escalates');
     const capped = run(h.home, p, env); // block #4 -> now quiet
     assert.strictEqual(capped.stdout, '', 'capped (quiet) before change');
-    // A new message arrives -> unread count changes -> signature changes -> reset.
+    // Mail lands while the condition persists -> same kind -> still quiet.
     fs.appendFileSync(seeded.inboxPath, JSON.stringify({ m: 'c' }) + '\n');
-    const after = run(h.home, p, env);
-    assert.strictEqual(after.json && after.json.decision, 'block', 'a changed set must re-block');
-    assert.match(after.json.reason, /3 unread/);
+    const grown = run(h.home, p, env);
+    assert.strictEqual(grown.stdout, '', 'a grown count of the SAME kind must not re-open the budget (no self-amplification)');
+    // The condition clears (everything read) -> state reset; new mail re-blocks.
+    fs.writeFileSync(seeded.cursorPath, '3');
+    const clear = run(h.home, p, env);
+    assert.strictEqual(clear.stdout, '', 'nothing pending -> allow');
+    fs.appendFileSync(seeded.inboxPath, JSON.stringify({ m: 'd' }) + '\n');
+    const fresh = run(h.home, p, env);
+    assert.strictEqual(fresh.json && fresh.json.decision, 'block', 'after the condition cleared, new neglect gets a fresh budget');
+    assert.match(fresh.json.reason, /1 unread/);
+  } finally { h.cleanup(); }
+});
+
+test('STOP POLICY: stop_hook_active === true -> allow immediately, no state change', () => {
+  const h = makeHome();
+  try {
+    seedWorkspace(h.home, 'ws1', { messages: ['a', 'b'], cursor: 0 });
+    const p = Object.assign(stopPayload('activesess'), { stop_hook_active: true });
+    const r = run(h.home, p);
+    assert.strictEqual(r.stdout, '', 'a Stop that is already continuing because of a block is never re-blocked');
+    assert.ok(!fs.existsSync(gateStateLib.stateFileFor('activesess', h.home)), 'no cap state written on the stop_hook_active path');
+    const normal = run(h.home, stopPayload('activesess'));
+    assert.strictEqual(normal.json && normal.json.decision, 'block', 'without the flag the same state still blocks');
   } finally { h.cleanup(); }
 });
 
@@ -2144,8 +2168,11 @@ test('STATED-INTENT: sig CHANGES after an intent was recorded -> escalation beha
     const r2 = run(h.home, p, env); // still same sig -> covered by intent, no escalation
     assert.doesNotMatch(r2.json.reason, /DEVSWARM ESCALATION/, 'still covered by the intent before the sig changes');
 
-    // Change the actual unread content -> a genuinely NEW blocking signature.
-    fs.appendFileSync(seeded.inboxPath, JSON.stringify({ m: 'c' }) + '\n');
+    // A new KIND of neglect (the Primary's OWN mailbox joins the children
+    // kind) -> a genuinely NEW blocking signature (Phase 5: counts alone no
+    // longer change it).
+    void seeded;
+    writeOwnSummary(h.home, 2);
 
     // Drive the (now intent-free) new sig through the PLAIN cap (2) until it
     // escalates — proves the old intent does not silently carry over.

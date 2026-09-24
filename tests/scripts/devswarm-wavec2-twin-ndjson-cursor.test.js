@@ -178,7 +178,7 @@ test('item 7 MUTATION: dropping the hint block restores the silence the field re
   // unnoticed.
   assert.ok(src.includes('cursorAdvanced: false,'),
     'the read path must state that it advanced no cursor');
-  assert.ok(src.includes("+ '` consumes them. NOTE: a Primary\\'s own `inbox read-primary` folds ONLY its OWN '"),
+  assert.ok(src.includes("+ '` consumes them. NOTE: a Primary\\'s own `inbox read-primary` (acked via its `ackCommand`) folds ONLY its OWN '"),
     'the hint must keep naming the read-primary scoping rule');
   const hintCount = (src.match(/ackHint:/g) || []).length;
   assert.equal(hintCount, 1, 'exactly one ackHint site — a second copy would be a drifting duplicate');

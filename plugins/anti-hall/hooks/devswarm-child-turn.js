@@ -195,8 +195,8 @@ const RECEIVE_NUDGE =
   '`node ' + CLI + ' inbox pull <DEVSWARM_BUILDER_ID>` (anti-hall devswarm ' +
   'CLI) — a SAFE, bounded drain that folds the native parent->child queue into your ' +
   'durable inbox (non-destructive count gate, one bounded read, never `monitor`). ' +
-  'Then read AND ack them via `node ' + CLI + ' inbox read-primary ' +
-  '<DEVSWARM_BUILDER_ID>`. Substitute your own DEVSWARM_BUILDER_ID for <...>.';
+  'Then read them via `node ' + CLI + ' inbox read-primary ' +
+  '<DEVSWARM_BUILDER_ID>` (read-only; after handling, run the `ackCommand` it returns). Substitute your own DEVSWARM_BUILDER_ID for <...>.';
 
 // substituteId(text, id) -> text with the literal `<DEVSWARM_BUILDER_ID>`
 // placeholder replaced by the real workspace id, when `id` passes the SAME
@@ -329,8 +329,8 @@ function buildUnreadSegment(info) {
   return (
     'DEVSWARM CHILD INBOX — PRIORITY: you have ' + info.count + ' unread parent '
     + 'message(s). STOP and address these parent message(s) FIRST before '
-    + 'continuing. Read AND ack them the SAFE way via the durable inbox '
-    + 'cursor — `node ' + CLI + ' inbox read-primary ' + info.id + '` (anti-hall devswarm CLI). '
+    + 'continuing. Read them the SAFE way via the durable inbox '
+    + 'cursor — `node ' + CLI + ' inbox read-primary ' + info.id + '` (anti-hall devswarm CLI) (read-only; after handling, run the `ackCommand` it returns). '
     + 'Do NOT run `hivecontrol workspace read-messages` or `monitor` — those '
     + 'DESTRUCTIVELY drain the native queue.'
   );
@@ -368,12 +368,12 @@ function buildMeshDirectSegment(count, id, urgencyMax, oldestTs) {
     return (
       'DEVSWARM MESH DIRECT — URGENT: you have ' + count + ' unread mesh direct '
       + 'message(s)' + age + ' addressed to you. STOP and read them FIRST via `node ' + CLI + ' '
-      + 'inbox read-primary ' + id + '` before continuing.'
+      + 'inbox read-primary ' + id + '` (read-only; after handling, run the `ackCommand` it returns), before continuing.'
     );
   }
   return (
     'DEVSWARM MESH DIRECT: you have ' + count + ' unread mesh direct message(s)'
-    + age + ' addressed to you. Read them via `node ' + CLI + ' inbox read-primary ' + id + '`.'
+    + age + ' addressed to you. Read them via `node ' + CLI + ' inbox read-primary ' + id + '` (read-only; after handling, run the `ackCommand` it returns).'
   );
 }
 

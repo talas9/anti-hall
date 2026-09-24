@@ -83,13 +83,14 @@
 // (~/.anti-hall/skip.json, guard name "devswarm-parent-gate") is the last-resort
 // user-consented escape hatch.
 //
-// LOOP-SAFETY: a bounded per-SET forced-ack cap. The blocking SET is signed
-// (workspace id + unread count + verdict status). The cap counter RESETS when
-// that signature changes (new unread arrived, a child newly went stale, a
-// partial ack moved a count) so each distinct neglect state gets its own small
-// budget; once the SAME set has been forced-acked CAP times we go quiet. This
-// can never hard-loop even if the model ignores the block. Default cap 3
-// (clamped 2..5 via ANTIHALL_DEVSWARM_PARENT_GATE_CAP).
+// LOOP-SAFETY (shared Stop policy, hooks/lib/stop-policy.js, Phase 5 #14):
+// `stop_hook_active` allows immediately (never block back to back), and the
+// forced-ack cap is keyed by the STABLE block kinds (own mailbox / children),
+// never by unread counts — new mail landing mid-drain no longer re-opens the
+// budget. The counter resets when the condition clears (nothing blocking ->
+// state removed). Once the same kinds have been forced-acked CAP times we
+// escalate once, then go quiet. Default cap 3 (clamped 2..5 via
+// ANTIHALL_DEVSWARM_PARENT_GATE_CAP).
 //
 // WAKE RE-VERIFY (v0.59 "self-wake"): the Primary is the LONGEST-lived DevSwarm
 // session (a child is typically spun for one matter and archived; the Primary
@@ -123,6 +124,10 @@ const os = require('os');
 const crypto = require('crypto');
 
 const { isSkipped } = require('./skip-guard.js');
+// Shared Stop policy (Phase 5): lazy-guarded so a missing lib degrades to the
+// pre-policy behavior, never a crash.
+let stopPolicy = null;
+try { stopPolicy = require('./lib/stop-policy.js'); } catch (_) { stopPolicy = null; }
 const { isDevswarmActive } = require('./lib/devswarm-detect.js');
 const { isChildWorkspace } = require('./lib/devswarm-role.js');
 // stateFileFor: SHARED with scripts/devswarm.js's `gate-intent` CLI verb and
@@ -603,6 +608,11 @@ function main() {
 
   let payload = {};
   try { payload = JSON.parse(raw); } catch (_) { return; }
+
+  // SHARED STOP POLICY (Phase 5, #14 — hooks/lib/stop-policy.js): the model is
+  // already continuing because of a Stop block -> allow, before any state
+  // write, store read or probe. Never re-block back to back.
+  if (stopPolicy && stopPolicy.stopHookActive(payload)) return;
 
   const home = os.homedir();
 
@@ -1496,16 +1506,18 @@ function main() {
     return;
   }
 
-  // Signature of the blocking SET. The cap RESETS whenever this changes (P1: cap
-  // resets when the unread SET changes). Includes unread counts, the unknown
-  // flag, AND verdict status so a new message, a fresh stale/escalation, an
-  // inbox becoming (un)readable, or a partial ack all re-open the small budget.
+  // Signature of the blocking SET = its STABLE block kinds (Phase 5, #14 —
+  // shared stop-policy.js). It used to hash unread COUNTS, message status and
+  // ids, so every message landing mid-drain opened a fresh cap budget (the
+  // gate amplified itself: 369 blocks in one field transcript). Now the budget
+  // resets only when the condition CLEARS (blocking empty -> state file removed
+  // above) or a different KIND of neglect appears (own mailbox vs children).
+  const blockKinds = blocking.map((b) => (own.id && b.id === own.id ? 'mailbox' : 'children'));
+  // Parked (undelivered) escalations are their own KIND: their arrival opens a
+  // fresh budget, but the parked text/child list never enters the signature.
+  if (parkedSegment) blockKinds.push('parked');
   const sig = crypto.createHash('sha1').update(
-    blocking
-      .map((b) => b.id + '\x00' + b.unread + '\x00' + (b.unknown ? '1' : '0') + '\x00' + b.status)
-      .sort()
-      .join('\x1f')
-    + (parkedSegment ? '\x1eparked:' + parkedSegment : '')
+    'devswarm-parent:' + (stopPolicy ? stopPolicy.kindSignature(blockKinds) : blockKinds.slice().sort().join(','))
   ).digest('hex');
 
   // Load prior loop-state { sig, blocks, escalated }.
@@ -1800,7 +1812,7 @@ function buildUnansweredSegment(unanswered) {
   const more = unanswered.length > 5 ? ' (and ' + (unanswered.length - 5) + ' more)' : '';
   return (
     'UNANSWERED QUESTION' + (unanswered.length > 1 ? 'S' : '') + ' — ' + items + more + ': ' +
-    'reading it via `inbox read-primary` is NOT sufficient to clear this. ' +
+    'reading it via `inbox read-primary` (and running its `ackCommand`) is NOT sufficient to clear this. ' +
     'You must DECIDE from context and REPLY: `send --to <id> --message-file <path>` (or ' +
     '--message-stdin). '
   );
@@ -1824,7 +1836,7 @@ function buildTruncatedSegment(truncated) {
     ' more sender(s) with an unanswered question are NOT shown (cap ' + cap + '). ' +
     'The true unanswered count is HIGHER than what this message can list. ' +
     'This is not resolvable by replying to only the senders named below — ' +
-    'check `devswarm.js inbox read-primary` / registry state directly. '
+    'check `devswarm.js inbox read-primary` (read-only; its `ackCommand` acks) / registry state directly. '
   );
 }
 
@@ -2056,7 +2068,7 @@ function buildReason(blocking, ownId, unanswered, escalateTimes, truncated, qEsc
       'YOUR OWN inbound status could not be confirmed: the cached summary predates this reader\'s ' +
       'live read position (own cursor caught up to or past what the summary last recorded), and a ' +
       'live recheck did not resolve it — treat this as UNKNOWN, not "no messages". Check explicitly ' +
-      'via `devswarm.js inbox count ' + ownId + '` or `devswarm.js inbox read-primary ' + ownId + '` ' +
+      'via `devswarm.js inbox count ' + ownId + '` or `devswarm.js inbox read-primary ' + ownId + '` (then its `ackCommand`) ' +
       'before assuming there is nothing pending. ';
   } else if (ownSelfUnknown) {
     // C3 fix: the own-summary projection could not be conclusively read (e.g.
@@ -2065,7 +2077,7 @@ function buildReason(blocking, ownId, unanswered, escalateTimes, truncated, qEsc
     body +=
       'YOUR OWN inbound status could not be confirmed (own-summary unreadable or corrupt — ' +
       'possibly a daemon problem) — treat this as UNKNOWN, not "no messages". Check explicitly via ' +
-      '`devswarm.js inbox read-primary ' + ownId + '` (and `devswarm.js healthcheck` / `devswarm.js logs` ' +
+      '`devswarm.js inbox read-primary ' + ownId + '` (then its `ackCommand`; and `devswarm.js healthcheck` / `devswarm.js logs` ' +
       'to check the daemon) before assuming there is nothing pending. ';
   } else if (ownEntry && ownEntry.unread > 0) {
     // v0.57 mesh (D4, Phase 8 step 4): urgencyMax is HONORED in wording only —
@@ -2075,7 +2087,7 @@ function buildReason(blocking, ownId, unanswered, escalateTimes, truncated, qEsc
     body +=
       (urgent ? 'URGENT — ' : '') +
       'YOU (the Primary) have ' + ownEntry.unread + ' unread parent/peer message(s) — ' +
-      'STOP and read them FIRST via `devswarm.js inbox read-primary ' + ownId + '`. ';
+      'STOP and read them FIRST via `devswarm.js inbox read-primary ' + ownId + '` (read-only; after handling, run the `ackCommand` it returns). ';
   }
   // SAME-WORKTREE TWIN FOLD (defect 773e3e0c7e59, P1): `ownEntry.unread` above
   // is a UNION that can include a same-worktree UUID twin descriptor folded in

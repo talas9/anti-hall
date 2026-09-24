@@ -1612,8 +1612,8 @@ test('OWN UNREAD DECIDE+REPLY REGRESSION: plain unread with no pendingQuestions 
       + 'message(s) addressed to YOU (the Primary). STOP and read your unread '
       + 'parent/peer message(s) FIRST before continuing. Read them via '
       + '`node ' + cliPath + ' inbox read-primary ' + OWN_ID + '` (anti-hall devswarm CLI — '
-      + 'this advances YOUR OWN read cursor, the correct/expected drain for a '
-      + 'message you are now acting on; to check WITHOUT consuming it instead, '
+      + 'read-only: after handling them run the `ackCommand` it returns, which advances '
+      + 'YOUR OWN read cursor; to check WITHOUT a receipt instead, '
       + 'use `inbox peek-primary ' + OWN_ID + '`). Do NOT run `hivecontrol workspace '
       + 'read-messages` or `monitor` — those DESTRUCTIVELY drain the NATIVE queue '
       + '(a completely separate channel from your own cursor above).';

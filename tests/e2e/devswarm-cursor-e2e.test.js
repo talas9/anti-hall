@@ -103,14 +103,14 @@ test('e2e: two REAL processes on one workspace lose no mail and each sees a trut
 
     const a = runInstance(home, repo, [
       ['register', id, '--worktree', repo, '--session', 'sess-e2e'],
-      ['inbox', 'read-primary', id, '--ack-as-owner'],
-      ['inbox', 'read-primary', id, '--ack-as-owner'],
+      ['inbox', 'drain-primary-legacy', id, '--ack-as-owner'],
+      ['inbox', 'drain-primary-legacy', id, '--ack-as-owner'],
     ]);
     const aBodies = ((a[1] && a[1].messages) || []).map((m) => m.body).filter(Boolean);
     assert.strictEqual(((a[2] && a[2].messages) || []).length, 0,
       'A must not be re-served its own consumed rows — a count of 0 is trustworthy FOR THAT INSTANCE');
 
-    const b = runInstance(home, repo, [['inbox', 'read-primary', id, '--ack-as-owner']]);
+    const b = runInstance(home, repo, [['inbox', 'drain-primary-legacy', id, '--ack-as-owner']]);
     const bBodies = ((b[0] && b[0].messages) || []).map((m) => m.body).filter(Boolean);
 
     const delivered = new Set([...aBodies, ...bBodies]);
@@ -133,7 +133,7 @@ test('e2e: `inbox count` agrees with `read-primary` for the SAME process at ever
 
     const r = runInstance(home, repo, [
       ['inbox', 'count', id],
-      ['inbox', 'read-primary', id, '--ack-as-owner'],
+      ['inbox', 'drain-primary-legacy', id, '--ack-as-owner'],
       ['inbox', 'count', id],
     ]);
     const before = r[0].unreadTotal !== undefined ? r[0].unreadTotal : r[0].unread;

@@ -213,8 +213,8 @@ test('item 4: siblingWatermarkCovered is a REAL comparison, not always-true', ()
 
 test('MUTATION (item 4): restoring the tautological sinceCursor comparison stops gating on the real watermark', () => {
   mutantKit.withMutant(
-    'if (siblingWatermarkCovered(ackTarget, freshWatermark)) {',
-    "if (ackTarget >= (Number.isFinite(part.sinceCursor) ? part.sinceCursor : 0)) {",
+    'if (siblingWatermarkCovered(op.ackTarget, freshWatermark)) removeSiblingSeenCursor',
+    'if (op.ackTarget >= 0) removeSiblingSeenCursor',
     (mutated) => {
       // The mutant restores the OLD tautological guard; siblingWatermarkCovered
       // itself must still be the real, independently-correct predicate — this

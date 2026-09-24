@@ -189,9 +189,9 @@ test('Claim 4: plain `inbox messages <id>` (no --ack-as-owner) emits NO warning;
     assert.equal(plain.out.result.ok, true);
     assert.doesNotMatch(plain.stderr, /did NOT ack/, 'no warning without the flag');
 
-    const ackd = captureStderr(() => cli.run(['inbox', 'read-primary', id, '--ack-as-owner'], ctx(home, { cwd: repo })));
+    const ackd = captureStderr(() => cli.run(['inbox', 'drain-primary-legacy', id, '--ack-as-owner'], ctx(home, { cwd: repo })));
     assert.equal(ackd.out.result.ok, true, JSON.stringify(ackd.out.result));
-    assert.equal(ackd.out.result.action, 'read-primary');
+    assert.equal(ackd.out.result.action, 'drain-primary-legacy');
     assert.equal(ackd.out.result.cursor, 1, 'read-primary --ack-as-owner DID ack (cursor advanced)');
     assert.doesNotMatch(ackd.stderr, /did NOT ack/, 'read-primary is a real ack — no not-acked warning');
   } finally { rm(home); rm(repo); }
@@ -276,10 +276,10 @@ test('Claim 2: a child with a DISTINCT builder-id self-registers via `inbox pull
     seed(home, namedKey, null,
       [{ workspaceId: builderId, ts: 1, hash: 'H-c2', body: 'hello child', sender: 'primary', recipient: builderId, mtype: 'direct', urgency: 'normal', isHeartbeat: false }]);
 
-    const ack = cli.run(['inbox', 'read-primary', builderId, '--ack-as-owner'],
+    const ack = cli.run(['inbox', 'drain-primary-legacy', builderId, '--ack-as-owner'],
       ctx(home, { cwd: childRepo, env: { DEVSWARM_BUILDER_ID: builderId } }));
     assert.equal(ack.result.ok, true, 'read-primary --ack-as-owner succeeds: ' + JSON.stringify(ack.result));
-    assert.equal(ack.result.action, 'read-primary');
+    assert.equal(ack.result.action, 'drain-primary-legacy');
     assert.equal(ack.result.total, 1);
     assert.equal(ack.result.cursor, 1, 'ack advanced the cursor to the message total');
 
@@ -307,7 +307,7 @@ test('Claim 2 (ownership path): a distinct-builder-id child acks its OWN inbox W
     seed(home, namedKey, null,
       [{ workspaceId: builderId, ts: 1, hash: 'H-own', body: 'yo', sender: 'primary', recipient: builderId, mtype: 'direct', urgency: 'normal', isHeartbeat: false }]);
 
-    const ack = cli.run(['inbox', 'read-primary', builderId],
+    const ack = cli.run(['inbox', 'drain-primary-legacy', builderId],
       ctx(home, { cwd: childRepo, env: { DEVSWARM_BUILDER_ID: builderId } }));
     assert.equal(ack.result.ok, true, 'child owns its own partition without the override: ' + JSON.stringify(ack.result));
     assert.equal(ack.result.cursor, 1);

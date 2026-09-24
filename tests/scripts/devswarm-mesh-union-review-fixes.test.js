@@ -102,14 +102,14 @@ test('P0: two genuinely distinct messages sharing sender+ts+body across sibling 
     seedPartition(home, repo, 'primary-p0', [{ body: 'collision content', ts: 5000, from: 'agentA' }]);
     seedPartition(home, repo, 'sibling-p0', [{ body: 'collision content', ts: 5000, from: 'agentA' }]);
 
-    const rp = cli.run(['inbox', 'read-primary', 'primary-p0', '--ack-as-owner'], ctx(home, { cwd: repo }));
+    const rp = cli.run(['inbox', 'drain-primary-legacy', 'primary-p0', '--ack-as-owner'], ctx(home, { cwd: repo }));
     assert.equal(rp.result.ok, true, JSON.stringify(rp.result));
     assert.equal(rp.result.count, 2, 'BOTH distinct messages must be delivered — neither is provably a duplicate of the other');
     assert.equal(rp.result.messages.filter((m) => m.body === 'collision content').length, 2,
       'both copies present, not collapsed to one');
 
     // Both partitions' cursors fully advanced (both were actually delivered).
-    const rp2 = cli.run(['inbox', 'read-primary', 'primary-p0', '--ack-as-owner'], ctx(home, { cwd: repo }));
+    const rp2 = cli.run(['inbox', 'drain-primary-legacy', 'primary-p0', '--ack-as-owner'], ctx(home, { cwd: repo }));
     assert.equal(rp2.result.count, 0, 'nothing left unread — both messages were genuinely delivered and acked, not silently dropped');
   } finally { rm(home); rm(repo); }
 });
@@ -130,7 +130,7 @@ test('P0 invariant: sibling cursor advances by exactly what THIS call delivered,
 
     seedPartition(home, repo, 'sibling-inv', [{ body: 'sib-1', ts: 1000 }]);
     // First ack: consumes sibling-inv's one existing message.
-    const first = cli.run(['inbox', 'read-primary', 'primary-inv', '--ack-as-owner'], ctx(home, { cwd: repo }));
+    const first = cli.run(['inbox', 'drain-primary-legacy', 'primary-inv', '--ack-as-owner'], ctx(home, { cwd: repo }));
     assert.equal(first.result.ok, true, JSON.stringify(first.result));
     const sibCursorPath = cli.primaryCursorPath(home, 'sibling-inv');
     assert.equal(fs.readFileSync(sibCursorPath, 'utf8').trim(), '1');
@@ -138,7 +138,7 @@ test('P0 invariant: sibling cursor advances by exactly what THIS call delivered,
     // More mail lands on the sibling AFTER that ack.
     seedPartition(home, repo, 'sibling-inv', [{ body: 'sib-2', ts: 2000 }, { body: 'sib-3', ts: 3000 }]);
 
-    const second = cli.run(['inbox', 'read-primary', 'primary-inv', '--ack-as-owner'], ctx(home, { cwd: repo }));
+    const second = cli.run(['inbox', 'drain-primary-legacy', 'primary-inv', '--ack-as-owner'], ctx(home, { cwd: repo }));
     assert.equal(second.result.ok, true, JSON.stringify(second.result));
     assert.equal(second.result.count, 2, 'only the NEW sibling mail is delivered this call');
     // Cursor invariant: cursor lands at exactly cursor(1) + delivered(2) = 3
@@ -168,7 +168,7 @@ test('P1a: a sibling cursor-write failure still delivers the message AND names t
       ? { ok: false, error: 'SIMULATED: reader_cursors write failed', own: null, floor: null, from: null, retired: [] }
       : origAck(s, o));
     let rp;
-    try { rp = cli.run(['inbox', 'read-primary', 'primary-p1a', '--ack-as-owner'], ctx(home, { cwd: repo })); }
+    try { rp = cli.run(['inbox', 'drain-primary-legacy', 'primary-p1a', '--ack-as-owner'], ctx(home, { cwd: repo })); }
     finally { rc.ackFor = origAck; }
     assert.equal(rp.result.ok, true, JSON.stringify(rp.result));
     assert.equal(rp.result.count, 1, 'delivery still succeeds (fail-open on delivery — the safe direction)');
@@ -182,7 +182,7 @@ test('P1a: a sibling cursor-write failure still delivers the message AND names t
 
     // Redelivery proof: since the cursor never persisted, the same message
     // resurfaces on the next read — the safe (at-least-once) direction.
-    const rp2 = cli.run(['inbox', 'read-primary', 'primary-p1a', '--ack-as-owner'], ctx(home, { cwd: repo }));
+    const rp2 = cli.run(['inbox', 'drain-primary-legacy', 'primary-p1a', '--ack-as-owner'], ctx(home, { cwd: repo }));
     assert.equal(rp2.result.ok, true, JSON.stringify(rp2.result));
     assert.equal(rp2.result.count, 1, 'the message the failed cursor never marked read must redeliver, never vanish');
   } finally { rm(home); rm(repo); }
@@ -221,7 +221,7 @@ test('P1b: a thrown registry-enumeration error surfaces as an unresolved/partial
     };
     let rp;
     try {
-      rp = cli.run(['inbox', 'read-primary', 'primary-p1b', '--ack-as-owner'], ctx(home, { cwd: repo }));
+      rp = cli.run(['inbox', 'drain-primary-legacy', 'primary-p1b', '--ack-as-owner'], ctx(home, { cwd: repo }));
     } finally {
       storeLib.openStore = realOpenStore;
     }
@@ -245,7 +245,7 @@ test('P1b (negative control): a genuinely single-row Primary (no siblings, no er
     register(home, repo, 'solo-p1b', undefined);
     seedPartition(home, repo, 'solo-p1b', [{ body: 'solo mail', ts: 1000 }]);
 
-    const rp = cli.run(['inbox', 'read-primary', 'solo-p1b', '--ack-as-owner'], ctx(home, { cwd: repo }));
+    const rp = cli.run(['inbox', 'drain-primary-legacy', 'solo-p1b', '--ack-as-owner'], ctx(home, { cwd: repo }));
     assert.equal(rp.result.ok, true, JSON.stringify(rp.result));
     assert.equal(rp.result.count, 1);
     assert.equal(rp.result.meshGroupUnresolved, false, '"no siblings exist" must stay a silent, non-error fallback');

@@ -230,9 +230,9 @@ test('Item 3 RED/GREEN (end-to-end): buildUnreadSegment must prescribe the ACKIN
 
 test('Item 3 mutation check (buildUnreadSegment): reverting to the bare `inbox read <id>` form reproduces the non-acking-verb defect', () => {
   const liveBefore = fs.readFileSync(CHILD_TURN_HOOK_PATH, 'utf8');
-  const oldStr = "cursor — `node ' + CLI + ' inbox read-primary ' + info.id + '` (anti-hall devswarm CLI). '";
+  const oldStr = "cursor — `node ' + CLI + ' inbox read-primary ' + info.id + '` (anti-hall devswarm CLI)";
   assert.ok(liveBefore.includes(oldStr), 'Item 3 buildUnreadSegment fix line not found verbatim');
-  const buggyStr = "cursor — `node ' + CLI + ' inbox read ' + info.id + '` (anti-hall devswarm CLI). '";
+  const buggyStr = "cursor — `node ' + CLI + ' inbox read ' + info.id + '` (anti-hall devswarm CLI)";
   const copy = scratchHookCopy('anti-hall-fixwave5-item3a');
   try {
     mutateHook(copy.hookPath, oldStr, buggyStr);
@@ -281,9 +281,9 @@ test('Item 3 RED/GREEN (unit): RECEIVE_NUDGE must prescribe read-primary, never 
 
 test('Item 3 mutation check (RECEIVE_NUDGE): reverting to the bare `inbox read <BUILDER_ID>` form reproduces the unpaired non-acking-verb defect', () => {
   const liveBefore = fs.readFileSync(CHILD_TURN_HOOK_PATH, 'utf8');
-  const oldStr = "'Then read AND ack them via `node ' + CLI + ' inbox read-primary ' +\n  '<DEVSWARM_BUILDER_ID>`. Substitute your own DEVSWARM_BUILDER_ID for <...>.';";
+  const oldStr = "'Then read them via `node ' + CLI + ' inbox read-primary ' +\n  '<DEVSWARM_BUILDER_ID>`";
   assert.ok(liveBefore.includes(oldStr), 'Item 3 RECEIVE_NUDGE fix text not found verbatim');
-  const buggyStr = "'Then read them the non-draining way via `node ' + CLI + ' inbox read ' +\n  '<DEVSWARM_BUILDER_ID>`. Substitute your own DEVSWARM_BUILDER_ID for <...>.';";
+  const buggyStr = "'Then read them the non-draining way via `node ' + CLI + ' inbox read ' +\n  '<DEVSWARM_BUILDER_ID>`";
   const copy = scratchHookCopy('anti-hall-fixwave5-item3b');
   try {
     mutateHook(copy.hookPath, oldStr, buggyStr);

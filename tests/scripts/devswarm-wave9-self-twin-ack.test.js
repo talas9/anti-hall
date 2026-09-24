@@ -119,7 +119,7 @@ test('(b) SELF twin: the caller ACKS its own identity twin\'s partition — the 
   try {
     assert.equal(cursorOf(home, repo, 'twin-uuid'), 0, 'precondition: the twin partition is unread');
 
-    const r1 = cli.run(['inbox', 'read-primary', 'caller-primary', '--ack-as-owner'], ctx(home, { cwd: repo }));
+    const r1 = cli.run(['inbox', 'drain-primary-legacy', 'caller-primary', '--ack-as-owner'], ctx(home, { cwd: repo }));
     assert.equal(r1.result.ok, true, JSON.stringify(r1.result));
     const got1 = r1.result.messages.filter((m) => m.body && m.body.startsWith('twin-row-')).map((m) => m.body);
     assert.deepEqual(got1, ['twin-row-1', 'twin-row-2'], 'call #1 delivers the twin\'s unread mail (delivery is unchanged by this fix)');
@@ -130,7 +130,7 @@ test('(b) SELF twin: the caller ACKS its own identity twin\'s partition — the 
       'THE FIX: the SELF twin\'s cursor must advance to the delivered prefix; pre-fix it stayed 0 and the rows re-delivered forever');
 
     // RED marker: pre-fix, call #2 hands back the identical rows.
-    const r2 = cli.run(['inbox', 'read-primary', 'caller-primary', '--ack-as-owner'], ctx(home, { cwd: repo }));
+    const r2 = cli.run(['inbox', 'drain-primary-legacy', 'caller-primary', '--ack-as-owner'], ctx(home, { cwd: repo }));
     assert.equal(r2.result.ok, true, JSON.stringify(r2.result));
     const got2 = r2.result.messages.filter((m) => m.body && m.body.startsWith('twin-row-')).map((m) => m.body);
     assert.deepEqual(got2, [], 'call #2 must deliver NOTHING new — pre-fix it re-delivered twin-row-1/twin-row-2 on every call, forever');
@@ -140,9 +140,9 @@ test('(b) SELF twin: the caller ACKS its own identity twin\'s partition — the 
 test('(b) SELF twin ack is LOSS-FREE: mail that arrives after the ack is still delivered', () => {
   const { home, repo } = selfTwinFixture('lossfree');
   try {
-    cli.run(['inbox', 'read-primary', 'caller-primary', '--ack-as-owner'], ctx(home, { cwd: repo }));
+    cli.run(['inbox', 'drain-primary-legacy', 'caller-primary', '--ack-as-owner'], ctx(home, { cwd: repo }));
     seedPartition(home, repo, 'twin-uuid', [{ body: 'twin-row-3', ts: 3000 }]);
-    const r = cli.run(['inbox', 'read-primary', 'caller-primary', '--ack-as-owner'], ctx(home, { cwd: repo }));
+    const r = cli.run(['inbox', 'drain-primary-legacy', 'caller-primary', '--ack-as-owner'], ctx(home, { cwd: repo }));
     assert.equal(r.result.ok, true, JSON.stringify(r.result));
     const got = r.result.messages.filter((m) => m.body && m.body.startsWith('twin-row-')).map((m) => m.body);
     assert.deepEqual(got, ['twin-row-3'], 'a NEW row on the twin partition is still delivered after the ack — the ack advances, it never skips ahead');
@@ -161,7 +161,7 @@ test('(b) a FOREIGN live sibling is still never ack-drained (the self-twin fix d
     markLive(home, 'foreign-f');
     seedPartition(home, repo, 'foreign-f', [{ body: 'foreign-row', ts: 2000 }]);
 
-    const r = cli.run(['inbox', 'read-primary', 'caller-f', '--ack-as-owner'], ctx(home, { cwd: repo }));
+    const r = cli.run(['inbox', 'drain-primary-legacy', 'caller-f', '--ack-as-owner'], ctx(home, { cwd: repo }));
     assert.equal(r.result.ok, true, JSON.stringify(r.result));
     assert.equal(cursorOf(home, repo, 'foreign-f'), 0,
       'a LIVE foreign sibling\'s cursor is still never advanced by another caller\'s read');
@@ -198,7 +198,7 @@ test('(b+c) WAVE 10: a CAPPED self-twin backlog acks to exactly the delivered pr
     seedPartition(home, repo, 'twin-uuid', rowsFor(250));
     assert.equal(cursorOf(home, repo, 'twin-uuid'), 0, 'precondition: the twin partition is unread');
 
-    const r1 = cli.run(['inbox', 'read-primary', 'caller-primary', '--ack-as-owner'], ctx(home, { cwd: repo }));
+    const r1 = cli.run(['inbox', 'drain-primary-legacy', 'caller-primary', '--ack-as-owner'], ctx(home, { cwd: repo }));
     assert.equal(r1.result.ok, true, JSON.stringify(r1.result));
     const got1 = twinBodies(r1);
     assert.equal(got1.length, CAP, 'the self-twin backlog is capped like any other sibling partition');
@@ -212,7 +212,7 @@ test('(b+c) WAVE 10: a CAPPED self-twin backlog acks to exactly the delivered pr
       'THE INVARIANT: the twin\'s cursor lands on pCursor + CAP — the DELIVERED prefix — never the raw total (250), which would mark the 50 withheld rows read and lose them');
 
     // And a second read makes real forward progress over the withheld slice.
-    const r2 = cli.run(['inbox', 'read-primary', 'caller-primary', '--ack-as-owner'], ctx(home, { cwd: repo }));
+    const r2 = cli.run(['inbox', 'drain-primary-legacy', 'caller-primary', '--ack-as-owner'], ctx(home, { cwd: repo }));
     const got2 = twinBodies(r2);
     assert.equal(got2.length, 50, 'the next read delivers exactly the withheld remainder (250 - 200)');
     assert.ok(got2.includes('twin-row-200') && got2.includes('twin-row-249'),

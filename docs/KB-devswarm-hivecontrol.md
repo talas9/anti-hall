@@ -563,7 +563,7 @@ platform-identical** (both call the same `hivecontrol`):
   into main regardless. The feature still gates the graphify SessionStart/Stop hooks OFF in
   children (`DEVSWARM_SOURCE_BRANCH` non-empty) + adds skill guidance so **only the Primary runs
   graphify, post-merge** (avoids wasted child work). Plan-time check: confirm the Obsidian-docs
-  output (`--obsidian`) also lands under gitignored `graphify-out/`, not a committed path.
+  output (`--obsidian`) also lands under gitignored `graphify-out/`, not a committed path. (Phase 5: `read-primary` / `messages --ack` are read-only — after handling the mail run the returned `ackCommand`, i.e. `inbox ack-primary <id> --receipt <rid>`.)
 
 ### 8.6 Open design questions (resolve before build — task #5)
 
@@ -632,7 +632,7 @@ prose reminders get ignored; only a mechanical trigger works.
 - `hooks/devswarm-child-gate.js` (Stop, **child only**, capped) — forces the child to
   self-report to its parent before going idle.
 - `hooks/devswarm-child-role.js` (SessionStart, **child only**) — Layer-1 self-report
-  reminder (the recovery model; see the `devswarm` skill).
+  reminder (the recovery model; see the `devswarm` skill). (Phase 5: `read-primary` / `messages --ack` are read-only — after handling the mail run the returned `ackCommand`, i.e. `inbox ack-primary <id> --receipt <rid>`.)
 
 **Heartbeat-authorship rule:** heartbeats are ALWAYS written by the working session's own
 turn/hook, NEVER by a background ticker — a daemon-written heartbeat would read "fresh" even
@@ -768,7 +768,9 @@ reminder), and `migrate`. `command-guard` carries a root-anchored `LIGHT_EXCEPTI
   a child that worked <5 min then stopped WITHOUT calling `message-parent` — a turn-START
   heartbeat proves only that a turn began, not that the child reported its stop-state.
   v0.54.1 reverted the freshness check: the gate now ALWAYS demands at least one real report
-  per unchanged blocking state, bounded by the per-window cap `MAX_BLOCKS = 2`
+  per unchanged blocking state. (Phase 5, §47: the caps below are superseded by the shared
+  Stop policy — `stop_hook_active` allows, and MAX_BLOCKS=2 per stable kind per session,
+  re-opened only when the condition clears.) Historical: bounded by the per-window cap `MAX_BLOCKS = 2`
   (`devswarm-child-gate.js` lines 219–221, 87) AND (v0.97.0, defect a55d6b71a76f root cause B)
   a SEPARATE, never-resetting lifetime cap `MAX_BLOCKS_PER_SESSION = 6` — the per-window cap
   re-arms unconditionally every `RESET_MS`, so without the lifetime cap a child stuck in the
@@ -1355,7 +1357,7 @@ transport for DevSwarm coordination — a **REPLACE**, not an additional option.
   `hooks/devswarm-child-turn.js` reads this flag defensively (undefined on an older
   store/summary shape is falsy — pure no-op until this field exists) and surfaces the SAME
   archive-request segment the pre-existing NDJSON-marker scan already produced, deduped so
-  a turn with both signals present never double-pushes the segment.
+  a turn with both signals present never double-pushes the segment. (Phase 5: `read-primary` / `messages --ack` are read-only — after handling the mail run the returned `ackCommand`, i.e. `inbox ack-primary <id> --receipt <rid>`.)
 
 ### 8.7.1 Single-consumer importance (why the read-guard exists)
 
@@ -1471,7 +1473,7 @@ answers" section and its Codex mirror,
   from the plan/intent context already held. Escalate to the human ONLY for a genuine human call
   (destructive/irreversible action, product/scope decision, or an assumption unsafe to make).
   **The escalation ladder is child → parent → human, never child → human.** Reply on the mesh
-  directly to the asking child (`send --to <meshId>`), not a broadcast.
+  directly to the asking child (`send --to <meshId>`), not a broadcast. (Phase 5: `read-primary` / `messages --ack` are read-only — after handling the mail run the returned `ackCommand`, i.e. `inbox ack-primary <id> --receipt <rid>`.)
 
 This reuses only already-shipped, already-documented CLI verbs (`send --to-primary`, `send
 --to <meshId>`, `inbox read-primary` — all in the CLI table at §8.8) — no new subcommand, no
@@ -1481,7 +1483,7 @@ distinct from the mechanically-enforced guard branches (command-guard's native-S
 the Stop-side child gate, etc.) documented throughout the rest of §8.7. Nothing currently
 mechanically verifies a child actually included all five required parts of a blocking-question
 message, or that a parent actually replied before a child's stated deadline — that enforcement
-gap is honest and open, not silently assumed closed.
+gap is honest and open, not silently assumed closed. (Phase 5: `read-primary` / `messages --ack` are read-only — after handling the mail run the returned `ackCommand`, i.e. `inbox ack-primary <id> --receipt <rid>`.)
 
 ---
 
@@ -1522,7 +1524,7 @@ gap is honest and open, not silently assumed closed.
 every process reading under that id shared ONE read position. Whichever instance acked first
 consumed the mail for all of them: a second instance's `read-primary` returned 0 while the
 cursor had already advanced past rows it was never shown. Twin rows (a meshId row and its uuid
-twin) make this routine rather than exotic.
+twin) make this routine rather than exotic. (Phase 5: `read-primary` / `messages --ack` are read-only — after handling the mail run the returned `ackCommand`, i.e. `inbox ack-primary <id> --receipt <rid>`.)
 
 **The model.** Each INSTANCE — one OS process identity, `deriveInstanceNonce`, stable across
 every CLI invocation from one harness session, so a main-thread turn, a cron turn and a Monitor
@@ -1752,14 +1754,16 @@ line-for-line against the current `plugins/anti-hall/scripts/devswarm.js`.
 |---|---|---|
 | `register <id> --worktree P --session S [--inbox NDJSON] [--cursor P] [--nudge ARGV]...` | Write/update a workspace descriptor (`workspaces/<id>.json`) + upsert the store registry. `--worktree`/`--session` are REQUIRED for a fresh registration — a descriptor missing either is invisible to the supervisor's `readDescriptors` (which filters on both), so `register` validates the MERGED result and fails closed rather than silently writing a phantom registration. Initializes the durable cursor to `0` if one doesn't already exist (non-destructive — never clobbers an existing cursor). | `cmdRegister` L254–294, dispatch L690–695 |
 | `ensure <id> [--worktree P] [--session S] ...` | Idempotent `register`: if a descriptor already exists it is LEFT UNTOUCHED (only the store registry is re-upserted, refreshing the `summary.json` projection); only a genuinely-absent descriptor goes through full `register` validation. `inbox pull` calls this internally to auto-create a child's descriptor before draining. | `cmdRegister(..., {requireNew:true})` L254–294, dispatch L696–701 |
-| `register-primary [--worktree P] [--session S] [--inbox NDJSON] [--cursor P] [--force]` | Register the CURRENT worktree's Primary/parent descriptor under its PER-WORKTREE id `primary-<worktreeHash>` (§8.7's per-project identity — never the old collision-prone hardcoded `'primary'`). `--worktree` defaults to `git rev-parse --show-toplevel` of cwd; `--session` defaults to `CLAUDE_CODE_SESSION_ID` env (the real Claude Code session id, when set — Task #10, closes the "Primary rows never resolve a transcript" gap), then `DEVSWARM_BUILDER_ID` env, then the derived id; `--cursor` defaults to `cursors/<id>.json` (the durable ACK cursor `inbox messages --ack`/`read-primary` advance — a SEPARATE cursor namespace from a child's own descriptor `cursorPath`); `--inbox` optionally points `migrate` at a legacy NDJSON source to fold into this partition. **LIVE SIBLING PRIMARY GUARD (defect 7d0a948031cd):** ONE Primary per project — a second `register-primary` for this same worktree from a DIFFERENT, currently-live session is refused (`ok:false, reason:'live-primary-conflict'`, exit code 2) rather than silently overwriting the existing row's `sessionId`; pass `--force` to register anyway. Never refused for a same-session restart (re-registering with the same `sessionId` is always a plain upsert), and never refused when the existing row's session is not provably live (`isRoutingLiveRowStrict` finds nothing live, or any probe error — fail-open toward the pre-fix upsert). | `cmdRegisterPrimary` L476–493, dispatch L752–755 |
+| `register-primary [--worktree P] [--session S] [--inbox NDJSON] [--cursor P] [--force]` | Register the CURRENT worktree's Primary/parent descriptor under its PER-WORKTREE id `primary-<worktreeHash>` (§8.7's per-project identity — never the old collision-prone hardcoded `'primary'`). `--worktree` defaults to `git rev-parse --show-toplevel` of cwd; `--session` defaults to `CLAUDE_CODE_SESSION_ID` env (the real Claude Code session id, when set — Task #10, closes the "Primary rows never resolve a transcript" gap), then `DEVSWARM_BUILDER_ID` env, then the derived id; `--cursor` defaults to `cursors/<id>.json` (the durable ACK cursor `inbox messages --ack`/`read-primary` advance — a SEPARATE cursor namespace from a child's own descriptor `cursorPath`); `--inbox` optionally points `migrate` at a legacy NDJSON source to fold into this partition. **LIVE SIBLING PRIMARY GUARD (defect 7d0a948031cd):** ONE Primary per project — a second `register-primary` for this same worktree from a DIFFERENT, currently-live session is refused (`ok:false, reason:'live-primary-conflict'`, exit code 2) rather than silently overwriting the existing row's `sessionId`; pass `--force` to register anyway. Never refused for a same-session restart (re-registering with the same `sessionId` is always a plain upsert), and never refused when the existing row's session is not provably live (`isRoutingLiveRowStrict` finds nothing live, or any probe error — fail-open toward the pre-fix upsert). (Phase 5: `read-primary` / `messages --ack` are read-only — after handling the mail run the returned `ackCommand`, i.e. `inbox ack-primary <id> --receipt <rid>`.) | `cmdRegisterPrimary` L476–493, dispatch L752–755 |
 | `heartbeat <id> [--progress N] [--phase X] [--wip T]... [--blockers T]... [--session S]` | Write a turn-authored heartbeat (`heartbeats/<id>.json`). Only asserts fields the caller actually supplied — NEVER fabricates `progress`/`phase`/`wip`/`blockers` (absent input = `null`/`[]` on write, not a guess). Consumer/session-invoked ONLY — the heartbeat-authorship rule (§8.7) forbids a background ticker ever writing one. | `cmdHeartbeat` L296–325, dispatch L702–706 |
 | `inbox pull <id> [--session S]` | CHILD-side reception drain. Auto-`ensure`s the descriptor, then ONE bounded guard-safe pull: non-destructive `message-count` gate FIRST (count `0` → returns without ever calling `read-messages`); on count `>0`, exactly ONE bounded `read-messages` (10 s finite timeout, never the blocking `monitor`); appends the batch to the durable inbox NDJSON in one atomic write, idempotent by content hash; feeds the store-parity projection with the same hash. | `cmdInboxPull` L335–362 → `companion/lib/devswarm-pull.js` `pullOnce` L177–290 |
 | `inbox read <id>` | CHILD-side cursor read: the unread slice of the durable inbox NDJSON past the descriptor's own `cursorPath`. Requires an existing descriptor with `inboxPath` (`register`/`ensure`/`inbox pull` all create one). | `cmdInbox` 'read' branch L450–453 |
 | `inbox count <id>` | CHILD-side non-destructive unread COUNT only (no message bodies) against the descriptor's inbox. | `cmdInbox` 'count' branch L446–449 |
-| `inbox ack <id> [--to N]` | Advance the descriptor's durable cursor. No `--to` = ack-all (cursor := current total); `--to N` sets an absolute count, clamped to `[0, total]` so an over-ack can never swallow messages that arrive later. This is the parent-gate's non-skip CLEAR path. CHILD-side only (operates on the descriptor's own `cursorPath`) — no `callerIdentity` check here, since a descriptor-scoped cursor has no cross-workspace hazard; that hazard lives in `inbox messages --ack`/`read-primary` below, which is store-scoped and keyed by an arbitrary `<id>`. | `cmdInbox` 'ack' branch L454–466 |
-| `inbox messages <id> [--unread] [--ack] [--ack-as-owner] [--json]` | **Primary/store non-destructive READ path.** Reads message BODIES directly from the store (`store.listMessages`) — never touches the native queue, needs NO descriptor (rows are keyed by workspace id regardless of registration, so it works even for an id nothing ever `register`ed). `--unread` returns only messages past the durable ACK cursor at `cursors/<id>.json` (note: this is a DIFFERENT cursor file/namespace than a child descriptor's own `cursorPath` used by `inbox read`/`ack`). `--ack` additionally advances that cursor to the current total in the same call (equivalent to `read-primary`) — **ack-ownership guard (v0.56.0, P0-hardened):** before ANY `--ack`, `cmdInboxMessages` calls `callerIdentity(env, cwd)` and refuses (`ok:false`, cursor left untouched) unless the caller's own identity equals `<id>`, UNLESS `--ack-as-owner` is passed explicitly to override for a legitimate cross-workspace ack (e.g. a supervisor clearing a dead workspace's backlog on its behalf). `callerIdentity` treats **cwd as ground truth**: when cwd resolves to a real git worktree, identity is derived from that worktree and a `DEVSWARM_BUILDER_ID` env var naming a *different* workspace is IGNORED — never trusted to override — closing the env-spoof path where a workspace could set `DEVSWARM_BUILDER_ID=<other-id>` to impersonate another workspace and ack its cursor. `DEVSWARM_BUILDER_ID` is honored as a declared identity only when it can't contradict cwd (cwd already agrees, or cwd resolves to no worktree at all). `--json` is accepted for CLI-invocation parity and is otherwise a no-op — output is always JSON regardless. | `cmdInboxMessages` L393–433, `callerIdentity` L124–139, dispatch via `cmdInbox` L438 |
-| `inbox read-primary <id> [--ack-as-owner]` | Sugar for `inbox messages <id> --unread --ack` under one name — "read what's unread, then advance the ACK cursor," the Primary's one-shot ergonomic. Subject to the SAME ack-ownership guard as `inbox messages --ack` above (it sets `{ack:true}` internally, so `callerIdentity` is checked identically; `--ack-as-owner` overrides identically). | `cmdInboxMessages(..., {ack:true})` L393–433, dispatch L439 |
+| `inbox ack <id> [--to N]` | Advance the descriptor's durable cursor. No `--to` = ack-all (cursor := current total); `--to N` sets an absolute count, clamped to `[0, total]` so an over-ack can never swallow messages that arrive later. This is the parent-gate's non-skip CLEAR path. CHILD-side only (operates on the descriptor's own `cursorPath`) — no `callerIdentity` check here, since a descriptor-scoped cursor has no cross-workspace hazard; that hazard lives in `inbox messages --ack`/`read-primary` below, which is store-scoped and keyed by an arbitrary `<id>`. (Phase 5: `read-primary` / `messages --ack` are read-only — after handling the mail run the returned `ackCommand`, i.e. `inbox ack-primary <id> --receipt <rid>`.) | `cmdInbox` 'ack' branch L454–466 |
+| `inbox messages <id> [--unread] [--ack] [--ack-as-owner] [--json]` | **Primary/store non-destructive READ path.** Reads message BODIES directly from the store (`store.listMessages`) — never touches the native queue, needs NO descriptor (rows are keyed by workspace id regardless of registration, so it works even for an id nothing ever `register`ed). `--unread` returns only messages past the durable ACK cursor at `cursors/<id>.json` (note: this is a DIFFERENT cursor file/namespace than a child descriptor's own `cursorPath` used by `inbox read`/`ack`). `--ack` (Phase 5) no longer advances anything: it returns a read receipt, and the returned `ackCommand` (`inbox ack-primary <id> --receipt <rid>`) advances exactly what was read (`--legacy-ack-now` keeps the old in-call ack for one release) — **ack-ownership guard (v0.56.0, P0-hardened):** before ANY `--ack`, `cmdInboxMessages` calls `callerIdentity(env, cwd)` and refuses (`ok:false`, cursor left untouched) unless the caller's own identity equals `<id>`, UNLESS `--ack-as-owner` is passed explicitly to override for a legitimate cross-workspace ack (e.g. a supervisor clearing a dead workspace's backlog on its behalf). `callerIdentity` treats **cwd as ground truth**: when cwd resolves to a real git worktree, identity is derived from that worktree and a `DEVSWARM_BUILDER_ID` env var naming a *different* workspace is IGNORED — never trusted to override — closing the env-spoof path where a workspace could set `DEVSWARM_BUILDER_ID=<other-id>` to impersonate another workspace and ack its cursor. `DEVSWARM_BUILDER_ID` is honored as a declared identity only when it can't contradict cwd (cwd already agrees, or cwd resolves to no worktree at all). `--json` is accepted for CLI-invocation parity and is otherwise a no-op — output is always JSON regardless. | `cmdInboxMessages` L393–433, `callerIdentity` L124–139, dispatch via `cmdInbox` L438 |
+| `inbox read-primary <id> [--ack-as-owner]` | **Read-only since Phase 5 (§47).** The unread union view with the same caps and ownership guard; acks nothing, writes a read receipt and returns `readReceiptId` + one exact `ackCommand`. | `cmdInboxMessages(..., {ack:true, deferAck:true})` |
+| `inbox ack-primary <id> --receipt <rid> [--ack-as-owner]` | The only cursor mutation of the split read path: applies exactly the receipt's ack (MAX-only, idempotent); fails closed with no write on a missing/unknown/expired/other-reader receipt or a non-owner caller. | `cmdInboxAckPrimary` → `applyReadAckOps` |
+| `inbox drain-primary-legacy <id> [--ack-as-owner]` | One-release compatibility: the old same-call read-and-ack (`--legacy-ack-now` on `read-primary`/`messages --ack` is the same). | `cmdInboxMessages(..., {ack:true})` |
 | `wake-directive <id>` | On-demand REPRINT of the full SessionStart idle-wake directive (`lib/devswarm-wake.js`'s `wakeDirective`) for `<id>`, with the generic `<DEVSWARM_BUILDER_ID>` placeholder substituted for the concrete id — copy-runnable as-is. This is the command the trimmed Stop-gate `MAILBOX WAKE CHECK` re-verify text (`wakeReassert`, fixed text ≤ 360 chars plus one embedded CLI path) points at when it names something as missing; the Stop gate no longer re-issues `CronCreate` itself, it sends the agent back here for the full CronList/CronCreate + Monitor-arm prompt. Returns `{ok, id, isChild, agent, directive}` — `directive` is `''` (never an error) for an unknown/absent `DEVSWARM_AI_AGENT`, matching `wakeDirective`'s own fail-open contract. | `cmdWakeDirective` L11211–11225, dispatch L13477 |
 | `workspaces list` | Derive + emit the `summary.json` projection: `{requiredGates, count, workspaces: {...}}`, one entry per registered workspace with `total`/`cursor`/`unread`/`gates`/`archive_ready`. | `cmdWorkspacesList` L495–514, dispatch L714–718 |
 | `gate <id> --set CSV --clear CSV [--by NAME]` | Mark/unmark named completion gates (append-only in the store — a set/clear appends a new timestamped row; current value = latest row per name). anti-hall is agnostic about what any gate MEANS — the consumer defines and sets them (default required set for `archive_ready`: `done,merged,tests_passed`, override via `ANTIHALL_DEVSWARM_REQUIRED_GATES`). `--by` names the setter (default `devswarm-cli`). | `cmdGate` L516–538, dispatch L719–724 |
@@ -1790,11 +1794,11 @@ line-for-line against the current `plugins/anti-hall/scripts/devswarm.js`.
 - Mesh message rows — `instanceNonce` (defect d3d571495bf6): a per-OS-process discriminator (`anc:<ancestor pid>:<startedAt>`, or `self:<pid>:<startedAt>` with no resolvable harness ancestor) stamped on every outbound row via `deriveInstanceNonce`, so two live processes sharing one `CLAUDE_CODE_SESSION_ID` (e.g. a `claude --resume` racing its own prior process) no longer write indistinguishable rows. Nullable, additive, and deliberately EXCLUDED from `meshMessageHash`/the dedup hash — a legacy row simply reads back `null`. `shortInstanceNonce(nonce)` (the shared display helper every consumer below uses) renders it down to a stable 6-hex-char digest (`sha1(nonce).slice(0,6)`) — short enough to eyeball, deterministic, never the raw pid-bearing nonce.
 - `inbox read-primary`/`inbox messages` rows — `instanceNonceShort` + `fromLine` (defect d3d571495bf6, item a): purely additive, present ONLY on a row that carries an `instanceNonce` — a row without one renders byte-identical to before this fix. `instanceNonceShort` is the shared short digest above; `fromLine` is the human-readable `<sender>@<short>` rendering, so two live processes both sending under the same `sender` id are visibly distinguishable per message instead of reading as one indistinguishable sender.
 - `roster` — `instances` + hint `instance-split`, and `phantom` (defects d3d571495bf6 / 298b79969409): `instances` (item b) is the count of DISTINCT `instanceNonce` values seen on a row's own outbound broadcast/heartbeat rows within the shared liveness freshness window (`DEFAULT_HEARTBEAT_FRESH_MS`, the SAME window `hasFreshHeartbeat` uses); present ONLY when at least one instanceNonce was seen (a row with none carries no `instances` key at all — byte-identical to the pre-fix shape). `> 1` additionally pushes the `instance-split` hint, meaning two live OS processes are both sending mesh traffic under one sessionId/row identity. `phantom` is the unrelated pre-existing hint: it fires when a row would otherwise carry no dormancy hint at all (reading as active) but the shared `computeRowLive` predicate — the SAME one `diagnose`'s `live` field now uses — finds no real sessionId and no fresh heartbeat, closing a case where a child trusted an empty roster hint and stranded mail on a row `diagnose` already reported as `live:false`. Neither hint is ever applied to native (`source:'native'`) children.
-- `diagnose` — `instanceSplits[]` (item c): `[{id, sessionId, instances, nonces:[<short>...]}]` for every registry row whose `instances` count (SAME `computeInstanceNonceCounts` source and freshness window as `roster`'s hint above, so the two verbs can never disagree) is `> 1` — rows sharing a mesh id whose divergence is only their `instanceNonce` (same underlying identity, different live OS process), distinct from the pre-existing `splits`/`deadSplits`/`mixedSplits` (which key on live registry rows, not process identity). `nonces[]` holds the short digest of each distinct nonce, never the raw value.
+- `diagnose` — `instanceSplits[]` (item c): `[{id, sessionId, instances, nonces:[<short>...]}]` for every registry row whose `instances` count (SAME `computeInstanceNonceCounts` source and freshness window as `roster`'s hint above, so the two verbs can never disagree) is `> 1` — rows sharing a mesh id whose divergence is only their `instanceNonce` (same underlying identity, different live OS process), distinct from the pre-existing `splits`/`deadSplits`/`mixedSplits` (which key on live registry rows, not process identity). `nonces[]` holds the short digest of each distinct nonce, never the raw value. (Phase 5: `read-primary` / `messages --ack` are read-only — after handling the mail run the returned `ackCommand`, i.e. `inbox ack-primary <id> --receipt <rid>`.)
 
-**Read-side exact-id-wins rule (defect 1932b53a3ace):** `resolveReadArgToId` (the shared resolver behind `inbox count`/`read`/`ack`/`messages`/`read-primary`/`peek-primary`) now checks for a registry row whose id EXACTLY equals the caller's `arg` FIRST (no liveness filter applied — a dead/dormant row's own exact id still wins as a no-op, matching every other exact-id-match path in this file), before ever delegating to `resolveSendTarget`'s meshId/redirect resolution — an exact registered id always wins as a no-op and is NEVER redirected to a different row, even when that same `arg` also happens to collide with a DIFFERENT row's derived meshId (a `register-primary` row and a same-worktree "twin" both derive the identical meshId from `canonicalMeshId`, since that IS `primaryWorkspaceId`). Pre-fix, a read could silently land on the colliding row instead of the row the caller literally named — e.g. `inbox ack <primary-id>` consuming a same-worktree twin's unread mail instead of refusing on the Primary's own (inbox-path-less) partition. `send --to` keeps its own, intentionally different behavior: an exact-id arg that ALSO collides with a distinct row's meshId still refuses as `ambiguous-target` there (a write must never silently guess which of two colliding partitions the caller meant) — reads and writes deliberately diverge on this one case.
+**Read-side exact-id-wins rule (defect 1932b53a3ace):** `resolveReadArgToId` (the shared resolver behind `inbox count`/`read`/`ack`/`messages`/`read-primary`/`peek-primary`) now checks for a registry row whose id EXACTLY equals the caller's `arg` FIRST (no liveness filter applied — a dead/dormant row's own exact id still wins as a no-op, matching every other exact-id-match path in this file), before ever delegating to `resolveSendTarget`'s meshId/redirect resolution — an exact registered id always wins as a no-op and is NEVER redirected to a different row, even when that same `arg` also happens to collide with a DIFFERENT row's derived meshId (a `register-primary` row and a same-worktree "twin" both derive the identical meshId from `canonicalMeshId`, since that IS `primaryWorkspaceId`). Pre-fix, a read could silently land on the colliding row instead of the row the caller literally named — e.g. `inbox ack <primary-id>` consuming a same-worktree twin's unread mail instead of refusing on the Primary's own (inbox-path-less) partition. `send --to` keeps its own, intentionally different behavior: an exact-id arg that ALSO collides with a distinct row's meshId still refuses as `ambiguous-target` there (a write must never silently guess which of two colliding partitions the caller meant) — reads and writes deliberately diverge on this one case. (Phase 5: `read-primary` / `messages --ack` are read-only — after handling the mail run the returned `ackCommand`, i.e. `inbox ack-primary <id> --receipt <rid>`.)
 
-**Store-unavailable read semantics, `storeUnavailableReason` (defect 902d3c5e7531, extended):** a store that genuinely EXISTS but cannot be READ (`EACCES` on the store dir, `ENOTDIR`/`EISDIR` from a journal path replaced by/holding a regular file, a corrupt/unparseable sqlite header) is no longer silently indistinguishable from a genuinely empty/never-written store. The journal backend's internal read helper now distinguishes `ENOENT` (no store yet — stays fail-open, `[]`) from every other fs error (recorded PER FILE on the store handle, surfaced via `getReadError()`/`getReadErrors()`); the sqlite backend wraps a genuine open failure (`mkdirSync`/`DatabaseSync` throwing) into the same typed shape and, for call-site parity, exposes both getters as no-ops (`null`/`[]`) since it has no deferred read path to report. Every read verb (`count`/`read`/`ack`/`messages`/`read-primary`/`peek-primary`) now reports `storeUnavailable` as a plain BOOLEAN, with the underlying error code in the sibling top-level field `storeUnavailableReason` (string|null — e.g. `"EACCES"`, `"ENOTDIR"`, or node:sqlite's own `"ERR_SQLITE_ERROR"`), and `known:false` in this case; `count`/`read`/`ack` additionally keep the fuller refusal object (`reason`/`error`/`registeredRepoKey`/`callerRepoKey`/`storeUnavailableReason`) under a separate `storeUnavailableDetail` key, never nested inside `storeUnavailable` itself. `emitKnownWarning`'s stderr line now names `store-unavailable (<code>)` instead of the tautological `storeUnavailable (store-unavailable)`. A never-written store dir (`ENOENT`) is unaffected — still refused as the pre-existing, unrelated `unregistered-workspace` reason when nothing else backs the id. The claim above is now genuinely blanket for the six READ VERBS (`count`/`read`/`ack`/`messages`/`read-primary`/`peek-primary`): EVERY read path among those that could otherwise mistake an unreadable registry for a genuinely-absent one re-probes `getReadError()` right after its own `listRegistry()` call, not just before it — this closes the two remaining gaps where `listRegistry()`'s own EACCES-swallowing (returns `[]` rather than throwing) let a real store outage read as a security/existence refusal instead: (1) the `read-primary`/`inbox messages --ack` ownership check (`doAck && !ackAsOwner`), which calls `resolveMeshTarget` -> `listRegistry()` to resolve the caller's own registry row BEFORE deciding ownership — an unreadable registry there used to report `caller-not-registered` for a caller that in fact owns `id`; and (2) the no-descriptor existence guard (`resolveWorkspaceStoreForRead`) for a totally unregistered id, whose own `listRegistry()` call could similarly mask a genuine registry outage as `unregistered-workspace`. Both now report `store-unavailable`/`storeUnavailableReason` instead. **Gap closed in 0.98.2 (defect 77d5a5bbf614):** `roster`, `diagnose`, and `healthcheck` no longer read the registry silently fail-open. `cmdRoster` (`devswarm.js:11762`) and `computeDiagnosis` (`devswarm.js:11981`) each probe `pickStoreReadErrorScope`/`getReadError()` right after their own `listRegistry()`/`computeSummary()` call and report `known:false`, `storeUnavailable:true`, `storeUnavailableReason:<code>`, `storeUnavailableScope`; `diagnose` and `healthcheck` (`cmdHealthcheck`, `devswarm.js:12323`) additionally flip `degraded:true` and set `status:'store-unavailable'` (`devswarm.js:12353`), so an unreadable `registry.ndjson` can no longer make `healthcheck` report `ok:true`.
+**Store-unavailable read semantics, `storeUnavailableReason` (defect 902d3c5e7531, extended):** a store that genuinely EXISTS but cannot be READ (`EACCES` on the store dir, `ENOTDIR`/`EISDIR` from a journal path replaced by/holding a regular file, a corrupt/unparseable sqlite header) is no longer silently indistinguishable from a genuinely empty/never-written store. The journal backend's internal read helper now distinguishes `ENOENT` (no store yet — stays fail-open, `[]`) from every other fs error (recorded PER FILE on the store handle, surfaced via `getReadError()`/`getReadErrors()`); the sqlite backend wraps a genuine open failure (`mkdirSync`/`DatabaseSync` throwing) into the same typed shape and, for call-site parity, exposes both getters as no-ops (`null`/`[]`) since it has no deferred read path to report. Every read verb (`count`/`read`/`ack`/`messages`/`read-primary`/`peek-primary`) now reports `storeUnavailable` as a plain BOOLEAN, with the underlying error code in the sibling top-level field `storeUnavailableReason` (string|null — e.g. `"EACCES"`, `"ENOTDIR"`, or node:sqlite's own `"ERR_SQLITE_ERROR"`), and `known:false` in this case; `count`/`read`/`ack` additionally keep the fuller refusal object (`reason`/`error`/`registeredRepoKey`/`callerRepoKey`/`storeUnavailableReason`) under a separate `storeUnavailableDetail` key, never nested inside `storeUnavailable` itself. `emitKnownWarning`'s stderr line now names `store-unavailable (<code>)` instead of the tautological `storeUnavailable (store-unavailable)`. A never-written store dir (`ENOENT`) is unaffected — still refused as the pre-existing, unrelated `unregistered-workspace` reason when nothing else backs the id. The claim above is now genuinely blanket for the six READ VERBS (`count`/`read`/`ack`/`messages`/`read-primary`/`peek-primary`): EVERY read path among those that could otherwise mistake an unreadable registry for a genuinely-absent one re-probes `getReadError()` right after its own `listRegistry()` call, not just before it — this closes the two remaining gaps where `listRegistry()`'s own EACCES-swallowing (returns `[]` rather than throwing) let a real store outage read as a security/existence refusal instead: (1) the `read-primary`/`inbox messages --ack` ownership check (`doAck && !ackAsOwner`), which calls `resolveMeshTarget` -> `listRegistry()` to resolve the caller's own registry row BEFORE deciding ownership — an unreadable registry there used to report `caller-not-registered` for a caller that in fact owns `id`; and (2) the no-descriptor existence guard (`resolveWorkspaceStoreForRead`) for a totally unregistered id, whose own `listRegistry()` call could similarly mask a genuine registry outage as `unregistered-workspace`. Both now report `store-unavailable`/`storeUnavailableReason` instead. **Gap closed in 0.98.2 (defect 77d5a5bbf614):** `roster`, `diagnose`, and `healthcheck` no longer read the registry silently fail-open. `cmdRoster` (`devswarm.js:11762`) and `computeDiagnosis` (`devswarm.js:11981`) each probe `pickStoreReadErrorScope`/`getReadError()` right after their own `listRegistry()`/`computeSummary()` call and report `known:false`, `storeUnavailable:true`, `storeUnavailableReason:<code>`, `storeUnavailableScope`; `diagnose` and `healthcheck` (`cmdHealthcheck`, `devswarm.js:12323`) additionally flip `degraded:true` and set `status:'store-unavailable'` (`devswarm.js:12353`), so an unreadable `registry.ndjson` can no longer make `healthcheck` report `ok:true`. (Phase 5: `read-primary` / `messages --ack` are read-only — after handling the mail run the returned `ackCommand`, i.e. `inbox ack-primary <id> --receipt <rid>`.)
 
 **Retired-sender ack hint corrected to `--ack-as-owner` (defect items 3, fl-wave4):** the INFORMATIONAL retired-sender hint in both `devswarm-parent-gate.js` (`buildInformationalSegment`) and `devswarm-parent-inbox.js` (the own-unread informational renderer) told the Primary to run plain `inbox ack <id>` — which fails ownership for a genuinely retired sender (no live owner to ack as) and never actually clears the hint. Both now say `inbox ack <id> --ack-as-owner`, matching the sanctioned cross-workspace-ack override `devswarm-parent-gate.js`'s own gone-worktree remediation text already used.
 
@@ -1810,7 +1814,7 @@ registry row; the CLI reported `known:false`), synthesised a self-row for it wit
 store-existence check, and an unconditional survivor-force transplanted the real Primary's
 unread count onto that phantom id — printing a `read-primary <id>` command that could not run.
 The same wrong id also defeated the self-sent filter (`row.sender === own.id`), so a child's
-count swung between its filtered and unfiltered values depending on the firing cwd.
+count swung between its filtered and unfiltered values depending on the firing cwd. (Phase 5: `read-primary` / `messages --ack` are read-only — after handling the mail run the returned `ackCommand`, i.e. `inbox ack-primary <id> --receipt <rid>`.)
 
 `companion/lib/devswarm-repokey.js` now exports `resolveWorktreeNoSpawn(startDir)`: a ZERO-SPAWN,
 submodule-aware toplevel resolver. It distinguishes the two `.git`-file shapes without invoking
@@ -1842,8 +1846,10 @@ node scripts/devswarm.js inbox read child-1
 node scripts/devswarm.js inbox ack child-1          # ack-all once processed
 
 # Primary reads what its OWN reception queue collected (no native call, no descriptor
-# needed — the store is keyed by id) and acks it in one shot:
+# needed — the store is keyed by id). read-primary is READ-ONLY: it returns a
+# readReceiptId + ackCommand; run that command after handling the mail:
 node scripts/devswarm.js inbox read-primary primary-<hash>
+node scripts/devswarm.js inbox ack-primary primary-<hash> --receipt <readReceiptId>
 
 # Consumer marks completion gates; anti-hall derives archive_ready once all are set:
 node scripts/devswarm.js gate child-1 --set done,merged,tests_passed
@@ -4102,3 +4108,107 @@ seeded sweep rarely archives.
 **Codex parity:** `hooks/`, `companion/` and `scripts/` are shared, unforked files — the
 same behavior applies to Codex sessions; the Codex doctor skill documents the read-only
 default and `--repair`.
+
+## §47 — Delivery WAL, read/ack split, shared Stop policy, twin routing (mesh redesign Phase 5)
+
+**Delivery WAL around the destructive native reads.** `hivecontrol workspace
+read-messages` (child `inbox pull`) and `workspace monitor` (ingest daemon) pop
+messages off the native queue as they print them. The raw stdout of every such
+read is now appended and fsynced to ONE append-only per-reader file,
+`~/.anti-hall/devswarm/wal/{pull,monitor}-<reader>.ndjson`, BEFORE it is parsed or
+written anywhere else (`companion/lib/devswarm-read-wal.js`). Each batch is closed by
+a `done` record (the destination is durable — the pull inbox NDJSON is fsynced) or a
+`quarantine` record (unparseable or short; the raw bytes stay in the WAL, uncapped
+and never deleted). Every pull, and every ingest daemon start and retry, replays the
+still-open batches first, through the same parser, and dedupes on the existing content
+hash, so a crash anywhere after the WAL fsync re-delivers and never loses. While a batch
+cannot be replayed (for example a store lock is busy), no new destructive read is
+issued for that reader. A full WAL with nothing pending is renamed into `wal/archive/`,
+never deleted.
+
+**Known limitation — residual window, pending a native peek/ack API (DevSwarm
+vendor ask).** hivecontrol dequeues inside its own process before any byte reaches
+anti-hall, and `spawnSync` holds stdout in memory until the child exits. A crash in
+that span loses the batch, and nothing on our side can close it. The window is kept
+as small as possible: the RAW bytes are written and fsynced to the WAL the moment
+`spawnSync` returns. That happens before the exit-status check (a killed read can
+still carry popped stdout) and before any parse or validation.
+
+**Second known limitation — a disk that fails between the preflight and the
+write cannot be made durable from userland.** If both the WAL write and the spill
+write then fail, the raw bytes go to stderr and to a last-resort file under
+`os.tmpdir()` (`anti-hall-wal-lastresort-<hash>-<entry>.json`, fsync attempted). The
+reader stays blocked, with a loud `walBlocked` / `inbox tick` `walAlerts` / `doctor`
+alert, until the bytes are absorbed back into a writable WAL.
+
+**Fail closed.** Before every destructive read the reader checks that BOTH the WAL
+and its spill destination can be appended and fsynced (open plus fsync, no bytes
+written). If it cannot, the read
+is refused. If the batch write fails after a read, the raw bytes go to a separate
+fsynced spill file (`~/.anti-hall/devswarm/wal-spill/<wal>/<entry>.json`), and the
+reader stays blocked until the spill is absorbed back into a writable WAL. Nothing
+is parsed and dropped. `inbox tick` then reports `known:false` plus `walBlocked`.
+
+**Prior reader keys and health.** Every batch records its reader's worktree, so
+replay also adopts another WAL of the same kind whose open batches all name the
+same worktree. Adoption first CLAIMS that WAL: it takes the prior reader's own lock,
+then does an atomic rename into `wal/adopted/<reader>/`. Of two concurrent adopters,
+the loser gets ENOENT and skips, so a batch is applied exactly once. Replay then
+dedupes on the destination partition's content hash. A reader whose key changed (identity rekey, new builder id) never
+strands its WAL. A pending batch older than 1h, pending bytes above 1 MiB, a spill
+or an unreadable WAL raises an alert in `inbox tick` (`walAlerts`) and a `doctor`
+WARN. Nothing is ever dropped for size or age.
+
+**Torn journal rows (#26).** A crash mid-append can leave a final row with no `\n`.
+The journal store's append (and the pull inbox append) now write a leading `\n` when
+the file does not end in one, so the next record lands whole. Readers already skip
+the torn line; it is not salvaged (it was lost at crash time).
+
+**Read/ack split.** `inbox read-primary <id>` (and `inbox messages <id> --ack`) no
+longer ack. They compute the exact ack the read implies, using the same unread
+window, caps and ownership gate as the old same-call drain, and store it as a read
+receipt (`~/.anti-hall/devswarm/read-receipts/<id>/<rid>.json`). The output carries
+`readReceiptId` and one exact `ackCommand`:
+
+```
+node scripts/devswarm.js inbox read-primary <id>         # read-only
+# ... handle the messages ...
+node scripts/devswarm.js inbox ack-primary <id> --receipt <rid>
+```
+
+`ack-primary` is the only cursor mutation. It advances exactly what that read
+returned. Every write is MAX-only, so re-applying a receipt, or applying it late, is a
+no-op, and mail that arrived after the read stays unread. It fails closed with no
+write on a missing, unknown or expired receipt (24h), a receipt issued to another
+reader, or a caller that does not own `<id>` (`--ack-as-owner` overrides). A sibling
+whose owner became live between the read and the ack gets only the caller's seen
+watermark, never its own cursor. `inbox drain-primary-legacy <id>` (and
+`--legacy-ack-now`) keeps the old same-call read-and-ack for one deprecation release.
+No environment variable restores it. Hook, wake and Stop texts now say "drain = read,
+consume, ack".
+
+**Shared Stop policy (#14, `hooks/lib/stop-policy.js`).** This applies to both
+`devswarm-parent-gate.js` and `devswarm-child-gate.js`:
+- `stop_hook_active: true` allows the stop immediately, before any state write or
+  probe. Codex's Stop payload carries the same field.
+- The cap is keyed by a STABLE block kind, never by unread counts or message
+  content. The parent's kinds are its own mailbox and children. The child's kinds are
+  `heartbeat-report` and `inbox` (known or UNKNOWN unread, so an unknown count still
+  blocks, with a reason). Mail landing mid-drain no longer re-opens the budget. A
+  kind's budget re-opens only when its condition is observed cleared.
+- Caps: parent 3 + one escalation, then quiet; child 2 per kind. The child's 5-minute
+  re-arm window and its lifetime-6 counter are gone.
+
+**Send routing to a stale twin (#6).** `send --to <exact id>` used to deliver into
+that partition even when the row was a stale twin: a row carrying another live
+row's sessionId while it sits in a different worktree. `send` now reroutes to that
+live same-session row, and only on proof. Proof means the addressed row is not
+strictly live, or `identity.sessionWorktreeCoherent` says its session runs elsewhere,
+AND another row with the same real sessionId is strictly live and has a worktree that the identity predicate positively proves coherent (`=== true`; an unknown or missing worktree is not proof). The
+result then carries `rerouted: true`, `reroutedFrom` and `rerouteReason`. Without that
+proof the message goes to the exact id as before, and is never dropped. Reads are
+never rerouted.
+
+**Codex parity:** the WAL, receipts, routing and Stop policy live in shared,
+unforked `companion/`, `scripts/` and `hooks/` files. The Codex port registers the same
+Stop hooks, so it gets identical behavior.

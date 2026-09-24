@@ -165,7 +165,7 @@ test('SubagentStart -> child-workspace mailbox-ownership note present when DEVSW
     assert.strictEqual(r.status, 0);
     const c = ctx(r);
     assert.ok(c.includes('DevSwarm child workspace'), 'must name the child-workspace context');
-    assert.ok(c.includes('do NOT run devswarm.js inbox pull/ack/read/read-primary/tick or heartbeat'), 'must name the forbidden verbs');
+    assert.ok(c.includes('do NOT run devswarm.js inbox pull/ack/ack-primary/read/read-primary/tick or heartbeat'), 'must name the forbidden verbs');
     assert.ok(c.includes('the workspace main thread owns the mailbox'), 'must state the ownership rule');
   } finally { h.cleanup(); }
 });

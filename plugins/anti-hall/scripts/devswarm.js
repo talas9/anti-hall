@@ -1389,6 +1389,185 @@ function commitNdAck(storeHandle, home, id, reader, target, descCursorPath, inbo
   return r.own;
 }
 
+// ============================================================================
+// Phase 5 ACK SPLIT — read receipts + the ONE ack executor.
+//
+// `inbox read-primary` computes the exact ack its read implies (the SAME
+// unread window, caps and ownership gate as the old same-call drain) as a
+// list of ops, and persists them in a read receipt instead of writing any
+// cursor. `inbox ack-primary <id> --receipt <rid>` applies them after the
+// caller has consumed the mail. `inbox drain-primary-legacy` (one release)
+// collects the same ops and applies them immediately. Every cursor write is
+// MAX-only, so applying a receipt twice, late, or after a newer ack is a
+// no-op — never a regression, never an ack of anything the read did not
+// return.
+//   { k:'own',     partition, target, delivered }
+//   { k:'sibling', partition, ackTarget, seenTarget, notAckable, delivered }
+//   { k:'nd',      partition, target, cursorPath, inboxPath }
+// ============================================================================
+const READ_RECEIPT_TTL_MS = 24 * 60 * 60 * 1000;
+const READ_RECEIPT_KEEP_MS = 7 * 24 * 60 * 60 * 1000;
+
+function readReceiptDir(home, id) { return path.join(devswarmRoot(home), 'read-receipts', String(id)); }
+
+// writeReadReceipt(home, id, { reader, ops, hashes, now }) -> { ok, receiptId } | { ok:false, error }.
+// Atomic (tmp + rename). Also prunes this id's receipts older than
+// READ_RECEIPT_KEEP_MS (tokens only — pruning a receipt never touches a
+// message or a cursor; an unacked message simply stays unread).
+function writeReadReceipt(home, id, o) {
+  try {
+    if (!isSafeId(String(id))) return { ok: false, error: 'unsafe id' };
+    const now = Number.isFinite(o.now) ? o.now : Date.now();
+    const receiptId = 'r' + now.toString(36) + crypto.randomBytes(6).toString('hex');
+    const dir = readReceiptDir(home, id);
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, receiptId + '.json');
+    const tmp = file + '.tmp';
+    fs.writeFileSync(tmp, JSON.stringify({
+      v: 1, receiptId, id: String(id), reader: o.reader || null, createdAt: now,
+      ops: o.ops || [], hashes: o.hashes || [], ackedAt: null,
+    }));
+    fs.renameSync(tmp, file);
+    try {
+      for (const n of fs.readdirSync(dir)) {
+        if (!/^r[a-z0-9]+\.json$/.test(n) || n === receiptId + '.json') continue;
+        const f = path.join(dir, n);
+        try { if (now - fs.statSync(f).mtimeMs > READ_RECEIPT_KEEP_MS) fs.unlinkSync(f); } catch (_) {}
+      }
+    } catch (_) { /* pruning is housekeeping only */ }
+    return { ok: true, receiptId };
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+}
+
+function readReadReceipt(home, id, receiptId) {
+  if (!isSafeId(String(id)) || !/^r[a-z0-9]+$/.test(String(receiptId))) return null;
+  try {
+    const r = JSON.parse(fs.readFileSync(path.join(readReceiptDir(home, id), receiptId + '.json'), 'utf8'));
+    return (r && typeof r === 'object' && Array.isArray(r.ops)) ? r : null;
+  } catch (_) { return null; }
+}
+
+// applyReadAckOps(s, home, id, reader, ops, { ctx, repoKey, verb, revalidate })
+// -> { acked, failures[] }. THE executor for both the legacy same-call drain
+// and ack-primary. `revalidate` (ack-primary) re-evaluates each sibling's ack
+// gate NOW: a sibling whose owner became live since the read gets only this
+// caller's seen-watermark, never its own cursor (the read-time verdict is
+// used as-is for the legacy same-call path).
+function applyReadAckOps(s, home, id, reader, ops, o) {
+  const ctx = o.ctx || {};
+  const meta = { callerId: id, nonce: reader, verb: o.verb || 'read-primary', cwd: (ctx && ctx.cwd) || null, repoKey: o.repoKey || null };
+  const failures = [];
+  let acked;
+  for (const op of ops || []) {
+    if (!op || typeof op !== 'object') continue;
+    if (op.k === 'own') {
+      const committed = commitInstanceAck(s, home, id, reader, op.target, Object.assign({}, meta, { delivered: op.delivered, gate: 'owner' }));
+      // A failed own-partition write is REPORTED (R1 Reviewer item 7): redelivery
+      // holds (nothing moved), but ok:true must not hide the half-ack.
+      if (committed.error) failures.push({ partitionId: id, channel: 'store-cursor', error: committed.error });
+      acked = Number.isFinite(committed.instance) ? committed.instance : Math.max(committed.floor || 0, op.target);
+    } else if (op.k === 'sibling') {
+      const notAckable = o.revalidate
+        ? siblingAckGate(s, id, op.partition, home, ctx.now, { cwd: ctx && ctx.cwd })
+        : op.notAckable;
+      if (notAckable) {
+        // Live sibling: never touch its own cursors; record how far THIS caller
+        // has been shown (caller-scoped watermark, D11-A lock).
+        if (op.seenTarget > 0 && !withWatermarkLock(id, op.partition, home, () => writeSiblingSeenCursor(home, id, op.partition, op.seenTarget))) {
+          failures.push({ partitionId: op.partition, channel: 'sibling-seen-watermark', error: 'could not write caller-scoped seen watermark' });
+        }
+        continue;
+      }
+      try {
+        const partCommit = commitInstanceAck(s, home, op.partition, reader, op.ackTarget, Object.assign({}, meta, { delivered: op.delivered, gate: 'sibling' }));
+        if (partCommit.error) throw new Error(partCommit.error);
+        // R14 F1 third half: retire the watermark only once the sibling's OWN
+        // cursor covers it (fresh on-disk read under the same lock, R15 P3).
+        withWatermarkLock(id, op.partition, home, () => {
+          const freshWatermark = readSiblingSeenCursor(home, id, op.partition);
+          if (siblingWatermarkCovered(op.ackTarget, freshWatermark)) removeSiblingSeenCursor(home, id, op.partition);
+        });
+      } catch (e) {
+        failures.push({ partitionId: op.partition, channel: 'sibling-store-cursor', error: String((e && e.message) || e) });
+      }
+    } else if (op.k === 'nd') {
+      try {
+        commitNdAck(s, home, id, reader, op.target, op.cursorPath, op.inboxPath, {
+          callerId: id, verb: meta.verb, cwd: meta.cwd, repoKey: meta.repoKey,
+          now: ctx && ctx.now, procTable: ctx && ctx.procTable,
+        });
+      } catch (e) { failures.push({ partitionId: id, channel: 'ndjson-cursor', error: String((e && e.message) || e) }); }
+    }
+  }
+  try { store.deriveSummary(s, { home, env: ctx.env, now: ctx.now }); } catch (_) { /* projection refresh is best-effort */ }
+  return { acked, failures };
+}
+
+// cmdInboxAckPrimary(id, flags, ctx) — `inbox ack-primary <id> --receipt <rid>`.
+// The ONLY cursor mutation of the split read path. Fails closed WITHOUT any
+// write on: missing/unknown receipt, a receipt for another id or another
+// reader, an expired receipt, a store that cannot be opened, or a caller that
+// does not own `id` (same ownership gate as the read; --ack-as-owner overrides).
+function cmdInboxAckPrimary(id, flags, ctx) {
+  const home = ctx.home;
+  const rid = one(flags, 'receipt');
+  const base = { action: 'ack-primary', id };
+  const refuse = (reason, error) => Object.assign({ ok: false, reason, error }, base);
+  if (!rid || typeof rid !== 'string') return refuse('missing-receipt', '--receipt <readReceiptId> (from `inbox read-primary`) is required');
+  const rec = readReadReceipt(home, id, rid);
+  if (!rec) return refuse('unknown-receipt', 'no read receipt ' + JSON.stringify(rid) + ' for ' + JSON.stringify(id) + ' — re-run `inbox read-primary ' + id + '`');
+  if (String(rec.id) !== String(id)) return refuse('receipt-owner-mismatch', 'receipt belongs to ' + JSON.stringify(rec.id));
+  const reader = callerReaderKey(ctx);
+  if ((rec.reader || null) !== (reader || null)) {
+    return refuse('receipt-owner-mismatch', 'receipt was issued to a different reader — a receipt acks only for the reader that read it; re-run `inbox read-primary ' + id + '` and then its `ackCommand`');
+  }
+  const now = Number.isFinite(ctx.now) ? ctx.now : Date.now();
+  if (!Number.isFinite(rec.createdAt) || now - rec.createdAt > READ_RECEIPT_TTL_MS) {
+    return refuse('receipt-expired', 'receipt is older than ' + Math.round(READ_RECEIPT_TTL_MS / 3600000) + 'h — re-run `inbox read-primary ' + id + '` and then its `ackCommand` (nothing was acked; the mail is still unread)');
+  }
+  const opened = resolveWorkspaceStoreForRead(id, ctx, home, { skipExistenceGuard: true });
+  if (!opened.ok) return Object.assign({}, base, { ok: false, reason: opened.reason || 'store-unavailable', error: opened.error || 'store could not be opened' });
+  const s = opened.store;
+  let applied;
+  let marker = null;
+  try {
+    if (!flags['ack-as-owner']) {
+      const callerInfo = callerIdentityDetailed(ctx.env, ctx.cwd);
+      const ownEntry = resolveMeshTarget(s, callerInfo.identity, home);
+      if (!(callerInfo.identity === id || (ownEntry && ownEntry.id === id))) {
+        return refuse(ownershipRefusalCause(callerInfo.kind, ownEntry), 'ack-primary refused: this caller does not own ' + JSON.stringify(id) + ' (use --ack-as-owner to override)');
+      }
+    }
+    // The ack IS the drain now: mark it for the parent gate (fail-soft).
+    try {
+      marker = require('../companion/lib/devswarm-drain-marker.js');
+      const sid = (ctx && ctx.env && ctx.env.CLAUDE_CODE_SESSION_ID) || null;
+      marker.markDrainStart(home, id, { sessionId: sid, count: 0, now: ctx.now });
+    } catch (_) { marker = null; }
+    let repoKeyForLog = null;
+    try { repoKeyForLog = repoKeyForCwd(ctx); } catch (_) { repoKeyForLog = null; }
+    applied = applyReadAckOps(s, home, id, reader, rec.ops, { ctx, repoKey: repoKeyForLog, verb: 'ack-primary', revalidate: true });
+  } finally {
+    try { s.close(); } catch (_) {}
+    if (marker) { try { marker.clearDrainMarker(home, id); } catch (_) {} }
+  }
+  const alreadyAcked = rec.ackedAt != null;
+  if (!applied.failures.length && !alreadyAcked) {
+    try {
+      const file = path.join(readReceiptDir(home, id), rid + '.json');
+      fs.writeFileSync(file + '.tmp', JSON.stringify(Object.assign({}, rec, { ackedAt: now })));
+      fs.renameSync(file + '.tmp', file);
+    } catch (_) { /* the cursors moved; the ackedAt stamp is informational */ }
+  }
+  const out = Object.assign({ ok: true }, base, {
+    readReceiptId: rid, acked: applied.acked, alreadyAcked, messages: Array.isArray(rec.hashes) ? rec.hashes.length : null,
+  });
+  if (applied.failures.length) { out.cursorWriteFailures = applied.failures; out.cursorPersisted = false; }
+  return out;
+}
+
 // floorCursor(s, id, home) -> the partition's stored floor (reader_cursors
 // '#floor', ns 'store'), or — before this partition's one-time import ran — the
 // legacy effective floor computed dry. THE value every "unread by anybody" /
@@ -7843,7 +8022,9 @@ function inboxReadDoesAck(flags, opts) {
 // before, which is the safe direction. The marker must never be able to break
 // a read that would otherwise have succeeded.
 function cmdInboxMessages(id, flags, ctx, opts) {
-  if (!inboxReadDoesAck(flags, opts)) return cmdInboxMessagesInner(id, flags, ctx, opts);
+  // A deferred-ack read (Phase 5 read-primary) mutates nothing, so it is not a
+  // drain; the drain marker is written by `ack-primary` instead.
+  if (!inboxReadDoesAck(flags, opts) || (opts && opts.deferAck)) return cmdInboxMessagesInner(id, flags, ctx, opts);
   let marker = null;
   try {
     marker = require('../companion/lib/devswarm-drain-marker.js');
@@ -7931,6 +8112,11 @@ function cmdInboxMessagesInner(id, flags, ctx, opts) {
   // is not carrying the marker.
   const promotedInner = maybePromoteUnclaimed(home, id, flags, ctx);
   const doAck = inboxReadDoesAck(flags, opts);
+  // Phase 5 ack split: `deferAck` = compute the exact ack (same unread window,
+  // same caps, same ownership gate) but DO NOT write it — persist it as a read
+  // receipt instead (`inbox ack-primary --receipt` applies it after consumption).
+  const deferAck = doAck && !!(opts && opts.deferAck);
+  let deferredAckOps = null;
   // forceUnread (spec item 5b / D): lets `peek-primary` request the SAME
   // unread-only view as `read-primary` (opts.ack:true implies it) WITHOUT
   // itself acking — a genuinely non-mutating peek at what read-primary would
@@ -7954,8 +8140,9 @@ function cmdInboxMessagesInner(id, flags, ctx, opts) {
     try {
       process.stderr.write('[devswarm] inbox messages ' + JSON.stringify(String(id))
         + ' --ack-as-owner did NOT ack — `messages` is read-only. To ack on the'
-        + " owner's behalf use `inbox read-primary " + String(id)
-        + ' --ack-as-owner` (or add --ack).\n');
+        + " owner's behalf run `inbox read-primary " + String(id)
+        + ' --ack-as-owner`, then the `ackCommand` it returns (`inbox ack-primary ' + String(id)
+        + ' --receipt <rid> --ack-as-owner`).\n');
     } catch (_) {}
   }
   // --since / --tail (defect 3f6027ee462a) — see INBOX_WINDOW_FLAGS' header for
@@ -8706,22 +8893,11 @@ function cmdInboxMessagesInner(id, flags, ctx, opts) {
       const ownDeliveredCount = messages.filter(
         (r) => r && (r.__srcId === undefined || r.__srcId === 'own')
       ).length;
-      const committed = commitInstanceAck(s, home, id, callerReader, ownTarget, {
-        callerId: id, delivered: ownDeliveredCount, nonce: callerReader,
-        gate: 'owner', verb: 'read-primary', cwd: (ctx && ctx.cwd) || null,
-        repoKey: callerRepoKeyForLog,
-      });
-      // A failed own-partition cursor write must be REPORTED, not swallowed
-      // (R1 Reviewer item 7). Redelivery already holds — commitInstanceAck
-      // leaves both namespaces untouched on failure — but returning `ok:true`
-      // with no signal that the ack did not persist is the silent half-ack this
-      // file's P1a fix exists to prevent. Same shape the sibling loop uses.
-      if (committed.error) {
-        cursorWriteFailures.push({ partitionId: id, channel: 'store-cursor', error: committed.error });
-      }
-      // `acked` is what THIS caller has now consumed — its own instance
-      // position when one exists, else the shared value it just wrote.
-      acked = Number.isFinite(committed.instance) ? committed.instance : Math.max(committed.floor || 0, ownTarget);
+      // Phase 5 ack split: the ack is COLLECTED as ops (own / sibling / nd),
+      // then either applied right here (legacy same-call drain) or persisted
+      // in a read receipt that `inbox ack-primary --receipt` applies later.
+      // ONE executor (applyReadAckOps) for both, so they cannot drift.
+      const ackOps = [{ k: 'own', partition: String(id), target: ownTarget, delivered: ownDeliveredCount }];
       // Per-partition cursors STAY per-partition: each sibling row is acked,
       // and ONLY the rows actually in `meshSiblingPartitions` (the group `id`
       // resolved to this call) — a partition outside the group, or one this
@@ -8835,106 +9011,32 @@ function cmdInboxMessagesInner(id, flags, ctx, opts) {
               : deliveredCount));
         const ackAnchor = Number.isFinite(part.sinceCursor) ? Math.max(part.cursor, part.sinceCursor) : part.cursor;
         const ackTarget = ackAnchor + physicalConsumed;
-        if (notAckable) {
-          const seenTarget = (Number.isFinite(part.sinceCursor) ? part.sinceCursor : part.cursor) + physicalConsumed;
-          // D11-A (TOCTOU fix): serialize against the read+conditional-unlink
-          // below under the SAME per-(callerId,siblingId) lock — see
-          // withWatermarkLock's header.
-          if (seenTarget > 0 && !withWatermarkLock(id, part.id, home, () => writeSiblingSeenCursor(home, id, part.id, seenTarget))) {
-            cursorWriteFailures.push({ partitionId: part.id, channel: 'sibling-seen-watermark', error: 'could not write caller-scoped seen watermark' });
-          }
-          continue; // the sibling's OWN cursors are never touched for a live twin
-        }
-        try {
-          // PER-INSTANCE SIBLING ACK (defect 8b211241bbe9). Each sibling
-          // partition is acked for THIS instance; the shared pair follows the
-          // MIN across that partition's instances. Single-instance case is
-          // byte-identical to the pre-fix pair of writes.
-          const partCommit = commitInstanceAck(s, home, part.id, callerReader, ackTarget, {
-            callerId: id, delivered: Number.isFinite(part.deliveredCount) ? part.deliveredCount : null,
-            nonce: callerReader, gate: 'sibling', verb: 'read-primary',
-            cwd: (ctx && ctx.cwd) || null, repoKey: callerRepoKeyForLog,
-          });
-          if (partCommit.error) throw new Error(partCommit.error);
-          // (defect 8b211241bbe9, R1 P1: the `ackTo(part.cursorPath, ackTarget)`
-          // that used to sit here wrote the shared JSON cursor to THIS reader's
-          // target immediately after commitInstanceAck had written that same
-          // path to the min across instances — the two shared namespaces then
-          // disagreed, and the write left no journal record. commitInstanceAck
-          // owns that path now.)
-          // R14 F1, THIRD HALF — retire the watermark once its rows are covered
-          // by the sibling's OWN durable cursors. The watermark exists only to
-          // stand in for a cursor that could not be advanced; keeping it after a
-          // real ack leaves a stale file that outlives the sibling (R14 F3's
-          // hygiene problem) and a second, redundant floor on every later read.
-          // Deleted only AFTER both real cursor writes succeeded, and only when
-          // the ack actually covers it — a partial ack keeps the watermark.
-          //
-          // R15 P3 FIX: the prior guard compared `ackTarget` against
-          // `part.sinceCursor` — but `ackTarget = max(part.cursor,
-          // part.sinceCursor) + physicalConsumed`, which is ALGEBRAICALLY >=
-          // `part.sinceCursor` for any `physicalConsumed >= 0`. The comparison
-          // was a tautology: always true, so the watermark was deleted
-          // unconditionally on every successful ack, never actually gated on
-          // "did this ack cover it". Re-read the RAW persisted watermark value
-          // from disk (not the in-memory `part.sinceCursor` captured earlier in
-          // this same read, which cannot reflect a concurrent writer bumping
-          // the file in between) and test the real invariant via
-          // `siblingWatermarkCovered` — pulled into its own predicate so the
-          // comparison is directly unit-testable, not only reachable through a
-          // full CLI race no single-process test can reproduce.
-          //
-          // D11-A (TOCTOU fix): the read (readSiblingSeenCursor) -> conditional
-          // unlink (removeSiblingSeenCursor) below used to run completely
-          // unlocked — a concurrent writeSiblingSeenCursor for this SAME
-          // (callerId, siblingId) pair (the notAckable branch above, from a
-          // second overlapping invocation) could land its write in the gap
-          // and lose that extension when the unlink fired. Both this
-          // read+unlink AND that write now serialize under the SAME
-          // per-(callerId,siblingId) lock (withWatermarkLock) — whichever
-          // caller wins the lock completes atomically w.r.t. the other.
-          withWatermarkLock(id, part.id, home, () => {
-            const freshWatermark = readSiblingSeenCursor(home, id, part.id);
-            if (siblingWatermarkCovered(ackTarget, freshWatermark)) {
-              removeSiblingSeenCursor(home, id, part.id);
-            }
-          });
-        } catch (e) {
-          cursorWriteFailures.push({ partitionId: part.id, channel: 'sibling-store-cursor', error: String((e && e.message) || e) });
-        }
+        ackOps.push({
+          k: 'sibling', partition: String(part.id), ackTarget,
+          seenTarget: (Number.isFinite(part.sinceCursor) ? part.sinceCursor : part.cursor) + physicalConsumed,
+          notAckable: !!notAckable,
+          delivered: Number.isFinite(part.deliveredCount) ? part.deliveredCount : null,
+        });
       }
-      store.deriveSummary(s, { home, env: ctx.env, now: ctx.now }); // refresh the persisted projection now
-      // Advance the NDJSON descriptor's OWN cursor too (a THIRD, separate
-      // cursor file from primaryCursorPath/the store cursor above) — mirrors
-      // the ack-all path `inbox ack <id>` already performs (below, ~line
-      // 3521). Without this, `read-primary` would durably consume the
-      // NDJSON-channel messages it just returned in `messages` above while
-      // never marking them read on the NDJSON side, so they would resurface
-      // as "unread" on the next `inbox count`/`peek-primary`/`read-primary`
-      // forever. Best-effort/fail-open on DELIVERY (the store-side ack above
-      // already durably succeeded regardless of this) — but P1a fix: report
-      // the persistence failure instead of swallowing it silently.
+      // NDJSON descriptor channel (a THIRD cursor, the reader_cursors 'nd' row).
+      // defect 8d0a66cfc563: ack only up to what was delivered (union.cursor +
+      // kept ndjson lines), so withheld lines resurface as unread next read.
       if (union && desc && desc.inboxPath && desc.cursorPath) {
-        try {
-          // defect 8d0a66cfc563: advanceCursor() marks the ENTIRE current
-          // inbox file read — correct only when every unread ndjson line was
-          // actually delivered. When the cap withheld some, ack only up to
-          // what was delivered (union.cursor + kept ndjson lines) so the
-          // withheld lines resurface as unread on the next read, exactly
-          // like the store-side partitions above.
-          const ndjsonWithheldCount = withheldBySource ? (withheldBySource.get('ndjson') || 0) : 0;
-          const ndjsonAckTarget = union.cursor + union.ndjsonUnreadLines.length - ndjsonWithheldCount;
-          // D1 fix: ack the RESOLVED per-instance cursor (same file the union
-          // read above was computed against), not the raw descriptor path —
-          // then project the MIN across instances onto the descriptor so
-          // every existing consumer of desc.cursorPath (and a slower sibling
-          // instance) still sees a loss-free, monotonic value.
-          commitNdAck(s, home, id, callerReader, ndjsonAckTarget, desc.cursorPath, desc.inboxPath, {
-            callerId: id, verb: 'read-primary', cwd: (ctx && ctx.cwd) || null, repoKey: callerRepoKeyForLog,
-            now: ctx && ctx.now, procTable: ctx && ctx.procTable,
-          });
-        }
-        catch (e) { cursorWriteFailures.push({ partitionId: id, channel: 'ndjson-cursor', error: String((e && e.message) || e) }); }
+        const ndjsonWithheldCount = withheldBySource ? (withheldBySource.get('ndjson') || 0) : 0;
+        ackOps.push({
+          k: 'nd', partition: String(id),
+          target: union.cursor + union.ndjsonUnreadLines.length - ndjsonWithheldCount,
+          cursorPath: desc.cursorPath, inboxPath: desc.inboxPath,
+        });
+      }
+      if (deferAck) {
+        deferredAckOps = ackOps;
+      } else {
+        const applied = applyReadAckOps(s, home, id, callerReader, ackOps, {
+          ctx, repoKey: callerRepoKeyForLog, verb: 'read-primary', revalidate: false,
+        });
+        for (const f of applied.failures) cursorWriteFailures.push(f);
+        acked = applied.acked;
       }
     }
   } finally { s.close(); }
@@ -9187,9 +9289,29 @@ function cmdInboxMessagesInner(id, flags, ctx, opts) {
   // ack that actually advanced the cursor from one that moved nothing (e.g. an
   // already-fully-read workspace, or — pre-FIX-5 — an unregistered id that
   // silently acked total:0 -> cursor:0). Report both endpoints explicitly.
-  if (doAck) {
+  if (doAck && !deferAck) {
     out.ackedFrom = cursor;
     out.acked = acked;
+  }
+  // Phase 5 ack split: nothing was acked. Persist the exact ack as a read
+  // receipt and hand the caller ONE command to run after consuming the mail.
+  if (deferAck) {
+    const rec = writeReadReceipt(home, id, {
+      reader: callerReader, ops: deferredAckOps || [], now: ctx.now,
+      hashes: messages.map((m) => (m && m.hash != null ? String(m.hash) : null)),
+    });
+    out.acked = false;
+    if (rec.ok) {
+      out.readReceiptId = rec.receiptId;
+      out.ackCommand = 'node ' + JSON.stringify(__filename) + ' inbox ack-primary ' + id + ' --receipt ' + rec.receiptId;
+      out.ackHint = 'read-only: nothing was acked. After you have consumed these messages run ackCommand '
+        + '(advances exactly what this read returned; re-reading before the ack returns the same unread set).';
+    } else {
+      out.readReceiptId = null;
+      out.receiptError = rec.error;
+      out.ackHint = 'read-only: nothing was acked, and the read receipt could not be written (' + rec.error
+        + ') — re-run read-primary, or use `inbox drain-primary-legacy ' + id + '` to read-and-ack in one call.';
+    }
   }
   // P1a: delivery ALWAYS succeeds regardless (fail-open on delivery — a
   // redelivered message next read is the safe direction), but a cursor
@@ -9310,15 +9432,27 @@ function cmdInboxTick(id, flags, ctx) {
   // cmdHeartbeat — see warnIdMismatch's own header comment.
   const idMismatch = warnIdMismatch(id, ctx);
   const isChildFlag = hasFlag(flags, 'child');
+  let pulled = null;
   if (isChildFlag) {
     // Same wrapping the 'pull' dispatch case already gives a bare `inbox pull`
     // (self-heal runs BEFORE the native drain, D-O-D7) — never skip it just
     // because this call is folded into `tick`. Best-effort: a pull failure
     // must not prevent the count/marker/heartbeat steps below from running.
-    try { withSelfHeal(() => cmdInbox('pull', id, flags, ctx), ctx); } catch (_) { /* fail-open */ }
+    try { pulled = withSelfHeal(() => cmdInbox('pull', id, flags, ctx), ctx); } catch (_) { /* fail-open */ }
   }
-  const counted = cmdInbox('count', id, flags, ctx);
+  let counted = cmdInbox('count', id, flags, ctx);
   const now = Number.isFinite(ctx.now) ? ctx.now : Date.now();
+  // Phase 5 delivery WAL: a pull refused because its WAL is unwritable (fail
+  // closed) means native mail may be waiting that this count cannot see —
+  // report it as UNKNOWN, never as a clean zero. Pending/spilled WAL batches
+  // past the age/size threshold surface here too (never dropped).
+  if (pulled && pulled.walBlocked) {
+    counted = Object.assign({}, counted, { known: false, walBlocked: true, walError: pulled.error || null });
+  }
+  try {
+    const alerts = require('../companion/lib/devswarm-read-wal.js').health(fs, home, now).filter((h) => h.alert);
+    if (alerts.length) counted = Object.assign({}, counted, { walAlerts: alerts });
+  } catch (_) { /* health is report-only */ }
 
   // Effect 1: wake-tick marker.
   try {
@@ -9428,6 +9562,7 @@ function cmdInbox(sub, id, flags, ctx) {
   }
   if (sub === 'tick') return cmdInboxTick(id, flags, ctx);
   if (sub === 'pull') return cmdInboxPull(id, flags, ctx);
+  if (sub === 'ack-primary') return cmdInboxAckPrimary(id, flags, ctx);
   // B2 (defects 902d3c5e7531/1932b53a3ace, id resolution parity): every read
   // verb below must accept a meshId exactly as `send --to` does
   // (resolveSendTarget/resolveMeshTarget). FALLBACK-ONLY by design (not a
@@ -9442,9 +9577,22 @@ function cmdInbox(sub, id, flags, ctx) {
   // this literal `id` as unregistered — the exact case `send --to` could
   // route but no read verb could reach.
   let readArgResolvedFrom = null;
-  if (sub === 'messages' || sub === 'read-primary' || sub === 'peek-primary') {
-    const opts = sub === 'read-primary' ? { ack: true }
+  if (sub === 'messages' || sub === 'read-primary' || sub === 'peek-primary' || sub === 'drain-primary-legacy') {
+    // Phase 5 ack split: `read-primary` (and `messages --ack`) are READ-ONLY —
+    // they return a read receipt; `ack-primary --receipt` is the ack.
+    // `drain-primary-legacy` / `--legacy-ack-now` keep the old same-call
+    // read-and-ack for ONE deprecation release (no env var restores it).
+    const legacyNow = sub === 'drain-primary-legacy' || !!flags['legacy-ack-now'];
+    if (sub === 'messages' && flags.ack && !legacyNow) {
+      try {
+        process.stderr.write('[devswarm] inbox messages --ack no longer acks: it returns a read receipt — '
+          + 'run the returned ackCommand (inbox ack-primary ' + String(id) + ' --receipt <id>) after consuming the mail.\n');
+      } catch (_) {}
+    }
+    const opts = sub === 'read-primary' ? (legacyNow ? { ack: true } : { ack: true, deferAck: true })
+      : sub === 'drain-primary-legacy' ? { ack: true, action: 'drain-primary-legacy' }
       : sub === 'peek-primary' ? { ack: false, unread: true, action: 'peek-primary' }
+      : (flags.ack && !legacyNow) ? { deferAck: true }
       : undefined;
     // B2/1932b53a3ace (read-primary/peek-primary meshId parity, follow-up
     // fix): `read-primary`'s doAck path opens its store with
@@ -10212,7 +10360,7 @@ function cmdInbox(sub, id, flags, ctx) {
           ackHint: '`inbox read` is READ-ONLY and advanced no cursor — these '
             + outUnreadTotal + ' unread row(s) (' + unreadNdjsonCount + ' durable-NDJSON, '
             + unreadStoreCount + ' store) stay unread until `devswarm.js inbox ack ' + id
-            + '` consumes them. NOTE: a Primary\'s own `inbox read-primary` folds ONLY its OWN '
+            + '` consumes them. NOTE: a Primary\'s own `inbox read-primary` (acked via its `ackCommand`) folds ONLY its OWN '
             + 'descriptor\'s NDJSON channel, so another row\'s (e.g. a same-worktree twin\'s) '
             + 'durable inbox is only ever drained by acking THAT id explicitly.',
         } : {}),
@@ -10558,7 +10706,7 @@ function cmdInbox(sub, id, flags, ctx) {
     }
     return ackOut;
   }
-  return { ok: false, error: 'unknown inbox subcommand: ' + JSON.stringify(sub) + ' (read|ack|count|pull|messages|read-primary|peek-primary)' };
+  return { ok: false, error: 'unknown inbox subcommand: ' + JSON.stringify(sub) + ' (read|ack|count|pull|messages|read-primary|ack-primary|peek-primary|drain-primary-legacy)' };
 }
 
 // cmdRegisterPrimary(flags, ctx) — register the CURRENT worktree's Primary/parent
@@ -12346,6 +12494,39 @@ function resolveMeshPartitionIds(storeHandle, id, worktreePath) {
   return { meshPartitionIds, meshUnionActive, meshGroupUnresolved, meshGroupError };
 }
 
+// staleTwinSuccessor(storeHandle, row, home) -> { row, reason } | null. #6
+// session-coherence routing. `row` is STALE when it is not strictly live, or
+// when the Phase 2 identity predicate proves its sessionId belongs to a live
+// session running in a DIFFERENT worktree (identity.sessionWorktreeCoherent
+// === false — the twin shape: a row carrying another live row's session). A
+// successor is another registry row with the SAME real sessionId that is
+// strictly live and not itself incoherent; pickFreshestLive breaks ties.
+// null (deliver to `row` as addressed) whenever that proof is missing —
+// unknown coherence, no successor, synthetic/absent sessionId, any throw.
+function staleTwinSuccessor(storeHandle, row, home) {
+  try {
+    const sid = row && row.sessionId != null ? String(row.sessionId) : '';
+    if (!sid || sid.startsWith(SYNTHETIC_SESSION_PREFIX) || sid === String(row.id)) return null;
+    const coherence = (r) => {
+      try { return identity.sessionWorktreeCoherent(sid, r.worktreePath, { home }).coherent; } catch (_) { return null; }
+    };
+    const rowLive = isRoutingLiveRowStrict(row, home);
+    const rowCoherent = row.worktreePath ? coherence(row) : null;
+    if (rowLive && rowCoherent !== false) return null;
+    const others = storeHandle.listRegistry().filter((d) => d && d.id != null
+      && String(d.id) !== String(row.id)
+      && d.sessionId != null && String(d.sessionId) === sid
+      && isRoutingLiveRowStrict(d, home)
+      && !!d.worktreePath && coherence(d) === true); // positive proof only (review P1)
+    if (!others.length) return null;
+    const pick = others.length === 1 ? others[0] : livenessSelect.pickFreshestLive(others, {
+      storeHandle, home, isLive: (r) => isRoutingLiveRowStrict(r, home),
+    });
+    if (!pick) return null;
+    return { row: pick, reason: rowLive ? 'session-worktree-incoherent' : 'addressed-row-not-live' };
+  } catch (_) { return null; }
+}
+
 // resolveSendTarget(storeHandle, arg) -> { target, ambiguous, candidates }.
 //
 // `send --to <arg>` addressing footgun (P0 fix): resolveMeshTarget ONLY matches
@@ -12373,7 +12554,7 @@ function resolveMeshPartitionIds(storeHandle, id, worktreePath) {
 // and they name DIFFERENT rows, that is a genuine collision (row A's real id
 // equals row B's derived meshId) and must fail loud as ambiguous rather than
 // silently preferring the meshId match and shadowing the exact-id row.
-function resolveSendTarget(storeHandle, arg, home) {
+function resolveSendTarget(storeHandle, arg, home, opts) {
   const byMesh = resolveMeshTarget(storeHandle, arg, home);
   if (!arg) return byMesh ? { target: byMesh, ambiguous: false, candidates: null } : { target: null, ambiguous: false, candidates: null };
   const idMatches = [];
@@ -12409,6 +12590,19 @@ function resolveSendTarget(storeHandle, arg, home) {
       return { target: null, ambiguous: true, candidates: [idMatches[0].id, byMesh.id] };
     }
     if (byMesh && sameWorktreeGroup && !sameRow) return { target: byMesh, ambiguous: false, candidates: null };
+    // #6 (Phase 5 routing): the exact-id branch had no liveness/coherence
+    // check, so `send --to <staleTwinId>` landed in a partition nobody drains.
+    // Reroute ONLY to a provable same-session successor; otherwise deliver to
+    // the exact id as before (never drop).
+    // Send-only (opts.rerouteStaleTwin): a READ of a twin id must still read
+    // that twin's own partition.
+    const successor = (opts && opts.rerouteStaleTwin) ? staleTwinSuccessor(storeHandle, idMatches[0], home) : null;
+    if (successor) {
+      return {
+        target: successor.row, ambiguous: false, candidates: null,
+        rerouted: true, reroutedFrom: String(idMatches[0].id), rerouteReason: successor.reason,
+      };
+    }
     return { target: idMatches[0], ambiguous: false, candidates: null };
   }
   if (idMatches.length > 1) {
@@ -12583,6 +12777,7 @@ function cmdSend(flags, ctx) {
   // send result below so a caller sees its `--to` was redirected rather than
   // silently landing on a different id than the one it typed.
   let sendRedirect = null;
+  let sendReroute = null; // #6: exact-id stale twin -> live same-session successor
   if (toPrimaryFlag) {
     try {
       const rh = maybeRehomeToCwdProject(home, primaryMeshId, ctx);
@@ -12624,7 +12819,7 @@ function cmdSend(flags, ctx) {
         // (unchanged), then falls back to an exact match against a row's own
         // `id` — the value `roster` now prints alongside meshId, so a copied
         // roster id addresses correctly instead of failing closed.
-        const resolved = resolveSendTarget(s, toFlag, home);
+        const resolved = resolveSendTarget(s, toFlag, home, { rerouteStaleTwin: true });
         if (resolved.ambiguous) {
           return {
             ok: false, reason: 'ambiguous-recipient',
@@ -12646,6 +12841,7 @@ function cmdSend(flags, ctx) {
         targetPartition = resolved.target.id;
         candidateMeshRow = resolved.target;
         if (resolved.redirected) sendRedirect = { from: resolved.redirectedFrom, to: String(resolved.target.id) };
+        if (resolved.rerouted) sendReroute = { from: resolved.reroutedFrom, to: String(resolved.target.id), reason: resolved.rerouteReason };
       }
     }
     // Candidate-set size for the resolved row's OWN canonical meshId group —
@@ -12709,6 +12905,7 @@ function cmdSend(flags, ctx) {
       // 73303d4c098b fix: additive-only fields, set ONLY when a redirect
       // actually happened — every other send response is byte-identical.
       if (sendRedirect) { out.redirected = true; out.redirectedFrom = sendRedirect.from; }
+      if (sendReroute) { out.rerouted = true; out.reroutedFrom = sendReroute.from; out.rerouteReason = sendReroute.reason; }
       Object.assign(out, {
         // FIX 3 (TRACED, purely additive): echo the integrity data already computed
         // above so `ok:true` is verifiable without a read-back-and-tail-compare.
@@ -15548,7 +15745,7 @@ const VERB_HELP = {
   register: { synopsis: 'register a new workspace descriptor', mutates: 'writes the descriptor file + store registry + summary' },
   ensure: { synopsis: 'like register, but requires the workspace to be new', mutates: 'writes the descriptor file + store registry + summary' },
   heartbeat: { synopsis: 'record a liveness heartbeat for a workspace', mutates: 'writes a heartbeat file; may emit a mesh broadcast' },
-  inbox: { synopsis: 'inbox subcommands: count | read | ack | pull | messages | read-primary | peek-primary', mutates: '`pull`/`ack` mutate cursors/receipts; the rest are read-only' },
+  inbox: { synopsis: 'inbox subcommands: count | read | ack | pull | messages | read-primary | ack-primary | peek-primary | drain-primary-legacy (drain = read-primary, consume, then the returned ack-primary --receipt command)', mutates: '`pull`/`ack`/`ack-primary`/`drain-primary-legacy` mutate cursors; `read-primary` writes only a read receipt; the rest are read-only' },
   workspaces: { synopsis: 'list registered workspaces', mutates: 'read-only' },
   gate: { synopsis: 'set/clear merge gates on a workspace (--set/--clear)', mutates: 'writes gate state to the store' },
   nudge: { synopsis: 'send a nudge command to a workspace', mutates: 'runs the configured nudge command against the workspace' },
@@ -15722,7 +15919,8 @@ function run(argv, ctx0) {
         // Csh: wire only the mesh READ verbs the task names (pull/messages/
         // read-primary/peek-primary); count/read/ack are the descriptor
         // durable-inbox path.
-        if (sub === 'pull' || sub === 'messages' || sub === 'read-primary' || sub === 'peek-primary') {
+        if (sub === 'pull' || sub === 'messages' || sub === 'read-primary' || sub === 'peek-primary'
+          || sub === 'ack-primary' || sub === 'drain-primary-legacy') {
           logVerbOutcome('inbox-' + sub, id, r, ctx);
         }
         return { code: r.ok ? 0 : 2, result: r };

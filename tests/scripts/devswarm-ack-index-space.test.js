@@ -106,7 +106,7 @@ test('P0 counterexample: NDJSON dedup + cap withholding never advances the store
 
     // Cap withholds the tail: only 1 message survives the merged, per-source
     // prefix cap.
-    const r = cli.run(['inbox', 'read-primary', id, '--ack-as-owner', '--limit', '1'], ctx(home, { cwd: repo }));
+    const r = cli.run(['inbox', 'drain-primary-legacy', id, '--ack-as-owner', '--limit', '1'], ctx(home, { cwd: repo }));
     assert.equal(r.result.ok, true, JSON.stringify(r.result));
     assert.equal(r.result.count, 1, 'only the single kept row is delivered this call');
     assert.equal(r.result.messages[0].body, 'm1', 'm1 (earliest ts) is the one row actually delivered');
@@ -121,7 +121,7 @@ test('P0 counterexample: NDJSON dedup + cap withholding never advances the store
 
     // Round-trip: a subsequent read (no cap) must re-serve every withheld
     // message — nothing lost, nothing duplicated.
-    const r2 = cli.run(['inbox', 'read-primary', id, '--ack-as-owner'], ctx(home, { cwd: repo }));
+    const r2 = cli.run(['inbox', 'drain-primary-legacy', id, '--ack-as-owner'], ctx(home, { cwd: repo }));
     assert.equal(r2.result.ok, true, JSON.stringify(r2.result));
     const bodies = r2.result.messages.map((m) => m.body).sort();
     assert.deepEqual(bodies, ['m2', 'm3', 'm4', 'm5'], 'every withheld message (including the dedup'
@@ -145,14 +145,14 @@ test('guard: union active with NO dedup, cap withholds -> cursor still equals la
     ]);
     // wantsUnion is active (read-primary always unions) but nothing in the
     // NDJSON channel to dedup against.
-    const r = cli.run(['inbox', 'read-primary', id, '--ack-as-owner', '--limit', '2'], ctx(home, { cwd: repo }));
+    const r = cli.run(['inbox', 'drain-primary-legacy', id, '--ack-as-owner', '--limit', '2'], ctx(home, { cwd: repo }));
     assert.equal(r.result.ok, true, JSON.stringify(r.result));
     assert.equal(r.result.count, 2);
     assert.deepEqual(r.result.messages.map((m) => m.body), ['a1', 'a2']);
     assert.equal(r.result.truncated, true);
     assert.equal(r.result.cursor, 2, 'no gaps: cursor advances exactly to the last delivered row\'s raw position (2)');
 
-    const r2 = cli.run(['inbox', 'read-primary', id, '--ack-as-owner'], ctx(home, { cwd: repo }));
+    const r2 = cli.run(['inbox', 'drain-primary-legacy', id, '--ack-as-owner'], ctx(home, { cwd: repo }));
     assert.deepEqual(r2.result.messages.map((m) => m.body), ['a3', 'a4'], 'the withheld tail resurfaces exactly, once');
   } finally { rm(home); }
 });
@@ -174,7 +174,7 @@ test('no regression: dedup active but cap withholds nothing -> ack target unchan
     writeNdjson(inboxPath, [{ _h: 'sh3', message: 'b3', fromBranch: 'child', createdAt: 3000 }]);
 
     // No --limit override small enough to truncate: everything is delivered.
-    const r = cli.run(['inbox', 'read-primary', id, '--ack-as-owner'], ctx(home, { cwd: repo }));
+    const r = cli.run(['inbox', 'drain-primary-legacy', id, '--ack-as-owner'], ctx(home, { cwd: repo }));
     assert.equal(r.result.ok, true, JSON.stringify(r.result));
     assert.equal(r.result.truncated, undefined, 'nothing withheld this call');
     // Delivered: b1, b2, b4 (store) + b3 (via its NDJSON twin) = 4 messages.
@@ -184,7 +184,7 @@ test('no regression: dedup active but cap withholds nothing -> ack target unchan
     // `total - 0` arithmetic in the no-withholding case.
     assert.equal(r.result.cursor, 4, 'own-store cursor advances to the full raw total when nothing was withheld');
 
-    const r2 = cli.run(['inbox', 'read-primary', id, '--ack-as-owner'], ctx(home, { cwd: repo }));
+    const r2 = cli.run(['inbox', 'drain-primary-legacy', id, '--ack-as-owner'], ctx(home, { cwd: repo }));
     assert.equal(r2.result.count, 0, 'fully acked: nothing left unread');
   } finally { rm(home); }
 });
@@ -234,7 +234,7 @@ test('combined: own (deduped+capped) + mesh sibling + NDJSON, each source acks i
     // Large enough limit that nothing is capped — isolates the dedup-only
     // effect on the own partition while confirming sibling/NDJSON stay
     // correct in their own space alongside it.
-    const r = cli.run(['inbox', 'read-primary', primaryId, '--ack-as-owner'], ctx(home, { cwd: repo }));
+    const r = cli.run(['inbox', 'drain-primary-legacy', primaryId, '--ack-as-owner'], ctx(home, { cwd: repo }));
     assert.equal(r.result.ok, true, JSON.stringify(r.result));
     const bodies = r.result.messages.map((m) => m.body).sort();
     assert.deepEqual(bodies, ['own1', 'own2', 'own3', 'sib1', 'sib2'], 'own (incl. deduped-via-ndjson) + sibling rows all delivered');
@@ -242,7 +242,7 @@ test('combined: own (deduped+capped) + mesh sibling + NDJSON, each source acks i
 
     // Re-read: nothing left, confirming sibling + ndjson cursors also
     // advanced fully and correctly (their own index space was never broken).
-    const r3 = cli.run(['inbox', 'read-primary', primaryId, '--ack-as-owner'], ctx(home, { cwd: repo }));
+    const r3 = cli.run(['inbox', 'drain-primary-legacy', primaryId, '--ack-as-owner'], ctx(home, { cwd: repo }));
     assert.equal(r3.result.ok, true, JSON.stringify(r3.result));
     assert.equal(r3.result.count, 0, 'sibling + ndjson + own all fully acked, nothing resurfaces');
   } finally { rm(home); }

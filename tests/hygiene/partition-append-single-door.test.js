@@ -82,6 +82,11 @@ test('every allowlist entry is PROVEN by a named test carrying its `proves:` mar
   const owned = [];
   for (const fns of Object.values(ALLOWED)) for (const e of Object.values(fns)) if (e.owner) owned.push(e.owner);
   assert.deepStrictEqual(owned, ['owned by Phase 5 delivery WAL']);
+  // The owner is real, not a forward reference: the ingest writer runs behind
+  // the delivery WAL (fsynced before ingestPayload, replayed until closed).
+  const ingest = fs.readFileSync(path.join(REPO, 'plugins/anti-hall/companion/devswarm-ingest.js'), 'utf8');
+  assert.match(ingest, /require\('\.\/lib\/devswarm-read-wal\.js'\)/, 'ingest must load the delivery WAL');
+  assert.match(ingest, /readWal\.closeBatch\(/, 'ingest must close WAL batches only after ingestPayload');
 });
 
 test('appendIntoPartition: verified lock (never a caller claim), registration recheck, archived only on request', () => {

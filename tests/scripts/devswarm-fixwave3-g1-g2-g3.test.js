@@ -376,7 +376,7 @@ test('G1 RED/GREEN (end-to-end): a null/hole sibling row must not permanently we
 
         // Call 2: `read-primary` — must consume (ack past) the hole even
         // though nothing is delivered yet.
-        const r1 = mutatedCli.run(['inbox', 'read-primary', 'primary-g1', '--ack-as-owner'], ctx(home, { cwd: repo }));
+        const r1 = mutatedCli.run(['inbox', 'drain-primary-legacy', 'primary-g1', '--ack-as-owner'], ctx(home, { cwd: repo }));
         assert.equal(r1.result.ok, true, JSON.stringify(r1.result));
         assert.deepEqual(r1.result.messages.map((m) => m.body), [], 'first read-primary: nothing delivered yet (the hole still poisons this window)');
 
@@ -390,7 +390,7 @@ test('G1 RED/GREEN (end-to-end): a null/hole sibling row must not permanently we
         assert.equal(c2.result.meshGapWithheld, undefined, 'no gap remains — the honesty flag must not be set once the hole is gone');
 
         // Call 4: `read-primary` again — THE FIX: real, permanent progress.
-        const r2 = mutatedCli.run(['inbox', 'read-primary', 'primary-g1', '--ack-as-owner'], ctx(home, { cwd: repo }));
+        const r2 = mutatedCli.run(['inbox', 'drain-primary-legacy', 'primary-g1', '--ack-as-owner'], ctx(home, { cwd: repo }));
         assert.deepEqual(r2.result.messages.map((m) => m.body), ['G1row-direct'], 'THE FIX: the second read-primary DELIVERS G1row — the mailbox made real, permanent progress; the wedge is broken');
       });
     } finally { rm(home); rm(repo); }
@@ -410,7 +410,9 @@ test('G1 mutation check: reverting the ack target to plain deliveredCount reprod
       + '        const ackAnchor = Number.isFinite(part.sinceCursor) ? Math.max(part.cursor, part.sinceCursor) : part.cursor;\n'
       + '        const ackTarget = ackAnchor + physicalConsumed;';
     assert.ok(fs.readFileSync(copy.devswarmPath, 'utf8').includes(oldStr), 'G1 fix block not found verbatim in cmdInboxMessages ack loop (under the null-preserving-maps mutant)');
-    const buggyStr = 'const ackTarget = part.cursor + deliveredCount;';
+    // physicalConsumed stays defined (the ack op's seenTarget reads it); only
+    // the ack TARGET reverts to the buggy arithmetic.
+    const buggyStr = 'const physicalConsumed = deliveredCount;\n        const ackTarget = part.cursor + deliveredCount;';
     // Compose a SECOND mutation onto the SAME scratch copy (rather than
     // calling the module-level `withMutant`, which would spin up its own
     // independent copy without the null-preserving-maps mutation already
@@ -426,14 +428,14 @@ test('G1 mutation check: reverting the ack target to plain deliveredCount reprod
       seedPartition(home, repo, 'sibling-g1m', [{ body: 'G1row-direct', ts: 2000, urgency: null }]);
 
       withInjectedHole('sibling-g1m', () => {
-        mutatedCli.run(['inbox', 'read-primary', 'primary-g1m', '--ack-as-owner'], ctx(home, { cwd: repo }));
+        mutatedCli.run(['inbox', 'drain-primary-legacy', 'primary-g1m', '--ack-as-owner'], ctx(home, { cwd: repo }));
         const sibCursor = readCursorFile(home, repo, 'sibling-g1m');
         assert.equal(sibCursor, 0, 'BUGGY (pre-G1-fix): the cursor never advances past the hole — this IS the permanent wedge');
 
         // A second read-primary call — WITHOUT the fix, this must ALSO
         // make zero progress (the hole recurs at the same position every
         // time).
-        const r2 = mutatedCli.run(['inbox', 'read-primary', 'primary-g1m', '--ack-as-owner'], ctx(home, { cwd: repo }));
+        const r2 = mutatedCli.run(['inbox', 'drain-primary-legacy', 'primary-g1m', '--ack-as-owner'], ctx(home, { cwd: repo }));
         assert.deepEqual(r2.result.messages.map((m) => m.body), [], 'BUGGY: G1row is STILL never delivered on a second call — reproduces "nothing an operator can do recovers it"');
       });
     } finally { rm(home); rm(repo); }
@@ -521,7 +523,7 @@ test('G2 RED/GREEN (end-to-end): a cross-partition hash duplicate must not leave
     };
 
     withInjectedDuplicate('sibling-g2', dupRow, () => {
-      const r1 = cli.run(['inbox', 'read-primary', 'primary-g2', '--ack-as-owner'], ctx(home, { cwd: repo }));
+      const r1 = cli.run(['inbox', 'drain-primary-legacy', 'primary-g2', '--ack-as-owner'], ctx(home, { cwd: repo }));
       assert.equal(r1.result.ok, true, JSON.stringify(r1.result));
       const bodies = r1.result.messages.map((m) => m.body).sort();
       assert.deepEqual(bodies, ['own-row', 'sib-new-row'], 'THE FIX: the dedup row is silently skipped (never re-delivered), the genuinely new row IS delivered');
@@ -530,7 +532,7 @@ test('G2 RED/GREEN (end-to-end): a cross-partition hash duplicate must not leave
       assert.equal(sibCursor, 2, 'THE FIX: the ack must cover BOTH physical sibling rows (the dedup skip AND the delivered row) — under the bug this was 1, under-acking and leaving sib-dup-row to be re-evaluated forever');
 
       // A second read-primary must see nothing new (no redelivery, no stall).
-      const r2 = cli.run(['inbox', 'read-primary', 'primary-g2', '--ack-as-owner'], ctx(home, { cwd: repo }));
+      const r2 = cli.run(['inbox', 'drain-primary-legacy', 'primary-g2', '--ack-as-owner'], ctx(home, { cwd: repo }));
       assert.deepEqual(r2.result.messages, [], 'second read: nothing left — the fix does not under- or over-deliver');
     });
   } finally { rm(home); rm(repo); }
@@ -555,7 +557,7 @@ test('G3 RED/GREEN: read-primary acking a gapped sibling window — trigger deli
     markSiblingOrphaned(home, 'sibling-g3'); // explicit orphan fixture — see helper comment above
     seedG3GapWindow(home, repo, 'sibling-g3');
 
-    const r1 = cli.run(['inbox', 'read-primary', 'primary-g3', '--ack-as-owner'], ctx(home, { cwd: repo }));
+    const r1 = cli.run(['inbox', 'drain-primary-legacy', 'primary-g3', '--ack-as-owner'], ctx(home, { cwd: repo }));
     assert.equal(r1.result.ok, true, JSON.stringify(r1.result));
     const bodies1 = r1.result.messages.map((m) => m.body);
     // (1) the trigger body IS in the returned payload
@@ -571,7 +573,7 @@ test('G3 RED/GREEN: read-primary acking a gapped sibling window — trigger deli
     assert.ok(direct.result.messages.some((m) => m.body === 'G3row-withheld'), 'G3row must still be reachable by reading the sibling directly — never lost');
 
     // (4) the next read delivers it completely
-    const r2 = cli.run(['inbox', 'read-primary', 'primary-g3', '--ack-as-owner'], ctx(home, { cwd: repo }));
+    const r2 = cli.run(['inbox', 'drain-primary-legacy', 'primary-g3', '--ack-as-owner'], ctx(home, { cwd: repo }));
     assert.deepEqual(r2.result.messages.map((m) => m.body), ['G3row-withheld'], 'the next read-primary must deliver the previously-withheld row, completely');
   } finally { rm(home); rm(repo); }
 });
@@ -599,7 +601,7 @@ test('G3 mutation check (variant 1): subtracting a flat "1" from deliveredCount 
       register(home, repo, 'sibling-g3m1', undefined, 'unclaimed:sibling-g3m1'); // Fix Wave 7 Item 2: genuine orphan fixture (never claimed by a real session)
       markSiblingOrphaned(home, 'sibling-g3m1'); // explicit orphan fixture — see helper comment above
       seedG3GapWindow(home, repo, 'sibling-g3m1');
-      mutatedCli.run(['inbox', 'read-primary', 'primary-g3m1', '--ack-as-owner'], ctx(home, { cwd: repo }));
+      mutatedCli.run(['inbox', 'drain-primary-legacy', 'primary-g3m1', '--ack-as-owner'], ctx(home, { cwd: repo }));
       const sibCursor = readCursorFile(home, repo, 'sibling-g3m1');
       assert.notEqual(sibCursor, 1, 'BUGGY variant 1: deliveredCount(1) - 1 = 0 — the cursor fails to advance at all, reproducing the wedge shape');
     } finally { rm(home); rm(repo); }
@@ -623,7 +625,7 @@ test('G3 mutation check (variant 2): dropping the trigger row from the payload w
       register(home, repo, 'sibling-g3m2', undefined, 'unclaimed:sibling-g3m2'); // Fix Wave 7 Item 2: genuine orphan fixture (never claimed by a real session)
       markSiblingOrphaned(home, 'sibling-g3m2'); // explicit orphan fixture — see helper comment above
       seedG3GapWindow(home, repo, 'sibling-g3m2');
-      const r1 = mutatedCli.run(['inbox', 'read-primary', 'primary-g3m2', '--ack-as-owner'], ctx(home, { cwd: repo }));
+      const r1 = mutatedCli.run(['inbox', 'drain-primary-legacy', 'primary-g3m2', '--ack-as-owner'], ctx(home, { cwd: repo }));
       const bodies1 = r1.result.messages.map((m) => m.body);
       assert.ok(!bodies1.includes('N0-native-trigger'), 'BUGGY variant 2: the trigger row is missing from the payload — the caller never saw it');
       const sibCursor = readCursorFile(home, repo, 'sibling-g3m2');
@@ -644,7 +646,9 @@ test('G3 mutation check (variant 3): reverting the ack target to plain delivered
     + '        const ackAnchor = Number.isFinite(part.sinceCursor) ? Math.max(part.cursor, part.sinceCursor) : part.cursor;\n'
     + '        const ackTarget = ackAnchor + physicalConsumed;';
   assert.ok(fs.readFileSync(DEVSWARM_PATH, 'utf8').includes(oldStr), 'G1/G3 fix block not found verbatim');
-  const buggyStr = 'const ackTarget = part.cursor + deliveredCount;';
+  // physicalConsumed stays defined (the ack op's seenTarget reads it) so the
+  // mutant fails on the reverted TARGET, never on a ReferenceError.
+  const buggyStr = 'const physicalConsumed = deliveredCount;\n        const ackTarget = part.cursor + deliveredCount;';
   withMutant(oldStr, buggyStr, (mutatedCli) => {
     const home = tmpHome();
     const repo = makeGitRepo('g3-mutant3');
@@ -664,7 +668,7 @@ test('G3 mutation check (variant 3): reverting the ack target to plain delivered
         isHeartbeat: false, needsReply: false, storeSeq: 0,
       };
       withInjectedDuplicate('sibling-g3m3', dupRow, () => {
-        mutatedCli.run(['inbox', 'read-primary', 'primary-g3m3', '--ack-as-owner'], ctx(home, { cwd: repo }));
+        mutatedCli.run(['inbox', 'drain-primary-legacy', 'primary-g3m3', '--ack-as-owner'], ctx(home, { cwd: repo }));
         const sibCursor = readCursorFile(home, repo, 'sibling-g3m3');
         assert.notEqual(sibCursor, 2, 'BUGGY variant 3: deliveredCount(1) under-acks — the cursor lands at 1 instead of the real physical count 2, reproducing the G2 index drift');
       });
@@ -704,7 +708,7 @@ test('Wave 6 RED/GREEN: a LIVE sibling\'s cursor is unchanged after a foreign ca
     const before = readCursorFile(home, repo, 'sibling-w6');
     assert.equal(before, 0, 'sanity: sibling starts unread');
 
-    const r1 = cli.run(['inbox', 'read-primary', 'primary-w6', '--ack-as-owner'], ctx(home, { cwd: repo }));
+    const r1 = cli.run(['inbox', 'drain-primary-legacy', 'primary-w6', '--ack-as-owner'], ctx(home, { cwd: repo }));
     assert.equal(r1.result.ok, true, JSON.stringify(r1.result));
 
     // Visibility must NOT regress: the live sibling's message is still
@@ -722,7 +726,7 @@ test('Wave 6 RED/GREEN: a LIVE sibling\'s cursor is unchanged after a foreign ca
     // The sibling's OWN next read must still see its own message as unread
     // (proof the ack genuinely never happened, not just that the field
     // reports 0 by coincidence).
-    const ownRead = cli.run(['inbox', 'read-primary', 'sibling-w6', '--ack-as-owner'], ctx(home, { cwd: repo }));
+    const ownRead = cli.run(['inbox', 'drain-primary-legacy', 'sibling-w6', '--ack-as-owner'], ctx(home, { cwd: repo }));
     assert.deepEqual(ownRead.result.messages.map((m) => m.body), ['live-sibling-row'], 'the live sibling must still see (and be able to ack) its own message itself — nothing was silently consumed out from under it');
   } finally { rm(home); rm(repo); }
 });
@@ -762,7 +766,7 @@ test('Wave 6 mutation check (variant 1): deleting the live-sibling gate reproduc
       register(home, repo, 'sibling-w6m1', undefined);
       markSiblingLive(home, 'sibling-w6m1');
       seedPartition(home, repo, 'sibling-w6m1', [{ body: 'live-sibling-row', ts: 2000 }]);
-      mutatedCli.run(['inbox', 'read-primary', 'primary-w6m1', '--ack-as-owner'], ctx(home, { cwd: repo }));
+      mutatedCli.run(['inbox', 'drain-primary-legacy', 'primary-w6m1', '--ack-as-owner'], ctx(home, { cwd: repo }));
       const sibCursor = readCursorFile(home, repo, 'sibling-w6m1');
       assert.notEqual(sibCursor, 0, 'BUGGY (gate deleted): the live sibling\'s cursor IS clobbered by the foreign caller — reproduces the P0');
     } finally { rm(home); rm(repo); }
@@ -782,7 +786,7 @@ test('Wave 6 mutation check (variant 2): inverting the gate\'s sense protects li
       register(home, repo, 'sibling-w6m2', undefined);
       markSiblingLive(home, 'sibling-w6m2');
       seedPartition(home, repo, 'sibling-w6m2', [{ body: 'live-sibling-row', ts: 2000 }]);
-      const r = mutatedCli.run(['inbox', 'read-primary', 'primary-w6m2', '--ack-as-owner'], ctx(home, { cwd: repo }));
+      const r = mutatedCli.run(['inbox', 'drain-primary-legacy', 'primary-w6m2', '--ack-as-owner'], ctx(home, { cwd: repo }));
       const sibCursor = readCursorFile(home, repo, 'sibling-w6m2');
       // BUGGY: with the condition flipped, `siblingLive:true` now falls
       // through to ack — the exact clobber this fix exists to prevent.

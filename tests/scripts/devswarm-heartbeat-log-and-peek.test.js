@@ -114,7 +114,7 @@ test('inbox peek-primary: unread-only view, matches read-primary content, but NE
     assert.deepEqual(again.result.messages, before.result.messages, 'a second peek must see the SAME unread messages');
 
     // NOW read-primary actually acks — the cursor advances.
-    const acked = cli.run(['inbox', 'read-primary', 'w4'], selfCtx);
+    const acked = cli.run(['inbox', 'drain-primary-legacy', 'w4'], selfCtx);
     assert.equal(acked.code, 0, JSON.stringify(acked.result));
     assert.notStrictEqual(acked.result.cursor, before.result.cursor, 'read-primary must advance the cursor, unlike peek-primary');
 

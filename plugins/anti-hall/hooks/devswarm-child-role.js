@@ -58,7 +58,7 @@ const OVERRIDE_CORE =
   '(`workspace message-*`) are BLOCKED. Report status: `node ' + CLI + ' ' +
   'heartbeat <id> --summary "<text>"`. Direct-message: `node ' + CLI + ' send ' +
   '--to-primary --message-file <path>` (or `--to <meshId>`). Check in: `node ' + CLI + ' ' +
-  'roster`, `mesh read`, `inbox read-primary <id>`. RESTING state = ' +
+  'roster`, `mesh read`, `inbox read-primary <id>` (read-only — then run the `ackCommand` it returns). RESTING state = ' +
   'keep polling the mesh — do not idle silently. Scope: COMMUNICATION ONLY; this never ' +
   'changes your assigned task.';
 

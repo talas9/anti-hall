@@ -254,7 +254,7 @@ Primary) / `send --to <meshId> --message TEXT` (direct to a specific sibling) /
 `send --broadcast --message TEXT` (all-to-all) / `heartbeat <id> --summary TEXT` (status
 ping, also broadcasts) / `roster` / `mesh read` (unseen broadcasts) / `inbox
 read-primary <id>` (Primary's own unread). Lifecycle (`spawn`/`merge`/`reconcile`) is
-covered in full in the `devswarm` skill.
+covered in full in the `devswarm` skill. (Phase 5: `read-primary` / `messages --ack` are read-only — after handling the mail run the returned `ackCommand`, i.e. `inbox ack-primary <id> --receipt <rid>`.)
 
 **A PRIMARY DOES spawn workspaces — it is its top fan-out tier** (see the DevSwarm note
 under "Swarm topology for larger work" above). Earlier revisions of this skill disclaimed
@@ -271,7 +271,7 @@ IS the Tier-0 wake posture (there is no external mechanism that wakes a truly id
 Code session, `anthropics/claude-code#44380` — do not assume one exists). A PRIMARY checks
 `roster`/`mesh read`/`inbox read-primary <id>` and directs a specific child via
 `send --to <meshId>`. Neither role should treat this as optional busywork: it is the
-only way a sibling/Primary/child learns anything happened.
+only way a sibling/Primary/child learns anything happened. (Phase 5: `read-primary` / `messages --ack` are read-only — after handling the mail run the returned `ackCommand`, i.e. `inbox ack-primary <id> --receipt <rid>`.)
 
 **Message template** — the same record shape every mesh write uses:
 ```json

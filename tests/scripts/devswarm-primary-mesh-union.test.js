@@ -113,7 +113,7 @@ test('read-primary sees mail delivered to a SIBLING registry row sharing the sam
     // ever opens `primary-hash-row`'s own partition, pre-fix.
     seedPartition(home, repo, 'uuid-child-row', [{ body: 'sent while resolved to the uuid row', ts: 1000, from: 'childA' }]);
 
-    const rp = cli.run(['inbox', 'read-primary', 'primary-hash-row', '--ack-as-owner'],
+    const rp = cli.run(['inbox', 'drain-primary-legacy', 'primary-hash-row', '--ack-as-owner'],
       ctx(home, { cwd: repo }));
     assert.equal(rp.result.ok, true, JSON.stringify(rp.result));
     assert.equal(rp.result.count, 1, 'read-primary must see the sibling partition\'s mail');
@@ -134,7 +134,7 @@ test('ack advances each contributing partition\'s OWN cursor, and only that part
     seedPartition(home, repo, 'primary-a', [{ body: 'from a', ts: 1000 }, { body: 'from a 2', ts: 1100 }]);
     seedPartition(home, repo, 'sibling-b', [{ body: 'from b', ts: 1200 }]);
 
-    const rp = cli.run(['inbox', 'read-primary', 'primary-a', '--ack-as-owner'],
+    const rp = cli.run(['inbox', 'drain-primary-legacy', 'primary-a', '--ack-as-owner'],
       ctx(home, { cwd: repo }));
     assert.equal(rp.result.ok, true, JSON.stringify(rp.result));
     assert.equal(rp.result.count, 3, 'both partitions\' mail delivered in one read-primary call');
@@ -145,7 +145,7 @@ test('ack advances each contributing partition\'s OWN cursor, and only that part
     assert.equal(bCursor, 1, 'sibling-b\'s own cursor advances to ITS OWN total (1) — a DIFFERENT value, its own');
 
     // A second read-primary sees nothing new — both partitions fully acked.
-    const rp2 = cli.run(['inbox', 'read-primary', 'primary-a', '--ack-as-owner'],
+    const rp2 = cli.run(['inbox', 'drain-primary-legacy', 'primary-a', '--ack-as-owner'],
       ctx(home, { cwd: repo }));
     assert.equal(rp2.result.count, 0);
   } finally { rm(home); rm(repo); }
@@ -160,7 +160,7 @@ test('ack never touches a partition outside the mesh group (a DIFFERENT worktree
     register(home, repoY, 'primary-y'); // a DIFFERENT worktree — NOT in primary-x's mesh group
     seedPartition(home, repoY, 'primary-y', [{ body: 'unrelated mail', ts: 500 }]);
 
-    cli.run(['inbox', 'read-primary', 'primary-x', '--ack-as-owner'], ctx(home, { cwd: repoX }));
+    cli.run(['inbox', 'drain-primary-legacy', 'primary-x', '--ack-as-owner'], ctx(home, { cwd: repoX }));
 
     assert.equal(fs.existsSync(cli.primaryCursorPath(home, 'primary-y')), false,
       'primary-y\'s cursor file must never be created/touched by acking a different worktree\'s read-primary');
@@ -200,7 +200,7 @@ test('two SEPARATE sends sharing (sender, ts, body) across partitions (different
     seedPartition(home, repo, 'primary-dd', [shared]);
     seedPartition(home, repo, 'sibling-dd', [shared, { body: 'unique to sibling', ts: 2100, from: 'dupSender' }]);
 
-    const rp = cli.run(['inbox', 'read-primary', 'primary-dd', '--ack-as-owner'],
+    const rp = cli.run(['inbox', 'drain-primary-legacy', 'primary-dd', '--ack-as-owner'],
       ctx(home, { cwd: repo }));
     assert.equal(rp.result.ok, true, JSON.stringify(rp.result));
     assert.equal(rp.result.count, 3, 'all three rows delivered — the two "duplicate content" sends are DISTINCT messages, neither is provably a copy of the other');
@@ -218,7 +218,7 @@ test('single-row Primary (the common case): read-primary is unaffected — no pa
     register(home, repo, 'solo-primary');
     seedPartition(home, repo, 'solo-primary', [{ body: 'solo message', ts: 1000 }]);
 
-    const rp = cli.run(['inbox', 'read-primary', 'solo-primary', '--ack-as-owner'],
+    const rp = cli.run(['inbox', 'drain-primary-legacy', 'solo-primary', '--ack-as-owner'],
       ctx(home, { cwd: repo }));
     assert.equal(rp.result.ok, true, JSON.stringify(rp.result));
     assert.equal(rp.result.count, 1);
@@ -244,7 +244,7 @@ test('diagnose\'s fold-facing signals (liveRows/kind/split/deadSplit) are unaffe
 
     // ...exercise the mesh-widened read path...
     cli.run(['inbox', 'peek-primary', 'fold-a'], ctx(home, { cwd: repo }));
-    cli.run(['inbox', 'read-primary', 'fold-a', '--ack-as-owner'], ctx(home, { cwd: repo }));
+    cli.run(['inbox', 'drain-primary-legacy', 'fold-a', '--ack-as-owner'], ctx(home, { cwd: repo }));
 
     // ...and diagnose's fold-facing signals must be BYTE-IDENTICAL after.
     const after = cli.run(['diagnose'], ctx(home, { cwd: repo }));
@@ -275,7 +275,7 @@ test('group resolution failure (corrupt registry row) falls back to single-parti
     finally { s.close(); }
 
     assert.doesNotThrow(() => {
-      const rp = cli.run(['inbox', 'read-primary', 'failopen-primary', '--ack-as-owner'],
+      const rp = cli.run(['inbox', 'drain-primary-legacy', 'failopen-primary', '--ack-as-owner'],
         ctx(home, { cwd: repo }));
       assert.equal(rp.result.ok, true, JSON.stringify(rp.result));
       assert.equal(rp.result.count, 1, 'failopen: falls back to reading failopen-primary\'s own partition');

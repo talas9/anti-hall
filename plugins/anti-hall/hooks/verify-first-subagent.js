@@ -65,7 +65,7 @@ const TEAMMATE_REPORTING_NOTE =
 // already long, and this hook's own text is long too.
 const CHILD_WORKSPACE_MAILBOX_NOTE =
   'You are a subagent inside a DevSwarm child workspace: do NOT run devswarm.js inbox ' +
-  'pull/ack/read/read-primary/tick or heartbeat — the workspace main thread owns the ' +
+  'pull/ack/ack-primary/read/read-primary/tick or heartbeat — the workspace main thread owns the ' +
   'mailbox; anything you learn goes back to your parent in your report.';
 
 const SUBAGENT_TEXT_BASE = [...CORE_LINES, SUBAGENT_DISCIPLINES, TEAMMATE_REPORTING_NOTE].join('\n');

@@ -314,3 +314,54 @@ test('runIngestLoop: an ordinary empty poll (no monitor output) never quarantine
     rm(home); rm(logDir);
   }
 });
+
+// ---------------------------------------------------------------------------
+// Phase 5 delivery WAL — every lossy batch's raw bytes are kept, uncapped and
+// un-rate-limited, even when the diagnostic file quarantine is suppressed.
+// ---------------------------------------------------------------------------
+test('runIngestLoop: every lossy batch is kept byte-exact in the delivery WAL (quarantine record, never rate-limited)', () => {
+  const home = tmpHome();
+  const logDir = fs.mkdtempSync(path.join(os.tmpdir(), 'anti-hall-lossq-log-'));
+  const prevLogDir = process.env.ANTI_HALL_LOG_DIR;
+  process.env.ANTI_HALL_LOG_DIR = logDir;
+  try {
+    const batches = ['[{"message":"cut-1', '[{"message":"cut-2', '[{"message":"cut-3'];
+    let k = 0;
+    const summary = ingest.runIngestLoop({
+      home, backend: 'journal', workspaceId: 'p', maxIterations: 3, worktree: WT, now: 1_700_000_000_000,
+      env: {}, run: () => ({ ok: true, raw: batches[k++], error: null }), sleep: () => {},
+    });
+    assert.equal(summary.stats.lossEvents, 3);
+    const walDir = path.join(home, '.anti-hall', 'devswarm', 'wal');
+    const walFile = fs.readdirSync(walDir).find((f) => f.startsWith('monitor-'));
+    const recs = fs.readFileSync(path.join(walDir, walFile), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
+    assert.deepEqual(recs.filter((r) => r.t === 'batch').map((r) => r.raw), batches, 'raw bytes preserved byte-exact');
+    assert.equal(recs.filter((r) => r.t === 'quarantine').length, 3, 'each closed as quarantine (not replayed forever)');
+  } finally {
+    if (prevLogDir === undefined) delete process.env.ANTI_HALL_LOG_DIR; else process.env.ANTI_HALL_LOG_DIR = prevLogDir;
+    rm(home); rm(logDir);
+  }
+});
+
+test('runIngestLoop: a batch left open in the WAL by a crash is replayed at startup before the first monitor read', () => {
+  const home = tmpHome();
+  try {
+    const first = ingest.runIngestLoop({
+      home, backend: 'journal', workspaceId: 'p', maxIterations: 1, worktree: WT,
+      env: {}, run: () => ({ ok: true, raw: '[]', error: null }), sleep: () => {},
+    });
+    assert.equal(first.started, true);
+    const walDir = path.join(home, '.anti-hall', 'devswarm', 'wal');
+    const walFile = path.join(walDir, fs.readdirSync(walDir).find((f) => f.startsWith('monitor-')));
+    // Simulate a crash after the WAL fsync, before ingest: an open batch.
+    fs.appendFileSync(walFile, JSON.stringify({ t: 'batch', e: 'crash-1', ts: 1, raw: JSON.stringify([{ fromBranch: 'c', message: 'survivor', createdAt: '2026-01-01T00:00:00Z' }]) }) + '\n');
+    const order = [];
+    const second = ingest.runIngestLoop({
+      home, backend: 'journal', workspaceId: 'p', maxIterations: 1, worktree: WT,
+      env: {}, run: () => { order.push('monitor'); return { ok: true, raw: '', error: null }; }, sleep: () => {},
+    });
+    assert.equal(second.stats.walReplayed, 1);
+    assert.equal(second.stats.inserted, 1, 'the crashed batch lands via replay');
+    assert.equal(order.length, 1, 'the monitor still runs after a successful replay');
+  } finally { rm(home); }
+});

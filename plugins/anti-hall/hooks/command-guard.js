@@ -400,7 +400,7 @@ const DEVSWARM_JS_PREFIX_SRC = '(?:node\\s+)?(?:\\S*[\\\\/])?scripts[\\\\/]devsw
 // `unarchive`'s mid-word "archive" substring — no boundary exists between
 // "un" and "archive").
 const MAILBOX_VERB_ALT = '(?:inbox\\s+' + FLAG_SKIP_SRC
-  + '(?:pull|ack|read-primary|read|tick)\\b|heartbeat\\b|reap-orphans\\b|register(?!-)\\b|archive(?!-)\\b)';
+  + '(?:pull|ack|read-primary|drain-primary-legacy|read|tick)\\b|heartbeat\\b|reap-orphans\\b|register(?!-)\\b|archive(?!-)\\b)';
 const DEVSWARM_JS_MAILBOX_RE = new RegExp(
   '\\b' + DEVSWARM_JS_PREFIX_SRC + '\\s+' + FLAG_SKIP_SRC + MAILBOX_VERB_ALT,
   'i'
@@ -459,7 +459,7 @@ function detectSubagentMailboxTouch(command, depth) {
 }
 function buildSubagentMailboxReason() {
   return 'DEVSWARM SUBAGENT MAILBOX GUARD: this Bash command invokes the DevSwarm mailbox ' +
-    '(inbox pull/ack/read/read-primary/tick, inbox messages --ack, mesh read, roster --ack, ' +
+    '(inbox pull/ack/ack-primary/read/read-primary/drain-primary-legacy/tick, inbox messages --ack, mesh read, roster --ack, ' +
     'reap-orphans, register, archive, or heartbeat) from SUBAGENT context. Only the workspace MAIN THREAD may own ' +
     'the mailbox — a subagent that acks/reads it advances the shared cursor, so the main thread ' +
     'silently misses mail (defect f0958b13fe2b). Do NOT delegate mailbox verbs to a subagent. ' +

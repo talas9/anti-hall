@@ -100,7 +100,7 @@ or `roster --ack` — a subagent that does advances the shared cursor and the ma
 silently misses mail. `hooks/command-guard.js`'s `devswarm-subagent-mailbox-guard` blocks
 these verbs whenever the PreToolUse payload shows subagent context (skip via
 `ANTIHALL_ALLOW_SUBAGENT_MAILBOX=1` or the `devswarm-subagent-mailbox-guard` skip name);
-see `docs/KB-devswarm-hivecontrol.md` §42.
+see `docs/KB-devswarm-hivecontrol.md` §42. (Phase 5: `read-primary` / `messages --ack` are read-only — after handling the mail run the returned `ackCommand`, i.e. `inbox ack-primary <id> --receipt <rid>`.)
 
 **One read-position table (mesh redesign Phase 3 — supersedes the per-instance files below).**
 Every read position is a row in the store's `reader_cursors` table: `'#floor'` (the stored,
@@ -114,7 +114,7 @@ snapshot PROVES it ended — never because a session file is missing. `inbox cou
 store read error is UNKNOWN (a gate blocks with the reason), never 0. The legacy files named
 below are imported once (the update's `reader-cursors-import` stage, `doctor --repair`, or
 lazily on first ack), read-only after that, never deleted, and the shared pair and descriptor
-cursor are still raised (upward only) for one release so older builds stay loss-free.
+cursor are still raised (upward only) for one release so older builds stay loss-free. (Phase 5: `read-primary` / `messages --ack` are read-only — after handling the mail run the returned `ackCommand`, i.e. `inbox ack-primary <id> --receipt <rid>`.)
 
 **Per-instance cursors (v0.99.0, defect 8b211241bbe9).** The read cursor is no longer one
 value per row id. Each INSTANCE — one OS process identity, stable across every CLI call from
@@ -126,7 +126,7 @@ moved only by a fold or a reap; the shared `cursors/<id>.json` is now a projecti
 across instances. Consequence for doctrine: two processes reading one id no longer eat each
 other's mail, and a `read-primary` returning 0 is trustworthy for THAT instance. Every cursor
 advance is journaled to `cursor-log/<repoKey>.ndjson` with its from/to, delivered count,
-caller, gate and verb.
+caller, gate and verb. (Phase 5: `read-primary` / `messages --ack` are read-only — after handling the mail run the returned `ackCommand`, i.e. `inbox ack-primary <id> --receipt <rid>`.)
 
 **Per-reader unread vs. the shared min-floor (v0.99.2, defect f061789267c1 /
 a77b85571dfa).** The shared `cursors/<id>.json` projection above (the MIN
@@ -279,7 +279,7 @@ Descriptor/registry divergence is repaired in both directions, and a registry wr
 during promotion is now reported as `promotion.registryWriteError` on `inbox pull`/
 `read-primary`/`inbox messages` JSON output (plus a stderr line) instead of being
 swallowed — the descriptor promotion itself already succeeded, and the next read repairs
-the registry from the descriptor's existing value. Full record: `docs/KB-devswarm-hivecontrol.md` §40.
+the registry from the descriptor's existing value. Full record: `docs/KB-devswarm-hivecontrol.md` §40. (Phase 5: `read-primary` / `messages --ack` are read-only — after handling the mail run the returned `ackCommand`, i.e. `inbox ack-primary <id> --receipt <rid>`.)
 
 ## Blocking questions — CHILD asks, PARENT answers (never child → human)
 
@@ -331,7 +331,7 @@ a child mid-task that hit a decision point and still has other work it could be 
    on a schedule (30 minutes by default as of v0.97.0/D13, was 5 minutes — Monitor,
    when armed, is the PRIMARY low-latency wake path; this cron is the fallback,
    never disarmed) then `inbox read-primary <id>` only when the tick actually found
-   something (the per-turn mesh reminder in "v0.58 mesh-only messaging" below
+   something — and run the `ackCommand` it returns once the messages are handled (the per-turn mesh reminder in "v0.58 mesh-only messaging" below
    reinforces this) so child questions are actually SEEN while you're otherwise
    idle. An unanswered child question is a **PARENT failure**, not a child stall.
 2. **Answer decisively**, from the plan/intent context you already hold — you usually
@@ -385,8 +385,10 @@ recovery" below) is a third, explicitly-invoked script, not a daemon.
 | `inbox read <id>` | none **(v0.84.0)** Partition resolution follows the WORKSPACE's registered project, not the caller's cwd. If they differ, the result is `known:false` with the NAMED reason/`registeredRepoKey`/`callerRepoKey` under `storeUnavailableDetail`, and a top-level `storeUnavailableReason` sibling to `storeUnavailable` (`storeUnavailable`/`storeUnavailableReason` stay `false`/`null` — a project-context-mismatch is not a genuine store-unavailable condition) — an honest "I cannot read this from here", NOT a zero meaning "no mail". | Durable-inbox cursor read (unread lines), no ack. | Check what's pending without consuming it. | Read-only. |
 | `inbox count <id>` | none **(v0.84.0)** Partition resolution follows the WORKSPACE's registered project, not the caller's cwd. If they differ, the result is `known:false` with the NAMED reason/`registeredRepoKey`/`callerRepoKey` under `storeUnavailableDetail`, and a top-level `storeUnavailableReason` sibling to `storeUnavailable` (`storeUnavailable`/`storeUnavailableReason` stay `false`/`null` — a project-context-mismatch is not a genuine store-unavailable condition) — an honest "I cannot read this from here", NOT a zero meaning "no mail". | Durable-inbox unread count only. | Cheap pre-check before `inbox read`. | Read-only. |
 | `inbox ack <id> [--to N] [--ack-as-owner]` | `--to` = ack to absolute count; omitted = ack-all **(v0.84.0)** A refused read may not acknowledge: `ack` on a workspace the caller does not own no longer advances the cursor (it used to, permanently skipping that workspace's mail). **(v0.96.0, D11-C)** `ack` also now refuses the WHOLE verb on a POSITIVE, resolvable ownership mismatch — the caller's own cwd/env resolves to a REAL, different registered row — instead of the previous half-ack (NDJSON drained, store cursor silently skipped, `ok:true`, counts never converge). `--ack-as-owner` still overrides. An unresolvable-caller-identity or unregistered-caller shape (the ordinary "ran `inbox ack` from a bare shell" case) is NOT a cross-workspace hazard and still fails open (ack proceeds) exactly as before. | Advance the durable-inbox cursor. | After processing durable-inbox messages. | **Writes** (cursor file). |
-| `inbox messages <id> [--unread] [--ack] [--ack-as-owner]` | none | Primary/store non-destructive read — bodies straight from the store, no descriptor needed, never touches the native queue. **Ack-ownership guard (v0.56.0):** `--ack` refuses (`ok:false`) unless the caller's own cwd-derived identity provably owns `<id>` (`DEVSWARM_BUILDER_ID` cannot override a *different* cwd-derived identity). Pass `--ack-as-owner` for a legitimate cross-workspace ack (e.g. a supervisor clearing a dead workspace's backlog). | Primary/observer reading a workspace's store-backed inbox. | Read-only unless `--ack` (then **writes** the store cursor + refreshes `summary.json`). |
-| `inbox read-primary <id> [--ack-as-owner]` | none | `inbox messages <id> --unread --ack` under one name — same ack-ownership guard. **(v0.98.0)** Both `read-primary` and `inbox messages --ack` carry `storeUnavailable`/`storeUnavailableReason` too: an unreadable `registry.ndjson` during the ownership check itself now reports `store-unavailable`/`storeUnavailableReason` instead of the misleading `caller-not-registered` (a genuine store outage, not a real ownership problem). | Primary consuming+acking in one call. | **Writes.** |
+| `inbox messages <id> [--unread] [--ack] [--ack-as-owner]` | none | Primary/store non-destructive read (Phase 5: `--ack` no longer acks — it returns a receipt; run the returned `ackCommand` / `inbox ack-primary <id> --receipt <rid>` after handling the mail.) Bodies straight from the store, no descriptor needed, never touches the native queue. **Ack-ownership guard (v0.56.0):** `--ack` refuses (`ok:false`) unless the caller's own cwd-derived identity provably owns `<id>` (`DEVSWARM_BUILDER_ID` cannot override a *different* cwd-derived identity). Pass `--ack-as-owner` for a legitimate cross-workspace ack (e.g. a supervisor clearing a dead workspace's backlog). | Primary/observer reading a workspace's store-backed inbox. | Read-only unless `--ack` (then **writes** the store cursor + refreshes `summary.json`). |
+| `inbox read-primary <id> [--ack-as-owner]` | none | **READ-ONLY (Phase 5 ack split).** The unread view with the same union, caps and ownership guard as before, but it acks NOTHING: it writes a read receipt and returns `readReceiptId` plus one exact `ackCommand`. Drain = read, consume, then run `ackCommand`. Re-reading before the ack returns the same unread set (re-delivery, never loss). | Primary reading its own mailbox |
+| `inbox ack-primary <id> --receipt <rid> [--ack-as-owner]` | none | The ONLY cursor mutation of the split read path: advances exactly what the receipt's read returned (MAX-only, idempotent; mail that arrived after the read stays unread). Fails closed with no write on a missing/unknown/expired (24h) receipt, a receipt issued to another reader, or a caller that does not own `<id>`. | After consuming a `read-primary` result |
+| `inbox drain-primary-legacy <id> [--ack-as-owner]` | none | One-release compatibility: the old same-call read-and-ack (`read-primary --legacy-ack-now` is the same). `inbox messages --ack` now returns a receipt and warns; `--legacy-ack-now` keeps its old behavior for this release. No env var restores it. | Scripts not yet migrated |
 | `wake-directive <id>` | none required | On-demand REPRINT of the full SessionStart idle-wake directive (`CronList`/`CronCreate` + Monitor-arm prompt) for `<id>`, with the placeholder substituted for the concrete id. This is where the trimmed Stop-gate `MAILBOX WAKE CHECK` re-verify (`wakeReassert`, ~400-char cap) sends an agent when `CronList`/Monitor is missing — the Stop gate itself no longer re-issues `CronCreate` inline. Returns `{ok, id, isChild, agent, directive}`; `directive` is `''` (never an error) for an unknown/absent agent. | An agent whose Stop-gate MAILBOX WAKE CHECK reports something missing, or anyone wanting to re-print the full wake setup on demand. | Read-only. |
 
 **B4: `seq` vs `index` (both fields on every returned message row).** `seq` is the
@@ -419,13 +421,13 @@ matching on `hash` (table-wide UNIQUE) when verifying a specific message landed.
 verbs (the "read-only trio") — worth reaching for together when an agent just wants to
 know the current mesh state without touching anything. `workspaces list` and `inbox
 messages`/`read-primary` are id- or scope-specific reads; `mesh read` and `roster --ack`
-are the only surfaces that clear `broadcastUnread`.
+are the only surfaces that clear `broadcastUnread`. (Phase 5: `read-primary` / `messages --ack` are read-only — after handling the mail run the returned `ackCommand`, i.e. `inbox ack-primary <id> --receipt <rid>`.)
 
 ### Addressing & identity — a plain how-to for BOTH roles
 
 This section exists because a copy-paste-shaped mistake here used to fail closed silently
 (v0.62 addressing fix) or ack the wrong workspace's inbox. Read it before your first
-`send`/`inbox read-primary` call in a new workspace.
+`send`/`inbox read-primary` call in a new workspace. (Phase 5: `read-primary` / `messages --ack` are read-only — after handling the mail run the returned `ackCommand`, i.e. `inbox ack-primary <id> --receipt <rid>`.)
 
 **Addressing (`send --to`) — which roster field to copy, either role.** Run `roster`
 first. Each row has BOTH an `id` field and a `meshId` field — **copy either one** into
@@ -452,20 +454,21 @@ current worktree's Primary, no roster lookup needed.
 - **The ack path — know which calls MUTATE:**
   - `inbox messages <id>` alone is **READ-ONLY** — bodies straight from the store, cursor
     untouched.
-  - `inbox messages <id> --ack` **MUTATES** (advances the durable cursor + refreshes
-    `summary.json`) — and is ownership-gated (see the edge-case table below).
-  - `inbox read-primary <id>` is `inbox messages <id> --unread --ack` under one name — it
-    **ALWAYS MUTATES** (it IS the ack-in-one-call convenience verb). Add
-    `--ack-as-owner` only for a legitimate cross-workspace ack (e.g. a supervisor or
-    Primary clearing a DIFFERENT, dead workspace's backlog on its behalf) — it bypasses
-    the ownership check but still mutates identically.
+  - **Phase 5 ack split:** `inbox read-primary <id>` and `inbox messages <id> --ack` are
+    now READ-ONLY. They return `readReceiptId` + one exact `ackCommand`
+    (`inbox ack-primary <id> --receipt <rid>`); running that command after you have
+    handled the messages is the only thing that advances the cursor. Drain = read,
+    consume, ack. `inbox drain-primary-legacy <id>` (or `--legacy-ack-now`) keeps the old
+    same-call read-and-ack for one release. Add `--ack-as-owner` only for a legitimate
+    cross-workspace ack (e.g. a supervisor or Primary clearing a DIFFERENT, dead
+    workspace's backlog on its behalf) — it bypasses the ownership check.
 
 ### Edge cases — symptom to remedy
 
 | Situation | Symptom | Remedy |
 |---|---|---|
 | **Unregistered recipient** | `send --to X` returns `{ok:false, reason:'unregistered-recipient'}` | `X` isn't a real `id`/`meshId` in this project's registry. Run `roster`, copy an actual `id` or `meshId` from a live row, and re-send. |
-| **Ownership mismatch** | `inbox messages/read-primary --ack` returns `ack refused: caller "<X>" does not own workspace "<id>" (pass --ack-as-owner to override)` | You're acking a workspace's inbox from a cwd that doesn't provably own it. If this genuinely is a legitimate cross-workspace ack (supervisor/Primary clearing another workspace's backlog), add `--ack-as-owner`; otherwise pass the CORRECT `<id>` — your own cwd-derived one. |
+| **Ownership mismatch** | `inbox messages --ack` / `read-primary` (or its `ack-primary`) returns `ack refused: caller "<X>" does not own workspace "<id>" (pass --ack-as-owner to override)` | You're acking a workspace's inbox from a cwd that doesn't provably own it. If this genuinely is a legitimate cross-workspace ack (supervisor/Primary clearing another workspace's backlog), add `--ack-as-owner`; otherwise pass the CORRECT `<id>` — your own cwd-derived one. |
 | **Mis-keyed / stray registry row** | A workspace looks missing or duplicated across `roster`/`diagnose`, or `reconcile`'s output shows non-zero `healed`/`rehomed` counts | Self-heals automatically — never hand-edit the store. `reconcile` runs a heal pre-pass on every call; `node hooks/doctor.js --fix` and the `update` skill also sweep EVERY per-project store for this on every run. Trigger one on demand if you don't want to wait for the next `update`/`doctor` pass. |
 | **Stale ingest daemon** | New native messages from a sender aren't showing up in `roster`/`diagnose`, even though the sender confirms it sent them | `roster`/`diagnose`/`healthcheck` always read the shared store LIVE (a pure on-demand query, never a stale cache) — they faithfully show whatever has ALREADY landed; a stale/dead ingest daemon only stops NEW native messages from landing. Restart it: `node companion/install-devswarm-ingest.js` (or let the DevSwarm-gated auto-heal in `node hooks/doctor.js --fix` / the `update` skill do it — both re-run this installer automatically inside an active session). |
 | **Idle child, no task** | A child workspace has nothing to do and is sitting unattended | Layer 1 self-report: the child runs `heartbeat <id> --summary "idle — reassign me or archive me"` (see "The layered recovery model" below). The Primary then either assigns new work via `send --to <id>` or, once merged/tested/deployed per its own policy, requests archive via `archive-request <childId>`. |
@@ -554,7 +557,7 @@ message-child`/`message-parent` are guard-blocked unconditionally whenever DevSw
 active (see "command-guard's native-SEND block" above) — there is no alternate native
 path. Report status via `heartbeat <id> --summary TEXT`; direct-message via `send
 --to-primary`/`send --to <meshId>`; broadcast via `send --broadcast`; check mesh state via
-`roster`/`diagnose`/`healthcheck`/`inbox read-primary <id>`.
+`roster`/`diagnose`/`healthcheck`/`inbox read-primary <id>`. (Phase 5: `read-primary` / `messages --ack` are read-only — after handling the mail run the returned `ackCommand`, i.e. `inbox ack-primary <id> --receipt <rid>`.)
 
 ## v0.57 mesh — shared per-project store + all-to-all messaging (SHIPPED in v0.58.0 — Claude-side only)
 
@@ -650,7 +653,7 @@ mesh rather than idling silently (this IS the Tier-0 wake posture — it replace
 re-assertion re-injects the same core directive (`devswarm-child-turn.js` for the child,
 `devswarm-parent-inbox.js` for the Primary — the one deliberate departure from that hook's
 prior "empty when nothing to report" contract, a small fixed per-turn cost traded against
-model habituation/drift back toward native messaging over many quiet turns).
+model habituation/drift back toward native messaging over many quiet turns). (Phase 5: `read-primary` / `messages --ack` are read-only — after handling the mail run the returned `ackCommand`, i.e. `inbox ack-primary <id> --receipt <rid>`.)
 
 **Honest wake-mechanism caveat.** "Keep polling the mesh" is the entire Tier-0 wake
 mechanism this release ships — it depends on the session actually taking another turn.

@@ -25,13 +25,21 @@
 //      appendFileSync, idempotent by embedded content hash (a re-observed message
 //      is skipped, so a crash-then-retry never duplicates a line).
 //
-// CRASH-WINDOW (honest residual limitation). `read-messages` marks the native
-// messages read BEFORE this process durably persists them. If the process dies in
-// the window between the native mark-read and the `appendFileSync`, those messages
-// are lost from the native side without landing in the durable inbox. The
-// count-gate MINIMIZES the window (no read-messages when count===0) but cannot
-// close it — hivecontrol exposes no non-destructive full read. Documented, not
-// hidden.
+// DELIVERY WAL (mesh redesign Phase 5, simplified). `read-messages` marks the
+// native messages read BEFORE this process persists them. The raw stdout of
+// every destructive read is therefore appended + fsynced to ONE append-only
+// per-reader WAL file (<devswarm>/wal/pull-<id>.ndjson) BEFORE it is parsed or
+// appended anywhere. Each batch is closed by a `done` (destination NDJSON
+// appended + fsynced) or `quarantine` (unparseable/short — raw bytes kept in the
+// WAL, never deleted) record. Every pull replays still-open batches FIRST,
+// under the pull lock, and refuses a new destructive read while one cannot be
+// replayed. Replay is idempotent by the existing content hash, so a crash
+// anywhere after the WAL fsync re-delivers, never loses.
+//
+// RESIDUAL WINDOW (not fixable here): hivecontrol dequeues inside its own
+// process; a crash between that dequeue and our WAL fsync (native-side, or
+// while spawnSync still holds stdout in memory) loses the batch. Closing it
+// needs a native peek/ack API.
 //
 // Pure Node built-ins. Every spawn is injectable via io.run so unit tests exercise
 // the count-gate / drain / idempotence / lock WITHOUT spawning a real binary; io.fs
@@ -57,6 +65,8 @@ const store = require('./devswarm-store.js');
 // durable NDJSON inbox stay UNCHANGED, worktree-hash based, D19); only WHICH
 // physical store the best-effort parity write lands in changes.
 const repokey = require('./devswarm-repokey.js');
+// Phase 5 delivery WAL (shared with the ingest daemon's monitor path).
+const readWal = require('./devswarm-read-wal.js');
 
 const PULL_LOCK_STALE_MS = 60 * 1000;   // a one-shot pull is short-lived; a lock older than this from a dead/unknown holder is stealable
 const READ_TIMEOUT_MS = 10 * 1000;      // the ONE bounded read-messages spawn — finite, never a blocking monitor
@@ -290,6 +300,10 @@ function collectExistingHashes(F, inboxPath) {
   return seen;
 }
 
+// walPath(home, id) — this child's pull WAL (see devswarm-read-wal.js).
+function walPath(home, id) { return readWal.walPath(home, 'pull', id); }
+function walPending(F, file) { return readWal.pending(F, file); }
+
 // pullOnce({ home, id, env, backend, now, io }) -> { ok, locked, imported, duplicate, nativeCount, error? }.
 // One bounded, guard-safe drain of the child's native queue into its durable inbox.
 // The caller GUARANTEES the descriptor (workspaces/<id>.json with inboxPath) exists.
@@ -357,76 +371,184 @@ function pullOnce(opts) {
     // here so a descriptor missing only this field still drains.
     const inboxPath = desc.inboxPath || inboxDefaultPath(home, id);
 
+    const wal = walPath(home, id);
+
+    // ingestRaw(raw) -> { imported, duplicate, parsed }. Parse one raw native
+    // batch, append the new rows to the durable inbox NDJSON (idempotent by
+    // content hash) and fsync it, then the best-effort store parity feed.
+    // THROWS when the durable append fails (the WAL entry then stays pending).
+    const ingestRaw = (raw) => {
+      const messages = normalizeMonitorPayload(raw);
+      const seen = collectExistingHashes(F, inboxPath);
+      let imported = 0;
+      let duplicate = 0;
+      const batch = [];
+      for (const m of messages) {
+        const h = messageHash(id, m);
+        if (seen.has(h)) { duplicate++; continue; }
+        seen.add(h); // also de-dupe WITHIN the batch
+        batch.push(JSON.stringify({
+          _h: h,
+          fromBranch: (m && m.fromBranch != null) ? m.fromBranch : null,
+          message: (m && m.message != null) ? m.message : null,
+          createdAt: (m && m.createdAt != null) ? m.createdAt : null,
+          status: (m && m.status != null) ? m.status : null,
+          // sender (D3, additive): appended AFTER the pre-existing fields, not
+          // interleaved — `_h` is computed from `m` above (messageHash), never
+          // from this row object, so adding a trailing key here cannot change
+          // an existing or new row's hash/dedupe key. Old rows on disk simply
+          // lack this key; every reader already treats `sender == null` as
+          // "no resolvable sender, count as real" (fail-open), so this is
+          // silently backward-compatible with every row written before it.
+          sender: senderId,
+        }) + '\n');
+        imported++;
+      }
+
+      // DURABLE append precedes ok:true (crash-window ordering). ONE appendFileSync of
+      // the whole batch — a throw here propagates as ok:false, never a false
+      // success. Leading '\n' when a prior crash left a torn tail (#26). The
+      // fsync makes the WAL `done` record below truthful.
+      if (batch.length > 0) {
+        F.mkdirSync(path.dirname(inboxPath), { recursive: true });
+        F.appendFileSync(inboxPath, (readWal.lacksTrailingNewline(F, inboxPath) ? '\n' : '') + batch.join(''));
+        const fd = F.openSync(inboxPath, 'r');
+        try { F.fsyncSync(fd); } finally { F.closeSync(fd); }
+      }
+
+      // Store parity feed (do NOT touch the store cursor). Best-effort: the durable
+      // NDJSON above is the source of truth `inbox read/ack` and the child-turn hook
+      // consume; the store projection is a secondary read model. Dedupe is by the SAME
+      // messageHash, so a re-ingest OR-IGNOREs — idempotent across both layers.
+      try {
+        // v0.57 mesh (D1/D8): the SHARED per-project store (store/<repoKey>/) when
+        // repoKey resolves — `id` (the child's builder-id) still selects the
+        // PARTITION inside that store (unchanged); repoKey===null falls back to
+        // the PRE-MESH per-id store (fail-open). deriveSummary is called WITHOUT
+        // an explicit workspaceId so it targets THIS handle's own hash (repoKey
+        // when set) — passing `workspaceId: id` here would write the projection to
+        // the WRONG (legacy id-hash) summary file even though the messages
+        // landed in the repoKey store.
+        const s = store.openStore({ home, workspaceId: id, hash: repoKey || undefined, backend, env });
+        try {
+          ingestPayload(s, raw, { workspaceId: id, now });
+          store.deriveSummary(s, { home, env, now });
+        } finally { s.close(); }
+      } catch (_) { /* durable inbox already persisted; store parity is best-effort */ }
+      return { imported, duplicate, parsed: messages.length };
+    };
+
+    // The worktree recorded on every batch lets a reader whose KEY changed
+    // (identity rekey / new builder id) still find its open batches.
+    const walMeta = { worktree: desc.worktreePath || cwd || null };
+
+    // FAIL CLOSED, step 1: batches spilled when the WAL was unwritable must be
+    // absorbed back into a writable WAL before anything else.
+    const absorbed = readWal.absorbSpill(F, wal, now);
+    if (absorbed.error) {
+      return {
+        ok: false, locked: true, walPath: wal, walBlocked: true,
+        spilled: readWal.spillPending(F, wal).length, spillDir: readWal.spillDir(wal),
+        error: 'delivery WAL not writable (' + absorbed.error + ') — spilled batch(es) kept in '
+          + readWal.spillDir(wal) + '; no destructive native read until the WAL is writable',
+      };
+    }
+
+    // REPLAY FIRST (admission control): every WAL batch a previous pull
+    // captured but never closed — in this reader's WAL, or in another pull WAL
+    // naming the same worktree (a prior reader key) — is ingested before any
+    // new destructive read. A replay failure returns ok:false with the batch
+    // still pending — no new read-messages while an earlier one has not landed.
+    let replayed = 0;
+    let replayImported = 0;
+    let pendingEntries;
+    try {
+      pendingEntries = walPending(F, wal).map((b) => ({ file: wal, e: b.e, raw: b.raw }))
+        .concat(readWal.adoptForWorktree(F, home, 'pull', walMeta.worktree, wal,
+          // the prior reader's own pull lock: never claim a WAL mid-pull
+          (base) => acquireExclLock(pullLockPath(home, base.slice('pull-'.length)), io, PULL_LOCK_STALE_MS)));
+    } catch (e) {
+      return { ok: false, locked: true, walBlocked: true, error: 'delivery WAL unreadable (' + String((e && e.code) || e) + '): ' + wal, walPath: wal };
+    }
+    for (const entry of pendingEntries) {
+      let r;
+      try { r = ingestRaw(entry.raw); } catch (e) {
+        return {
+          ok: false, locked: true, walPath: wal, walPending: pendingEntries.length - replayed,
+          error: 'WAL replay failed (batch kept pending, no new native read): ' + String((e && e.message) || e),
+        };
+      }
+      const empty = r.parsed === 0 && entry.raw.trim() !== '' && entry.raw.trim() !== '[]';
+      readWal.closeBatch(F, entry.file, entry.e, empty
+        ? { t: 'quarantine', reason: 'unparseable' }
+        : { t: 'done', imported: r.imported, duplicate: r.duplicate, into: id }, now);
+      replayed += 1;
+      replayImported += r.imported;
+    }
+    const replayOut = replayed ? { walReplayed: replayed, walReplayImported: replayImported } : {};
+
+    // FAIL CLOSED, step 2: never issue a destructive read into a WAL that
+    // cannot be appended + fsynced right now.
+    const notWritable = readWal.preflight(F, wal);
+    if (notWritable) {
+      return Object.assign({
+        ok: false, locked: true, walPath: wal, walBlocked: true,
+        error: 'delivery WAL not writable (' + notWritable + '): ' + wal + ' — destructive native read refused',
+      }, replayOut);
+    }
+
     // NON-DESTRUCTIVE count-gate. count===0 -> never touch read-messages.
     const cRes = run({ args: ['workspace', 'message-count'], env });
     if (!cRes || !cRes.ok) {
-      return { ok: false, locked: true, error: (cRes && cRes.error) || 'message-count failed' };
+      return Object.assign({ ok: false, locked: true, error: (cRes && cRes.error) || 'message-count failed' }, replayOut);
     }
     const nativeCount = parseCount(cRes.raw);
     if (!(nativeCount > 0)) {
-      return { ok: true, locked: true, imported: 0, duplicate: 0, nativeCount: 0 };
+      readWal.maybeRotate(F, wal, now);
+      return Object.assign({ ok: true, locked: true, imported: 0, duplicate: 0, nativeCount: 0 }, replayOut);
     }
 
     // count>0 -> ONE bounded read-messages (finite timeout, NEVER monitor).
     const rRes = run({ args: ['workspace', 'read-messages'], timeout: READ_TIMEOUT_MS, env });
+
+    // WAL the RAW bytes IMMEDIATELY — before the exit-status check and before
+    // any parse or validation (a failed/killed read can still carry popped
+    // stdout). Residual window (native dequeue -> here) is documented in
+    // devswarm-read-wal.js. A WAL write failure SPILLS the raw bytes to a
+    // separate fsynced file and blocks further destructive reads (step 1).
+    const rawStr = String(rRes && rRes.raw != null ? rRes.raw : '');
+    let entryId = null;
+    let walError = null;
+    let spillPath = null;
+    let lastResortPath = null;
+    if (rawStr !== '') {
+      const cap = readWal.captureRaw(F, wal, rawStr, now, walMeta);
+      entryId = cap.entryId || null;
+      if (!entryId) {
+        walError = cap.error || 'WAL write failed';
+        spillPath = cap.spillPath || null;
+        lastResortPath = cap.lastResortPath || null;
+      }
+    }
     if (!rRes || !rRes.ok) {
-      return { ok: false, locked: true, error: (rRes && rRes.error) || 'read-messages failed' };
+      return Object.assign({
+        ok: false, locked: true, error: (rRes && rRes.error) || 'read-messages failed',
+        walEntry: entryId, walPath: wal,
+      }, replayOut, walError ? { walError, walBlocked: true, spillPath, lastResortPath } : {});
     }
 
-    const messages = normalizeMonitorPayload(rRes.raw);
-    const seen = collectExistingHashes(F, inboxPath);
-    let imported = 0;
-    let duplicate = 0;
-    const batch = [];
-    for (const m of messages) {
-      const h = messageHash(id, m);
-      if (seen.has(h)) { duplicate++; continue; }
-      seen.add(h); // also de-dupe WITHIN the batch
-      batch.push(JSON.stringify({
-        _h: h,
-        fromBranch: (m && m.fromBranch != null) ? m.fromBranch : null,
-        message: (m && m.message != null) ? m.message : null,
-        createdAt: (m && m.createdAt != null) ? m.createdAt : null,
-        status: (m && m.status != null) ? m.status : null,
-        // sender (D3, additive): appended AFTER the pre-existing fields, not
-        // interleaved — `_h` is computed from `m` above (messageHash), never
-        // from this row object, so adding a trailing key here cannot change
-        // an existing or new row's hash/dedupe key. Old rows on disk simply
-        // lack this key; every reader already treats `sender == null` as
-        // "no resolvable sender, count as real" (fail-open), so this is
-        // silently backward-compatible with every row written before it.
-        sender: senderId,
-      }) + '\n');
-      imported++;
+    let got;
+    try { got = ingestRaw(rawStr); } catch (e) {
+      if (!walError) throw e; // WAL entry pending -> the next pull replays it
+      return Object.assign({
+        ok: false, locked: true, walBlocked: true, walError, spillPath, lastResortPath,
+        error: 'delivery WAL write failed (' + walError + ') and the inbox append failed ('
+          + String((e && e.message) || e) + ') — batch kept in ' + (spillPath || lastResortPath || 'stderr only')
+          + '; destructive reads blocked until the WAL is writable',
+      }, replayOut);
     }
-
-    // DURABLE append precedes ok:true (crash-window ordering). ONE appendFileSync of
-    // the whole batch — a throw here propagates to the catch below as ok:false, never
-    // a false success. Skip the syscall entirely when there is nothing new.
-    if (batch.length > 0) {
-      F.mkdirSync(path.dirname(inboxPath), { recursive: true });
-      F.appendFileSync(inboxPath, batch.join(''));
-    }
-
-    // Store parity feed (do NOT touch the store cursor). Best-effort: the durable
-    // NDJSON above is the source of truth `inbox read/ack` and the child-turn hook
-    // consume; the store projection is a secondary read model. Dedupe is by the SAME
-    // messageHash, so a re-ingest OR-IGNOREs — idempotent across both layers.
-    try {
-      // v0.57 mesh (D1/D8): the SHARED per-project store (store/<repoKey>/) when
-      // repoKey resolves — `id` (the child's builder-id) still selects the
-      // PARTITION inside that store (unchanged); repoKey===null falls back to
-      // the PRE-MESH per-id store (fail-open). deriveSummary is called WITHOUT
-      // an explicit workspaceId so it targets THIS handle's own hash (repoKey
-      // when set) — passing `workspaceId: id` here would write the projection to
-      // the WRONG (legacy id-hash) summary file even though the messages
-      // landed in the repoKey store.
-      const s = store.openStore({ home, workspaceId: id, hash: repoKey || undefined, backend, env });
-      try {
-        ingestPayload(s, rRes.raw, { workspaceId: id, now });
-        store.deriveSummary(s, { home, env, now });
-      } finally { s.close(); }
-    } catch (_) { /* durable inbox already persisted; store parity is best-effort */ }
+    const imported = got.imported;
+    const duplicate = got.duplicate;
 
     // RECONCILIATION — make the destructive-read silent-loss OBSERVABLE. The KB pins
     // `message-count` and `read-messages` to the SAME native metric: message-count is
@@ -434,24 +556,32 @@ function pullOnce(opts) {
     // marks them read (destructive) — so the count gates a destructive drain whose batch
     // SHOULD contain exactly that many messages. If we recovered FEWER than the count
     // said (imported+duplicate < nativeCount), the shortfall was marked-read natively but
-    // never landed in the durable inbox — genuine loss (e.g. normalizeMonitorPayload
-    // returned [] on an unhandled read-messages shape). Because they are the same metric,
-    // fail ok:false to force attention; a NEW message arriving between the two calls can
-    // only make read-messages return MORE (never fewer), so a shortfall is never a benign
-    // count-vs-read race — it is always real loss. Surface a loud `lost` field AND a
-    // best-effort telemetry line (never throws) so the loss is never silent.
+    // never landed in the durable inbox (e.g. normalizeMonitorPayload returned [] on an
+    // unhandled read-messages shape). The raw bytes are KEPT in the WAL (quarantined,
+    // never deleted), so the batch is recoverable — but fail ok:false to force attention.
     const recovered = imported + duplicate;
-    if (recovered < nativeCount) {
+    const shortfall = recovered < nativeCount;
+    if (!walError) {
+      try {
+        readWal.closeBatch(F, wal, entryId, shortfall
+          ? { t: 'quarantine', reason: 'shortfall', nativeCount, recovered }
+          : { t: 'done', imported, duplicate }, now);
+      } catch (_) { /* batch stays pending -> next pull replays it idempotently */ }
+    }
+    // A spilled batch keeps this reader blocked until absorbed: never ok:true.
+    const walOut = walError ? { walError, walBlocked: true, spillPath, lastResortPath } : {};
+    if (shortfall) {
       const lost = nativeCount - recovered;
       try {
         F.writeSync(2, 'devswarm-pull: reception shortfall for ' + JSON.stringify(id)
           + ' — message-count=' + nativeCount + ' recovered=' + recovered + ' lost=' + lost
-          + ' (marked-read natively but not persisted; likely an unhandled read-messages shape)\n');
+          + ' (marked-read natively but not parsed; raw batch kept in ' + wal + ' entry ' + entryId + ')\n');
       } catch (_) { /* telemetry is best-effort; a failed log must never break the drain */ }
-      return { ok: false, locked: true, imported, duplicate, nativeCount, lost };
+      return Object.assign({ ok: false, locked: true, imported, duplicate, nativeCount, lost, walPath: wal, walEntry: entryId }, replayOut, walOut);
     }
 
-    return { ok: true, locked: true, imported, duplicate, nativeCount };
+    return Object.assign({ ok: !walError, locked: true, imported, duplicate, nativeCount }, replayOut, walOut,
+      walError ? { error: 'delivery WAL write failed (' + walError + ') — batch kept in ' + (spillPath || lastResortPath || 'stderr only') + '; destructive reads blocked until the WAL is writable' } : {});
   } catch (e) {
     return { ok: false, locked: true, error: String(e && e.message || e) };
   } finally {
@@ -464,4 +594,5 @@ module.exports = {
   pullLockPath, inboxDefaultPath, cursorDefaultPath,
   acquireExclLock, defaultRun, parseCount, collectExistingHashes,
   pullOnce,
+  walPath, walPending,
 };

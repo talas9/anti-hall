@@ -234,7 +234,7 @@ test('drain marker: an ack-bearing read CLEARS the marker on the way out (no mar
   const f = seedForRead('drain-clear');
   try {
     const c = ctx(f.home, { cwd: f.repo, env: { CLAUDE_CODE_SESSION_ID: 'sess-clear' } });
-    const r = cli.run(['inbox', 'read-primary', f.id], c);
+    const r = cli.run(['inbox', 'drain-primary-legacy', f.id], c);
     assert.strictEqual(r.result.ok, true, JSON.stringify(r.result));
     assert.strictEqual(drainMarker.readDrainMarker(f.home, f.id, {}), null,
       'a finished drain must leave NO marker — a lingering one would silence the parent gate until its TTL expired');
@@ -258,7 +258,7 @@ test('drain marker: DURING the read the marker exists, carries this session id, 
     };
     let threw = false;
     try {
-      cli.run(['inbox', 'read-primary', f.id], ctx(f.home, { cwd: f.repo, env: { CLAUDE_CODE_SESSION_ID: 'sess-during' } }));
+      cli.run(['inbox', 'drain-primary-legacy', f.id], ctx(f.home, { cwd: f.repo, env: { CLAUDE_CODE_SESSION_ID: 'sess-during' } }));
     } catch (_) { threw = true; } finally { storeLib.openStore = openStoreReal; }
 
     assert.ok(seen, 'a marker must exist while the drain is in flight — that is the whole point of the fix');
@@ -820,7 +820,7 @@ test('drain marker MUTATION-KILL: without the entry mark, an in-flight drain is 
           throw new Error('boom');
         };
         try {
-          mutatedCli.run(['inbox', 'read-primary', f.id], ctx(f.home, { cwd: f.repo, env: { CLAUDE_CODE_SESSION_ID: 'sess-mutant' } }));
+          mutatedCli.run(['inbox', 'drain-primary-legacy', f.id], ctx(f.home, { cwd: f.repo, env: { CLAUDE_CODE_SESSION_ID: 'sess-mutant' } }));
         } catch (_) { /* the throw is the probe */ } finally { storeLib.openStore = openStoreReal; }
         assert.strictEqual(seen, null,
           'RED (expected on the mutant): no marker exists mid-drain, so the gate keeps forcing acks at a mailbox '
@@ -841,7 +841,7 @@ test('drain marker MUTATION-KILL: without the `finally` clear, a crashed drain s
         const openStoreReal = storeLib.openStore;
         storeLib.openStore = function patched() { storeLib.openStore = openStoreReal; throw new Error('boom'); };
         try {
-          mutatedCli.run(['inbox', 'read-primary', f.id], ctx(f.home, { cwd: f.repo, env: { CLAUDE_CODE_SESSION_ID: 'sess-leak' } }));
+          mutatedCli.run(['inbox', 'drain-primary-legacy', f.id], ctx(f.home, { cwd: f.repo, env: { CLAUDE_CODE_SESSION_ID: 'sess-leak' } }));
         } catch (_) { /* expected */ } finally { storeLib.openStore = openStoreReal; }
         const leaked = drainMarker.readDrainMarker(f.home, f.id, {});
         assert.ok(leaked && !leaked.stale,
