@@ -236,3 +236,45 @@ test('under node --test with no injected execFn the real claude CLI is never spa
   assert.strictEqual(r.attempted, false);
   assert.match(r.detail, /node --test/);
 });
+
+// --- P2a: `claude` not on PATH -> CLAUDE_CODE_EXECPATH; failure -> manual command + restart
+function enoent() { const e = new Error('spawn claude ENOENT'); e.code = 'ENOENT'; return e; }
+
+test('P2a: `claude` not on PATH -> retries with CLAUDE_CODE_EXECPATH', () => {
+  const calls = [];
+  const out = U.harnessRegisterPostUpdate({
+    installedVersion: '1.0.0', latest: '1.1.0', env: { CLAUDE_CODE_EXECPATH: '/opt/claude/bin/claude-x' },
+    execFileFn: (bin, args) => { calls.push([bin, args.join(' ')]); if (bin === 'claude') throw enoent(); return 'updated\n'; },
+  });
+  assert.deepStrictEqual(calls, [['claude', 'plugin update anti-hall@anti-hall'], ['/opt/claude/bin/claude-x', 'plugin update anti-hall@anti-hall']]);
+  assert.strictEqual(out.ok, true);
+});
+
+test('P2a: no `claude` and no CLAUDE_CODE_EXECPATH -> failure whose action is the manual command + RESTART, never /reload-plugins', () => {
+  const out = U.harnessRegisterPostUpdate({
+    installedVersion: '1.0.0', latest: '1.1.0', env: {},
+    execFileFn: () => { throw enoent(); },
+  });
+  assert.strictEqual(out.attempted, true);
+  assert.strictEqual(out.ok, false);
+  assert.match(out.detail, /claude plugin update anti-hall@anti-hall, then RESTART/);
+  const action = U.harnessAction(out, true, '1.1.0');
+  assert.match(action, /^run manually: claude plugin update anti-hall@anti-hall — then RESTART Claude Code/);
+  assert.doesNotMatch(action, /^run \/reload-plugins/);
+  // A needed-and-succeeded registration says RESTART; nothing attempted keeps the reload action.
+  assert.match(U.harnessAction({ attempted: true, ok: true }, true, '1.1.0'), /^RESTART Claude Code/);
+  assert.strictEqual(U.harnessAction({ attempted: false, ok: false }, true, '1.1.0'), 'run /reload-plugins');
+});
+
+test('P2a: a registration that FAILED in the re-exec child -> its manual-command action replaces the parent reload action', () => {
+  const fx = reexecFixture();
+  try {
+    const local = { installed: '0.108.0', latest: '0.109.0', updated: true, action: 'run /reload-plugins' };
+    const childReg = { attempted: true, ok: false, detail: 'harness update failed — run manually: claude plugin update anti-hall@anti-hall, then RESTART Claude Code (x)' };
+    const { status } = U.runPostPullReexec({
+      paths: fx.paths, status: local, env: {}, cwd: fx.root,
+      spawnReexec: fakeChild({ harnessRegistered: childReg, action: U.harnessAction(childReg, true, '0.109.0') }),
+    });
+    assert.match(status.action, /^run manually: claude plugin update anti-hall@anti-hall/);
+  } finally { fs.rmSync(fx.root, { recursive: true, force: true }); }
+});

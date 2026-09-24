@@ -396,6 +396,23 @@ const OFFLINE_RE = new RegExp(
 // one such call. Failure/timeout behavior itself (OFFLINE_RE fail-open vs
 // hard STOP) is unchanged; only how long we wait before deciding.
 const GIT_EXEC_TIMEOUT_MS = 20000;
+// `claude plugin update` timeout (harnessRegisterPostUpdate); also part of the
+// post-pull re-exec child's budget (runPostPullReexec).
+const HARNESS_REGISTER_TIMEOUT_MS = 20000;
+const HARNESS_REGISTER_CMD = 'claude plugin update anti-hall@anti-hall';
+
+// harnessAction(harnessRegistered, updated, latest) -> the status `action`.
+// A registration that was needed but failed never says "/reload-plugins": the
+// harness keeps loading the old build until the user registers and restarts.
+function harnessAction(harnessRegistered, updated, latest) {
+  if (harnessRegistered && harnessRegistered.ok) {
+    return 'RESTART Claude Code (exit and resume the session) — the harness now registers ' + latest + '; /reload-plugins is not enough';
+  }
+  if (harnessRegistered && harnessRegistered.attempted) {
+    return 'run manually: ' + HARNESS_REGISTER_CMD + ' — then RESTART Claude Code (exit and resume the session); /reload-plugins is not enough';
+  }
+  return updated ? 'run /reload-plugins' : 'already up to date';
+}
 
 /** defaultExec(args, cwd) → stdout string. Throws on non-zero (carries .stderr/.status). */
 function defaultExec(args, cwd) {
@@ -510,12 +527,22 @@ function harnessRegisterPostUpdate(opts) {
   }
   // Tests never spawn the real harness CLI (repo rule: tests never touch the
   // real machine); a test that wants this path injects execFn.
-  if (!o.execFn && process.env.NODE_TEST_CONTEXT) {
+  if (!o.execFn && !o.execFileFn && process.env.NODE_TEST_CONTEXT) {
     return { attempted: false, ok: false, detail: 'skipped under node --test (no execFn injected; the real claude CLI is never spawned by tests)' };
   }
-  const run = o.execFn || ((args) => execFileSync('claude', args, {
-    encoding: 'utf8', timeout: 20000, stdio: ['ignore', 'pipe', 'pipe'],
-  }));
+  // `claude` may not be on the PATH of the shell running update (P2a): fall
+  // back to CLAUDE_CODE_EXECPATH, the running Claude Code binary's own path.
+  const env = o.env || process.env;
+  const execFile = o.execFileFn || execFileSync;
+  const execOpts = { encoding: 'utf8', timeout: HARNESS_REGISTER_TIMEOUT_MS, stdio: ['ignore', 'pipe', 'pipe'] };
+  const run = o.execFn || ((args) => {
+    try { return execFile('claude', args, execOpts); }
+    catch (e) {
+      const alt = env.CLAUDE_CODE_EXECPATH;
+      if (e && e.code === 'ENOENT' && alt) return execFile(alt, args, execOpts);
+      throw e;
+    }
+  });
   try {
     const out = run(cmdArgs);
     const text = String(out || '');
@@ -543,7 +570,7 @@ function harnessRegisterPostUpdate(opts) {
     const msg = (stderr ? String(stderr) : (e && e.message) || String(e)).trim();
     return {
       attempted: true, ok: false,
-      detail: 'harness update failed — run manually: ' + cmdStr + ' (' + (msg.split('\n')[0] || 'unknown error') + ')',
+      detail: 'harness update failed — run manually: ' + cmdStr + ', then RESTART Claude Code (' + (msg.split('\n')[0] || 'unknown error') + ')',
     };
   }
 }
@@ -3308,9 +3335,7 @@ function runUpdate(opts) {
       harnessRegistered,
       // A harness re-registration needs a full RESTART (see
       // harnessRegisterPostUpdate); a plain cache sync only needs a reload.
-      action: (harnessRegistered && harnessRegistered.ok)
-        ? 'RESTART Claude Code (exit and resume the session) — the harness now registers ' + latest + '; /reload-plugins is not enough'
-        : (updated ? 'run /reload-plugins' : 'already up to date'),
+      action: harnessAction(harnessRegistered, updated, latest),
     },
     changelog,
     stop: false,
@@ -3387,10 +3412,10 @@ function runPostPullReexec(opts) {
         const theirs = parsed.status.harnessRegistered;
         if (mine && mine.attempted && !(theirs && theirs.attempted)) {
           merged.harnessRegistered = mine;
-          if (mine.ok) merged.action = status.action;
-        } else if (theirs && theirs.ok && typeof parsed.status.action === 'string') {
-          // The NEW version did the registration (the usual case when the
-          // parent predates it): its RESTART action replaces our reload one.
+          merged.action = status.action; // RESTART, or the manual command on failure
+        } else if (theirs && theirs.attempted && typeof parsed.status.action === 'string') {
+          // The NEW version attempted the registration: its RESTART (or its
+          // manual-command-on-failure) action replaces our reload one.
           merged.action = parsed.status.action;
         }
         return { status: merged, note: null };
@@ -3570,6 +3595,7 @@ module.exports = {
   inspectInstalledIngest,
   ingestUnitNeedsHeal,
   harnessRegisterPostUpdate,
+  harnessAction,
   reconcilePostUpdate,
   foldMeshPostUpdate,
   foldAllStoresPostUpdate,

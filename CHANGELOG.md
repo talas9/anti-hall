@@ -174,7 +174,10 @@ the update.
   `/reload-plugins`). From 0.108.0 on, the post-pull re-exec means the newly pulled `update.js`
   performs the registration even when a later release changes it; a registration done by
   the parent is never hidden by the child's no-op. This does NOT cover the hop from 0.107.x
-  or earlier (that `update.js` has no re-exec) — see the upgrade note above. `doctor` warns when `installed_plugins.json` lags the
+  or earlier (that `update.js` has no re-exec) — see the upgrade note above.
+  When `claude` is not on `PATH` it retries with `CLAUDE_CODE_EXECPATH` (the running
+  Claude Code binary); if registration still fails, `action` gives the exact manual
+  command plus a restart instead of `/reload-plugins`. `doctor` warns when `installed_plugins.json` lags the
   newest cache/marketplace version.
 - **Identity: a child's messages were labelled as a Primary.** Every sender's `from` was
   `primary-<worktree hash>`, children included, so a resumed Primary could see another
