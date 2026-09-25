@@ -111,7 +111,7 @@ test('autoHandover section carries exactly the contracted keys (enabled/pct/maxT
   assert.deepStrictEqual(sec.settings.map((s) => s.key).sort(),
     ['enabled', 'maxTokens', 'nag', 'nagQuietMin', 'nagStepPct', 'pct'].sort());
   const mt = SCHEMA.findSetting('autoHandover', 'maxTokens');
-  assert.deepStrictEqual([mt.type, mt.min, mt.default, mt.env], ['number', 0, 170000, 'ANTIHALL_AUTO_HANDOVER_MAX_TOKENS']);
+  assert.deepStrictEqual([mt.type, mt.min, mt.default, mt.env], ['number', 0, 0, 'ANTIHALL_AUTO_HANDOVER_MAX_TOKENS']);
   assert.strictEqual(SCHEMA.findSetting('autoHandover', 'enabled').default, true);
   assert.strictEqual(SCHEMA.findSetting('autoHandover', 'pct').default, 85);
   assert.strictEqual(SCHEMA.findSetting('autoHandover', 'nag').default, true);

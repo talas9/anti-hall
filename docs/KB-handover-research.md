@@ -184,7 +184,7 @@ release:
 |---|---|---|---|
 | G1 | No `PreCompact` hook: nothing mechanical saved if auto-compact fires before the next prompt | §4 hooks [official]; #43733 | **Shipped** `precompact-snapshot.js` (Claude + Codex): `PRECOMPACT-<n>.md` with git state, task snapshot, last 10 user messages verbatim, newest-handover pointer; never blocks |
 | G2 | Fire directive rode `UserPromptSubmit` only | #28728; Codex mid-turn compaction | **Shipped** once-only Stop-side fire (shared latch, `stop_hook_active` guarded) |
-| G3 | Percent-only trigger (85% of 1M = 850K) | P5, P6 | **Shipped** `autoHandover.maxTokens`, default 170000, whichever comes first |
+| G3 | Percent-only trigger (85% of 1M = 850K) | P5, P6 | **Shipped, then corrected (v0.108.2)**: `autoHandover.pct` is measured against this session's ACTUAL context window (not a fixed 200K assumption), so 85% already scales correctly to 1M+ windows — a fixed `autoHandover.maxTokens` ceiling defaulted to 170000 would instead fire an unrelated, far-too-early handover on a genuinely large window. `maxTokens` now defaults to `0` (off) and is opt-in only, for a user who wants an absolute floor regardless of window size |
 | G4 | No slot for user-issued session constraints | P2 | **Shipped** slot 2a "Session rules (verbatim)" |
 | G5 | Seq-N handovers could re-summarize a compacted context | P3, P4 | **Shipped** carry-forward rule (copy verbatim with evidence) |
 | G6 | No receiver read-back | P8, P9 | **Shipped** read-back step (skill + resume step 5) |

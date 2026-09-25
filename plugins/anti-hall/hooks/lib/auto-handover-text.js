@@ -71,24 +71,55 @@ function compactCommand(handoverPath, platform) {
     '; keep pending tasks, the user\'s session rules, and unverified items';
 }
 
-// buildFireDirective(result, via, payload)
-//   result : hooks/lib/context-pct.js's reading ({ pct, used, estimated, windowLabel })
-//   via    : 'pct' | 'tokens' (hooks/lib/auto-handover-config.js overThreshold())
-//   payload: the hook payload (cwd + session_id -> the expected handover path)
-function buildFireDirective(result, via, payload) {
+// buildFireDirective(result, via, payload, maxTokens)
+//   result    : hooks/lib/context-pct.js's reading ({ pct, used, estimated, windowLabel })
+//   via       : 'pct' | 'tokens' (hooks/lib/auto-handover-config.js overThreshold())
+//   payload   : the hook payload (cwd + session_id -> the expected handover path)
+//   maxTokens : the caller's resolved autoHandover.maxTokens ceiling (cfg.maxTokens
+//               from resolveEffective()) — only meaningful when via === 'tokens'
+//               (that crossing is only reachable when the user opted a ceiling
+//               in; maxTokens defaults to 0 = off). Optional for backward
+//               compatibility with any caller not yet passing it.
+function buildFireDirective(result, via, payload, maxTokens) {
   const pct = result.pct;
   const platform = detectPlatform(payload);
   const w = WORDS[platform];
-  let label = '';
+  const hp = expectedHandoverPath(payload);
   if (via === 'tokens') {
-    label = ' (~' + Math.round((result.used || 0) / 1000) + 'K tokens — over the absolute autoHandover.maxTokens ' +
-      'ceiling; long contexts degrade with length, not just near the window limit)';
-  } else if (result.estimated) {
+    // A token-ceiling fire is only possible when the user explicitly opted
+    // into autoHandover.maxTokens (default 0 = off) — lead with the ceiling
+    // that actually fired, never the "CONTEXT AT ~X%" pct framing (which
+    // reads as confusingly small/unrelated next to "REQUIRED" when the
+    // session is nowhere near the pct threshold).
+    const usedK = Math.round((result.used || 0) / 1000);
+    const ceilingK = Number.isFinite(maxTokens) && maxTokens > 0 ? Math.round(maxTokens / 1000) : null;
+    return (
+      'CONTEXT: ~' + usedK + 'K tokens ≥ your configured autoHandover.maxTokens ceiling' +
+      (ceilingK != null ? ' (' + ceilingK + 'K)' : '') +
+      ' — AUTO-HANDOVER REQUIRED. Without asking the user first: ' +
+      '(1) immediately WRITE an anti-hall session handover YOURSELF, following the contract of ' + w.skill + ' ' +
+      'exactly (self-write mandate — never delegate this to a subagent; it never lived ' +
+      'this session and would lose decision/trial fidelity)' +
+      (hp ? '; by the skill\'s own date/sequence rules its main file is ' + hp : '') + '; ' +
+      '(2) then TELL the user this was done, to preserve the session\'s work against auto-compact (or ' +
+      'anything they might otherwise forget), and LIST every path you just saved under .anti-hall/handovers/**; ' +
+      (platform === 'codex'
+        ? '(3) URGE them to run /compact (or /new for a fresh chat) soon — Codex re-points the ' +
+          'post-compaction context at the handover through the anti-hall SessionStart hook (source ' +
+          '"compact"), so a plain `/compact` is enough — and ASK '
+        : '(3) URGE them to compact (or /clear) soon and give them this exact command to paste: `' +
+          compactCommand(hp, platform) + '` (substitute the real path if you wrote the handover elsewhere), and ASK ') +
+      'whether they would like to reach a good stopping point first before they do. ' + BLOAT_SENTENCE + ' ' +
+      'This fires once per session at this threshold; you will get brief follow-up reminders as context ' +
+      'keeps growing, not a repeat of this whole message.'
+    );
+  }
+  let label = '';
+  if (result.estimated) {
     label = result.windowLabel === 'inferred-1m'
       ? ' (inferred 1M window — observed usage already exceeded the standard 200k, so this session is estimated against a 1,000,000-token window)'
       : ' (ESTIMATED — assuming a standard 200k context window; if this is a 1M-context session, set ANTIHALL_CONTEXT_WINDOW_TOKENS or install the anti-hall statusline for an exact reading)';
   }
-  const hp = expectedHandoverPath(payload);
   return (
     'CONTEXT AT ~' + Math.round(pct) + '%' + label + ' — AUTO-HANDOVER REQUIRED. Without asking the user first: ' +
     '(1) immediately WRITE an anti-hall session handover YOURSELF, following the contract of ' + w.skill + ' ' +

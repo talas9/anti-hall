@@ -199,7 +199,7 @@ function main() {
           fired: true, firedAt: now, firedPct: result.pct, firedVia: 'stop-' + over,
           lastNagPct: result.pct, lastNagAt: now, softFired: latch.softFired === true,
         });
-        emit(buildFireDirective(result, over, payload));
+        emit(buildFireDirective(result, over, payload, settings.maxTokens));
         return;
       }
       emit();

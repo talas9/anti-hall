@@ -105,7 +105,7 @@ the guards fire?", use `doctor`.
 
 ## Settings (defaults; `*` = advanced)
 
-- **Auto Handover**: `autoHandover.enabled`=true, `autoHandover.pct`=85, `autoHandover.maxTokens`=170000, `autoHandover.nag`=true, `autoHandover.nagStepPct`=5, `autoHandover.nagQuietMin`=15
+- **Auto Handover**: `autoHandover.enabled`=true, `autoHandover.pct`=85, `autoHandover.maxTokens`=0, `autoHandover.nag`=true, `autoHandover.nagStepPct`=5, `autoHandover.nagQuietMin`=15
 - **Guards**: `guards.mergeGate`=false, `guards.shipitGate`=false, `guards.outputVerifyGuard`=true, `guards.failureRootCauseNudge`=true, `guards.repoSelfDrift`=true, `guards.stashGuard`=false, `guards.emitDedupe`=true, `guards.editGuardAllow`=—*, `guards.allowSubagentMailbox`=false*, `guards.reaperMatch`=—*, `guards.reaperExclude`=—*, `guards.tasklistWorkThreshold`=3*, `guards.progressFreshMs`=1800000*, `guards.apiGuardThirdparty`=false*
 - **Version Alerts**: `versionAlerts.antiHall`=true, `versionAlerts.claudeCli`=true, `versionAlerts.devswarm`=true
 - **Updates / Maintenance**: `updates.quiet`=false, `updates.reconcileBudgetMs`=60000*, `updates.postpullBudgetMs`=90000*, `updates.sweepBudgetMs`=20000*

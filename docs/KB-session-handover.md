@@ -255,7 +255,7 @@ Mapping to the principles above:
 | Never re-summarize a summary | Seq N>1 carry-forward rule: predecessor rules, Done + Verified and NOT-verified rows are copied verbatim with their evidence, tagged `(carried from …)`; only fresh evidence adds or supersedes rows (P3/P4) |
 | Receiver read-back | After the resume checklist, the resumed agent restates goal / next action / active session rules to the user in its own words before acting (I-PASS "synthesis by receiver", P8/P9); `handover-resume.js` step 5 asks for it |
 | Mechanical safety net | `precompact-snapshot.js` (PreCompact) writes `PRECOMPACT-<n>.md` — git state, task snapshot, last 10 user messages verbatim, newest-handover pointer — right before every compaction; the resume hook names it |
-| Trigger before the model degrades | Auto-handover fires at the pct threshold OR the absolute `maxTokens` ceiling (default 170000), from `UserPromptSubmit` or once from `Stop`, and hands the user an exact `/compact focus: <handover path>` line |
+| Trigger before the model degrades | Auto-handover fires at the pct threshold (measured against this session's ACTUAL context window) OR the opt-in absolute `maxTokens` ceiling (default `0` = off), from `UserPromptSubmit` or once from `Stop`, and hands the user an exact `/compact focus: <handover path>` line |
 
 This mirrors the existing `.anti-hall/progress/` and `.anti-hall/history/` layouts, so the
 three artifacts share one navigation model: read the `INDEX.md` first, open only what the

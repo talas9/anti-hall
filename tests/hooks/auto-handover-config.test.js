@@ -199,20 +199,31 @@ test('CLI nag/nag-step/nag-quiet: persist their values', () => {
   }
 });
 
-test('maxTokens: default 170000, env override, 0 disables; overThreshold picks pct / tokens / pct-unknown-window', () => {
+test('maxTokens: default 0 (off, opt-in), env override, 0 stays disabled; overThreshold picks pct / tokens / pct-unknown-window', () => {
   const { overThreshold, DEFAULT_MAX_TOKENS } = require('../../plugins/anti-hall/hooks/lib/auto-handover-config.js');
   const h = makeHome();
   try {
+    // Default: OFF. The real per-session context-window pct trigger (default
+    // 85%) is the only thing that fires unless a user explicitly opts a
+    // ceiling in — a fixed absolute token default would fire far too early
+    // on a genuinely large (e.g. 1M) window.
     const d = resolveEffective({ home: h.home, env: {} });
-    assert.strictEqual(DEFAULT_MAX_TOKENS, 170000);
-    assert.strictEqual(d.maxTokens, 170000);
+    assert.strictEqual(DEFAULT_MAX_TOKENS, 0);
+    assert.strictEqual(d.maxTokens, 0);
     assert.strictEqual(resolveEffective({ home: h.home, env: { ANTIHALL_AUTO_HANDOVER_MAX_TOKENS: '0' } }).maxTokens, 0);
     assert.strictEqual(resolveEffective({ home: h.home, env: { ANTIHALL_AUTO_HANDOVER_MAX_TOKENS: '300000' } }).maxTokens, 300000);
-    assert.strictEqual(overThreshold({ pct: 90, used: 180000, windowKnown: true }, d), 'pct');
-    assert.strictEqual(overThreshold({ pct: 20, used: 200000, windowKnown: true }, d), 'tokens');
-    assert.strictEqual(overThreshold({ pct: 90, used: 180000, windowKnown: false }, d), 'tokens');
+    // 1M window, 214K tokens, no settings at all -> the token ceiling is
+    // off by default and 214K/1M is nowhere near the 85% pct threshold, so
+    // NOTHING fires (the exact "default-off" regression this default change
+    // exists to prevent: a fixed 170000 default would have fired here).
+    assert.strictEqual(overThreshold({ pct: 21.4, used: 214000, windowKnown: true }, d), null);
+    // With an explicit opt-in ceiling, the SAME shape now fires via tokens.
+    const withCeiling = Object.assign({}, d, { maxTokens: 170000 });
+    assert.strictEqual(overThreshold({ pct: 90, used: 180000, windowKnown: true }, withCeiling), 'pct');
+    assert.strictEqual(overThreshold({ pct: 20, used: 200000, windowKnown: true }, withCeiling), 'tokens');
+    assert.strictEqual(overThreshold({ pct: 90, used: 180000, windowKnown: false }, withCeiling), 'tokens');
     assert.strictEqual(overThreshold({ pct: 90, used: 180000, windowKnown: false }, Object.assign({}, d, { maxTokens: 0 })), 'pct-unknown-window');
-    assert.strictEqual(overThreshold({ pct: 10, used: 20000, windowKnown: true }, d), null);
+    assert.strictEqual(overThreshold({ pct: 10, used: 20000, windowKnown: true }, withCeiling), null);
     assert.strictEqual(overThreshold({ pct: 99, used: 999999, windowKnown: true }, resolveEffective({ home: h.home, env: { ANTIHALL_AUTO_HANDOVER_PCT: '0' } })), null);
   } finally {
     h.cleanup();

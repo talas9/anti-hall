@@ -125,8 +125,10 @@ test('never nags before the fire directive has gone out (latch not fired; unknow
   const h = makeHome();
   try {
     const tp = writeUsage(h, 95);
-    // Token ceiling off: 95% of the guessed 200k is 190000 REAL tokens, which
-    // the default maxTokens ceiling would (correctly) fire on at Stop.
+    // Token ceiling explicitly off (it already defaults to off since
+    // v0.108.2, but this is set explicitly so the test keeps isolating the
+    // pct-against-unknown-window path even if a caller opts a ceiling in
+    // elsewhere in the suite).
     const r = testHook(HOOK, payload({ transcript_path: tp }), { home: h.home, env: { ANTIHALL_AUTO_HANDOVER_MAX_TOKENS: '0' }, expectJson: true });
     assert.strictEqual(decision(r), null);
   } finally {

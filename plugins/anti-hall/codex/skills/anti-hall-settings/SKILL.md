@@ -73,8 +73,8 @@ re-running `get` on that one key afterward.
 ## Auto-handover (`autoHandover` section)
 
 The auto-handover trigger (`hooks/auto-handover.js` + the Stop-time
-`hooks/auto-handover-pause-nag.js`) is **on by default at 85%** context, or at an absolute ceiling of 170000 tokens,
-whichever comes first. When the main agent first crosses it, it self-writes a handover, tells the user,
+`hooks/auto-handover-pause-nag.js`) is **on by default at 85%** of this session's actual context window (an optional absolute `maxTokens`
+ceiling is available but off by default — see below). When the main agent first crosses it, it self-writes a handover, tells the user,
 and suggests `/compact` or `/clear`. Follow-up reminders fire every `nagStepPct`
 further points and at a quiet pause (at most once per `nagQuietMin` minutes)
 unless `nag` is off.
@@ -83,7 +83,7 @@ unless `nag` is off.
 |---|---|---|
 | `autoHandover.enabled` | `true` | the whole trigger |
 | `autoHandover.pct` | `85` | threshold, 1-99 (env `ANTIHALL_AUTO_HANDOVER_PCT`; env `0` = off for that process) |
-| `autoHandover.maxTokens` | `170000` | absolute token ceiling (env `ANTIHALL_AUTO_HANDOVER_MAX_TOKENS`; `0` = off); real token count, so it fires the full directive even when the window is unknown |
+| `autoHandover.maxTokens` | `0` | opt-in absolute token ceiling (env `ANTIHALL_AUTO_HANDOVER_MAX_TOKENS`; `0` = off, the default); when set, a real token count, so it fires the full directive even when the window is unknown |
 | `autoHandover.nag` | `true` | follow-up reminders |
 | `autoHandover.nagStepPct` | `5` | milestone step, in points |
 | `autoHandover.nagQuietMin` | `15` | minutes between pause reminders |

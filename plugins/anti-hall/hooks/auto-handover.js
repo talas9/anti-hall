@@ -88,7 +88,7 @@ function main() {
                   writeLatch(home, tag, Object.assign({}, latch, { softFired: true, lastNagAt: now }));
                 }
               } else {
-                text = buildFireDirective(result, over, payload);
+                text = buildFireDirective(result, over, payload, settings.maxTokens);
                 writeLatch(home, tag, {
                   fired: true, firedAt: now, firedPct: result.pct, firedVia: over,
                   lastNagPct: result.pct, lastNagAt: now, softFired: false,

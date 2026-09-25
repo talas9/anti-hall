@@ -38,16 +38,21 @@ const DEFAULT_NAG = true;
 const DEFAULT_NAG_STEP_PCT = 5;
 const DEFAULT_NAG_QUIET_MIN = 15;
 // Absolute token ceiling, fired on whichever of pct / maxTokens comes first.
-// 170000 = the default 85% threshold on a standard 200K window, so 200K
-// sessions behave exactly as before, while a 1M session hands over at ~170K
-// instead of ~850K. Sources (docs/KB-handover-research.md): Claude Code
-// model-config — models without extended context compact at the 200K
-// boundary, native-1M models at ~967K
-// (https://code.claude.com/docs/en/model-config); Chroma "Context Rot"
-// (https://www.trychroma.com/research/context-rot) — 18 models degrade at
+// DEFAULT IS OFF (0): the `pct` trigger (default 85, see DEFAULT_PCT above)
+// is measured against this session's ACTUAL context window (see
+// hooks/lib/context-pct.js), so it already fires at 85% of a 200K window, a
+// 1M window, or whatever size a future model ships with — a fixed absolute
+// token count would either fire far too early on a genuinely large window or
+// require constant re-tuning as window sizes change. `maxTokens` stays
+// available as an opt-in EXTRA ceiling for a user who wants an absolute
+// floor regardless of window size (Chroma "Context Rot",
+// https://www.trychroma.com/research/context-rot — 18 models degrade at
 // every input-length increment tested, i.e. quality tracks absolute length,
-// not the percentage of a larger window.
-const DEFAULT_MAX_TOKENS = 170000;
+// not the percentage of a larger window) — set via
+// ANTIHALL_AUTO_HANDOVER_MAX_TOKENS or `scripts/auto-handover-config.js set
+// maxTokens <n>`. See docs/KB-handover-research.md for the underlying
+// research this feature was built from.
+const DEFAULT_MAX_TOKENS = 0;
 
 // readConfig(home) -> the RAW settings.json section (NOT the resolved
 // values) — {} when nothing has ever been written. Used by the CLI's `get`

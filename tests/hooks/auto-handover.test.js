@@ -211,9 +211,9 @@ test('nag:false in settings silences the milestone nag but the initial fire stil
 // from an estimate whose window is genuinely unknown) --------------------
 
 // Deliberately WITHOUT ANTIHALL_CONTEXT_WINDOW_TOKENS. The absolute token
-// ceiling is turned OFF here: 85%+ of a guessed 200k window is >= 170000 REAL
-// tokens, which the default maxTokens ceiling (a real count) fires on by
-// design — these tests isolate the pct-against-unknown-window path.
+// ceiling defaults to OFF (v0.108.2), but is set explicitly to '0' here too
+// so these tests keep isolating the pct-against-unknown-window path even if
+// a caller has opted a ceiling in via env/settings elsewhere in the suite.
 const DEDUPE_ONLY = { ANTIHALL_EMIT_DEDUPE: '0', ANTIHALL_AUTO_HANDOVER_MAX_TOKENS: '0' };
 
 test('unknown window (no statusline, no env, usage never exceeded 200k) -> soft advisory, NOT the mandatory directive', () => {
@@ -277,14 +277,27 @@ test('a KNOWN window (ANTIHALL_CONTEXT_WINDOW_TOKENS) fires the mandatory direct
   }
 });
 
-// --- absolute token ceiling (autoHandover.maxTokens, default 170000) -------
+// --- absolute token ceiling (autoHandover.maxTokens, OPT-IN, default 0/off,
+// v0.108.2) --------------------------------------------------------------
 
-test('token ceiling: 1M window at 20% (200K tokens) -> mandatory directive via maxTokens, even though pct < 85', () => {
+test('token ceiling default is OFF: 1M window, 214K tokens, no settings at all -> does NOT fire (pct is nowhere near 85%)', () => {
+  const h = makeHome();
+  try {
+    const p = h.writeTranscript([]);
+    fs.writeFileSync(p, assistantUsageLine(214000) + '\n', 'utf8');
+    const r = testHook(HOOK, payload({ transcript_path: p }), { home: h.home, env: { ANTIHALL_EMIT_DEDUPE: '0', ANTIHALL_CONTEXT_WINDOW_TOKENS: '1000000' }, expectJson: true });
+    assert.strictEqual(ctx(r), '', `default ceiling must be off; got: ${ctx(r)}`);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('token ceiling (opted in): 1M window at 20% (200K tokens) -> mandatory directive via maxTokens, even though pct < 85', () => {
   const h = makeHome();
   try {
     const p = h.writeTranscript([]);
     fs.writeFileSync(p, assistantUsageLine(200000) + '\n', 'utf8');
-    const r = testHook(HOOK, payload({ transcript_path: p }), { home: h.home, env: { ANTIHALL_EMIT_DEDUPE: '0', ANTIHALL_CONTEXT_WINDOW_TOKENS: '1000000' }, expectJson: true });
+    const r = testHook(HOOK, payload({ transcript_path: p }), { home: h.home, env: { ANTIHALL_EMIT_DEDUPE: '0', ANTIHALL_CONTEXT_WINDOW_TOKENS: '1000000', ANTIHALL_AUTO_HANDOVER_MAX_TOKENS: '170000' }, expectJson: true });
     assert.match(ctx(r), /AUTO-HANDOVER REQUIRED/);
     assert.match(ctx(r), /maxTokens/);
     const latch = JSON.parse(fs.readFileSync(path.join(h.home, '.anti-hall', 'auto-handover', 's1.json'), 'utf8'));
@@ -294,19 +307,19 @@ test('token ceiling: 1M window at 20% (200K tokens) -> mandatory directive via m
   }
 });
 
-test('token ceiling: unknown window, 172K real tokens -> mandatory directive (a real count, not a guess)', () => {
+test('token ceiling (opted in): unknown window, 172K real tokens -> mandatory directive (a real count, not a guess)', () => {
   const h = makeHome();
   try {
     const p = h.writeTranscript([]);
     fs.writeFileSync(p, assistantUsageLine(172000) + '\n', 'utf8');
-    const r = testHook(HOOK, payload({ transcript_path: p }), { home: h.home, env: { ANTIHALL_EMIT_DEDUPE: '0' }, expectJson: true });
+    const r = testHook(HOOK, payload({ transcript_path: p }), { home: h.home, env: { ANTIHALL_EMIT_DEDUPE: '0', ANTIHALL_AUTO_HANDOVER_MAX_TOKENS: '170000' }, expectJson: true });
     assert.match(ctx(r), /AUTO-HANDOVER REQUIRED/);
   } finally {
     h.cleanup();
   }
 });
 
-test('token ceiling: below both thresholds -> silent; env override raises the ceiling; 0 disables it', () => {
+test('token ceiling: below the opted-in ceiling -> silent; env override raises it; 0 keeps it off; no override -> stays off (new default)', () => {
   const h = makeHome();
   try {
     const p = h.writeTranscript([]);
@@ -317,7 +330,9 @@ test('token ceiling: below both thresholds -> silent; env override raises the ce
     const r2 = testHook(HOOK, payload({ transcript_path: p }), { home: h.home, env: Object.assign({ ANTIHALL_AUTO_HANDOVER_MAX_TOKENS: '0' }, base), expectJson: true });
     assert.strictEqual(ctx(r2), '');
     const r3 = testHook(HOOK, payload({ transcript_path: p }), { home: h.home, env: base, expectJson: true });
-    assert.match(ctx(r3), /AUTO-HANDOVER REQUIRED/);
+    assert.strictEqual(ctx(r3), '', `no explicit ceiling -> default off (v0.108.2); got: ${ctx(r3)}`);
+    const r4 = testHook(HOOK, payload({ transcript_path: p }), { home: h.home, env: Object.assign({ ANTIHALL_AUTO_HANDOVER_MAX_TOKENS: '250000' }, base), expectJson: true });
+    assert.match(ctx(r4), /AUTO-HANDOVER REQUIRED/, `300K over an explicit 250K ceiling must fire; got: ${ctx(r4)}`);
   } finally {
     h.cleanup();
   }

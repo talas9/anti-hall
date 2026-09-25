@@ -339,7 +339,7 @@ Codex `anti-hall-<name>`: activate, context-conserve, deadly-loop, debt, defects
 - `hooks/doctor.js [--repair]`; `skills/update/scripts/update.js [--check]`; `companion/devswarm-recover.js <id>` (the only kill path).
 
 **Settings** (`~/.anti-hall/settings.json`; env > file > /config > legacy > default; key=default; advanced keys after `|`, defaults via `settings.js show --all`):
-- autoHandover: enabled=true, pct=85, maxTokens=170000, nag=true, nagStepPct=5, nagQuietMin=15
+- autoHandover: enabled=true, pct=85, maxTokens=0, nag=true, nagStepPct=5, nagQuietMin=15
 - guards: mergeGate=false, shipitGate=false, outputVerifyGuard=true, failureRootCauseNudge=true, repoSelfDrift=true, stashGuard=false, emitDedupe=true | editGuardAllow, allowSubagentMailbox, reaperMatch, reaperExclude, tasklistWorkThreshold, progressFreshMs, apiGuardThirdparty
 - versionAlerts: antiHall=true, claudeCli=true, devswarm=true
 - updates: quiet=false | reconcileBudgetMs, postpullBudgetMs, sweepBudgetMs

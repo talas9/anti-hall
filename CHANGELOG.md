@@ -50,6 +50,27 @@ the update.
   its resolved canonical alias-family directory too. Idempotent, fail-open,
   no-delete, runs from `doctor --repair` and `update` like every other
   default migration.
+- **Default ceiling removed: `autoHandover.maxTokens` now defaults to `0`
+  (off) — the trigger fires at 85% of the session's REAL context window, not
+  a fixed 170000-token assumption.** `autoHandover.pct` (default 85%) is
+  already measured against this session's actual context window
+  (`hooks/lib/context-pct.js`: the statusline's real `context_window`, a
+  Codex rollout's `model_context_window`, or an estimate), so it already
+  scales correctly to a 1M+ window; a fixed absolute `maxTokens` default
+  fired an EARLY, unrelated handover on a genuinely large window instead
+  (the exact G3 gap this ceiling was meant to close, re-opened by hardcoding
+  its value — see `docs/KB-handover-research.md`). `maxTokens` is now
+  opt-in only (`ANTIHALL_AUTO_HANDOVER_MAX_TOKENS`, `settings.json`
+  `autoHandover.maxTokens`, or `scripts/auto-handover-config.js set
+  maxTokens <n>` — all still work exactly as before) for a user who wants an
+  absolute token floor regardless of window size. `hooks/lib/settings-schema.js`
+  and `hooks/lib/auto-handover-config.js`'s `DEFAULT_MAX_TOKENS` both moved
+  from `170000` to `0`. Also fixed the fire-directive wording
+  (`hooks/lib/auto-handover-text.js`): a token-ceiling fire (only reachable
+  when a ceiling is opted in) now leads with "CONTEXT: ~NK tokens ≥ your
+  configured autoHandover.maxTokens ceiling (NK)" instead of the pct-framed
+  "CONTEXT AT ~N%" line, which read confusingly small/unrelated next to
+  "REQUIRED" when the session was nowhere near the pct threshold.
 
 ## 0.108.1 (2026-09-25)
 

@@ -8,9 +8,10 @@
 //     last-seen max_tokens for the session (sticky), else "inferred 1M" once
 //     usage exceeds 200k, else UNKNOWN (200k assumed).
 //   - Below pct => silent.
-//   - Crossing pct with a KNOWN window, or crossing the absolute maxTokens
-//     ceiling (default 170000; real token count, so window-independent) =>
-//     the mandatory directive, once per arm: write a handover unasked, tell
+//   - Crossing pct with a KNOWN window, or crossing the OPT-IN absolute
+//     maxTokens ceiling (default 0 = off; real token count, so
+//     window-independent, when a user sets one) => the mandatory directive,
+//     once per arm: write a handover unasked, tell
 //     the user, urge /compact or /clear, explain the hallucination risk.
 //   - Crossing with an UNKNOWN window => one soft advisory per arm, never the
 //     mandatory directive (a 200k guess could be badly wrong on a 1M session).
@@ -134,7 +135,7 @@ test('drop below threshold re-arms: a later crossing after /compact fires a fres
   } finally { rm(home); }
 });
 
-test('1M window from the statusline (sticky max_tokens): 150k tokens is 15% and under the 170k ceiling -> silent; 900k fires', () => {
+test('1M window from the statusline (sticky max_tokens): 150k tokens is 15% -> silent; 900k fires', () => {
   const home = makeHome();
   try {
     // The statusline persisted this session's real window earlier (stale ts:
@@ -230,11 +231,11 @@ test('pause-nag: silent within nagQuietMin of the last nag; nags once after it; 
   } finally { rm(home); }
 });
 
-test('absolute maxTokens ceiling: 175k tokens fires the mandatory directive even on a 1M window at 17.5%', () => {
+test('opt-in absolute maxTokens ceiling: 175k tokens fires the mandatory directive even on a 1M window at 17.5%, once set', () => {
   const home = makeHome();
   try {
     const t = writeTranscript(home, [mainAssistantUsageLine({ inputTokens: 175000 })]);
-    const r = runHook(HOOK, payload(t), home, { ANTIHALL_CONTEXT_WINDOW_TOKENS: '1000000' });
+    const r = runHook(HOOK, payload(t), home, { ANTIHALL_CONTEXT_WINDOW_TOKENS: '1000000', ANTIHALL_AUTO_HANDOVER_MAX_TOKENS: '170000' });
     assert.ok(hasDirective(r), `stdout: ${r.stdout}`);
     assert.match(r.json.hookSpecificOutput.additionalContext, /AUTO-HANDOVER REQUIRED/);
     const off = makeHome();
@@ -242,6 +243,15 @@ test('absolute maxTokens ceiling: 175k tokens fires the mandatory directive even
       const r2 = runHook(HOOK, payload(writeTranscript(off, [mainAssistantUsageLine({ inputTokens: 175000 })])), off, { ANTIHALL_CONTEXT_WINDOW_TOKENS: '1000000', ANTIHALL_AUTO_HANDOVER_MAX_TOKENS: '0' });
       assert.ok(!hasDirective(r2), `maxTokens=0 turns the ceiling off; stdout: ${r2.stdout}`);
     } finally { rm(off); }
+  } finally { rm(home); }
+});
+
+test('maxTokens default is OFF (v0.108.2): 1M window, 214k tokens, no settings at all -> does NOT fire', () => {
+  const home = makeHome();
+  try {
+    const t = writeTranscript(home, [mainAssistantUsageLine({ inputTokens: 214000 })]);
+    const r = runHook(HOOK, payload(t), home, { ANTIHALL_CONTEXT_WINDOW_TOKENS: '1000000' });
+    assert.ok(!hasDirective(r), `default ceiling must be off (214K on a 1M window is only 21.4%, nowhere near the 85% pct threshold); stdout: ${r.stdout}`);
   } finally { rm(home); }
 });
 
