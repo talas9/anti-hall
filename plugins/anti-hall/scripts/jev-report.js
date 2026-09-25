@@ -5,8 +5,18 @@
 // USAGE
 //   node plugins/anti-hall/scripts/jev-report.js [--days 7] [--json] [--window 24h|7d]
 //     [--by project|session] [--project <name>] [--weekly]
+//     [--since <iso>] [--until <iso>] [--exclude-window <iso>..<iso>]
 //   node plugins/anti-hall/scripts/jev-report.js label <hash> [tp|fp]
 //   node plugins/anti-hall/scripts/jev-report.js prune-audit --days N
+//
+// --since/--until filter rows to those with `ts` inside [since, until]
+// (either end optional); --exclude-window <iso>..<iso> additionally drops any
+// row with `ts` inside that one closed interval (repeat the flag for more than
+// one window). All three apply BEFORE --project/--by/--weekly and before any
+// other filtering, to every row read from jev-assist.ndjson and
+// jev-triage.ndjson alike. Use this to exclude a known-accidental run from a
+// report, e.g. the 2026-09-24T19:56Z..22:23Z supervisorBlockerLabel run:
+//   --exclude-window 2026-09-24T19:56:00Z..2026-09-24T22:23:00Z
 //
 // --project <name> filters rows to that project (a cwd basename, e.g.
 // "anti-hall" -- see hooks/lib/jev-assist.js's defaultProject(); a row with no
@@ -529,8 +539,15 @@ function percentile(sortedArr, p) {
 
 const COST_WINDOWS = { '24h': 1, '7d': 7 };
 
+// parseIsoMs(s) -> epoch ms, or null when `s` doesn't parse as a date (never
+// throws, matches every other best-effort Date.parse use in this file).
+function parseIsoMs(s) {
+  const t = Date.parse(s);
+  return Number.isFinite(t) ? t : null;
+}
+
 function parseArgs(argv) {
-  const opts = { days: null, json: false, window: null };
+  const opts = { days: null, json: false, window: null, since: null, until: null };
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--days') opts.days = Number(argv[++i]);
     else if (argv[i] === '--json') opts.json = true;
@@ -539,8 +556,46 @@ function parseArgs(argv) {
     else if (argv[i] === '--by') opts.by = argv[++i]; // 'project' | 'session'
     else if (argv[i] === '--project') opts.project = argv[++i];
     else if (argv[i] === '--weekly') opts.weekly = true;
+    else if (argv[i] === '--since') opts.since = parseIsoMs(argv[++i]);
+    else if (argv[i] === '--until') opts.until = parseIsoMs(argv[++i]);
+    else if (argv[i] === '--exclude-window') {
+      // <iso>..<iso> -- repeatable; a malformed value is silently dropped
+      // (never throws), matching this script's fail-open convention.
+      const raw = argv[++i];
+      const parts = typeof raw === 'string' ? raw.split('..') : [];
+      if (parts.length === 2) {
+        const s = parseIsoMs(parts[0]);
+        const e = parseIsoMs(parts[1]);
+        if (s !== null && e !== null) {
+          if (!opts.excludeWindows) opts.excludeWindows = [];
+          opts.excludeWindows.push([Math.min(s, e), Math.max(s, e)]);
+        }
+      }
+    }
   }
   return opts;
+}
+
+// filterByTimeWindow(rows, opts) -> rows within [opts.since, opts.until] and
+// outside every opts.excludeWindows interval, applied by `ts`. A row with no
+// parseable `ts` is left in place (unaffected, not silently dropped) — this
+// filter can only exclude what it can actually date.
+function filterByTimeWindow(rows, opts) {
+  if (opts.since === null && opts.until === null && (!opts.excludeWindows || opts.excludeWindows.length === 0)) {
+    return rows;
+  }
+  return rows.filter((row) => {
+    const ts = row && row.ts ? Date.parse(row.ts) : NaN;
+    if (!Number.isFinite(ts)) return true;
+    if (opts.since !== null && ts < opts.since) return false;
+    if (opts.until !== null && ts > opts.until) return false;
+    if (opts.excludeWindows) {
+      for (const [s, e] of opts.excludeWindows) {
+        if (ts >= s && ts <= e) return false;
+      }
+    }
+    return true;
+  });
 }
 
 // groupKeyOf(row, by) -> the row's project/session key, or 'unknown' when
@@ -1077,9 +1132,15 @@ async function main() {
   const opts = parseArgs(argv);
   const home = opts.home;
   let rows = readLines(home);
-  const triageRows = readTriageLines(home);
+  let triageRows = readTriageLines(home);
   const costPerCall = readCostPerCall(home);
   const humanLabelByHash = latestHumanLabelByHash(readLabels(home));
+
+  // --since/--until/--exclude-window: applied BEFORE --project/--by/--weekly
+  // and before anything else -- see the module doc comment. Excludes a known-
+  // accidental run from the report without touching jev-assist.ndjson itself.
+  rows = filterByTimeWindow(rows, opts);
+  triageRows = filterByTimeWindow(triageRows, opts);
 
   // --project <name>: filter to rows tagged with that project key BEFORE
   // anything else (report, cost windows, budget) -- 'unknown' matches rows
@@ -1163,6 +1224,7 @@ module.exports = {
   buildHeadline, labelsLogPath, readLabels, latestHumanLabelByHash, cmdLabel,
   auditLogPath, readAuditSnippet, cmdPruneAudit, maybeWarnLowCredit, budgetStatePath,
   parseArgs, groupKeyOf, groupRowsBy, buildWeeklyScorecard, weeklyReason, readJevJson,
+  parseIsoMs, filterByTimeWindow, MIN_LABELED_FOR_VERDICT,
 };
 
 if (require.main === module) {

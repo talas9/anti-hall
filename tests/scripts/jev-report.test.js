@@ -851,3 +851,70 @@ test('buildReport: label-only rows (string jev answer) are excluded from changed
   assert.strictEqual(r.changedUnique, 0, 'label-only rows never contribute to changedRate');
   assert.match(r.suggestion, /label-only/);
 });
+
+// ---------------------------------------------------------------------------
+// FIX (v0.108.1, proven bug 3): --since/--until/--exclude-window let a report
+// exclude a known-accidental run (e.g. the 2026-09-24T19:56Z..22:23Z
+// supervisorBlockerLabel rows) without touching jev-assist.ndjson itself.
+// ---------------------------------------------------------------------------
+
+test('parseArgs: --since/--until/--exclude-window are parsed', () => {
+  const { parseArgs, parseIsoMs } = require('../../plugins/anti-hall/scripts/jev-report.js');
+  const opts = parseArgs(['--since', '2026-09-01T00:00:00Z', '--until', '2026-09-30T00:00:00Z',
+    '--exclude-window', '2026-09-24T19:56:00Z..2026-09-24T22:23:00Z']);
+  assert.strictEqual(opts.since, parseIsoMs('2026-09-01T00:00:00Z'));
+  assert.strictEqual(opts.until, parseIsoMs('2026-09-30T00:00:00Z'));
+  assert.deepStrictEqual(opts.excludeWindows, [[parseIsoMs('2026-09-24T19:56:00Z'), parseIsoMs('2026-09-24T22:23:00Z')]]);
+});
+
+test('parseArgs: an unparseable --exclude-window value is dropped, not thrown', () => {
+  const { parseArgs } = require('../../plugins/anti-hall/scripts/jev-report.js');
+  const opts = parseArgs(['--exclude-window', 'not-a-window']);
+  assert.strictEqual(opts.excludeWindows, undefined);
+});
+
+test('filterByTimeWindow: --since/--until bound the row set; a row with no ts passes through', () => {
+  const { filterByTimeWindow } = require('../../plugins/anti-hall/scripts/jev-report.js');
+  const rows = [
+    { ts: '2026-09-01T00:00:00Z', id: 'a' },
+    { ts: '2026-09-15T00:00:00Z', id: 'b' },
+    { ts: '2026-09-30T00:00:00Z', id: 'c' },
+    { id: 'd' }, // no ts at all
+  ];
+  const out = filterByTimeWindow(rows, { since: Date.parse('2026-09-10T00:00:00Z'), until: Date.parse('2026-09-20T00:00:00Z') });
+  assert.deepStrictEqual(out.map((r) => r.id), ['b', 'd']);
+});
+
+test('filterByTimeWindow: --exclude-window drops rows inside the interval, keeps rows outside it', () => {
+  const { filterByTimeWindow } = require('../../plugins/anti-hall/scripts/jev-report.js');
+  const rows = [
+    { ts: '2026-09-24T19:00:00Z', id: 'before' },
+    { ts: '2026-09-24T20:30:00Z', id: 'inside' },
+    { ts: '2026-09-24T23:00:00Z', id: 'after' },
+  ];
+  const out = filterByTimeWindow(rows, {
+    since: null, until: null,
+    excludeWindows: [[Date.parse('2026-09-24T19:56:00Z'), Date.parse('2026-09-24T22:23:00Z')]],
+  });
+  assert.deepStrictEqual(out.map((r) => r.id), ['before', 'after']);
+});
+
+test('buildReport via filterByTimeWindow: excluding the accidental run window removes those rows from the aggregate', () => {
+  const { filterByTimeWindow } = require('../../plugins/anti-hall/scripts/jev-report.js');
+  const accidentalRows = [];
+  for (let i = 0; i < 50; i++) {
+    accidentalRows.push(row({ id: 'supervisorBlockerLabel', h: 'acc' + i, ts: '2026-09-24T20:30:00.000Z' }));
+  }
+  const realRows = [];
+  for (let i = 0; i < 10; i++) {
+    realRows.push(row({ id: 'supervisorBlockerLabel', h: 'real' + i, ts: '2026-09-25T10:00:00.000Z' }));
+  }
+  const filtered = filterByTimeWindow(accidentalRows.concat(realRows), {
+    since: null, until: null,
+    excludeWindows: [[Date.parse('2026-09-24T19:56:00Z'), Date.parse('2026-09-24T22:23:00Z')]],
+  });
+  assert.strictEqual(filtered.length, 10, 'only the real rows survive the exclusion window');
+  const report = buildReport(filtered, {});
+  const r = report.integrations.find((x) => x.id === 'supervisorBlockerLabel');
+  assert.strictEqual(r.calls, 10);
+});
