@@ -6,7 +6,219 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
-## 0.108.5 (unreleased)
+## 0.109.0
+
+### Features
+
+- **Post-handover new-work gate (on by default).** Once context is past the auto-handover
+  threshold and this session's handover has been written, the agent now sizes each new
+  request before starting it. If the request would need more than about 5% of the context
+  window, it offers you two choices: park it in the task list and the handover and start
+  it after `/compact` or `/clear`, or go ahead anyway if you insist. Quick questions,
+  finishing the task already in flight, and spawning a DevSwarm workspace pass straight
+  through. Works the same on Claude Code and Codex.
+- **One-shot budget reminder after a handover.** If usage grows more than the budget past
+  the point where the handover was saved, you get one reminder per handover: refresh the
+  handover, and offer to park the rest of the work.
+- **New settings:** `autoHandover.gateNewWork` (boolean, default `true`) and
+  `autoHandover.gateBudgetPct` (1-50, default `5`), both also in `/config`.
+- **New Jev integration `postHandoverGate` (shadow only, default `shadow`).** It logs
+  whether Jev thinks a request fits in the remaining post-handover budget. It never
+  changes what the gate says. It has its own `jevIntegrations.postHandoverGate` row, like
+  the other Jev integrations.
+- **Mechanical nudge on a silent background subagent.** anti-hall already documented the
+  heartbeat convention for a coordinator to notice and re-dispatch a stale subagent, but
+  nothing forced it to happen and nothing wrote the heartbeat automatically. A new Stop
+  hook (shared with the Codex port) instead watches the signal the harness always
+  produces: every background agent launch and its eventual terminal notification. An
+  agent counts as silent once its own output has gone stale (or never appeared) past the
+  threshold with no terminal notification seen, and you get one nudge per stale snapshot —
+  advisory only, it never stops or re-dispatches the agent itself. The
+  `~/.anti-hall/agents/<id>.json` heartbeat file, when a subagent does self-report it,
+  is kept as an additional secondary signal.
+- **New settings:** `guards.silentAgentNudge` (boolean, default `true`) and
+  `guards.silentAgentNudgeMin` (minutes, default `20`), both also in `/config`.
+
+### Changed
+
+- **DevSwarm auto-archive: a finished workspace's own status pings no longer keep it
+  "active" forever.** A done child workspace is woken periodically by its own mailbox
+  cron, the Monitor watcher, and a Stop-hook heartbeat reminder — each wake used to reset
+  the idle timer, so a finished child could never go idle and was never auto-archived.
+  The idle timer now reads the child's own transcript turn by turn and skips only those
+  wake/ping/heartbeat/status turns; any other activity (real work, read-only work
+  included, a new direct message, or a commit) still resets the timer, and a turn that is
+  still doing real work blocks the archive outright. If the transcript can't be read, the
+  older, more conservative rule applies, so this change can only delay an archive, never
+  make one happen early. Archives stay reversible, only by the exact workspace id, and
+  never triggered from a hook.
+- **New setting:** `devswarm.autoArchive.ignorePings` (boolean, default `true`), also in
+  `/config`.
+- **`devswarm.js spawn` is faster and more deterministic.** A cached workspace title from
+  hivecontrol's raw branch-name default could clobber an already-confirmed, different
+  title, giving a "sometimes branch, sometimes brief" spawn-title race — fixed. The
+  roster/per-turn "finish" column now shows the actual done-rule state in plain words
+  (`done ✓ merged` / `done, not merged` / `working`) instead of a raw gate-count
+  ratio. Spawn now skips the redundant origin fetch when the remote-tracking ref is
+  already fresh, fetches submodule updates on demand only when it does fetch, and puts a
+  timeout on the underlying `hivecontrol create` call, reporting per-phase timings. It
+  also now detects and reports (never auto-repairs) a submodule worktree that failed to
+  create during an otherwise-successful workspace create.
+- **New settings:** `devswarm.spawnFetchTtlSec` (seconds, default `300`) and
+  `devswarm.spawnCreateTimeoutMs` (milliseconds, default `180000`), both also in
+  `/config`.
+
+### Fixes
+
+- **The DevSwarm ingest daemon no longer freezes, dies silently, or reads healthy while a
+  slow `hivecontrol` drains nothing.** Under heavy machine load the monitor call timed out
+  (`spawnSync … ETIMEDOUT`), but `spawnSync`'s `timeout` only sends SIGTERM and then keeps
+  blocking until the child actually exits. A `hivecontrol` that was slow to die froze the
+  whole daemon, heartbeat included, for minutes. The daemon (`companion/devswarm-ingest.js`)
+  now runs each monitor call with a non-blocking `child_process.spawn`: SIGTERM at the hard
+  timeout, SIGKILL after a grace period, and a hard upper bound after that. While a call is
+  in flight, a timer keeps the lock and liveness heartbeat fresh. The heartbeat is also written
+  on the backoff paths that skipped it before (a blocked delivery WAL, a retryable store
+  error), and it carries a new `lastMonitorAttemptMs`. Transient failures back off
+  exponentially (2s, 4s, 8s …) up to a 5-minute cap instead of retrying every 2s. Every exit
+  now leaves a reason in `~/.anti-hall/devswarm-ingest.log`: SIGTERM/SIGINT/SIGHUP are logged
+  (and the in-flight `hivecontrol` child is killed), as are uncaught exceptions and unhandled
+  rejections (with the stack) and the final exit code. An exit with no line at all is now the
+  signature of a SIGKILL. Health (`monitorFaultFor` / `daemonHealth`): when no monitor poll has
+  succeeded since the daemon started, or since the last success, for longer than the new
+  `devswarm.monitorNoOkFailMin` window (default 10 minutes), health reads FAILING even when no
+  failures have been counted. That was the field case: `lastMonitorOkMs` stayed null with 0
+  failures for 15+ minutes and read as healthy. Inside that window a freshly started daemon
+  reports "starting up" (`startingUp: true`, status still healthy, so no repair restarts it).
+  The failing banner now says which condition tripped, the heartbeat age, and the last error
+  in plain words.
+- **New setting:** `devswarm.monitorNoOkFailMin` (minutes, default `10`), also in `/config`.
+- **`doctor --repair` no longer reinstalls a healthy-but-slow ingest daemon, and the
+  installer stopped churning launchctl on every workspace spawn.** A monitor fault only
+  fires once the daemon's base liveness signals already passed, so a merely slow/timed-out
+  `hivecontrol` call (`ETIMEDOUT`, no resolvable spawn-error code) is a live daemon, not a
+  broken one — `doctor --repair` used to reinstall/restart it anyway, which only interrupts
+  an otherwise-healthy process. `isMonitorConfigFault()` now reinstalls only for a genuine
+  config fault (`ENOENT`/`EACCES`/`ENOTDIR`); a slow/transient fault is reported via the new
+  `monitorSlowReason()` and left alone — a genuinely dead daemon still reinstalls either way.
+  Separately, `install-devswarm-ingest.js` (which runs on every DevSwarm workspace spawn) no
+  longer unloads already-reaped legacy per-worktree launchctl units it never installed, and
+  skips the unload+load of the live per-project unit entirely when the on-disk plist already
+  matches what would be written and the label is already loaded.
+- **`jev report`'s triage rows leaked across `--project`/`--by` groups, and a settings
+  write could slip past its own risky-change lock.** `jev-report.js` filtered `triageRows`
+  by time window only, never by the same `groupKeyOf()` used for every other row, so every
+  project's or session's triage counts showed every OTHER project's/session's triage
+  decisions mixed in; a project-less triage row now buckets under `unknown` like any other
+  row instead of leaking everywhere. `settings.js set()`'s locked-key risky-change check
+  read `settings.json` and decided before acquiring `withSettingsLock` — the same TOCTOU
+  `reset()` already had fixed — so a concurrent writer could change `settings.json` between
+  that stale read and this call's own write, letting a risky change through unconfirmed;
+  the check now runs inside the same lock, reusing the same load.
+- **The silent-background-agent nudge could stay silent, and the handover scan it
+  triggers is no longer a full recursive walk.** `silent-agent-nudge.js`'s terminal-status
+  match lacked a case-insensitive flag, so a differently-cased status was misread as
+  still-silent; its task-id/status parsing was first-match-only against the whole text leaf,
+  so when several agents finished together in one leaf only the first agent's id/status pair
+  was ever read and every later agent stayed flagged as silent. Each
+  `<task-notification>` block is now parsed separately, paired with its own id and status,
+  and the displayed nudge is deduped by agent id across the transcript and heartbeat
+  sources so an agent visible through both never produces two lines for the same thing.
+  Separately, the handover lookup this nudge (and the post-handover gate) relies on used
+  to do a full recursive walk of `.anti-hall/handovers` — every date dir × every session
+  dir × every file — just to find one session's own handover; it's now bounded to
+  `<date>/<sessionId>/` per date dir via the new `findNewestHandoverForSession()`.
+  `findNewestHandover()`'s cross-session fallback (used by handover-resume and the
+  pre-compact snapshot) is unchanged.
+- **The DevSwarm auto-archive idle gate could archive a workspace mid-work, or never fire
+  at all.** A safety review of the 0.109 idle gate found it treated every wake/ping turn as
+  proof of idleness, when a false "ping" archives a child mid-work (an extra reset only
+  delays, so every doubt now counts as real work): a background Agent/Bash launch with no
+  matching final `<task-notification>` (completed/failed/stopped, matched by task id or
+  tool-use id), or a `turn_duration` pending-background-agent count above zero, now blocks
+  archive outright, and a ping turn never hides it. The mailbox-ping classifier first went
+  too strict (a bare allowlisted `node devswarm.js inbox|heartbeat|roster|mesh` command,
+  nothing else) — since real children pipe their pings through `grep`/`head`/`tail`/`wc`,
+  that made the gate inert in practice, every wake turn counting as real work — so it now
+  also accepts exactly one `2>&1` plus a chain of those read-only filters with plain-word
+  arguments only; anything with a file redirect, `<(`, `$(`, a pipe reader like `python3`/
+  `sed`/`awk`/`jq`/`tee`/`xargs`, or a shell chain still counts as real work. Native
+  mailbox-drained rows (no `mtype`) now count toward the inbound floor, and a cron-wake
+  flag now only ever attaches to the very next meta prompt so a human prompt can't be
+  misclassified as a wake. The wake text asks children to run mailbox commands plain, with
+  no pipes or filters.
+- **6 DevSwarm spawn-review fixes: timeout detection, freshness, submodule fetch, and an
+  honest merge label.** A real `spawnSync` timeout (`ETIMEDOUT`, `SIGTERM`, null status)
+  never reached `cmdSpawn`'s timeout detection because the error branch returned before the
+  signal check ran; it's now propagated with an explicit `timedOut` flag, and a timeout now
+  reports plainly, including that a partial workspace may already exist for the branch
+  (never auto-cleaned). Remote-ref freshness no longer consults `FETCH_HEAD` (it moves on
+  ANY fetch of ANY ref), only the ref's own reflog/loose-ref mtime. A submodule-recursive
+  fetch that fails now retries once with `--no-recurse-submodules` before being reported as
+  failed. The submodule-worktree-failure regex now only matches `fatal:` lines actually tied
+  to submodule worktree creation, instead of sweeping in an unrelated fatal error. The
+  roster/finish-column label now distinguishes "done, merge unverified" from "done, not
+  merged" instead of collapsing both into the same dishonest label.
+- **DevSwarm no longer flags an ordinary process restart as a concurrent-instance split.**
+  The instance-split check only confirmed each instance nonce had a row somewhere in the
+  15-minute freshness window, not whether two nonces were ever alive at the same time — and
+  a nonce legitimately changes on every restart, so an ordinary restart (old process's last
+  heartbeat still under 15 minutes old, new process's first heartbeat landing minutes later)
+  always read as two concurrent instances even though only one was ever alive. Each nonce's
+  activity span is now padded by 60s and swept for the peak number of nonces overlapping at
+  any point in time; only that peak counts toward instances/instance-split, shared
+  identically by the roster and diagnose paths.
+- **`.anti-hall/handovers|progress|history` paths could double when the session's cwd was
+  already inside one of those directories.** `precompact-snapshot`, `handover-resume`,
+  `tasklist-guard`, `task-lifecycle-log`, `progress-prune`, and `migrate-state` all joined
+  `.anti-hall/...` onto the raw session cwd instead of the git toplevel, so a cwd already
+  under `.anti-hall/handovers/` (or any repo subdirectory) doubled the path and
+  handover-resume could never find what precompact-snapshot had just written. All of them
+  now resolve through the repo's git toplevel first (a submodule and a DevSwarm child
+  worktree each keep their own state), falling back to the raw cwd outside a git repo.
+- **`mcp-reaper` can now also reap abandoned Codex `app-server-broker.mjs` helpers.**
+  These are spawned detached and unref'd on purpose, so PPID 1 is normal for a live one —
+  not evidence of death like it is for the reaper's ordinary MCP-server matcher — so a
+  helper is only selected when its `--cwd` directory no longer exists, or no live
+  claude/codex process's cwd is equal to, an ancestor of, or a descendant of it (so a
+  session at a workspace root still owns a broker whose `--cwd` is inside a submodule
+  beneath it), and only once it's older than the new minimum age. Matched by an exact
+  script-name + codex-plugin-path signature, kept fully separate from the reaper's
+  generic MCP parent-death matcher so that invariant never loosens. Opt-in, and only takes
+  effect when the companion reaper is installed and running.
+- **New settings:** `guards.reaperCodexBroker` (boolean, default `true`) and
+  `guards.reaperCodexBrokerMinAgeS` (seconds, default `1800`), both also in `/config`.
+- **DevSwarm's wake-watch/doctor re-arm could name a path that doesn't exist on disk.**
+  The version check that picks the "newest" build took the max across the installed
+  plugin list, the newest cache directory, and the marketplace clone's own
+  `plugin.json` — but the marketplace clone can fast-forward before that new version is
+  actually mirrored into the plugin cache, so the re-arm command it printed could point
+  at a cache directory that was never created, crashing the moment it ran. Both the
+  wake-watcher's version check and doctor's shared version-check helper now verify the
+  target script file actually exists on disk before returning a path; when a newer
+  version is merely known but not yet cached, they print an update-available notice
+  once and keep running instead of exiting with nothing left watching.
+- **A settings `reset()` could silently disarm a safety guard under a race, and a
+  DevSwarm supervisor blocker label could go silently blank.** `settings.js reset` now
+  re-checks the safety-switch confirmation gate inside the same lock it uses for the
+  write, closing a window where a concurrent writer could arm a guard and have `reset`
+  quietly disarm it without `--confirmed`. Separately, the DevSwarm supervisor's
+  blocker-label dedupe now reads back the `mode` field it already writes; previously
+  that field was dropped on read, so every deduped (skipped) re-ask treated an
+  already-promoted label as unset, silently blanking it for the rest of the re-ask
+  interval.
+- **Jev's own `triage` integration was invisible in `jev report`, and its agree%
+  swung wildly across identical time windows.** Triage decisions were logged to a
+  separate file with a different schema, so the report's per-integration table never
+  showed them at all rather than showing them with a bad value — they now appear as
+  their own `triage` row. The agree% denominator now counts distinct, fresh decisions
+  only (a cache-hit retry of the same decision no longer adds an extra vote), which was
+  the actual cause of agreement swinging between 99%/77.5%/37% across windows on the
+  same underlying data; the table now also prints the sample size inline. The same
+  blocker-label read-back fix noted above is included here too, proven with a fixture
+  repro (10 sweeps: label once, then null the other nine before the fix).
+
+## 0.108.5
 
 ### P0: anti-hall could move a git-tracked `.planning/` folder in child worktrees
 
@@ -39,29 +251,6 @@ restore.
   `devswarm-migrate.js` act on temp-file renames, lock files, or `~/.anti-hall` state.
 
 ### Fixes
-
-- **The DevSwarm ingest daemon no longer freezes, dies silently, or reads healthy while a
-  slow `hivecontrol` drains nothing.** Under heavy machine load the monitor call timed out
-  (`spawnSync … ETIMEDOUT`), but `spawnSync`'s `timeout` only sends SIGTERM and then keeps
-  blocking until the child actually exits. A `hivecontrol` that was slow to die froze the
-  whole daemon, heartbeat included, for minutes. The daemon (`companion/devswarm-ingest.js`)
-  now runs each monitor call with a non-blocking `child_process.spawn`: SIGTERM at the hard
-  timeout, SIGKILL after a grace period, and a hard upper bound after that. While a call is
-  in flight, a timer keeps the lock and liveness heartbeat fresh. The heartbeat is also written
-  on the backoff paths that skipped it before (a blocked delivery WAL, a retryable store
-  error), and it carries a new `lastMonitorAttemptMs`. Transient failures back off
-  exponentially (2s, 4s, 8s …) up to a 5-minute cap instead of retrying every 2s. Every exit
-  now leaves a reason in `~/.anti-hall/devswarm-ingest.log`: SIGTERM/SIGINT/SIGHUP are logged
-  (and the in-flight `hivecontrol` child is killed), as are uncaught exceptions and unhandled
-  rejections (with the stack) and the final exit code. An exit with no line at all is now the
-  signature of a SIGKILL. Health (`monitorFaultFor` / `daemonHealth`): when no monitor poll has
-  succeeded since the daemon started, or since the last success, for longer than the new
-  `devswarm.monitorNoOkFailMin` window (default 10 minutes), health reads FAILING even when no
-  failures have been counted. That was the field case: `lastMonitorOkMs` stayed null with 0
-  failures for 15+ minutes and read as healthy. Inside that window a freshly started daemon
-  reports "starting up" (`startingUp: true`, status still healthy, so no repair restarts it).
-  The failing banner now says which condition tripped, the heartbeat age, and the last error
-  in plain words.
 
 - **Every jev-assist call site now threads `sessionId`/`turnRef` into the logged row.**
   Live speculation decisions (the `speculation` add-block integration, the only one that
