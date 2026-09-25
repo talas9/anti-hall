@@ -318,7 +318,7 @@ seen (e.g. its done report); the plan shows the split (`to_direct=`/`to_broadcas
 (e) it isn't the Primary (the app DB's `builderType` decides; when it is missing, empty or whitespace-only for the row, the main-checkout rule does; a `primary-<hash>` descriptor id never does), (f) the owner hasn't selected it in the app for 10 min,
 (g) it has been idle >= `idleMin` — idle means no REAL work (0.109.0): the child's own mailbox-wake,
 ping, heartbeat and status-report turns don't count, but any other AI turn, tool call, new inbound
-message or commit resets it (a status command with a pipe, redirect or chain counts as real work), and an
+message or commit resets it (a ping is a plain mailbox command, optionally with `2>&1` and `| grep/head/tail/wc` — any other pipe, redirect or chain is real work), and an
 AI turn still doing real work, or background agent/Bash work it launched that has not reported
 completion, blocks outright; when the
 transcript can't be read, any activity resets it (the older rule) — and (h) the sweep hasn't already auto-archived it at the

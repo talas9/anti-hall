@@ -102,16 +102,19 @@ function nonClaudeGolden(agent, cli, isChild) {
     + 'in one line and stop (do not loop, do not spawn a subagent)';
   // Phase 5 ack split: read-primary is read-only; the prompt names the ack step.
   const ackAfterRead = ' (read-only; after handling, run the `ackCommand` it returns)';
+  // 0.109 idle gate: the mailbox commands are asked for PLAIN (no pipes/filters).
+  const plain = ' (run plain: no pipes/filters)';
+  const plain2 = ' (both plain: no pipes/filters)';
   const drain = isChild
     ? 'first run `node ' + cli + ' inbox pull ' + id + '` (cheap, inline — imports ' +
       'anything waiting in your native queue) then `node ' + cli + ' inbox count ' + id +
-      '`; ' + stopCond + ', say so and stop — do NOT spawn a subagent; otherwise (' +
+      '`' + plain2 + '; ' + stopCond + ', say so and stop — do NOT spawn a subagent; otherwise (' +
       otherwise + '), run `node ' + cli +
       ' inbox read-primary ' + id + '`' + ackAfterRead + ' (delegate to a subagent only if the payload is large ' +
       '— its ackCommand is the cursor-advancing step, matching devswarm-child-turn.js\'s own ' +
       'mesh-direct instruction; `inbox read` is a non-mutating peek and cannot clear the ' +
       'withheld gap)' + storeUnavailableClause
-    : 'first run `node ' + cli + ' inbox count ' + id + '`; ' + stopCond + ', say so ' +
+    : 'first run `node ' + cli + ' inbox count ' + id + '`' + plain + '; ' + stopCond + ', say so ' +
       'and stop — do NOT spawn a subagent; otherwise (' + otherwise + '), run `node ' + cli +
       ' inbox read-primary ' + id + '`' + ackAfterRead + ' (delegate to a subagent only if the payload is large)' + storeUnavailableClause;
   return ' MAILBOX WAKE: this workspace runs `' + agent + '`, which has NO idle-wake ' +
@@ -463,4 +466,20 @@ test('wakeReassert: DEVSWARM_BUILDER_ID unset -> the placeholder is preserved, b
   const out = wakeReassert({ DEVSWARM_AI_AGENT: 'claude' }, CLI, true, '');
   assert.ok(out.includes('inbox tick <DEVSWARM_BUILDER_ID> --child'), `must keep the placeholder in the tick command; out=${out}`);
   assert.ok(out.includes('wake-directive <DEVSWARM_BUILDER_ID>'), `must keep the placeholder in the wake-directive pointer; out=${out}`);
+});
+
+// 0.109 idle gate: the auto-archive idle classifier ignores a wake turn only
+// when its mailbox commands are plain (companion/lib/devswarm-idle.js). Every
+// injected drain/wake text therefore tells the agent to run them as PLAIN
+// commands — no pipes or filters (the output is already small).
+test('0.109: every drain text (cron tick, child, Primary, Codex turn-native) says run the commands plain, no pipes/filters', () => {
+  for (const [isChild, useTick] of [[true, true], [false, true], [true, false], [false, false]]) {
+    const out = drainCmd(CLI, isChild, useTick, 'child-abc123');
+    assert.match(out, /plain: no pipes\/filters/i, `isChild=${isChild} useTick=${useTick}: ${out}`);
+    assert.match(out, /no pipes\/filters/i);
+  }
+  const cron = wakeDirective({ DEVSWARM_AI_AGENT: 'claude', DEVSWARM_BUILDER_ID: 'child-abc123' }, true, CLI, '');
+  assert.match(cron, /no pipes\/filters/i, cron);
+  const codex = wakeDirective({ DEVSWARM_AI_AGENT: 'codex', DEVSWARM_BUILDER_ID: 'child-abc123' }, true, CLI, '');
+  assert.match(codex, /no pipes\/filters/i, codex);
 });

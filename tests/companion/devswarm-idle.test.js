@@ -44,8 +44,6 @@ test('mailbox allowlist: any shell metacharacter, pipe reader, chain or other ve
     base + ' | sed -n p',
     base + ' | jq .',
     base + ' | sort',
-    base + ' | head -1',
-    base + ' 2>&1',
     base + ' 2>/dev/null',
     base + '; make',
     base + ' && git push',
@@ -72,11 +70,61 @@ test('mailbox allowlist: any shell metacharacter, pipe reader, chain or other ve
     'node ' + CLI,
     'python3 ' + CLI + ' inbox tick c1',
     'node ' + CLI + ' inbox tick c1 --summary "$(git push)"',
-    'node ' + CLI + ' heartbeat c1 --summary "done; idle && awaiting auto-archive" 2>&1 | head -1',
   ]) assert.strictEqual(I.isMailboxTool(bash(cmd)), false, JSON.stringify(cmd));
   // a backgrounded mailbox command is not a ping either.
   assert.strictEqual(I.isMailboxTool(bash(base, { run_in_background: true })), false);
   assert.strictEqual(I.isMailboxTool(bash(base, { run_in_background: 'true' })), false);
+});
+
+test('mailbox allowlist: provably read-only tails — optional `2>&1`, then `| grep|head|tail|wc <plain tokens>` — stay a ping', () => {
+  for (const cmd of [
+    'node ' + CLI + ' inbox tick c1 --child 2>&1 | grep -oE \'"ok":[^,]*\' | head -3',
+    'node ' + CLI + ' inbox tick c1 --child 2>&1',
+    'node ' + CLI + ' inbox tick c1 --child | head -1',
+    'node ' + CLI + ' inbox tick c1 --child 2>&1 | grep -o -E \'"(ok|unreadTotal)":[a-z0-9]+\' | wc -l',
+    'node ' + CLI + ' heartbeat c1 --summary "done; idle && awaiting auto-archive" 2>&1 | tail -2',
+    'node ' + CLI + ' inbox read-primary c1 | grep -c unread',
+  ]) assert.strictEqual(I.isMailboxTool(bash(cmd)), true, JSON.stringify(cmd));
+});
+
+test('mailbox allowlist: any other tail is REAL work (writers, file redirects, other filters, grep -f)', () => {
+  const base = 'node ' + CLI + ' inbox tick c1 --child';
+  for (const cmd of [
+    base + ' | grep x > /repo/f',
+    base + ' 2>&1 | grep x >> /repo/f',
+    base + ' | tee /repo/f',
+    base + ' | tee',
+    base + ' | awk 1',
+    base + ' | xargs rm',
+    base + ' | sed -n p',
+    base + ' | sort',
+    base + ' | jq .',
+    base + ' | python3 -c "print(1)"',
+    base + ' | grep -f /etc/patterns',
+    base + ' | grep -rf /etc/patterns',
+    base + ' | grep --file=/etc/patterns',
+    base + ' | grep --file /etc/patterns',
+    base + ' 2> /tmp/err',
+    base + ' 2>/tmp/err',
+    base + ' >&2',
+    base + ' 2>&1 > /repo/f',
+    base + ' | grep x 2>&1',
+    base + ' 2>&1 2>&1',
+    base + ' |',
+    base + ' | | head',
+    base + ' || head',
+    base + ' | grep $(git push)',
+    base + ' | grep "$X"',
+    base + ' | grep `x`',
+    base + ' | grep x; make',
+    base + ' | head -1 & make',
+    base + ' | head <(git push)',
+    base + ' | grep \'a\'b',
+    base + ' | GREP=1 grep x',
+    base + ' | /usr/bin/grep x',
+    'grep x | ' + base,
+    'head -1 /etc/passwd',
+  ]) assert.strictEqual(I.isMailboxTool(bash(cmd)), false, JSON.stringify(cmd));
 });
 
 test('mailbox allowlist: a Monitor is a ping only when it runs EXACTLY the wake watcher', () => {

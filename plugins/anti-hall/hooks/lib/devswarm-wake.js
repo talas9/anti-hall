@@ -274,6 +274,12 @@ function drainCmd(cli, isChild, useTick, id) {
   // branch now fires on ANY `ok:false`: report the reason (and
   // `storeUnavailableReason`/`storeUnavailableDetail` when present) in one
   // line and stop.
+  // 0.109 idle gate: the auto-archive idle classifier (companion/lib/
+  // devswarm-idle.js) ignores a wake turn only when its mailbox commands are
+  // plain, so every drain text asks for them plain (their output is small; the
+  // wording is kept short for the SessionStart payload budget).
+  const plainNote = ' (run plain: no pipes/filters)';
+  const plainNote2 = ' (both plain: no pipes/filters)';
   const storeUnavailableClause = ' — if that reports `ok:false`, '
     + 'report the `reason` (and `storeUnavailableReason`/`storeUnavailableDetail` when present) '
     + 'in one line and stop (do not loop, do not spawn a subagent)';
@@ -284,7 +290,7 @@ function drainCmd(cli, isChild, useTick, id) {
         'mesh-direct instruction; `inbox read` is a non-mutating peek and cannot clear the ' +
         'withheld gap)'
       : ')';
-    return 'run ' + tickCmd + ' (with `--child` it first imports anything waiting in your ' +
+    return 'run ' + tickCmd + plainNote + ' (with `--child` it first imports anything waiting in your ' +
       'native queue, then reports the SAME `unreadTotal`/`meshGapWithheld`/`known` fields ' +
       '`inbox count` does, and writes a liveness marker + refreshes your heartbeat — one ' +
       'command instead of pull+count); ' + stopCond + ', say so and stop — do NOT spawn a ' +
@@ -294,14 +300,14 @@ function drainCmd(cli, isChild, useTick, id) {
   const countCmd = '`node ' + cli + ' inbox count ' + id + '`';
   if (isChild) {
     return 'first run `node ' + cli + ' inbox pull ' + id + '` (cheap, inline — imports ' +
-      'anything waiting in your native queue) then ' + countCmd + '; ' + stopCond + ', ' +
+      'anything waiting in your native queue) then ' + countCmd + plainNote2 + '; ' + stopCond + ', ' +
       'say so and stop — do NOT spawn a subagent; otherwise (' + otherwise + '), run `node ' +
       cli + ' inbox read-primary ' + id +
       '`' + ACK_AFTER_READ + ' (delegate to a subagent only if the payload is large — its ackCommand is the cursor-advancing ' +
       'step, matching devswarm-child-turn.js\'s own mesh-direct instruction; `inbox read` is a ' +
       'non-mutating peek and cannot clear the withheld gap)' + storeUnavailableClause;
   }
-  return 'first run ' + countCmd + '; ' + stopCond + ', say so and stop — do NOT spawn a ' +
+  return 'first run ' + countCmd + plainNote + '; ' + stopCond + ', say so and stop — do NOT spawn a ' +
     'subagent; otherwise (' + otherwise + '), run `node ' + cli + ' inbox read-primary ' + id +
     '`' + ACK_AFTER_READ + ' (delegate to a subagent only if the payload is large)' + storeUnavailableClause;
 }

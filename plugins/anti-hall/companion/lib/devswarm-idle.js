@@ -20,11 +20,12 @@
 //   * its trigger is a wake: a cron fire (system scheduled_task_fire), a
 //     mailbox-wake Monitor notification, or a Stop-hook feedback prompt — a
 //     prompt a human typed is never a wake;
-//   * EVERY tool call in it is mailbox-class: a single simple
-//     `node <path>/devswarm.js inbox|heartbeat|roster|mesh <plain args>` with
-//     no shell metacharacter at all (no pipe/filter, chain, redirect,
-//     substitution), exactly `node <path>/devswarm-wake-watch.js` as a Monitor,
-//     CronList, a mailbox CronCreate, a Cron/Monitor ToolSearch.
+//   * EVERY tool call in it is mailbox-class: one
+//     `node <path>/devswarm.js inbox|heartbeat|roster|mesh <plain args>`,
+//     optionally `2>&1` and `| grep|head|tail|wc <plain args>` (provably
+//     read-only; no chain, file redirect, substitution or other filter),
+//     exactly `node <path>/devswarm-wake-watch.js` as a Monitor, CronList, a
+//     mailbox CronCreate, a Cron/Monitor ToolSearch.
 // SAFETY PRINCIPLE: in doubt, a turn is REAL — an extra reset only delays
 // archiving; a false ping would archive a child mid-work. Background work
 // (a background Agent/Bash launch with no final <task-notification>, or a
@@ -49,41 +50,80 @@ const path = require('path');
 const TAIL_BYTES = 2 * 1024 * 1024;
 const MAILBOX_VERBS = new Set(['inbox', 'heartbeat', 'roster', 'mesh']);
 
-// STRICT ALLOWLIST (safety review, 0.109): a command is mailbox-class only when
-// it is ONE simple command with no shell metacharacter anywhere — no pipe,
-// chain, redirect, subshell, substitution, brace/group or newline — so no
-// filter, writer or second command can ride along. Every word is a plain
-// token: [A-Za-z0-9_@%+=:,./~-], or a quoted string with no `$`, backtick,
-// backslash inside ('...' is literal). Anything else -> REAL work.
-const SHELL_META = /[|;&><`(){}\n\r]|\$\(/;
-const PLAIN_WORDS = /^\s*(?:(?:[A-Za-z0-9_@%+=:,./~-]+|"[^"$`\\]*"|'[^']*')(?:\s+|\s*$))+$/;
+// STRICT ALLOWLIST (safety review, 0.109): a command is mailbox-class only
+// when it is ONE mailbox command, optionally followed by PROVABLY READ-ONLY
+// output handling:
+//   node <path>/devswarm.js <inbox|heartbeat|roster|mesh> <words> [2>&1] [| grep|head|tail|wc <words>]...
+// A word is a plain token [A-Za-z0-9_@%+=:,./~-]+, a '...' literal, or a
+// "..." string with no `$`, backtick or backslash; words are separated by
+// spaces/tabs only. `2>&1` (fd duplication, no file) is allowed once, right
+// after the mailbox command; `|` only between segments. ANY other shell
+// syntax — `;` `&` `>`/`>>`/`<` to a file, `<(`, `$(`, backticks, `(` `{`,
+// a newline, `||`, adjacent quoted pieces — or any other filter (python3,
+// sed, sort, awk, jq, tee, xargs, ...), or `grep -f/--file`, is REAL work.
+const WORD_RE = /[ \t]+|2>&1(?=[ \t|]|$)|\||'[^'\n]*'|"[^"$`\\\n]*"|[A-Za-z0-9_@%+=:,./~-]+/y;
+const PIPE_FILTERS = new Set(['grep', 'head', 'tail', 'wc']);
 
-// simpleWords(cmd) -> [word] (quotes stripped) | null when not a strict simple command.
-function simpleWords(cmd) {
+// segments(cmd) -> [[word, ...], ...] split on `|` (the DUP token '2>&1' kept
+// as a word), or null when anything outside the grammar above appears.
+function segments(cmd) {
   const s = String(cmd == null ? '' : cmd);
-  if (!s.trim() || SHELL_META.test(s) || !PLAIN_WORDS.test(s)) return null;
-  const out = [];
-  for (const m of s.matchAll(/"([^"]*)"|'([^']*)'|(\S+)/g)) out.push(m[1] !== undefined ? m[1] : (m[2] !== undefined ? m[2] : m[3]));
-  return out;
+  const segs = [[]];
+  let prevWord = false; // the previous token was a word (no separator since)
+  WORD_RE.lastIndex = 0;
+  while (WORD_RE.lastIndex < s.length) {
+    const at = WORD_RE.lastIndex;
+    const m = WORD_RE.exec(s);
+    if (!m || m.index !== at) return null;
+    const t = m[0];
+    if (/^[ \t]+$/.test(t)) { prevWord = false; continue; }
+    if (t === '|') { if (!segs[segs.length - 1].length) return null; segs.push([]); prevWord = false; continue; }
+    if (prevWord) return null; // adjacent pieces (e.g. 'a'b) — not provably one plain word
+    const q = t[0];
+    segs[segs.length - 1].push(t === '2>&1' ? { dup: true } : (q === '"' || q === "'") ? t.slice(1, -1) : t);
+    prevWord = true;
+  }
+  if (!segs[segs.length - 1].length) return null;
+  return segs;
+}
+
+function isReadOnlyFilter(words) {
+  if (!words.length || typeof words[0] !== 'string' || !PIPE_FILTERS.has(words[0])) return false;
+  for (const w of words.slice(1)) {
+    if (typeof w !== 'string') return false; // no 2>&1 inside a filter
+    if (words[0] === 'grep' && (/^--file(=|$)/.test(w) || /^-[A-Za-z0-9]*f/.test(w))) return false;
+  }
+  return true;
+}
+
+// mailboxCommand(cmd, scriptRe, verbs) -> true when cmd fits the grammar.
+function mailboxCommand(cmd, scriptRe, verbs, allowTail) {
+  const segs = segments(cmd);
+  if (!segs) return false;
+  const first = segs[0].slice();
+  if (!allowTail && (segs.length > 1 || first.some((w) => typeof w !== 'string'))) return false;
+  if (first.length && typeof first[first.length - 1] !== 'string') first.pop(); // trailing 2>&1
+  if (first.some((w) => typeof w !== 'string')) return false;
+  if (first.length < (verbs ? 3 : 2) || first[0] !== 'node' || !scriptRe.test(first[1])) return false;
+  if (verbs && !verbs.has(first[2])) return false;
+  return segs.slice(1).every(isReadOnlyFilter);
 }
 
 const isTrue = (v) => v === true || v === 'true';
 
 // isMailboxTool(block) -> bool for one assistant tool_use block.
-//   Bash    : exactly `node <path>/devswarm.js <inbox|heartbeat|roster|mesh> <plain args>`
-//             (never backgrounded)
+//   Bash    : `node <path>/devswarm.js <inbox|heartbeat|roster|mesh> <plain args>`
+//             [2>&1] [| grep|head|tail|wc <plain args>]... (never backgrounded)
 //   Monitor : exactly `node <path>/devswarm-wake-watch.js <plain args>`
 function isMailboxTool(block) {
   const name = String((block && block.name) || '');
   const input = (block && block.input) || {};
   if (name === 'Bash') {
     if (isTrue(input.run_in_background)) return false;
-    const w = simpleWords(input.command);
-    return !!(w && w.length >= 3 && w[0] === 'node' && /^(?:.*\/)?devswarm\.js$/.test(w[1]) && MAILBOX_VERBS.has(w[2]));
+    return mailboxCommand(input.command, /^(?:.*\/)?devswarm\.js$/, MAILBOX_VERBS, true);
   }
   if (name === 'Monitor') {
-    const w = simpleWords(input.command);
-    return !!(w && w.length >= 2 && w[0] === 'node' && /^(?:.*\/)?devswarm-wake-watch\.js$/.test(w[1]));
+    return mailboxCommand(input.command, /^(?:.*\/)?devswarm-wake-watch\.js$/, null, false);
   }
   if (name === 'CronList') return true;
   if (name === 'CronCreate') return /devswarm\.js/.test(String(input.prompt || '')) && /\binbox\b/.test(String(input.prompt || ''));
