@@ -526,40 +526,20 @@ function supervisorEnabled(env) {
 
 // ----- single-flight sweep lock (P2-11) -----
 function sweepLockPath(home) { return path.join(devswarmRoot(home), 'locks', 'sweep.lock'); }
-function isAliveDefault(pid) {
-  if (!Number.isFinite(pid) || pid <= 0) return false;
-  try { process.kill(pid, 0); return true; } catch (e) { return !!(e && e.code === 'EPERM'); }
-}
 // acquireSweepLock(home, io) -> release() | null. Same dead-holder/stale-steal
-// semantics as the per-workspace lock, on a fixed process-wide path.
+// semantics as the per-workspace lock (companion/lib/lock.js), on a fixed
+// process-wide path: a dead holder or one older than SWEEP_LOCK_STALE_MS is
+// reclaimed; a live, fresh sweep in progress -> null (skip this tick).
 function acquireSweepLock(home, io) {
-  const F = (io && io.fs) || fs;
-  const isAlive = (io && io.isAlive) || isAliveDefault;
-  const now = (io && io.now) || Date.now;
-  const p = sweepLockPath(home);
-  try { F.mkdirSync(path.dirname(p), { recursive: true }); } catch (_) {}
-  for (let attempt = 0; attempt < 2; attempt++) {
-    const ts = now();
-    const token = process.pid + ':' + ts + ':' + Math.random().toString(36).slice(2);
-    try {
-      const fd = F.openSync(p, 'wx');
-      try { F.writeSync(fd, JSON.stringify({ pid: process.pid, ts, token })); } finally { F.closeSync(fd); }
-      return function release() {
-        try { const cur = JSON.parse(F.readFileSync(p, 'utf8')); if (cur && cur.token === token) F.unlinkSync(p); } catch (_) {}
-      };
-    } catch (e) {
-      if (!e || e.code !== 'EEXIST') return null;
-      let holder = null;
-      try { holder = JSON.parse(F.readFileSync(p, 'utf8')); } catch (_) {}
-      const holderPid = holder && Number.isFinite(holder.pid) ? holder.pid : null;
-      const holderTs = holder && Number.isFinite(holder.ts) ? holder.ts : null;
-      const dead = holderPid !== null && !isAlive(holderPid);
-      const stale = holderTs === null || (now() - holderTs) > SWEEP_LOCK_STALE_MS;
-      if (dead || stale) { try { F.unlinkSync(p); } catch (_) {} continue; }
-      return null; // live, fresh sweep in progress -> skip this tick
-    }
-  }
-  return null;
+  const h = require('./lib/lock.js').acquire(sweepLockPath(home), {
+    fs: io && io.fs,
+    isAlive: io && io.isAlive,
+    now: io && io.now,
+    staleMs: SWEEP_LOCK_STALE_MS,
+    liveStaleMs: SWEEP_LOCK_STALE_MS,
+    stealDead: true,
+  });
+  return h ? function release() { h.release(); } : null;
 }
 
 // sweepOnce({home, now, env, idleThresholdMs, cooldownMs, nudgeWindowMs,
