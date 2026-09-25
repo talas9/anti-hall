@@ -60,6 +60,52 @@ test('detector: anchor on an older session than the newest transcript -> drift +
   } finally { f.cleanup(); }
 });
 
+// P2 fix: "newest" used to mean "started first" (the transcript's embedded
+// FIRST timestamp) — three sessions started within 90s could rank an
+// abandoned one (no writes since) "newer" than the one still live. It must
+// rank by LAST ACTIVITY (transcript mtime) instead.
+test('detector: last-activity (mtime) beats a later start time — an abandoned session never outranks a live one', () => {
+  const f = fixture();
+  try {
+    // sess-b "started" AFTER sess-a by embedded timestamp, but sess-b's
+    // transcript has not been touched since (old mtime); sess-a is the one
+    // still being appended to (recent mtime).
+    transcript(f, 'sess-a', f.repo, '2026-09-11T10:00:00.000Z');
+    transcript(f, 'sess-b', f.repo, '2026-09-11T10:00:30.000Z');
+    const dir = drift.projectDirFor(f.repo, f.home);
+    const stale = new Date('2026-09-11T10:05:00.000Z');
+    const recent = new Date();
+    fs.utimesSync(path.join(dir, 'sess-b.jsonl'), stale, stale);
+    fs.utimesSync(path.join(dir, 'sess-a.jsonl'), recent, recent);
+    const list = drift.sessionsForWorktree(f.repo, { home: f.home });
+    assert.strictEqual(list[0].sessionId, 'sess-a', 'the actively-written session ranks newest, not the one that merely started later');
+    assert.strictEqual(list[1].sessionId, 'sess-b');
+  } finally { f.cleanup(); }
+});
+
+test('anchorSessionDrift: no notice when the current session IS the most recently active one, even though another session started later and briefly looks newer', () => {
+  const f = fixture();
+  try {
+    transcript(f, 'sess-old-anchor', f.repo, '2026-09-11T09:00:00.000Z');
+    transcript(f, 'sess-live', f.repo, '2026-09-11T10:00:00.000Z');
+    transcript(f, 'sess-abandoned', f.repo, '2026-09-11T10:00:30.000Z'); // started AFTER sess-live
+    const dir = drift.projectDirFor(f.repo, f.home);
+    fs.utimesSync(path.join(dir, 'sess-old-anchor.jsonl'), new Date('2026-09-11T09:00:10.000Z'), new Date('2026-09-11T09:00:10.000Z'));
+    // sess-abandoned: last write Sep 11 (stale) despite the later start time —
+    // exactly the field-reported shape (an abandoned 6KB transcript).
+    fs.utimesSync(path.join(dir, 'sess-abandoned.jsonl'), new Date('2026-09-11T10:01:00.000Z'), new Date('2026-09-11T10:01:00.000Z'));
+    // sess-live: the CURRENT running session, actively written right now.
+    fs.utimesSync(path.join(dir, 'sess-live.jsonl'), new Date(), new Date());
+    const d = drift.anchorSessionDrift({ anchorSessionId: 'sess-old-anchor', worktree: f.repo, home: f.home, currentSessionId: 'sess-live' });
+    assert.strictEqual(d, null, 'sess-live is the most recently active session on this worktree; sess-abandoned merely started later');
+    // Sanity: without currentSessionId (fail-open to the anchor-only check),
+    // the anchor mismatch against the most-recently-active session still
+    // surfaces drift (proves this isn't vacuously null for every input).
+    const d2 = drift.anchorSessionDrift({ anchorSessionId: 'sess-old-anchor', worktree: f.repo, home: f.home });
+    assert.strictEqual(d2.newestSessionId, 'sess-live');
+  } finally { f.cleanup(); }
+});
+
 test('parent-inbox: the Primary sees the drift notice (read-only)', () => {
   const f = fixture();
   try {

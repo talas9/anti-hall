@@ -748,6 +748,7 @@ function appDbChecks(opts) {
   const env = o.env || process.env;
   const now = Number.isFinite(o.now) ? o.now : Date.now();
   const F = o.fsi || fs;
+  const cwd = o.cwd || process.cwd();
   const out = [];
   let appDb;
   try { appDb = require('./devswarm-app-db.js'); } catch (_) { return out; }
@@ -782,7 +783,26 @@ function appDbChecks(opts) {
     out.push({ status: WARN, message: 'open in the DevSwarm app but unknown to anti-hall (no descriptor): ' + st.unknownToAntiHall.map((u) => (u.label || u.id) + ' (' + String(u.id).slice(0, 8) + ')').join('; ') });
   }
   if (Array.isArray(st.openButMarkedArchived) && st.openButMarkedArchived.length) {
-    out.push({ status: WARN, message: 'open in the DevSwarm app but archived in anti-hall (conflict, report only — `devswarm.js unarchive <id>` if it is live): ' + st.openButMarkedArchived.map((u) => (u.label || u.id) + ' (' + String(u.id).slice(0, 8) + ')').join('; ') });
+    // P1 fix (same scoping as hooks/devswarm-parent-inbox.js): openButMarkedArchived
+    // is HOME-GLOBAL (every repo the app knows about), so scope it to THIS repo
+    // before reporting — otherwise `doctor` warns about conflicts in other repos.
+    // Resolve the current repositoryId through the canonical toplevel resolver
+    // (identity.js resolveContext) + the existing app-DB reader
+    // (repositoryForWorktree) — no new fs-walk. Fail CLOSED: an entry lacking
+    // repositoryId (written by 0.108.0-0.108.2) or an unresolvable current repo
+    // never matches, so it is never reported here.
+    let curRepoId = null;
+    try {
+      const gitTop = require('./identity.js').resolveContext(cwd, { home, missingPath: 'ancestor' }).worktreeRoot;
+      const repo = (gitTop && snap) ? appDb.repositoryForWorktree(snap, gitTop) : null;
+      curRepoId = (repo && repo.id != null) ? String(repo.id) : null;
+    } catch (_) { curRepoId = null; }
+    const scopedConflicts = curRepoId
+      ? st.openButMarkedArchived.filter((u) => u && u.repositoryId != null && String(u.repositoryId) === curRepoId)
+      : [];
+    if (scopedConflicts.length) {
+      out.push({ status: WARN, message: 'open in the DevSwarm app but archived in anti-hall (conflict, report only — `devswarm.js unarchive <id>` if it is live): ' + scopedConflicts.map((u) => (u.label || u.id) + ' (' + String(u.id).slice(0, 8) + ')').join('; ') });
+    }
   }
   if (st.gaps && Array.isArray(st.gaps.repos)) {
     const gapRepos = st.gaps.repos.filter((r) => r.gap > 0);
@@ -849,7 +869,7 @@ function runChecks(opts) {
 
   // v0.108.0 DevSwarm app-DB view (report-only, silent without an app DB).
   try {
-    for (const r of appDbChecks({ home, env, now, fsi: F })) results.push(r);
+    for (const r of appDbChecks({ home, env, now, fsi: F, cwd })) results.push(r);
   } catch (e) {
     results.push({ status: WARN, message: 'DevSwarm app-DB check unavailable: ' + (e && e.message) });
   }

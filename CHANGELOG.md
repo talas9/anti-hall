@@ -60,6 +60,30 @@ the update.
   Added a Claude/Codex parity column to the Jev "All integrations" table in
   `plugins/anti-hall/skills/jev/SKILL.md` and the equivalent note in the
   Codex mirror `plugins/anti-hall/codex/skills/anti-hall-jev/SKILL.md`.
+- **`openButMarkedArchived` (app-state.json) was HOME-GLOBAL and reached the
+  Primary's screenshot ask unfiltered.** `syncAppState` (`scripts/devswarm.js`)
+  collects this conflict list across EVERY repo the DevSwarm app knows about,
+  but `hooks/devswarm-parent-inbox.js`'s `uiSyncAsk` passed it straight
+  through — the Primary of one repo could be asked for a screenshot about
+  workspaces belonging to entirely different repos. The writer now stamps
+  each entry with `repositoryId`, and both the parent-inbox hook and
+  `companion/lib/doctor-devswarm.js` scope the list to the current session's
+  repo (resolved via the existing canonical toplevel resolver
+  (`companion/lib/identity.js` `resolveContext`) + the app-DB's
+  `repositoryForWorktree` — no new fs-walk). An entry with no `repositoryId`
+  (written by 0.108.0-0.108.2, before this fix) or an unresolvable current
+  repo fails CLOSED: it is never shown. `syncAppState` regenerates
+  app-state.json on every supervisor tick, so pre-fix entries self-repair on
+  the next sync — no migration needed.
+- **`primary-session-drift.js` picked "newest session" by transcript START
+  time, not last activity.** Three sessions started within ~90s could rank an
+  abandoned transcript (no writes since) as "newer" than the session still
+  actively being written to, because `sessionsForWorktree` sorted by the
+  transcript's first embedded timestamp. It now sorts by the transcript
+  file's mtime (last activity, already collected for the MAX_SCAN bound), and
+  `anchorSessionDrift` only surfaces "a newer session exists" when that
+  most-recently-active session is actually more recently active than the
+  CURRENT running session's own last activity.
 
 ## 0.108.2 (2026-09-25)
 

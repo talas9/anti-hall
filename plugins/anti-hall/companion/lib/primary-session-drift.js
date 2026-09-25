@@ -50,7 +50,15 @@ function transcriptInfo(file, F) {
   return { cwd, startMs: Number.isFinite(startMs) ? startMs : null };
 }
 
-// sessionsForWorktree(worktree, { home, fs }) -> [{ sessionId, startMs }] newest first.
+// sessionsForWorktree(worktree, { home, fs }) ->
+//   [{ sessionId, startMs, lastActivityMs }] ordered by LAST ACTIVITY, newest
+//   first. P2 fix: "newest" used to mean "started first" (transcriptInfo's
+//   `startMs`, the transcript's FIRST timestamp) — three sessions started
+//   within 90s could then rank an abandoned one (no writes since) "newer"
+//   than the one still live and being actively written to. `lastActivityMs`
+//   is the transcript file's own mtime (already collected below, `m`, to
+//   bound the MAX_SCAN window) — it advances on every turn appended to the
+//   transcript, so it tracks real recency instead of session-start order.
 function sessionsForWorktree(worktree, opts) {
   const o = opts || {};
   const F = o.fs || fs;
@@ -71,13 +79,13 @@ function sessionsForWorktree(worktree, opts) {
   }
   files.sort((a, b) => b.m - a.m);
   const out = [];
-  for (const { n, sessionId } of files.slice(0, MAX_SCAN)) {
+  for (const { n, sessionId, m } of files.slice(0, MAX_SCAN)) {
     const info = transcriptInfo(path.join(dir, n), F);
     if (!info.cwd || !(info.cwd === wt || info.cwd.startsWith(wt + path.sep))) continue;
     if (info.startMs == null) continue;
-    out.push({ sessionId, startMs: info.startMs });
+    out.push({ sessionId, startMs: info.startMs, lastActivityMs: m });
   }
-  out.sort((a, b) => b.startMs - a.startMs);
+  out.sort((a, b) => b.lastActivityMs - a.lastActivityMs);
   return out;
 }
 
@@ -92,7 +100,18 @@ function anchorSessionDrift(opts) {
     if (!anchor || anchor.startsWith('unclaimed:')) return null;
     const list = sessionsForWorktree(o.worktree, o);
     if (!list.length || list[0].sessionId === anchor) return null;
-    return { anchorSessionId: anchor, newestSessionId: list[0].sessionId, newestStartMs: list[0].startMs };
+    // P2 fix: only surface "a newer session exists" when the most-recently-
+    // ACTIVE session on this worktree (list[0], now ordered by lastActivityMs)
+    // is actually more recently active than the CURRENT running session's own
+    // last activity — a session that merely started earlier/later but has
+    // since gone stale must not outrank the live one on id/anchor alone.
+    // o.currentSessionId not found in `list` (its own transcript not yet
+    // matched/written) -> fail open to the anchor-only drift below, same as
+    // before this fix.
+    const cur = o.currentSessionId != null ? String(o.currentSessionId) : '';
+    const curEntry = cur ? list.find((s) => s.sessionId === cur) : null;
+    if (curEntry && list[0].lastActivityMs <= curEntry.lastActivityMs) return null;
+    return { anchorSessionId: anchor, newestSessionId: list[0].sessionId, newestStartMs: list[0].lastActivityMs };
   } catch (_) { return null; }
 }
 

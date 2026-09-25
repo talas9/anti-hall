@@ -139,28 +139,56 @@ test('sync-ui verb: a conflict refuses --yes until --accept-conflicts; bad input
   } finally { rmFixture(f); }
 });
 
-test('parent-inbox asks for a screenshot once per session per set, only on conflict', { skip }, () => {
+// P1 fix: app-state.json's openButMarkedArchived is HOME-GLOBAL (every repo
+// the app knows about). It must carry repositoryId (written by syncAppState)
+// AND be scoped to THIS session's repo (resolved via the canonical toplevel
+// resolver + repositoryForWorktree) before it reaches the ask — a cwd inside
+// `f.repoPath` (a real git repo whose toplevel matches the fixture's
+// `repositories.path`, repositoryId 'repo-1') is what lets that resolution
+// succeed.
+function conflictAskFixture() {
   const f = buildAppDb();
+  cp.spawnSync('git', ['init', '-q', f.repoPath]);
+  const KEY = repokey.repoKeyForWorktree(f.repoPath);
+  const ds = path.join(f.home, '.anti-hall', 'devswarm');
+  fs.mkdirSync(path.join(ds, 'summaries'), { recursive: true });
+  const plain = path.join(f.base, 'plain-b'); fs.mkdirSync(plain);
+  fs.writeFileSync(path.join(ds, 'summaries', KEY + '.json'), JSON.stringify({
+    generatedAt: Date.now(), requiredGates: ['done'], recent: [], archivedRegistryRows: [],
+    workspaces: { 'b-b': { worktreePath: plain, sessionId: null, total: 0, cursor: 0, unread: 0, directUnread: 0, gates: {}, archive_ready: false } },
+  }));
+  const run = (sid) => {
+    const r = testHook('devswarm-parent-inbox.js', { hook_event_name: 'UserPromptSubmit', session_id: sid, prompt: 'hi', cwd: f.repoPath },
+      { home: f.home, env: Object.assign({ DEVSWARM_REPO_ID: 'repo-1' }, f.env), expectJson: true });
+    return (r.json && r.json.hookSpecificOutput && r.json.hookSpecificOutput.additionalContext) || '';
+  };
+  return { f, ds, run };
+}
+
+test('parent-inbox asks for a screenshot once per session per set, only on a SAME-REPO conflict', { skip }, () => {
+  const { f, ds, run } = conflictAskFixture();
   try {
-    const REPO_CWD = process.cwd();
-    const KEY = repokey.repoKeyForWorktree(REPO_CWD);
-    const ds = path.join(f.home, '.anti-hall', 'devswarm');
-    fs.mkdirSync(path.join(ds, 'summaries'), { recursive: true });
-    const plain = path.join(f.base, 'plain-b'); fs.mkdirSync(plain);
-    fs.writeFileSync(path.join(ds, 'summaries', KEY + '.json'), JSON.stringify({
-      generatedAt: Date.now(), requiredGates: ['done'], recent: [], archivedRegistryRows: [],
-      workspaces: { 'b-b': { worktreePath: plain, sessionId: null, total: 0, cursor: 0, unread: 0, directUnread: 0, gates: {}, archive_ready: false } },
-    }));
-    const run = (sid) => {
-      const r = testHook('devswarm-parent-inbox.js', { hook_event_name: 'UserPromptSubmit', session_id: sid, prompt: 'hi', cwd: REPO_CWD },
-        { home: f.home, env: Object.assign({ DEVSWARM_REPO_ID: 'repo-1' }, f.env), expectJson: true });
-      return (r.json && r.json.hookSpecificOutput && r.json.hookSpecificOutput.additionalContext) || '';
-    };
     assert.ok(!/DEVSWARM SYNC/.test(run('s1')), 'no conflict -> no ask');
-    fs.writeFileSync(path.join(ds, 'app-state.json'), JSON.stringify({ v: 1, at: Date.now(), ok: true, openButMarkedArchived: [{ id: 'b-a', label: 'Alpha task' }] }));
+    fs.writeFileSync(path.join(ds, 'app-state.json'), JSON.stringify({ v: 1, at: Date.now(), ok: true, openButMarkedArchived: [{ id: 'b-a', label: 'Alpha task', repositoryId: 'repo-1' }] }));
     const first = run('s1');
     assert.ok(/DEVSWARM SYNC: The DevSwarm app shows 'Alpha task' as open, but anti-hall has it archived/.test(first), first);
     assert.ok(!/DEVSWARM SYNC/.test(run('s1')), 'once per session per set');
     assert.ok(/DEVSWARM SYNC/.test(run('s2')), 'a new session asks again');
+  } finally { rmFixture(f); appDb.resetCache(); }
+});
+
+test('parent-inbox: a CROSS-repo conflict (different repositoryId) is never surfaced here', { skip }, () => {
+  const { f, ds, run } = conflictAskFixture();
+  try {
+    fs.writeFileSync(path.join(ds, 'app-state.json'), JSON.stringify({ v: 1, at: Date.now(), ok: true, openButMarkedArchived: [{ id: 'other-a', label: 'Some other repo workspace', repositoryId: 'other-repo' }] }));
+    assert.ok(!/DEVSWARM SYNC/.test(run('s1')), 'a conflict belonging to a different repositoryId must not ask this session');
+  } finally { rmFixture(f); appDb.resetCache(); }
+});
+
+test('parent-inbox: a LEGACY entry with no repositoryId (0.108.0-0.108.2 shape) fails closed, no ask', { skip }, () => {
+  const { f, ds, run } = conflictAskFixture();
+  try {
+    fs.writeFileSync(path.join(ds, 'app-state.json'), JSON.stringify({ v: 1, at: Date.now(), ok: true, openButMarkedArchived: [{ id: 'b-a', label: 'Alpha task' }] }));
+    assert.ok(!/DEVSWARM SYNC/.test(run('s1')), 'an entry that cannot be proven same-repo must not ask (fail closed)');
   } finally { rmFixture(f); appDb.resetCache(); }
 });

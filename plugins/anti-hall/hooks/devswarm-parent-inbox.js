@@ -2163,7 +2163,7 @@ function main() {
     if (primaryId && gitTop) {
       const desc = JSON.parse(fs.readFileSync(path.join(home, '.anti-hall', 'devswarm', 'workspaces', primaryId + '.json'), 'utf8'));
       const drift = require('../companion/lib/primary-session-drift.js');
-      const notice = drift.driftNotice(drift.anchorSessionDrift({ anchorSessionId: desc && desc.sessionId, worktree: gitTop, home }), sessionId);
+      const notice = drift.driftNotice(drift.anchorSessionDrift({ anchorSessionId: desc && desc.sessionId, worktree: gitTop, home, currentSessionId: sessionId }), sessionId);
       if (notice && dedupeEmit(home, sessionId, 'parent-inbox-session-drift', notice, { transcriptPath, keepaliveTurns: 20 })) segments.push(notice);
     }
   } catch (_) { /* no descriptor / unreadable: no notice */ }
@@ -2207,7 +2207,28 @@ function main() {
       const st = { conflicts: [], unreadable: false };
       try {
         const as = JSON.parse(fs.readFileSync(path.join(devswarmRoot(home), 'app-state.json'), 'utf8'));
-        if (as && Array.isArray(as.openButMarkedArchived)) st.conflicts = as.openButMarkedArchived;
+        if (as && Array.isArray(as.openButMarkedArchived)) {
+          // P1 fix: app-state.json's openButMarkedArchived is HOME-GLOBAL (every
+          // repo the app knows about), so it must be scoped to THIS session's
+          // repo before it reaches uiSyncAsk — otherwise the owner gets asked
+          // for a screenshot about workspaces in other repos entirely. Resolve
+          // the current repositoryId through the SAME app-DB reader/canonical
+          // toplevel (`gitTop`, resolved once above via identity.js
+          // resolveContext) that already backs repositoryForWorktree elsewhere
+          // in this hook — no new fs-walk. Fail CLOSED: an entry lacking
+          // repositoryId (written by 0.108.0-0.108.2, before this fix) or an
+          // unresolvable current repo never matches, so it is never shown
+          // (better a missed ask than a cross-repo one). The writer
+          // (scripts/devswarm.js syncAppState) regenerates app-state.json every
+          // supervisor tick, so 0.108.0-0.108.2 entries self-repair on the next
+          // sync — no migration needed.
+          const snapForRepo = appDbLib ? appSnap() : null;
+          const curRepo = (appDbLib && snapForRepo && gitTop) ? appDbLib.repositoryForWorktree(snapForRepo, gitTop) : null;
+          const curRepoId = (curRepo && curRepo.id != null) ? String(curRepo.id) : null;
+          st.conflicts = curRepoId
+            ? as.openButMarkedArchived.filter((c) => c && c.repositoryId != null && String(c.repositoryId) === curRepoId)
+            : [];
+        }
       } catch (_) { /* no sync yet */ }
       if (appDbLib && !appSnap()) {
         const f = appDbLib.appDbPath({ home, env: process.env });

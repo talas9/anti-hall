@@ -158,6 +158,10 @@ test('(4) app-state --json: read-only, reports the open-but-archived conflict', 
     assert.strictEqual(r.code, 0);
     assert.deepStrictEqual(listFiles(f.home), before, 'app-state writes nothing');
     assert.deepStrictEqual(r.result.openButMarkedArchived.map((u) => u.id), ['b-a']);
+    // P1 fix: each openButMarkedArchived entry carries repositoryId so a
+    // reader (parent-inbox hook, doctor) can scope it to its own repo instead
+    // of nagging every repo the app knows about.
+    assert.strictEqual(r.result.openButMarkedArchived[0].repositoryId, 'repo-1');
     assert.strictEqual(r.result.wouldMark, 2);
     assert.strictEqual(r.result.text, undefined, '--json carries no text rendering');
     const h = dw.run(['app-state'], { home: f.home, env: f.env, cwd: f.base });

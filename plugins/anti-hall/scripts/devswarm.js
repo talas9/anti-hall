@@ -5792,7 +5792,7 @@ function syncAppState(home, ctx) {
       if (w.builderType !== 'primary' && !known.has(w.id) && !(wtKey && knownWt.has(wtKey))) unknownToAntiHall.push({ id: w.id, label: w.label });
       // Conflict (report only — never auto-unarchived): open in the app, but
       // anti-hall holds an archived marker for it.
-      if (archivedIds.has(w.id)) openButMarkedArchived.push({ id: w.id, label: w.label });
+      if (archivedIds.has(w.id)) openButMarkedArchived.push({ id: w.id, label: w.label, repositoryId: w.repositoryId });
     }
     active.sort((a, b) => (a.repositoryId || '').localeCompare(b.repositoryId || '') || ((a.rank == null ? Infinity : a.rank) - (b.rank == null ? Infinity : b.rank)));
     const gapCooldown = Number.isFinite(c.gapCooldownMs) ? c.gapCooldownMs : APP_GAP_COOLDOWN_MS;
