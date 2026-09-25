@@ -754,6 +754,61 @@ test('jev-assist.js finalize(): auto-populates `project` from cwd basename when 
 });
 
 // ---------------------------------------------------------------------------
+// Real cost SUMMED PER PROJECT: groupRowsBy('project') + buildReport per
+// group already gives each group its own realCostTotal (buildReport is
+// project-agnostic — it only ever sees the rows it's handed); this proves
+// the composition actually sums correctly per project, and that
+// printRealCostSummary renders it.
+// ---------------------------------------------------------------------------
+
+test('sum cost per project: groupRowsBy + buildReport gives each project its own independent realCostTotal', () => {
+  const { groupRowsBy, buildReport } = require('../../plugins/anti-hall/scripts/jev-report.js');
+  const rows = [
+    row({ id: 'speculation', h: 'p1a', project: 'proj-a', backend: 'jev', costUsd: 0.001, costSource: 'default-price' }),
+    row({ id: 'speculation', h: 'p1b', project: 'proj-a', backend: 'jev', costUsd: 0.002, costSource: 'default-price' }),
+    row({ id: 'speculation', h: 'p2a', project: 'proj-b', backend: 'jev', costUsd: 0.05, costSource: 'gateway' }),
+    row({ id: 'modelRouting', h: 'p2b', project: 'proj-b', backend: 'jev', costUsd: 0.01, costSource: 'default-price' }),
+  ];
+  const groups = groupRowsBy(rows, 'project');
+  const projA = buildReport(groups.get('proj-a'), {});
+  const projB = buildReport(groups.get('proj-b'), {});
+  const specA = projA.integrations.find((r) => r.id === 'speculation');
+  assert.ok(Math.abs(specA.realCostTotal - 0.003) < 1e-9, 'proj-a speculation cost is scoped to proj-a rows only: ' + specA.realCostTotal);
+  const specB = projB.integrations.find((r) => r.id === 'speculation');
+  assert.ok(Math.abs(specB.realCostTotal - 0.05) < 1e-9, 'proj-b speculation must not include proj-a\'s cost: ' + specB.realCostTotal);
+  const mrB = projB.integrations.find((r) => r.id === 'modelRouting');
+  assert.ok(Math.abs(mrB.realCostTotal - 0.01) < 1e-9);
+});
+
+test('printRealCostSummary: renders total + per-integration real cost for a single group report', () => {
+  const { buildReport, printRealCostSummary } = require('../../plugins/anti-hall/scripts/jev-report.js');
+  const rows = [
+    row({ id: 'speculation', h: 'x1', backend: 'jev', costUsd: 0.002, costSource: 'default-price' }),
+    row({ id: 'modelRouting', h: 'x2', backend: 'jev', costUsd: 0.001, costSource: 'gateway' }),
+  ];
+  const report = buildReport(rows, {});
+  const lines = [];
+  const origLog = console.log;
+  console.log = (s) => lines.push(s);
+  try { printRealCostSummary(report); } finally { console.log = origLog; }
+  const out = lines.join('\n');
+  assert.match(out, /real cost: \$0\.0030 total/);
+  assert.match(out, /speculation: calls=1 \$0\.0020/);
+  assert.match(out, /modelRouting: calls=1 \$0\.0010/);
+});
+
+test('printRealCostSummary: silent no-op when nothing in the group carries a real cost', () => {
+  const { buildReport, printRealCostSummary } = require('../../plugins/anti-hall/scripts/jev-report.js');
+  const rows = [row({ id: 'speculation', h: 'x1' })];
+  const report = buildReport(rows, {});
+  const lines = [];
+  const origLog = console.log;
+  console.log = (s) => lines.push(s);
+  try { printRealCostSummary(report); } finally { console.log = origLog; }
+  assert.deepStrictEqual(lines, []);
+});
+
+// ---------------------------------------------------------------------------
 // --weekly: a compact, always-7-day per-integration summary (verdict + reason)
 // for the weekly scorecard SessionStart notice (hooks/jev-weekly-scorecard.js).
 // ---------------------------------------------------------------------------

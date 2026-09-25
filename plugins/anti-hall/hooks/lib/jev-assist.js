@@ -218,6 +218,19 @@ function readPrices(home) {
 //   'price-table' : the response carried real token counts but no cost, and
 //                   the owner configured a per-token price for this model
 //                   (or a "default" entry) in jev.json `prices`.
+//   'default-price': same shape as 'price-table' (real tokensIn/tokensOut,
+//                   pure arithmetic), but from the BUILT-IN default rate
+//                   (jev.priceUsdPerMInput/jev.priceUsdPerMOutput) rather
+//                   than an owner-configured `prices` entry -- this is what
+//                   makes every jev-assist row carry a real costUsd out of
+//                   the box instead of staying permanently null until an
+//                   owner manually populates `prices`. Defaults are Jev's
+//                   OWN published rate (verified: typesafe.ai,
+//                   vercel.com/ai-gateway/models/jev, openrouter.ai/typesafe
+//                   -- $0.042/1M input tokens, output free) so they are
+//                   accurate for the actual judge model this file calls
+//                   UNLESS the owner overrides them (e.g. a custom
+//                   judgeModel) via those two settings keys.
 //   null          : neither is available. NEVER fabricated, and NEVER an
 //                   extra network call -- this is pure arithmetic over data
 //                   the call already returned.
@@ -231,6 +244,12 @@ function computeCostUsd({ r, cachedFlag, home }) {
     if (entry && Number.isFinite(entry.inPerMTok) && Number.isFinite(entry.outPerMTok)) {
       const costUsd = (r.tokensIn / 1e6) * entry.inPerMTok + (r.tokensOut / 1e6) * entry.outPerMTok;
       return { costUsd, costSource: 'price-table' };
+    }
+    const inPerMTok = jevSetting(home, 'priceUsdPerMInput', 0.042);
+    const outPerMTok = jevSetting(home, 'priceUsdPerMOutput', 0);
+    if (Number.isFinite(inPerMTok) && Number.isFinite(outPerMTok)) {
+      const costUsd = (r.tokensIn / 1e6) * inPerMTok + (r.tokensOut / 1e6) * outPerMTok;
+      return { costUsd, costSource: 'default-price' };
     }
   }
   return { costUsd: null, costSource: null };

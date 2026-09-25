@@ -158,6 +158,16 @@ the update.
   ARCHIVE-READY reminder stays exempt (`archive-request` auto-archives a dead target on its
   next run, so it is never redundant there); a genuinely `stuck`/escalated status is unaffected.
 
+- **Jev cost tracking logged `costUsd: null` forever ("not configured").** `computeCostUsd`
+  only ever computed a real per-token cost from an owner-populated `jev.prices` table, so
+  every row stayed null until an owner manually filled it in. It now falls back to a
+  BUILT-IN default rate (new `jev.priceUsdPerMInput`/`jev.priceUsdPerMOutput` settings,
+  default `0.042`/`0` — verified: typesafe.ai, vercel.com/ai-gateway/models/jev,
+  openrouter.ai/typesafe) whenever `jev.prices` has no matching entry, so real cost is
+  populated out of the box. `jev-report.js --by project|session` now also prints a
+  real-cost summary (total + per-integration) scoped to that project/session; the gateway
+  credit balance is still read exactly as before.
+
 ### Features
 
 - **`devswarm.heldPartitions` (owner-held mesh partitions).** A new csv settings key

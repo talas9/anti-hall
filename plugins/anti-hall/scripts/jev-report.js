@@ -1164,6 +1164,26 @@ function printCostWindows(costWindows) {
   }
 }
 
+// printRealCostSummary(report) — the SAME real (gateway/price-table/default-
+// price) cost figures printCostWindows shows for the top-level report, but
+// for ONE already-built report (e.g. a single `--by project`/`--by session`
+// group) rather than a {24h,7d} window map. Reuses report.integrations[]'s
+// existing realCostTotal/realCostPerCall fields (buildReport computes these
+// identically regardless of which rows it was given) — no new aggregation,
+// just a render for a shape printCostWindows does not otherwise reach. Skips
+// silently when nothing in this group carried a real cost.
+function printRealCostSummary(report) {
+  const known = report.integrations.filter((r) => r.realCostTotal !== null);
+  if (known.length === 0) return;
+  let total = 0;
+  for (const r of known) total += r.realCostTotal;
+  console.log(`  real cost: $${total.toFixed(4)} total`);
+  for (const r of known) {
+    const perCall = r.realCostPerCall == null ? 'n/a' : `$${r.realCostPerCall.toFixed(4)}/call`;
+    console.log(`    ${r.id}: calls=${r.freshCalls} $${r.realCostTotal.toFixed(4)} ${perCall}`);
+  }
+}
+
 // printBudgetStatus(status) — status is null when budget.mode !== 'watch'
 // (nothing printed: unlimited is the silent default). Never suggests
 // disabling Jev; a budget in "watch" mode is observability only.
@@ -1279,6 +1299,10 @@ async function main() {
         console.log(`\n=== ${opts.by}: ${key} (${groupRows.length} row(s)) ===`);
         printTable(byGroup[key]);
         printHeadlines(byGroup[key]);
+        // Real cost, per integration, WITHIN this project/session — sums
+        // costUsd (see hooks/lib/jev-assist.js computeCostUsd) exactly like
+        // the top-level printCostWindows, just scoped to this one group.
+        printRealCostSummary(byGroup[key]);
       }
     }
     return;
@@ -1323,7 +1347,7 @@ module.exports = {
   buildHeadline, labelsLogPath, readLabels, latestHumanLabelByHash, cmdLabel,
   auditLogPath, readAuditSnippet, cmdPruneAudit, maybeWarnLowCredit, budgetStatePath,
   parseArgs, groupKeyOf, groupRowsBy, buildWeeklyScorecard, weeklyReason, readJevJson,
-  parseIsoMs, filterByTimeWindow, MIN_LABELED_FOR_VERDICT,
+  parseIsoMs, filterByTimeWindow, MIN_LABELED_FOR_VERDICT, printRealCostSummary,
 };
 
 if (require.main === module) {

@@ -614,14 +614,25 @@ port gets this integration for free with no separate implementation. `jev-assist
   cost or token usage from each response; `jev-assist.js` `computeCostUsd` logs
   `costUsd` + `costSource`: `gateway` (reported), `price-table` (tokens × the owner's
   `jev.prices` setting — `{model: {inPerMTok, outPerMTok}}` or a `default` entry; the
-  legacy `jev.json` `prices` is still read), `cache` ($0 for a cache hit), or null
-  (never invented, never an extra network call). The TypeSafe systemone endpoint
-  currently returns neither, so real cost needs `jev.prices`.
+  legacy `jev.json` `prices` is still read), `default-price` (tokens × the BUILT-IN
+  `jev.priceUsdPerMInput`/`jev.priceUsdPerMOutput` rate — **v0.108.4**, default
+  `0.042`/`0`, verified against typesafe.ai, vercel.com/ai-gateway/models/jev and
+  openrouter.ai/typesafe — used whenever `jev.prices` has no matching entry, so a row
+  gets a real cost out of the box instead of staying permanently null pending manual
+  configuration), `cache` ($0 for a cache hit), or null (only when the response carried
+  neither a gateway cost nor real token counts at all — never invented, never an extra
+  network call).
 - **Report.** `jev-report.js [--window 24h|7d] [--json]` adds cost windows ($/call,
   $/changed decision), precision from labels (`jev-report.js label <hash> tp|fp`; human
   labels win over AUTO labels derived from recorded outcomes), yield, cost efficiency,
   overhead and a one-line headline per integration. Changed decisions are counted once
-  per content hash (a fresh call plus its cache hits = one decision).
+  per content hash (a fresh call plus its cache hits = one decision). **v0.108.4:**
+  `--by project|session` now ALSO prints a real-cost summary (total + per-integration,
+  from the SAME `costUsd`/`realCostTotal` figures the top-level cost windows use) scoped
+  to that one project/session group — `groupRowsBy` + `buildReport` already gave each
+  group its own independent sum; `printRealCostSummary` is the render for it. The
+  Vercel AI Gateway credit balance is still read the same way (15-min cache, report-time
+  only, unaffected by this).
 - **Budget watch** (opt-in; settings `jev.budget.mode` `unlimited`/`watch`,
   `jev.budget.usdPerDay`, `jev.budget.usdPerWeek`, `jev.budget.minCreditUsd`; legacy
   `jev.json` `budget` still read). Over `usdPerDay` the assist layer logs one

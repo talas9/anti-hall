@@ -227,7 +227,7 @@ test('computeCostUsd: no gateway cost, real tokens, price table configured -> co
   } finally { h.cleanup(); }
 });
 
-test('computeCostUsd: real tokens but no price table entry -> null, never fabricated', () => {
+test('computeCostUsd: real tokens, no price-table entry -> falls back to the built-in default rate (Jev\'s own published price)', () => {
   const h = makeHome();
   try {
     h.writeState('jev.json', {});
@@ -236,7 +236,37 @@ test('computeCostUsd: real tokens but no price table entry -> null, never fabric
       r: { ok: true, tokensIn: 100, tokensOut: 50, model: 'typesafe-ai/jev' },
       cachedFlag: false, home: h.home,
     });
-    assert.deepStrictEqual(r, { costUsd: null, costSource: null });
+    assert.strictEqual(r.costSource, 'default-price');
+    // default $0.042/1M input, $0/1M output: 100 tok in @ 0.042/1e6 = 0.0000042
+    assert.ok(Math.abs(r.costUsd - 0.0000042) < 1e-12, JSON.stringify(r));
+  } finally { h.cleanup(); }
+});
+
+test('computeCostUsd: default rate is configurable via jev.priceUsdPerMInput/priceUsdPerMOutput', () => {
+  const h = makeHome();
+  try {
+    h.writeState('settings.json', { jev: { priceUsdPerMInput: 2, priceUsdPerMOutput: 4 } });
+    const { computeCostUsd } = freshLib();
+    const r = computeCostUsd({
+      r: { ok: true, tokensIn: 1000000, tokensOut: 500000, model: 'some-other-model' },
+      cachedFlag: false, home: h.home,
+    });
+    assert.strictEqual(r.costSource, 'default-price');
+    assert.ok(Math.abs(r.costUsd - (2 + 2)) < 1e-9, '1M in @ $2/MTok + 0.5M out @ $4/MTok = $4: ' + JSON.stringify(r));
+  } finally { h.cleanup(); }
+});
+
+test('computeCostUsd: a `prices` table entry still wins over the built-in default rate', () => {
+  const h = makeHome();
+  try {
+    h.writeState('jev.json', { prices: { 'typesafe-ai/jev': { inPerMTok: 1, outPerMTok: 2 } } });
+    const { computeCostUsd } = freshLib();
+    const r = computeCostUsd({
+      r: { ok: true, tokensIn: 1000000, tokensOut: 500000, model: 'typesafe-ai/jev' },
+      cachedFlag: false, home: h.home,
+    });
+    assert.strictEqual(r.costSource, 'price-table');
+    assert.ok(Math.abs(r.costUsd - (1 + 1)) < 1e-9);
   } finally { h.cleanup(); }
 });
 
