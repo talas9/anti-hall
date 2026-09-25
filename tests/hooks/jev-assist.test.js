@@ -632,6 +632,35 @@ test('recordOutcome: appends an outcome line joinable by hash', async () => {
   } finally { h.cleanup(); }
 });
 
+test('recordOutcome: populates project via the same cwd-basename fallback finalize() uses', async () => {
+  const h = makeHome();
+  try {
+    h.writeState('jev.json', { enabled: true, timeoutMs: 3000 });
+    await withEnv({ HOME: h.home }, async () => {
+      const { recordOutcome } = freshLib();
+      recordOutcome({ id: 'triage', h: 'deadbeef', outcome: 'answered', source: 'triage-answer-latency' });
+      const log = readNdjson(path.join(h.home, '.anti-hall', 'logs', 'jev-assist.ndjson'));
+      const outcomeLine = log.find((l) => l.type === 'outcome');
+      assert.ok(outcomeLine, 'outcome line present');
+      assert.strictEqual(outcomeLine.project, path.basename(process.cwd()));
+    });
+  } finally { h.cleanup(); }
+});
+
+test('recordOutcome: an explicit project wins over the cwd-basename fallback', async () => {
+  const h = makeHome();
+  try {
+    h.writeState('jev.json', { enabled: true, timeoutMs: 3000 });
+    await withEnv({ HOME: h.home }, async () => {
+      const { recordOutcome } = freshLib();
+      recordOutcome({ id: 'triage', h: 'deadbeef', outcome: 'answered', project: 'skycrew' });
+      const log = readNdjson(path.join(h.home, '.anti-hall', 'logs', 'jev-assist.ndjson'));
+      const outcomeLine = log.find((l) => l.type === 'outcome');
+      assert.strictEqual(outcomeLine.project, 'skycrew');
+    });
+  } finally { h.cleanup(); }
+});
+
 // ---------------------------------------------------------------------------
 // askSync — sync subprocess path (model-routing-guard's use case)
 // ---------------------------------------------------------------------------

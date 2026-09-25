@@ -81,10 +81,11 @@
 //   add-block baseline), a hardcoded constant rather than a real verdict --
 //   comparing `jev` against `base` there is NOT a measure of agreement.
 //
-// recordOutcome({id, h, outcome}) appends a second line shape
-//   {ts, type:'outcome', id, h, outcome} so `jev report` can join a later
-//   observed result (e.g. 'evidence-added', 'user-override') back to the
-//   decision by hash.
+// recordOutcome({id, h, outcome, project}) appends a second line shape
+//   {ts, type:'outcome', id, h, outcome, project} so `jev report` can join a
+//   later observed result (e.g. 'evidence-added', 'user-override') back to
+//   the decision by hash. `project` uses the same cwd-basename fallback as
+//   finalize()'s decision rows (see defaultProject() below).
 
 const fs = require('fs');
 const os = require('os');
@@ -445,15 +446,23 @@ function appendLog(home, entry) {
   }
 }
 
-// recordOutcome({id, h, outcome, source, home}) — best-effort, never throws.
+// recordOutcome({id, h, outcome, source, home, project}) — best-effort,
+// never throws.
 // `source` ('jev'|'regex'|...) is optional and lets a caller whose block did
 // NOT go through ask() (e.g. a pure regex/lexical block) still report an
 // outcome that `jev report` can compare against Jev-sourced outcomes, even
 // though no decision row for it exists in this log.
-function recordOutcome({ id, h, outcome, source, home } = {}) {
+// `project`: same cwd-basename convention as finalize()'s decision rows (see
+// defaultProject() above) — an outcome row groups by its own project field
+// exactly like a decision row, so it must carry the same fallback rather
+// than always landing in 'unknown' (jev-report's groupRowsBy already reads
+// row.project generically; this just stops outcome rows being the one row
+// shape that never had it).
+function recordOutcome({ id, h, outcome, source, home, project } = {}) {
   if (!id || !h || !outcome) return;
   const entry = { ts: new Date().toISOString(), type: 'outcome', id, h, outcome };
   if (source) entry.source = source;
+  entry.project = (typeof project === 'string' && project) ? project : defaultProject();
   appendLog(homeDir(home), entry);
 }
 

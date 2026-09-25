@@ -164,10 +164,16 @@ Jev is doing:
      changed/good-outcome/failure rates look. Tell the user to run `jev report
      label <hash> tp|fp` on a few more decisions (see "labeling" below) to seed
      the sample, or wait for more `recordOutcome` signal to accrue.
-   - **REVIEW (label-only, no outcome signal yet)** — a `choice` classifier (no
-     boolean baseline, e.g. `newRequest`) never uses changed-decision rate at
-     all; explain it needs human labels before any KEEP/REMOVE verdict is even
-     possible.
+   - **REVIEW (label-only, no outcome signal yet)** — a `choice`/string-label
+     classifier (no boolean baseline, e.g. `newRequest`, `supervisorBlockerLabel`)
+     never uses changed-decision rate at all; explain it needs human labels
+     before any KEEP/REMOVE verdict is even possible. Its `changed%` column
+     shows `n/a (N distinct)` instead of `0.0%` (v0.108.3 fix — a bare 0 read
+     as "Jev never did anything" when there's simply no boolean outcome to
+     diff), and a `label-only integrations` note below the table (and in the
+     headline) spells out the real distinct-decision count split fresh vs
+     cache, e.g. `label-only: no boolean outcome to compare; 25 distinct
+     decisions (25 fresh)`.
    - **REVIEW (p95 latency exceeds budget)** — the classifier is slow relative
      to its own hook's timeout budget; flag it, but this is a performance note,
      not a correctness one.
@@ -212,7 +218,12 @@ this codebase); `sessionId` is the Claude session id when the calling hook had
 one to thread through (not every integration is session-scoped — e.g.
 `devswarm-supervisor.js`'s background sweep never has one). A row from BEFORE
 this feature existed, or from an integration that genuinely has no session,
-groups under `unknown` — not an error, not dropped.
+groups under `unknown` — not an error, not dropped. `recordOutcome()`'s
+`type:'outcome'` rows (e.g. `triage`'s answer-latency join, `speculation`'s
+evidence-added/user-override outcomes) now carry `project` the same way
+(v0.108.3 fix — they used to have none at all); an outcome row logged before
+that fix still groups under `unknown` and cannot be repaired retroactively
+(no source cwd to recover it from).
 
 ### Excluding a known-accidental run (v0.108.1)
 

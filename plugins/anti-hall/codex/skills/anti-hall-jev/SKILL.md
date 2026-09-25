@@ -92,6 +92,13 @@ itself.
   only, never a REMOVE trigger by itself; a shadow-mode row's yield is now
   computed from `wouldChange` (what Jev would have done) instead of `changed`
   (which is always null in shadow by construction — see `docs/KB-jev-classifier.md`).
+  **v0.108.3 fix:** a label-only (`choice`/string) integration's `changed%`
+  column used to print a bare `0.0%`, indistinguishable from "Jev never
+  changed anything here". It now shows `n/a (N distinct)`, a `label-only
+  integrations` note below the table (and the headline) states `label-only:
+  no boolean outcome to compare; N distinct decisions (M fresh)`, and the
+  distinct-decision count dedupes cache retries of the same content hash —
+  KEEP/REMOVE/REVIEW gating itself is unchanged.
 - `jev-report.js --since <iso> --until <iso>` / `--exclude-window <iso>..<iso>`
   (repeatable) exclude rows by `ts` before anything else — use this to drop a
   known-accidental run from the numbers, e.g.
@@ -117,7 +124,12 @@ itself.
   filters to one project first. `project` is a cwd basename (agnostic, no
   absolute paths); `sessionId` is present only when the calling hook had one to
   thread through. A row missing either (including every row logged before this
-  feature existed) groups under `unknown`.
+  feature existed) groups under `unknown`. **v0.108.3 fix:** `recordOutcome()`'s
+  `type:'outcome'` rows (`triage`'s answer-latency join, `speculation`'s
+  evidence-added/user-override outcomes) now carry `project` too, via the same
+  cwd-basename fallback as decision rows — they used to have none at all. A
+  pre-fix outcome row still groups under `unknown` and cannot be repaired
+  retroactively (no source cwd to recover it from).
 - `node "$ANTI_HALL_ROOT/scripts/jev-report.js" [--window 24h|7d]` — read-only
   KEEP/REVIEW/REMOVE summary per integration. Two cost signals: `costPerCall` in
   `~/.anti-hall/jev.json` for a manual estimate (else `n/a`), and an automatic

@@ -610,14 +610,15 @@ function groupKeyOf(row, by) {
 }
 
 // groupRowsBy(rows, by) -> Map<groupKey, rows[]>. Outcome rows (type:
-// 'outcome') carry no project/session of their own (recordOutcome never
-// receives one) but DO join to a decision row by hash; they are placed in
-// EVERY group whose id had rows in this window is not tractable cheaply, so
+// 'outcome') DO join to a decision row by hash, but computing "every group
+// whose id had rows in this window" per outcome is not tractable cheaply, so
 // (documented, simple, and safe) they are instead grouped by their OWN
 // project/session fields exactly like a decision row -- 'unknown' when
-// absent, same as everything else. A human-labeled outcome that predates
-// project/session tracking simply reports under 'unknown', same as any
-// other pre-feature row.
+// absent, same as everything else. recordOutcome() populates `project` with
+// the same cwd-basename fallback finalize() uses for decision rows, but
+// never had a sessionId to thread through, so outcome rows still fall into
+// 'unknown' for --by session. A row logged before either field existed
+// simply reports under 'unknown', same as any other pre-feature row.
 function groupRowsBy(rows, by) {
   const groups = new Map();
   for (const row of rows) {
@@ -656,7 +657,14 @@ function buildHeadline(r, windowLabel) {
   const tpPart = `${tpTotal} TP (${r.humanTP} human, ${r.autoTP} auto)`;
   const costPart = r.costPerTp == null ? 'cost n/a' : `$${r.costPerTp.toFixed(4)}/TP`;
   const p50Part = r.p50 == null ? 'p50 n/a' : `p50=${r.p50}ms`;
-  return `${r.id}: ${r.changedUnique} changed/${windowLabel} · ${tpPart} · ${costPart} · ${p50Part} · ${r.suggestion}`;
+  // Label-only integrations never populate changedUnique (no boolean
+  // baseline to diff against — see labelOnlyNote above), so "0 changed/24h"
+  // would read as "Jev did nothing" here instead of "nothing boolean to
+  // measure"; swap in the distinct-decision count instead.
+  const changedPart = r.isLabelOnly
+    ? `${r.labelDistinctDecisions} distinct decisions/${windowLabel} (label-only)`
+    : `${r.changedUnique} changed/${windowLabel}`;
+  return `${r.id}: ${changedPart} · ${tpPart} · ${costPart} · ${p50Part} · ${r.suggestion}`;
 }
 
 function buildReport(rows, opts = {}) {
@@ -703,6 +711,14 @@ function buildReport(rows, opts = {}) {
         changedHashByFresh: new Map(),
         failures: 0, latencies: [],
         labelCounts: new Map(), labeled: 0,
+        // labelHashesAll/labelHashesFresh: distinct content hashes for
+        // `choice`-style rows (typeof row.jev === 'string') -- these never
+        // populate changedHashByFresh (no boolean baseline to compare
+        // against), so a label-only integration's changed%/changedUnique
+        // read as a bare 0 that looks like "nothing happened" rather than
+        // "there is no boolean signal to measure". Tracked separately so
+        // the report can show a real distinct-decision count instead.
+        labelHashesAll: new Set(), labelHashesFresh: new Set(),
         realCostSum: 0, realCostKnown: false,
         timeouts: 0, fallbackCount: 0, overOneSecFresh: 0,
       });
@@ -746,6 +762,10 @@ function buildReport(rows, opts = {}) {
     if (typeof row.jev === 'string') {
       bucket.labeled++;
       bucket.labelCounts.set(row.jev, (bucket.labelCounts.get(row.jev) || 0) + 1);
+      if (row.h) {
+        bucket.labelHashesAll.add(row.h);
+        if (row.backend !== 'cache') bucket.labelHashesFresh.add(row.h);
+      }
     }
     // Dedupe changed decisions by content hash, and EXCLUDE cache hits
     // entirely: a cache hit is a retry of an already-counted decision, not a
@@ -838,10 +858,24 @@ function buildReport(rows, opts = {}) {
     const lowYieldNote = changedRate < LOW_YIELD_CHANGED_RATE
       ? `low yield: changed ${pct(changedRate)} < 1%` : null;
 
+    // Label-only integration (a `choice` classifier, e.g. newRequest's
+    // new-request/follow-up/correction/question, or a plain string label
+    // like supervisorBlockerLabel's "wedged"): it has no boolean baseline,
+    // so changedUnique/changedRate are ALWAYS 0 by construction (see
+    // labelHashesAll/labelHashesFresh above and the effectiveDirection
+    // comment) -- a bare "0 changed" reads as "Jev never did anything here"
+    // when the real story is "there is nothing boolean to compare". Same
+    // `bucket.labeled > 0 && known === 0` condition the suggestion branch
+    // below already uses to detect this case.
+    const isLabelOnly = bucket.labeled > 0 && known === 0;
+    const labelOnlyNote = isLabelOnly
+      ? `label-only: no boolean outcome to compare; ${bucket.labelHashesAll.size} distinct decisions (${bucket.labelHashesFresh.size} fresh)`
+      : null;
+
     let suggestion;
     if (bucket.calls < MIN_CALLS_FOR_VERDICT) {
       suggestion = `REVIEW (not enough data: ${bucket.calls} < ${MIN_CALLS_FOR_VERDICT} calls)`;
-    } else if (bucket.labeled > 0 && known === 0) {
+    } else if (isLabelOnly) {
       // Label-only integration (a `choice` classifier, no boolean baseline):
       // changedHashByFresh is never populated for these rows at all (see
       // above), so this MUST run before the labelled-sample/REMOVE/KEEP
@@ -903,6 +937,10 @@ function buildReport(rows, opts = {}) {
       changed,
       changedUnique: totalChangedUnique,
       changedRate,
+      isLabelOnly,
+      labelOnlyNote,
+      labelDistinctDecisions: bucket.labelHashesAll.size,
+      labelDistinctFresh: bucket.labelHashesFresh.size,
       goodOutcomeRate,
       knownOutcomes: known,
       outcomeRateBySource,
@@ -1018,7 +1056,9 @@ function printTable(report) {
       ? (r.excludedNoCompare > 0 ? 'n/a (no comparison signal)' : 'n/a')
       : pct(r.agreementPct),
     r.topLabel != null ? `${pct(r.labelPct)} (${r.topLabel})` : 'n/a',
-    String(r.changed.added), String(r.changed.relaxed), pct(r.changedRate), pct(r.goodOutcomeRate),
+    String(r.changed.added), String(r.changed.relaxed),
+    r.isLabelOnly ? `n/a (${r.labelDistinctDecisions} distinct)` : pct(r.changedRate),
+    pct(r.goodOutcomeRate),
     `${pct(r.outcomeRateBySource.jev)}/${pct(r.outcomeRateBySource.regex)}`,
     r.p50 == null ? 'n/a' : String(r.p50), r.p95 == null ? 'n/a' : String(r.p95),
     r.costEstimate == null ? 'n/a' : `$${r.costEstimate.toFixed(4)}`, r.suggestion,
@@ -1028,6 +1068,11 @@ function printTable(report) {
   console.log(line(header));
   console.log(widths.map((w) => '-'.repeat(w)).join('  '));
   for (const r of rows) console.log(line(r));
+  const labelOnlyRows = report.integrations.filter((r) => r.isLabelOnly);
+  if (labelOnlyRows.length > 0) {
+    console.log('\nlabel-only integrations (changed% above reads "n/a" — a choice/label classifier has no boolean outcome to compare):');
+    for (const r of labelOnlyRows) console.log(`  ${r.id}: ${r.labelOnlyNote}`);
+  }
   if (!report.costPerCallKnown) {
     console.log('\ncost: n/a — set jev.json "costPerCall" (owner-supplied $/call estimate) to enable.');
   }
