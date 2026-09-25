@@ -12335,12 +12335,17 @@ function cmdGate(id, flags, ctx) {
       // guard) rather than a second descriptor read for the same id.
       const worktreePath = descForGate && descForGate.worktreePath ? descForGate.worktreePath : null;
       if (worktreePath) {
-        let verified = null;
-        try { verified = gitTruth.gitMergedInto(worktreePath); } catch (_) { verified = null; }
+        // gitMergeProof is the SAME proof auto-archive gate (b) runs
+        // (devswarm-lifecycle.js mergedFact); the row's set_by binds the
+        // verdict to the HEAD it was computed at (mergedVerifiedHead).
+        let proof = null;
+        try { proof = gitTruth.gitMergeProof(worktreePath); } catch (_) { proof = null; }
+        const verified = proof ? proof.merged : null;
+        const verifiedBy = proof && proof.head ? store.MERGED_VERIFIED_SETBY_PREFIX + proof.head : setBy;
         if (verified === true) {
-          s.setGate({ workspaceId: id, name: 'merged_verified', value: true, setBy });
+          s.setGate({ workspaceId: id, name: 'merged_verified', value: true, setBy: verifiedBy });
         } else if (verified === false) {
-          s.setGate({ workspaceId: id, name: 'merged_verified', value: false, setBy });
+          s.setGate({ workspaceId: id, name: 'merged_verified', value: false, setBy: verifiedBy });
           try {
             process.stderr.write('[devswarm] gate: `merged` set, but HEAD does not appear to be an ancestor of '
               + 'the default branch (git ground-truth check) — this can be normal for a squash/rebase merge; the '

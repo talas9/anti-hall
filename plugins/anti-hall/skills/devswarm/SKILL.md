@@ -297,12 +297,15 @@ once its work is merged, which sets the `done` gate on its own id and sends the 
 `[[ANTIHALL_DONE]]` message (idempotent; the roster then shows the child `done`/`archive-pending`,
 and nobody has to archive it by hand); chat text such as "DONE" never counts and `tests_passed` is not required here,
 because (b) proves the merge and an archive can be undone; (b) its branch is merged
-into its source (`git merge-base --is-ancestor` against the source branch or `origin/`.
-The app's PR row counts only for a done-report still tied to HEAD: a merged PR suffices when
-ancestry can't be determined; after a git "not an ancestor" (a squash merge) the PR must be
-merged AND its head sha (`headRefOid`) must equal HEAD exactly, and a PR row without a head
-sha stays blocked. The `done` verb records the HEAD it reported at, and gate (a) ignores that
-report once HEAD moves on. A `done` set with a plain `gate --set done` needs the git proof),
+into its source (`gitMergeProof`, the same check `gate --set merged` records as
+`merged_verified`: HEAD an ancestor of the REMOTE default branch, `origin/HEAD`'s target,
+or `origin/<source>` when that is unresolvable; a local branch ref never counts).
+When git can't decide, a `merged` gate verified at the current HEAD proves it, and then,
+for a done-report still tied to HEAD, a merged app PR row. A git "not an ancestor" always
+blocks: a reused branch with new commits, and a squash merge (the app DB has no PR head sha,
+so a squash-merged child needs a manual archive). The `done` verb records the HEAD it
+reported at, and gate (a) ignores that report once HEAD moves on. A `done` set with a plain
+`gate --set done` needs the git proof),
 (c) `git status --porcelain` is empty, (d) there's no unread mail to it or from it,
 (e) it isn't the Primary (the app DB's `builderType` decides; when it is missing, empty or whitespace-only for the row, the main-checkout rule does; a `primary-<hash>` descriptor id never does), (f) the owner hasn't selected it in the app for 10 min, and
 (g) it has been idle >= `idleMin`. A fact that can't be read counts as not proven.

@@ -56,7 +56,8 @@ function fixture(fake, children, opts) {
   const db = new sqlite.DatabaseSync(dbFile);
   db.exec('CREATE TABLE builders (id TEXT PRIMARY KEY, repositoryId TEXT, branchName TEXT, sourceBranch TEXT, worktreePath TEXT,'
     + ' builderType TEXT, isActive INTEGER, isHidden INTEGER, lastSelectedAt TEXT, label TEXT, pullRequestId TEXT)');
-  db.exec('CREATE TABLE pull_requests (id TEXT PRIMARY KEY, repositoryId TEXT, branchName TEXT, state TEXT, targetBranch TEXT, headRefOid TEXT)');
+  // The real DevSwarm pull_requests table has NO head/commit sha column.
+  db.exec('CREATE TABLE pull_requests (id TEXT PRIMARY KEY, repositoryId TEXT, branchName TEXT, state TEXT, targetBranch TEXT)');
   const ins = db.prepare('INSERT INTO builders VALUES (?,?,?,?,?,?,?,?,?,?,?)');
   const primaryWt = path.join(base, 'primary'); fs.mkdirSync(primaryWt);
   ins.run('p-1', 'r1', 'main', null, primaryWt, 'primary', 1, 0, null, 'Primary', null);
@@ -65,7 +66,7 @@ function fixture(fake, children, opts) {
     const wt = path.join(base, 'wt-' + c.id); fs.mkdirSync(wt);
     ins.run(c.id, 'r1', 'feat/' + c.id, 'main', wt, c.builderType || 'standard', c.archived ? 0 : 1, c.archived ? 1 : 0,
       c.lastSelectedAt === undefined ? null : c.lastSelectedAt, 'Task ' + c.id, null);
-    if (c.pr) db.prepare('INSERT INTO pull_requests VALUES (?,?,?,?,?,?)').run('pr-' + c.id, 'r1', 'feat/' + c.id, c.pr, 'main', c.prHead || null);
+    if (c.pr) db.prepare('INSERT INTO pull_requests VALUES (?,?,?,?,?)').run('pr-' + c.id, 'r1', 'feat/' + c.id, c.pr, 'main');
     facts[wt] = Object.assign({ id: c.id, ancestor: true, porcelain: '', done: true, unread: 0, unreadFrom: 0, activity: NOW - 60 * MIN }, c);
   }
   db.close();
@@ -76,7 +77,7 @@ function fixture(fake, children, opts) {
   const deps = {
     descriptors: () => Object.values(byId).map((f) => ({ id: f.id, worktreePath: f.wt, sessionId: 's-' + f.id })),
     repoKey: () => 'proj-abc123',
-    summary: () => ({ workspaces: Object.fromEntries(Object.values(byId).map((f) => [f.id, { id: f.id, archive_ready: f.done, gates: f.gates || {}, doneHead: f.doneHead, unread: f.unread, broadcastUnread: 0, cursor: 0 }])) }),
+    summary: () => ({ workspaces: Object.fromEntries(Object.values(byId).map((f) => [f.id, { id: f.id, archive_ready: f.done, gates: f.gates || {}, doneHead: f.doneHead, mergedVerified: f.mergedVerified, mergedVerifiedHead: f.mergedVerifiedHead, unread: f.unread, broadcastUnread: 0, cursor: 0 }])) }),
     unreadFrom: (h, k, ids) => ids.reduce((n, id) => n + ((byId[id] && byId[id].unreadFrom) || 0), 0),
     activityTs: (d) => byId[d.id].activity,
     git: (cwd, args) => {
@@ -192,7 +193,7 @@ test('chat text "DONE" with no structured report -> blocked on a-done (real stor
 const blockersOf = (fx) => L.planAutoArchive(opts(fx, { settings: DRY })).candidates[0].blockers.map((b) => b.gate);
 
 test('P1-B squash-merged PR + branch reused with new commits (done at the old HEAD) -> blocked', { skip }, () => {
-  const fx = fixture(V252, [{ id: 'c1', done: false, gates: { done: true }, doneHead: 'old-sha', head: 'new-sha', ancestor: false, pr: 'merged', prHead: 'old-sha' }]);
+  const fx = fixture(V252, [{ id: 'c1', done: false, gates: { done: true }, doneHead: 'old-sha', head: 'new-sha', ancestor: false, pr: 'merged' }]);
   assert.deepStrictEqual(L.autoArchiveSweep(opts(fx, { settings: DRY })).wouldArchive, []);
   assert.deepStrictEqual(blockersOf(fx), ['a-done', 'b-merged']);
   const c = L.planAutoArchive(opts(fx, { settings: DRY })).candidates[0];
@@ -212,36 +213,55 @@ test('P1-B done at the old HEAD, new HEAD, merge proven by git -> still blocked 
   assert.strictEqual(L.planAutoArchive(opts(fx, { settings: DRY })).candidates[0].eligible, true);
 });
 
-test('P1-B non-ancestor + merged PR with head sha unknown -> blocked, even for a HEAD-bound done-report', { skip }, () => {
+test('P1-B non-ancestor + merged PR -> blocked, even for a HEAD-bound done-report', { skip }, () => {
   const fx = fixture(V252, [{ id: 'c1', done: false, gates: { done: true }, doneHead: 'abc', ancestor: false, pr: 'merged' }]);
   assert.deepStrictEqual(L.planAutoArchive(opts(fx, { settings: DRY })).toArchive, []);
-  assert.deepStrictEqual(blockersOf(fx), ['b-merged']);
-  assert.strictEqual(L.planAutoArchive(opts(fx, { settings: DRY })).candidates[0].facts.merged.via, 'git:not-ancestor; pr head unknown');
-});
-
-// Squash merge: git ancestry always says "not an ancestor". The merged PR
-// proves the merge only when its head sha IS the worktree's current HEAD.
-test('squash-merged PR whose head sha == HEAD (done-report at HEAD) -> proven, eligible', { skip }, () => {
-  const fx = fixture(V252, [{ id: 'c1', done: false, gates: { done: true }, head: 'sq-sha', doneHead: 'sq-sha', ancestor: false, pr: 'merged', prHead: 'sq-sha' }]);
-  const c = L.planAutoArchive(opts(fx, { settings: DRY })).candidates[0];
-  assert.strictEqual(c.eligible, true, JSON.stringify(c.blockers));
-  assert.strictEqual(c.facts.merged.via, 'pr:head');
-  // Not merged (closed) with a matching head: blocked.
-  const fx2 = fixture(V252, [{ id: 'c1', done: false, gates: { done: true }, head: 'sq-sha', doneHead: 'sq-sha', ancestor: false, pr: 'closed', prHead: 'sq-sha' }]);
-  assert.deepStrictEqual(blockersOf(fx2), ['b-merged']);
-  // A sha-less (manual) done never gets the PR fallback.
-  fx.byId.c1.doneHead = undefined;
-  assert.deepStrictEqual(blockersOf(fx), ['b-merged']);
-});
-
-test('squash-merged PR + a new commit on top (HEAD != PR head, re-reported done) -> blocked', { skip }, () => {
-  const fx = fixture(V252, [{ id: 'c1', done: false, gates: { done: true }, head: 'new-sha', doneHead: 'new-sha', ancestor: false, pr: 'merged', prHead: 'sq-sha' }]);
   assert.deepStrictEqual(blockersOf(fx), ['b-merged']);
   assert.strictEqual(L.planAutoArchive(opts(fx, { settings: DRY })).candidates[0].facts.merged.via, 'git:not-ancestor');
 });
 
-test('ancestry path unchanged: HEAD an ancestor -> proven by git, PR head irrelevant', { skip }, () => {
-  const fx = fixture(V252, [{ id: 'c1', done: false, gates: { done: true }, head: 'h1', doneHead: 'h1', pr: 'merged', prHead: 'other' }]);
+// Squash merge: git ancestry says "not an ancestor", and the app DB carries no
+// PR head sha to bind a merged PR to HEAD, so a squash-merged lane stays
+// blocked (manual archive) — a merged PR row never overrides git.
+test('squash-merged PR (not an ancestor) with a done-report at HEAD -> blocked', { skip }, () => {
+  const fx = fixture(V252, [{ id: 'c1', done: false, gates: { done: true }, head: 'sq-sha', doneHead: 'sq-sha', ancestor: false, pr: 'merged' }]);
+  assert.deepStrictEqual(blockersOf(fx), ['b-merged']);
+  assert.strictEqual(L.planAutoArchive(opts(fx, { settings: DRY })).candidates[0].facts.merged.via, 'git:not-ancestor');
+});
+
+// A `merged` gate the gate verb VERIFIED at the current HEAD proves gate (b)
+// when git cannot decide; unverified, or verified at an older HEAD, never does.
+test('verified merged gate at HEAD proves gate (b) when git is undeterminable', { skip }, () => {
+  const fx = fixture(V252, [{ id: 'c1', done: false, gates: { done: true, merged: true, merged_verified: true }, head: 'h1', refsMissing: true, mergedVerified: true, mergedVerifiedHead: 'h1' }]);
+  const c = L.planAutoArchive(opts(fx, { settings: DRY })).candidates[0];
+  assert.strictEqual(c.eligible, true, JSON.stringify(c.blockers));
+  assert.strictEqual(c.facts.merged.via, 'gate:merged_verified');
+  // verified at an OLDER HEAD (new commit since): blocked
+  fx.byId.c1.head = 'h2';
+  assert.deepStrictEqual(blockersOf(fx), ['b-merged']);
+  fx.byId.c1.head = 'h1';
+  // merged gate set but NOT verified: blocked
+  fx.byId.c1.mergedVerified = false;
+  assert.deepStrictEqual(blockersOf(fx), ['b-merged']);
+  fx.byId.c1.mergedVerified = true;
+  // verified row but the merged gate itself cleared: blocked
+  fx.byId.c1.gates = { done: true, merged: false, merged_verified: true };
+  assert.deepStrictEqual(blockersOf(fx), ['b-merged']);
+  // git resolves "not an ancestor" -> blocked even with a verified gate at HEAD
+  fx.byId.c1.gates = { done: true, merged: true, merged_verified: true };
+  fx.byId.c1.refsMissing = false; fx.byId.c1.ancestor = false;
+  assert.deepStrictEqual(blockersOf(fx), ['b-merged']);
+  assert.strictEqual(L.planAutoArchive(opts(fx, { settings: DRY })).candidates[0].facts.merged.via, 'git:not-ancestor');
+});
+
+test('squash-merged PR + a new commit on top (re-reported done) -> blocked', { skip }, () => {
+  const fx = fixture(V252, [{ id: 'c1', done: false, gates: { done: true }, head: 'new-sha', doneHead: 'new-sha', ancestor: false, pr: 'merged' }]);
+  assert.deepStrictEqual(blockersOf(fx), ['b-merged']);
+  assert.strictEqual(L.planAutoArchive(opts(fx, { settings: DRY })).candidates[0].facts.merged.via, 'git:not-ancestor');
+});
+
+test('ancestry path unchanged: HEAD an ancestor -> proven by git, PR row irrelevant', { skip }, () => {
+  const fx = fixture(V252, [{ id: 'c1', done: false, gates: { done: true }, head: 'h1', doneHead: 'h1', pr: 'closed' }]);
   const c = L.planAutoArchive(opts(fx, { settings: DRY })).candidates[0];
   assert.strictEqual(c.eligible, true, JSON.stringify(c.blockers));
   assert.match(c.facts.merged.via, /^git:/);
@@ -268,6 +288,100 @@ test('P1-B manual `gate --set done` (no sha) still works for the Primary, with g
   assert.match(c.facts.merged.via, /^git:/);
   fx.byId.c1.ancestor = false; // the merged PR row is present, git says no
   assert.deepStrictEqual(blockersOf(fx), ['b-merged']);
+});
+
+// REAL git + the REAL gate verb + the REAL store (no fake git): gate (b) and
+// `gate --set merged` run the SAME proof (gitMergeProof). Field shape: the
+// lane's HEAD is in origin/main, but local `main` is stale (behind).
+function realGit(dir, args) {
+  const r = require('node:child_process').spawnSync('git', ['-C', dir, '-c', 'user.name=T', '-c', 'user.email=t@example.com'].concat(args), { encoding: 'utf8' });
+  if (r.status !== 0 && args[0] !== 'merge-base') throw new Error('git ' + args.join(' ') + ': ' + r.stderr);
+  return { status: r.status, out: String(r.stdout || '').trim() };
+}
+function commitFile(dir, name) {
+  fs.writeFileSync(path.join(dir, name), name);
+  realGit(dir, ['add', name]);
+  realGit(dir, ['commit', '-q', '-m', name]);
+  return realGit(dir, ['rev-parse', 'HEAD']).out;
+}
+// realLane(fx) -> the c1 worktree as a real repo on feat/c1, merged into
+// origin/main by a fast-forward push, with local `main` left one commit behind.
+function realLane(fx) {
+  const wt = fx.byId.c1.wt;
+  const remote = path.join(fx.base, 'remote.git');
+  require('node:child_process').spawnSync('git', ['init', '-q', '--bare', remote]);
+  realGit(wt, ['init', '-q', '-b', 'main']);
+  fs.writeFileSync(path.join(wt, '.gitignore'), '.anti-hall/\n');
+  realGit(wt, ['add', '.gitignore']);
+  commitFile(wt, 'base');
+  realGit(wt, ['remote', 'add', 'origin', remote]);
+  realGit(wt, ['push', '-q', 'origin', 'main']);
+  realGit(wt, ['remote', 'set-head', 'origin', 'main']);
+  realGit(wt, ['checkout', '-q', '-b', 'feat/c1']);
+  const head = commitFile(wt, 'work');
+  realGit(wt, ['push', '-q', 'origin', 'HEAD:main']); // the merge; also advances origin/main locally
+  return { wt, head };
+}
+function realSummary(fx, wt) {
+  const store = require(path.join(ROOT, 'companion', 'lib', 'devswarm-store.js'));
+  const repoKey = require(path.join(ROOT, 'companion', 'lib', 'devswarm-repokey.js')).repoKeyForWorktree(wt);
+  const s = store.openStore({ home: fx.home, hash: repoKey, backend: 'journal', env: {} });
+  try { const sum = store.computeSummary(s, { home: fx.home, env: {}, now: NOW }); sum.workspaces.c1.unread = 0; return sum; }
+  finally { s.close(); }
+}
+function realDeps(fx, wt) {
+  const deps = Object.assign({}, fx.deps, { summary: () => realSummary(fx, wt) });
+  delete deps.git; // the real git
+  return deps;
+}
+const vctx = (fx, wt) => ({ home: fx.home, backend: 'journal', env: {}, cwd: wt });
+
+test('REAL git: verified merged gate at HEAD + stale local main -> proven; verb and gate (b) agree', { skip }, () => {
+  const fx = fixture(V252, [{ id: 'c1', done: false }]);
+  const { wt, head } = realLane(fx);
+  // non-vacuous: HEAD is NOT in the stale local main, IS in origin/main
+  assert.strictEqual(realGit(wt, ['merge-base', '--is-ancestor', 'HEAD', 'main']).status, 1);
+  assert.strictEqual(realGit(wt, ['merge-base', '--is-ancestor', 'HEAD', 'origin/main']).status, 0);
+  assert.strictEqual(dw.run(['register', 'c1', '--worktree', wt, '--session', 's'], vctx(fx, wt)).result.ok, true);
+  const g = dw.run(['gate', 'c1', '--set', 'done,merged,tests_passed'], vctx(fx, wt)).result;
+  assert.strictEqual(g.gates.merged_verified, true);
+  const sum = realSummary(fx, wt);
+  assert.strictEqual(sum.workspaces.c1.mergedVerifiedHead, head, 'the verb binds its verdict to HEAD');
+  const deps = realDeps(fx, wt);
+  const c = L.planAutoArchive(Object.assign(opts(fx, { settings: DRY }), { deps })).candidates[0];
+  assert.strictEqual(c.eligible, true, JSON.stringify(c.blockers));
+  assert.strictEqual(c.facts.merged.via, 'git:origin/main');
+  // origin/main unavailable locally (git undeterminable): the verified gate at HEAD proves it
+  const originMain = realGit(wt, ['rev-parse', 'origin/main']).out;
+  realGit(wt, ['update-ref', '-d', 'refs/remotes/origin/main']);
+  const c2 = L.planAutoArchive(Object.assign(opts(fx, { settings: DRY }), { deps })).candidates[0];
+  assert.strictEqual(c2.eligible, true, JSON.stringify(c2.blockers));
+  assert.strictEqual(c2.facts.merged.via, 'gate:merged_verified');
+  // a new commit after the verified merge: blocked, with or without origin/main
+  commitFile(wt, 'more');
+  const blocked = () => L.planAutoArchive(Object.assign(opts(fx, { settings: DRY }), { deps })).candidates[0];
+  assert.deepStrictEqual(blocked().blockers.map((b) => b.gate), ['b-merged']);
+  assert.strictEqual(blocked().facts.merged.via, 'unproven');
+  realGit(wt, ['update-ref', 'refs/remotes/origin/main', originMain]);
+  assert.deepStrictEqual(blocked().blockers.map((b) => b.gate), ['b-merged']);
+  assert.strictEqual(blocked().facts.merged.via, 'git:not-ancestor');
+});
+
+test('REAL git: unverified merged gate (HEAD not in origin/main) never proves gate (b)', { skip }, () => {
+  const fx = fixture(V252, [{ id: 'c1', done: false }]);
+  const { wt } = realLane(fx);
+  commitFile(wt, 'unmerged'); // HEAD now ahead of origin/main
+  dw.run(['register', 'c1', '--worktree', wt, '--session', 's'], vctx(fx, wt));
+  const g = dw.run(['gate', 'c1', '--set', 'done,merged,tests_passed'], vctx(fx, wt)).result;
+  assert.strictEqual(g.gates.merged, true);
+  assert.strictEqual(g.gates.merged_verified, false);
+  const deps = realDeps(fx, wt);
+  const c = L.planAutoArchive(Object.assign(opts(fx, { settings: DRY }), { deps })).candidates[0];
+  assert.deepStrictEqual(c.blockers.map((b) => b.gate), ['b-merged']);
+  realGit(wt, ['update-ref', '-d', 'refs/remotes/origin/main']); // undeterminable: still blocked
+  const c2 = L.planAutoArchive(Object.assign(opts(fx, { settings: DRY }), { deps })).candidates[0];
+  assert.deepStrictEqual(c2.blockers.map((b) => b.gate), ['b-merged']);
+  assert.strictEqual(c2.facts.merged.via, 'unproven');
 });
 
 test('dry-run writes NOTHING and spawns no archive (even with 2.5.3 available)', { skip }, () => {
@@ -511,6 +625,11 @@ test('no builderType column: the Primary seat (main checkout) decides, never the
   const repo = path.join(base, 'main');
   cp.spawnSync('git', ['init', '-q', repo]);
   cp.spawnSync('git', ['-C', repo, '-c', 'user.email=a@b.c', '-c', 'user.name=T', 'commit', '-q', '--allow-empty', '-m', 'init']);
+  // gate (b) proves against the REMOTE default branch: give the repo an origin.
+  cp.spawnSync('git', ['init', '-q', '--bare', path.join(base, 'remote.git')]);
+  cp.spawnSync('git', ['-C', repo, 'remote', 'add', 'origin', path.join(base, 'remote.git')]);
+  cp.spawnSync('git', ['-C', repo, 'push', '-q', 'origin', 'HEAD:main']);
+  cp.spawnSync('git', ['-C', repo, 'remote', 'set-head', 'origin', 'main']);
   const child = path.join(base, 'child');
   cp.spawnSync('git', ['-C', repo, 'worktree', 'add', '-q', child, '-b', 'feat/child']);
   const dbFile = path.join(base, 'devswarm.db');
@@ -558,6 +677,11 @@ for (const [label, bt] of [['NULL', null], ['empty', ''], ['whitespace-only', ' 
     const repo = path.join(base, 'main');
     cp.spawnSync('git', ['init', '-q', repo]);
     cp.spawnSync('git', ['-C', repo, '-c', 'user.email=a@b.c', '-c', 'user.name=T', 'commit', '-q', '--allow-empty', '-m', 'init']);
+    // gate (b) proves against the REMOTE default branch: give the repo an origin.
+    cp.spawnSync('git', ['init', '-q', '--bare', path.join(base, 'remote.git')]);
+    cp.spawnSync('git', ['-C', repo, 'remote', 'add', 'origin', path.join(base, 'remote.git')]);
+    cp.spawnSync('git', ['-C', repo, 'push', '-q', 'origin', 'HEAD:main']);
+    cp.spawnSync('git', ['-C', repo, 'remote', 'set-head', 'origin', 'main']);
     const child = path.join(base, 'child');
     cp.spawnSync('git', ['-C', repo, 'worktree', 'add', '-q', child, '-b', 'feat/child']);
     const dbFile = path.join(base, 'devswarm.db');

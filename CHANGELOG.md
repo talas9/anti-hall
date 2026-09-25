@@ -45,15 +45,26 @@ the update.
   so a child that reused its branch after a squash-merged PR kept `done`, the PR fallback
   matched the old merged PR, and new commits were eligible. The `done` verb now records
   the worktree HEAD with the gate (`set_by` `devswarm-done@<sha>`, projected as
-  `doneHead`), and gate (b)'s app PR row counts only for a done-report tied to HEAD. When
-  ancestry can't be determined (source branch or both refs missing locally), a merged PR
-  row suffices. When git says "not an ancestor" (every squash merge does), the PR must be
-  merged AND its head sha (`pull_requests.headRefOid`) must equal the worktree's HEAD
-  exactly, so a reused branch with new commits stays blocked. A PR row without a head sha
-  stays blocked. The DevSwarm app DB's `pull_requests` table has no documented head-sha
-  column today, so until it does a squash-merged child still needs a manual archive. A
-  `done` set any other way (`gate --set done`, no sha) still works for the Primary, but
-  needs the git-ancestry proof.
+  `doneHead`), and gate (b)'s app PR row counts only for a done-report tied to HEAD and
+  only when git ancestry can't be determined. When git says "not an ancestor" the lane
+  stays blocked, so a reused branch with new commits never auto-archives. The DevSwarm app
+  DB's `pull_requests` table has no head/commit sha column (15 columns, checked on a live
+  DB), so a merged PR row can't be tied to HEAD and a squash-merged child still needs a
+  manual archive. A `done` set any other way (`gate --set done`, no sha) still works for
+  the Primary, but needs the git proof.
+- **Gate (b) called merges "unproven" that `gate --set merged` had just verified.** The
+  verb checked HEAD against the remote default branch (`origin/HEAD`'s target, e.g.
+  `origin/main`); gate (b) checked the LOCAL source branch first and stopped there when it
+  said "not an ancestor", so a stale local `main` (behind `origin/main`) hid every merge.
+  Both now call one function, `devswarm-git-truth.js` `gitMergeProof`: HEAD must be an
+  ancestor of the remote default branch (`origin/<source>` only when `origin/HEAD` is
+  unresolvable), and a local branch ref never counts, so a local `main` with unpushed
+  commits can't prove a merge either. The verb records the HEAD it verified at in the
+  `merged_verified` row (`set_by` `devswarm-merged@<sha>`, projected as
+  `mergedVerifiedHead`). When git can't decide, a `merged` gate verified at the current
+  HEAD proves gate (b); an unverified `merged` gate, or one verified at an older HEAD,
+  never does. A resolved "not an ancestor" always blocks. Gate (b) proves against the
+  remote now, so a repo with no `origin` never auto-archives.
 - **Nothing made a child set the `done` gate, so auto-archive still never fired.** New
   child verb `devswarm.js done [<id>] [--summary "..."]`: it sets the `done` gate on the
   caller's own workspace id (never `merged`/`tests_passed`) and sends the Primary one

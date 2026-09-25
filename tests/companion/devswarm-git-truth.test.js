@@ -171,3 +171,55 @@ test('gitMergedInto: missing worktreePath -> null', () => {
   assert.strictEqual(gitTruth.gitMergedInto(''), null);
   assert.strictEqual(gitTruth.gitMergedInto(null), null);
 });
+
+// ---- gitMergeProof (the ONE merge proof: gate verb + auto-archive gate (b)) ----
+
+test('gitMergeProof: HEAD in origin/main but local main STALE -> merged via origin/main (local ref never consulted)', () => {
+  const { dir, remote } = makeRepoWithUpstream();
+  try {
+    git(dir, ['checkout', '-q', '-b', 'feat']);
+    fs.writeFileSync(path.join(dir, 'g.txt'), '2');
+    git(dir, ['add', '.']);
+    git(dir, ['commit', '-q', '-m', 'c2']);
+    git(dir, ['push', '-q', 'origin', 'HEAD:main']); // merged remotely; local main stays at c1
+    const head = git(dir, ['rev-parse', 'HEAD']).trim();
+    assert.notStrictEqual(git(dir, ['rev-parse', 'main']).trim(), head, 'local main is stale (precondition)');
+    assert.deepStrictEqual(gitTruth.gitMergeProof(dir), { merged: true, via: 'git:origin/main', head, ref: 'origin/main' });
+    assert.strictEqual(gitTruth.gitMergedInto(dir), true);
+  } finally { rm(dir); rm(remote); }
+});
+
+test('gitMergeProof: HEAD only in a LOCAL main with unpushed commits -> NOT merged', () => {
+  const { dir, remote } = makeRepoWithUpstream();
+  try {
+    fs.writeFileSync(path.join(dir, 'g.txt'), '2');
+    git(dir, ['add', '.']);
+    git(dir, ['commit', '-q', '-m', 'c2 (unpushed, on local main)']);
+    const r = gitTruth.gitMergeProof(dir);
+    assert.strictEqual(r.merged, false);
+    assert.strictEqual(r.via, 'git:not-ancestor');
+  } finally { rm(dir); rm(remote); }
+});
+
+test('gitMergeProof: binds to opts.head; no origin/HEAD -> falls back to origin/<sourceBranch>, else null', () => {
+  const remote = makeBareRemote();
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ght-proof-'));
+  try {
+    git(dir, ['init', '-q', '-b', 'main']);
+    git(dir, ['config', 'user.email', 'a@example.com']);
+    git(dir, ['config', 'user.name', 'Test']);
+    fs.writeFileSync(path.join(dir, 'f.txt'), '1');
+    git(dir, ['add', '.']);
+    git(dir, ['commit', '-q', '-m', 'c1']);
+    const c1 = git(dir, ['rev-parse', 'HEAD']).trim();
+    git(dir, ['remote', 'add', 'origin', remote]);
+    git(dir, ['push', '-q', '-u', 'origin', 'main']);
+    assert.strictEqual(gitTruth.gitMergeProof(dir).merged, null, 'no origin/HEAD and no sourceBranch -> unknown');
+    assert.strictEqual(gitTruth.gitMergeProof(dir, { sourceBranch: 'main' }).via, 'git:origin/main');
+    fs.writeFileSync(path.join(dir, 'g.txt'), '2');
+    git(dir, ['add', '.']);
+    git(dir, ['commit', '-q', '-m', 'c2']);
+    assert.strictEqual(gitTruth.gitMergeProof(dir, { sourceBranch: 'main' }).merged, false);
+    assert.strictEqual(gitTruth.gitMergeProof(dir, { sourceBranch: 'main', head: c1 }).merged, true, 'proof is of opts.head');
+  } finally { rm(dir); rm(remote); }
+});

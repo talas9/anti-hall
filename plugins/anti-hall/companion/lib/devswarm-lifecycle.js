@@ -8,13 +8,17 @@
 //                     gate: done,merged,tests_passed by default) OR the child's
 //                     structured done-report: the `done` gate row alone
 //                     (the child's `devswarm.js done` verb). See doneFact.
-//     (b) merged    — `git merge-base --is-ancestor HEAD <source>` in the
-//                     worktree (local ref, then origin/<source>), else (HEAD-bound
-//                     done-report only) the app DB pull_requests row for the
-//                     branch has state=merged — and, when git resolved "not an
-//                     ancestor" (squash merge), its head sha equals HEAD.
-//                     NOT `hivecontrol workspace check-merge` — it is
-//                     side-effecting (see devswarm-capabilities.js).
+//     (b) merged    — devswarm-git-truth.js gitMergeProof, the SAME proof the
+//                     `gate --set merged` verb records as merged_verified: HEAD
+//                     an ancestor of the REMOTE default branch (origin/HEAD's
+//                     target; origin/<source> only when that is unresolvable;
+//                     a local branch ref never counts). When git cannot decide,
+//                     a `merged` gate the verb verified AT THE CURRENT HEAD
+//                     proves it; failing that (HEAD-bound done-report only) an
+//                     app DB pull_requests row with state=merged. A resolved
+//                     "not an ancestor" (unmerged commits, or a squash merge)
+//                     always blocks. NOT `hivecontrol workspace check-merge` —
+//                     it is side-effecting (see devswarm-capabilities.js).
 //     (c) clean     — `git status --porcelain` is empty
 //     (d) no unread — zero unread TO the child and zero unread FROM it in any
 //                     other partition of the project's mesh store
@@ -61,6 +65,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { spawnSync } = require('child_process');
 const caps = require('./devswarm-capabilities.js');
+const gitTruth = require('./devswarm-git-truth.js');
 
 const VIEWED_GRACE_MS = 10 * 60 * 1000;
 const PLAN_TTL_MS = 15 * 60 * 1000;
@@ -119,7 +124,7 @@ function appDbRows(o) {
     let prs = [];
     const prCols = new Set(db.prepare('PRAGMA table_info(pull_requests)').all().map((c) => String(c.name)));
     if (prCols.has('branchName') && prCols.has('state')) {
-      const ps = ['id', 'repositoryId', 'branchName', 'state', 'targetBranch', 'headRefOid'].filter((c) => prCols.has(c));
+      const ps = ['id', 'repositoryId', 'branchName', 'state', 'targetBranch'].filter((c) => prCols.has(c));
       prs = db.prepare('SELECT ' + ps.join(', ') + ' FROM pull_requests').all().map((r) => Object.assign({}, r));
     }
     return { builders, prs, hasLastSelected: cols.has('lastSelectedAt'), hasBuilderType: cols.has('builderType') };
@@ -213,43 +218,46 @@ function isPrimaryBuilder(b, db, o) {
   } catch (_) { return true; }
 }
 
-// mergedFact(b, db, deps, { allowPr, head }) -> { merged, via } — gate (b).
-// Git ancestry is the proof: HEAD an ancestor of the source branch (local or
-// origin/). The PR fallback runs only with opts.allowPr — which
-// evaluateCandidate sets only for a done-report bound to the current HEAD — and:
-//   - ancestry undeterminable (worktree, source branch or both refs missing
-//     locally, or git failing): a merged PR row suffices;
-//   - git resolved "not an ancestor" (a squash merge always lands here): the
-//     PR must be merged AND its head sha (pull_requests.headRefOid) must equal
-//     HEAD exactly. A branch reused after a squash-merged PR has new commits,
-//     so HEAD != the PR head and it stays blocked (P1-B). No head sha in the
-//     row -> blocked.
+// mergedFact(b, db, deps, { allowPr, head, verifiedHead }) -> { merged, via } —
+// gate (b). The proof is gitTruth.gitMergeProof, shared with the `gate --set
+// merged` verb, so the two can never disagree (they did: gate (b) used to stop
+// at a stale LOCAL `main` while the verb checked origin/main). Order:
+//   1. git resolved: contained -> merged; "not an ancestor" -> BLOCKED, always
+//      (HEAD has commits the remote default branch lacks — a reused branch
+//      with new commits, or a squash merge, which has no sha-level proof);
+//   2. git undeterminable: a `merged` gate the verb verified at THIS HEAD
+//      (opts.verifiedHead === head) proves it;
+//   3. then, only with opts.allowPr (a done-report bound to the current HEAD),
+//      a merged app DB PR row.
 function mergedFact(b, db, deps, opts) {
   const allowPr = !!(opts && opts.allowPr);
-  const head = opts && typeof opts.head === 'string' ? opts.head : null;
+  let head = opts && typeof opts.head === 'string' ? opts.head : null;
   const wt = b.worktreePath;
-  const src = b.sourceBranch ? String(b.sourceBranch) : null;
-  let notAncestor = false;
-  if (wt && src && fs.existsSync(wt)) {
-    for (const ref of [src, 'origin/' + src]) {
-      const v = deps.git(wt, ['rev-parse', '--verify', '--quiet', ref + '^{commit}']);
-      if (!v.ok) continue;
-      const r = deps.git(wt, ['merge-base', '--is-ancestor', 'HEAD', ref]);
-      if (r.status === 0) return { merged: true, via: 'git:' + ref };
-      if (r.status === 1) notAncestor = true; // resolved; origin/ may still contain it (stale local base)
-    }
+  if (wt && fs.existsSync(wt)) {
+    const g = gitTruth.gitMergeProof(wt, { head, sourceBranch: b.sourceBranch ? String(b.sourceBranch) : null, git: deps.git });
+    if (g.merged === true) return { merged: true, via: g.via };
+    if (g.merged === false) return { merged: false, via: 'git:not-ancestor' };
+    head = head || g.head;
   }
-  if (!allowPr) return { merged: false, via: notAncestor ? 'git:not-ancestor' : 'unproven' };
+  if (head && opts && opts.verifiedHead === head) return { merged: true, via: 'gate:merged_verified' };
+  if (!allowPr) return { merged: false, via: 'unproven' };
   const pr = (db.prs || []).find((p) => (b.pullRequestId && p.id === b.pullRequestId)
     || (p.branchName === b.branchName && (!p.repositoryId || !b.repositoryId || p.repositoryId === b.repositoryId)));
-  const prMerged = !!pr && String(pr.state || '').toLowerCase() === 'merged';
-  if (notAncestor) {
-    const prHead = pr && typeof pr.headRefOid === 'string' ? pr.headRefOid.trim() : '';
-    if (prMerged && head && prHead && prHead === head) return { merged: true, via: 'pr:head' };
-    return { merged: false, via: prMerged && !prHead ? 'git:not-ancestor; pr head unknown' : 'git:not-ancestor' };
-  }
-  if (prMerged) return { merged: true, via: 'pr' };
+  if (pr && String(pr.state || '').toLowerCase() === 'merged') return { merged: true, via: 'pr' };
   return { merged: false, via: pr ? 'pr:' + String(pr.state || '').toLowerCase() : 'unproven' };
+}
+
+// verifiedMergeHead(summary, ids) -> sha | null — the HEAD at which the gate
+// verb PROVED a `merged` gate (merged gate set, merged_verified true, sha
+// recorded). An unverified or sha-less merged gate returns null.
+function verifiedMergeHead(summary, ids) {
+  const ws = (summary && summary.workspaces) || {};
+  for (const id of ids) {
+    const w = ws[id];
+    if (w && w.gates && w.gates.merged === true && w.mergedVerified === true
+      && typeof w.mergedVerifiedHead === 'string' && w.mergedVerifiedHead) return w.mergedVerifiedHead;
+  }
+  return null;
 }
 
 // doneFact(summary, ids, head) -> { done, via, boundToHead } — gate (a), scoped
@@ -356,7 +364,7 @@ function evaluateCandidate(c, o, deps, db, settings, now) {
       : done.via === 'stale-head' ? 'done reported at ' + String(done.doneHead).slice(0, 12) + ' but HEAD is now ' + (head ? head.slice(0, 12) : 'unresolvable') + ' — run done again'
       : 'no done-report (done gate unset) and finish gates not all set' });
   }
-  const m = mergedFact(b, db, deps, { allowPr: done.done && done.boundToHead === true, head });
+  const m = mergedFact(b, db, deps, { allowPr: done.done && done.boundToHead === true, head, verifiedHead: verifiedMergeHead(un.summary, c.ids) });
   facts.merged = m;
   if (!m.merged) blockers.push({ gate: 'b-merged', detail: m.via });
   const cl = cleanFact(b.worktreePath, deps);

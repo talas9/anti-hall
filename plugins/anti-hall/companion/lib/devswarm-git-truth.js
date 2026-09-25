@@ -11,16 +11,18 @@
 //     completion gate — nothing detected the single-copy-on-disk state until
 //     now.
 //
-//   gitMergedInto(worktreePath, targetRef) -> boolean | null — best-effort
-//     ancestry check (HEAD an ancestor of targetRef / the resolved default
-//     branch) used to VERIFY (never gate) a child's self-declared `merged`
-//     completion flag.
+//   gitMergeProof(worktreePath, opts) -> { merged, via, head, ref } — HEAD an
+//     ancestor of the REMOTE default branch. The one merge proof shared by the
+//     `gate --set merged` verb (records merged_verified) and auto-archive gate
+//     (b). gitMergedInto(worktreePath, targetRef) is its boolean|null verdict.
 //
 // REPORT-ONLY DOCTRINE: nothing in this module blocks, kills, or archives
-// anything. Callers surface what it reports; they never act on it
-// mechanically. Same spawnSync convention as companion/lib/liveness.js's
-// defaultGitCommitTs — an argv array (NEVER shell-interpolated), a short
-// timeout, fail-open (never throw) on any error/non-zero/signal.
+// anything. Callers surface what it reports; the one mechanical consumer is
+// auto-archive gate (b), which only ever WITHHOLDS an archive on a non-true
+// merge proof (fail-closed) — never kills or deletes.
+// Same spawnSync convention as companion/lib/liveness.js's defaultGitCommitTs:
+// an argv array (NEVER shell-interpolated), a short timeout, fail-open (never
+// throw) on any error/non-zero/signal.
 
 const { spawnSync } = require('child_process');
 
@@ -91,33 +93,63 @@ function defaultBranchRef(worktreePath) {
   return m ? m[1] : null;
 }
 
-// gitMergedInto(worktreePath, targetRef) -> boolean | null. Best-effort
-// ancestry check: is HEAD an ancestor of targetRef (or the resolved default
-// branch when targetRef is omitted)?
-//
-//   true  — HEAD is provably an ancestor of the target (a fast-forward /
-//           regular merge landed it).
-//   false — HEAD is provably NOT an ancestor. This is a REAL negative, but is
-//           NOT proof "not merged" — a squash or rebase merge legitimately
-//           breaks ancestry even though the work IS merged. Callers must
-//           treat false as "could not verify", never as grounds to block
-//           anything (REPORT-ONLY doctrine — see scripts/devswarm.js cmdGate).
-//   null  — UNKNOWN: no resolvable target ref, a non-git worktree, or any
-//           spawn failure. NEVER fabricated into true/false.
-function gitMergedInto(worktreePath, targetRef) {
-  if (!worktreePath) return null;
-  const ref = targetRef || defaultBranchRef(worktreePath);
-  if (!ref) return null;
-  let r;
+// gitMergeProof(worktreePath, opts) -> { merged, via, head, ref } — THE single
+// merge proof shared by `scripts/devswarm.js gate --set merged` (which records
+// the verdict as the `merged_verified` gate, bound to `head`) and auto-archive
+// gate (b) (companion/lib/devswarm-lifecycle.js mergedFact). One rule, so the
+// two can never disagree again: HEAD must be an ancestor of the REMOTE default
+// branch, the origin/HEAD symbolic ref's target (e.g. origin/main). Only when
+// origin/HEAD is unresolvable does opts.sourceBranch supply 'origin/<branch>'.
+// A LOCAL branch ref is never consulted: a stale local `main` (behind
+// origin/main) must not read as "not merged", and a local `main` carrying
+// unpushed commits must not read as "merged".
+//   merged true  — HEAD is provably contained in the remote ref.
+//   merged false — provably NOT (unmerged commits, or a squash/rebase merge:
+//                  there is no squash detection; the caller decides what a
+//                  false means — the gate verb reports it, auto-archive blocks).
+//   merged null  — undeterminable (no ref, non-git dir, spawn failure).
+// opts: { sourceBranch?, head? (bind the proof to this sha), ref? (explicit
+// target), git? (cwd, args) -> { ok, status, out } — injectable for tests }.
+function defaultGitRun(cwd, args) {
   try {
-    r = runGit(worktreePath, ['merge-base', '--is-ancestor', 'HEAD', ref]);
-  } catch (_) {
-    return null;
-  }
-  if (r.error || r.signal) return null;
-  if (r.status === 0) return true;
-  if (r.status === 1) return false; // git's documented "not an ancestor" exit code
-  return null; // any other exit code (e.g. 128, bad ref/object) is a resolution failure, not a proven negative
+    const r = runGit(cwd, args);
+    if (r.error || r.signal) return { ok: false, status: null, out: '' };
+    return { ok: r.status === 0, status: r.status, out: String(r.stdout || '') };
+  } catch (_) { return { ok: false, status: null, out: '' }; }
 }
 
-module.exports = { GIT_TIMEOUT_MS, gitPushState, gitMergedInto, defaultBranchRef };
+function gitMergeProof(worktreePath, opts) {
+  const o = opts || {};
+  const git = typeof o.git === 'function' ? o.git : defaultGitRun;
+  const res = (merged, via, head, ref) => ({ merged, via, head: head || null, ref: ref || null });
+  if (!worktreePath) return res(null, 'unproven');
+  let head = typeof o.head === 'string' && o.head ? o.head : '';
+  if (!head) {
+    const h = git(worktreePath, ['rev-parse', 'HEAD']);
+    head = h && h.ok ? String(h.out || '').trim() : '';
+  }
+  if (!head) return res(null, 'unproven');
+  let ref = typeof o.ref === 'string' && o.ref ? o.ref : null;
+  if (!ref) {
+    const s = git(worktreePath, ['symbolic-ref', 'refs/remotes/origin/HEAD']);
+    const m = s && s.ok ? /^refs\/remotes\/(origin\/.+)$/.exec(String(s.out || '').trim()) : null;
+    if (m) ref = m[1];
+    else if (o.sourceBranch) ref = 'origin/' + String(o.sourceBranch);
+  }
+  if (!ref) return res(null, 'unproven', head);
+  const v = git(worktreePath, ['rev-parse', '--verify', '--quiet', ref + '^{commit}']);
+  if (!v || !v.ok) return res(null, 'unproven', head, ref);
+  const r = git(worktreePath, ['merge-base', '--is-ancestor', head, ref]);
+  if (r && r.status === 0) return res(true, 'git:' + ref, head, ref);
+  if (r && r.status === 1) return res(false, 'git:not-ancestor', head, ref); // git's documented "not an ancestor"
+  return res(null, 'unproven', head, ref); // 128 etc: a resolution failure, not a proven negative
+}
+
+// gitMergedInto(worktreePath, targetRef) -> boolean | null — gitMergeProof's
+// verdict alone (true / false / null as documented there). REPORT-ONLY: a
+// false is NOT proof "not merged" (a squash or rebase merge breaks ancestry).
+function gitMergedInto(worktreePath, targetRef) {
+  return gitMergeProof(worktreePath, { ref: targetRef }).merged;
+}
+
+module.exports = { GIT_TIMEOUT_MS, gitPushState, gitMergedInto, gitMergeProof, defaultBranchRef };

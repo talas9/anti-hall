@@ -577,6 +577,12 @@ const DONE_REPORT_MARKER = '[[ANTIHALL_DONE]]';
 // projects it as workspaces[id].doneHead, and auto-archive gate (a) honours the
 // done-report only while that sha is still the worktree's HEAD.
 const DONE_GATE_SETBY_PREFIX = 'devswarm-done@';
+// MERGED_VERIFIED_SETBY_PREFIX (0.108.3) — `gate --set merged` records the HEAD
+// its merge proof (devswarm-git-truth.js gitMergeProof) ran at in the
+// merged_verified row's set_by ('devswarm-merged@<sha>'). deriveSummary
+// projects it as workspaces[id].mergedVerifiedHead; auto-archive gate (b)
+// counts a verified merged gate only while that sha is still the HEAD.
+const MERGED_VERIFIED_SETBY_PREFIX = 'devswarm-merged@';
 
 // ensureMessagesMeshColumns(db) — additive migration for a `messages` table that
 // pre-dates the v0.57 mesh columns (an on-disk store created by <=0.56). A brand
@@ -2913,6 +2919,10 @@ function computeSummary(store, opts) {
     // so archive_ready above is never gated on it (REPORT-ONLY doctrine).
     if (Object.prototype.hasOwnProperty.call(gates, 'merged_verified')) {
       workspaces[d.id].mergedVerified = gates.merged_verified;
+      const by = typeof store.currentGateSetBy === 'function' ? (store.currentGateSetBy(d.id) || {}).merged_verified : null;
+      if (typeof by === 'string' && by.startsWith(MERGED_VERIFIED_SETBY_PREFIX) && by.length > MERGED_VERIFIED_SETBY_PREFIX.length) {
+        workspaces[d.id].mergedVerifiedHead = by.slice(MERGED_VERIFIED_SETBY_PREFIX.length);
+      }
     }
     // doneHead (P1-B): the HEAD sha the child's `done` verb recorded with the
     // CURRENT done row. Absent for a done set any other way (no sha) or cleared.
@@ -3334,7 +3344,7 @@ module.exports = {
   // v0.58 (archive-request store write, deriveSummary archive_requested):
   ARCHIVE_REQUEST_MARKER,
   // 0.108.3 (child `done` verb's structured done message):
-  DONE_REPORT_MARKER, DONE_GATE_SETBY_PREFIX,
+  DONE_REPORT_MARKER, DONE_GATE_SETBY_PREFIX, MERGED_VERIFIED_SETBY_PREFIX,
   // GC — age-based summaries/ pruning, never touching an in-use repoKey:
   gcStaleSummaries, GC_STALE_SUMMARIES_DAYS_DEFAULT,
 };
