@@ -427,41 +427,36 @@ function validate(entry, value) {
 // error} when another writer holds the lock past the wait budget. set() and
 // reset() are read-modify-write of the WHOLE file: without a lock two
 // concurrent writers (two sessions, a hook and the CLI) each read the old file
-// and the second rename drops the first one's key. Same lock shape as
-// hooks/repair-on-reload.js (atomic 'wx' create with our pid; a dead or stale
-// holder is reclaimed); bounded wait, never throws.
+// and the second rename drops the first one's key. The shared lock primitive
+// (companion/lib/lock.js): a dead holder is reclaimed at once, a live one past
+// SETTINGS_LOCK_STALE_MS; bounded wait, token-checked release, never throws.
 const SETTINGS_LOCK_WAIT_MS = 2000;
 const SETTINGS_LOCK_STALE_MS = 30000;
-function pidAlive(pid) {
-  if (!Number.isInteger(pid) || pid <= 0) return false;
-  try { process.kill(pid, 0); return true; } catch (e) { return !!(e && e.code === 'EPERM'); }
-}
 function withSettingsLock(opts, fn) {
-  const lock = settingsPath(opts) + '.lock';
-  const deadline = Date.now() + SETTINGS_LOCK_WAIT_MS;
-  let held = false;
-  try { fs.mkdirSync(path.dirname(lock), { recursive: true }); } catch (_) { /* surfaced by the write */ }
-  while (!held) {
-    try {
-      fs.writeFileSync(lock, JSON.stringify({ pid: process.pid, at: Date.now() }), { flag: 'wx' });
-      held = true;
-      break;
-    } catch (e) {
-      if (!e || e.code !== 'EEXIST') return { ok: false, error: 'settings lock failed: ' + ((e && e.message) || String(e)) };
-    }
-    let holder = null;
-    try { holder = JSON.parse(fs.readFileSync(lock, 'utf8')); } catch (_) { holder = null; }
-    const stale = !holder || !pidAlive(holder.pid) || (Number.isFinite(holder.at) && Date.now() - holder.at > SETTINGS_LOCK_STALE_MS);
-    if (stale) {
-      try { fs.unlinkSync(lock); } catch (_) { /* another waiter reclaimed it */ }
-      continue;
-    }
-    if (Date.now() >= deadline) {
-      return { ok: false, lockBusy: true, error: 'settings.json is being written by another process (pid ' + holder.pid + '); retry' };
-    }
-    try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20); } catch (_) { /* busy-wait fallback */ }
+  let lockLib;
+  try { lockLib = require('../../companion/lib/lock.js'); }
+  catch (e) { return { ok: false, error: 'settings lock failed: ' + ((e && e.message) || String(e)) }; }
+  let held = null;
+  let holder = null;
+  try {
+    held = lockLib.acquire(settingsPath(opts) + '.lock', {
+      throwOnError: true,
+      stealDead: true,
+      staleMs: SETTINGS_LOCK_STALE_MS,
+      liveStaleMs: SETTINGS_LOCK_STALE_MS,
+      maxTries: Infinity,
+      waitMs: SETTINGS_LOCK_WAIT_MS,
+      stepMs: 20,
+      onRefused(h) { holder = h; },
+    });
+  } catch (e) {
+    return { ok: false, error: 'settings lock failed: ' + ((e && e.message) || String(e)) };
   }
-  try { return fn(); } finally { try { fs.unlinkSync(lock); } catch (_) { /* already gone */ } }
+  if (!held) {
+    const pid = holder && holder.pid != null ? holder.pid : 'unknown';
+    return { ok: false, lockBusy: true, error: 'settings.json is being written by another process (pid ' + pid + '); retry' };
+  }
+  try { return fn(); } finally { held.release(); }
 }
 
 // set(section, key, value, opts?) -> {ok, error?}. Validates against the

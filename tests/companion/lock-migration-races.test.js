@@ -219,3 +219,31 @@ test('ingest orphan sweep: a fresh lock published at the path just before the re
     assert.deepStrictEqual(fs.readdirSync(dir).filter((n) => /\.reap-/.test(n)), []);
   } finally { rm(home); }
 });
+
+test('settings lock: a writer that judged a dead holder never deletes a live writer\'s fresh lock; a fresh empty lock is waited on', (t) => {
+  const settings = require(path.join(ROOT, 'hooks', 'lib', 'settings.js'));
+  const lockLib = require(path.join(ROOT, 'companion', 'lib', 'lock.js'));
+  const home = tmpHome();
+  try {
+    const p = settings.path({ home }) + '.lock';
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, JSON.stringify({ pid: 2147483646, at: Date.now() }));
+    const real = fs.readFileSync;
+    let other = 'not-run';
+    const m = t.mock.method(fs, 'readFileSync', function (file, enc) {
+      const raw = real.call(fs, file, enc);
+      if (file === p && other === 'not-run') { other = null; other = lockLib.acquire(p, { stealDead: true }); }
+      return raw;
+    });
+    let r;
+    try { r = settings.set('guards', 'mergeGate', 'true', { home }); } finally { m.mock.restore(); }
+    assert.ok(other && other.token, 'precondition: the competing writer took the lock inside the window');
+    assert.strictEqual(r.lockBusy, true, 'the writer waits on the live holder instead of deleting its lock');
+    assert.strictEqual(JSON.parse(fs.readFileSync(p, 'utf8')).token, other.token, 'the live writer\'s lock survived');
+    other.release();
+    fs.writeFileSync(p, '');
+    assert.strictEqual(settings.set('guards', 'mergeGate', 'true', { home }).lockBusy, true, 'a fresh empty (mid-write) lock is never stolen');
+    fs.unlinkSync(p);
+    assert.strictEqual(settings.set('guards', 'mergeGate', 'true', { home }).ok, true);
+  } finally { rm(home); }
+});
