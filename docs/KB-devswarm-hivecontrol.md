@@ -645,14 +645,26 @@ prose reminders get ignored; only a mechanical trigger works.
   **v0.109 false-NEGLECT-while-busy fix (Bug 2):** a family whose ONLY reason to block is a
   plain real-unread backlog (no unknown-unread axis, no corroborated stale/escalated
   verdict) is downgraded from a hard block to a non-blocking advisory line (on stderr, e.g.
-  `<id>: busy, N queued (oldest Xm)`) when the child is PROVABLY BUSY right now — a fresh
-  heartbeat within the existing freshness window, or evidence its own session is live/
-  mid-turn (`isSessionAliveRow`). This closes the "the child was alive and actively
-  working, a human was driving it directly, it just hadn't reached a mailbox read yet"
-  false positive, whose only escape used to be typing "intentional". A genuinely NOT-busy
-  child (no fresh heartbeat, no live session) still hard-blocks once its real unread
-  exceeds the new `devswarm.parentGateNeglectMinUnread` setting (default `0` — any real
-  unread blocks, unchanged sensitivity).
+  `<id>: busy, N queued (oldest Xm)`) when the child is PROVABLY BUSY right now. This
+  closes the "the child was actively working, a human was driving it directly, it just
+  hadn't reached a mailbox read yet" false positive, whose only escape used to be typing
+  "intentional". Busy needs POSITIVE evidence of recent real work
+  (`companion/lib/devswarm-idle.js` `childBusyState`): the child's own transcript was
+  written within `devswarm.parentGateBusyFreshMin` minutes (default `5`) AND its latest
+  turn is real work — not a ping-only mailbox wake, not waiting. A live pid or a fresh
+  heartbeat is NOT evidence (an idle child at its prompt has a live pid; the wake cron's
+  `inbox tick` rewrites the heartbeat). Waiting = an unresolved `AskUserQuestion` or
+  `ExitPlanMode`, or ANY unresolved tool call on a transcript quiet longer than the busy
+  window (a permission prompt or a hung tool). Safety rules: a missing/unreadable
+  transcript, a Codex child with no Claude transcript, or any classification failure is NOT
+  busy (the old block/escalate path runs); if ANY member of a twin family is waiting, the
+  family blocks with `<title>: waiting on a human answer in its own session`; even a busy
+  child blocks once its oldest unread is older than `devswarm.parentGateBusyMaxAgeMin`
+  (default `60`), with `<title>: busy but hasn't read mail in Xm` (an unknown message age
+  never qualifies for the advisory); and a busy advisory pass never clears the gate's
+  loop-state, so the forced-ack count and escalation carry on — only a pass where no child
+  has unread clears it. A NOT-busy child still hard-blocks once its real unread exceeds
+  `devswarm.parentGateNeglectMinUnread` (default `0` — any real unread blocks).
 - `hooks/devswarm-child-turn.js` (UserPromptSubmit, **child only**) — writes a
   turn-authored heartbeat, KEYED BY `DEVSWARM_BUILDER_ID` (`heartbeats/<DEVSWARM_BUILDER_ID>.json`,
   unique per child; falls back to a sanitized/hashed `<branch>` key only when `DEVSWARM_BUILDER_ID`

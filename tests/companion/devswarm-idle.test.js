@@ -353,62 +353,98 @@ test('waiting-on-input: the AskUserQuestion already got its tool_result (answere
   assert.strictEqual(r.openWaitingTool, 'Bash', JSON.stringify(r));
 });
 
-// waitingOnUserInput(desc, home, opts) — the realActivity-backed wrapper
-// devswarm-parent-gate.js calls. Isolated fixture HOME per the repo's own
-// "tests never touch the real home" rule; nothing here writes outside its
-// own mkdtemp dir.
+// childBusyState(desc, home, opts) -> { busy, waiting, reason } — the
+// realActivity-backed reader devswarm-parent-gate.js calls (v0.109 safety
+// review). busy needs POSITIVE evidence: a transcript whose mtime is within
+// opts.freshMs AND whose latest turn is real work (not ping-only, not
+// waiting). Anything unknown -> busy:false. Isolated fixture HOME per the
+// repo's own "tests never touch the real home" rule.
 function isoHome() {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'anti-hall-idle-test-'));
   return { home, cleanup: () => { try { fs.rmSync(home, { recursive: true, force: true }); } catch (_) {} } };
 }
-function writeTranscriptFor(home, worktreePath, sessionId, text) {
+function writeTranscriptFor(home, worktreePath, sessionId, text, ageMin) {
   const liveness = require(path.join(__dirname, '..', '..', 'plugins', 'anti-hall', 'companion', 'lib', 'liveness.js'));
   const dir = liveness.projectDirFor(worktreePath, home);
   fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(path.join(dir, sessionId + '.jsonl'), text);
+  const f = path.join(dir, sessionId + '.jsonl');
+  fs.writeFileSync(f, text);
+  const t = (Date.now() - (ageMin || 0) * MIN) / 1000;
+  fs.utimesSync(f, t, t);
+}
+const openTool = (id, name, input) => tr().prompt(T0, 'Do it.').raw({
+  type: 'assistant', timestamp: iso(T0 + MIN),
+  message: { role: 'assistant', content: [{ type: 'tool_use', id, name, input: input || {} }] },
+});
+function busyOf(h, id, text, ageMin, opts) {
+  const wt = path.join(h.home, 'wt', id);
+  if (text != null) writeTranscriptFor(h.home, wt, 'sess-' + id, text, ageMin);
+  return I.childBusyState({ id, sessionId: 'sess-' + id, worktreePath: wt }, h.home, Object.assign({ freshMs: 5 * MIN }, opts || {}));
 }
 
-test('waitingOnUserInput: an open AskUserQuestion in the child\'s own transcript -> true', () => {
+test('childBusyState: open still-running Bash, FRESH transcript -> busy', () => {
   const h = isoHome();
   try {
-    const wt = path.join(h.home, 'wt', 'c1');
-    const t = tr().prompt(T0, 'Ship the migration.').tool(T0 + MIN, 'Read', { file_path: '/wt/x.js' });
-    t.raw({
-      type: 'assistant', timestamp: iso(T0 + 2 * MIN),
-      message: { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_ask2', name: 'AskUserQuestion', input: { questions: [{ question: 'Which env?' }] } }] },
-    });
-    writeTranscriptFor(h.home, wt, 'sess-c1', t.text());
-    assert.strictEqual(I.waitingOnUserInput({ id: 'c1', sessionId: 'sess-c1', worktreePath: wt }, h.home), true);
+    const r = busyOf(h, 'b1', openTool('toolu_b1', 'Bash', { command: 'npm test' }).text(), 0);
+    assert.strictEqual(r.busy, true, JSON.stringify(r));
+    assert.strictEqual(r.waiting, false, JSON.stringify(r));
   } finally { h.cleanup(); }
 });
 
-test('waitingOnUserInput: an open, still-running Bash (genuinely working) -> false', () => {
+test('childBusyState: open AskUserQuestion -> waiting, not busy', () => {
   const h = isoHome();
   try {
-    const wt = path.join(h.home, 'wt', 'c2');
-    const t = tr().prompt(T0, 'Run the suite.');
-    t.raw({
-      type: 'assistant', timestamp: iso(T0 + MIN),
-      message: { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_bash3', name: 'Bash', input: { command: 'npm test' } }] },
-    });
-    writeTranscriptFor(h.home, wt, 'sess-c2', t.text());
-    assert.strictEqual(I.waitingOnUserInput({ id: 'c2', sessionId: 'sess-c2', worktreePath: wt }, h.home), false);
+    const r = busyOf(h, 'b2', openTool('toolu_b2', 'AskUserQuestion', { questions: [{ question: 'Which env?' }] }).text(), 0);
+    assert.strictEqual(r.busy, false, JSON.stringify(r));
+    assert.strictEqual(r.waiting, true, JSON.stringify(r));
   } finally { h.cleanup(); }
 });
 
-test('waitingOnUserInput: a closed (finished) turn -> false', () => {
+test('childBusyState: open ExitPlanMode -> waiting, not busy', () => {
   const h = isoHome();
   try {
-    const wt = path.join(h.home, 'wt', 'c3');
+    const r = busyOf(h, 'b3', openTool('toolu_b3', 'ExitPlanMode', { plan: 'x' }).text(), 0);
+    assert.strictEqual(r.busy, false, JSON.stringify(r));
+    assert.strictEqual(r.waiting, true, JSON.stringify(r));
+  } finally { h.cleanup(); }
+});
+
+test('childBusyState: unresolved Bash with a STALE transcript (permission prompt / hung tool) -> waiting, not busy', () => {
+  const h = isoHome();
+  try {
+    const r = busyOf(h, 'b4', openTool('toolu_b4', 'Bash', { command: 'rm -rf build' }).text(), 15);
+    assert.strictEqual(r.busy, false, JSON.stringify(r));
+    assert.strictEqual(r.waiting, true, JSON.stringify(r));
+  } finally { h.cleanup(); }
+});
+
+test('childBusyState: closed real turn, STALE transcript -> not busy, not waiting', () => {
+  const h = isoHome();
+  try {
     const t = tr().prompt(T0, 'Fix it.').tool(T0 + MIN, 'Edit', { file_path: '/wt/x.js' }).say(T0 + 2 * MIN, 'Done.').stop(T0 + 2 * MIN, 0);
-    writeTranscriptFor(h.home, wt, 'sess-c3', t.text());
-    assert.strictEqual(I.waitingOnUserInput({ id: 'c3', sessionId: 'sess-c3', worktreePath: wt }, h.home), false);
+    const r = busyOf(h, 'b5', t.text(), 30);
+    assert.strictEqual(r.busy, false, JSON.stringify(r));
+    assert.strictEqual(r.waiting, false, JSON.stringify(r));
   } finally { h.cleanup(); }
 });
 
-test('waitingOnUserInput: no transcript at all -> false (caller falls back to its own pre-existing busy check)', () => {
+test('childBusyState: latest turn is a ping-only wake (fresh mtime) -> not busy', () => {
   const h = isoHome();
   try {
-    assert.strictEqual(I.waitingOnUserInput({ id: 'c4', sessionId: 'sess-c4', worktreePath: path.join(h.home, 'wt', 'c4') }, h.home), false);
+    const t = tr().prompt(T0, 'Fix it.').tool(T0 + MIN, 'Edit', { file_path: '/wt/x.js' }).stop(T0 + 2 * MIN, 0)
+      .raw({ type: 'system', subtype: 'scheduled_task_fire', timestamp: iso(T0 + 30 * MIN) })
+      .prompt(T0 + 30 * MIN, 'Mailbox wake', { isMeta: true })
+      .tool(T0 + 31 * MIN, 'Bash', { command: 'node ' + CLI + ' inbox tick c1 --child' }).stop(T0 + 32 * MIN, 0);
+    const r = busyOf(h, 'b6', t.text(), 0);
+    assert.strictEqual(r.busy, false, JSON.stringify(r));
+  } finally { h.cleanup(); }
+});
+
+test('childBusyState: no transcript -> not busy, not waiting (unknown never counts as busy)', () => {
+  const h = isoHome();
+  try {
+    const r = busyOf(h, 'b7', null, 0);
+    assert.strictEqual(r.busy, false, JSON.stringify(r));
+    assert.strictEqual(r.waiting, false, JSON.stringify(r));
   } finally { h.cleanup(); }
 });

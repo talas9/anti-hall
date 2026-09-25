@@ -191,18 +191,19 @@ function tsOf(e) {
   return Number.isFinite(t) ? t : null;
 }
 
-// readTail(file, fsi) -> { text, truncated } | null.
+// readTail(file, fsi) -> { text, truncated, mtimeMs } | null.
 function readTail(file, F) {
   let fd = null;
   try {
-    const size = F.statSync(file).size;
+    const st = F.statSync(file);
+    const size = st.size;
     const start = Math.max(0, size - TAIL_BYTES);
     fd = F.openSync(file, 'r');
     const buf = Buffer.alloc(size - start);
     F.readSync(fd, buf, 0, buf.length, start);
     let text = buf.toString('utf8');
     if (start > 0) { const nl = text.indexOf('\n'); text = nl === -1 ? '' : text.slice(nl + 1); }
-    return { text, truncated: start > 0 };
+    return { text, truncated: start > 0, mtimeMs: Number.isFinite(st.mtimeMs) ? st.mtimeMs : null };
   } catch (_) {
     return null;
   } finally { try { if (fd !== null) F.closeSync(fd); } catch (_) {} }
@@ -311,6 +312,7 @@ function classifyTranscript(text, opts) {
   let realTurns = 0;
   let openRealTurn = false;
   let lastReal = null;
+  let lastTurnReal = false; // the transcript's very LAST turn is real work (not ping-only)
   turns.forEach((t, i) => {
     const allMailbox = t.tools.every(isMailboxTool);
     // A turn whose prompt fell before the tail window (prompted:false) is
@@ -319,6 +321,7 @@ function classifyTranscript(text, opts) {
     if (ping) { pingTurns++; return; }
     realTurns++;
     lastReal = t;
+    if (i === turns.length - 1) lastTurnReal = true;
     if (Number.isFinite(t.lastTs) && (realTs === null || t.lastTs > realTs)) realTs = t.lastTs;
     if (i === turns.length - 1 && !t.closed) openRealTurn = true;
   });
@@ -337,9 +340,9 @@ function classifyTranscript(text, opts) {
   // not a wait) or because the tool itself hands control to a human
   // (AskUserQuestion with no answer yet). This function does not judge which
   // — it just reports the unresolved tool's name; the caller
-  // (waitingOnUserInput below) is the one place that says AskUserQuestion
-  // specifically means "waiting on a human", so there is exactly one
-  // definition of that anywhere in this codebase.
+  // (childBusyState below) is the one place that decides which unresolved
+  // tools mean "waiting", so there is exactly one definition of that
+  // anywhere in this codebase.
   let openWaitingTool = null;
   if (turns.length) {
     const last = turns[turns.length - 1];
@@ -351,7 +354,7 @@ function classifyTranscript(text, opts) {
       }
     }
   }
-  return { realTs, openRealTurn, pendingBackground, windowStartTs, pingTurns, realTurns, openWaitingTool };
+  return { realTs, openRealTurn, pendingBackground, windowStartTs, pingTurns, realTurns, openWaitingTool, lastTurnReal };
 }
 
 // realActivity(desc, home, opts) -> { known, ts, openRealTurn, reason, ... }.
@@ -374,26 +377,50 @@ function realActivity(desc, home, opts) {
   if (!tail || !tail.text) return { known: false, reason: 'transcript unreadable' };
   const r = classifyTranscript(tail.text, { truncated: tail.truncated });
   if (!Number.isFinite(r.realTs)) return { known: false, reason: 'no timestamps' };
-  return Object.assign({ known: true, ts: r.realTs }, r);
+  return Object.assign({ known: true, ts: r.realTs, mtimeMs: tail.mtimeMs }, r);
 }
 
-// waitingOnUserInput(desc, home, opts) -> bool. devswarm-parent-gate.js's
-// "busy" NEGLECT-advisory downgrade (0.109, commit 55361e8) needs to tell
-// "actively working" apart from "blocked on a human answer inside its own
-// session" — a fresh heartbeat or a live pid (idleAlive) is true for BOTH,
-// so neither alone can drive that decision. This reuses realActivity's own
-// transcript read (SAME tail window, SAME classifyTranscript parse) rather
-// than a second parser, and answers ONLY the narrow, well-defined case: the
-// transcript's last turn is still open AND its last unresolved tool call is
-// AskUserQuestion (a tool_use with no tool_result yet — the harness pauses
-// there for a human, it never times the turn out on its own). Unknown (no
-// transcript, unreadable, mismatched heartbeat session, ...) -> false, so a
-// caller that cannot read the transcript falls back to its OWN prior
-// (pre-this-function) busy determination rather than this function silently
-// asserting "not waiting".
-function waitingOnUserInput(desc, home, opts) {
-  const r = realActivity(desc, home, opts);
-  return !!(r && r.known && r.openRealTurn && r.openWaitingTool === 'AskUserQuestion');
+// HUMAN_WAIT_TOOLS: a tool_use of one of these with no tool_result yet means
+// the harness is paused for a human (a question, a plan approval) — the
+// Primary cannot resolve it through the mesh.
+const HUMAN_WAIT_TOOLS = new Set(['AskUserQuestion', 'ExitPlanMode']);
+const DEFAULT_BUSY_FRESH_MS = 5 * 60 * 1000;
+// Clock-skew tolerance: an mtime this far in the FUTURE is not trusted as fresh.
+const FUTURE_SKEW_MS = 60 * 1000;
+
+// childBusyState(desc, home, opts) -> { busy, waiting, reason, openTool }.
+// devswarm-parent-gate.js's NEGLECT-advisory downgrade (0.109) asks one
+// question: is this child PROVABLY doing real work right now? A live pid or
+// a fresh heartbeat cannot answer it — an idle child sitting at its prompt
+// has a live pid, and the wake cron's `inbox tick` rewrites the heartbeat.
+// The only positive evidence is the child's own transcript:
+//   busy    = transcript mtime within opts.freshMs (default 5 min)
+//             AND its latest turn is real work (not a ping-only wake turn)
+//             AND it is not waiting (below).
+//   waiting = the last turn is still open on an unresolved AskUserQuestion or
+//             ExitPlanMode (paused for a human), OR on ANY unresolved
+//             tool_use while the transcript is stale (a permission prompt or
+//             a hung tool — nothing has been appended for > freshMs).
+// Unknown (no session id, no/unreadable transcript, a Codex child with no
+// Claude transcript, a heartbeat from another session, no mtime, any throw)
+// -> { busy:false, waiting:false }: the caller falls back to its ordinary
+// block/escalate path. SAFETY: a missed block is the costly error, so every
+// doubt resolves to NOT busy.
+function childBusyState(desc, home, opts) {
+  const o = opts || {};
+  const now = Number.isFinite(o.now) ? o.now : Date.now();
+  const freshMs = Number.isFinite(o.freshMs) && o.freshMs > 0 ? o.freshMs : DEFAULT_BUSY_FRESH_MS;
+  let r;
+  try { r = realActivity(desc, home, o); } catch (_) { return { busy: false, waiting: false, reason: 'classify-threw', openTool: null }; }
+  if (!r || !r.known) return { busy: false, waiting: false, reason: (r && r.reason) || 'unknown', openTool: null };
+  const openTool = r.openWaitingTool || null;
+  const ageMs = Number.isFinite(r.mtimeMs) ? now - r.mtimeMs : null;
+  const fresh = ageMs !== null && ageMs <= freshMs && ageMs >= -FUTURE_SKEW_MS;
+  if (openTool && HUMAN_WAIT_TOOLS.has(openTool)) return { busy: false, waiting: true, reason: 'open ' + openTool, openTool };
+  if (openTool && !fresh) return { busy: false, waiting: true, reason: 'unresolved ' + openTool + ', transcript stale', openTool };
+  if (!fresh) return { busy: false, waiting: false, reason: ageMs === null ? 'no transcript mtime' : 'transcript stale', openTool };
+  if (!r.lastTurnReal) return { busy: false, waiting: false, reason: 'latest turn is ping-only', openTool };
+  return { busy: true, waiting: false, reason: 'fresh real work', openTool };
 }
 
-module.exports = { realActivity, classifyTranscript, isMailboxTool, waitingOnUserInput, TAIL_BYTES };
+module.exports = { realActivity, classifyTranscript, isMailboxTool, childBusyState, HUMAN_WAIT_TOOLS, DEFAULT_BUSY_FRESH_MS, TAIL_BYTES };

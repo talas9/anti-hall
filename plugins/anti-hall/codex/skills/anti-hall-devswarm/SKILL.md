@@ -117,8 +117,14 @@ itself — that exclusion made the gate disagree with the roster/`devswarm-paren
 count (`companion/lib/devswarm-store.js`'s `unionUnreadFor`), which never applied it; both now
 read through the same `unionUnread` primitive. (2) a family whose only reason to block is a
 plain real-unread backlog is downgraded to a non-blocking advisory when the child is provably
-BUSY (fresh heartbeat, or a live mid-turn session) instead of hard-blocking and forcing
-"intentional" as the only escape; a genuinely NOT-busy child still blocks past
+BUSY instead of hard-blocking and forcing "intentional" as the only escape. Busy means the
+child's transcript was written within `devswarm.parentGateBusyFreshMin` minutes (default `5`)
+and its latest turn is real work; a live pid or fresh heartbeat alone never counts, and a
+missing transcript (e.g. a Codex child with no Claude transcript) is NOT busy. A child
+waiting on an unresolved `AskUserQuestion`/`ExitPlanMode`, or on any tool call past that
+window, blocks (one waiting twin blocks its whole family); a busy child still blocks once its
+oldest unread passes `devswarm.parentGateBusyMaxAgeMin` (default `60`); a busy pass keeps the
+forced-ack/escalation count. A NOT-busy child still blocks past
 `devswarm.parentGateNeglectMinUnread` (default `0`). Full detail:
 `docs/KB-devswarm-hivecontrol.md`'s parent-gate section.
 

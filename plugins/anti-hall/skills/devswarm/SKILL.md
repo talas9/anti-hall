@@ -859,12 +859,19 @@ removed; both surfaces now read through the same `companion/lib/devswarm-unread.
 `isNoiseText`, is still excluded on both the gate and the count it reports). Separately, a
 family whose ONLY reason to block is a plain real-unread backlog (no unknown-unread axis, no
 corroborated stale/escalated verdict) is now downgraded to a non-blocking advisory
-(`<id>: busy, N queued (oldest Xm)`, stderr) when the child is provably BUSY — a fresh
-heartbeat within the existing freshness window, or a live mid-turn session
-(`isSessionAliveRow`) — instead of hard-blocking and forcing "intentional" as the only
-escape. A genuinely NOT-busy child (no fresh heartbeat, no live session) still hard-blocks
-once its real unread exceeds `devswarm.parentGateNeglectMinUnread` (default `0`: any real
-unread blocks, unchanged sensitivity).
+(`<id>: busy, N queued (oldest Xm)`, stderr) when the child is provably BUSY, instead of
+hard-blocking and forcing "intentional" as the only escape. Busy needs positive evidence:
+the child's transcript was written within `devswarm.parentGateBusyFreshMin` minutes
+(default `5`) and its latest turn is real work (not a mailbox ping, not waiting). A live
+pid or a fresh heartbeat alone never counts. A child waiting on an unresolved
+`AskUserQuestion`/`ExitPlanMode`, or on any tool call while its transcript has gone quiet
+past that window (permission prompt, hung tool), blocks with a waiting line; in a twin
+family one waiting member makes the whole family block. A missing/unreadable transcript
+(including a Codex child) means NOT busy. Even a busy child blocks once its oldest unread
+is older than `devswarm.parentGateBusyMaxAgeMin` (default `60`): `<title>: busy but hasn't
+read mail in Xm`. A busy pass keeps the forced-ack/escalation count. A NOT-busy child
+still hard-blocks once its real unread exceeds `devswarm.parentGateNeglectMinUnread`
+(default `0`: any real unread blocks).
 
 **Child-gate "already-reported" satisfaction.** `hooks/devswarm-child-gate.js` now skips
 its Stop-block entirely, for the current stop episode, when the child's own mesh summary

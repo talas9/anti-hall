@@ -182,6 +182,13 @@ test('devswarm.cooldownSec/idleSec match liveness.js source constants (devswarm-
   assert.strictEqual(find('devswarm', 'idleSec').default, idleMs / 1000);
 });
 
+test('devswarm.parentGateBusyFreshMin / parentGateBusyMaxAgeMin match devswarm-parent-gate.js source constants', () => {
+  assert.strictEqual(find('devswarm', 'parentGateBusyFreshMin').default, constFromSource(['hooks', 'devswarm-parent-gate.js'], 'DEFAULT_BUSY_FRESH_MIN'));
+  assert.strictEqual(find('devswarm', 'parentGateBusyMaxAgeMin').default, constFromSource(['hooks', 'devswarm-parent-gate.js'], 'DEFAULT_BUSY_MAX_AGE_MIN'));
+  assert.strictEqual(find('devswarm', 'parentGateBusyFreshMin').default, 5);
+  assert.strictEqual(find('devswarm', 'parentGateBusyMaxAgeMin').default, 60);
+});
+
 test('devswarm.parentGateCap matches devswarm-parent-gate.js source constant', () => {
   assert.strictEqual(find('devswarm', 'parentGateCap').default, constFromSource(['hooks', 'devswarm-parent-gate.js'], 'DEFAULT_CAP'));
 });

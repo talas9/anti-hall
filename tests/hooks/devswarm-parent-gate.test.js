@@ -1288,24 +1288,19 @@ test('FIX 3: an OLD heartbeat does NOT suppress the stale nudge (no false proof-
   } finally { h.cleanup(); }
 });
 
-test('BUG 2 FIX (v0.109, supersedes FIX 3): a fresh heartbeat downgrades a plain REAL-unread block to an ADVISORY, not a hard block', () => {
+test('BUG 2 (v0.109 safety review F1): a fresh heartbeat ALONE is not busy evidence -> real unread still hard-blocks', () => {
   const h = makeHome();
   try {
     seedWorkspace(h.home, 'ws-hb2', { messages: ['a', 'b'], cursor: 0, verdict: { status: 'stale' } }); // 2 unread + stale
     writeHeartbeat(h.home, 'ws-hb2', Date.now());
     const r = run(h.home);
-    // v0.109 field defect ("false NEGLECT while the child is busy"): the OLD
-    // behavior here (`real unread on a live workspace still gates`) is
-    // exactly what generated the incident — a child alive and actively
-    // working, driven directly by a human, got hard-blocked as NEGLECT for
-    // not yet having reached a mailbox read. The liveness axis (stale) is
-    // already suppressed by the fresh heartbeat (pre-existing); now the
-    // PLAIN unread axis is too, downgraded to a non-blocking advisory on
-    // stderr, since this family's only remaining reason to report is
-    // unionUnread>0 with no unreadUnknown/staleOrEscalated left.
-    assert.strictEqual(r.status, 0);
-    assert.strictEqual(r.stdout, '', `a busy child's plain unread backlog must not hard-block; stdout=${r.stdout}`);
-    assert.match(r.stderr, /ws-hb2: busy, 2 queued/, `must emit the busy advisory; stderr=${r.stderr}`);
+    // 55361e8 treated a fresh heartbeat as "busy" and downgraded this to an
+    // advisory. Heartbeats are also written by the wake cron's inbox tick,
+    // so they prove nothing about real work: with no fresh real-work
+    // transcript the child is NOT busy and the block stands.
+    assert.strictEqual(r.json && r.json.decision, 'block', `stdout=${r.stdout} stderr=${r.stderr}`);
+    assert.match(r.json.reason, /2 unread/);
+    assert.doesNotMatch(r.stderr, /ws-hb2: busy/);
   } finally { h.cleanup(); }
 });
 
@@ -1329,7 +1324,7 @@ test('BUG 2 PART 1: a genuinely WORKING busy child (fresh heartbeat, transcript 
   const h = makeHome();
   try {
     const wt = path.join(h.home, 'wt', 'ws-work');
-    seedWorkspace(h.home, 'ws-work', { messages: ['a', 'b'], cursor: 0, worktreePath: wt, sessionId: 'sess-work' });
+    seedWorkspace(h.home, 'ws-work', { messageRows: [{ m: 'a', createdAt: Date.now() - 60000 }, { m: 'b', createdAt: Date.now() - 30000 }], cursor: 0, worktreePath: wt, sessionId: 'sess-work' });
     writeHeartbeat(h.home, 'ws-work', Date.now());
     const t0 = Date.now() - 5 * 60000;
     writeSessionTranscript(h.home, wt, 'sess-work', [
@@ -1372,6 +1367,166 @@ test('BUG 2 CONTROL: the SAME unread backlog WITHOUT a fresh heartbeat (not busy
     const r = run(h.home);
     assert.strictEqual(r.json && r.json.decision, 'block', 'a NOT-busy child with real unread still hard-blocks');
     assert.match(r.json.reason, /2 unread/);
+  } finally { h.cleanup(); }
+});
+
+// ---------------------------------------------------------------------------
+// v0.109 safety review (F1-F6): "busy" needs POSITIVE evidence of recent real
+// work — a FRESH child transcript (mtime within parentGateBusyFreshMin,
+// default 5) whose latest turn is real work, not ping-only and not waiting.
+// A live pid or a fresh heartbeat is NOT evidence (the wake cron's inbox tick
+// writes heartbeats). Unknown -> NOT busy -> the old block/escalate behavior.
+// ---------------------------------------------------------------------------
+function writeLiveSession(home, sessionId) {
+  const dir = path.join(home, '.claude', 'sessions');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'live-' + sessionId + '.json'), JSON.stringify({ pid: process.pid, sessionId, cwd: home, startedAt: Date.now() }));
+}
+function transcriptFile(home, worktreePath, sessionId) {
+  return path.join(liveness.projectDirFor(worktreePath, home), sessionId + '.jsonl');
+}
+function setTranscriptAge(home, worktreePath, sessionId, ageMin) {
+  const t = (Date.now() - ageMin * 60000) / 1000;
+  fs.utimesSync(transcriptFile(home, worktreePath, sessionId), t, t);
+}
+const openToolLines = (t0, id, name, input) => [
+  { type: 'user', timestamp: iso(t0), message: { role: 'user', content: 'Do the work.' } },
+  { type: 'assistant', timestamp: iso(t0 + 1000), message: { role: 'assistant', content: [{ type: 'tool_use', id, name, input: input || {} }] } },
+];
+const closedRealLines = (t0) => [
+  { type: 'user', timestamp: iso(t0), message: { role: 'user', content: 'Fix the bug.' } },
+  { type: 'assistant', timestamp: iso(t0 + 1000), message: { role: 'assistant', content: [{ type: 'text', text: 'Done.' }] } },
+  { type: 'system', subtype: 'stop_hook_summary', timestamp: iso(t0 + 2000) },
+];
+const rowsAged = (n, ageMin) => Array.from({ length: n }, (_, i) => ({ m: 'msg' + i, createdAt: Date.now() - ageMin * 60000 + i }));
+function seedBusyCandidate(home, id, opts) {
+  const wt = opts.worktreePath || path.join(home, 'wt', id);
+  const sid = 'sess-' + id;
+  seedWorkspace(home, id, { messageRows: rowsAged(opts.unread || 2, opts.unreadAgeMin == null ? 2 : opts.unreadAgeMin), cursor: 0, worktreePath: wt, sessionId: sid });
+  if (opts.lines) {
+    writeSessionTranscript(home, wt, sid, opts.lines);
+    setTranscriptAge(home, wt, sid, opts.transcriptAgeMin || 0);
+  }
+  return { wt, sid };
+}
+
+test('F1: live pid but IDLE at its prompt (stale transcript) with unread -> BLOCKS (a live pid is not evidence of work)', () => {
+  const h = makeHome();
+  try {
+    const s = seedBusyCandidate(h.home, 'ws-idlepid', { lines: closedRealLines(Date.now() - 40 * 60000), transcriptAgeMin: 30 });
+    writeLiveSession(h.home, s.sid);
+    writeHeartbeat(h.home, 'ws-idlepid', Date.now()); // the wake cron's inbox tick keeps this fresh too
+    const r = run(h.home);
+    assert.strictEqual(r.json && r.json.decision, 'block', `idle-but-alive child with unread must block; stdout=${r.stdout} stderr=${r.stderr}`);
+    assert.match(r.json.reason, /2 unread/);
+  } finally { h.cleanup(); }
+});
+
+test('F1: FRESH real-work transcript (open Bash, mtime now) -> advisory, not a block', () => {
+  const h = makeHome();
+  try {
+    seedBusyCandidate(h.home, 'ws-fresh', { lines: openToolLines(Date.now() - 60000, 'toolu_fresh', 'Bash', { command: 'npm test' }), transcriptAgeMin: 0 });
+    const r = run(h.home);
+    assert.strictEqual(r.status, 0);
+    assert.strictEqual(r.stdout, '', `fresh real work must be advisory only; stdout=${r.stdout}`);
+    assert.match(r.stderr, /ws-fresh: busy, 2 queued/, `stderr=${r.stderr}`);
+  } finally { h.cleanup(); }
+});
+
+test('F2: busy but the oldest unread is 90m old -> BLOCKS with "busy but hasn\'t read mail in 90m"', () => {
+  const h = makeHome();
+  try {
+    seedBusyCandidate(h.home, 'ws-old', { unreadAgeMin: 90, lines: openToolLines(Date.now() - 60000, 'toolu_old', 'Bash', { command: 'npm test' }), transcriptAgeMin: 0 });
+    const r = run(h.home);
+    assert.strictEqual(r.json && r.json.decision, 'block', `age cap must force a block; stdout=${r.stdout} stderr=${r.stderr}`);
+    assert.match(r.json.reason, /ws-old: busy but hasn't read mail in 90m/, `reason=${r.json && r.json.reason}`);
+  } finally { h.cleanup(); }
+});
+
+test('F3: an unresolved ExitPlanMode (fresh transcript) is WAITING -> blocks, naming the wait', () => {
+  const h = makeHome();
+  try {
+    seedBusyCandidate(h.home, 'ws-plan', { lines: openToolLines(Date.now() - 60000, 'toolu_plan', 'ExitPlanMode', { plan: 'x' }), transcriptAgeMin: 0 });
+    const r = run(h.home);
+    assert.strictEqual(r.json && r.json.decision, 'block', `stdout=${r.stdout} stderr=${r.stderr}`);
+    assert.match(r.json.reason, /ws-plan: waiting on a human answer in its own session/);
+  } finally { h.cleanup(); }
+});
+
+test('F3: an unresolved Bash tool_use with a STALE transcript (permission prompt / hung tool) -> blocks', () => {
+  const h = makeHome();
+  try {
+    seedBusyCandidate(h.home, 'ws-perm', { lines: openToolLines(Date.now() - 20 * 60000, 'toolu_perm', 'Bash', { command: 'rm -rf build' }), transcriptAgeMin: 15 });
+    const r = run(h.home);
+    assert.strictEqual(r.json && r.json.decision, 'block', `stdout=${r.stdout} stderr=${r.stderr}`);
+    assert.match(r.json.reason, /ws-perm: waiting on a human answer in its own session/);
+  } finally { h.cleanup(); }
+});
+
+test('F4: MISSING transcript (heartbeat fresh, pid live) -> NOT busy -> blocks', () => {
+  const h = makeHome();
+  try {
+    const s = seedBusyCandidate(h.home, 'ws-notr', {});
+    writeLiveSession(h.home, s.sid);
+    writeHeartbeat(h.home, 'ws-notr', Date.now());
+    const r = run(h.home);
+    assert.strictEqual(r.json && r.json.decision, 'block', `stdout=${r.stdout} stderr=${r.stderr}`);
+    assert.match(r.json.reason, /2 unread/);
+  } finally { h.cleanup(); }
+});
+
+test('F5: a twin family where one member is busy and the other is WAITING -> waiting line + block', () => {
+  const h = makeHome();
+  const bogusCwd = fs.mkdtempSync(path.join(os.tmpdir(), 'parent-gate-busytwin-nogit-'));
+  try {
+    const sharedWt = path.join(h.home, 'shared-busy-wt');
+    fs.mkdirSync(sharedWt, { recursive: true });
+    seedBusyCandidate(h.home, 'twin-busy', { worktreePath: sharedWt, lines: openToolLines(Date.now() - 60000, 'toolu_tb', 'Bash', { command: 'npm test' }), transcriptAgeMin: 0 });
+    seedBusyCandidate(h.home, 'twin-wait', { worktreePath: sharedWt, lines: openToolLines(Date.now() - 60000, 'toolu_tw', 'AskUserQuestion', { questions: [{ question: 'Which env?' }] }), transcriptAgeMin: 0 });
+    const r = run(h.home, stopPayload('sess-busytwin', false, bogusCwd));
+    assert.strictEqual(r.json && r.json.decision, 'block', `a waiting twin must not be hidden by a busy twin; stdout=${r.stdout} stderr=${r.stderr}`);
+    assert.match(r.json.reason, /1 workspace\(s\)/, 'the two descriptors must still collapse to one family');
+    assert.match(r.json.reason, /twin-wait: waiting on a human answer in its own session/, `reason=${r.json && r.json.reason}`);
+  } finally { h.cleanup(); fs.rmSync(bogusCwd, { recursive: true, force: true }); }
+});
+
+test('F6: a busy (advisory) pass KEEPS the forced-ack/escalation counter; the next non-busy pass escalates', () => {
+  const h = makeHome();
+  try {
+    const env = { ANTIHALL_DEVSWARM_PARENT_GATE_CAP: '2' };
+    const p = stopPayload('sess-f6');
+    const s = seedBusyCandidate(h.home, 'ws-f6', { lines: openToolLines(Date.now() - 60000, 'toolu_f6', 'Bash', { command: 'npm test' }), transcriptAgeMin: 30 });
+    // Stale transcript: not busy -> two ordinary blocks.
+    assert.strictEqual(run(h.home, p, env).json.decision, 'block', 'block #1');
+    assert.strictEqual(run(h.home, p, env).json.decision, 'block', 'block #2');
+    const before = readGateState(h.home, 'sess-f6');
+    // Fresh again: busy -> advisory, and the state file must survive intact.
+    setTranscriptAge(h.home, s.wt, s.sid, 0);
+    const adv = run(h.home, p, env);
+    assert.strictEqual(adv.stdout, '', `busy pass is advisory; stdout=${adv.stdout}`);
+    const kept = readGateState(h.home, 'sess-f6');
+    assert.strictEqual(kept.blocks, before.blocks, 'a busy pass must not reset the forced-ack count');
+    assert.strictEqual(kept.sig, before.sig);
+    // Stale again: the budget continues -> this pass escalates.
+    setTranscriptAge(h.home, s.wt, s.sid, 30);
+    const r3 = run(h.home, p, env);
+    assert.strictEqual(r3.json && r3.json.decision, 'block');
+    assert.match(r3.json.reason, /DEVSWARM ESCALATION/, `the kept counter must drive escalation; reason=${r3.json && r3.json.reason}`);
+  } finally { h.cleanup(); }
+});
+
+test('F1/F6: an idle-but-alive child with unread still ESCALATES after N forced acks', () => {
+  const h = makeHome();
+  try {
+    const env = { ANTIHALL_DEVSWARM_PARENT_GATE_CAP: '2' };
+    const p = stopPayload('sess-esc');
+    const s = seedBusyCandidate(h.home, 'ws-esc', { lines: closedRealLines(Date.now() - 40 * 60000), transcriptAgeMin: 30 });
+    writeLiveSession(h.home, s.sid);
+    assert.strictEqual(run(h.home, p, env).json.decision, 'block', 'block #1');
+    assert.strictEqual(run(h.home, p, env).json.decision, 'block', 'block #2');
+    const r3 = run(h.home, p, env);
+    assert.strictEqual(r3.json && r3.json.decision, 'block');
+    assert.match(r3.json.reason, /DEVSWARM ESCALATION/);
   } finally { h.cleanup(); }
 });
 

@@ -140,12 +140,13 @@ const { readDescriptors } = require('../companion/devswarm-supervisor.js');
 const { readUnreadMessages } = require('../companion/lib/devswarm-inbox-cursor.js');
 const devswarmUnread = require('../companion/lib/devswarm-unread.js');
 const { livenessPathFor, devswarmRoot, hasFreshHeartbeat, isSessionAliveRow } = require('../companion/lib/liveness.js');
-// waitingOnUserInput — Bug 2 part 1 (55361e8 follow-up): REUSE the existing
-// transcript classifier (companion/lib/devswarm-idle.js) rather than a
-// second parser. Tells "actively working" apart from "blocked on a human
-// answer inside its own session" — both look identical to a fresh heartbeat
-// / live pid, which is all `busy` below could see before this.
-const { waitingOnUserInput } = require('../companion/lib/devswarm-idle.js');
+// childBusyState — the ONE "is this child provably doing real work" reader
+// (companion/lib/devswarm-idle.js, reusing its transcript classifier rather
+// than a second parser). A live pid or a fresh heartbeat is NOT evidence of
+// work (an idle child at its prompt has a live pid; the wake cron's inbox
+// tick rewrites the heartbeat) — only a fresh real-work transcript is.
+const { childBusyState } = require('../companion/lib/devswarm-idle.js');
+const devswarmNames = require('../companion/lib/devswarm-names.js');
 const { rowState } = require('../companion/lib/row-state.js');
 // devswarm-ignore.js: the user-editable ~/.anti-hall/devswarm/ignore.json
 // {"ids":[...]} list — see that module's header. Suppresses this gate's
@@ -238,9 +239,8 @@ function resolveCap(env) {
 // DEFAULT_NEGLECT_MIN_UNREAD — Bug 2 fix (false NEGLECT while the child is
 // busy). Default 0 keeps the pre-existing sensitivity for a genuinely
 // NOT-busy child unchanged (any real unread still blocks); a BUSY child
-// (fresh heartbeat or a live mid-turn session — see `busy` above) never
-// hard-blocks on unread alone regardless of this value, so the setting only
-// ever tunes the NOT-busy path.
+// (fresh real-work transcript — see `busy` in main()) is handled by the busy
+// advisory path instead, so the setting only ever tunes the NOT-busy path.
 const DEFAULT_NEGLECT_MIN_UNREAD = 0;
 
 // resolveNeglectMinUnread(env) -> int >= 0. Same fail-open shape as resolveCap.
@@ -256,6 +256,48 @@ function resolveNeglectMinUnread(env) {
     if (Number.isFinite(n)) return n;
   }
   return DEFAULT_NEGLECT_MIN_UNREAD;
+}
+
+// DEFAULT_BUSY_FRESH_MIN / DEFAULT_BUSY_MAX_AGE_MIN (v0.109 safety review):
+// a child counts as busy only while its transcript was written within
+// parentGateBusyFreshMin minutes (and its latest turn is real work); even a
+// busy child blocks once its oldest unread is older than
+// parentGateBusyMaxAgeMin minutes — busy never defers mail indefinitely.
+const DEFAULT_BUSY_FRESH_MIN = 5;
+const DEFAULT_BUSY_MAX_AGE_MIN = 60;
+
+// resolvePositiveMin(key, envName, dflt, env) -> number > 0. Same fail-open
+// shape as resolveCap: settings.getWithEnv first, then the raw env var, then
+// the default.
+function resolvePositiveMin(key, envName, dflt, env) {
+  const e = env || {};
+  try {
+    const n = require('./lib/settings.js').getWithEnv('devswarm', key, dflt, e);
+    return Number.isFinite(n) && n > 0 ? n : dflt;
+  } catch (_) { /* fall through */ }
+  const raw = e[envName];
+  if (typeof raw === 'string' && /^\d+(\.\d+)?$/.test(raw.trim())) {
+    const n = Number(raw.trim());
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+  return dflt;
+}
+function resolveBusyFreshMin(env) {
+  return resolvePositiveMin('parentGateBusyFreshMin', 'ANTIHALL_DEVSWARM_PARENT_GATE_BUSY_FRESH_MIN', DEFAULT_BUSY_FRESH_MIN, env);
+}
+function resolveBusyMaxAgeMin(env) {
+  return resolvePositiveMin('parentGateBusyMaxAgeMin', 'ANTIHALL_DEVSWARM_PARENT_GATE_BUSY_MAX_AGE_MIN', DEFAULT_BUSY_MAX_AGE_MIN, env);
+}
+
+// unreadRowTs(row) -> finite ms | null. A row's own send time: numeric or
+// ISO-string `ts` / `createdAt`. Never throws.
+function unreadRowTs(row) {
+  if (!row || typeof row !== 'object') return null;
+  for (const v of [row.ts, row.createdAt]) {
+    if (Number.isFinite(v)) return v;
+    if (typeof v === 'string' && v) { const t = Date.parse(v); if (Number.isFinite(t)) return t; }
+  }
+  return null;
 }
 
 // readVerdict(id, home) -> { status, pending, notDraining } | null. Reads ONLY
@@ -658,6 +700,10 @@ function readOwnUnread(home, cwd, repoKey) {
   }
 }
 
+// reasonHome: the home main() resolved, for buildReason's display-name
+// lookup (names/<id>.json) without widening buildReason's signature.
+let reasonHome = null;
+
 function main() {
   // Settings switch devswarm.parentGate (0.108.4): off -> no-op. Fail-open: any error runs the hook.
   try { if (!require('./lib/settings.js').enabled('devswarm', 'parentGate')) return; } catch (_) { /* run */ }
@@ -682,6 +728,7 @@ function main() {
   if (stopPolicy && stopPolicy.stopHookActive(payload)) return;
 
   const home = os.homedir();
+  reasonHome = home;
 
   // `cwd` falls back to process.cwd() when the payload omits it, same fallback
   // posture other Stop hooks use (e.g. task-guard.js documents `cwd?` as
@@ -982,6 +1029,8 @@ function main() {
     try { return repokeyMod.registeredRepoKey(d, d && d.id, { resolveFresh: repoKeyOfWorktree }); }
     catch (_) { return null; }
   }
+  // busyFreshMs (v0.109 safety review): resolved ONCE for the whole scan.
+  const busyFreshMs = resolveBusyFreshMin(process.env) * 60000;
   for (const d of descriptors) {
     // The Primary's OWN descriptor (workspaces/<own.id>.json) is already
     // accounted for by the own row above (readOwnUnread: this reader's own
@@ -1109,6 +1158,12 @@ function main() {
     // read). null when unknown/never resolved — the advisory text below
     // falls back to omitting the age rather than fabricating one.
     let oldestUnreadAgeMsForDescriptor = null;
+    // ndjsonOldestTs / unreadAgeUnknown (v0.109 safety review F2): the busy
+    // advisory is capped by the oldest unread's age, so that age must be
+    // KNOWN. Any counted real row with no usable timestamp makes the age
+    // unknown, and an unknown age never qualifies for the advisory.
+    let ndjsonOldestTs = null;
+    let unreadAgeUnknown = false;
     // unreadReason/unreadReasonPath/unreadReasonErrno (regression fix — see
     // this file's own d1c8625 identity-family-collapse note below): a bare
     // `unreadUnknown` boolean gave no way to tell a malformed/phantom
@@ -1220,8 +1275,13 @@ function main() {
         }
       } else {
         for (const row of u.rows) {
-          if (row === null) { realUnread++; continue; } // unparseable -> fail open (real)
+          if (row === null) { realUnread++; unreadAgeUnknown = true; continue; } // unparseable -> fail open (real)
           if (isNoiseText(row.message)) continue; // positively-classified noise -> excluded
+          {
+            const rts = unreadRowTs(row);
+            if (rts === null) unreadAgeUnknown = true;
+            else if (ndjsonOldestTs === null || rts < ndjsonOldestTs) ndjsonOldestTs = rts;
+          }
           // OUTBOUND-NOT-NEGLECT SENDER FILTER REMOVED (v0.109 field defect —
           // "gate count mismatch"): this used to skip a row whose `sender`
           // equalled this Primary's own id, on the theory that a message the
@@ -1317,8 +1377,10 @@ function main() {
               unreadReasonPath = null;
               unreadReasonErrno = null;
             }
+            let storeRealRows = 0;
             for (const row of union.storeOnlyUnreadRows) {
               if (isNoiseText(row && row.body)) continue;
+              storeRealRows++;
               // SENDER FILTER REMOVED — see the matching NDJSON-tier comment
               // above (~:1190): a mesh-direct row this Primary sent IS the
               // child's real unread backlog and must count identically to how
@@ -1332,6 +1394,8 @@ function main() {
             // second store read.
             if (Number.isFinite(union.oldestUnreadAgeMs)) {
               oldestUnreadAgeMsForDescriptor = union.oldestUnreadAgeMs;
+            } else if (storeRealRows > 0) {
+              unreadAgeUnknown = true;
             }
           } finally {
             try { storeHandle.close(); } catch (_) {}
@@ -1386,33 +1450,34 @@ function main() {
       try { idleAlive = isSessionAliveRow({ sessionId: d.sessionId }, home); } catch (_) { idleAlive = false; }
     }
     if (staleOrEscalated && idleAlive) staleOrEscalated = false;
-    // busy (Bug 2 — false NEGLECT while genuinely busy): computed
-    // UNCONDITIONALLY (unlike the staleOrEscalated-gated heartbeat check
-    // above) because it feeds the SEPARATE unread/NEGLECT axis below, not
-    // just the liveness axis. "Provably busy" = a FRESH heartbeat (the same
-    // existing freshness window hasFreshHeartbeat already uses) OR evidence
-    // the child's own session is mid-turn right now (idleAlive, already
-    // computed above — a live harness pid for this sessionId). Either signal
-    // alone is definitive proof-of-life; this is a pure OR, never a new
-    // stricter requirement than either check already applies on its own.
-    let busy = idleAlive;
-    if (!busy) {
-      try { busy = hasFreshHeartbeat(d.id, home); } catch (_) { busy = false; }
-    }
-    // waitingOnUser (Bug 2 part 1 — a busy-but-actually-stuck child): a child
-    // can be provably busy by BOTH signals above (fresh heartbeat, live pid)
-    // while its own session is blocked on an unanswered AskUserQuestion the
-    // Primary cannot see or resolve through the mesh — the Primary's
-    // block/escalation is the CORRECT behavior there, not an advisory. Only
-    // ever NARROWS `busy` (true -> false), never widens it: a descriptor this
-    // can't classify (no transcript, unreadable, ...) leaves `busy` exactly
-    // as computed above (55361e8's pre-existing behavior), per
-    // waitingOnUserInput's own fail-to-false contract.
+    // busy / waitingOnUser (v0.109 safety review F1/F3/F4): computed
+    // UNCONDITIONALLY — it feeds the separate unread/NEGLECT axis below. Busy
+    // needs POSITIVE evidence of recent real work: the child's own transcript
+    // written within parentGateBusyFreshMin AND its latest turn real work
+    // (childBusyState). `idleAlive` (live pid) and a fresh heartbeat are
+    // deliberately NOT inputs — an idle child at its prompt has a live pid
+    // and the wake cron's inbox tick rewrites its heartbeat. waitingOnUser =
+    // an unresolved AskUserQuestion/ExitPlanMode, or any unresolved tool_use
+    // on a stale transcript (permission prompt / hung tool). Any doubt —
+    // missing/unreadable transcript, a Codex child with no Claude transcript,
+    // a throw — resolves to NOT busy, so the family blocks as before.
+    let busy = false;
     let waitingOnUser = false;
-    if (busy) {
-      try { waitingOnUser = waitingOnUserInput(d, home); } catch (_) { waitingOnUser = false; }
-      if (waitingOnUser) busy = false;
+    try {
+      const bs = childBusyState(d, home, { freshMs: busyFreshMs });
+      busy = !!(bs && bs.busy);
+      waitingOnUser = !!(bs && bs.waiting);
+    } catch (_) { busy = false; waitingOnUser = false; }
+    if (waitingOnUser) busy = false;
+    // Final oldest-unread age: the older of the NDJSON rows' own timestamps
+    // and the store-side union's age. Unknown (see unreadAgeUnknown) -> null.
+    if (ndjsonOldestTs !== null) {
+      const ndAge = Date.now() - ndjsonOldestTs;
+      if (Number.isFinite(ndAge) && (oldestUnreadAgeMsForDescriptor === null || ndAge > oldestUnreadAgeMsForDescriptor)) {
+        oldestUnreadAgeMsForDescriptor = Math.max(0, ndAge);
+      }
     }
+    if (realUnread > 0 && oldestUnreadAgeMsForDescriptor === null) unreadAgeUnknown = true;
     // FIELD (archived rows still alerting): a workspace the owner already
     // ARCHIVED is done and put away — it must never render as escalated /
     // not-draining. Liveness axis ONLY, same as every suppressor above; the row
@@ -1493,6 +1558,7 @@ function main() {
       // for the family-level busy/NEGLECT decision below — see `busy`'s own
       // comment above for the definition.
       busy,
+      unreadAgeUnknown,
       // waitingOnUser: REPORT-ONLY provenance for the family-level
       // waiting-on-input line below — see the per-descriptor `waitingOnUser`
       // comment above for the definition.
@@ -1594,6 +1660,13 @@ function main() {
   // neglectMinUnread (Bug 2): resolved ONCE, outside the per-family loop —
   // see resolveNeglectMinUnread's own header.
   const neglectMinUnread = resolveNeglectMinUnread(process.env);
+  // busyMaxAgeMs (v0.109 safety review F2): the age cap on the busy advisory.
+  const busyMaxAgeMs = resolveBusyMaxAgeMin(process.env) * 60000;
+  // busyAdvisoryHeld (F6): true when at least one family was downgraded to a
+  // busy advisory this pass. Such a pass must NOT clear the loop-state file
+  // (forced-ack count / escalation) — only a pass where no child has unread
+  // at all clears it.
+  let busyAdvisoryHeld = false;
 
   const blocking = [];
   for (const fam of families) {
@@ -1668,7 +1741,9 @@ function main() {
     // so familyBusy alone can't reflect this — a DIFFERENT member of the same
     // family could still be genuinely busy without being the one waiting).
     let familyWaitingOnUser = false;
+    let familyAgeUnknown = false;
     for (const m of members) {
+      if (m.unreadAgeUnknown) familyAgeUnknown = true;
       if (m.busy) familyBusy = true;
       if (m.waitingOnUser) familyWaitingOnUser = true;
       if (Number.isFinite(m.oldestUnreadAgeMs) && (familyOldestUnreadAgeMs === null || m.oldestUnreadAgeMs > familyOldestUnreadAgeMs)) {
@@ -1733,9 +1808,9 @@ function main() {
     // BUG 2 FIX — false NEGLECT while genuinely busy. A family whose ONLY
     // reason to report is a plain unread backlog (no unreadUnknown, no
     // corroborated staleOrEscalated) is downgraded from a hard block to an
-    // advisory when the child is PROVABLY BUSY (a fresh heartbeat within the
-    // existing freshness window, and/or a live mid-turn session — see the
-    // per-descriptor `busy` comment above). Scoped to CHILD families only
+    // advisory when the child is PROVABLY BUSY (a fresh real-work transcript
+    // — see the per-descriptor `busy` comment above; a heartbeat or live pid
+    // alone never qualifies). Scoped to CHILD families only
     // (never the Primary's own mailbox, `own.id`) — the field report this
     // closes was specifically a child the Primary was actively driving in
     // long turns, whose only gap was "hasn't reached a mailbox read yet",
@@ -1746,16 +1821,27 @@ function main() {
     const survivorIdForBusyCheck = (fam && fam.survivor && fam.survivor.id != null)
       ? String(fam.survivor.id) : (members[0] && members[0].id != null ? String(members[0].id) : null);
     const isChildFamily = !(own.id && survivorIdForBusyCheck != null && survivorIdForBusyCheck === String(own.id));
+    // v0.109 safety review (F2/F5): busy only downgrades when NO member of
+    // the family is waiting (a busy twin must never hide a waiting one), and
+    // only while the oldest unread is KNOWN and within parentGateBusyMaxAgeMin
+    // — past that, even a busy child blocks with a plain age line.
+    const familyBusyEffective = familyBusy && !familyWaitingOnUser;
+    let busyButStaleMail = false;
     if (isChildFamily && !unreadUnknown && !staleOrEscalated && unionUnread > 0) {
-      if (familyBusy) {
-        try {
-          const ageTxt = Number.isFinite(familyOldestUnreadAgeMs)
-            ? ' (oldest ' + Math.max(1, Math.round(familyOldestUnreadAgeMs / 60000)) + 'm)' : '';
-          fs.writeSync(2, 'anti-hall: ' + survivorIdForBusyCheck + ': busy, ' + unionUnread + ' queued' + ageTxt + '\n');
-        } catch (_) {}
-        continue; // advisory only — never a hard block for a provably busy child
+      if (familyBusyEffective) {
+        const ageKnown = !familyAgeUnknown && Number.isFinite(familyOldestUnreadAgeMs);
+        if (ageKnown && familyOldestUnreadAgeMs <= busyMaxAgeMs) {
+          try {
+            const ageTxt = ' (oldest ' + Math.max(1, Math.round(familyOldestUnreadAgeMs / 60000)) + 'm)';
+            fs.writeSync(2, 'anti-hall: ' + survivorIdForBusyCheck + ': busy, ' + unionUnread + ' queued' + ageTxt + '\n');
+          } catch (_) {}
+          busyAdvisoryHeld = true;
+          continue; // advisory only — provably busy, mail recent
+        }
+        if (ageKnown) busyButStaleMail = true; // over the age cap -> block with the age line
+      } else if (!familyWaitingOnUser && unionUnread <= neglectMinUnread) {
+        continue; // below the configured NOT-busy threshold
       }
-      if (unionUnread <= neglectMinUnread) continue; // below the configured NOT-busy threshold
     }
     if (!(unreadUnknown || unionUnread > 0 || staleOrEscalated)) continue; // this family has nothing to report
     const survivor = fam && fam.survivor;
@@ -1768,7 +1854,13 @@ function main() {
     // to an advisory a few lines up). Names it in the reason text so the
     // Primary knows THIS block is not neglect but its own child stuck on a
     // question it cannot answer through the mesh.
-    if (familyWaitingOnUser) entry.waitingOnInput = true;
+    if (familyWaitingOnUser) {
+      entry.waitingOnInput = true;
+      // Name the member(s) actually waiting (F5: in a twin family that may
+      // not be the survivor).
+      entry.waitingIds = members.filter((m) => m && m.waitingOnUser && m.id != null).map((m) => String(m.id));
+    }
+    if (busyButStaleMail) entry.busyStaleAgeMin = Math.max(1, Math.round(familyOldestUnreadAgeMs / 60000));
     if (foreignProject) entry.foreignProject = true;
     if (worktreeGone) entry.worktreeGone = true;
     if (urgencyMax != null) entry.urgencyMax = urgencyMax;
@@ -1798,7 +1890,10 @@ function main() {
   // waved through just because the visible `blocking`/`unanswered` happen to
   // be empty this pass.
   if (blocking.length === 0 && unanswered.length === 0 && !truncated && !parkedSegment) {
-    try { fs.unlinkSync(stateFile); } catch (_) {}
+    // F6: a pass that only DEFERRED unread mail (busy advisory) keeps the
+    // loop-state untouched, so the forced-ack count and escalation carry on
+    // once the child stops being busy. Only a truly clean pass clears it.
+    if (!busyAdvisoryHeld) { try { fs.unlinkSync(stateFile); } catch (_) {} }
     return;
   }
 
@@ -2237,12 +2332,21 @@ function buildInformationalSegment(informational) {
 // apart from the ordinary "N unread" wording so the Primary knows this is
 // not neglect: the mesh cannot answer a prompt sitting inside a child's own
 // interactive session.
-function buildWaitingOnInputSegment(blocking) {
+function buildWaitingOnInputSegment(blocking, home) {
   if (!Array.isArray(blocking) || !blocking.length) return '';
+  const title = (id) => {
+    try { return devswarmNames.displayName(id, devswarmNames.readName(home, id)); } catch (_) { return String(id); }
+  };
   let out = '';
   for (const b of blocking) {
-    if (!b || !b.waitingOnInput || !b.id) continue;
-    out += b.id + ': waiting on a human answer in its own session\n';
+    if (!b || !b.id) continue;
+    if (b.waitingOnInput) {
+      const ids = Array.isArray(b.waitingIds) && b.waitingIds.length ? b.waitingIds : [b.id];
+      for (const id of ids) out += title(id) + ': waiting on a human answer in its own session\n';
+    }
+    if (Number.isFinite(b.busyStaleAgeMin)) {
+      out += title(b.id) + ": busy but hasn't read mail in " + b.busyStaleAgeMin + 'm\n';
+    }
   }
   return out;
 }
@@ -2302,7 +2406,7 @@ function buildReason(blocking, ownId, unanswered, escalateTimes, truncated, qEsc
     body += buildUnansweredSegment(unanswered);
   }
   body += buildInformationalSegment(unansweredInformational);
-  body += buildWaitingOnInputSegment(blocking);
+  body += buildWaitingOnInputSegment(blocking, reasonHome);
 
   if (escalateTimes) {
     // Standalone escalation wording (requirement D) — deliberately NOT the
