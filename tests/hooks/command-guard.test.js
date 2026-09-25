@@ -76,6 +76,37 @@ const BLOCK = [
   'node plugins/anti-hall/scripts/jev-report.js prune-audit --days 30',
   'gcloud compute instances delete foo',
   'kubectl delete pod foo',
+  // P1 fp (rc-v0.108.4.2 review): a mutating verb earlier on the line must not
+  // be shadowed by a LATER compound word that merely CONTAINS a read-only
+  // verb as a substring — `list-users`/`get-worker-1` are single argv tokens,
+  // not the literal `list`/`get` verb.
+  'gcloud functions deploy list-users',
+  'kubectl delete pod get-worker-1',
+  // P1 fp: git fetch with a refspec/prune/force can rewrite or delete local
+  // remote-tracking refs — must stay gated like push/pull.
+  'git fetch --prune origin',
+  'git fetch -p origin',
+  'git fetch --prune-tags origin',
+  'git fetch --force origin main',
+  'git fetch -f origin main',
+  'git fetch origin +refs/heads/*:refs/remotes/origin/*',
+  'git fetch origin main:main',
+  // P2 fp: -readonly must be an actual argv token BEFORE the db path, and
+  // dangerous sqlite3 dot-commands/ATTACH must stay gated even on a
+  // `-readonly` connection (.shell/.system/.output/.once/.import/.save can
+  // still write files or run shell commands; ATTACH opens a second,
+  // non-readonly db).
+  'sqlite3 "-readonly db" /tmp/x.db "select 1"',
+  'sqlite3 -readonly /tmp/x.db ".shell rm -rf /"',
+  'sqlite3 -readonly /tmp/x.db ".system rm -rf /"',
+  'sqlite3 -readonly /tmp/x.db ".output /tmp/pwn"',
+  'sqlite3 -readonly /tmp/x.db ".once /tmp/pwn"',
+  'sqlite3 -readonly /tmp/x.db ".import /etc/passwd t"',
+  'sqlite3 -readonly /tmp/x.db ".save /tmp/copy.db"',
+  'sqlite3 -readonly /tmp/x.db "ATTACH DATABASE \'/tmp/x.db\' AS y"',
+  // P2 fp: the doctor.js exemption must exclude --reclaim-ingest-lock too
+  // (forces a stale-lock takeover — a mutating action, not diagnostics).
+  'node plugins/anti-hall/hooks/doctor.js --reclaim-ingest-lock',
 ];
 
 const ALLOW = [

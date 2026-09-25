@@ -93,7 +93,10 @@ const LIGHT_EXCEPTIONS = [
   // git fetch alone only updates local remote-tracking refs/objects — it never
   // touches the working tree or any local branch, so it is read-only from the
   // working-tree's perspective (unlike push/pull, which stay gated below).
-  /\bgit\s+fetch\b/i,
+  // The actual exemption is isSafeGitFetch() below (P1 fix: a `:` refspec, a
+  // leading `+` refspec, or --prune/-p/--prune-tags/--force/-f can rewrite or
+  // delete local remote-tracking refs, so a bare `\bgit\s+fetch\b` match here
+  // would wrongly exempt those too — checked per-segment in isHeavySegment).
   // npm/node version queries
   /\bnpm\s+(?:--version|-v|view|info|ls)\b/i,
   // `node -e "..."` / `-e '...'` is intentionally NOT blanket-exempted here —
@@ -111,15 +114,15 @@ const LIGHT_EXCEPTIONS = [
   /\bgit\s+(?:push|pull)\b[^\n]*\s--dry-run\b/i,
   // docker ps/images/inspect (read-only)
   /\bdocker\s+(?:ps|images|inspect|logs|stats)\b/i,
-  // sqlite3 opened with -readonly: the connection itself refuses writes, so no
-  // statement it runs can mutate the db file.
-  /\bsqlite3\b[^\n]*\s-readonly\b/i,
-  // gcloud/gh/kubectl read-only inspection subcommands (describe/list/get/view).
-  // `get` also matches inside compound read subcommands like `get-iam-policy`
-  // (word-boundary substring) — those are read-only too, so that is not a gap.
-  /\b(?:gcloud|gh|kubectl)\s+(?:\S+\s+)*?(?:describe|list|get|view)\b/i,
-  // gcloud logging read (the log-tail/query command, not a mutation).
-  /\bgcloud\s+(?:\S+\s+)*?logging\s+read\b/i,
+  // sqlite3 opened with -readonly, and gcloud/gh/kubectl read-only inspection
+  // subcommands: the actual exemptions are isSafeSqliteReadonly() and
+  // isReadOnlyCloudInspect() below (P1/P2 fix: the old regexes here did a
+  // \b-boundary SUBSTRING match, so `-readonly` matched even as a substring
+  // of a longer flag and `list`/`get`/`describe`/`view` matched inside a
+  // LATER compound word like `list-users` or `get-worker-1` — e.g. `gcloud
+  // functions deploy list-users` and `kubectl delete pod get-worker-1` both
+  // slipped through as "read-only" even though the real verb was the
+  // mutating `deploy`/`delete`. Checked per-segment in isHeavySegment().
   // anti-hall's own read-only CLI subcommands. Each is a NARROW, anchored
   // exemption of one specific script + one specific read-only subcommand set
   // (not the whole script), mirroring the devswarm.js carve-out's anchoring
@@ -135,9 +138,10 @@ const LIGHT_EXCEPTIONS = [
   /\bnode\s+(?:\S*[\\/])?scripts[\\/]settings\.js\s+(?:-\S+\s+)*(?:show|get)\b/i,
   /\bnode\s+(?:\S*[\\/])?scripts[\\/]jev-report\.js\b(?![^\n]*\b(?:label|prune-audit)\b)/i,
   // hooks/doctor.js: read-only diagnostics by default — --repair/--fix (and the
-  // explicit opt-in repair flags) switch it to a mutating repair pass, so any
-  // of those flags anywhere on the line disqualifies the exemption.
-  /\bnode\s+(?:\S*[\\/])?hooks[\\/]doctor\.js\b(?![^\n]*--(?:repair|fix|repair-ingest-orphans|repair-test-stores)\b)/i,
+  // explicit opt-in repair flags, including --reclaim-ingest-lock, which forces
+  // a stale-lock takeover — a mutating action) switch it to a mutating repair
+  // pass, so any of those flags anywhere on the line disqualifies the exemption.
+  /\bnode\s+(?:\S*[\\/])?hooks[\\/]doctor\.js\b(?![^\n]*--(?:repair|fix|repair-ingest-orphans|repair-test-stores|reclaim-ingest-lock)\b)/i,
   // anti-hall's own coordinator-owned phase-state helpers. These are documented
   // to run INLINE on the main thread on purpose — phase-state is written by the
   // coordinator, never a subagent (orchestration/SKILL.md, ship-it/SKILL.md).
@@ -1101,6 +1105,127 @@ function isSafeNodeEval(segment) {
   return false;
 }
 
+// isSafeGitFetch(segment) -> true iff this segment is `git fetch ...` AND
+// carries no argument that can rewrite/delete a local ref: no `:` refspec
+// (src:dst form), no leading `+` refspec (force-updates the dst even past a
+// non-fast-forward), and none of --prune/-p/--prune-tags/--force/-f (which
+// delete or force-overwrite local remote-tracking refs). P1 fix: the old
+// LIGHT_EXCEPTIONS entry was a bare `\bgit\s+fetch\b` match, so it exempted
+// ALL of those mutating forms too — `git fetch --prune origin` and
+// `git fetch origin +refs/heads/*:refs/remotes/origin/*` both slipped through
+// as "read-only". A `false` return here only means this specific exemption
+// does not apply — `git fetch` still matches HEAVY_PATTERNS unconditionally
+// (push|pull|fetch|clone) and is gated exactly as it was before the exemption
+// existed, so this is fail-safe (never wrongly widens the block, only
+// narrows the ALLOW).
+const GIT_FETCH_DANGEROUS_FLAGS = new Set(['--prune', '-p', '--prune-tags', '--force', '-f']);
+function isSafeGitFetch(segment) {
+  if (effectiveVerb(segment) !== 'git') return false;
+  const tokens = tokenizeQuoted(segment);
+  const gitIdx = tokens.findIndex((t) => basename(t).toLowerCase() === 'git');
+  if (gitIdx === -1) return false;
+  if ((tokens[gitIdx + 1] || '').toLowerCase() !== 'fetch') return false;
+  for (let i = gitIdx + 2; i < tokens.length; i++) {
+    const t = tokens[i];
+    if (GIT_FETCH_DANGEROUS_FLAGS.has(t)) return false;
+    if (t.startsWith('+')) return false;
+    if (t.includes(':')) return false;
+  }
+  return true;
+}
+
+// isSafeSqliteReadonly(segment) -> true iff this is a `sqlite3` invocation
+// with `-readonly` present as its OWN argv token before the db path, and the
+// SQL/args after the db path contain none of sqlite3's dangerous dot-commands
+// (.shell/.system/.output/.once/.import/.save — several of these can write
+// files or run arbitrary shell commands even on a read-only CONNECTION) or a
+// standalone ATTACH (which opens a second, non-readonly database file).
+// P2 fix: the old LIGHT_EXCEPTIONS entry was `/\bsqlite3\b[^\n]*\s-readonly\b/i`
+// — a whole-string substring match, not an argv-position check, so it did not
+// verify -readonly was an actual flag token (vs. e.g. part of a quoted SQL
+// string) nor that no dangerous dot-command followed.
+const SQLITE_DANGEROUS_RE = /(^|[\s;])\.(shell|system|output|once|import|save)\b|\bATTACH\b/i;
+function isSafeSqliteReadonly(segment) {
+  if (effectiveVerb(segment) !== 'sqlite3') return false;
+  const tokens = tokenizeQuoted(segment);
+  const verbIdx = tokens.findIndex((t) => basename(t).toLowerCase() === 'sqlite3');
+  if (verbIdx === -1) return false;
+  let readonlyIdx = -1;
+  let dbPathIdx = -1;
+  for (let i = verbIdx + 1; i < tokens.length; i++) {
+    if (tokens[i] === '-readonly') { readonlyIdx = i; continue; }
+    if (tokens[i].startsWith('-')) continue; // some other flag
+    dbPathIdx = i;
+    break; // first non-flag token is the db path (sqlite3 [OPTS] FILE [SQL])
+  }
+  if (readonlyIdx === -1 || dbPathIdx === -1 || readonlyIdx > dbPathIdx) return false;
+  const rest = tokens.slice(dbPathIdx + 1).join(' ');
+  return !SQLITE_DANGEROUS_RE.test(rest);
+}
+
+// isReadOnlyCloudInspect(segment) -> true iff this is a gcloud/gh/kubectl
+// invocation whose verb position is exactly describe|list|get|view (or, for
+// gcloud only, the literal `logging read`), tokenized and matched by EXACT
+// token equality — never a substring/\b match. P1 fix: the old regex
+// `\b(?:gcloud|gh|kubectl)\s+(?:\S+\s+)*?(?:describe|list|get|view)\b` matched
+// those words as a SUBSTRING anywhere later on the line, including inside an
+// unrelated LATER compound token — `gcloud functions deploy list-users` and
+// `kubectl delete pod get-worker-1` both matched (on `list`/`get` inside
+// `list-users`/`get-worker-1`) even though the real, earlier verb was the
+// mutating `deploy`/`delete`.
+//   - gcloud: `gcloud <group...> <verb> [resource] [flags]` — the first
+//     non-flag token is always a product/resource-group name (e.g. `run` in
+//     `gcloud run services describe foo`, Cloud Run — never itself a verb),
+//     so it is excluded from both the verb search and the mutating-verb scan.
+//     Every OTHER non-flag token is checked: ANY exact match to a mutating
+//     verb rejects the whole segment; a read-only verb token being present
+//     is what allows it.
+//   - gh / kubectl: no product-group prefix — the verb is exactly the FIRST
+//     token after the binary.
+// Belt + suspenders: a standalone mutating-verb token anywhere in the
+// (non-exempt) argv rejects the exemption outright, even if a read-only verb
+// also appears — a real gcloud/kubectl/gh invocation never combines the two.
+const CLOUD_BINARIES = new Set(['gcloud', 'gh', 'kubectl']);
+const CLOUD_READONLY_VERBS = new Set(['describe', 'list', 'get', 'view']);
+const CLOUD_MUTATING_VERBS = new Set([
+  'deploy', 'delete', 'create', 'update', 'set', 'patch', 'apply', 'rm',
+  'remove', 'scale', 'rollout', 'run', 'exec', 'push', 'merge', 'close', 'edit',
+]);
+function isReadOnlyCloudInspect(segment) {
+  const tokens = tokenizeQuoted(segment);
+  const binIdx = tokens.findIndex((t) => CLOUD_BINARIES.has(basename(t).toLowerCase()));
+  if (binIdx === -1) return false;
+  const bin = basename(tokens[binIdx]).toLowerCase();
+  const rest = tokens.slice(binIdx + 1);
+  if (bin === 'gcloud') {
+    for (let i = 0; i < rest.length - 1; i++) {
+      if (rest[i].toLowerCase() === 'logging' && rest[i + 1].toLowerCase() === 'read') return true;
+    }
+    let exemptedProductWord = false;
+    let sawReadonlyVerb = false;
+    for (const t of rest) {
+      if (t.startsWith('-')) continue;
+      if (!exemptedProductWord) { exemptedProductWord = true; continue; }
+      const low = t.toLowerCase();
+      if (CLOUD_MUTATING_VERBS.has(low)) return false;
+      if (CLOUD_READONLY_VERBS.has(low)) sawReadonlyVerb = true;
+    }
+    return sawReadonlyVerb;
+  }
+  // gh / kubectl: the verb is exactly the first token after the binary.
+  const first = (rest[0] || '').toLowerCase();
+  if (!CLOUD_READONLY_VERBS.has(first)) return false;
+  for (let i = 1; i < rest.length; i++) {
+    if (rest[i].startsWith('-')) continue;
+    if (CLOUD_MUTATING_VERBS.has(rest[i].toLowerCase())) return false;
+  }
+  return true;
+}
+
+// Per-segment checks that need tokenized/positional logic (not a plain regex
+// substring match) — evaluated alongside LIGHT_EXCEPTIONS in isHeavySegment.
+const LIGHT_EXCEPTION_FNS = [isSafeGitFetch, isSafeSqliteReadonly, isReadOnlyCloudInspect];
+
 // Evaluate one segment: heavy if (its effective verb is a HEAVY_VERB) OR (it
 // matches a HEAVY_PATTERN), AND it is NOT itself a LIGHT_EXCEPTION. Light
 // exceptions are checked PER SEGMENT so `git status && npm run build` blocks on
@@ -1108,6 +1233,9 @@ function isSafeNodeEval(segment) {
 function isHeavySegment(segment) {
   for (const re of LIGHT_EXCEPTIONS) {
     if (re.test(segment)) return false;
+  }
+  for (const fn of LIGHT_EXCEPTION_FNS) {
+    if (fn(segment)) return false;
   }
   if (isSafeNodeEval(segment)) return false;
   const verb = effectiveVerb(segment);
