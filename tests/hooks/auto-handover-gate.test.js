@@ -248,3 +248,64 @@ test('settings: gateNewWork / gateBudgetPct schema, defaults, validation and res
     assert.strictEqual(cfg.resolveEffective({ home: h.home, env: {} }).gateBudgetPct, 5);
   } finally { h.cleanup(); }
 });
+
+// ---------------------------------------------------------------------------
+// PERFORMANCE: noteHandover() runs on EVERY prompt once the gate's fire arm
+// is set. It must look up THIS session's own handover only, bounded to
+// <date>/<sessionId>/ -- never a full recursive walk of every OTHER
+// session's directory under .anti-hall/handovers (hooks/lib/handover-find.js's
+// findNewestHandoverForSession, used by auto-handover-gate.js's
+// sessionHandover()).
+// ---------------------------------------------------------------------------
+
+test('sessionHandover(): bounded to THIS session only -- never readdirs another session\'s directory, on a repo with many other sessions/dates', () => {
+  const gate = require('../../plugins/anti-hall/hooks/lib/auto-handover-gate.js');
+  const h = makeHome();
+  const cwd = path.join(h.home, 'proj2');
+  fs.mkdirSync(cwd, { recursive: true });
+  const targetSid = 'target-session';
+  const otherSids = ['other-a', 'other-b', 'other-c'];
+  const dates = ['2026-09-20', '2026-09-21', '2026-09-22'];
+
+  // Many OTHER sessions' handover dirs, across several dates -- these must
+  // never be walked by a session-scoped lookup.
+  for (const date of dates) {
+    for (const sid of otherSids) {
+      const dir = path.join(cwd, '.anti-hall', 'handovers', date, sid);
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, 'HANDOVER.md'), '# other\n', 'utf8');
+    }
+  }
+  // THIS session's own handover, on the most recent date.
+  const ownDir = path.join(cwd, '.anti-hall', 'handovers', dates[dates.length - 1], targetSid);
+  fs.mkdirSync(ownDir, { recursive: true });
+  fs.writeFileSync(path.join(ownDir, 'HANDOVER.md'), '# mine\n', 'utf8');
+
+  const realReaddirSync = fs.readdirSync;
+  const readdirPaths = [];
+  fs.readdirSync = (...args) => {
+    readdirPaths.push(String(args[0]));
+    return realReaddirSync.apply(fs, args);
+  };
+  let result;
+  try {
+    result = gate.sessionHandover({ cwd, session_id: targetSid });
+  } finally {
+    fs.readdirSync = realReaddirSync;
+    h.cleanup();
+  }
+
+  assert.ok(result, 'must still find this session\'s own handover');
+  assert.match(result.filePath, /target-session/);
+
+  for (const p of readdirPaths) {
+    for (const sid of otherSids) {
+      assert.ok(!p.endsWith(path.sep + sid) && !p.includes(path.sep + sid + path.sep),
+        'must never readdir another session\'s directory: ' + p);
+    }
+  }
+  // Sanity: it DID look inside this session's own directories (not a vacuous
+  // pass from finding nothing to walk at all).
+  assert.ok(readdirPaths.some((p) => p.endsWith(path.sep + targetSid)),
+    'must have looked inside the target session\'s own directory: ' + JSON.stringify(readdirPaths));
+});

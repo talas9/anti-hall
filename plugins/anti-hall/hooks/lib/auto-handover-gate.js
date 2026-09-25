@@ -37,14 +37,20 @@ const find = require('./handover-find.js');
 const MTIME_SLACK_MS = 2000;
 
 // sessionHandover(payload) -> { filePath, mtimeMs } | null — the newest
-// HANDOVER*.md written by THIS session (any date dir).
+// HANDOVER*.md written by THIS session (any date dir). Bounded to this
+// session's own handover directories only (find.findNewestHandoverForSession)
+// -- noteHandover() below calls this on EVERY prompt once the gate's fire arm
+// is set, so it must never fall back to (or even list) another session's
+// handover dirs the way find.findNewestHandover's cross-session fallback
+// does for handover-resume.js's different "pick up the newest handover
+// anywhere" use case.
 function sessionHandover(payload) {
   try {
     const cwd = payload && typeof payload.cwd === 'string' && payload.cwd ? payload.cwd : null;
     if (!cwd) return null;
     const sid = find.sanitizeSessionId(payload.session_id);
-    const c = find.findNewestHandover(find.handoversRoot(cwd), sid);
-    if (!c || c.sessionId !== sid) return null;
+    const c = find.findNewestHandoverForSession(find.handoversRoot(cwd), sid);
+    if (!c) return null;
     return { filePath: c.filePath, mtimeMs: c.mtimeMs };
   } catch (_) {
     return null;

@@ -81,7 +81,10 @@ const DEFAULT_MIN = 20; // minutes — mirrors agent-watchdog.js's 20-min defaul
 const FINISHED_HEARTBEAT_STATUS = /^(done|complete|completed|finished|stopped|success|succeeded|error|failed)$/i;
 // Transcript notification statuses that mean the agent has actually ended
 // (see task-notification's <status> — observed values: completed/failed/stopped).
-const TERMINAL_NOTIFICATION_STATUS = /^(completed|failed|stopped)$/;
+// Case-insensitive, matching FINISHED_HEARTBEAT_STATUS above -- a harness or
+// agent that emits a differently-cased status (e.g. "Completed") must still
+// be recognized as terminal, not misread as still-silent.
+const TERMINAL_NOTIFICATION_STATUS = /^(completed|failed|stopped)$/i;
 
 function settingsGet(section, key, dflt) {
   try { return require('./lib/settings.js').get(section, key, dflt); } catch (_) { return dflt; }
@@ -121,6 +124,12 @@ function extractTexts(node) {
 
 const AGENT_ID_RE = /agentId:\s*([0-9a-fA-F]{6,40})/;
 const OUTPUT_FILE_RE = /output_file:\s*(\S+)/;
+// A single transcript text leaf can hold SEVERAL <task-notification> blocks
+// (several agents can finish in the same turn) — TASK_NOTIFICATION_BLOCK_RE
+// (global) splits the leaf into each individual block first, and TASK_ID_RE/
+// STATUS_RE are then applied WITHIN that one block only, so a task-id from
+// one notification never pairs with a status from another.
+const TASK_NOTIFICATION_BLOCK_RE = /<task-notification>([\s\S]*?)<\/task-notification>/g;
 const TASK_ID_RE = /<task-id>([^<]*)<\/task-id>/;
 const STATUS_RE = /<status>([^<]*)<\/status>/;
 
@@ -185,10 +194,13 @@ function scanTranscript(transcriptPath) {
           }
         }
         if (hasNotif && text.indexOf('<task-notification>') !== -1) {
-          const tidm = TASK_ID_RE.exec(text);
-          const statm = STATUS_RE.exec(text);
-          if (tidm && tidm[1] && statm && TERMINAL_NOTIFICATION_STATUS.test(statm[1])) {
-            terminal.add(tidm[1]);
+          for (const blockMatch of text.matchAll(TASK_NOTIFICATION_BLOCK_RE)) {
+            const body = blockMatch[1];
+            const tidm = TASK_ID_RE.exec(body);
+            const statm = STATUS_RE.exec(body);
+            if (tidm && tidm[1] && statm && TERMINAL_NOTIFICATION_STATUS.test(statm[1])) {
+              terminal.add(tidm[1]);
+            }
           }
         }
       }
@@ -359,18 +371,33 @@ function main() {
     process.exit(0); // can't persist the cap -> fail-open by staying silent (never risk a repeat-nudge loop)
   }
 
+  // Dedup by agent id ACROSS sources for the DISPLAYED message only (state
+  // above still tracks both the 't:' and 'h:' keys separately, so each
+  // source's own snapshot dedup keeps working) -- the same agent id can show
+  // up as both a transcript-sourced AND a heartbeat-sourced candidate in one
+  // Stop (an agent that both self-reports a heartbeat AND is watched via the
+  // harness's own task-notification), and that must read as ONE stale agent
+  // to the user, not two duplicate lines for the same thing.
+  const seenIds = new Set();
+  const shownCandidates = [];
+  for (const c of stale) {
+    if (seenIds.has(c.id)) continue;
+    seenIds.add(c.id);
+    shownCandidates.push(c);
+  }
+
   const MAX_NAMED = 3;
-  const shown = stale.slice(0, MAX_NAMED).map((c) => {
+  const shown = shownCandidates.slice(0, MAX_NAMED).map((c) => {
     const mins = Math.floor(c.age / 60000);
     return c.label + ' — silent ' + mins + 'm';
   }).join('; ');
-  const more = stale.length > MAX_NAMED ? ', +' + (stale.length - MAX_NAMED) + ' more' : '';
+  const more = shownCandidates.length > MAX_NAMED ? ', +' + (shownCandidates.length - MAX_NAMED) + ' more' : '';
 
   const reason =
-    'anti-hall silent-agent-nudge: ' + stale.length +
+    'anti-hall silent-agent-nudge: ' + shownCandidates.length +
     ' of your own background subagent(s) have gone silent past the ' + minMinutes +
     'm threshold: ' + shown + more + '. This is advisory only — nothing was ' +
-    'auto-killed. Check on ' + (stale.length === 1 ? 'it' : 'them') + ' (TaskOutput) or ' +
+    'auto-killed. Check on ' + (shownCandidates.length === 1 ? 'it' : 'them') + ' (TaskOutput) or ' +
     're-dispatch with tighter scope if it is dead (TaskStop first, per orchestration rule I) ' +
     '— do not assume, verify. Set ANTIHALL_SILENT_AGENT_NUDGE=off to silence.';
 

@@ -237,6 +237,68 @@ test('a stale agent that later gets a terminal notification stops being nudged',
   } finally { h.cleanup(); }
 });
 
+test('a MIXED-CASE terminal status (e.g. "Completed") still counts as resolved -> nothing', () => {
+  const h = makeHome();
+  try {
+    const out = writeOutputFile(h, 'worker-mixedcase.output', THRESHOLD_MS + 60000);
+    const tp = h.writeTranscript([
+      agentLaunchResultLine('a1200000000000009', out, 'toolu_mc', isoMinutesAgo(30)),
+      notificationLine('a1200000000000009', 'Completed', isoMinutesAgo(1)),
+    ]);
+    const r = testHook(HOOK, stopPayload(tp), { home: h.home });
+    assert.ok(!isBlock(r), 'a differently-cased terminal status must still resolve the agent, not be misread as still-silent');
+  } finally { h.cleanup(); }
+});
+
+test('TWO <task-notification> blocks in ONE text leaf (several agents finishing together) each resolve their OWN agent, not a mismatched pairing', () => {
+  const h = makeHome();
+  try {
+    const outA = writeOutputFile(h, 'worker-multi-a.output', THRESHOLD_MS + 60000);
+    const outB = writeOutputFile(h, 'worker-multi-b.output', THRESHOLD_MS + 60000);
+
+    // A single transcript text leaf carrying BOTH agents' terminal
+    // notifications concatenated -- the real shape when several background
+    // agents finish in the same turn. Both launches AND both notifications
+    // land in the SAME (single) Stop call/transcript read, so a stale-
+    // snapshot dedup cap from an earlier call can never mask the bug: a
+    // first-match-only parser would resolve only 'aaaa...001' (the first
+    // block) and leave 'bbbb...002' looking silent on this very first read.
+    const twoBlockText =
+      '<task-notification>\n<task-id>aaaa000000000001</task-id>\n<status>completed</status>\n</task-notification>\n' +
+      '<task-notification>\n<task-id>bbbb000000000002</task-id>\n<status>failed</status>\n</task-notification>';
+    const twoBlockLine = {
+      type: 'user',
+      message: { role: 'user', content: twoBlockText },
+      timestamp: isoMinutesAgo(1),
+    };
+    const tp = h.writeTranscript([
+      agentLaunchResultLine('aaaa000000000001', outA, 'toolu_ma', isoMinutesAgo(30)),
+      agentLaunchResultLine('bbbb000000000002', outB, 'toolu_mb', isoMinutesAgo(30)),
+      twoBlockLine,
+    ]);
+    const r = testHook(HOOK, stopPayload(tp), { home: h.home });
+    assert.ok(!isBlock(r), 'both agents must resolve from the SAME text leaf — a first-match-only bug would leave the second one silently unresolved: ' + JSON.stringify(r.json));
+  } finally { h.cleanup(); }
+});
+
+test('the SAME agent id showing up through BOTH the transcript AND heartbeat sources in one Stop produces only ONE nudge line for it', () => {
+  const h = makeHome();
+  try {
+    const sharedId = 'acaf000000000009';
+    const out = writeOutputFile(h, 'worker-shared.output', THRESHOLD_MS + 60000);
+    const tp = h.writeTranscript([
+      agentLaunchResultLine(sharedId, out, 'toolu_shared', isoMinutesAgo(30)),
+    ]);
+    writeHeartbeatAgent(h, sharedId, { ageMs: THRESHOLD_MS + 5 * 60 * 1000, status: 'running', step: 'still going' });
+
+    const r = testHook(HOOK, stopPayload(tp), { home: h.home });
+    assert.ok(isBlock(r));
+    const occurrences = (r.json.reason.match(new RegExp(sharedId, 'g')) || []).length;
+    assert.strictEqual(occurrences, 1, 'the shared agent id must appear exactly once in the nudge text, not once per source: ' + r.json.reason);
+    assert.match(r.json.reason, /^anti-hall silent-agent-nudge: 1 /, 'the reported stale count must also be deduped to 1: ' + r.json.reason);
+  } finally { h.cleanup(); }
+});
+
 // ---------------------------------------------------------------------------
 // Heartbeat source (kept as an ADDITIONAL signal)
 // ---------------------------------------------------------------------------

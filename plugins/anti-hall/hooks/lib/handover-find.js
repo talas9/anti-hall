@@ -98,6 +98,56 @@ function findNewestHandover(root, wantSessionId) {
   return pool[0];
 }
 
+// collectForSession(root, re, sessionId) -> [{filePath, mtimeMs, date,
+// sessionId, seq}], same shape as collect() but bounded to ONLY this
+// session's own directory under each date -- it never lists (or even stats)
+// any OTHER session's directory. For each date dir it goes straight to
+// <date>/<sessionId>/ instead of listDirs(datePath) + a per-entry filter, so
+// the cost is O(#dates) readdir calls, not O(#dates * #sessions-per-date).
+function collectForSession(root, re, sessionId) {
+  const out = [];
+  if (!sessionId) return out;
+  for (const date of listDirs(root)) {
+    const sessionPath = path.join(root, date, sessionId);
+    let files;
+    try {
+      files = fs.readdirSync(sessionPath);
+    } catch (_) {
+      continue; // no handover dir for this session on this date -- fine
+    }
+    for (const fname of files) {
+      const m = re.exec(fname);
+      if (!m) continue;
+      const filePath = path.join(sessionPath, fname);
+      let st;
+      try {
+        st = fs.statSync(filePath);
+      } catch (_) {
+        continue;
+      }
+      if (!st.isFile()) continue;
+      out.push({ filePath, mtimeMs: st.mtimeMs, date, sessionId, seq: m[1] ? parseInt(m[1], 10) : 1 });
+    }
+  }
+  return out;
+}
+
+// findNewestHandoverForSession(root, sessionId) -> candidate or null. Bounded
+// to THIS session's own handover files only -- no cross-session fallback
+// (unlike findNewestHandover, whose fallback exists for handover-resume's
+// "pick up wherever the newest handover is" use case). Used by
+// hooks/lib/auto-handover-gate.js's noteHandover(), which runs on EVERY
+// prompt once the gate's fire arm is set and must never arm from another
+// session's handover anyway (see that file's own header comment) -- a full
+// collect(root, re, null) walk (every date dir x every session dir x every
+// file) on every prompt is wasted work once there are many sessions/dates.
+function findNewestHandoverForSession(root, sessionId) {
+  const candidates = collectForSession(root, HANDOVER_FILE_RE, sessionId);
+  if (candidates.length === 0) return null;
+  candidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
+  return candidates[0];
+}
+
 // findNewestPrecompact(root, sessionId) -> the newest PRECOMPACT-<n>.md for
 // THIS session only (a snapshot from another session is not this session's
 // continuation state), or null.
@@ -130,6 +180,7 @@ module.exports = {
   localDate,
   handoversRoot,
   findNewestHandover,
+  findNewestHandoverForSession,
   findNewestPrecompact,
   nextHandoverName,
 };
