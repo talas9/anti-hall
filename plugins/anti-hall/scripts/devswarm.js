@@ -242,6 +242,11 @@ const {
   // process is running, not merely that ITS row heartbeated recently.
   isSessionAliveRow,
 } = require('../companion/lib/liveness.js');
+// devswarmIdle.childBusyState — the ONE waiting-on-human detector (peer B:
+// roster row hint + the parent gate's own hard-block line already reuse it,
+// never a second implementation of "is a transcript paused on an unresolved
+// AskUserQuestion/ExitPlanMode").
+const devswarmIdle = require('../companion/lib/devswarm-idle.js');
 const { readDescriptors } = require('../companion/devswarm-supervisor.js');
 const { pokeOrEscalate, acquireLock } = require('../companion/lib/recovery.js');
 const migrate = require('../companion/devswarm-migrate.js');
@@ -15675,6 +15680,22 @@ function rosterHints(home, id, worktreePath, now, sessionId, opts) {
       // heartbeat). Surface it so roster and diagnose can never silently
       // disagree about the same row the way the field report showed.
       hints.push('phantom');
+    }
+  } catch (_) {}
+  // waiting-on-human (peer B): reuse the SAME childBusyState detector the
+  // parent gate's hard-block "waiting on a human answer" line already uses
+  // (companion/lib/devswarm-idle.js) — never a second detector. Additive
+  // only: a row with no sessionId/worktreePath (native/phantom rows) or an
+  // unreadable transcript reads unknown and gets no hint, same fail-open
+  // posture as the rest of this function. Truncated question text (~120
+  // chars, same truncation childBusyState's `question` already carries)
+  // rides in the hint string itself so `roster` needs no second field.
+  try {
+    if (sessionId && worktreePath) {
+      const bs = devswarmIdle.childBusyState({ id, sessionId, worktreePath }, home, { now });
+      if (bs && bs.waiting) {
+        hints.push(bs.question ? 'waiting-on-human: ' + bs.question : 'waiting-on-human');
+      }
     }
   } catch (_) {}
   return hints;

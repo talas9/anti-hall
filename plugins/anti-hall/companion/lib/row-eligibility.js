@@ -51,10 +51,12 @@ function archiveIgnored(home, id, F) {
   try { F.statSync(path.join(devswarmRoot(home), 'archive-ignore', String(id) + '.json')); return true; } catch (_) { return false; }
 }
 
-// computeLiveness(row, ctx) -> { live, busy, waitingOnUser }. Same rules the
+// computeLiveness(row, ctx) -> { live, busy, waitingOnUser, waitingQuestion }. Same rules the
 // parent gate applied inline before this module existed (v0.109 safety review
 // F1/F3/F4 + 0.109.4): live = the session pid is alive; busy = childBusyState;
 // a wait only counts while the session is live, and a wait is never busy.
+// waitingQuestion: childBusyState's REPORT-ONLY truncated preview of the
+// pending AskUserQuestion/ExitPlanMode text; null unless waitingOnUser holds.
 function computeLiveness(row, ctx) {
   const d = row.descriptor || row;
   const home = ctx.home;
@@ -64,16 +66,19 @@ function computeLiveness(row, ctx) {
   }
   let busy = false;
   let waitingOnUser = false;
+  let waitingQuestion = null;
   try {
     const opts = {};
     if (Number.isFinite(ctx.busyFreshMs)) opts.freshMs = ctx.busyFreshMs;
     const bs = require('./devswarm-idle.js').childBusyState(d, home, opts);
     busy = !!(bs && bs.busy);
     waitingOnUser = !!(bs && bs.waiting);
-  } catch (_) { busy = false; waitingOnUser = false; }
+    waitingQuestion = (bs && bs.question) || null;
+  } catch (_) { busy = false; waitingOnUser = false; waitingQuestion = null; }
   if (waitingOnUser && !live) waitingOnUser = false;
+  if (!waitingOnUser) waitingQuestion = null;
   if (waitingOnUser) busy = false;
-  return { live, busy, waitingOnUser };
+  return { live, busy, waitingOnUser, waitingQuestion };
 }
 
 function project(row, ctx, heldIds) {
@@ -96,8 +101,8 @@ function project(row, ctx, heldIds) {
   if (appArchived) archivedBy.push(st.appArchivedVia || 'app-db');
   const held = heldIds().has(id);
   const ignored = archiveIgnored(ctx.home, id, ctx.fsi || fs);
-  let live = null; let busy = null; let waitingOnUser = null;
-  if (ctx.liveness === true) ({ live, busy, waitingOnUser } = computeLiveness(r, ctx));
+  let live = null; let busy = null; let waitingOnUser = null; let waitingQuestion = null;
+  if (ctx.liveness === true) ({ live, busy, waitingOnUser, waitingQuestion } = computeLiveness(r, ctx));
   const reason = archivedBy.length ? 'archived:' + archivedBy[0]
     : held ? 'held' : ignored ? 'ignored'
       : waitingOnUser ? 'waiting-on-user' : busy ? 'busy' : live ? 'live' : 'eligible';
@@ -114,6 +119,7 @@ function project(row, ctx, heldIds) {
     live,
     busy,
     waitingOnUser,
+    waitingQuestion,
     reason,
   };
 }

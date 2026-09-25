@@ -344,17 +344,28 @@ function classifyTranscript(text, opts) {
   // tools mean "waiting", so there is exactly one definition of that
   // anywhere in this codebase.
   let openWaitingTool = null;
+  // openWaitingQuestion (peer B, roster/gate "waiting on a human" line):
+  // truncated (~120 chars) text of the SAME unresolved tool_use openWaitingTool
+  // already names — never a second detector, just an additional read of the
+  // one tool_use object this loop already found. Extracted via
+  // extractQuestionText (defensive across the AskUserQuestion/ExitPlanMode
+  // input shapes) and truncated via truncateQuestionText.
+  let openWaitingQuestion = null;
   if (turns.length) {
     const last = turns[turns.length - 1];
     if (!last.closed) {
       for (let j = last.tools.length - 1; j >= 0; j--) {
         const tu = last.tools[j];
         const id = tu && tu.id != null ? String(tu.id) : null;
-        if (id && !toolResultIds.has(id)) { openWaitingTool = String(tu.name || ''); break; }
+        if (id && !toolResultIds.has(id)) {
+          openWaitingTool = String(tu.name || '');
+          openWaitingQuestion = truncateQuestionText(extractQuestionText(tu));
+          break;
+        }
       }
     }
   }
-  return { realTs, openRealTurn, pendingBackground, windowStartTs, pingTurns, realTurns, openWaitingTool, lastTurnReal };
+  return { realTs, openRealTurn, pendingBackground, windowStartTs, pingTurns, realTurns, openWaitingTool, openWaitingQuestion, lastTurnReal };
 }
 
 // realActivity(desc, home, opts) -> { known, ts, openRealTurn, reason, ... }.
@@ -383,6 +394,44 @@ function realActivity(desc, home, opts) {
 // HUMAN_WAIT_TOOLS: a tool_use of one of these with no tool_result yet means
 // the harness is paused for a human (a question, a plan approval) — the
 // Primary cannot resolve it through the mesh.
+// QUESTION_TRUNCATE_LEN (peer B): the roster row / gate "waiting on a human"
+// line gets a SHORT preview, not the full prompt/plan text — 120 chars is
+// enough to identify which question without turning one blocked-child line
+// into a paragraph.
+const QUESTION_TRUNCATE_LEN = 120;
+function truncateQuestionText(s) {
+  const t = (typeof s === 'string' ? s : '').replace(/\s+/g, ' ').trim();
+  if (!t) return null;
+  return t.length > QUESTION_TRUNCATE_LEN ? t.slice(0, QUESTION_TRUNCATE_LEN - 1) + '…' : t;
+}
+// extractQuestionText(tu) -> best-effort question/plan text from an unresolved
+// AskUserQuestion/ExitPlanMode tool_use's own input, DEFENSIVE across input
+// shapes (never asserts one exact schema — a shape drift degrades to null,
+// never a throw). AskUserQuestion's input carries a `questions` array (each
+// with its own `question` string); a lone `question` string is accepted too.
+// ExitPlanMode carries a `plan` string (the proposal itself, previewed the
+// same way). Any other tool falls back to null (openWaitingTool alone still
+// names it) rather than dumping an arbitrary JSON blob as "the question".
+function extractQuestionText(tu) {
+  try {
+    const name = tu && tu.name;
+    const input = tu && tu.input;
+    if (!input || typeof input !== 'object') return null;
+    if (name === 'AskUserQuestion') {
+      if (Array.isArray(input.questions) && input.questions.length) {
+        const q = input.questions[0];
+        if (q && typeof q.question === 'string') return q.question;
+      }
+      if (typeof input.question === 'string') return input.question;
+      return null;
+    }
+    if (name === 'ExitPlanMode') {
+      return typeof input.plan === 'string' ? input.plan : null;
+    }
+    return null;
+  } catch (_) { return null; }
+}
+
 const HUMAN_WAIT_TOOLS = new Set(['AskUserQuestion', 'ExitPlanMode']);
 const DEFAULT_BUSY_FRESH_MS = 5 * 60 * 1000;
 // Clock-skew tolerance: an mtime this far in the FUTURE is not trusted as fresh.
@@ -414,13 +463,17 @@ function childBusyState(desc, home, opts) {
   try { r = realActivity(desc, home, o); } catch (_) { return { busy: false, waiting: false, reason: 'classify-threw', openTool: null }; }
   if (!r || !r.known) return { busy: false, waiting: false, reason: (r && r.reason) || 'unknown', openTool: null };
   const openTool = r.openWaitingTool || null;
+  // question (peer B): only meaningful alongside openTool — carried through
+  // on every branch openTool is, so a caller can pull it without a second
+  // classifyTranscript pass, but it is never surfaced on a NOT-waiting result.
+  const question = r.openWaitingQuestion || null;
   const ageMs = Number.isFinite(r.mtimeMs) ? now - r.mtimeMs : null;
   const fresh = ageMs !== null && ageMs <= freshMs && ageMs >= -FUTURE_SKEW_MS;
-  if (openTool && HUMAN_WAIT_TOOLS.has(openTool)) return { busy: false, waiting: true, reason: 'open ' + openTool, openTool };
-  if (openTool && !fresh) return { busy: false, waiting: true, reason: 'unresolved ' + openTool + ', transcript stale', openTool };
-  if (!fresh) return { busy: false, waiting: false, reason: ageMs === null ? 'no transcript mtime' : 'transcript stale', openTool };
-  if (!r.lastTurnReal) return { busy: false, waiting: false, reason: 'latest turn is ping-only', openTool };
-  return { busy: true, waiting: false, reason: 'fresh real work', openTool };
+  if (openTool && HUMAN_WAIT_TOOLS.has(openTool)) return { busy: false, waiting: true, reason: 'open ' + openTool, openTool, question };
+  if (openTool && !fresh) return { busy: false, waiting: true, reason: 'unresolved ' + openTool + ', transcript stale', openTool, question };
+  if (!fresh) return { busy: false, waiting: false, reason: ageMs === null ? 'no transcript mtime' : 'transcript stale', openTool, question: null };
+  if (!r.lastTurnReal) return { busy: false, waiting: false, reason: 'latest turn is ping-only', openTool, question: null };
+  return { busy: true, waiting: false, reason: 'fresh real work', openTool, question: null };
 }
 
 module.exports = {
@@ -431,4 +484,9 @@ module.exports = {
   // queued 'attachment' entry's attachment.prompt, or a 'queue-operation'
   // entry's content) WITHOUT re-implementing this parsing a second time.
   notificationTexts, finishedTaskKeys,
+  // truncateQuestionText / extractQuestionText / QUESTION_TRUNCATE_LEN (peer
+  // B): exported so a caller that already holds a tool_use object (rather
+  // than running classifyTranscript itself) can format the SAME truncated
+  // preview without re-implementing the shape-defensive extraction.
+  truncateQuestionText, extractQuestionText, QUESTION_TRUNCATE_LEN,
 };

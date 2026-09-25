@@ -155,6 +155,11 @@ the update.
   agent to re-arm `Monitor` when it reads `false` (the harness caps a Monitor
   at 30 minutes; this cron's own 30-minute fallback cadence is exactly when
   it would have lapsed).
+- **`devswarm.js roster`/the parent gate now name what a child is waiting
+  on.** A row (or block reason) whose transcript is paused on an unresolved
+  `AskUserQuestion`/`ExitPlanMode` now carries a truncated (~120 char)
+  preview of the actual question/plan text, not just "waiting on a human" —
+  reusing the SAME `childBusyState` detector both surfaces already relied on.
 
 ## 0.110.0 (2026-09-26)
 

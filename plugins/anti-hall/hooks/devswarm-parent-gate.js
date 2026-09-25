@@ -1511,6 +1511,11 @@ function main() {
     // busy — both rules live in row-eligibility.js's computeLiveness.
     const busy = e.busy === true;
     const waitingOnUser = e.waitingOnUser === true;
+    // waitingQuestion (peer B): REPORT-ONLY truncated (~120 char) preview of
+    // the pending AskUserQuestion/ExitPlanMode text, from the same
+    // childBusyState read the projection already made (never a second
+    // transcript read); null unless waitingOnUser holds.
+    const waitingQuestion = waitingOnUser ? (e.waitingQuestion || null) : null;
     // Final oldest-unread age: the older of the NDJSON rows' own timestamps
     // and the store-side union's age. Unknown (see unreadAgeUnknown) -> null.
     if (ndjsonOldestTs !== null) {
@@ -1603,6 +1608,9 @@ function main() {
       // waiting-on-input line below — see the per-descriptor `waitingOnUser`
       // comment above for the definition.
       waitingOnUser,
+      // waitingQuestion: REPORT-ONLY truncated preview riding alongside
+      // waitingOnUser (peer B) — see the comment above where it is derived.
+      waitingQuestion,
       oldestUnreadAgeMs: oldestUnreadAgeMsForDescriptor,
     });
   }
@@ -1913,7 +1921,14 @@ function main() {
       entry.waitingOnInput = true;
       // Name the member(s) actually waiting (F5: in a twin family that may
       // not be the survivor).
-      entry.waitingIds = members.filter((m) => m && m.waitingOnUser && m.id != null).map((m) => String(m.id));
+      const waitingMembers = members.filter((m) => m && m.waitingOnUser && m.id != null);
+      entry.waitingIds = waitingMembers.map((m) => String(m.id));
+      // waitingQuestions (peer B): id -> truncated question preview, only for
+      // members that actually have one (a stale/unreadable transcript can
+      // leave waitingOnUser true with question null — never fabricated).
+      const wq = {};
+      for (const m of waitingMembers) { if (m.waitingQuestion) wq[String(m.id)] = m.waitingQuestion; }
+      if (Object.keys(wq).length) entry.waitingQuestions = wq;
     }
     if (busyButStaleMail) entry.busyStaleAgeMin = Math.max(1, Math.round(familyOldestUnreadAgeMs / 60000));
     if (foreignProject) entry.foreignProject = true;
@@ -2418,7 +2433,12 @@ function buildWaitingOnInputSegment(blocking, home) {
     if (!b || !b.id) continue;
     if (b.waitingOnInput) {
       const ids = Array.isArray(b.waitingIds) && b.waitingIds.length ? b.waitingIds : [b.id];
-      for (const id of ids) out += title(id) + ': waiting on a human answer in its own session\n';
+      const wq = (b.waitingQuestions && typeof b.waitingQuestions === 'object') ? b.waitingQuestions : {};
+      for (const id of ids) {
+        const q = wq[String(id)];
+        out += title(id) + ': waiting on a human answer in its own session'
+          + (q ? ' — "' + q + '"' : '') + '\n';
+      }
     }
     if (Number.isFinite(b.busyStaleAgeMin)) {
       out += title(b.id) + ": busy but hasn't read mail in " + b.busyStaleAgeMin + 'm\n';
