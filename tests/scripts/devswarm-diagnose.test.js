@@ -137,6 +137,30 @@ for (const B of backends) {
     }
   });
 
+  test(`[${B.name}] diagnose: a devswarm.heldPartitions id is reported as heldPartitions[], never orphans[]`, () => {
+    const home = tmpHome();
+    const main = makeGitRepo('dheld-' + B.name);
+    try {
+      const repoKey = repokey.repoKeyForWorktree(main);
+      seedMsg(home, repoKey, 'held-ws', 'stuck-message', 'native:held1');
+      seedMsg(home, repoKey, 'plain-orphan-ws', 'stuck-message', 'native:po1');
+
+      const d = cli.run(['diagnose'], bctx(home, { cwd: main, env: { ANTIHALL_DEVSWARM_HELD_PARTITIONS: 'held-ws' } }));
+      assert.strictEqual(d.result.ok, true);
+      assert.ok(!d.result.orphans.some((o) => o.id === 'held-ws'), 'a held id must never appear in orphans[]');
+      assert.ok(d.result.heldPartitions.some((o) => o.id === 'held-ws' && o.unread >= 1), 'held id surfaced in heldPartitions[]');
+      assert.ok(d.result.orphans.some((o) => o.id === 'plain-orphan-ws'), 'an unlisted orphan is unaffected');
+
+      // healthcheck's degraded gate must not count a held partition as an
+      // orphan (it is not an actionable, unread-with-no-reader mesh drift).
+      const hc = cli.run(['healthcheck'], bctx(home, { cwd: main, env: { ANTIHALL_DEVSWARM_HELD_PARTITIONS: 'held-ws,plain-orphan-ws' } }));
+      assert.strictEqual(hc.result.counts.orphansWithUnread, 0, 'both partitions held -> zero orphans-with-unread');
+
+      const human = cli.diagnoseHumanLine(d.result);
+      assert.ok(human.includes('held=1'), 'human-readable diagnose line reports the held count: ' + human);
+    } finally { rm(main); rm(home); }
+  });
+
   // HAZARD 2 — a 2-row group with ZERO live rows must report the DANGEROUS
   // split ("deadSplit"), not `splits: []` — the pre-fix blind spot: liveRows
   // is 0, so the old `liveRows >= 2` check reports clean while mail strands.

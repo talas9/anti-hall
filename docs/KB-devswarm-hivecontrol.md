@@ -3384,6 +3384,20 @@ partition is a human decision, and a cron job, supervisor sweep, or subagent she
 business making it. A capped pass reports `capped:true` and `remaining:N` so it can never be
 mistaken for a complete one.
 
+### Owner-held partitions (`devswarm.heldPartitions`)
+
+An owner can permanently exempt specific partition ids from the per-turn ORPHANED MESH
+warning and from `reap-orphans` — e.g. a stranded partition the owner deliberately wants to
+keep around for manual inspection rather than either nagging every turn or being reaped.
+Set `devswarm.heldPartitions` (csv of partition ids; env override
+`ANTIHALL_DEVSWARM_HELD_PARTITIONS`) via `/anti-hall:settings` or `~/.anti-hall/settings.json`.
+`computeSummary` diverts a held id out of `orphans[]` and into its own `heldPartitions[]`
+field **before** either the warning or `reap-orphans` ever see it — never dropped, never
+reaped, still visible via `devswarm diagnose`/`devswarm healthcheck` (`held=N`) as owner-held.
+The reaper itself never auto-deletes anything regardless (see "What 'reap' actually does"
+above); `heldPartitions` additionally makes it refuse those specific ids even under
+`--apply`, as one more belt on top.
+
 ## 34. `reconcile-registry`: seeing mesh-vs-hivecontrol drift
 
 Drift between the mesh registry and hivecontrol runs in **both** directions (defect

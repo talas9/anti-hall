@@ -15814,6 +15814,10 @@ function computeDiagnosis(s, ctx) {
   return {
     sum, registry: rows, meshTargets, splits, deadSplits, mixedSplits,
     orphans: sum.orphans || [],
+    // held by owner (devswarm.heldPartitions) — diverted out of `orphans`
+    // by computeSummary; reported here (not silently dropped) so
+    // `diagnose`/`doctor` still show them, distinctly, as owner-held.
+    heldPartitions: sum.heldPartitions || [],
     staleRegistryPartitions: sum.staleRegistryPartitions || [],
     phantoms, unreadTotal, instanceSplits,
     cursorWrites,
@@ -15872,6 +15876,7 @@ function cmdDiagnose(flags, ctx) {
     count: d.registry.length, registry: d.registry,
     meshTargets: d.meshTargets, splits: d.splits, deadSplits: d.deadSplits, mixedSplits: d.mixedSplits,
     orphans: d.orphans,
+    heldPartitions: d.heldPartitions, // owner-held (devswarm.heldPartitions) — held by owner, not an orphan
     staleRegistryPartitions: d.staleRegistryPartitions,
     degraded, warning,
   };
@@ -15890,6 +15895,7 @@ function diagnoseHumanLine(r) {
     'deadSplits=' + (r.deadSplits ? r.deadSplits.length : 0),
     'mixedSplits=' + (r.mixedSplits ? r.mixedSplits.length : 0),
     'orphans=' + (r.orphans ? r.orphans.length : 0),
+    'held=' + (r.heldPartitions ? r.heldPartitions.length : 0),
     'stale=' + (r.staleRegistryPartitions ? r.staleRegistryPartitions.length : 0),
   ];
   const scope = r.repoKey ? ' (scope: ' + r.repoKey + ')' : '';
@@ -17067,7 +17073,12 @@ function collectOrphanCandidates(ctx) {
   try {
     const sum = store.computeSummary(s, { home, env: ctx.env, now: ctx.now });
     const orphans = Array.isArray(sum && sum.orphans) ? sum.orphans : [];
-    const candidates = orphans.filter((o) => o && o.id != null && isSafeId(String(o.id))).map((o) => {
+    // Owner-held partitions (devswarm.heldPartitions) are ALREADY excluded from
+    // `sum.orphans` by computeSummary itself (they land in `sum.heldPartitions`
+    // instead), so this filter is defense-in-depth against drift, not the
+    // primary exclusion — a held id must never be reap-orphans-eligible.
+    const heldIds = store.heldPartitionIdsFrom(ctx.env);
+    const candidates = orphans.filter((o) => o && o.id != null && isSafeId(String(o.id)) && !heldIds.has(String(o.id))).map((o) => {
       // lastMessageTs: the newest row actually sitting in the partition, so a
       // human can see whether this is week-old sediment or something that
       // arrived an hour ago before authorising anything.

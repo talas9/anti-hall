@@ -2080,6 +2080,23 @@ function staleRegistrySeg(c) {
   return segment(c, '⚠ DEVSWARM STALE WORKSPACE(S)');
 }
 
+test('HELD PARTITIONS: summary.heldPartitions (with orphans empty) -> never renders the ORPHANED MESH warning', () => {
+  const h = makeHome();
+  try {
+    // computeSummary diverts owner-held ids (devswarm.heldPartitions) into
+    // heldPartitions[] and OUT of orphans[] before this hook ever sees the
+    // summary; this proves the render layer only ever reads summary.orphans,
+    // so a heldPartitions-only summary can never accidentally trip the banner.
+    writeSharedSummary(h.home, {}, {
+      heldPartitions: [{ id: 'held-a', messageCount: 5, unread: 5 }],
+    });
+    const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV });
+    assert.strictEqual(r.status, 0);
+    const c = ctx(r);
+    assert.ok(!c.includes('ORPHANED MESH'), `held partition must never trigger the orphan warning; ctx=${c}`);
+  } finally { h.cleanup(); }
+});
+
 test('ORPHANS: summary.orphans -> renders orphan line with ids + unread counts', () => {
   const h = makeHome();
   try {

@@ -907,6 +907,7 @@ Generated from `hooks/lib/settings-schema.js` (a hygiene test keeps this table a
 | `devswarm.supervisorMode` | `auto` (auto/on/off) | `ANTIHALL_DEVSWARM_SUPERVISOR` | Force the DevSwarm supervisor context on/off, or auto-detect. |
 | `devswarm.requiredGates` | `done,merged,tests_passed` | `ANTIHALL_DEVSWARM_REQUIRED_GATES` | Merge gates required for DevSwarm tasks. |
 | `devswarm.inboxCmd` | — | `ANTIHALL_DEVSWARM_INBOX_CMD` | Consumer-configured command to read pending mesh messages (no built-in default). |
+| `devswarm.heldPartitions` adv | — | `ANTIHALL_DEVSWARM_HELD_PARTITIONS` | Owner-held mesh partition ids (csv). Exempt from the per-turn "ORPHANED MESH" warning and from `reap-orphans`; still shown via `diagnose`/`healthcheck` as held by owner. |
 | `devswarm.childGateStrict` adv | `true` | `ANTIHALL_DEVSWARM_CHILD_GATE_STRICT` | Strict child-gate enforcement. |
 | `devswarm.parentGateCap` adv | `3` [2..5] | `ANTIHALL_DEVSWARM_PARENT_GATE_CAP` | Caps the parent-gate wait/child count, clamped to [2,5]. |
 | `devswarm.activeFloorPct` adv | `50` [0..100] | `ANTIHALL_DEVSWARM_ACTIVE_FLOOR_PCT` | Min percent of active workspaces kept in the archived cache (0 disables the floor). |

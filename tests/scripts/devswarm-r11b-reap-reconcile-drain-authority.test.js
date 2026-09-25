@@ -454,6 +454,39 @@ test('reap-orphans: the DEFAULT is a dry run — it lists candidates and changes
   } finally { rm(f.home); rm(f.repo); }
 });
 
+test('reap-orphans: an owner-held partition (devswarm.heldPartitions) is EXCLUDED from candidates', () => {
+  const f = seedOrphans('held', 2);
+  try {
+    const heldId = f.ids[0];
+    const r = cli.run(['reap-orphans'], ctx(f.home, { cwd: f.repo, env: { ANTIHALL_DEVSWARM_HELD_PARTITIONS: heldId } }));
+    assert.strictEqual(r.result.ok, true, JSON.stringify(r.result));
+    assert.strictEqual(r.result.candidateCount, 1, 'the held id must never be a reap-orphans candidate');
+    assert.ok(!r.result.candidates.some((c) => c.partitionId === heldId),
+      'held id must be absent from candidates: ' + JSON.stringify(r.result.candidates));
+    assert.ok(r.result.candidates.some((c) => c.partitionId === f.ids[1]),
+      'the non-held orphan must still be a candidate');
+  } finally { rm(f.home); rm(f.repo); }
+});
+
+test('reap-orphans: --apply --max never retires a held partition even if it would otherwise be selected', () => {
+  const f = seedOrphans('held-apply', 1);
+  const heldId = f.ids[0];
+  try {
+    const r = cli.run(['reap-orphans', '--apply', '--max', '5'],
+      ctx(f.home, { cwd: f.repo, stdinIsTty: true, env: { ANTIHALL_DEVSWARM_HELD_PARTITIONS: heldId } }));
+    assert.strictEqual(r.result.ok, true, JSON.stringify(r.result));
+    assert.strictEqual(r.result.candidateCount, 0, 'no candidates -> nothing to apply: ' + JSON.stringify(r.result));
+    assert.strictEqual(r.result.reapedCount, 0, 'nothing retired: ' + JSON.stringify(r.result));
+
+    // The partition's cursor must be untouched (retiring is cursor-advance-only).
+    const s = storeLib.openStore({ home: f.home, hash: f.repoKey, backend: 'journal' });
+    try {
+      assert.strictEqual(s.messageCount(heldId), 2);
+      assert.strictEqual(s.cursorValue(heldId), 0, 'a held partition\'s cursor must not be advanced');
+    } finally { s.close(); }
+  } finally { rm(f.home); rm(f.repo); }
+});
+
 test('reap-orphans: --apply without --max is refused (there is deliberately no unbounded apply)', () => {
   const f = seedOrphans('nomax', 1);
   try {

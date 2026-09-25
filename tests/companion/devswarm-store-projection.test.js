@@ -182,6 +182,47 @@ for (const B of backends) {
     } finally { s.close(); rm(home); }
   });
 
+  test(`[${B.name}] heldPartitions[]: devswarm.heldPartitions id is diverted OUT of orphans[] and INTO heldPartitions[]`, () => {
+    const home = tmpHome();
+    const s = open(home);
+    try {
+      s.appendMessage({ workspaceId: 'ghost-held', body: 'stranded', hash: 'gh1' }); // no registry row, unread
+      const sum = store.computeSummary(s, { home, now: 1, env: { ANTIHALL_DEVSWARM_HELD_PARTITIONS: 'ghost-held' } });
+      const orphans = sum.orphans || [];
+      const held = sum.heldPartitions || [];
+      assert.ok(!orphans.some((o) => o.id === 'ghost-held'), 'a held id must never appear in orphans[]');
+      const h = held.find((o) => o.id === 'ghost-held');
+      assert.ok(h, 'held id is surfaced in heldPartitions[]');
+      assert.equal(h.messageCount, 1);
+      assert.equal(h.unread, 1);
+    } finally { s.close(); rm(home); }
+  });
+
+  test(`[${B.name}] heldPartitions[]: a csv of multiple ids all divert; an unlisted orphan still surfaces normally`, () => {
+    const home = tmpHome();
+    const s = open(home);
+    try {
+      s.appendMessage({ workspaceId: 'held-a', body: 'm', hash: 'ha1' });
+      s.appendMessage({ workspaceId: 'held-b', body: 'm', hash: 'hb1' });
+      s.appendMessage({ workspaceId: 'plain-orphan', body: 'm', hash: 'po1' });
+      const sum = store.computeSummary(s, { home, now: 1, env: { ANTIHALL_DEVSWARM_HELD_PARTITIONS: ' held-a, held-b ,' } });
+      const orphanIds = (sum.orphans || []).map((o) => o.id);
+      const heldIds = (sum.heldPartitions || []).map((o) => o.id);
+      assert.deepEqual(heldIds.sort(), ['held-a', 'held-b']);
+      assert.deepEqual(orphanIds, ['plain-orphan']);
+    } finally { s.close(); rm(home); }
+  });
+
+  test(`[${B.name}] heldPartitions[]: key is OMITTED when devswarm.heldPartitions is unset/empty`, () => {
+    const home = tmpHome();
+    const s = open(home);
+    try {
+      s.appendMessage({ workspaceId: 'ghost', body: 'stranded', hash: 'g2' });
+      const sum = store.computeSummary(s, { home, now: 1 });
+      assert.ok(!('heldPartitions' in sum), 'heldPartitions key omitted when no ids are held');
+    } finally { s.close(); rm(home); }
+  });
+
   test(`[${B.name}] orphans/stale keys are OMITTED when empty (byte-identical guarantee)`, () => {
     const home = tmpHome();
     const s = open(home);

@@ -137,6 +137,17 @@ the update.
   fail/pass patterns now require a non-zero count; plain marker patterns (`FAIL`, `PASS`,
   `--- FAIL:`) are unaffected. Covers pytest, jest, cargo, go test, and mocha summary lines.
 
+### Features
+
+- **`devswarm.heldPartitions` (owner-held mesh partitions).** A new csv settings key
+  (env override `ANTIHALL_DEVSWARM_HELD_PARTITIONS`) lets an owner permanently exempt
+  specific mesh partition ids from the per-turn "ORPHANED MESH" warning and from
+  `reap-orphans`. Held ids are diverted out of `orphans[]` and into their own
+  `heldPartitions[]` field by `computeSummary` — never dropped, still visible via
+  `devswarm diagnose`/`devswarm healthcheck` as owner-held. `reap-orphans` refuses them
+  even under `--apply` as an extra belt; the reaper already never auto-deletes anything
+  (dry-run default, human-only, `--apply --max N` required).
+
 ## 0.108.3
 
 ### Features

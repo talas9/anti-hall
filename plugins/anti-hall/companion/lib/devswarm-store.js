@@ -221,6 +221,29 @@ function requiredGatesFrom(env) {
   return DEFAULT_REQUIRED_GATES.slice();
 }
 
+// heldPartitionIdsFrom(env) -> Set<string>. Owner-held mesh partition ids
+// (settings key devswarm.heldPartitions, csv, default empty; env override
+// ANTIHALL_DEVSWARM_HELD_PARTITIONS). A held partition is exempt from the
+// per-turn "ORPHANED MESH" warning (see the orphans[] loop below, which
+// filters into `heldPartitions[]` instead) and from `reap-orphans`
+// (scripts/devswarm.js collectOrphanCandidates) — it is still surfaced by
+// `doctor` as "held by owner" so it never silently vanishes from view. Same
+// trim/filter-empty parsing convention as requiredGatesFrom above.
+function heldPartitionIdsFrom(env) {
+  const e = env || process.env;
+  let csv;
+  try { csv = require('../../hooks/lib/settings.js').getWithEnv('devswarm', 'heldPartitions', undefined, e); }
+  catch (_) { csv = e.ANTIHALL_DEVSWARM_HELD_PARTITIONS; }
+  const ids = new Set();
+  if (typeof csv === 'string' && csv.trim() !== '') {
+    for (const part of csv.split(',')) {
+      const t = part.trim();
+      if (t !== '') ids.add(t);
+    }
+  }
+  return ids;
+}
+
 // selectBackend(opts) -> 'sqlite' | 'journal'. FEATURE-DETECT, force-overridable
 // (opts.backend or ANTIHALL_DEVSWARM_STORE_BACKEND=journal) so tests can exercise
 // the journal path even on a runtime that HAS node:sqlite.
@@ -3056,6 +3079,8 @@ function computeSummary(store, opts) {
   const orphans = [];
   const archivedStranded = [];
   const forwardedDrained = [];
+  const heldPartitions = [];
+  const heldIds = heldPartitionIdsFrom(o.env);
   const isArchivedStranded = orphanPolicy.makeArchivedStrandedTest(home, registry);
   // B2 fix: an archived orphan whose identity family DOES have a live survivor
   // (so isArchivedStranded above is false for it) but whose every unread row has
@@ -3084,6 +3109,14 @@ function computeSummary(store, opts) {
     // checking stranded first keeps the cheaper, more-common-shape check first.
     if (isArchivedStranded(id)) { archivedStranded.push({ id, messageCount: total, unread }); continue; }
     if (isForwardedDrained(id)) { forwardedDrained.push({ id, messageCount: total, unread }); continue; }
+    // Owner-held (devswarm.heldPartitions): checked LAST, after the other
+    // classifiers, so a held id that is ALSO archived-stranded/forwarded-drained
+    // still lands in the more specific bucket (this check only needs to divert
+    // what would otherwise be a plain, actionable orphan). Never dropped —
+    // surfaced in its own `heldPartitions[]` field, same shape/convention as
+    // archivedStranded/forwardedDrained, so `doctor`/diagnostics can still show
+    // it as "held by owner" instead of it silently vanishing.
+    if (heldIds.has(id)) { heldPartitions.push({ id, messageCount: total, unread }); continue; }
     orphans.push({ id, messageCount: total, unread });
   }
 
@@ -3140,6 +3173,11 @@ function computeSummary(store, opts) {
   // a silent drop would BE the "success while dropping part of the job" defect
   // shape this repo keeps re-learning.
   if (forwardedDrained.length) summary.forwardedDrained = forwardedDrained;
+  // QUIET diagnostic field (never rendered as a per-turn warning), same shape
+  // and omitted-when-empty convention: owner-held partitions (devswarm.
+  // heldPartitions) diverted out of orphans[] above. `doctor` reads this to
+  // show them as "held by owner" instead of them silently vanishing.
+  if (heldPartitions.length) summary.heldPartitions = heldPartitions;
   if (staleRegistryPartitions.length) summary.staleRegistryPartitions = staleRegistryPartitions;
 
   return summary;
@@ -3333,7 +3371,7 @@ module.exports = {
   storeRootDir, summariesRootDir, listStoreHashes,
   storeDir, sqlitePath, journalDir, summaryPath,
   storeDirForHash, sqlitePathForHash, journalDirForHash, summaryPathForHash,
-  requiredGatesFrom, selectBackend, sqliteAvailable,
+  requiredGatesFrom, heldPartitionIdsFrom, selectBackend, sqliteAvailable,
   resolveStoreBackend, readBackendMarker, writeBackendMarker, inferBackendFromDisk, backendMarkerFile,
   hasBackendData, mergeMarkerFile, readMergeMarker, mergeSplitBackendStore, mergeSplitBackendStoresAllStores,
   openStore, openSqlite, openJournal,
