@@ -6,7 +6,7 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
-## 0.108.4 (unreleased)
+## 0.108.4
 
 ### Features
 
@@ -66,6 +66,14 @@ the update.
   coordinator-detect, omc-detect, phase-tracker, fable-availability,
   codex-availability, emit-dedupe-reset, agent-watchdog, command-guard's data-safety
   sub-guards) and why.
+- **`devswarm.heldPartitions` (owner-held mesh partitions).** A new csv settings key
+  (env override `ANTIHALL_DEVSWARM_HELD_PARTITIONS`) lets an owner permanently exempt
+  specific mesh partition ids from the per-turn "ORPHANED MESH" warning and from
+  `reap-orphans`. Held ids are diverted out of `orphans[]` and into their own
+  `heldPartitions[]` field by `computeSummary` — never dropped, still visible via
+  `devswarm diagnose`/`devswarm healthcheck` as owner-held. `reap-orphans` refuses them
+  even under `--apply` as an extra belt; the reaper already never auto-deletes anything
+  (dry-run default, human-only, `--apply --max N` required).
 
 ### Changed
 
@@ -93,9 +101,6 @@ the update.
   audit/root-cause tasks) unchanged at 100%. Rows 1-3's `COMPLEX`-anywhere veto
   is untouched — it stays broad because being generous there only prevents a
   block, the safe direction.
-
-### Fixes
-
 - **`jev-assist.test.js` no longer reads the real machine's home.** The `getMode`
   test for `codexNudgeSubstantial`/`tasklistTrivial` called `getMode(id, cfg)`
   without the 3rd `home` argument; both ids have a `settings-schema.js`
@@ -107,9 +112,6 @@ the update.
   `makeHome()`. Extended `tests/hygiene/settings-home-injection.test.js` with a
   `getMode` regression guard that points `HOME` at a poisoned settings.json and
   proves `getMode(id, cfg, home)` never reads it.
-
-### Fixes
-
 - **A child's `primary-<hash>` label no longer comes back as a live "ghost" roster row
   under the Primary's session.** Root cause: `reconcile` (run by `update` or doctor-repair
   inside a Primary session) spawns `inbox pull <id>` for each row with cwd set to that
@@ -128,9 +130,6 @@ the update.
   pending forever, and it moves the label's leftover descriptor into
   `archived-retired/` rather than deleting it. Messages sent to the alias are
   forwarded, and they stay readable under the alias.
-
-### Fixes
-
 - **`cmdArchive` claimed hivecontrol "has no teardown command" — false on DevSwarm >= 2.5.3.**
   A live substrate test (2026-09-25) proved `hivecontrol workspace archive <id>` exists and
   works (sets isActive=0/isHidden=1). When the capability gate allows it, `devswarm.js archive`
@@ -177,17 +176,6 @@ the update.
   An idempotent forward-migration seeds it from existing ndjson records (wired into both
   `doctor --repair` and `update.js`'s post-pull pass); the ndjson log itself is still
   written on every archive and still read as a fallback for any pre-migration record.
-
-### Features
-
-- **`devswarm.heldPartitions` (owner-held mesh partitions).** A new csv settings key
-  (env override `ANTIHALL_DEVSWARM_HELD_PARTITIONS`) lets an owner permanently exempt
-  specific mesh partition ids from the per-turn "ORPHANED MESH" warning and from
-  `reap-orphans`. Held ids are diverted out of `orphans[]` and into their own
-  `heldPartitions[]` field by `computeSummary` — never dropped, still visible via
-  `devswarm diagnose`/`devswarm healthcheck` as owner-held. `reap-orphans` refuses them
-  even under `--apply` as an extra belt; the reaper already never auto-deletes anything
-  (dry-run default, human-only, `--apply --max N` required).
 
 ## 0.108.3
 

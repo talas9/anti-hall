@@ -738,8 +738,8 @@ See `statusline/STATUSLINE.md` for details and how to revert.
 
 Every user-facing anti-hall setting lives in ONE place: `~/.anti-hall/settings.json`,
 organized into sections (`autoHandover`, `guards`, `safety`, `context`, `maintenance`,
-`jev`, `limitConserve`, `devswarm`, `statusline`, `codexNudge`, `versionAlerts`,
-`updates`, `defects`). Since 0.108.4 every hook anti-hall registers (Claude and Codex)
+`jev`, `jevIntegrations`, `limitConserve`, `devswarm`, `statusline`, `codexNudge`,
+`versionAlerts`, `updates`, `defects`). Since 0.108.4 every hook anti-hall registers (Claude and Codex)
 has an on/off switch whose default is the old behaviour; the hook checks it first and
 does nothing when it is off. The few parts with no switch on purpose (shared libraries,
 bookkeeping hooks other features read) are listed with the reason at the end of
