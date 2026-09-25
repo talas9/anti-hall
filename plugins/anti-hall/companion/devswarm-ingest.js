@@ -32,6 +32,7 @@ const crypto = require('crypto');
 const { spawnSync, spawn } = require('child_process');
 
 const store = require('./lib/devswarm-store.js');
+const lockLib = require('./lib/lock.js');
 const { devswarmRoot } = require('./lib/liveness.js');
 // Phase 5 delivery WAL around the destructive `monitor` read.
 const readWal = require('./lib/devswarm-read-wal.js');
@@ -495,167 +496,60 @@ function isHolderHeartbeatStale(home, worktree, nowMs, F, io, holderPid) {
 // all, is left alone exactly as before this fix (fail-open toward never
 // killing).
 function acquireIngestLock(home, io, worktree) {
-  const F = (io && io.fs) || fs;
   const isAlive = (io && io.isAlive) || isAliveDefault;
   const now = (io && io.now) || Date.now;
   const p = ingestLockPath(home, worktree);
-  try { F.mkdirSync(path.dirname(p), { recursive: true }); } catch (_) {}
-  for (let attempt = 0; attempt < 2; attempt++) {
-    const ts = now();
-    const token = process.pid + ':' + ts + ':' + Math.random().toString(36).slice(2);
-    try {
-      const fd = F.openSync(p, 'wx');
-      try { F.writeSync(fd, JSON.stringify({ pid: process.pid, ts, token })); } finally { F.closeSync(fd); }
-      const release = function release() {
-        try { const cur = JSON.parse(F.readFileSync(p, 'utf8')); if (cur && cur.token === token) F.unlinkSync(p); } catch (_) {}
-      };
-      // heartbeat(atMs?) — refresh OUR lock's ts (atomic tmp+rename) so a healthy
-      // long-lived daemon stays fresh and is never mistaken for a stale holder.
-      // No-op (and never clobbers) if the lock was reclaimed by someone else
-      // (token mismatch) or is gone.
-      //
-      // TRI-STATE RETURN (Codex review fix — a caller that treated every falsy/
-      // exception outcome as "lock lost" would exit a perfectly healthy daemon
-      // on a transient EBUSY/EMFILE/ENOSPC blip, or on a torn read racing a
-      // concurrent writer's tmp+rename — none of those prove the lock changed
-      // hands):
-      //   true   — refreshed OUR lock; still ours, still healthy.
-      //   false  — DEFINITIVE loss: the lock file is genuinely gone (ENOENT on
-      //            read), or it parsed cleanly and the token no longer matches
-      //            ours (someone else's lock is now at this path). A caller MAY
-      //            treat this as "stop, we are no longer the consumer".
-      //   'error' — anything else: a non-ENOENT read error, an unparseable/torn
-      //            read (mirrors the TORN-READ GUARD posture already used for
-      //            the initial acquire above), or a write/rename failure. NOT
-      //            proof of loss — a caller must keep running and retry later.
-      release.heartbeat = function heartbeat(atMs) {
-        let raw;
-        try {
-          raw = F.readFileSync(p, 'utf8');
-        } catch (e) {
-          return (e && e.code === 'ENOENT') ? false : 'error';
-        }
-        let cur;
-        try {
-          cur = JSON.parse(raw);
-        } catch (_) {
-          return 'error'; // torn/unparseable read — transient, not proof of loss
-        }
-        if (!cur || cur.token !== token) return false; // definitively reclaimed
-        try {
-          const nts = Number.isFinite(atMs) ? atMs : now();
-          const tmp = p + '.hb.' + process.pid;
-          F.writeFileSync(tmp, JSON.stringify({ pid: cur.pid, ts: nts, token }));
-          F.renameSync(tmp, p);
-          return true;
-        } catch (_) {
-          return 'error'; // write/rename failure — transient, not proof of loss
-        }
-      };
-      return release;
-    } catch (e) {
-      if (!e || e.code !== 'EEXIST') return null;
-      let holder = null;
-      try { holder = JSON.parse(F.readFileSync(p, 'utf8')); } catch (_) {}
-      const holderPid = holder && Number.isFinite(holder.pid) ? holder.pid : null;
-      let holderTs = holder && Number.isFinite(holder.ts) ? holder.ts : null;
-      if (holderTs === null) {
-        // TORN-READ GUARD: a live holder is briefly a 0-byte file between openSync('wx')
-        // and writeSync. A concurrent reader that catches it empty/unparseable must NOT
-        // treat it as absent — fall back to the file's MTIME for liveness. A FRESH mtime =
-        // live holder mid-write -> back off (never steal); only an OLD mtime (or a stat
-        // failure) reads as a dead holder we may reclaim. Mirrors devswarm-store acquireOnce.
-        try { holderTs = F.statSync(p).mtimeMs; } catch (_) { holderTs = null; }
-      }
-      const alive = holderPid !== null && isAlive(holderPid); // the OS reports SOMETHING live at that pid
+  // Publish, torn-read guard (an empty/unparseable holder is dated by its
+  // mtime: a fresh one is a live holder mid-write), atomic rename-aside
+  // reclaim and token-checked release all come from companion/lib/lock.js.
+  // The STEAL RULE above is this lock's own `decide`.
+  const h = lockLib.acquire(p, {
+    fs: io && io.fs,
+    isAlive,
+    now,
+    decide(holder) {
+      const holderPid = holder.known ? holder.pid : null;
+      const holderTs = holder.ts;
+      const alive = holderPid !== null && holder.alive; // the OS reports SOMETHING live at that pid
       // v0.65 ORPHAN-RECLAIM: "the OS says pid N is alive" is NOT the same as
       // "pid N is still OUR holder, and it is still a running consumer".
       //   * PID REUSE — the daemon died, leaked this lock (frozen with its old
       //     pid), and the OS later handed that pid NUMBER to an unrelated live
       //     process. Proven by the OS-reported start time postdating the lock's
-      //     own ts. NO SIGNAL IS EVER SENT: the real holder is already gone and
-      //     the unrelated live process is none of our business — only the
-      //     orphaned FILE is removed.
-      //   * ZOMBIE — kill(pid, 0) succeeds for a defunct (state Z) process, so a
-      //     holder that exited under a parent that never reaped it used to block
-      //     every restart forever. A confirmed Z can never run code again.
+      //     own ts. NO SIGNAL IS EVER SENT: only the orphaned FILE is removed.
+      //   * ZOMBIE — kill(pid, 0) succeeds for a defunct (state Z) process; a
+      //     confirmed Z can never run code again.
       // Both verdicts are CONFIRMED-ONLY (classifyLockHolder fails toward
-      // never-reclaiming on any unresolvable/implausible reading), and both are
-      // reclaim-WITHOUT-kill — the SIGKILL path below is untouched and still
-      // requires the far stricter wedged-heartbeat proof.
+      // never-reclaiming) and reclaim-WITHOUT-kill.
       const holderClass = classifyLockHolder({ pid: holderPid, ts: holderTs }, now(), io);
       const reclaimReason = isReclaimableHolderState(holderClass.state) ? holderClass.state : null;
-      // P1-B fix: a holder with a KNOWN pid that is confirmed DEAD can never come
-      // back — reclaim it IMMEDIATELY, without waiting out the staleness window.
-      // (Previously a lock leaked by a killed daemon stranded ingestion for up to
-      // INGEST_LOCK_STALE_MS ~15min. This mattered even MORE before a later fix:
-      // runIngestLoop used to register a SIGTERM/SIGINT listener that could not
-      // run while the event loop was blocked inside spawnSync, so a killed daemon
-      // often never got a chance to release its own lock at all — that listener
-      // has since been REMOVED (Node's default terminate disposition now governs,
-      // which does not depend on the event loop running any JS), but a hard kill
-      // (SIGKILL, OOM) still bypasses any in-process release regardless. hardTimeoutMs
-      // bounds how long the spawnSync block itself can last; this dead-holder-
-      // immediate-reclaim is what actually closes the leaked-lock window for every
-      // OTHER starter once the holder is confirmed gone, independent of how it died.)
-      // An UNKNOWN holder (unparseable/torn record, no pid to check) still needs
-      // BOTH stale AND not-alive before reclaim — unchanged from before.
+      // P1-B: a KNOWN pid confirmed DEAD can never come back — reclaim it
+      // IMMEDIATELY (a hard kill/OOM bypasses any in-process release). An
+      // UNKNOWN holder (torn record, no pid) needs BOTH stale AND not-alive.
       const knownDead = reclaimReason !== null;
       const stale = holderTs === null || (now() - holderTs) > INGEST_LOCK_STALE_MS;
       if (knownDead || (stale && !alive)) {
-        // A dead pid is the long-standing, already-documented case and stays
-        // silent; the two NEW verdicts are surprising enough to be worth a
-        // record (they are exactly what a KeepAlive refuse->exit->relaunch loop
-        // looks like from the outside, so the log is how an operator sees the
-        // loop actually break).
         if (reclaimReason === 'reused' || reclaimReason === 'zombie') {
           alog.logEvent('lock', 'reclaim-orphaned-ingest-lock', 'warn',
             'reclaimed the ingest lock from a recorded holder that is not a live consumer (' + reclaimReason + ') — no signal sent',
             { pid: holderPid, lockPath: p, reason: reclaimReason, holderTs });
         }
-        try { F.unlinkSync(p); } catch (_) {}
-        continue;
+        return 'steal';
       }
-      // H2 heartbeat-aware steal: a KNOWN-LIVE holder is still NEVER stolen
-      // merely for looking stale by lock-ts (see this function's own STEAL RULE
-      // header comment) — but "live" alone does not mean "healthy". If the
-      // holder's OWN daemon heartbeat proves it is WEDGED (isHolderHeartbeatStale
-      // above), SIGTERM cannot land on it (Node cannot preempt a blocked event
-      // loop to dispatch a signal handler — see runIngestLoop's SIGNAL HANDLER
-      // comment / H3's hardTimeoutMs), so SIGKILL is the only way to actually
-      // free the lock. A FRESH heartbeat (busy-but-live) is NEVER touched —
-      // isHolderHeartbeatStale's fail-toward-never-kill contract guarantees this
-      // branch only fires on a POSITIVELY CONFIRMED stale heartbeat, never an
-      // inconclusive read.
-      //
-      // REQUIRE `stale` (the LOCK's own timestamp, computed above) TOO — not
-      // heartbeat-staleness alone. The daemon's own loop refreshes the lock ts
-      // via release.heartbeat() EVERY iteration (runIngestLoop, before the
-      // separate per-sweep writeIngestHeartbeat call), and writeIngestHeartbeat
-      // is fully fail-open (any write error is swallowed). So a daemon that is
-      // genuinely alive and looping — NOT wedged — can still show a stale
-      // OWN-heartbeat file if only that separate heartbeat write path breaks
-      // (e.g. its directory becomes unwritable) while the lock ts keeps
-      // refreshing fine. Without also requiring the lock ts to be stale, that
-      // failure alone would get a perfectly healthy consumer SIGKILLed and its
-      // lock stolen — the exact single-consumer-split this lock exists to
-      // prevent. A TRULY wedged daemon (blocked inside a hung child call) can't
-      // run ANY part of its loop body, so both signals go stale together —
-      // requiring both costs nothing in the genuine-wedge case this branch
-      // exists to catch.
-      if (alive && stale && isHolderHeartbeatStale(home, worktree, now(), F, io, holderPid)) {
+      // H2 heartbeat-aware steal: a KNOWN-LIVE holder is never stolen merely
+      // for a stale lock ts — but a live pid whose OWN daemon heartbeat is
+      // positively confirmed stale is WEDGED (SIGTERM cannot land on a blocked
+      // event loop), so it is SIGKILLed and the lock reclaimed. REQUIRE the
+      // lock's own ts to be stale TOO: a healthy loop refreshes it every
+      // iteration even if only the separate heartbeat write path breaks.
+      if (alive && stale && isHolderHeartbeatStale(home, worktree, now(), (io && io.fs) || fs, io, holderPid)) {
         const killFn = (io && io.kill) || defaultKillProcess;
         let killErr = null;
         try { killFn(holderPid, 'SIGKILL'); } catch (e) { killErr = e; }
         const ctx = { pid: holderPid, lockPath: p, staleMs: INGEST_LOCK_STALE_MS };
-        // Only reclaim when the kill actually landed (no error) OR the pid was
-        // already gone (ESRCH — it exited between our isAlive() probe and this
-        // call, so there is nothing left to protect). Any OTHER kill error
-        // (EPERM, etc.) means we do NOT know the holder is actually dead — the
-        // live process keeps running, so deleting its lock here would let a
-        // contender acquire a SECOND, concurrent lock on top of a still-alive
-        // holder (the exact single-consumer break this lock exists to
-        // prevent). Refuse in that case rather than reclaim unconditionally.
+        // Reclaim only when the kill landed OR the pid was already gone
+        // (ESRCH). Any OTHER kill error means the holder may still run —
+        // refuse rather than hand out a second concurrent lock.
         const killSucceededOrAlreadyGone = !killErr || killErr.code === 'ESRCH';
         if (killErr) {
           alog.logError('lock', 'steal-kill-wedged-holder', killErr, ctx);
@@ -663,14 +557,25 @@ function acquireIngestLock(home, io, worktree) {
           alog.logEvent('lock', 'steal-kill-wedged-holder', 'warn',
             'reclaimed ingest lock from a live-but-wedged holder (stale own heartbeat) via SIGKILL', ctx);
         }
-        if (!killSucceededOrAlreadyGone) return null; // kill did not confirm the holder is gone -> refuse, never reclaim
-        try { F.unlinkSync(p); } catch (_) {}
-        continue; // reclaim: loop back and re-attempt openSync('wx')
+        return killSucceededOrAlreadyGone ? 'steal' : 'respect';
       }
-      return null; // live-and-responsive holder, or a fresh/unknown lock -> refuse
-    }
-  }
-  return null;
+      return 'respect'; // live-and-responsive holder, or a fresh/unknown lock -> refuse
+    },
+  });
+  if (!h) return null;
+  const release = function release() { h.release(); };
+  // heartbeat(atMs?) — refresh OUR lock's ts (atomic tmp+rename) so a healthy
+  // long-lived daemon stays fresh and is never mistaken for a stale holder.
+  // TRI-STATE RETURN (a caller must not exit a healthy daemon on a blip):
+  //   true    — refreshed OUR lock; still ours.
+  //   false   — DEFINITIVE loss: the lock file is gone (ENOENT), or it parsed
+  //             cleanly with another token.
+  //   'error' — anything else (non-ENOENT read error, torn read, write/rename
+  //             failure). NOT proof of loss — keep running, retry later.
+  release.heartbeat = function heartbeat(atMs) {
+    return h.refresh(Number.isFinite(atMs) ? { ts: atMs } : undefined);
+  };
+  return release;
 }
 
 // messageHash(workspaceId, msg) — stable dedupe hash from the message's
@@ -2060,6 +1965,21 @@ function legacyIngestLockPath(home, worktree) {
 // (:150-155), so probeLegacyHolders below can tell a FRESH unparseable lock
 // (probably a live holder mid-write) from a STALE one (probably an abandoned
 // lock from a process that died before ever completing its write).
+// snapshotLockHolder(lockPath, F, now, io) -> { snap, holder } | null. ONE read
+// (companion/lib/lock.js inspect) that yields both the {pid, ts} verdict input
+// readLockHolder would give and the exact snapshot the atomic reclaim
+// (lock.reclaimStale) verifies before removing anything — so a proven-orphan
+// removal can never delete a fresh lock a concurrent daemon published at the
+// same path after the read.
+function snapshotLockHolder(lockPath, F, now, io) {
+  const snap = lockLib.inspect(lockPath, { fs: F, now, isAlive: io && io.isAlive });
+  if (!snap) return null;
+  const r = snap.record;
+  const holder = r && Number.isFinite(r.pid)
+    ? { pid: r.pid, ts: Number.isFinite(r.ts) ? r.ts : null }
+    : { pid: null, ts: snap.tsFromMtime ? snap.ts : null };
+  return { snap, holder };
+}
 function readLockHolder(lockPath, F) {
   let raw;
   try { raw = F.readFileSync(lockPath, 'utf8'); } catch (_) { return null; } // ENOENT etc — genuinely no lock
@@ -2184,8 +2104,9 @@ function probeLegacyHolders(home, mainWorktree, io) {
     }
     let lockPath;
     try { lockPath = legacyIngestLockPath(home, wt); } catch (_) { continue; } // fail-open: one bad path never aborts the probe
-    const holder = readLockHolder(lockPath, F);
-    if (!holder) continue;
+    const got = snapshotLockHolder(lockPath, F, now, io);
+    if (!got) continue;
+    const holder = got.holder;
     let cls;
     try { cls = classifyLockHolder(holder, now(), io); } catch (_) { cls = { state: 'live', pid: holder.pid, ts: holder.ts }; }
     // DEFAULT-BLOCK: everything that is not positively proven gone (and not an
@@ -2198,21 +2119,12 @@ function probeLegacyHolders(home, mainWorktree, io) {
     // stale or unconfirmable record is left on disk untouched — it just no
     // longer blocks. Per-file and idempotent: an already-gone file is a no-op.
     if (isReclaimableHolderState(cls.state)) {
-      // TOCTOU GUARD: `cls` proved the holder read at `holder` (above) is dead
-      // — but that proof is only valid for THAT exact record. A concurrent
-      // daemon can remove this same-path lock and write a fresh LIVE one in
-      // the window between the read above and this unlink; re-read the file
-      // right before removing it and require it to be byte-identical (same
-      // pid, same ts) to what was classified. Any mismatch means someone else
-      // already touched this path — leave it alone (it is either already gone
-      // or a brand-new live holder, never ours to remove).
-      try {
-        const current = readLockHolder(lockPath, F);
-        if (current && current.pid === holder.pid && current.ts === holder.ts) {
-          F.unlinkSync(lockPath);
-          reaped.push({ worktree: wt, lockPath, pid: holder.pid, reason: cls.state });
-        }
-      } catch (_) { /* already removed / unwritable -> nothing to do */ }
+      // `cls` proves only THAT exact record dead: the atomic reclaim removes
+      // it only if it is still that snapshot, never a fresh live holder a
+      // concurrent daemon published at the same path since the read.
+      if (lockLib.reclaimStale(lockPath, got.snap, { fs: F }) === 'reclaimed') {
+        reaped.push({ worktree: wt, lockPath, pid: holder.pid, reason: cls.state });
+      }
     }
   }
   if (reaped.length) {
@@ -2303,34 +2215,16 @@ function sweepOrphanedIngestLocks(home, io, skipPath, opts) {
     if (skipReal !== null && path.resolve(full) === skipReal) continue;
     result.scanned++;
     try {
-      const holder = readLockHolder(full, F);
-      if (!holder) continue; // vanished between readdir and read -> nothing to reap
-      // Inode captured AT CLASSIFY TIME (best-effort; unresolvable -> null,
-      // never blocks the sweep) — an extra identity check alongside pid/ts at
-      // unlink time below, narrowing the TOCTOU window further.
-      let inoAtClassify = null;
-      try { inoAtClassify = F.statSync(full).ino; } catch (_) { inoAtClassify = null; }
-      const cls = classifyLockHolder(holder, now(), io);
+      const got = snapshotLockHolder(full, F, now, io);
+      if (!got) continue; // vanished between readdir and read -> nothing to reap
+      const cls = classifyLockHolder(got.holder, now(), io);
       const sweepable = isReclaimableHolderState(cls.state) || (allowTornStale && cls.state === 'torn-stale');
       if (!sweepable) { result.kept++; continue; }
-      // TOCTOU GUARD (same as probeLegacyHolders): re-read the file immediately
-      // before removing it and require it to still match the exact record that
-      // was classified (pid + ts), AND — when resolvable — the same inode as
-      // at classify time. If a concurrent daemon has already removed this
-      // holder and written a fresh lock at the same path in the interim, a
-      // content or inode mismatch skips the unlink rather than risk deleting
-      // the new holder's lock out from under it.
-      try {
-        const current = readLockHolder(full, F);
-        let sameInode = true;
-        if (inoAtClassify != null) {
-          try { sameInode = F.statSync(full).ino === inoAtClassify; } catch (_) { sameInode = false; }
-        }
-        if (sameInode && current && current.pid === holder.pid && current.ts === holder.ts) {
-          F.unlinkSync(full);
-          result.reaped.push({ lockPath: full, pid: cls.pid, reason: cls.state });
-        }
-      } catch (_) { /* already gone / unwritable -> idempotent no-op */ }
+      // Atomic reclaim of exactly the classified snapshot (see
+      // snapshotLockHolder); a fresh lock that replaced it is kept.
+      if (lockLib.reclaimStale(full, got.snap, { fs: F }) === 'reclaimed') {
+        result.reaped.push({ lockPath: full, pid: cls.pid, reason: cls.state });
+      }
     } catch (_) { /* one malformed lock never aborts the sweep */ }
   }
   if (result.reaped.length) {

@@ -151,9 +151,11 @@ function publish(F, p, payload, mode) {
   }
 }
 
-// reclaim(F, p, judgedToken, judgedRecordRaw) -> 'reclaimed' | 'gone' | 'caught'.
-// Rename-aside, verify, discard; a caught fresh lock is restored (never
-// clobbering one published meanwhile) and must be respected.
+// reclaim(F, p, h) -> 'reclaimed' | 'gone' | 'caught' | 'failed'.
+// Rename-aside, verify against the judged holder `h` (from inspect()),
+// discard; a caught fresh lock is restored (never clobbering one published
+// meanwhile) and must be respected. 'failed' = the verified stale file could
+// not be discarded; it is put back so nothing is lost or left half-moved.
 function reclaim(F, p, h) {
   const reap = p + '.reap-' + process.pid + '-' + rand();
   try { F.renameSync(p, reap); } catch (_) { return 'gone'; }
@@ -183,8 +185,23 @@ function reclaim(F, p, h) {
     }
     return 'caught';
   }
-  try { F.unlinkSync(reap); } catch (_) { /* already gone */ }
+  try { F.unlinkSync(reap); } catch (e) {
+    if (!e || e.code !== 'ENOENT') {
+      let exists = false;
+      try { F.statSync(p); exists = true; } catch (_) { exists = false; }
+      if (!exists) { try { F.renameSync(reap, p); } catch (_) {} }
+      return 'failed';
+    }
+  }
   return 'reclaimed';
+}
+
+// reclaimStale(lockPath, holder, opts) — the public form of the atomic
+// reclaim for a sweep that judged `holder` (from inspect()) itself.
+function reclaimStale(lockPath, holder, opts) {
+  const F = (opts && opts.fs) || fs;
+  if (!holder) return 'gone';
+  return reclaim(F, lockPath, holder);
 }
 
 // acquire(lockPath, opts) -> handle | null.
@@ -227,7 +244,7 @@ function acquire(lockPath, opts) {
     lastHolder = h;
     if (shouldSteal(h, o)) {
       const r = reclaim(F, lockPath, h);
-      if (r === 'caught') { refused(o, h); return null; }
+      if (r === 'caught' || r === 'failed') { refused(o, h); return null; }
       continue; // reclaimed (or already gone): retry the create immediately
     }
     if (Date.now() >= deadline || i + 1 >= maxTries) break;
@@ -276,7 +293,7 @@ function refresh(handle, fields) {
   const next = Object.assign({}, cur, { ts: (handle.now || Date.now)() }, fields || {});
   next.token = handle.token;
   for (const k of Object.keys(next)) if (next[k] === undefined) delete next[k];
-  const tmp = handle.path + '.tmp-' + process.pid + '-' + rand();
+  const tmp = handle.path + '.hb.' + process.pid + '-' + rand();
   try {
     F.writeFileSync(tmp, JSON.stringify(next));
     F.renameSync(tmp, handle.path);
@@ -318,7 +335,7 @@ async function withLockAsync(lockPath, opts, fn) {
 }
 
 module.exports = {
-  acquire, release, refresh, inspect, withLock, withLockAsync,
+  acquire, release, refresh, inspect, reclaimStale, withLock, withLockAsync,
   defaultIsAlive, sleepSync, DEFAULT_STALE_MS,
   _shouldSteal: shouldSteal,
 };

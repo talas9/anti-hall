@@ -174,3 +174,48 @@ test('store journal messages.lock: a writer that judged a stale dead holder neve
     } finally { s.close(); }
   } finally { rm(home); }
 });
+
+test('ingest lock: two starters reclaiming the SAME dead holder — exactly one wins', () => {
+  const ingest = require(path.join(ROOT, 'companion', 'devswarm-ingest.js'));
+  const home = tmpHome();
+  try {
+    const p = ingest.ingestLockPath(home);
+    const w = reclaimRace(p, { pid: 4242, ts: Date.now(), token: 'dead' },
+      (F) => ingest.acquireIngestLock(home, { fs: F, isAlive: (pid) => pid !== 4242 }));
+    w();
+  } finally { rm(home); }
+});
+
+test('ingest orphan sweep: a fresh lock published at the path just before the removal is kept, never deleted', () => {
+  const ingest = require(path.join(ROOT, 'companion', 'devswarm-ingest.js'));
+  const home = tmpHome();
+  try {
+    const dir = ingest.ingestLocksDir(home);
+    fs.mkdirSync(dir, { recursive: true });
+    const full = path.join(dir, 'ingest-project-x-aaaaaa.lock');
+    const now = Date.now();
+    fs.writeFileSync(full, JSON.stringify({ pid: 4242, ts: now - 60 * 60 * 1000, token: 'orphan' }));
+    let injected = false;
+    const inject = (p) => {
+      if (injected || p !== full) return;
+      injected = true; // a concurrent daemon reclaimed the orphan and published its own live lock
+      fs.writeFileSync(full + '.x', JSON.stringify({ pid: process.pid, ts: now, token: 'fresh' }));
+      fs.renameSync(full + '.x', full);
+    };
+    const racing = new Proxy(fs, {
+      get(target, prop) {
+        if (prop === 'unlinkSync') return (p) => { inject(p); return target.unlinkSync(p); };
+        if (prop === 'renameSync') return (a, b) => { inject(a); return target.renameSync(a, b); };
+        const v = target[prop];
+        return typeof v === 'function' ? v.bind(target) : v;
+      },
+    });
+    const res = ingest.sweepOrphanedIngestLocks(home, {
+      fs: racing, now: () => now, isAlive: (pid) => pid !== 4242, startTimeOf: () => null, isZombie: () => false,
+    }, null);
+    assert.ok(injected, 'precondition: the removal step was reached for the orphan');
+    assert.strictEqual(res.reaped.length, 0, 'the swapped-in fresh lock is not reported reaped');
+    assert.strictEqual(JSON.parse(fs.readFileSync(full, 'utf8')).token, 'fresh', 'the fresh live lock survived');
+    assert.deepStrictEqual(fs.readdirSync(dir).filter((n) => /\.reap-/.test(n)), []);
+  } finally { rm(home); }
+});

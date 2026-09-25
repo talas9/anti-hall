@@ -472,9 +472,9 @@ test('acquireIngestLock: TWO concurrent starters racing a DEAD-but-FRESH lock (P
     let otherRacerResult;
     const racerFs = new Proxy(fs, {
       get(target, prop) {
-        if (prop === 'unlinkSync') {
-          return function (target_p) {
-            const r = target.unlinkSync(target_p);
+        if (prop === 'renameSync') {
+          return function (target_p, dest) {
+            const r = target.renameSync(target_p, dest);
             if (!otherRacerRan && target_p === p) {
               otherRacerRan = true;
               otherRacerResult = ingest.acquireIngestLock(home, { isAlive: isAliveExceptOriginal, now: () => ts + 1000 });
@@ -677,7 +677,7 @@ test('acquireIngestLock: TWO concurrent starters racing to steal the SAME stale 
     const oldTs = 1000;
     fs.writeFileSync(p, JSON.stringify({ pid: 4242, ts: oldTs, token: 'dead-holder' }));
     // Simulate two processes racing on the exact same stale+dead lock: the FIRST
-    // acquireIngestLock's unlinkSync (the steal) is intercepted so a SECOND, fully
+    // acquireIngestLock's rename-aside (the steal) is intercepted so a SECOND, fully
     // independent acquireIngestLock call runs to completion "in between" — exactly
     // the two-daemons-racing-a-stale-lock scenario the single-consumer invariant
     // must survive (stealing a lock that's ALREADY been re-claimed by someone else
@@ -693,9 +693,9 @@ test('acquireIngestLock: TWO concurrent starters racing to steal the SAME stale 
     let otherRacerResult;
     const racerFs = new Proxy(fs, {
       get(target, prop) {
-        if (prop === 'unlinkSync') {
-          return function (target_p) {
-            const r = target.unlinkSync(target_p);
+        if (prop === 'renameSync') {
+          return function (target_p, dest) {
+            const r = target.renameSync(target_p, dest);
             if (!otherRacerRan && target_p === p) {
               otherRacerRan = true;
               // The "other" racer sees the file gone and reclaims it FIRST.
