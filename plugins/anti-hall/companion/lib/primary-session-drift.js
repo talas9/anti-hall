@@ -90,7 +90,7 @@ function sessionsForWorktree(worktree, opts) {
 }
 
 // anchorSessionDrift({ anchorSessionId, worktree, home, fs }) ->
-//   null | { anchorSessionId, newestSessionId, newestStartMs }.
+//   null | { anchorSessionId, newestSessionId, newestActivityMs }.
 // Drift = the newest session on the worktree is NOT the anchor's recorded one.
 // No anchor session, no transcripts, or the anchor IS the newest -> null.
 function anchorSessionDrift(opts) {
@@ -111,7 +111,7 @@ function anchorSessionDrift(opts) {
     const cur = o.currentSessionId != null ? String(o.currentSessionId) : '';
     const curEntry = cur ? list.find((s) => s.sessionId === cur) : null;
     if (curEntry && list[0].lastActivityMs <= curEntry.lastActivityMs) return null;
-    return { anchorSessionId: anchor, newestSessionId: list[0].sessionId, newestStartMs: list[0].lastActivityMs };
+    return { anchorSessionId: anchor, newestSessionId: list[0].sessionId, newestActivityMs: list[0].lastActivityMs };
   } catch (_) { return null; }
 }
 
