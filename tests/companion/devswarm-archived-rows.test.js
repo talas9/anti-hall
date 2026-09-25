@@ -72,8 +72,9 @@ test('item 3: the parent-gate consults it and drops the stale/escalated axis for
   // heartbeat and archive-ready ones, and must touch ONLY staleOrEscalated.
   const gate = fs.readFileSync(
     path.join(__dirname, '..', '..', 'plugins', 'anti-hall', 'hooks', 'devswarm-parent-gate.js'), 'utf8');
-  // Phase 4: the predicate is reached through THE one row-state reducer.
-  assert.ok(gate.includes("require('../companion/lib/row-state.js')"), 'gate must import the row-state reducer');
+  // v0.110: the predicate is reached through THE one row-eligibility
+  // projection (which wraps the row-state reducer).
+  assert.ok(gate.includes("require('../companion/lib/row-eligibility.js')"), 'gate must import the row-eligibility projection');
   assert.ok(gate.includes('if (archived) staleOrEscalated = false;'),
     'gate must suppress ONLY the liveness axis for an archived row');
   assert.ok(!/if \(archived\)[\s\S]{0,120}realUnread = 0/.test(gate),

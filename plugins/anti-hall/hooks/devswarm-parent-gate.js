@@ -1528,7 +1528,8 @@ function main() {
     // family from every blocking axis, unread included.
     const archived = e.markerArchived;
     const appArchived = e.appArchived;
-    if (e.archived) staleOrEscalated = false;
+    if (archived) staleOrEscalated = false;
+    if (appArchived) staleOrEscalated = false;
     // archiveIgnored (0.109.4): the owner's per-row archive-ignore marker
     // (`devswarm.js archive-ignore <id>` -> archive-ignore/<id>.json), used for
     // deliberately held specimen/twin rows (row-eligibility.js `ignored`).
