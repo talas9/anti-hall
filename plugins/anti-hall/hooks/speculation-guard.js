@@ -317,17 +317,21 @@ function collectTextFromEntryDedup(node) {
 // CLAIM about the project's state; it's a statement of what the plan/spec
 // obligates. Two independent signals exempt a "must be"/"should be" match
 // (checked ONLY for those two patterns — every other marker is unaffected):
-//   1) the modal is immediately followed by a past participle expressing an
-//      obligation ("must be measured/verified/tested/...") — a real claim
-//      ("must be the cache", "should be fine") is instead followed by a noun
-//      phrase or adjective, never one of these participles.
-//   2) the same line carries an explicit requirement/acceptance-criteria
-//      context ("requirement:", "acceptance:"/"acceptance criteria:").
+//   1) the modal is immediately followed by a past participle naming a real
+//      OBLIGATION ("must be measured/verified/tested/..."). STATE words
+//      ("done", "deployed", "built", "fixed", "running", "fine") are NOT in
+//      this list: "should be done by now" is a claim about state, not a duty.
+//   2) the LINE STARTS with an explicit requirement label (optional list
+//      bullet, then "Requirement:", "Acceptance:", "AC:" or "Spec:"). A label
+//      appearing mid-line ("per the spec: this should be fine") does not count.
+// Every must-be/should-be occurrence is judged independently, so one exempt
+// requirement cannot hide a later speculative claim in the same text.
 // Neither signal changes how any OTHER speculation marker is judged.
 // --------------------------------------------------------------------------
 const OBLIGATION_PARTICIPLE_RE =
-  /^\s+(measured|verified|tested|checked|confirmed|validated|reviewed|documented|run|executed|deployed|built|done|implemented|approved|logged|tracked|captured|recorded)\b/i;
-const REQUIREMENT_CONTEXT_RE = /\b(requirement|acceptance(?:\s+criteria)?|spec)\s*:/i;
+  /^\s+(measured|verified|tested|checked|reviewed|documented|validated|approved|confirmed|updated|run)\b/i;
+const REQUIREMENT_LINE_RE =
+  /^\s*(?:(?:[-*+\u2022]|\d+[.)])\s+)?(?:requirement|acceptance(?:\s+criteria)?|ac|spec)\s*:/i;
 
 function isObligationPhrasing(text, matchText, matchIndex) {
   const after = text.slice(matchIndex + matchText.length, matchIndex + matchText.length + 40);
@@ -335,8 +339,7 @@ function isObligationPhrasing(text, matchText, matchIndex) {
   const lineStart = text.lastIndexOf('\n', matchIndex) + 1;
   const lineEndIdx = text.indexOf('\n', matchIndex);
   const lineEnd = lineEndIdx === -1 ? text.length : lineEndIdx;
-  const line = text.slice(lineStart, lineEnd);
-  return REQUIREMENT_CONTEXT_RE.test(line);
+  return REQUIREMENT_LINE_RE.test(text.slice(lineStart, lineEnd));
 }
 
 const MODAL_OBLIGATION_MARKERS = new Set(['must be', 'should be']);
@@ -348,10 +351,13 @@ function findSpeculationMarker(text) {
   for (const pat of SPECULATION_PATTERNS) {
     const m = text.match(pat);
     if (!m) continue;
-    if (MODAL_OBLIGATION_MARKERS.has(m[0].toLowerCase()) && isObligationPhrasing(text, m[0], m.index)) {
-      continue; // requirement phrasing, not a speculative claim — keep scanning other patterns
+    if (!MODAL_OBLIGATION_MARKERS.has(m[0].toLowerCase())) return m[0];
+    // must-be/should-be: judge EVERY occurrence; the first non-exempt one flags.
+    const g = new RegExp(pat.source, pat.flags.includes('g') ? pat.flags : pat.flags + 'g');
+    let mm;
+    while ((mm = g.exec(text)) !== null) {
+      if (!isObligationPhrasing(text, mm[0], mm.index)) return mm[0];
     }
-    return m[0];
   }
   return null;
 }

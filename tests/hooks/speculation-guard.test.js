@@ -503,3 +503,44 @@ for (const text of CLAIM_BLOCK) {
     }
   });
 }
+
+// ---------------------------------------------------------------------------
+// 0.109.5 review P1: the obligation exemption must not swallow STATE words
+// ("should be done/deployed/fine"), every must-be/should-be occurrence is
+// judged (not just the first per pattern), and requirement context applies
+// only when the LINE STARTS with a label.
+const REVIEW_BLOCK = [
+  'the migration should be done by now',
+  'it should be deployed already',
+  'X must be measured on P3. The cause must be the cache.',
+  'Per the spec: this should be fine',
+];
+for (const text of REVIEW_BLOCK) {
+  test(`BLOCK (review P1): "${text}" is flagged`, () => {
+    const h = makeHome();
+    try {
+      const tp = h.writeTranscript([assistantMessage(text)]);
+      const r = testHook(HOOK, stopPayload(tp), { home: h.home, env: { ANTIHALL_JEV: '0' } });
+      assert.ok(isBlock(r), `must block; stdout: ${r.stdout}`);
+    } finally {
+      h.cleanup();
+    }
+  });
+}
+const REVIEW_ALLOW = [
+  'Requirement: X must be measured on the P3 build',
+  '- AC: the endpoint should be reviewed by security',
+  'must be verified before release',
+];
+for (const text of REVIEW_ALLOW) {
+  test(`ALLOW (review P1): "${text}" is not flagged`, () => {
+    const h = makeHome();
+    try {
+      const tp = h.writeTranscript([assistantMessage(text)]);
+      const r = testHook(HOOK, stopPayload(tp), { home: h.home, env: { ANTIHALL_JEV: '0' } });
+      assert.ok(!isBlock(r), `must not block; stdout: ${r.stdout}`);
+    } finally {
+      h.cleanup();
+    }
+  });
+}
