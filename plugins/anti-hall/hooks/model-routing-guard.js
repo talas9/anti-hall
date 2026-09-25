@@ -117,16 +117,32 @@ const COMPLEX = [
 // VERB PHRASE (design/plan + article, deep/code/security review, brainstorm,
 // architecture, root-cause/regression ANALYSIS, security audit, etc.), matched
 // only against the corpus with backtick-quoted spans stripped (mechanical CLI
-// syntax and config keys live there). READONLY_SUPPRESS_RE additionally
-// suppresses Row 4 when the corpus explicitly marks itself read-only/mechanical/
-// verbatim/fixed-command — a genuine planning ask does not talk like that.
+// syntax and config keys live there). Row 4 is additionally suppressed only
+// when the corpus is read-only (READONLY_RE) AND mechanical (MECHANICAL_SHAPE_RE:
+// fixed commands, "run exactly", "return ≤N lines") AND carries no review/
+// design/audit/analysis verb (REVIEW_DESIGN_VERB_RE). Read-only alone never
+// suppresses: "read-only code review/security audit of X" is genuine planning
+// that a read-only marker must not hide.
 // COMPLEX itself is UNCHANGED and still backs the Rows 1-3 veto (being generous
 // there only prevents a block, which is the safe direction).
 const PLANNING_INTENT_RE =
-  /\b(architect(?:ure)?|brainstorm|design\s+(?:a|the|an)\b|plan\s+(?:a|the|an|out)\b|deep\s+review|code\s+review|design\s+review|security\s+review|review\s+the\s+(?:code|design|architecture|plan)|critique|debate|merge\s+order|workflow\s+analysis|root[- ]cause\s+analysis|regression\s+analysis|security\s+audit)\b/i;
+  /\b(architect(?:ure)?|brainstorm|design\s+(?:a|the|an)\b|plan\s+(?:a|the|an|out)\b|deep\s+review|code\s+review|design\s+review|security\s+review|review\s+the\s+(?:code|design|architecture|plan)|review\s+(?:this|the|a)\s+(?:pr|pull\s+request|diff|patch|change(?:s|set)?)|audit\s+(?:the|this)\b|critique|debate|merge\s+order|workflow\s+analysis|root[- ]cause\s+analysis|(?:find|identify|determine|diagnose|trace)\s+(?:the\s+)?root[- ]cause|root[- ]cause\s+(?:why|how|the|this)|regression\s+analysis|security\s+audit)\b/i;
 
-const READONLY_SUPPRESS_RE =
+const READONLY_RE =
   /\b(verbatim|read[- ]?only|mechanical|append\s*only|run\s+exactly|do\s+nothing\s+else|nothing\s+else|no\s+other\s+file\s+edits|no\s+repo\s+edits|no\s+source\s+edits)\b/i;
+
+// Fixed-command / bounded-output shape: the caller already decided WHAT to do.
+const MECHANICAL_SHAPE_RE =
+  /\b(run\s+exactly|run\s+only|run\s+(?:this|these|the\s+following)\s+(?:exact\s+)?commands?|exactly\s+(?:this|these)\s+commands?|verbatim|append\s*only|do\s+nothing\s+else|nothing\s+else|return\s+(?:only\s+)?(?:at\s+most\s+|no\s+more\s+than\s+|under\s+|up\s+to\s+)?\d+\s+lines?)\b|return\s+(?:only\s+)?(?:≤|<=)\s*\d+\s+lines?\b/i;
+
+// A review/design/analysis verb anywhere (code spans stripped) keeps Row 4 live.
+const REVIEW_DESIGN_VERB_RE =
+  /\b(review|audit|design|architect(?:ure)?|plan|brainstorm|critique|analy[sz]e|analysis|investigate|root[- ]cause)\b/i;
+
+function readOnlyMechanical(corpus) {
+  return READONLY_RE.test(corpus) && MECHANICAL_SHAPE_RE.test(corpus)
+    && !REVIEW_DESIGN_VERB_RE.test(stripCodeSpans(corpus));
+}
 
 // Strip fenced/inline code spans before Row-4 intent matching — mechanical CLI
 // syntax and dotted config keys (e.g. `jev.audit.snippets`) live inside them and
@@ -429,10 +445,10 @@ function main() {
   // Row 4: genuine planning-intent phrase ∧ explicit haiku => advisory
   // (planning-shaped task on haiku). Uses PLANNING_INTENT_RE (stricter than
   // COMPLEX — see its comment above), matched with code spans stripped, and
-  // suppressed when the corpus marks itself read-only/mechanical/verbatim/
-  // fixed-command (READONLY_SUPPRESS_RE).
+  // suppressed only when the corpus is read-only AND mechanical with no
+  // review/design verb (readOnlyMechanical).
   if (model === 'haiku' &&
-      !READONLY_SUPPRESS_RE.test(corpus) &&
+      !readOnlyMechanical(corpus) &&
       PLANNING_INTENT_RE.test(stripCodeSpans(corpus))) {
     advise(
       'MODEL-ROUTING (advisory): this looks planning-shaped (architecture/design/' +

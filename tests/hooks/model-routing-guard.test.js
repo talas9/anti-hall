@@ -379,6 +379,110 @@ test('ROW 4 GENUINE: root cause analysis on haiku -> still advisory', () => {
   } finally { h.cleanup(); }
 });
 
+test('ROW 4 (0.108.4 follow-up): read-only CODE REVIEW on haiku -> still advisory (a read-only marker never hides genuine planning)', () => {
+  const h = makeHome();
+  try {
+    const r = testHook(HOOK, payload({
+      model: 'haiku',
+      subagent_type: 'general-purpose',
+      description: "Read-only code review of settings.js",
+      prompt: "READ-ONLY code review of hooks/lib/settings.js. Do not edit any file. Report correctness bugs with file:line.",
+    }), { home: h.home });
+    assertAdvisory(r, /planning-shaped/);
+  } finally { h.cleanup(); }
+});
+
+test('ROW 4 (0.108.4 follow-up): read-only SECURITY AUDIT on haiku -> still advisory', () => {
+  const h = makeHome();
+  try {
+    const r = testHook(HOOK, payload({
+      model: 'haiku',
+      subagent_type: 'general-purpose',
+      description: "Read-only security audit of the upload endpoint",
+      prompt: "Read-only security audit of the upload endpoint: look for path traversal and missing auth checks. Make no edits; nothing else.",
+    }), { home: h.home });
+    assertAdvisory(r, /planning-shaped/);
+  } finally { h.cleanup(); }
+});
+
+test('ROW 4 (0.108.4 follow-up): "review this PR" on haiku -> advisory', () => {
+  const h = makeHome();
+  try {
+    const r = testHook(HOOK, payload({
+      model: 'haiku',
+      subagent_type: 'general-purpose',
+      description: "Review this PR",
+      prompt: "Review this PR for correctness and missing tests. Read-only: do not push or edit.",
+    }), { home: h.home });
+    assertAdvisory(r, /planning-shaped/);
+  } finally { h.cleanup(); }
+});
+
+test('ROW 4 (0.108.4 follow-up): "review the diff" on haiku -> advisory', () => {
+  const h = makeHome();
+  try {
+    const r = testHook(HOOK, payload({
+      model: 'haiku',
+      subagent_type: 'general-purpose',
+      description: "Review the diff",
+      prompt: "Review this diff against main and list anything that could break existing callers.",
+    }), { home: h.home });
+    assertAdvisory(r, /planning-shaped/);
+  } finally { h.cleanup(); }
+});
+
+test('ROW 4 (0.108.4 follow-up): "audit the ..." on haiku -> advisory', () => {
+  const h = makeHome();
+  try {
+    const r = testHook(HOOK, payload({
+      model: 'haiku',
+      subagent_type: 'general-purpose',
+      description: "Audit the migration",
+      prompt: "Audit the data migration in migrations.js for idempotency and data-loss risks. Read only, no edits.",
+    }), { home: h.home });
+    assertAdvisory(r, /planning-shaped/);
+  } finally { h.cleanup(); }
+});
+
+test('ROW 4 (0.108.4 follow-up): "find the root cause" on haiku -> advisory', () => {
+  const h = makeHome();
+  try {
+    const r = testHook(HOOK, payload({
+      model: 'haiku',
+      subagent_type: 'general-purpose',
+      description: "Find the root cause",
+      prompt: "Find the root cause of the intermittent 500s on /api/orders. Read-only investigation; nothing else is to be changed.",
+    }), { home: h.home });
+    assertAdvisory(r, /planning-shaped/);
+  } finally { h.cleanup(); }
+});
+
+test('ROW 4 (0.108.4 follow-up): read-only + fixed command + return <=N lines, no review/design verb -> suppressed', () => {
+  const h = makeHome();
+  try {
+    const r = testHook(HOOK, payload({
+      model: 'haiku',
+      subagent_type: 'general-purpose',
+      description: "List merge order",
+      prompt: "Read-only. Run exactly `git log --oneline -5` and nothing else; return at most 5 lines showing the merge order.",
+    }), { home: h.home });
+    assertNoPlanningAdvisory(r);
+  } finally { h.cleanup(); }
+});
+
+test('ROW 4 (0.108.4 follow-up): "root cause" as a ledger noun (content being appended) -> no advisory', () => {
+  const h = makeHome();
+  try {
+    const r = testHook(HOOK, payload({
+      model: 'haiku',
+      subagent_type: 'general-purpose',
+      description: "Ledger: hang root cause confirmed",
+      prompt: "Using the Edit tool only (no git; touch nothing else), append to the ledger: - Root cause: the store lock was held across the fsync. (f3b8 root cause).",
+    }), { home: h.home });
+    assertNoPlanningAdvisory(r);
+  } finally { h.cleanup(); }
+});
+
 // -------------------------------------------------------------- Row 5 (catch-all)
 
 test('ROW 5: explicit haiku on mechanical -> silent allow', () => {

@@ -231,6 +231,17 @@ the update.
   reported as `<id>@round<N>`, and Jev off means no groups and no per-pair calls. The
   Jev cache key now also includes each finding's round and text, so a reused id never
   gets another finding's cached answer.
+- **`model-routing-guard`'s read-only suppression hid genuine planning on haiku.** The
+  Row-4 fix above suppressed the advisory whenever the spawn said "read-only", so a
+  "read-only code review / security audit of X" on haiku got no advisory. Row 4 is now
+  suppressed only when the spawn is read-only AND mechanical (fixed commands, "run
+  exactly", "return ≤N lines") AND carries no review/design/audit/analysis verb. The
+  intent set also covers "review this PR/diff", "audit the/this …" and root-cause asks
+  ("find/identify/diagnose the root cause", "root cause why …"); a bare "root cause:"
+  noun in ledger content does not count. Re-measured: 0/316 false positives on the same
+  316 real mechanical haiku spawns (0.0%; the pre-0.108.4 guard fired on 75/316, 23.7%),
+  and 18/18 on a genuine-planning set that includes the read-only review/audit, PR/diff
+  review, "audit the" and root-cause cases (the earlier 0.108.4 fix caught 8/18).
 
 ## 0.108.3
 
