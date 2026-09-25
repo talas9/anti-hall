@@ -423,4 +423,12 @@ function childBusyState(desc, home, opts) {
   return { busy: true, waiting: false, reason: 'fresh real work', openTool };
 }
 
-module.exports = { realActivity, classifyTranscript, isMailboxTool, childBusyState, HUMAN_WAIT_TOOLS, DEFAULT_BUSY_FRESH_MS, TAIL_BYTES };
+module.exports = {
+  realActivity, classifyTranscript, isMailboxTool, childBusyState, HUMAN_WAIT_TOOLS, DEFAULT_BUSY_FRESH_MS, TAIL_BYTES,
+  // notificationTexts / finishedTaskKeys: exported so OTHER transcript readers
+  // (silent-agent-nudge.js) can recognize a <task-notification> block across
+  // all three real shapes the harness uses (a plain user string/array, a
+  // queued 'attachment' entry's attachment.prompt, or a 'queue-operation'
+  // entry's content) WITHOUT re-implementing this parsing a second time.
+  notificationTexts, finishedTaskKeys,
+};

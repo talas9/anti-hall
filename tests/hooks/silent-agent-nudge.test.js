@@ -83,14 +83,44 @@ function agentLaunchResultLine(id, outputFile, toolUseId, isoTs) {
 // notificationLine(taskId, status, isoTs) -> a terminal task-notification.
 // Real shape: message.content is a BARE STRING (not a content-block array).
 function notificationLine(taskId, status, isoTs) {
-  const text = '<task-notification>\n<task-id>' + taskId + '</task-id>\n' +
+  const text = notificationText(taskId, status);
+  return {
+    type: 'user',
+    message: { role: 'user', content: text },
+    timestamp: isoTs,
+  };
+}
+
+// notificationText(taskId, status) -> the raw <task-notification> block text,
+// shared by all three real transcript shapes below.
+function notificationText(taskId, status) {
+  return '<task-notification>\n<task-id>' + taskId + '</task-id>\n' +
     '<tool-use-id>toolu_01ABCDEF</tool-use-id>\n' +
     '<output-file>/tmp/whatever/tasks/' + taskId + '.output</output-file>\n' +
     '<status>' + status + '</status>\n' +
     '<summary>Agent "x" finished</summary>\n</task-notification>';
+}
+
+// notificationAttachmentLine(taskId, status, isoTs) -> the ATTACHMENT shape
+// verified against a real transcript: type:'attachment', with the
+// notification text living at attachment.prompt (a string), not
+// message.content.
+function notificationAttachmentLine(taskId, status, isoTs) {
   return {
-    type: 'user',
-    message: { role: 'user', content: text },
+    type: 'attachment',
+    attachment: { type: 'prompt', commandMode: false, prompt: notificationText(taskId, status), timestamp: isoTs },
+    timestamp: isoTs,
+  };
+}
+
+// notificationQueueOpLine(taskId, status, isoTs) -> the QUEUE-OPERATION shape
+// verified against a real transcript: type:'queue-operation', with the
+// notification text living directly at entry.content (a string).
+function notificationQueueOpLine(taskId, status, isoTs) {
+  return {
+    type: 'queue-operation',
+    operation: 'enqueue',
+    content: notificationText(taskId, status),
     timestamp: isoTs,
   };
 }
@@ -247,6 +277,101 @@ test('a MIXED-CASE terminal status (e.g. "Completed") still counts as resolved -
     ]);
     const r = testHook(HOOK, stopPayload(tp), { home: h.home });
     assert.ok(!isBlock(r), 'a differently-cased terminal status must still resolve the agent, not be misread as still-silent');
+  } finally { h.cleanup(); }
+});
+
+test('TRANSCRIPT: terminal notification arriving as an ATTACHMENT entry (attachment.prompt) resolves the agent -> nothing', () => {
+  const h = makeHome();
+  try {
+    const out = writeOutputFile(h, 'worker-attach.output', THRESHOLD_MS + 60 * 60 * 1000);
+    const tp = h.writeTranscript([
+      agentToolUseLine('toolu_att', 'Attachment-shape completion', isoMinutesAgo(90)),
+      agentLaunchResultLine('aaaa100000000001', out, 'toolu_att', isoMinutesAgo(90)),
+      notificationAttachmentLine('aaaa100000000001', 'completed', isoMinutesAgo(1)),
+    ]);
+    const r = testHook(HOOK, stopPayload(tp), { home: h.home });
+    assert.ok(!isBlock(r), 'an attachment-shaped terminal notification must resolve the agent, not be missed: ' + JSON.stringify(r.json));
+  } finally { h.cleanup(); }
+});
+
+test('TRANSCRIPT: terminal notification arriving as a QUEUE-OPERATION entry (entry.content) resolves the agent -> nothing', () => {
+  const h = makeHome();
+  try {
+    const out = writeOutputFile(h, 'worker-queueop.output', THRESHOLD_MS + 60 * 60 * 1000);
+    const tp = h.writeTranscript([
+      agentToolUseLine('toolu_qop', 'Queue-op-shape completion', isoMinutesAgo(90)),
+      agentLaunchResultLine('aaab100000000001', out, 'toolu_qop', isoMinutesAgo(90)),
+      notificationQueueOpLine('aaab100000000001', 'completed', isoMinutesAgo(1)),
+    ]);
+    const r = testHook(HOOK, stopPayload(tp), { home: h.home });
+    assert.ok(!isBlock(r), 'a queue-operation-shaped terminal notification must resolve the agent, not be missed: ' + JSON.stringify(r.json));
+  } finally { h.cleanup(); }
+});
+
+test('SAFETY NET: output_file stale but a LATER tool_result references the agentId (result delivered) -> resolved, not nudged', () => {
+  const h = makeHome();
+  try {
+    const out = writeOutputFile(h, 'worker-delivered.output', THRESHOLD_MS + 60 * 60 * 1000);
+    const agentId = 'aaac100000000001';
+    // A later transcript entry (e.g. a SendMessage/TaskOutput tool_result)
+    // that quotes the agentId in its own tool_result content — the harness
+    // does this when the coordinator follows up on a finished agent — must
+    // count as delivered even with no <task-notification> block at all.
+    const followUpResultLine = {
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [
+          { tool_use_id: 'toolu_followup', type: 'tool_result', content: [{ type: 'text', text: 'Agent ' + agentId + ' result: done, see summary.' }] },
+        ],
+      },
+      timestamp: isoMinutesAgo(1),
+    };
+    const tp = h.writeTranscript([
+      agentToolUseLine('toolu_del', 'Delivered via follow-up reference', isoMinutesAgo(90)),
+      agentLaunchResultLine(agentId, out, 'toolu_del', isoMinutesAgo(90)),
+      followUpResultLine,
+    ]);
+    const r = testHook(HOOK, stopPayload(tp), { home: h.home });
+    assert.ok(!isBlock(r), 'a later tool_result referencing the agentId means the result was delivered -> must not nudge: ' + JSON.stringify(r.json));
+  } finally { h.cleanup(); }
+});
+
+test('HARD CAP: 5 consecutive Stops for the same stale agent produce exactly 1 block, even when the snapshot keeps changing', () => {
+  const h = makeHome();
+  try {
+    const out = path.join(h.home, 'worker-hardcap.output');
+    const agentId = 'aaae100000000001';
+    const tp = h.writeTranscript([
+      agentToolUseLine('toolu_hcp', 'Hard cap scenario', isoMinutesAgo(90)),
+      agentLaunchResultLine(agentId, out, 'toolu_hcp', isoMinutesAgo(90)),
+    ]);
+    let blocks = 0;
+    for (let i = 0; i < 5; i++) {
+      // Re-touch the output file EVERY call so its mtime (the snapshot dedup
+      // key) is DIFFERENT each time — the snapshot-only dedup above would nudge
+      // again on every call; the hard cap must still suppress after the first.
+      fs.writeFileSync(out, '{}\n', 'utf8');
+      const t = new Date(Date.now() - (THRESHOLD_MS + 60 * 60 * 1000) + i); // distinct mtime each iteration
+      fs.utimesSync(out, t, t);
+      const r = testHook(HOOK, stopPayload(tp), { home: h.home });
+      if (isBlock(r)) blocks++;
+    }
+    assert.strictEqual(blocks, 1, 'exactly one block across 5 consecutive Stops for the same agent, regardless of snapshot churn');
+  } finally { h.cleanup(); }
+});
+
+test('CONTROL: a genuinely silent agent (no notification in ANY shape, no later reference) is still flagged', () => {
+  const h = makeHome();
+  try {
+    const out = writeOutputFile(h, 'worker-truly-silent.output', THRESHOLD_MS + 60 * 60 * 1000);
+    const tp = h.writeTranscript([
+      agentToolUseLine('toolu_silent', 'Genuinely still running', isoMinutesAgo(90)),
+      agentLaunchResultLine('aaad100000000001', out, 'toolu_silent', isoMinutesAgo(90)),
+    ]);
+    const r = testHook(HOOK, stopPayload(tp), { home: h.home });
+    assert.ok(isBlock(r), 'an agent with no completion signal in any shape must still be nudged: ' + JSON.stringify(r.json));
+    assert.match(r.json.reason, /Genuinely still running|aaad100000000001/);
   } finally { h.cleanup(); }
 });
 

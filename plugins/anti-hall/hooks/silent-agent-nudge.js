@@ -133,6 +133,21 @@ const TASK_NOTIFICATION_BLOCK_RE = /<task-notification>([\s\S]*?)<\/task-notific
 const TASK_ID_RE = /<task-id>([^<]*)<\/task-id>/;
 const STATUS_RE = /<status>([^<]*)<\/status>/;
 
+// notificationTexts(entry) -> string[] of this transcript entry's texts that
+// contain '<task-notification>', across all THREE real shapes the harness
+// uses for a completion notice: a 'user' entry (bare string or array of text
+// blocks), a queued 'attachment' entry (attachment.prompt), or a
+// 'queue-operation' entry (entry.content). REUSED from
+// companion/lib/devswarm-idle.js — that module already had to solve this
+// exact multi-shape problem for the DevSwarm idle gate, and a second,
+// independently-drifting copy of the same parsing here is exactly how this
+// bug happened: this hook's own scanner only ever recognized the 'user'
+// shape, so a completion notice delivered as an 'attachment' or
+// 'queue-operation' entry was silently invisible to it (verified against
+// live transcripts: all three shapes co-occur with <task-notification> in
+// real sessions).
+const { notificationTexts: idleNotificationTexts } = require('../companion/lib/devswarm-idle.js');
+
 // scanTranscript(transcriptPath) -> { launched: Map<id, {outputFile, description, launchedAtMs}>, terminal: Set<id> } | null
 function scanTranscript(transcriptPath) {
   const { readTail } = require('./lib/transcript-tail.js');
@@ -142,6 +157,13 @@ function scanTranscript(transcriptPath) {
   const launched = new Map();
   const terminal = new Set();
   const descByToolUseId = new Map();
+  // SAFETY NET (delivered-but-unnotified): every OTHER tool_result's text
+  // (not the launch's own tool_result), so that if none of the three
+  // <task-notification> shapes above ever appear, but a LATER tool_result
+  // still literally quotes the agentId (e.g. a follow-up SendMessage/
+  // TaskOutput result the coordinator triggered once it had already acted on
+  // the agent's output), that counts as the result having been delivered.
+  const otherToolResultTexts = [];
 
   for (const raw of lines) {
     const line = raw.trim();
@@ -150,7 +172,8 @@ function scanTranscript(transcriptPath) {
     const hasLaunch = line.indexOf('Async agent launched successfully') !== -1;
     const hasNotif = line.indexOf('<task-notification>') !== -1;
     const hasAgentToolUse = line.indexOf('"name":"Agent"') !== -1 || line.indexOf('"name": "Agent"') !== -1;
-    if (!hasLaunch && !hasNotif && !hasAgentToolUse) continue;
+    const hasToolResult = line.indexOf('tool_result') !== -1;
+    if (!hasLaunch && !hasNotif && !hasAgentToolUse && !hasToolResult) continue;
 
     let entry;
     try { entry = JSON.parse(line); } catch (_) { continue; }
@@ -171,6 +194,23 @@ function scanTranscript(transcriptPath) {
       }
     }
 
+    // (b) terminal notification, any of the three real shapes — checked for
+    // EVERY entry type (not gated on entry.type === 'user' the way the
+    // launch/tool_result walk below is), since that gate is exactly what
+    // made 'attachment' and 'queue-operation' notifications invisible.
+    if (hasNotif) {
+      for (const text of idleNotificationTexts(entry)) {
+        for (const blockMatch of text.matchAll(TASK_NOTIFICATION_BLOCK_RE)) {
+          const body = blockMatch[1];
+          const tidm = TASK_ID_RE.exec(body);
+          const statm = STATUS_RE.exec(body);
+          if (tidm && tidm[1] && statm && TERMINAL_NOTIFICATION_STATUS.test(statm[1])) {
+            terminal.add(tidm[1]);
+          }
+        }
+      }
+    }
+
     if (entry.type !== 'user') continue;
 
     // Walk each content block (or the single string/object content itself)
@@ -181,6 +221,7 @@ function scanTranscript(transcriptPath) {
       if (!block) continue;
       const toolUseId = typeof block.tool_use_id === 'string' ? block.tool_use_id : undefined;
       const blockContent = block.content !== undefined ? block.content : block;
+      const isToolResult = block.type === 'tool_result';
       for (const text of extractTexts(blockContent)) {
         if (hasLaunch && text.indexOf('Async agent launched successfully') !== -1) {
           const idm = AGENT_ID_RE.exec(text);
@@ -193,16 +234,7 @@ function scanTranscript(transcriptPath) {
             });
           }
         }
-        if (hasNotif && text.indexOf('<task-notification>') !== -1) {
-          for (const blockMatch of text.matchAll(TASK_NOTIFICATION_BLOCK_RE)) {
-            const body = blockMatch[1];
-            const tidm = TASK_ID_RE.exec(body);
-            const statm = STATUS_RE.exec(body);
-            if (tidm && tidm[1] && statm && TERMINAL_NOTIFICATION_STATUS.test(statm[1])) {
-              terminal.add(tidm[1]);
-            }
-          }
-        }
+        if (isToolResult) otherToolResultTexts.push({ toolUseId, text });
       }
     }
   }
@@ -212,6 +244,21 @@ function scanTranscript(transcriptPath) {
   for (const rec of launched.values()) {
     if (rec.toolUseId && descByToolUseId.has(rec.toolUseId)) {
       rec.description = descByToolUseId.get(rec.toolUseId);
+    }
+  }
+
+  // SAFETY NET pass: for any launched-but-not-yet-terminal agent, check
+  // whether a tool_result OTHER than its own launch result later quotes its
+  // agentId. Ordering note: completion can only come AFTER launch (the
+  // launch line is what creates the agentId in the first place), so scanning
+  // the whole tail after the fact is safe — there is no ordering case where a
+  // completion reference could precede or be misattributed to a launch that
+  // has not happened yet.
+  for (const [id, rec] of launched) {
+    if (terminal.has(id)) continue;
+    for (const { toolUseId, text } of otherToolResultTexts) {
+      if (toolUseId !== undefined && toolUseId === rec.toolUseId) continue; // the launch's own result already named it — not "later" evidence
+      if (text.indexOf(id) !== -1) { terminal.add(id); break; }
     }
   }
 
@@ -335,12 +382,14 @@ function main() {
 
   const stateFile = path.join(home, '.anti-hall', 'silent-agent-nudge-state.json');
   let prevNudged = {};
+  let everNudged = {}; // HARD CAP state: { 'sessionId::id': tsMs } — see below.
   try {
     const parsed = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
-    if (parsed && typeof parsed === 'object' && parsed.nudged && typeof parsed.nudged === 'object') {
-      prevNudged = parsed.nudged;
+    if (parsed && typeof parsed === 'object') {
+      if (parsed.nudged && typeof parsed.nudged === 'object') prevNudged = parsed.nudged;
+      if (parsed.everNudged && typeof parsed.everNudged === 'object') everNudged = parsed.everNudged;
     }
-  } catch (_) { prevNudged = {}; }
+  } catch (_) { prevNudged = {}; everNudged = {}; }
 
   const liveKeys = new Set(candidates.map((c) => c.key));
   const stale = candidates.filter((c) => prevNudged[c.key] !== c.snapshot);
@@ -355,21 +404,43 @@ function main() {
     if (liveKeys.has(k)) nextNudged[k] = prevNudged[k];
   }
 
-  if (stale.length === 0) {
+  // HARD CAP (independent of the snapshot dedup above): at most ONE nudge per
+  // agentId per SESSION, ever — regardless of the snapshot changing (output
+  // file re-touched, a heartbeat re-written, a self-prune round-trip losing
+  // the record, or any other reason the snapshot-keyed dedup above might miss
+  // a repeat). Keyed by sessionId + agentId so two different sessions with a
+  // coincidentally equal agent id never share a cap, and TTL-pruned (30 days)
+  // so the map does not grow unbounded across many past sessions.
+  const sessionId = typeof payload.session_id === 'string' ? payload.session_id : '';
+  const everKey = (id) => sessionId + '::' + id;
+  const EVER_NUDGED_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+  const nextEverNudged = {};
+  for (const k of Object.keys(everNudged)) {
+    const ts = Number(everNudged[k]);
+    if (Number.isFinite(ts) && (now - ts) < EVER_NUDGED_TTL_MS) nextEverNudged[k] = ts;
+  }
+  // Without a session id there is nothing safe to scope the hard cap to —
+  // fall back to snapshot-only dedup rather than caping across unrelated
+  // sessions.
+  const hardCapped = sessionId ? stale.filter((c) => !Object.prototype.hasOwnProperty.call(nextEverNudged, everKey(c.id))) : stale;
+
+  function persist() {
     try {
       fs.mkdirSync(path.dirname(stateFile), { recursive: true });
-      fs.writeFileSync(stateFile, JSON.stringify({ nudged: nextNudged }), 'utf8');
-    } catch (_) { /* best-effort prune, never blocks */ }
+      fs.writeFileSync(stateFile, JSON.stringify({ nudged: nextNudged, everNudged: nextEverNudged }), 'utf8');
+    } catch (_) { /* best-effort persist, never blocks */ }
+  }
+
+  if (hardCapped.length === 0) {
+    // Keep the snapshot map in sync even when every stale candidate got
+    // suppressed by the hard cap, so it does not look "not yet nudged" next
+    // time and keep re-entering `stale` above for no reason.
+    for (const c of stale) nextNudged[c.key] = c.snapshot;
+    persist();
     process.exit(0);
   }
 
   for (const c of stale) nextNudged[c.key] = c.snapshot;
-  try {
-    fs.mkdirSync(path.dirname(stateFile), { recursive: true });
-    fs.writeFileSync(stateFile, JSON.stringify({ nudged: nextNudged }), 'utf8');
-  } catch (_) {
-    process.exit(0); // can't persist the cap -> fail-open by staying silent (never risk a repeat-nudge loop)
-  }
 
   // Dedup by agent id ACROSS sources for the DISPLAYED message only (state
   // above still tracks both the 't:' and 'h:' keys separately, so each
@@ -380,11 +451,21 @@ function main() {
   // to the user, not two duplicate lines for the same thing.
   const seenIds = new Set();
   const shownCandidates = [];
-  for (const c of stale) {
+  for (const c of hardCapped) {
     if (seenIds.has(c.id)) continue;
     seenIds.add(c.id);
     shownCandidates.push(c);
   }
+
+  // Exactly ONE block per Stop cycle: this whole hook only ever emits a
+  // single {decision:'block'} response per invocation already (one `reason`
+  // string covering up to MAX_NAMED names + a "+N more" tail) — recorded here
+  // explicitly since the hard cap above is what makes that hold true across
+  // repeated Stops for the SAME agent too, not just within one Stop.
+  if (sessionId) {
+    for (const c of shownCandidates) nextEverNudged[everKey(c.id)] = now;
+  }
+  persist();
 
   const MAX_NAMED = 3;
   const shown = shownCandidates.slice(0, MAX_NAMED).map((c) => {
