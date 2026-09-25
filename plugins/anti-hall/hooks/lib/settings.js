@@ -512,13 +512,21 @@ function set(section, key, value, opts) {
 // key it needs `opts.confirmed` when the effective value AFTER removal is the
 // RISKY direction relative to the current one (see isRiskyChange above) —
 // without it nothing is written and it returns {ok:false,
-// needsConfirmation:true, warning}.
+// needsConfirmation:true, warning}. The check runs INSIDE withSettingsLock
+// (P2 fix, rc-v0.108.4.2 review): it used to read+decide BEFORE acquiring the
+// lock, so a concurrent writer (another session, or a hook) could change
+// settings.json between the check and the delete below — a TOCTOU race where
+// the confirmation decision was made against data that was already stale by
+// the time the guard was actually disarmed.
 function reset(section, key, opts) {
   const entry = schema.findSetting(section, key);
   if (!entry) return { ok: false, error: 'unknown setting: ' + section + '.' + key };
 
+  return withSettingsLock(opts, () => {
+  const backedUpCorruptTo = backupCorruptIfNeeded(opts);
+  const store = load(opts);
+
   if (entry.locked && !(opts && opts.confirmed)) {
-    const store = load(opts);
     if (store[section] && Object.prototype.hasOwnProperty.call(store[section], key)) {
       const currentValue = get(section, key, undefined, opts);
       const envVal = readEnvOverride(entry, opts);
@@ -530,9 +538,6 @@ function reset(section, key, opts) {
     }
   }
 
-  return withSettingsLock(opts, () => {
-  const backedUpCorruptTo = backupCorruptIfNeeded(opts);
-  const store = load(opts);
   if (!store[section] || !Object.prototype.hasOwnProperty.call(store[section], key)) {
     return backedUpCorruptTo ? { ok: true, backedUpCorruptTo } : { ok: true };
   }

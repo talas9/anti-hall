@@ -461,6 +461,57 @@ test('SAFETY: reset is gated on the effective value AFTER removal — resetting 
   } finally { fs.rmSync(home, { recursive: true, force: true }); }
 });
 
+test('SAFETY: reset()\'s confirmation gate reads settings.json INSIDE the lock (rc-v0.108.4.2 review, P2) — a writer that arms the guard between an old-style pre-lock check and the delete must not let the disarm slip through unconfirmed', () => {
+  const home = tmpHome();
+  try {
+    const opts = { home, env: {} };
+    const file = settings.path(opts);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    // Start with NO override — guards.stashGuard resolves to its safe
+    // default (false). A stale PRE-LOCK read (the old, buggy shape) would
+    // see this and wrongly decide "nothing armed, no confirmation needed".
+    fs.writeFileSync(file, JSON.stringify({}) + '\n', 'utf8');
+
+    const realReadFileSync = fs.readFileSync;
+    // Capture the pre-race snapshot BEFORE any interception — this is what
+    // the very first physical read of settings.json must return, so the
+    // race is genuinely "read started before the concurrent write landed",
+    // not "write, then read the fresh result back" (which would not
+    // distinguish the buggy pre-lock-check shape from the fixed one, since
+    // both would just see the armed guard immediately).
+    const staleSnapshot = realReadFileSync.call(fs, file, 'utf8');
+    let armed = false;
+    fs.readFileSync = (p, ...rest) => {
+      if (p === file && !armed) {
+        armed = true;
+        // Simulate a concurrent writer (another session/CLI invocation)
+        // arming the guard right as this reset() call's first read begins —
+        // but that in-flight read still returns the stale (pre-write) bytes
+        // it already started with; every read AFTER this one sees the armed
+        // guard.
+        fs.writeFileSync(file, JSON.stringify({ guards: { stashGuard: true } }) + '\n', 'utf8');
+        return staleSnapshot;
+      }
+      return realReadFileSync.call(fs, p, ...rest);
+    };
+    let result;
+    try {
+      result = settings.reset('guards', 'stashGuard', opts);
+    } finally {
+      fs.readFileSync = realReadFileSync;
+    }
+
+    // The fix: every read of settings.json for this call happens INSIDE
+    // withSettingsLock, so the confirmation decision and the delete see the
+    // SAME (already-armed-by-the-concurrent-writer) snapshot — reset()
+    // correctly requires confirmation instead of silently disarming it.
+    assert.strictEqual(result.ok, false, JSON.stringify(result));
+    assert.strictEqual(result.needsConfirmation, true, JSON.stringify(result));
+    assert.strictEqual(result.warning, EXPECTED_WARNING['guards.stashGuard']);
+    assert.strictEqual(settings.get('guards', 'stashGuard', undefined, opts), true, 'the concurrently-armed guard must still be set — nothing was deleted');
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
 test('SAFETY: guards.editGuardAllow is risky only when ADDING a path not already present; removal-only and no-op changes need no confirmation', () => {
   const home = tmpHome();
   try {

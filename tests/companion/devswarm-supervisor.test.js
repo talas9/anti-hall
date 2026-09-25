@@ -952,15 +952,57 @@ test('sweepOnce: 3 consecutive sweeps over an unchanged blocker cache log exactl
   } finally { cleanup(); }
 });
 
-test('readBlockerLabelAskState/writeBlockerLabelAskState round-trip; unreadable state fails open to hash:""/askedAt:0', () => {
+test('readBlockerLabelAskState/writeBlockerLabelAskState round-trip; unreadable state fails open to hash:""/askedAt:0/mode:""', () => {
   const { home, cleanup } = makeHome();
   try {
-    assert.deepStrictEqual(M.readBlockerLabelAskState(home, 'child-a'), { hash: '', askedAt: 0 });
+    assert.deepStrictEqual(M.readBlockerLabelAskState(home, 'child-a'), { hash: '', askedAt: 0, mode: '' });
     M.writeBlockerLabelAskState(home, 'child-a', { hash: 'h1', askedAt: 12345, mode: 'shadow' });
     const state = M.readBlockerLabelAskState(home, 'child-a');
     assert.strictEqual(state.hash, 'h1');
     assert.strictEqual(state.askedAt, 12345);
+    // P2 fix (rc-v0.108.4.2 review): mode must round-trip through the read —
+    // it was written by writeBlockerLabelAskState() since cf82ef5 but never
+    // read back, so every caller's askState.mode was always undefined.
+    assert.strictEqual(state.mode, 'shadow', 'mode must be read back, not left undefined');
     assert.ok(fs.existsSync(M.blockerLabelAskStatePath(home, 'child-a')));
+  } finally { cleanup(); }
+});
+
+test('jevBlockerLabel: dedupe-suppressed call returns the label when the last logged ask was mode "on" (P2 fix regression guard)', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    writeJevConfig(home, { enabled: true, integrations: { supervisorBlockerLabel: 'on' } });
+    writeTriagePending(home, { 'primary-1\u0001child-a': { ts: 1000, kind: 'blocker', urgency: 'urgent' } });
+    const now = Date.now();
+    const first = M.jevBlockerLabel('child-a', home, { now });
+    assert.strictEqual(first, 'wedged', 'mode "on" must attach the label on the first ask');
+    // Same input, still within the re-ask interval -> dedupe-suppressed path.
+    // Before the fix, askState.mode was always undefined here, so this
+    // always returned null even though the promoted mode was "on".
+    const second = M.jevBlockerLabel('child-a', home, { now: now + 1000 });
+    assert.strictEqual(second, 'wedged', 'a dedupe-suppressed call must still return the label for a promoted "on" ask');
+  } finally { cleanup(); }
+});
+
+test('jevBlockerLabel: a mode change (off -> on) after the re-ask interval elapses is reflected in the next label, not the stale cached mode', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    // Start in mode "off" (no jev config) so the first ask is recorded with mode:"off".
+    writeTriagePending(home, { 'primary-1\u0001child-a': { ts: 1000, kind: 'blocker', urgency: 'urgent' } });
+    const now = Date.now();
+    const first = M.jevBlockerLabel('child-a', home, { now });
+    assert.strictEqual(first, null, 'mode "off" attaches no label');
+    let state = M.readBlockerLabelAskState(home, 'child-a');
+    assert.strictEqual(state.mode, 'off');
+
+    // Promote to mode "on" and let the re-ask interval elapse (same input
+    // hash) -> the elapsed interval must force a fresh ask that picks up
+    // the new mode, instead of trusting the stale cached "off".
+    writeJevConfig(home, { enabled: true, integrations: { supervisorBlockerLabel: 'on' } });
+    const after = M.jevBlockerLabel('child-a', home, { now: now + (6 * 60 * 60 * 1000 + 1000) });
+    assert.strictEqual(after, 'wedged', 'a mode change picked up on the post-interval re-ask must attach the label');
+    state = M.readBlockerLabelAskState(home, 'child-a');
+    assert.strictEqual(state.mode, 'on', 'the re-asked state must persist the new mode, not the stale one');
   } finally { cleanup(); }
 });
 

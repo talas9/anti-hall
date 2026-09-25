@@ -335,9 +335,16 @@ function readBlockerLabelAskState(home, childId) {
     return {
       hash: typeof (parsed && parsed.hash) === 'string' ? parsed.hash : '',
       askedAt: Number.isFinite(parsed && parsed.askedAt) ? parsed.askedAt : 0,
+      // P2 fix (rc-v0.108.4.2 review): this field was written by
+      // writeBlockerLabelAskState() but never READ back here, so every call
+      // site's `askState.mode` was always `undefined` — the dedupe-skip
+      // branch below (`askState.mode === 'on' ? label : null`) could never
+      // return the label for a suppressed re-ask, silently dropping an "on"
+      // mode's label for the rest of the re-ask interval.
+      mode: typeof (parsed && parsed.mode) === 'string' ? parsed.mode : '',
     };
   } catch (_) {
-    return { hash: '', askedAt: 0 };
+    return { hash: '', askedAt: 0, mode: '' };
   }
 }
 function writeBlockerLabelAskState(home, childId, state) {
