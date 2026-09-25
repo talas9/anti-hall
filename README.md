@@ -97,16 +97,81 @@ and the DevSwarm/statusline/context-protection detail behind each skill are in
 
 ## Documentation
 
-Full index: [`docs/README.md`](docs/README.md) (every doc, grouped, with a one-line
-description). Start here:
+Full index with more detail: [`docs/README.md`](docs/README.md). Every doc under
+`docs/`, grouped by topic, one line each:
+
+**Guides**
 
 | Doc | What it covers |
 |---|---|
-| [`docs/KB.md`](docs/KB.md) | Canonical knowledge-base index — current-plugin ground truth, topic → doc map. |
-| [`docs/GUIDE.md`](docs/GUIDE.md) | Extended guide — full hook/skills reference, statusline, config, contributing. |
-| [`docs/KB-devswarm-hivecontrol.md`](docs/KB-devswarm-hivecontrol.md) | DevSwarm mesh integration reference. |
-| [`docs/KB-jev-classifier.md`](docs/KB-jev-classifier.md) | Jev opt-in speculation classifier reference. |
-| [`plugins/anti-hall/codex/README.md`](plugins/anti-hall/codex/README.md) | Codex port — hook parity, install, skills. |
+| [`docs/KB.md`](docs/KB.md) | Canonical knowledge-base index — current-plugin ground truth, topic → doc map, staleness ledger. Read this first. |
+| [`docs/GUIDE.md`](docs/GUIDE.md) | Extended guide — hook reference, skills reference, statusline/config/troubleshooting, contributing. |
+| [`docs/E2E-TESTING.md`](docs/E2E-TESTING.md) | How the zero-dependency `node:test` hook suite works; per-event I/O contract. |
+| [`docs/TASK-WORK.md`](docs/TASK-WORK.md) | Task discipline design (`TaskCreate`/`TaskUpdate` vs legacy `TodoWrite`); basis for tasklist-guard. |
+| [`docs/TASKLIST-GUARD.md`](docs/TASKLIST-GUARD.md) | Usage guide for the `tasklist-guard` Stop hook: progress/history file convention, env knobs, escape hatch. |
+
+**Knowledge base (KB-\*)**
+
+| Doc | Topic |
+|---|---|
+| [`docs/KB-claude-codex.md`](docs/KB-claude-codex.md) | Backbone synthesis — hooks, plugins, prompting, Codex, orchestration, anti-hallucination evidence. |
+| [`docs/KB-claude-code-hooks.md`](docs/KB-claude-code-hooks.md) | Claude Code's hook system reference. |
+| [`docs/KB-claude-code-harness-features.md`](docs/KB-claude-code-harness-features.md) | Full harness feature surface vs what anti-hall actually uses; gap list. |
+| [`docs/KB-claude-workflow-orchestration.md`](docs/KB-claude-workflow-orchestration.md) | When/how to use the `Workflow` tool vs a single/shallow agent. |
+| [`docs/KB-claude-monitor-tool.md`](docs/KB-claude-monitor-tool.md) | The `Monitor` tool for event-driven orchestration. |
+| [`docs/KB-codex-platform-hooks-plugins.md`](docs/KB-codex-platform-hooks-plugins.md) | Codex platform hooks, plugins, skills, customization. |
+| [`docs/KB-codex-workflow-orchestration.md`](docs/KB-codex-workflow-orchestration.md) | Codex workflow orchestration, subagents, Workflow/swarm equivalents. |
+| [`docs/KB-codex-vs-opus-coding.md`](docs/KB-codex-vs-opus-coding.md) | Codex (GPT-5.x) vs Claude Opus for coding — division of labor. |
+| [`docs/KB-omc.md`](docs/KB-omc.md) | oh-my-claudecode (OMC) — Claude-side orchestration layer. |
+| [`docs/KB-omx.md`](docs/KB-omx.md) | oh-my-codex (OMX) — Codex-side orchestration layer. |
+| [`docs/KB-devswarm-hivecontrol.md`](docs/KB-devswarm-hivecontrol.md) | DevSwarm & the `hivecontrol` CLI — multi-workspace orchestration. |
+| [`docs/KB-devswarm-app-db.md`](docs/KB-devswarm-app-db.md) | The DevSwarm desktop app's database: what anti-hall reads (read-only), field evidence, sync. |
+| [`docs/KB-cmux.md`](docs/KB-cmux.md) | cmux — terminal workspace for AI coding agents. |
+| [`docs/KB-fable-5.md`](docs/KB-fable-5.md) | Claude Fable 5 model reference. |
+| [`docs/KB-sonnet-5.md`](docs/KB-sonnet-5.md) | Claude Sonnet 5 + model routing, Claude and Codex tables. |
+| [`docs/KB-gpt-5.6.md`](docs/KB-gpt-5.6.md) | GPT-5.6 (Sol/Terra/Luna) model reference. |
+| [`docs/KB-model-modes.md`](docs/KB-model-modes.md) | Model operating modes — effort levels, Plan Mode, Workflow/ultracode, Codex reasoning tiers. |
+| [`docs/KB-token-usage-models.md`](docs/KB-token-usage-models.md) | Token usage & cost mechanics across effort tiers, Claude + Codex. |
+| [`docs/KB-jev-classifier.md`](docs/KB-jev-classifier.md) | Jev (TypeSafe System One) opt-in classifier: every wired integration, metrics, cost and budget watch. |
+| [`docs/KB-goal-setting.md`](docs/KB-goal-setting.md) | Goal setting theory + AI-agent goal misspecification as a reward-hacking cause. |
+| [`docs/KB-false-completion.md`](docs/KB-false-completion.md) | False task completion — reward hacking, claimed-vs-verified gaps, mitigations. |
+| [`docs/KB-overengineering.md`](docs/KB-overengineering.md) | Overengineering causes and measurement; anti-hall's scope-fidelity implications. |
+| [`docs/KB-session-handover.md`](docs/KB-session-handover.md) | AI-agent session handover design; backs the `handover` skill. |
+| [`docs/KB-handover-research.md`](docs/KB-handover-research.md) | Handover research refresh: compaction loss, context rot, trigger points, Claude Code + Codex compaction/hook facts. |
+| [`docs/KB-flutter-claude-debug.md`](docs/KB-flutter-claude-debug.md) | Research backing the `flutter-debug` skill. |
+| [`docs/CONTEXT-PRESERVATION-KB.md`](docs/CONTEXT-PRESERVATION-KB.md) | Slowing main-agent context growth — caching, sub-agent isolation, compaction, JIT retrieval. |
+| [`docs/CODEX-KB-MIGRATION-MAP.md`](docs/CODEX-KB-MIGRATION-MAP.md) | Cross-reference between Claude-side and Codex-side KB docs. |
+
+**Reference / design**
+
+| Doc | What it covers |
+|---|---|
+| [`docs/opus-4-8-features.md`](docs/opus-4-8-features.md) | Claude Opus 4.8 feature reference (context window, effort, thinking, pricing). |
+| [`docs/opus-4-8-swarm.md`](docs/opus-4-8-swarm.md) | Multi-agent orchestration on Opus 4.8 — Dynamic Workflows, Managed Agents. |
+| [`docs/gsd-distilled.md`](docs/gsd-distilled.md) | GSD phase model, distilled; the phase loop `ship-it` borrows from. |
+| [`docs/superpowers-planning.md`](docs/superpowers-planning.md) | Distillation of the superpowers skill set; Iron-Law + rationalization-table pattern. |
+| [`docs/keynote-prompting-claude.md`](docs/keynote-prompting-claude.md) | Distilled notes from two Anthropic prompting talks. |
+| [`docs/keynote-transcript.md`](docs/keynote-transcript.md) | Reconstructed transcript of the Prompting 101 talk. |
+| [`docs/superpowers/specs/2026-07-05-devswarm-orchestration-design.md`](docs/superpowers/specs/2026-07-05-devswarm-orchestration-design.md) | Approved design — DevSwarm-aware workspace-tier orchestration. |
+| [`docs/superpowers/plans/2026-07-06-devswarm-orchestration.md`](docs/superpowers/plans/2026-07-06-devswarm-orchestration.md) | Implementation plan for the design above. |
+| [`docs/superpowers/specs/2026-07-08-devswarm-liveness-supervisor-design.md`](docs/superpowers/specs/2026-07-08-devswarm-liveness-supervisor-design.md) | Design — DevSwarm liveness supervisor (wedged-session recovery). |
+| [`docs/superpowers/plans/2026-07-08-devswarm-liveness-supervisor.md`](docs/superpowers/plans/2026-07-08-devswarm-liveness-supervisor.md) | Implementation plan for the liveness supervisor. |
+| [`docs/superpowers/specs/2026-08-01-harness-feature-adoption.md`](docs/superpowers/specs/2026-08-01-harness-feature-adoption.md) | Harness-feature adoption plan derived from `KB-claude-code-harness-features.md`. |
+
+**Archive / history** — frozen, dated records, never edited to match current code:
+
+| Doc | What it is |
+|---|---|
+| [`docs/AUDIT-REPORT.md`](docs/AUDIT-REPORT.md) | 4-auditor review, `v0.7.0`-era. Superseded; findings applied. |
+| [`docs/AUDIT-REPORT-2.md`](docs/AUDIT-REPORT-2.md) | Double deadly-loop final gate, `v0.11.1 → v0.11.2`. Superseded; findings applied. |
+| [`docs/PLUGIN-REVIEW.md`](docs/PLUGIN-REVIEW.md) | KB-driven plugin audit that prescribed the cadence redesign. Superseded; shipped. |
+| [`docs/ULTRAPLAN.md`](docs/ULTRAPLAN.md) | Single consolidated reconciliation plan, `v0.3.0`-era. Superseded; executed. |
+| [`docs/2026-06-06-context-opt-test-design.md`](docs/2026-06-06-context-opt-test-design.md) | Dated context-optimization test-harness design. |
+| [`docs/2026-06-10-v0.32.0-fable5-model-routing-plan.md`](docs/2026-06-10-v0.32.0-fable5-model-routing-plan.md) | Dated v0.32.0 design plan (Fable 5 support, model-routing guard). |
+| [`docs/2026-06-10-v0.34.0-flutter-debug-plan.md`](docs/2026-06-10-v0.34.0-flutter-debug-plan.md) | Dated v0.34.0 design plan (flutter-debug agent + skill). |
+| [`docs/archive/devswarm-layered-recovery-history.md`](docs/archive/devswarm-layered-recovery-history.md) | DevSwarm layered-recovery version history (v0.54–v0.107), moved out of GUIDE in v0.108.0. |
+
+Codex port: [`plugins/anti-hall/codex/README.md`](plugins/anti-hall/codex/README.md) — hook parity, install, skills.
 
 ## Troubleshooting
 

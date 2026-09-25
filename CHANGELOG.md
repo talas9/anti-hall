@@ -85,6 +85,17 @@ the update.
   most-recently-active session is actually more recently active than the
   CURRENT running session's own last activity.
 
+### Docs
+
+- **Every `docs/*.md` file now linked from both README.md and docs/KB.md.**
+  `docs/KB.md` was missing `KB-claude-code-hooks.md`, `KB-devswarm-app-db.md`,
+  `archive/devswarm-layered-recovery-history.md`, and two `superpowers/`
+  design/plan docs; the root `README.md`'s Documentation section only linked
+  ~5 of 52 tracked docs. Both now link the full set, grouped by topic. New
+  hygiene test `tests/hygiene/readme-doc-links.test.js` guards this going
+  forward (every git-tracked `docs/*.md` linked from README.md AND
+  `docs/KB.md`; every relative docs/ link in README.md resolves).
+
 ## 0.108.2 (2026-09-25)
 
 ### Fixes
