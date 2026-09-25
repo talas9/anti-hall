@@ -1860,7 +1860,7 @@ function cmdInboxAckPrimary(id, flags, ctx) {
     if (wtPath) dirId = canonicalReceiptId(s, id, wtPath);
   } catch (_) { dirId = String(id); }
   const found = readReadReceipt(home, id, rid, { dirId });
-  if (!found) { try { s.close(); } catch (_) {} return refuse('unknown-receipt', 'no read receipt ' + JSON.stringify(rid) + ' for ' + JSON.stringify(id) + ' — re-run `inbox read-primary ' + id + '`'); }
+  if (!found) { try { s.close(); } catch (_) {} return refuse('unknown-receipt', 'no read receipt ' + JSON.stringify(rid) + ' for ' + JSON.stringify(id) + ' — re-run `inbox read-primary ' + id + '`, then run the ackCommand it returns'); }
   const rec = found.rec;
   if (String(rec.id) !== String(id)) {
     // Not the exact literal id the receipt was issued to — still ackable
