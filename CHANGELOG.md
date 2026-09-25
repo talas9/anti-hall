@@ -22,6 +22,30 @@ the update.
   (including a chained second heavy command, or a `--check` hidden inside a still-heavy
   invocation) keeps the whole line blocked. Full suites, builds, installs, deploys and
   pushes stay gated. New setting `guards.allowReadOnlyVerify` (default on).
+- **`devswarm.js relay <seq|receipt> --to <id> [--note-file <path>]`.** Forwards a
+  message the caller already received (its own inbox) to another workspace,
+  verbatim, prefixed with a provenance header (`relayed from X, seq N, M
+  bytes`). `<receipt>` (an `inbox read-primary` readReceiptId) resolves only
+  when it covers exactly one message; otherwise it refuses ambiguous rather
+  than guessing. Verifies the relayed byte length against the source and
+  refuses (`ok:false`) on a mismatch or an empty source body — never a silent
+  partial relay.
+- **`devswarm.js inbox read-primary --format text`.** Prints one
+  `from/seq/body` block per message instead of the raw JSON. The default
+  two-step read-then-`ack-primary --receipt` flow is unchanged; the new,
+  opt-in `--ack-after-print` flag acks immediately after printing instead.
+- **`devswarm.js send --quiet`.** Prints one line (`sent seq N -> X, B bytes,
+  ok`) instead of the full JSON; failure still prints a loud `ok:false ...`
+  line and keeps the non-zero exit code.
+- **`devswarm.js send --to <id> --cc-primary`.** A direct `--to` send also
+  copies the Primary with the identical message body, best-effort — reported
+  under the result's `ccPrimary`, never flips the primary send's own
+  `ok`/exit code.
+- **`spawn` help text now documents the real hivecontrol args.**
+  `devswarm.js help spawn` names every `hivecontrol workspace create` flag
+  (`-s/--source`, `-a/--agent`, `-p/--prompt`, `-r/--remote`, `-t/--title`)
+  plus anti-hall's own `--from-local`, with an example and pointers to
+  `send`/`roster`/`inbox` for following up with a spawned child.
 
 ### Fixes
 
@@ -114,33 +138,6 @@ the update.
   actually changes) and fail-open throughout (an install failure, or
   `devswarm.stableLauncher = false`, falls straight back to the previous
   version-pinned path — byte-identical to pre-fix behavior).
-
-### Added
-
-- **`devswarm.js relay <seq|receipt> --to <id> [--note-file <path>]`.** Forwards a
-  message the caller already received (its own inbox) to another workspace,
-  verbatim, prefixed with a provenance header (`relayed from X, seq N, M
-  bytes`). `<receipt>` (an `inbox read-primary` readReceiptId) resolves only
-  when it covers exactly one message; otherwise it refuses ambiguous rather
-  than guessing. Verifies the relayed byte length against the source and
-  refuses (`ok:false`) on a mismatch or an empty source body — never a silent
-  partial relay.
-- **`devswarm.js inbox read-primary --format text`.** Prints one
-  `from/seq/body` block per message instead of the raw JSON. The default
-  two-step read-then-`ack-primary --receipt` flow is unchanged; the new,
-  opt-in `--ack-after-print` flag acks immediately after printing instead.
-- **`devswarm.js send --quiet`.** Prints one line (`sent seq N -> X, B bytes,
-  ok`) instead of the full JSON; failure still prints a loud `ok:false ...`
-  line and keeps the non-zero exit code.
-- **`devswarm.js send --to <id> --cc-primary`.** A direct `--to` send also
-  copies the Primary with the identical message body, best-effort — reported
-  under the result's `ccPrimary`, never flips the primary send's own
-  `ok`/exit code.
-- **`spawn` help text now documents the real hivecontrol args.**
-  `devswarm.js help spawn` names every `hivecontrol workspace create` flag
-  (`-s/--source`, `-a/--agent`, `-p/--prompt`, `-r/--remote`, `-t/--title`)
-  plus anti-hall's own `--from-local`, with an example and pointers to
-  `send`/`roster`/`inbox` for following up with a spawned child.
 
 ## 0.110.0 (2026-09-26)
 
