@@ -107,8 +107,9 @@ function isHardRisk(fp) {
 
 // findPlanPath(cwd): the PLAN.md path if found at <cwd>/PLAN.md, else null.
 // GSD's `.planning/` convention is discontinued (owner decision, 2026-07-03) —
-// `scripts/migrate-state.js` folds any existing `.planning/` content into
-// `.anti-hall/history/legacy/planning/`; this hook no longer looks there.
+// an explicit `scripts/migrate-state.js --planning` can copy existing
+// `.planning/` content into `.anti-hall/history/legacy/planning/`; this hook no
+// longer looks at either.
 function findPlanPath(cwd) {
   if (!cwd || typeof cwd !== 'string') return null;
   const candidate = path.join(cwd, 'PLAN.md');

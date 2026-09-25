@@ -1166,11 +1166,10 @@ function runRepairs(opts) {
     return { pending: pending.length > 0, detail: pending.join(', ') };
   }, () => require(MIGRATE_STATE).migrateLegacyState({ dir: cwd }));
 
-  migrationFix('migrate-gsd', 'migrate-gsd-planning', () => {
-    const r = require(MIGRATE_STATE).migrateGsdPlanning({ dir: cwd, dryRun: true });
-    const pending = r.filter((x) => x.action === 'pending').map((x) => x.file);
-    return { pending: pending.length > 0, detail: pending.length + ' file(s)' };
-  }, () => require(MIGRATE_STATE).migrateGsdPlanning({ dir: cwd }));
+  // 0.108.5 P0: the GSD `.planning/` fold is NOT a repair. It used to run here
+  // (and so on every repair-on-reload) and moved git-tracked .planning/ files
+  // out of child worktrees and submodules. It is now copy-only and runs only
+  // as the explicit, human-typed `migrate-state.js --planning`.
 
   migrationFix('migrate-devswarm-store', 'migrate-devswarm-store', () => {
     const r = require(MIGRATE_STATE).migrateDevswarmStore({ dryRun: true });
@@ -1383,9 +1382,9 @@ function runRepairs(opts) {
   }
 
   // --migrations-only (repair-on-reload's automatic pass): ONLY the stamped
-  // data migrations above and the ~/.anti-hall sweeps below run (the legacy /
-  // GSD migrations above also write <cwd>/.anti-hall/history/legacy/, and the
-  // GSD one deletes each verified-copied <cwd>/.planning/ file). Everything in
+  // data migrations above and the ~/.anti-hall sweeps below run (the legacy
+  // migration above also COPIES into <cwd>/.anti-hall/history/legacy/; it
+  // never deletes or moves a source file). Everything in
   // this block touches config OUTSIDE ~/.anti-hall (Claude statusLine, Codex
   // hooks/config.toml, launchd/systemd units, native hivecontrol queues) and
   // stays behind a user-typed `doctor --repair`.
@@ -1910,6 +1909,50 @@ function runRepairs(opts) {
       push(id, action, 'failed', id + ' raised: ' + errMsg(e));
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// checkPlanningDamage({cwd}) -> [{ worktree, missing, withCopy, safe, restoreCmd }]
+// REPORT-ONLY (0.108.5 P0). Every work tree of cwd's repo (plus each one's
+// initialised submodules) where tracked `.planning/` files are missing and a
+// copy sits under .anti-hall/history/legacy/planning/ — the damage the
+// pre-0.108.5 automatic GSD fold left behind. Restores nothing; prints the
+// exact commands. Empty array when nothing is found.
+function checkPlanningDamage(opts) {
+  const o = opts || {};
+  const cwd = o.cwd || process.cwd();
+  const out = [];
+  try {
+    const cp = require('child_process');
+    const env = Object.assign({}, process.env);
+    for (const k of ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_COMMON_DIR', 'GIT_INDEX_FILE', 'GIT_PREFIX']) delete env[k];
+    const run = (dir, args) => {
+      const r = cp.spawnSync('git', ['-C', dir].concat(args), { encoding: 'utf8', env, timeout: 30000 });
+      return r && !r.error && r.status === 0 ? String(r.stdout || '') : null;
+    };
+    const wts = [];
+    const list = run(cwd, ['worktree', 'list', '--porcelain']);
+    if (list == null) return out;
+    for (const line of list.split('\n')) if (line.startsWith('worktree ')) wts.push(line.slice(9));
+    const dirs = [];
+    for (const wt of wts) {
+      if (!fs.existsSync(wt)) continue;
+      dirs.push(wt);
+      const subs = run(wt, ['submodule', '--quiet', 'foreach', '--recursive', 'pwd']);
+      if (subs) for (const s of subs.split('\n')) if (s.trim()) dirs.push(s.trim());
+    }
+    const ms = require(MIGRATE_STATE);
+    for (const d of dirs) {
+      const r = ms.findPlanningDamage({ dir: d });
+      if (!r || r.withCopy === 0) continue;
+      out.push({
+        worktree: r.worktree, missing: r.missing, withCopy: r.withCopy, safe: r.safe.length,
+        restoreCmd: 'git -C "' + r.worktree + '" checkout -- .planning',
+        optInCmd: 'node "' + MIGRATE_STATE + '" --restore-planning --dir "' + r.worktree + '"',
+      });
+    }
+  } catch (_) { /* fail-open: report-only */ }
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -3022,7 +3065,7 @@ function reconcileStuckNdCursors(opts) {
 }
 
 module.exports = {
-  readInstalledIngestWorkingDir, classifyIngestUnit, runRepairs,
+  readInstalledIngestWorkingDir, classifyIngestUnit, runRepairs, checkPlanningDamage,
   // tmp-worktree/WorkingDirectory report-only message (exported for direct test
   // coverage of the exact bootout + quarantine command text):
   tmpWorkdirReportMessage,

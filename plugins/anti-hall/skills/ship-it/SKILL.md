@@ -105,8 +105,8 @@ proceed without. Interactively (no autonomy granted), present the intent note an
 `ExitPlanMode` approval** — plan mode is read-only for the repo, so the file lands the moment
 the gate clears, before any code. Write **one** file: `PLAN.md` at the repo root. (GSD's
 `.planning/` convention is discontinued as of 2026-07-03 — no longer written to or read from;
-`scripts/migrate-state.js` folds any existing `.planning/` content into
-`.anti-hall/history/legacy/planning/`.) It carries the design through `/clear` and compaction.
+an explicit, copy-only `scripts/migrate-state.js --planning` can copy existing
+`.planning/` content into `.anti-hall/history/legacy/planning/`; nothing does it automatically.) It carries the design through `/clear` and compaction.
 This single file is the durable memory — **not** an artifact graph, not a file per phase.
 
 ```markdown

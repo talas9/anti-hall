@@ -27,12 +27,11 @@ const QUIET = process.argv.includes('--quiet');
 // self-test diagnostics (see the early exit right after the repair pass).
 // No user config is touched (no statusLine, no Codex install, no daemon
 // install/restart); those stay behind a user-typed `doctor --repair`.
-// Two of those migrations write PROJECT state in the session's cwd, not
+// One of those migrations writes PROJECT state in the session's cwd, not
 // user config: migrateLegacyState copies .anti-hall-progress.md /
-// .anti-hall-history.md into <cwd>/.anti-hall/history/legacy/ (originals kept),
-// and migrateGsdPlanning copies <cwd>/.planning/ files there and then DELETES
-// each source file once its copy is verified byte-identical (directories are
-// never removed).
+// .anti-hall-history.md into <cwd>/.anti-hall/history/legacy/ (originals kept).
+// No repair pass ever deletes or moves a repo file (0.108.5 P0: the GSD
+// .planning/ fold is explicit-only, `migrate-state.js --planning`).
 const MIGRATIONS_ONLY = process.argv.includes('--migrations-only');
 // Repair mode is OPT-IN (mesh redesign Phase 4). Plain `doctor` and `--check`
 // run NO repair: diagnostics only. The live self-tests below still exercise the
@@ -1278,6 +1277,24 @@ if (REPAIR_INGEST_ORPHANS) {
   if (!result) return;
   head('leaked test-fixture stores');
   warnl(result.message);
+})();
+
+// --- 5m-planning. moved-.planning damage (REPORT-ONLY, CONDITIONAL, check
+// mode included) ---------------------------------------------------------------
+// 0.108.5 P0: the pre-0.108.5 automatic GSD fold moved tracked .planning/
+// files into .anti-hall/history/legacy/planning/. Lists each affected work
+// tree with the exact restore command. Restores NOTHING; silent when clean;
+// never touches pass/fail.
+(function planningDamageSection() {
+  let rows = [];
+  try { rows = require('./lib/doctor-repair.js').checkPlanningDamage({ cwd: process.cwd() }); } catch (_) { rows = []; }
+  if (!rows || rows.length === 0) return;
+  head('moved .planning/ files (pre-0.108.5 automatic fold — report-only, nothing restored)');
+  for (const r of rows) {
+    warnl(r.worktree + ': ' + r.missing + ' tracked .planning/ file(s) missing from the work tree, ' + r.withCopy + ' with a legacy copy (' + r.safe + ' byte-identical to HEAD)');
+    infol('restore from git:        ' + r.restoreCmd);
+    infol('or restore identical copies only (opt-in): ' + r.optInCmd);
+  }
 })();
 
 // --- 5m. identity-rekey-candidates (REPORT-ONLY, CONDITIONAL, check mode

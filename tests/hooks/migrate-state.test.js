@@ -133,7 +133,7 @@ test('GSD: no .planning/ directory -> single not-found entry, no throw', () => {
   } finally { cleanup(); }
 });
 
-test('GSD: migrates a nested .planning/ tree preserving relative structure', () => {
+test('GSD: copies a nested .planning/ tree preserving relative structure', () => {
   const { dir, write, cleanup } = makeTmpDir();
   try {
     write('.planning/ROADMAP.md', '# roadmap\n');
@@ -142,7 +142,7 @@ test('GSD: migrates a nested .planning/ tree preserving relative structure', () 
 
     const results = migrateGsdPlanning({ dir });
     assert.strictEqual(results.length, 3);
-    assert.ok(results.every((r) => r.action === 'migrated'));
+    assert.ok(results.every((r) => r.action === 'copied'), JSON.stringify(results));
 
     const base = path.join(dir, '.anti-hall', 'history', 'legacy', 'planning');
     assert.strictEqual(fs.readFileSync(path.join(base, 'ROADMAP.md'), 'utf8'), '# roadmap\n');
@@ -151,7 +151,7 @@ test('GSD: migrates a nested .planning/ tree preserving relative structure', () 
   } finally { cleanup(); }
 });
 
-test('GSD: deletes each source file once its copy is verified, but NEVER removes .planning/ (or a subdirectory) itself', () => {
+test('GSD: COPY-ONLY -- every source file is left in place, byte-identical', () => {
   const { dir, write, cleanup } = makeTmpDir();
   try {
     const original = '# roadmap\n- phase 1\n- phase 2\n';
@@ -159,61 +159,41 @@ test('GSD: deletes each source file once its copy is verified, but NEVER removes
     const nestedSrcPath = write('.planning/codebase/architecture.md', '# arch\n');
 
     const results = migrateGsdPlanning({ dir });
-    assert.ok(results.every((r) => r.action === 'migrated'));
-
-    // Source FILES are gone (verified-copy delete)...
-    assert.ok(!fs.existsSync(srcPath), 'ROADMAP.md source should be deleted after verified migration');
-    assert.ok(!fs.existsSync(nestedSrcPath), 'nested source file should be deleted after verified migration');
-    // ...but the directory tree itself is never removed, only emptied of migrated files.
-    assert.ok(fs.existsSync(path.join(dir, '.planning')), '.planning/ directory itself must still exist');
-    assert.ok(fs.existsSync(path.join(dir, '.planning', 'codebase')), '.planning/codebase/ subdirectory must still exist');
-
-    // The migrated content is fully present at the destination (lossless).
-    const base = path.join(dir, '.anti-hall', 'history', 'legacy', 'planning');
-    assert.strictEqual(fs.readFileSync(path.join(base, 'ROADMAP.md'), 'utf8'), original);
+    assert.ok(results.every((r) => r.action === 'copied'));
+    assert.strictEqual(fs.readFileSync(srcPath, 'utf8'), original, 'source must survive untouched');
+    assert.strictEqual(fs.readFileSync(nestedSrcPath, 'utf8'), '# arch\n', 'nested source must survive untouched');
   } finally { cleanup(); }
 });
 
-test('GSD: idempotent -- second run finds nothing left to migrate (source already deleted), reports empty, no error', () => {
+test('GSD: idempotent -- second run reports skipped (identical copy exists), source still present', () => {
   const { dir, write, cleanup } = makeTmpDir();
   try {
     write('.planning/STATE.md', '# state\n');
-
     const first = migrateGsdPlanning({ dir });
-    assert.strictEqual(first.length, 1);
-    assert.strictEqual(first[0].action, 'migrated');
-
+    assert.strictEqual(first[0].action, 'copied');
     const second = migrateGsdPlanning({ dir });
-    assert.deepStrictEqual(second, [], 'second run should find zero files left under .planning/ and not throw');
-
-    // .planning/ itself is still there, just empty of the file that was migrated.
-    assert.ok(fs.existsSync(path.join(dir, '.planning')));
+    assert.deepStrictEqual(second.map((r) => r.action), ['skipped']);
+    assert.ok(fs.existsSync(path.join(dir, '.planning', 'STATE.md')));
   } finally { cleanup(); }
 });
 
-test('GSD: dedupe is per source path, not global content -- two different files with identical content each get their own migrated+deleted copy', () => {
+test('GSD: two files with identical content each get their own copy', () => {
   const { dir, write, cleanup } = makeTmpDir();
   try {
     const content = '# duplicate content\n';
     write('.planning/A.md', content);
     write('.planning/B.md', content);
-
     const results = migrateGsdPlanning({ dir });
-    const aResult = results.find((r) => r.file === '.planning/A.md');
-    const bResult = results.find((r) => r.file === '.planning/B.md');
-    assert.ok(aResult && bResult, 'expected an entry for both A.md and B.md');
-    assert.strictEqual(aResult.action, 'migrated');
-    assert.strictEqual(bResult.action, 'migrated');
-
-    // Each source is independently deleted after its own verified copy --
-    // one file's migration is never mistaken for the other's.
-    assert.ok(!fs.existsSync(path.join(dir, '.planning', 'A.md')));
-    assert.ok(!fs.existsSync(path.join(dir, '.planning', 'B.md')));
+    assert.strictEqual(results.find((r) => r.file === '.planning/A.md').action, 'copied');
+    assert.strictEqual(results.find((r) => r.file === '.planning/B.md').action, 'copied');
     const base = path.join(dir, '.anti-hall', 'history', 'legacy', 'planning');
     assert.strictEqual(fs.readFileSync(path.join(base, 'A.md'), 'utf8'), content);
     assert.strictEqual(fs.readFileSync(path.join(base, 'B.md'), 'utf8'), content);
+    assert.ok(fs.existsSync(path.join(dir, '.planning', 'A.md')));
+    assert.ok(fs.existsSync(path.join(dir, '.planning', 'B.md')));
   } finally { cleanup(); }
 });
+
 
 // --- migrateDevswarmStore dryRun pending (Bug 3: must be IDEMPOTENT, not a
 // bare descriptor count) ------------------------------------------------------
@@ -378,20 +358,16 @@ test('migrateDevswarmStore: markRead ON via opts advances the cursor -- imported
   });
 });
 
-test('GSD: re-run after a file is re-created with DIFFERENT content migrates the new content (not confused with prior state)', () => {
+test('GSD: a changed source never overwrites an existing different legacy copy (conflict, both kept)', () => {
   const { dir, write, cleanup } = makeTmpDir();
   try {
     write('.planning/NOTES.md', '# version one\n');
-    const first = migrateGsdPlanning({ dir });
-    assert.strictEqual(first[0].action, 'migrated');
-
-    // File re-appears (e.g. a fresh GSD session wrote it again) with new content.
+    assert.strictEqual(migrateGsdPlanning({ dir })[0].action, 'copied');
     write('.planning/NOTES.md', '# version two\n');
     const second = migrateGsdPlanning({ dir });
-    assert.strictEqual(second[0].action, 'migrated', 'different content at the same path must be treated as fresh, not skipped');
-    assert.ok(!fs.existsSync(path.join(dir, '.planning', 'NOTES.md')), 'source deleted again after the second verified migration');
-
+    assert.strictEqual(second[0].action, 'conflict');
     const base = path.join(dir, '.anti-hall', 'history', 'legacy', 'planning');
-    assert.strictEqual(fs.readFileSync(path.join(base, 'NOTES.md'), 'utf8'), '# version two\n');
+    assert.strictEqual(fs.readFileSync(path.join(base, 'NOTES.md'), 'utf8'), '# version one\n');
+    assert.strictEqual(fs.readFileSync(path.join(dir, '.planning', 'NOTES.md'), 'utf8'), '# version two\n');
   } finally { cleanup(); }
 });

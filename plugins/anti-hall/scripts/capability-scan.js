@@ -24,7 +24,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const cp = require('child_process');
-const { migrateLegacyState, migrateGsdPlanning } = require('./migrate-state.js');
+const { migrateLegacyState } = require('./migrate-state.js');
 
 const ROOT = path.resolve(__dirname, '..'); // plugin root (plugins/anti-hall)
 
@@ -171,21 +171,15 @@ const MIGRATIONS_HOW = 'node "${CLAUDE_PLUGIN_ROOT}/scripts/migrate-state.js"';
 // Detection ONLY — delegates to migrate-state.js's own dryRun mode rather than
 // reimplementing what "pending" means. Never writes or deletes.
 function migrationsCapability({ dir }) {
+  // The GSD .planning/ fold is not a pending migration (0.108.5: explicit,
+  // copy-only `migrate-state.js --planning`), so it is not detected here.
   let legacyPending = null;
-  let gsdPending = null;
   try {
     legacyPending = migrateLegacyState({ dir, dryRun: true }).some((r) => r.action === 'pending');
   } catch (_) {
     legacyPending = null;
   }
-  try {
-    gsdPending = migrateGsdPlanning({ dir, dryRun: true }).some((r) => r.action === 'pending');
-  } catch (_) {
-    gsdPending = null;
-  }
-
-  const unknown = legacyPending === null && gsdPending === null;
-  const active = unknown ? 'unknown' : !(legacyPending || gsdPending);
+  const active = legacyPending === null ? 'unknown' : !legacyPending;
   return { name: 'state-migrations', available: true, active, how: MIGRATIONS_HOW };
 }
 

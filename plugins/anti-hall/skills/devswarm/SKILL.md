@@ -868,7 +868,8 @@ node plugins/anti-hall/scripts/migrate-state.js --mark-read [dir]
 ```
 
 Only affects the migration's own DevSwarm-store fold (not the legacy `.anti-hall-progress.md`/
-`.anti-hall-history.md`/`.planning/` copies, which are unconditional and unrelated to read state).
+`.anti-hall-history.md` copies, which are unconditional and unrelated to read state; the `.planning/`
+copy runs only with the explicit `--planning` flag).
 Any message that arrives AFTER this migration call returns is unaffected and still surfaces as
 unread normally. Default behavior (flag/env absent) is unchanged — the legacy cursor is preserved
 exactly as it was before this option existed.

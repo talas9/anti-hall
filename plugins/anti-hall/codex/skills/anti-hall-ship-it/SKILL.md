@@ -98,7 +98,7 @@ ANTI_HALL_ROOT="$(cd "$(dirname "$SKILL_FILE")/../../.." && pwd)"
 test -f "$ANTI_HALL_ROOT/.codex-plugin/plugin.json" || { echo "anti-hall plugin root not found relative to $SKILL_FILE — aborting" >&2; exit 1; }
 ```
 
-`$ANTI_HALL_ROOT/scripts/migrate-state.js` is a pure-Node script with no Claude-specific dependencies — it works identically from a Codex session: `node "$ANTI_HALL_ROOT/scripts/migrate-state.js"`. Use it to fold legacy root `.anti-hall-progress.md`/`.anti-hall-history.md` files into the new dated `.anti-hall/` structure.
+`$ANTI_HALL_ROOT/scripts/migrate-state.js` is a pure-Node script with no Claude-specific dependencies — it works identically from a Codex session: `node "$ANTI_HALL_ROOT/scripts/migrate-state.js"`. Use it to fold legacy root `.anti-hall-progress.md`/`.anti-hall-history.md` files into the new dated `.anti-hall/` structure (copy-only). A `.planning/` tree is only copied by the explicit `--planning` flag, never moved.
 
 ## 8. Wrap-up: summarize and index
 

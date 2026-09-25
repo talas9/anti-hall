@@ -13,8 +13,11 @@
 // so the archived name still matches the legacy root filename at a glance.
 //
 // USAGE
-//   node plugins/anti-hall/scripts/migrate-state.js [dir]
-//   (dir defaults to process.cwd())
+//   node plugins/anti-hall/scripts/migrate-state.js [dir] [--planning] [--mark-read]
+//   node plugins/anti-hall/scripts/migrate-state.js --restore-planning [--dir <wt>]
+//   (dir defaults to process.cwd()). --planning = explicit copy-only GSD
+//   .planning/ fold; --restore-planning = restore tracked .planning/ files the
+//   pre-0.108.5 automatic fold moved out (see restorePlanning).
 //
 // EXPORT
 //   migrateLegacyState({ dir }) -> Array<{ file, dest, action }>
@@ -200,37 +203,27 @@ function migrateLegacyState({ dir, dryRun } = {}) {
 }
 
 /**
- * migrateGsdPlanning({ dir })
+ * migrateGsdPlanning({ dir, dryRun })
  *
- * Folds a GSD (Get-Shit-Done) `.planning/` tree into
- * `.anti-hall/history/legacy/planning/`, preserving relative structure.
- * Owner decision (2026-07-03): GSD is discontinued, and anti-hall's
- * `.anti-hall/` convention supersedes `.planning/` going forward.
+ * EXPLICIT, HUMAN-RUN ONLY (`migrate-state.js --planning`). Never wired into
+ * doctor --repair, repair-on-reload, update.js or migrations.js: 0.108.5 P0 —
+ * the old automatic version moved git-tracked `.planning/` files out of child
+ * worktrees and submodules.
  *
- * DELETE POLICY (owner-confirmed, 2026-07-03): once a file's copy is
- * VERIFIED byte-identical at the destination, the SOURCE FILE is deleted —
- * but the `.planning/` directory itself (and any subdirectory) is NEVER
- * removed, only the individual files inside it, one at a time, each only
- * after its own copy is confirmed. A file whose copy cannot be verified is
- * left in place (never deleted) and reported as 'verify-failed', not
- * silently swallowed. This is deliberately narrower than "rm -rf .planning/":
- * no directory is ever unlinked, so a partial run (crash, permission error
- * partway through) can never leave `.planning/` missing — only progressively
- * emptied of files that are safely duplicated elsewhere.
+ * COPY-ONLY: copies each `.planning/` file into
+ * `.anti-hall/history/legacy/planning/` (relative structure kept). The source
+ * is NEVER unlinked, renamed or removed, and an existing legacy copy with
+ * DIFFERENT content is never overwritten (reported as 'conflict').
  *
- * dir — repo root to look in (default: cwd)
- * dryRun — when true, detect only: no write/delete happens, and a file that
- *   would be migrated is reported as 'pending' instead of 'migrated'.
+ * Skips the whole tree (single 'unsafe-skip' entry with a `reason`) when:
+ *   - `dir` is a linked (e.g. DevSwarm child) worktree, not the main checkout;
+ *   - `dir` is inside a git submodule;
+ *   - any `.planning/` file is tracked by git (already safe in git);
+ *   - the location or tracking state cannot be confirmed (fail closed).
  *
- * Returns Array<{ file, dest, action }>, action one of:
- *   'migrated'      — copied, verified, source file deleted
- *   'pending'       — (dryRun only) would migrate; nothing written
- *   'skipped'       — destination already holds identical content (idempotent
- *                     re-run); source is NOT deleted here (a prior run already
- *                     deleted it, or this is a second independent source with
- *                     the same content — never delete on a 'skipped' path)
- *   'verify-failed' — copy written but re-read didn't match; source kept
- *   'not-found'     — `.planning/` does not exist (single entry, whole-run)
+ * Returns Array<{ file, dest, action, reason? }>, action one of:
+ *   'copied' | 'pending' (dryRun) | 'skipped' (identical copy exists) |
+ *   'conflict' | 'verify-failed' | 'not-found' | 'unsafe-skip'
  */
 function walkFiles(root, rel) {
   const abs = path.join(root, rel);
@@ -252,6 +245,47 @@ function walkFiles(root, rel) {
   return out;
 }
 
+const GIT_SCRUB_ENV = ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_COMMON_DIR', 'GIT_INDEX_FILE', 'GIT_PREFIX'];
+
+// git(dir, args, opts) -> { ok, stdout } — Buffer stdout when opts.buffer.
+function git(dir, args, opts) {
+  const o = opts || {};
+  const env = Object.assign({}, process.env);
+  for (const k of GIT_SCRUB_ENV) delete env[k];
+  env.GIT_LITERAL_PATHSPECS = '1';
+  try {
+    const r = require('child_process').spawnSync('git', ['-C', dir].concat(args), {
+      encoding: o.buffer ? 'buffer' : 'utf8', env, timeout: 30000, maxBuffer: 256 * 1024 * 1024,
+      input: o.input,
+    });
+    if (!r || r.error || r.status !== 0) return { ok: false, stdout: null };
+    return { ok: true, stdout: r.stdout };
+  } catch (_) {
+    return { ok: false, stdout: null };
+  }
+}
+
+// planningUnsafeReason(root) -> null when an explicit copy is allowed, else why not.
+function planningUnsafeReason(root) {
+  let ctx;
+  try {
+    ctx = require('../companion/lib/identity.js').resolveContext(root, { memo: false });
+  } catch (e) {
+    return 'could not resolve the git location (' + (e && e.message) + ')';
+  }
+  if (!ctx || ctx.kind === 'deleted') return 'directory does not exist';
+  if (ctx.uncertain) return 'git location could not be confirmed';
+  if (String(ctx.kind).startsWith('submodule')) return 'inside a git submodule';
+  if (ctx.kind === 'linked-worktree') return 'a linked (child) worktree, not the main checkout';
+  if (ctx.kind === 'non-git') return null;
+  if (ctx.kind !== 'main') return 'unrecognised git location kind ' + ctx.kind;
+  const r = git(root, ['ls-files', '-z', '--', '.planning']);
+  if (!r.ok) return 'could not check git tracking of .planning/';
+  const tracked = r.stdout.split('\0').filter(Boolean).length;
+  if (tracked > 0) return '.planning/ is tracked by git (' + tracked + ' file(s)) — already safe in git, nothing to fold';
+  return null;
+}
+
 function migrateGsdPlanning({ dir, dryRun } = {}) {
   const root = path.resolve(dir || process.cwd());
   const planningDir = path.join(root, '.planning');
@@ -268,6 +302,9 @@ function migrateGsdPlanning({ dir, dryRun } = {}) {
     return [{ file: '.planning', dest: null, action: 'not-found' }];
   }
 
+  const reason = planningUnsafeReason(root);
+  if (reason) return [{ file: '.planning', dest: null, action: 'unsafe-skip', reason }];
+
   const results = [];
   for (const rel of relFiles) {
     const srcPath = path.join(root, rel);
@@ -276,24 +313,25 @@ function migrateGsdPlanning({ dir, dryRun } = {}) {
 
     let srcContent;
     try {
-      srcContent = fs.readFileSync(srcPath, 'utf8');
+      srcContent = fs.readFileSync(srcPath);
     } catch (_) {
-      continue; // unreadable (e.g. binary/permission) — skip, never fail the whole run
+      continue; // unreadable — skip, never fail the whole run
     }
 
     let destContent = null;
     try {
-      destContent = fs.readFileSync(destPath, 'utf8');
+      destContent = fs.readFileSync(destPath);
     } catch (_) {
       destContent = null;
     }
 
-    if (destContent === srcContent) {
-      // Destination already matches — a prior run already migrated (and
-      // deleted) this file, or a different source produced identical
-      // content. Either way, never delete on this path: we did not just
-      // write+verify a fresh copy in THIS call.
+    if (destContent && destContent.equals(srcContent)) {
       results.push({ file: rel, dest: destPath, action: 'skipped' });
+      continue;
+    }
+    if (destContent) {
+      // Never overwrite an existing legacy copy — it may be the only copy.
+      results.push({ file: rel, dest: destPath, action: 'conflict' });
       continue;
     }
 
@@ -303,47 +341,117 @@ function migrateGsdPlanning({ dir, dryRun } = {}) {
     }
 
     safeWrite(destPath, srcContent);
-
-    // Verify before deleting: re-read the just-written destination and
-    // require an exact match to what was read from source. Only a
-    // confirmed-identical copy authorizes deleting the source file.
-    let verifyContent;
-    try {
-      verifyContent = fs.readFileSync(destPath, 'utf8');
-    } catch (_) {
-      verifyContent = null;
-    }
-
-    if (verifyContent !== srcContent) {
-      results.push({ file: rel, dest: destPath, action: 'verify-failed' });
-      continue; // never delete an unverified copy
-    }
-
-    try {
-      fs.unlinkSync(srcPath); // delete ONLY this file — never the containing directory
-      results.push({ file: rel, dest: destPath, action: 'migrated' });
-    } catch (_) {
-      // Copy is verified-good even though the source delete failed (e.g.
-      // permission error) — report as migrated (the data is safely
-      // duplicated), the leftover source file is harmless and can be
-      // cleaned up on a later run.
-      results.push({ file: rel, dest: destPath, action: 'migrated' });
-    }
+    let verifyContent = null;
+    try { verifyContent = fs.readFileSync(destPath); } catch (_) { verifyContent = null; }
+    results.push({ file: rel, dest: destPath, action: verifyContent && verifyContent.equals(srcContent) ? 'copied' : 'verify-failed' });
   }
 
   return results;
+}
+
+// gitBlobId(buf, hexLen) -> the git object id of `buf` as a blob (sha1 or sha256 repo).
+function gitBlobId(buf, hexLen) {
+  const algo = hexLen === 64 ? 'sha256' : 'sha1';
+  return require('crypto').createHash(algo)
+    .update(Buffer.concat([Buffer.from('blob ' + buf.length + '\0'), buf])).digest('hex');
+}
+
+/**
+ * findPlanningDamage({ dir }) -> { worktree, missing, safe: [{ file, legacy }] } | null
+ *
+ * READ-ONLY. Damage left by the pre-0.108.5 automatic fold: tracked
+ * `.planning/` files missing from the work tree (git status " D") whose copy
+ * under `<prefix>/.anti-hall/history/legacy/planning/` exists. `missing` counts
+ * every missing tracked `.planning/` file (all restorable from git); `safe`
+ * lists the ones whose legacy copy is byte-identical to HEAD. null when `dir`
+ * is not a git work tree or nothing tracked under `.planning/` is missing.
+ */
+function findPlanningDamage({ dir } = {}) {
+  let wt = null;
+  try {
+    wt = require('../companion/lib/identity.js').resolveContext(path.resolve(dir || process.cwd()), { memo: false }).toplevel;
+  } catch (_) { wt = null; }
+  if (!wt) return null;
+  const del = git(wt, ['ls-files', '--deleted', '-z']);
+  if (!del.ok) return null;
+  const re = /^((?:[^/]+\/)*?)\.planning\/(.+)$/;
+  const missing = [];
+  for (const f of del.stdout.split('\0').filter(Boolean)) {
+    const m = re.exec(f);
+    if (m) missing.push({ file: f, legacy: path.join(wt, m[1], '.anti-hall', 'history', 'legacy', 'planning', m[2]) });
+  }
+  if (missing.length === 0) return null;
+  const withCopy = missing.filter((x) => { try { return fs.statSync(x.legacy).isFile(); } catch (_) { return false; } });
+  const head = new Map();
+  if (withCopy.length) {
+    const lt = git(wt, ['ls-tree', '-r', '-z', '--full-tree', 'HEAD', '--'].concat(withCopy.map((x) => x.file)));
+    if (lt.ok) {
+      for (const rec of lt.stdout.split('\0').filter(Boolean)) {
+        const m = /^\d+ blob ([0-9a-f]+)\t(.+)$/.exec(rec);
+        if (m) head.set(m[2], m[1]);
+      }
+    }
+  }
+  const safe = withCopy.filter((x) => {
+    const id = head.get(x.file);
+    if (!id) return false;
+    try { return gitBlobId(fs.readFileSync(x.legacy), id.length) === id; } catch (_) { return false; }
+  });
+  return { worktree: wt, missing: missing.length, withCopy: withCopy.length, safe };
+}
+
+/**
+ * restorePlanning({ dir }) -> { worktree, restored: [file], skipped: n } | null
+ *
+ * EXPLICIT, HUMAN-RUN ONLY (`migrate-state.js --restore-planning`). Writes back
+ * ONLY the files findPlanningDamage marks safe (missing, tracked, legacy copy
+ * byte-identical to HEAD), and only when the path is still absent at write
+ * time. The legacy copies are never deleted.
+ */
+function restorePlanning({ dir } = {}) {
+  const d = findPlanningDamage({ dir });
+  if (!d) return null;
+  const restored = [];
+  for (const x of d.safe) {
+    const dest = path.join(d.worktree, x.file);
+    try {
+      if (fs.existsSync(dest)) continue;
+      fs.mkdirSync(path.dirname(dest), { recursive: true });
+      fs.copyFileSync(x.legacy, dest, fs.constants.COPYFILE_EXCL);
+      restored.push(x.file);
+    } catch (_) { /* left missing; git checkout remains the fallback */ }
+  }
+  return { worktree: d.worktree, restored, skipped: d.missing - restored.length };
 }
 
 // ---------------------------------------------------------------------------
 // CLI entry point
 // ---------------------------------------------------------------------------
 if (require.main === module) {
-  // --mark-read is an opt-in flag (see migrateDevswarmStore's markRead doc
-  // above) — strip it from argv before reading the positional `dir` arg so
-  // `node migrate-state.js --mark-read` (no dir) still defaults dir to cwd.
+  // Flags (all opt-in): --mark-read (see migrateDevswarmStore), --planning
+  // (copy-only GSD fold), --restore-planning [--dir <wt>]. The positional
+  // `dir` skips flags, so `node migrate-state.js --mark-read` defaults to cwd.
   const argv = process.argv.slice(2);
   const markReadFlag = argv.includes('--mark-read');
-  const dir = argv.find((a) => a !== '--mark-read') || process.cwd();
+  const planningFlag = argv.includes('--planning');
+  const restoreFlag = argv.includes('--restore-planning');
+  const dirIdx = argv.indexOf('--dir');
+  const dir = (dirIdx >= 0 && argv[dirIdx + 1])
+    || argv.find((a, i) => !a.startsWith('--') && argv[i - 1] !== '--dir') || process.cwd();
+
+  if (restoreFlag) {
+    const r = restorePlanning({ dir });
+    if (!r) {
+      console.log('no missing tracked .planning/ files in ' + path.resolve(dir));
+    } else {
+      for (const f of r.restored) console.log('restored ' + f);
+      console.log('restored ' + r.restored.length + ' file(s) in ' + r.worktree +
+        (r.skipped ? '; ' + r.skipped + ' missing file(s) had no byte-identical legacy copy — restore them from git: git -C "' + r.worktree + '" checkout -- .planning' : '') +
+        '. Legacy copies under .anti-hall/history/legacy/planning/ were left in place.');
+    }
+    process.exit(0);
+  }
+
   const results = migrateLegacyState({ dir });
 
   const anyFound = results.some((r) => r.action !== 'not-found');
@@ -359,19 +467,20 @@ if (require.main === module) {
     }
   }
 
-  const gsdResults = migrateGsdPlanning({ dir });
-  const gsdFound = gsdResults.some((r) => r.action !== 'not-found');
-  if (!gsdFound) {
-    console.log('no .planning/ (GSD) directory found');
-  } else {
-    const migrated = gsdResults.filter((r) => r.action === 'migrated').length;
-    const skipped = gsdResults.filter((r) => r.action === 'skipped').length;
-    const verifyFailed = gsdResults.filter((r) => r.action === 'verify-failed').length;
-    console.log('GSD .planning/ -> .anti-hall/history/legacy/planning/: ' +
-      migrated + ' file(s) migrated (copy verified, source deleted), ' +
-      skipped + ' already up to date' +
-      (verifyFailed ? ', ' + verifyFailed + ' FAILED VERIFICATION (source kept, not deleted)' : '') +
-      '. The .planning/ directory itself is never removed.');
+  if (planningFlag) {
+    const gsdResults = migrateGsdPlanning({ dir });
+    const count = (a) => gsdResults.filter((r) => r.action === a).length;
+    if (gsdResults[0] && gsdResults[0].action === 'not-found') {
+      console.log('no .planning/ (GSD) directory found');
+    } else if (gsdResults[0] && gsdResults[0].action === 'unsafe-skip') {
+      console.log('GSD .planning/ fold skipped: ' + gsdResults[0].reason + '. Nothing was copied or changed.');
+    } else {
+      console.log('GSD .planning/ -> .anti-hall/history/legacy/planning/: ' +
+        count('copied') + ' file(s) copied, ' + count('skipped') + ' already up to date' +
+        (count('conflict') ? ', ' + count('conflict') + ' CONFLICT (a different legacy copy exists; left untouched)' : '') +
+        (count('verify-failed') ? ', ' + count('verify-failed') + ' FAILED VERIFICATION' : '') +
+        '. Copy-only: the .planning/ files are never deleted or moved.');
+    }
   }
 
   // DevSwarm store auto-migration (HOME-scoped, idempotent + non-destructive).
@@ -482,5 +591,5 @@ function migrateAutoArchivedState({ dryRun, home } = {}) {
 
 module.exports = {
   migrateLegacyState, migrateGsdPlanning, migrateDevswarmStore, migrateReplyState, migrateGateIntents,
-  migrateAutoArchivedState,
+  migrateAutoArchivedState, findPlanningDamage, restorePlanning,
 };

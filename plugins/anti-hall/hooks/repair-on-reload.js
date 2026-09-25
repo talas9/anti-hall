@@ -47,11 +47,10 @@
 //     doctor.js --repair --migrations-only runs ONLY the stamped data
 //     migrations + store repairs (runMigrations via lib/doctor-repair.js) and
 //     never touches user config (~/.claude settings, ~/.codex, launchd/systemd).
-//     It is NOT confined to ~/.anti-hall: migrateLegacyState and
-//     migrateGsdPlanning write project state under
-//     <cwd>/.anti-hall/history/legacy/ (cwd = the session's), and
-//     migrateGsdPlanning DELETES each <cwd>/.planning/ source file once its copy
-//     is verified byte-identical (directories are never removed). Idempotent,
+//     It is NOT confined to ~/.anti-hall: migrateLegacyState COPIES project
+//     state into <cwd>/.anti-hall/history/legacy/ (cwd = the session's) and
+//     never deletes or moves a source. It never runs the GSD .planning/ fold
+//     (0.108.5 P0: explicit `migrate-state.js --planning` only). Idempotent,
 //     fail-open, and it
 //     stamps each migration's own marker (migrations.js recordRun) ONLY once
 //     that migration's apply+re-scan both report complete — "stamp only after

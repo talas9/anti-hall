@@ -215,9 +215,14 @@ Modes:
    `node plugins/anti-hall/scripts/migrate-state.js` once per repo (idempotent,
    safe to re-run) to fold any legacy root-level `.anti-hall-progress.md` /
    `.anti-hall-history.md` files into the new dated `.anti-hall/history/`
-   structure. The same command also folds a GSD `.planning/` tree (if present)
-   into `.anti-hall/history/legacy/planning/` — non-destructive; GSD's own
-   `/gsd-*` tooling keeps working against the untouched original. Owner
+   structure (copy-only; the originals are never touched). A GSD `.planning/`
+   tree is NOT folded by default and never automatically: only the explicit
+   `migrate-state.js --planning` copies it into
+   `.anti-hall/history/legacy/planning/`, copy-only, and it skips git-tracked
+   `.planning/`, linked/child worktrees and submodules. If `doctor` reports
+   moved `.planning/` files (damage from the pre-0.108.5 automatic fold),
+   restore them with the printed `git -C <worktree> checkout -- .planning`, or
+   the opt-in `migrate-state.js --restore-planning --dir <worktree>`. Owner
    decision (2026-07-03): `.anti-hall/` is the intended destination for
    progress/handover state across all projects going forward.
 7. Run the capability scan (`node plugins/anti-hall/scripts/capability-scan.js`)
