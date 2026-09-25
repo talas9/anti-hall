@@ -48,6 +48,10 @@ const { devswarmRoot, isSafeId } = archivedLib;
 const archivedCache = require('./devswarm-archived-cache.js');
 const appDbLib = require('./devswarm-app-db.js');
 
+// rowStateDetail(opts) -> rowState's fields + appArchivedVia ('app-db' |
+// 'active-list' | null): WHICH app-side source decided appArchived. Consumed by
+// row-eligibility.js (archivedBy provenance); rowState() itself keeps its
+// original four-field shape.
 // rowState(opts) -> { status, archived, appArchived, present }
 // opts: { home, id, worktreePath, sessionId, repoKey, registryRow, env, now,
 //         cache, fsi, log, xcache }
@@ -56,6 +60,11 @@ const appDbLib = require('./devswarm-app-db.js');
 //   repoKey: the row's own project key; without it appArchived is false.
 //   cache: an already-read app active-set cache (hot-path callers read it once).
 function rowState(opts) {
+  const d = rowStateDetail(opts);
+  return { status: d.status, archived: d.archived, appArchived: d.appArchived, present: d.present };
+}
+
+function rowStateDetail(opts) {
   const o = opts || {};
   const F = o.fsi || fs;
   const id = o.id != null ? String(o.id) : '';
@@ -79,7 +88,8 @@ function rowState(opts) {
     // surfaces (roster, diagnose) keep their never-writes contract.
     appDb = appDbLib.appArchivedVerdict({ home: o.home, env: o.env, id, worktreePath: o.worktreePath || null, now: o.now, xcache: o.xcache === true });
   } catch (_) { appDb = null; }
-  if (appDb === true || appDb === false) appArchived = appDb;
+  let appArchivedVia = null;
+  if (appDb === true || appDb === false) { appArchived = appDb; if (appDb) appArchivedVia = 'app-db'; }
   else if (o.repoKey) {
     try {
       appArchived = !!archivedCache.isAppArchived({
@@ -87,13 +97,14 @@ function rowState(opts) {
         env: o.env, now: o.now, cache: o.cache, fsi: o.fsi,
       });
     } catch (_) { appArchived = false; }
+    if (appArchived) appArchivedVia = 'active-list';
   }
   let present;
   if (o.registryRow === undefined) present = true;
   else if (o.registryRow) present = true;
   else present = activeDescriptorExists(o.home, id, F);
   const status = archived ? 'archived' : appArchived ? 'app-archived' : present ? 'active' : 'unknown';
-  return { status, archived, appArchived, present };
+  return { status, archived, appArchived, present, appArchivedVia };
 }
 
 // isRowArchived(opts) -> bool. Either archive kind — the question routing,
@@ -159,4 +170,4 @@ function archiveCompleteIds(home, fsi) {
   return out;
 }
 
-module.exports = { rowState, isRowArchived, isArchiveComplete, archiveCompleteIds };
+module.exports = { rowState, rowStateDetail, isRowArchived, isArchiveComplete, archiveCompleteIds };
