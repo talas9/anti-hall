@@ -160,6 +160,11 @@ the update.
   `AskUserQuestion`/`ExitPlanMode` now carries a truncated (~120 char)
   preview of the actual question/plan text, not just "waiting on a human" —
   reusing the SAME `childBusyState` detector both surfaces already relied on.
+- **`doctor` reports live processes leaked into archived/gone DevSwarm
+  workspaces.** A bounded (≤2s), report-only scan cross-references every live
+  process's cwd against archived (anti-hall's own marker, or the DevSwarm app
+  DB's) or gone (worktree removed) workspace paths and prints pid, command
+  name, cwd, and a suggested manual `kill` — never kills anything itself.
 
 ## 0.110.0 (2026-09-26)
 

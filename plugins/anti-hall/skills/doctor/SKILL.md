@@ -38,6 +38,17 @@ changes nothing.
   (a second native `hivecontrol workspace monitor` process would split the
   destructive queue — report-only, never killed). See [Runtime health
   checks](#runtime-health-checks) below.
+- **Orphaned workspace processes** (`companion/lib/doctor-devswarm.js`'s
+  `orphanedWorkspaceProcessCheck`): a bounded (≤2s), report-only scan for any
+  LIVE process whose **cwd** sits inside a workspace worktree that is now
+  archived (anti-hall's own `archived/<id>.json`, or the DevSwarm app DB's own
+  archived builders) or simply gone (an active descriptor whose worktreePath no
+  longer exists on disk). Prints `N process(es) alive with cwd in archived/gone
+  workspaces: pid <pid> (<comm>) cwd=<path> [<reason>]; ...` — pid, command name,
+  and cwd for each — and a suggested MANUAL `kill <pid>` command. **Never kills,
+  signals, or closes anything itself.** macOS reads `lsof -a -d cwd -Fpcn`;
+  Linux walks `/proc/<pid>/cwd`. Silent when nothing is stale to watch for or
+  the scan finds no hit.
 - **Foreign skill/hook conflict scan** (always runs, independent of DevSwarm):
   cross-references other ENABLED plugins' `hooks.json`/skills against anti-hall's
   own. See [below](#foreign-skillhook-conflict-scan).

@@ -11,6 +11,7 @@ const os = require('os');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { spawnSync } = require('child_process');
 const { isDevswarmActive } = require('../../hooks/lib/devswarm-detect.js');
 const { computeLiveness, livenessPathFor, projectDirFor, devswarmRoot, isSafeId, unreadBacklog, heartbeatVersion, sessionPidFor } = require('./liveness.js');
 const { checkResults: descriptorChecks } = require('./doctor-descriptors.js');
@@ -860,6 +861,166 @@ function appDbChecks(opts) {
   return out;
 }
 
+// PROC_SCAN_TIMEOUT_MS (peer C): the whole cwd scan (spawn + parse, or the
+// /proc walk) is bounded to this — fail-open on a timeout (report nothing
+// rather than hang doctor). Never a kill/report-only diagnostic.
+const PROC_SCAN_TIMEOUT_MS = 2000;
+
+// staleWorkspacePaths(home, env, now, F) -> Map<worktreePath, {id, reason}>.
+// The set of workspace worktree paths this doctor check watches for a leaked
+// process: archived (anti-hall's own archived/<id>.json, or the app DB's own
+// archived builders — REUSES the same row-eligibility signal appDbChecks'
+// leak check above already reads via appDb.snapshot(), never re-derived) OR
+// GONE (an active descriptor whose worktreePath no longer exists on disk —
+// the worktree was removed out from under a still-registered row). A path
+// present in BOTH sets keeps its 'archived' reason (checked first). Read-
+// only, fail-open per source.
+function staleWorkspacePaths(home, env, now, F) {
+  const out = new Map();
+  // archived/<id>.json (anti-hall's own archive).
+  try {
+    const archDir = path.join(devswarmRoot(home), 'archived');
+    let names = [];
+    try { names = F.readdirSync(archDir); } catch (_) { names = []; }
+    for (const n of names) {
+      if (!/\.json$/.test(n)) continue;
+      let d = null;
+      try { d = JSON.parse(F.readFileSync(path.join(archDir, n), 'utf8')); } catch (_) { d = null; }
+      if (d && d.worktreePath && isSafeId(d.id)) out.set(d.worktreePath, { id: d.id, reason: 'archived' });
+    }
+  } catch (_) { /* fail-open */ }
+  // app-DB archived builders (same source appDbChecks' leak check reads).
+  try {
+    const appDb = require('./devswarm-app-db.js');
+    const file = appDb.appDbPath({ home, env });
+    let exists = false;
+    try { exists = !!file && F.statSync(file).isFile(); } catch (_) { exists = false; }
+    if (exists) {
+      const snap = appDb.snapshot({ home, env, now, fresh: true });
+      if (snap) {
+        for (const w of snap.workspaces) {
+          if (w.archived && w.worktreePath && isSafeId(w.id) && !out.has(w.worktreePath)) {
+            out.set(w.worktreePath, { id: w.id, reason: 'app-archived' });
+          }
+        }
+      }
+    }
+  } catch (_) { /* fail-open: no app DB is the common case */ }
+  // Active descriptors whose worktreePath no longer exists (worktree removed
+  // out from under a still-registered row — never archived, just gone).
+  try {
+    let names = [];
+    try { names = F.readdirSync(workspacesDir(home)); } catch (_) { names = []; }
+    for (const n of names) {
+      if (!/\.json$/.test(n)) continue;
+      let d = null;
+      try { d = JSON.parse(F.readFileSync(path.join(workspacesDir(home), n), 'utf8')); } catch (_) { d = null; }
+      if (!d || !d.worktreePath || !isSafeId(d.id)) continue;
+      if (out.has(d.worktreePath)) continue; // archived reason wins
+      let exists = true;
+      try { exists = F.existsSync(d.worktreePath); } catch (_) { exists = true; }
+      if (!exists) out.set(d.worktreePath, { id: d.id, reason: 'gone' });
+    }
+  } catch (_) { /* fail-open */ }
+  return out;
+}
+
+// scanProcessCwds({platform, run}) -> [{pid, comm, cwd}]. Bounded, fail-open,
+// NEVER kills or signals anything (a plain read of each live process's cwd).
+// macOS: one `lsof -a -d cwd -Fpcn` spawn (measured ~0.2s on a live dev
+// machine's several thousand open fds — well under PROC_SCAN_TIMEOUT_MS) —
+// `-F` field output is parsed line-by-line (`p<pid>`, `c<command>`, `n<path>`,
+// an `f<fdtype>` line ignored). Linux: walks /proc/<pid>/cwd symlinks (no
+// lsof dependency assumed present); the walk itself is time-bounded, so a
+// huge /proc still returns whatever it collected before the deadline instead
+// of hanging. Any other platform: unsupported, returns [] silently (this
+// check is simply dormant there, same posture as every other doctor probe
+// that only knows macOS/Linux).
+function scanProcessCwds(opts) {
+  const o = opts || {};
+  const platform = o.platform || process.platform;
+  const run = o.run || ((cmd, args) => spawnSync(cmd, args, { encoding: 'utf8', timeout: PROC_SCAN_TIMEOUT_MS }));
+  const F = o.fsi || fs;
+  const out = [];
+  try {
+    if (platform === 'darwin') {
+      const r = run('lsof', ['-a', '-d', 'cwd', '-Fpcn']);
+      if (!r || r.error || r.status !== 0 || typeof r.stdout !== 'string') return out;
+      let pid = null;
+      let comm = null;
+      for (const line of r.stdout.split('\n')) {
+        if (!line) continue;
+        const tag = line[0];
+        const val = line.slice(1);
+        if (tag === 'p') { pid = Number(val); comm = null; }
+        else if (tag === 'c') { comm = val; }
+        else if (tag === 'n' && Number.isFinite(pid)) { out.push({ pid, comm, cwd: val }); }
+      }
+      return out;
+    }
+    if (platform === 'linux') {
+      const start = Date.now();
+      let names = [];
+      try { names = F.readdirSync('/proc'); } catch (_) { names = []; }
+      for (const n of names) {
+        if (Date.now() - start > PROC_SCAN_TIMEOUT_MS) break; // bounded: return what we have
+        if (!/^\d+$/.test(n)) continue;
+        let cwd = null;
+        try { cwd = F.readlinkSync('/proc/' + n + '/cwd'); } catch (_) { continue; } // gone/perm-denied: skip
+        let comm = null;
+        try { comm = F.readFileSync('/proc/' + n + '/comm', 'utf8').trim(); } catch (_) { comm = null; }
+        out.push({ pid: Number(n), comm, cwd });
+      }
+      return out;
+    }
+  } catch (_) { return out; } // fail-open: any throw reports nothing, never breaks doctor
+  return out;
+}
+
+// orphanedWorkspaceProcessCheck(opts) -> [{status, message}] (0 or 1 result).
+// Peer request C: "N processes alive with cwd in archived/gone workspaces"
+// report-only line — pid, command name, cwd, for every live process whose
+// cwd is under a path staleWorkspacePaths() flagged. NEVER kills/signals
+// anything; the message ends with a suggested MANUAL command, never one this
+// code runs itself. Silent (no result at all) when there is nothing stale to
+// watch for (dormant on a project with no archived/gone workspace) or the
+// scan found nothing — matches the rest of this file's "silent when not
+// applicable" convention rather than a noisy PASS line every run.
+function orphanedWorkspaceProcessCheck(opts) {
+  const o = opts || {};
+  const home = o.home || os.homedir();
+  const env = o.env || process.env;
+  const now = Number.isFinite(o.now) ? o.now : Date.now();
+  const F = o.fsi || fs;
+  const out = [];
+  try {
+    const stale = staleWorkspacePaths(home, env, now, F);
+    if (!stale.size) return out;
+    const procs = scanProcessCwds({ platform: o.platform, run: o.run, fsi: F });
+    if (!procs.length) return out;
+    const hits = [];
+    for (const p of procs) {
+      if (!p || typeof p.cwd !== 'string' || !p.cwd) continue;
+      for (const [wtPath, meta] of stale) {
+        if (p.cwd === wtPath || p.cwd.startsWith(wtPath.replace(/\/+$/, '') + '/')) {
+          hits.push({ pid: p.pid, comm: p.comm || 'unknown', cwd: p.cwd, workspaceId: meta.id, reason: meta.reason });
+          break;
+        }
+      }
+    }
+    if (hits.length) {
+      out.push({
+        status: WARN,
+        message: hits.length + ' process(es) alive with cwd in archived/gone workspaces: '
+          + hits.map((h) => 'pid ' + h.pid + ' (' + h.comm + ') cwd=' + h.cwd + ' [' + h.reason + ']').join('; ')
+          + ' — never auto-killed (report only); to close one, run e.g. `kill <pid>` after confirming it is safe',
+        orphanedWorkspaceProcesses: hits,
+      });
+    }
+  } catch (_) { /* fail-open: this check never blocks the rest of doctor */ }
+  return out;
+}
+
 function runChecks(opts) {
   const o = opts || {};
   const home = o.home || os.homedir();
@@ -924,6 +1085,15 @@ function runChecks(opts) {
     }
   } catch (e) {
     results.push({ status: WARN, message: 'delivery WAL health unavailable: ' + (e && e.message) });
+  }
+
+  // Peer C: report-only leak scan — a live process whose cwd sits inside an
+  // archived or gone workspace path. Bounded (PROC_SCAN_TIMEOUT_MS), never
+  // kills anything.
+  try {
+    for (const r of orphanedWorkspaceProcessCheck({ home, env, now, fsi: F })) results.push(r);
+  } catch (e) {
+    results.push({ status: WARN, message: 'orphaned-workspace-process scan unavailable: ' + (e && e.message) });
   }
 
   // Descriptor-store integrity (companion/lib/doctor-descriptors.js): a
@@ -1045,4 +1215,6 @@ module.exports = {
   // install-vs-source integrity (CHECK 1/CHECK 2) — exported individually for tests.
   installDivergenceCheck, monitorsJsonPresenceCheck, resolveMarketplaceDir, resolveInstallScope,
   collectShippedFiles,
+  // orphaned-workspace-process leak scan (peer C) — exported individually for tests.
+  staleWorkspacePaths, scanProcessCwds, orphanedWorkspaceProcessCheck, PROC_SCAN_TIMEOUT_MS,
 };
