@@ -312,12 +312,46 @@ function collectTextFromEntryDedup(node) {
 }
 
 // --------------------------------------------------------------------------
+// REQUIREMENT PHRASING EXEMPTION — "must be"/"should be" used as a
+// REQUIREMENT ("X must be measured on the P3 build") is not a speculative
+// CLAIM about the project's state; it's a statement of what the plan/spec
+// obligates. Two independent signals exempt a "must be"/"should be" match
+// (checked ONLY for those two patterns — every other marker is unaffected):
+//   1) the modal is immediately followed by a past participle expressing an
+//      obligation ("must be measured/verified/tested/...") — a real claim
+//      ("must be the cache", "should be fine") is instead followed by a noun
+//      phrase or adjective, never one of these participles.
+//   2) the same line carries an explicit requirement/acceptance-criteria
+//      context ("requirement:", "acceptance:"/"acceptance criteria:").
+// Neither signal changes how any OTHER speculation marker is judged.
+// --------------------------------------------------------------------------
+const OBLIGATION_PARTICIPLE_RE =
+  /^\s+(measured|verified|tested|checked|confirmed|validated|reviewed|documented|run|executed|deployed|built|done|implemented|approved|logged|tracked|captured|recorded)\b/i;
+const REQUIREMENT_CONTEXT_RE = /\b(requirement|acceptance(?:\s+criteria)?|spec)\s*:/i;
+
+function isObligationPhrasing(text, matchText, matchIndex) {
+  const after = text.slice(matchIndex + matchText.length, matchIndex + matchText.length + 40);
+  if (OBLIGATION_PARTICIPLE_RE.test(after)) return true;
+  const lineStart = text.lastIndexOf('\n', matchIndex) + 1;
+  const lineEndIdx = text.indexOf('\n', matchIndex);
+  const lineEnd = lineEndIdx === -1 ? text.length : lineEndIdx;
+  const line = text.slice(lineStart, lineEnd);
+  return REQUIREMENT_CONTEXT_RE.test(line);
+}
+
+const MODAL_OBLIGATION_MARKERS = new Set(['must be', 'should be']);
+
+// --------------------------------------------------------------------------
 // Find the first matching speculation marker label (for the block reason).
 // --------------------------------------------------------------------------
 function findSpeculationMarker(text) {
   for (const pat of SPECULATION_PATTERNS) {
     const m = text.match(pat);
-    if (m) return m[0];
+    if (!m) continue;
+    if (MODAL_OBLIGATION_MARKERS.has(m[0].toLowerCase()) && isObligationPhrasing(text, m[0], m.index)) {
+      continue; // requirement phrasing, not a speculative claim — keep scanning other patterns
+    }
+    return m[0];
   }
   return null;
 }

@@ -456,3 +456,50 @@ test('P1-a: duplicate-text boundary — current hook regex verdict + stored hash
     fs.rmSync(path.dirname(legacyHook), { recursive: true, force: true });
   }
 });
+
+// ---------------------------------------------------------------------------
+// REQUIREMENT PHRASING (owner-reported false positive): "must be"/"should be"
+// used as a REQUIREMENT ("X must be measured on the P3 build") is not a
+// speculative CLAIM about the project's state — it's a statement of what the
+// plan/spec obligates, no different from "must ship" or "should include".
+// Fix: exclude a modal ("must be"/"should be") followed by a past participle
+// expressing an obligation (measured/verified/tested/done/built/...), and
+// requirement contexts ("requirement:"/"acceptance:"), while still flagging a
+// genuine speculative CLAIM ("it must be the cache", "should be fine").
+const OBLIGATION_ALLOW = [
+  'X must be measured on the P3 build before we ship.',
+  'The fix should be tested on staging first.',
+  'Coverage must be verified before merge.',
+  'Requirement: the API must be documented.',
+  'Acceptance: latency should be validated under load.',
+];
+for (const text of OBLIGATION_ALLOW) {
+  test(`ALLOW: requirement phrasing "${text}" is not flagged as speculation`, () => {
+    const h = makeHome();
+    try {
+      const tp = h.writeTranscript([assistantMessage(text)]);
+      const r = testHook(HOOK, stopPayload(tp), { home: h.home, env: { ANTIHALL_JEV: '0' } });
+      assert.ok(!isBlock(r), `requirement phrasing must not block; stdout: ${r.stdout}`);
+    } finally {
+      h.cleanup();
+    }
+  });
+}
+
+const CLAIM_BLOCK = [
+  'It must be the cache causing this.',
+  'This should be fine now.',
+  'The bug must be a race condition in the scheduler.',
+];
+for (const text of CLAIM_BLOCK) {
+  test(`BLOCK: speculative claim "${text}" is still flagged`, () => {
+    const h = makeHome();
+    try {
+      const tp = h.writeTranscript([assistantMessage(text)]);
+      const r = testHook(HOOK, stopPayload(tp), { home: h.home, env: { ANTIHALL_JEV: '0' } });
+      assert.ok(isBlock(r), `speculative claim must still block; stdout: ${r.stdout}`);
+    } finally {
+      h.cleanup();
+    }
+  });
+}
