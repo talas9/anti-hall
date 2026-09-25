@@ -225,6 +225,31 @@ function main() {
     process.exit(0);
   }
 
+  // PLAN MODE (permission_mode === 'plan'): reported false positive — a
+  // session stuck in Claude Code PLAN MODE got blocked on Stop, repeatedly,
+  // demanding a write to .anti-hall/progress/<date>/<session>.md. Plan mode is
+  // a read-only planning session where only the harness's own plan file can
+  // be written (docs/KB-model-modes.md) — the progress-file write this guard
+  // demands is structurally impossible there, so the block just loops until
+  // the user manually leaves plan mode. `permission_mode` is the SAME
+  // harness-set, top-level field edit-guard.js already trusts for its own
+  // plan-mode exemption (isPlanMode() in edit-guard.js) — same trust class as
+  // tool_name/session_id, not model/tool-settable. Case-insensitive for
+  // safety; any non-string is not plan mode. Never blocks in plan mode — at
+  // most a non-blocking advisory note so the agent still gets the reminder
+  // once it leaves plan mode.
+  if (typeof (payload && payload.permission_mode) === 'string' &&
+      payload.permission_mode.toLowerCase() === 'plan') {
+    try {
+      fs.writeSync(1,
+        '[tasklist-guard] PLAN MODE — Stop not blocked (progress-file writes are not ' +
+        'possible in plan mode). Track this work as tasks and refresh the progress file ' +
+        'once you leave plan mode.\n'
+      );
+    } catch (_) { /* best-effort advisory only */ }
+    process.exit(0);
+  }
+
   const transcriptPath = payload && payload.transcript_path;
   if (!transcriptPath || typeof transcriptPath !== 'string') {
     process.exit(0); // cold-start fail-open

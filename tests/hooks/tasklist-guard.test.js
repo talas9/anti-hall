@@ -1268,3 +1268,54 @@ test('REVIEW FIX: a read-only `cat` of the progress file (piped/redirected elsew
     assert.ok(isBlock(r), `a read of the progress file redirected elsewhere must NOT count as a fresh write — should still block on staleness; stdout: ${r.stdout}`);
   } finally { h.cleanup(); }
 });
+
+// ---------------------------------------------------------------------------
+// PLAN MODE (permission_mode === 'plan'). Reported false positive: a session
+// stuck in Claude Code PLAN MODE (a read-only planning session where only the
+// harness plan file can be written) got blocked on Stop, repeatedly, demanding
+// a write to .anti-hall/progress/<date>/<session>.md — a write it structurally
+// cannot make in plan mode. permission_mode is the same harness-set,
+// PreToolUse-documented field edit-guard.js already trusts for its own
+// plan-mode exemption (isPlanMode); tasklist-guard is a Stop hook, but the
+// harness attaches permission_mode broadly, and case-insensitively per the
+// same convention. In plan mode, tasklist-guard must not block — at most a
+// non-blocking note.
+function planStopPayload(transcriptPath, cwd, session = 't') {
+  const p = stopPayload(transcriptPath, cwd, session);
+  p.permission_mode = 'plan';
+  return p;
+}
+
+test('PLAN MODE: same 4-edit/no-tasklist signal that BLOCKS in normal mode -> NOT a block in plan mode', () => {
+  const h = makeHome();
+  try {
+    const tp = h.writeTranscript(edits(4));
+    const r = testHook(HOOK, planStopPayload(tp, h.home), { home: h.home });
+    assert.ok(!isBlock(r), `plan mode must never block Stop; stdout: ${r.stdout}`);
+    assert.strictEqual(r.status, 0);
+  } finally { h.cleanup(); }
+});
+
+test('PLAN MODE case-insensitive: permission_mode:"Plan" -> NOT a block', () => {
+  const h = makeHome();
+  try {
+    const tp = h.writeTranscript(edits(4));
+    const p = stopPayload(tp, h.home);
+    p.permission_mode = 'Plan';
+    const r = testHook(HOOK, p, { home: h.home });
+    assert.ok(!isBlock(r), `plan mode (any case) must never block Stop; stdout: ${r.stdout}`);
+  } finally { h.cleanup(); }
+});
+
+test('NORMAL MODE regression: identical signal with permission_mode absent/"default" -> STILL blocks', () => {
+  for (const mode of [undefined, 'default', 'acceptEdits']) {
+    const h = makeHome();
+    try {
+      const tp = h.writeTranscript(edits(4));
+      const p = stopPayload(tp, h.home);
+      if (mode !== undefined) p.permission_mode = mode;
+      const r = testHook(HOOK, p, { home: h.home });
+      assert.ok(isBlock(r), `permission_mode=${mode} must not relax the guard; stdout: ${r.stdout}`);
+    } finally { h.cleanup(); }
+  }
+});
