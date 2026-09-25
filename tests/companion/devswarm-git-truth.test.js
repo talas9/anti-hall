@@ -223,3 +223,23 @@ test('gitMergeProof: binds to opts.head; no origin/HEAD -> falls back to origin/
     assert.strictEqual(gitTruth.gitMergeProof(dir, { sourceBranch: 'main', head: c1 }).merged, true, 'proof is of opts.head');
   } finally { rm(dir); rm(remote); }
 });
+
+// 0.108.3: a LOCAL branch literally named `origin/main` (refs/heads/origin/main)
+// wins over refs/remotes/origin/main for the short name `origin/main`, so the
+// proof must hand git the full remote ref.
+test('gitMergeProof: a local branch named origin/main at an unmerged commit never proves a merge (full remote ref)', () => {
+  const { dir, remote } = makeRepoWithUpstream();
+  try {
+    git(dir, ['checkout', '-q', '-b', 'feat']);
+    fs.writeFileSync(path.join(dir, 'g.txt'), '2');
+    git(dir, ['add', '.']);
+    git(dir, ['commit', '-q', '-m', 'c2 (unmerged)']);
+    git(dir, ['branch', 'origin/main', 'HEAD']); // the ambiguous local branch, at the unmerged HEAD
+    const head = git(dir, ['rev-parse', 'HEAD']).trim();
+    // non-vacuous: git resolves the short name to the LOCAL branch
+    assert.strictEqual(git(dir, ['rev-parse', 'origin/main']).trim(), head, 'short name hits the local branch (precondition)');
+    assert.notStrictEqual(git(dir, ['rev-parse', 'refs/remotes/origin/main']).trim(), head);
+    assert.deepStrictEqual(gitTruth.gitMergeProof(dir), { merged: false, via: 'git:not-ancestor', head, ref: 'origin/main' });
+    assert.strictEqual(gitTruth.gitMergedInto(dir, 'origin/main'), false, 'an explicit short ref is expanded too');
+  } finally { rm(dir); rm(remote); }
+});

@@ -104,6 +104,11 @@ the update.
   `~/.anti-hall/logs/devswarm-auto-archive.ndjson`, and new gate (h) (`h-rearchive`) never
   auto-archives the same workspace again at that HEAD. A new `done` at a new HEAD makes it
   eligible again. The log is append-only and no retire/restore path touches it.
+- **A local branch named `origin/main` could prove a merge.** `gitMergeProof` shortened
+  `refs/remotes/origin/<b>` to `origin/<b>` before calling `rev-parse`/`merge-base`, and git
+  resolves that short name to a local branch literally called `origin/<b>` first. It now
+  passes the full `refs/remotes/...` ref to git (an explicit `origin/...` ref too); `via`
+  still shows the short name.
 - **The Stop-time handover pause nag could repeat the same text with no progress.**
   `hooks/auto-handover-pause-nag.js` stored `nagStepPct` and `lastNagPct` but never compared
   them. It now re-nags only when context has risen at least `nagStepPct` points since the

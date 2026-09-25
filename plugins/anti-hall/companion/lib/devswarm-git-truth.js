@@ -102,7 +102,11 @@ function defaultBranchRef(worktreePath) {
 // origin/HEAD is unresolvable does opts.sourceBranch supply 'origin/<branch>'.
 // A LOCAL branch ref is never consulted: a stale local `main` (behind
 // origin/main) must not read as "not merged", and a local `main` carrying
-// unpushed commits must not read as "merged".
+// unpushed commits must not read as "merged". git always receives the FULL
+// `refs/remotes/...` name: the short `origin/main` resolves a LOCAL branch
+// literally named `origin/main` (refs/heads/origin/main) before the remote
+// ref, so the short form could prove a merge against a local branch. `via`
+// and `ref` in the result keep the short display name.
 //   merged true  — HEAD is provably contained in the remote ref.
 //   merged false — provably NOT (unmerged commits, or a squash/rebase merge:
 //                  there is no squash detection; the caller decides what a
@@ -137,9 +141,11 @@ function gitMergeProof(worktreePath, opts) {
     else if (o.sourceBranch) ref = 'origin/' + String(o.sourceBranch);
   }
   if (!ref) return res(null, 'unproven', head);
-  const v = git(worktreePath, ['rev-parse', '--verify', '--quiet', ref + '^{commit}']);
+  // full ref for git; `ref` stays the short display name
+  const fullRef = /^origin\//.test(ref) ? 'refs/remotes/' + ref : ref;
+  const v = git(worktreePath, ['rev-parse', '--verify', '--quiet', fullRef + '^{commit}']);
   if (!v || !v.ok) return res(null, 'unproven', head, ref);
-  const r = git(worktreePath, ['merge-base', '--is-ancestor', head, ref]);
+  const r = git(worktreePath, ['merge-base', '--is-ancestor', head, fullRef]);
   if (r && r.status === 0) return res(true, 'git:' + ref, head, ref);
   if (r && r.status === 1) return res(false, 'git:not-ancestor', head, ref); // git's documented "not an ancestor"
   return res(null, 'unproven', head, ref); // 128 etc: a resolution failure, not a proven negative
