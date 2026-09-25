@@ -242,6 +242,15 @@ the update.
   316 real mechanical haiku spawns (0.0%; the pre-0.108.4 guard fired on 75/316, 23.7%),
   and 18/18 on a genuine-planning set that includes the read-only review/audit, PR/diff
   review, "audit the" and root-cause cases (the earlier 0.108.4 fix caught 8/18).
+- **Docs described the safety-key gate wrongly.** The `safety` section description in the
+  schema still said `settings.js set/reset` refuses these keys and a settings.json value is
+  ignored, and `llms.txt` said they are never changed via `settings.js set` or
+  `settings.json`. The schema, the CLI usage text, `llms.txt`, `docs/GUIDE.md`, the
+  `settings` skill and the system briefing (Claude + Codex) now say the same thing as the
+  code: a risky `set` and a `reset` whose fallback value is risky need `--confirmed`,
+  re-arming never does, and a settings.json value counts like any other. They also note
+  that nothing mechanically stops an agent from writing settings.json directly — the owner
+  chose consent over an extra guard.
 
 ## 0.108.3
 

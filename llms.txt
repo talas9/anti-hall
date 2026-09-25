@@ -51,8 +51,9 @@ Codex: `node plugins/anti-hall/codex/install-codex.js` (project) or `--global`. 
 
 All fail-open. "Codex" = also registered by the Codex port (`codex/hooks/hooks.json`).
 Switch = the setting (and/or env var) that turns the hook off; every hook has one except the
-infrastructure listed under Settings. "safety" = a safety key: `set`/`reset` need `--confirmed` (a human direct command, or the agent asking and getting a yes) — /config and env still work too,
-never via `settings.js set` or `settings.json`.
+infrastructure listed under Settings. "safety" = a safety key: `set` to the risky value, and a `reset` whose fallback value is
+risky (e.g. resetting an armed `guards.stashGuard`, default off), need `--confirmed` (a human direct command, or the agent asking
+and getting a yes); re-arming a guard never does. /config, env and a `settings.json` value all count (normal precedence).
 
 | Event (matcher) | Hook | What it does | Codex | Switch |
 |---|---|---|---|---|
@@ -208,7 +209,7 @@ the schema's non-advanced set. Codex: no `/config`, use the skill.
 | guards.stashGuard (safety: --confirmed) | false | `ANTIHALL_STASH_GUARD` |
 | guards.modelRouting | strict (strict/advisory/off) | `ANTIHALL_MODEL_ROUTING` |
 | guards.apiGuard / speculationGuard / claimLedger / taskGuard / tasklistGuard / scanThrottle | true | `ANTI_HALL_SCAN_THROTTLE` (scanThrottle) |
-| safety.gitGuard / commandGuard / editGuard / swarmGuard (safety: `set`/`reset` need `--confirmed`; normal precedence applies) | true | `ANTIHALL_GIT_GUARD`, `ANTIHALL_COMMAND_GUARD`, `ANTIHALL_EDIT_GUARD`, `ANTIHALL_SWARM_GUARD` |
+| safety.gitGuard / commandGuard / editGuard / swarmGuard (safety: risky `set`/`reset` need `--confirmed`; normal precedence applies, settings.json values count) | true | `ANTIHALL_GIT_GUARD`, `ANTIHALL_COMMAND_GUARD`, `ANTIHALL_EDIT_GUARD`, `ANTIHALL_SWARM_GUARD` |
 | guards.editGuardAllow / allowSubagentMailbox (advanced, safety: --confirmed) | "" / false | `ANTIHALL_EDIT_GUARD_ALLOW`, `ANTIHALL_ALLOW_SUBAGENT_MAILBOX` |
 | context.verifyFirstSession / verifyFirstOrchestration / verifyFirstTurn / verifyFirstSubagent / taskTracker / handoverResume / defectNudge | true | — |
 | maintenance.repairOnReload / progressPrune / precompactSnapshot / taskLifecycleLog / sessionEndReaper | true | `ANTIHALL_REPAIR_ON_RELOAD`, `ANTI_HALL_SESSION_END_REAPER` |

@@ -794,7 +794,10 @@ wired resolver.
   and the knobs that weaken them (`guards.stashGuard`, `guards.editGuardAllow`,
   `guards.allowSubagentMailbox`) are owner decision (0.108.4, revised): no hard refusal —
   a human direct command, or a confirmation after a clear, plain warning, is enough.
-  `settings.js set`/`reset` on one of these needs `--confirmed`; without it nothing
+  `settings.js set` to the risky value (a guard off, a bypass on, a new allow-list path)
+  needs `--confirmed`, and so does a `reset` whose fallback value is the risky one (e.g.
+  resetting an armed `guards.stashGuard`, whose default is off); re-arming a guard,
+  narrowing a list, or a reset back to a safe default does not. Without it nothing
   changes and the call returns `{ok:false, needsConfirmation:true, warning}` — one short,
   factual, human-readable line built from the key's own `safetyNote` in the schema (calm
   facts, not alarming). A direct user ask to change the guard IS the confirmation; otherwise
@@ -805,6 +808,10 @@ wired resolver.
   off turns off the delegation check only; command-guard's data-safety sub-guards stay on.
   The per-guard `skip.json` escape hatch works as before, and `"all"` still never covers
   git-guard. On Codex there is no `/config`: use `--confirmed` or the env var.
+  A value in `~/.anti-hall/settings.json` counts for these keys like any other; nothing
+  mechanically stops an agent from writing that file directly — the owner chose consent
+  over an extra guard, so the skills tell the agent never to hand-edit a safety key there
+  to get around the confirmation.
 - **Legacy config is never deleted.** `~/.anti-hall/jev.json` (and any future
   per-feature config file the schema maps) keeps working as a fallback forever;
   `doctor --repair` and `/anti-hall:update` forward-migrate its values into
@@ -818,7 +825,7 @@ wired resolver.
 
 ### Every setting
 
-Generated from `hooks/lib/settings-schema.js` (a hygiene test keeps this table and the schema in sync). "adv" = advanced (shown by `show --all`); "safety" = `set`/`reset` need `--confirmed` (see above).
+Generated from `hooks/lib/settings-schema.js` (a hygiene test keeps this table and the schema in sync). "adv" = advanced (shown by `show --all`); "safety" = a risky `set`/`reset` needs `--confirmed` (see above).
 
 | Setting | Default | Env | Notes |
 |---|---|---|---|

@@ -53,8 +53,11 @@ setting, `set` it here.
 `safety.gitGuard`, `safety.commandGuard`, `safety.editGuard`, `safety.swarmGuard`,
 `guards.stashGuard`, `guards.editGuardAllow` and `guards.allowSubagentMailbox` are
 safety keys (owner decision: no hard refusal — a human direct command, or a
-confirmation after a clear, plain warning, is enough). `set`/`reset` on one of these
-needs `--confirmed`; without it, nothing changes and the CLI returns one short,
+confirmation after a clear, plain warning, is enough). `set` to the risky value (a guard off, a
+bypass on, a new allow-list path) needs `--confirmed`, and so does a `reset` whose
+fallback value is the risky one (e.g. resetting an armed `guards.stashGuard`, whose
+default is off); re-arming a guard, narrowing a list, or a reset back to a safe default
+does not. Without `--confirmed`, nothing changes and the CLI returns one short,
 factual, human-readable line (`{ok:false, needsConfirmation:true, warning}` on
 `--json`) — calm facts, not alarming, built from that key's own one-sentence
 `safetyNote` in the schema.
@@ -69,6 +72,12 @@ factual, human-readable line (`{ok:false, needsConfirmation:true, warning}` on
   on yes; on no, or on no answer, leave it unchanged and say so.
 - **Never infer consent** from context, and never add `--confirmed` on your own
   initiative to get past the warning — that is exactly the case this gate exists for.
+
+A value in `~/.anti-hall/settings.json` counts for these keys like any other (normal
+precedence: env > settings.json > `/config` > default). Nothing mechanically stops an
+agent from writing that file directly; the owner chose consent over an extra guard, so
+the rule is the same as above — never hand-edit a safety key in settings.json to get
+around the confirmation.
 
 A one-off pause is still the per-guard `skip.json` escape hatch, only on the user's
 explicit request.

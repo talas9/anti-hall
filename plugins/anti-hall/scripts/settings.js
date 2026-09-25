@@ -15,8 +15,14 @@
 // `show --all` includes advanced (tuning/timeout) settings; by default they
 // are collapsed to a count per section. `--section` filters to one section.
 //
-// SAFETY-LOCKED keys (schema `locked: true`, e.g. safety.gitGuard): `set` and
-// `reset` need `--confirmed`. Without it nothing changes and the CLI prints
+// SAFETY-LOCKED keys (schema `locked: true`, e.g. safety.gitGuard): `set` to
+// the RISKY value (a guard off, a bypass on, a new allow-list path) and a
+// `reset` whose fallback value (env, /config, legacy or default once the
+// settings.json override is gone) is the risky one — e.g. resetting an armed
+// guards.stashGuard, default off — need `--confirmed`; re-arming a guard,
+// narrowing a list, or a reset back to a safe default does not. A value in
+// ~/.anti-hall/settings.json counts like any other (normal precedence). Without
+// `--confirmed` nothing changes and the CLI prints
 // one short, factual, human-readable line (built from the key's `safetyNote`)
 // explaining what the guard normally protects, then exits non-zero with
 // `{ok:false, needsConfirmation:true, warning}` on --json. The confirmation
