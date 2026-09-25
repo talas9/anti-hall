@@ -1309,6 +1309,62 @@ test('BUG 2 FIX (v0.109, supersedes FIX 3): a fresh heartbeat downgrades a plain
   } finally { h.cleanup(); }
 });
 
+// Bug 2 part 1 — waiting-on-input. A child can be provably "busy" by BOTH
+// pre-existing signals (fresh heartbeat, live pid) while its own session is
+// actually stuck on an unanswered AskUserQuestion — the Primary cannot
+// unblock that through the mesh, so the block/escalation must survive even
+// though the child "looks" busy. writeSessionTranscript seeds the transcript
+// file the SAME reader (companion/lib/devswarm-idle.js, via
+// devswarm-parent-gate.js's `waitingOnUserInput`) reads.
+const liveness = require('../../plugins/anti-hall/companion/lib/liveness.js');
+function writeSessionTranscript(home, worktreePath, sessionId, lines) {
+  const dir = liveness.projectDirFor(worktreePath, home);
+  fs.mkdirSync(dir, { recursive: true });
+  const body = lines.map((l) => JSON.stringify(l)).join('\n') + '\n';
+  fs.writeFileSync(path.join(dir, sessionId + '.jsonl'), body);
+}
+const iso = (t) => new Date(t).toISOString();
+
+test('BUG 2 PART 1: a genuinely WORKING busy child (fresh heartbeat, transcript mid-tool) still downgrades to an advisory', () => {
+  const h = makeHome();
+  try {
+    const wt = path.join(h.home, 'wt', 'ws-work');
+    seedWorkspace(h.home, 'ws-work', { messages: ['a', 'b'], cursor: 0, worktreePath: wt, sessionId: 'sess-work' });
+    writeHeartbeat(h.home, 'ws-work', Date.now());
+    const t0 = Date.now() - 5 * 60000;
+    writeSessionTranscript(h.home, wt, 'sess-work', [
+      { type: 'user', timestamp: iso(t0), message: { role: 'user', content: 'Run the migration.' } },
+      { type: 'assistant', timestamp: iso(t0 + 60000), message: { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_bashwork', name: 'Bash', input: { command: 'npm test' } }] } },
+    ]);
+    const r = run(h.home);
+    assert.strictEqual(r.status, 0);
+    assert.strictEqual(r.stdout, '', `a genuinely working child must still get an advisory, not a block; stdout=${r.stdout}`);
+    assert.match(r.stderr, /ws-work: busy, 2 queued/, `must emit the busy advisory; stderr=${r.stderr}`);
+  } finally { h.cleanup(); }
+});
+
+test('BUG 2 PART 1: a child WAITING on its own unanswered AskUserQuestion (fresh heartbeat) still BLOCKS, naming the wait', () => {
+  const h = makeHome();
+  try {
+    const wt = path.join(h.home, 'wt', 'ws-ask');
+    seedWorkspace(h.home, 'ws-ask', { messages: ['a', 'b'], cursor: 0, worktreePath: wt, sessionId: 'sess-ask' });
+    writeHeartbeat(h.home, 'ws-ask', Date.now()); // fresh proof-of-life — the OLD (55361e8) signal alone would wrongly call this busy
+    const t0 = Date.now() - 5 * 60000;
+    writeSessionTranscript(h.home, wt, 'sess-ask', [
+      { type: 'user', timestamp: iso(t0), message: { role: 'user', content: 'Which environment should this ship to?' } },
+      {
+        type: 'assistant', timestamp: iso(t0 + 60000),
+        message: { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_askwait', name: 'AskUserQuestion', input: { questions: [{ question: 'Which env?' }] } }] },
+      },
+      // no tool_result for toolu_askwait — the harness is paused for a human answer
+    ]);
+    const r = run(h.home);
+    assert.strictEqual(r.json && r.json.decision, 'block', `a child waiting on its own AskUserQuestion must still hard-block; stdout=${r.stdout}`);
+    assert.match(r.json.reason, /2 unread/);
+    assert.match(r.json.reason, /ws-ask: waiting on a human answer in its own session/, `must name the wait; reason=${r.json.reason}`);
+  } finally { h.cleanup(); }
+});
+
 test('BUG 2 CONTROL: the SAME unread backlog WITHOUT a fresh heartbeat (not busy) still hard-blocks', () => {
   const h = makeHome();
   try {

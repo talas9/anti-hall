@@ -140,6 +140,12 @@ const { readDescriptors } = require('../companion/devswarm-supervisor.js');
 const { readUnreadMessages } = require('../companion/lib/devswarm-inbox-cursor.js');
 const devswarmUnread = require('../companion/lib/devswarm-unread.js');
 const { livenessPathFor, devswarmRoot, hasFreshHeartbeat, isSessionAliveRow } = require('../companion/lib/liveness.js');
+// waitingOnUserInput — Bug 2 part 1 (55361e8 follow-up): REUSE the existing
+// transcript classifier (companion/lib/devswarm-idle.js) rather than a
+// second parser. Tells "actively working" apart from "blocked on a human
+// answer inside its own session" — both look identical to a fresh heartbeat
+// / live pid, which is all `busy` below could see before this.
+const { waitingOnUserInput } = require('../companion/lib/devswarm-idle.js');
 const { rowState } = require('../companion/lib/row-state.js');
 // devswarm-ignore.js: the user-editable ~/.anti-hall/devswarm/ignore.json
 // {"ids":[...]} list — see that module's header. Suppresses this gate's
@@ -1393,6 +1399,20 @@ function main() {
     if (!busy) {
       try { busy = hasFreshHeartbeat(d.id, home); } catch (_) { busy = false; }
     }
+    // waitingOnUser (Bug 2 part 1 — a busy-but-actually-stuck child): a child
+    // can be provably busy by BOTH signals above (fresh heartbeat, live pid)
+    // while its own session is blocked on an unanswered AskUserQuestion the
+    // Primary cannot see or resolve through the mesh — the Primary's
+    // block/escalation is the CORRECT behavior there, not an advisory. Only
+    // ever NARROWS `busy` (true -> false), never widens it: a descriptor this
+    // can't classify (no transcript, unreadable, ...) leaves `busy` exactly
+    // as computed above (55361e8's pre-existing behavior), per
+    // waitingOnUserInput's own fail-to-false contract.
+    let waitingOnUser = false;
+    if (busy) {
+      try { waitingOnUser = waitingOnUserInput(d, home); } catch (_) { waitingOnUser = false; }
+      if (waitingOnUser) busy = false;
+    }
     // FIELD (archived rows still alerting): a workspace the owner already
     // ARCHIVED is done and put away — it must never render as escalated /
     // not-draining. Liveness axis ONLY, same as every suppressor above; the row
@@ -1473,6 +1493,10 @@ function main() {
       // for the family-level busy/NEGLECT decision below — see `busy`'s own
       // comment above for the definition.
       busy,
+      // waitingOnUser: REPORT-ONLY provenance for the family-level
+      // waiting-on-input line below — see the per-descriptor `waitingOnUser`
+      // comment above for the definition.
+      waitingOnUser,
       oldestUnreadAgeMs: oldestUnreadAgeMsForDescriptor,
     });
   }
@@ -1637,8 +1661,16 @@ function main() {
     // advisory for a provably busy child.
     let familyBusy = false;
     let familyOldestUnreadAgeMs = null;
+    // familyWaitingOnUser (Bug 2 part 1): OR across members — a family whose
+    // survivor is waiting on a human answer inside its own session, used
+    // below to attach the plain "waiting on a human answer" line to a block
+    // that stays a hard block (waitingOnUser already forced busy=false above,
+    // so familyBusy alone can't reflect this — a DIFFERENT member of the same
+    // family could still be genuinely busy without being the one waiting).
+    let familyWaitingOnUser = false;
     for (const m of members) {
       if (m.busy) familyBusy = true;
+      if (m.waitingOnUser) familyWaitingOnUser = true;
       if (Number.isFinite(m.oldestUnreadAgeMs) && (familyOldestUnreadAgeMs === null || m.oldestUnreadAgeMs > familyOldestUnreadAgeMs)) {
         familyOldestUnreadAgeMs = m.oldestUnreadAgeMs;
       }
@@ -1730,6 +1762,13 @@ function main() {
     const survivorId = survivor && survivor.id != null ? String(survivor.id) : (members[0] && members[0].id != null ? String(members[0].id) : null);
     if (!survivorId) continue;
     const entry = { id: survivorId, unread: unionUnread, unknown: unreadUnknown, status };
+    // waitingOnInput (Bug 2 part 1): this family reaches here — a hard block,
+    // never an advisory — precisely BECAUSE waitingOnUser forced `busy` false
+    // above (a plain-unread family that stayed busy would have `continue`d
+    // to an advisory a few lines up). Names it in the reason text so the
+    // Primary knows THIS block is not neglect but its own child stuck on a
+    // question it cannot answer through the mesh.
+    if (familyWaitingOnUser) entry.waitingOnInput = true;
     if (foreignProject) entry.foreignProject = true;
     if (worktreeGone) entry.worktreeGone = true;
     if (urgencyMax != null) entry.urgencyMax = urgencyMax;
@@ -2190,6 +2229,24 @@ function buildInformationalSegment(informational) {
   );
 }
 
+// buildWaitingOnInputSegment(blocking) -> string. Bug 2 part 1: one plain
+// line per blocking family whose child is stuck on an unanswered
+// AskUserQuestion inside its OWN session (`entry.waitingOnInput`, set only
+// when this family reached a hard block precisely because that forced
+// `busy` false — see the per-descriptor `waitingOnUser` comment above). Told
+// apart from the ordinary "N unread" wording so the Primary knows this is
+// not neglect: the mesh cannot answer a prompt sitting inside a child's own
+// interactive session.
+function buildWaitingOnInputSegment(blocking) {
+  if (!Array.isArray(blocking) || !blocking.length) return '';
+  let out = '';
+  for (const b of blocking) {
+    if (!b || !b.waitingOnInput || !b.id) continue;
+    out += b.id + ': waiting on a human answer in its own session\n';
+  }
+  return out;
+}
+
 function buildReason(blocking, ownId, unanswered, escalateTimes, truncated, qEscalateTimes, hasIntent, ownSelfUnknown, unansweredInformational, ownStaleCache, ownSource) {
   const shown = blocking.slice(0, 5).map((b) => {
     const bits = [];
@@ -2245,6 +2302,7 @@ function buildReason(blocking, ownId, unanswered, escalateTimes, truncated, qEsc
     body += buildUnansweredSegment(unanswered);
   }
   body += buildInformationalSegment(unansweredInformational);
+  body += buildWaitingOnInputSegment(blocking);
 
   if (escalateTimes) {
     // Standalone escalation wording (requirement D) — deliberately NOT the

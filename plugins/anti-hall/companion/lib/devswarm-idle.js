@@ -224,6 +224,15 @@ function classifyTranscript(text, opts) {
   const bgLaunches = new Map(); // launch tool_use id -> true (pending)
   const bgAlias = new Map(); // task id / tool_use id -> launch tool_use id
   let lastBgCount = 0; // newest turn_duration pendingBackgroundAgentCount, any turn
+  // toolResultIds (waiting-on-input, Bug 2 part 1): EVERY tool_use id this
+  // transcript has ever seen a tool_result for, independent of the
+  // background-launch tracking above (that Map only ever holds BG_TOOLS
+  // launches, not a general index). Used below, after the turn loop, to find
+  // the last turn's UNRESOLVED tool call — the same "no tool_result yet"
+  // shape a pending AskUserQuestion or permission prompt leaves in the
+  // transcript, read with the SAME parse already running here rather than a
+  // second pass/parser over the file.
+  const toolResultIds = new Set();
   const open = (wake, ts) => { cur = { wake, tools: [], lastTs: ts, closed: false, prompted: true, bgCount: 0 }; turns.push(cur); };
   const orphan = (ts) => { cur = { wake: null, tools: [], lastTs: ts, closed: false, prompted: false, bgCount: 0 }; turns.push(cur); };
   for (const line of String(text || '').split('\n')) {
@@ -253,7 +262,9 @@ function classifyTranscript(text, opts) {
       const c = e.message && e.message.content;
       if (Array.isArray(c)) {
         for (const b of c) {
-          if (!b || b.type !== 'tool_result' || !bgLaunches.has(b.tool_use_id)) continue;
+          if (!b || b.type !== 'tool_result') continue;
+          if (b.tool_use_id != null) toolResultIds.add(String(b.tool_use_id));
+          if (!bgLaunches.has(b.tool_use_id)) continue;
           if (b.is_error === true) { bgLaunches.delete(b.tool_use_id); continue; } // never started
           const r = e.toolUseResult;
           if (r && typeof r === 'object') {
@@ -317,7 +328,30 @@ function classifyTranscript(text, opts) {
   // No real turn in the WHOLE transcript: the session's first entry.
   if (realTs === null) realTs = windowStartTs;
   const pendingBackground = bgLaunches.size > 0 || lastBgCount > 0 || !!(lastReal && lastReal.bgCount > 0);
-  return { realTs, openRealTurn, pendingBackground, windowStartTs, pingTurns, realTurns };
+  // openWaitingTool (waiting-on-input, Bug 2 part 1): the NAME of the last
+  // tool_use in the transcript's very last turn that has no tool_result yet
+  // — ONLY when that last turn is itself still open (no stop_hook_summary/
+  // turn_duration after it; the exact same `!t.closed` condition
+  // `openRealTurn` above already uses). A turn can be open because the
+  // session is genuinely mid-tool (Bash still running — that is ACTIVE work,
+  // not a wait) or because the tool itself hands control to a human
+  // (AskUserQuestion with no answer yet). This function does not judge which
+  // — it just reports the unresolved tool's name; the caller
+  // (waitingOnUserInput below) is the one place that says AskUserQuestion
+  // specifically means "waiting on a human", so there is exactly one
+  // definition of that anywhere in this codebase.
+  let openWaitingTool = null;
+  if (turns.length) {
+    const last = turns[turns.length - 1];
+    if (!last.closed) {
+      for (let j = last.tools.length - 1; j >= 0; j--) {
+        const tu = last.tools[j];
+        const id = tu && tu.id != null ? String(tu.id) : null;
+        if (id && !toolResultIds.has(id)) { openWaitingTool = String(tu.name || ''); break; }
+      }
+    }
+  }
+  return { realTs, openRealTurn, pendingBackground, windowStartTs, pingTurns, realTurns, openWaitingTool };
 }
 
 // realActivity(desc, home, opts) -> { known, ts, openRealTurn, reason, ... }.
@@ -343,4 +377,23 @@ function realActivity(desc, home, opts) {
   return Object.assign({ known: true, ts: r.realTs }, r);
 }
 
-module.exports = { realActivity, classifyTranscript, isMailboxTool, TAIL_BYTES };
+// waitingOnUserInput(desc, home, opts) -> bool. devswarm-parent-gate.js's
+// "busy" NEGLECT-advisory downgrade (0.109, commit 55361e8) needs to tell
+// "actively working" apart from "blocked on a human answer inside its own
+// session" — a fresh heartbeat or a live pid (idleAlive) is true for BOTH,
+// so neither alone can drive that decision. This reuses realActivity's own
+// transcript read (SAME tail window, SAME classifyTranscript parse) rather
+// than a second parser, and answers ONLY the narrow, well-defined case: the
+// transcript's last turn is still open AND its last unresolved tool call is
+// AskUserQuestion (a tool_use with no tool_result yet — the harness pauses
+// there for a human, it never times the turn out on its own). Unknown (no
+// transcript, unreadable, mismatched heartbeat session, ...) -> false, so a
+// caller that cannot read the transcript falls back to its OWN prior
+// (pre-this-function) busy determination rather than this function silently
+// asserting "not waiting".
+function waitingOnUserInput(desc, home, opts) {
+  const r = realActivity(desc, home, opts);
+  return !!(r && r.known && r.openRealTurn && r.openWaitingTool === 'AskUserQuestion');
+}
+
+module.exports = { realActivity, classifyTranscript, isMailboxTool, waitingOnUserInput, TAIL_BYTES };

@@ -6,6 +6,8 @@
 const { test } = require('node:test');
 const assert = require('node:assert');
 const path = require('node:path');
+const fs = require('node:fs');
+const os = require('node:os');
 
 const I = require(path.join(__dirname, '..', '..', 'plugins', 'anti-hall', 'companion', 'lib', 'devswarm-idle.js'));
 
@@ -301,4 +303,112 @@ test('P2: a human prompt consumes a pending cron flag; a later meta line is not 
     .prompt(T0 + 30 * MIN, 'Mailbox wake', { isMeta: true })
     .tool(T0 + 31 * MIN, 'Bash', { command: 'node ' + CLI + ' inbox tick c1 --child' }).stop(T0 + 32 * MIN, 0);
   assert.strictEqual(I.classifyTranscript(ok.text()).pingTurns, 1);
+});
+
+// ---------------------------------------------------------------------------
+// Bug 2 part 1 — waiting-on-input. A child's "busy" (fresh heartbeat / live
+// pid) is true both while it is ACTIVELY WORKING and while its own session
+// is stuck on an unanswered AskUserQuestion. `openWaitingTool` (in
+// classifyTranscript) names the last turn's unresolved tool call so the
+// caller (waitingOnUserInput) can tell those two apart without a second
+// transcript parser.
+test('waiting-on-input: last turn open on an AskUserQuestion with no tool_result -> openWaitingTool is AskUserQuestion', () => {
+  const t = tr().prompt(T0, 'Ship the migration.')
+    .tool(T0 + MIN, 'Read', { file_path: '/wt/x.js' });
+  t.raw({
+    type: 'assistant', timestamp: iso(T0 + 2 * MIN),
+    message: { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_ask1', name: 'AskUserQuestion', input: { questions: [{ question: 'Which env?' }] } }] },
+  });
+  const r = I.classifyTranscript(t.text());
+  assert.strictEqual(r.openRealTurn, true, JSON.stringify(r));
+  assert.strictEqual(r.openWaitingTool, 'AskUserQuestion', JSON.stringify(r));
+});
+
+test('waiting-on-input: last turn open on a still-running Bash (no tool_result) -> openWaitingTool is Bash, NOT AskUserQuestion (real work, not a human wait)', () => {
+  const t = tr().prompt(T0, 'Run the suite.');
+  t.raw({
+    type: 'assistant', timestamp: iso(T0 + MIN),
+    message: { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_bash1', name: 'Bash', input: { command: 'npm test' } }] },
+  });
+  const r = I.classifyTranscript(t.text());
+  assert.strictEqual(r.openRealTurn, true, JSON.stringify(r));
+  assert.strictEqual(r.openWaitingTool, 'Bash', JSON.stringify(r));
+});
+
+test('waiting-on-input: a CLOSED last turn (stop_hook_summary/turn_duration present) -> openWaitingTool is null even with an earlier unresolved tool', () => {
+  const t = tr().prompt(T0, 'Fix it.').tool(T0 + MIN, 'Edit', { file_path: '/wt/x.js' }).say(T0 + 2 * MIN, 'Done.').stop(T0 + 2 * MIN, 0);
+  const r = I.classifyTranscript(t.text());
+  assert.strictEqual(r.openWaitingTool, null, JSON.stringify(r));
+});
+
+test('waiting-on-input: the AskUserQuestion already got its tool_result (answered), then a later unresolved Bash is what is actually open', () => {
+  const t = tr().prompt(T0, 'Ship it.')
+    .tool(T0 + MIN, 'AskUserQuestion', { questions: [{ question: 'Which env?' }] }) // answered — .tool() writes the tool_result
+    .prompt(T0 + 2 * MIN, 'staging'); // human answered, new turn opens
+  t.raw({
+    type: 'assistant', timestamp: iso(T0 + 3 * MIN),
+    message: { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_bash2', name: 'Bash', input: { command: 'deploy staging' } }] },
+  });
+  const r = I.classifyTranscript(t.text());
+  assert.strictEqual(r.openWaitingTool, 'Bash', JSON.stringify(r));
+});
+
+// waitingOnUserInput(desc, home, opts) — the realActivity-backed wrapper
+// devswarm-parent-gate.js calls. Isolated fixture HOME per the repo's own
+// "tests never touch the real home" rule; nothing here writes outside its
+// own mkdtemp dir.
+function isoHome() {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'anti-hall-idle-test-'));
+  return { home, cleanup: () => { try { fs.rmSync(home, { recursive: true, force: true }); } catch (_) {} } };
+}
+function writeTranscriptFor(home, worktreePath, sessionId, text) {
+  const liveness = require(path.join(__dirname, '..', '..', 'plugins', 'anti-hall', 'companion', 'lib', 'liveness.js'));
+  const dir = liveness.projectDirFor(worktreePath, home);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, sessionId + '.jsonl'), text);
+}
+
+test('waitingOnUserInput: an open AskUserQuestion in the child\'s own transcript -> true', () => {
+  const h = isoHome();
+  try {
+    const wt = path.join(h.home, 'wt', 'c1');
+    const t = tr().prompt(T0, 'Ship the migration.').tool(T0 + MIN, 'Read', { file_path: '/wt/x.js' });
+    t.raw({
+      type: 'assistant', timestamp: iso(T0 + 2 * MIN),
+      message: { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_ask2', name: 'AskUserQuestion', input: { questions: [{ question: 'Which env?' }] } }] },
+    });
+    writeTranscriptFor(h.home, wt, 'sess-c1', t.text());
+    assert.strictEqual(I.waitingOnUserInput({ id: 'c1', sessionId: 'sess-c1', worktreePath: wt }, h.home), true);
+  } finally { h.cleanup(); }
+});
+
+test('waitingOnUserInput: an open, still-running Bash (genuinely working) -> false', () => {
+  const h = isoHome();
+  try {
+    const wt = path.join(h.home, 'wt', 'c2');
+    const t = tr().prompt(T0, 'Run the suite.');
+    t.raw({
+      type: 'assistant', timestamp: iso(T0 + MIN),
+      message: { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_bash3', name: 'Bash', input: { command: 'npm test' } }] },
+    });
+    writeTranscriptFor(h.home, wt, 'sess-c2', t.text());
+    assert.strictEqual(I.waitingOnUserInput({ id: 'c2', sessionId: 'sess-c2', worktreePath: wt }, h.home), false);
+  } finally { h.cleanup(); }
+});
+
+test('waitingOnUserInput: a closed (finished) turn -> false', () => {
+  const h = isoHome();
+  try {
+    const wt = path.join(h.home, 'wt', 'c3');
+    const t = tr().prompt(T0, 'Fix it.').tool(T0 + MIN, 'Edit', { file_path: '/wt/x.js' }).say(T0 + 2 * MIN, 'Done.').stop(T0 + 2 * MIN, 0);
+    writeTranscriptFor(h.home, wt, 'sess-c3', t.text());
+    assert.strictEqual(I.waitingOnUserInput({ id: 'c3', sessionId: 'sess-c3', worktreePath: wt }, h.home), false);
+  } finally { h.cleanup(); }
+});
+
+test('waitingOnUserInput: no transcript at all -> false (caller falls back to its own pre-existing busy check)', () => {
+  const h = isoHome();
+  try {
+    assert.strictEqual(I.waitingOnUserInput({ id: 'c4', sessionId: 'sess-c4', worktreePath: path.join(h.home, 'wt', 'c4') }, h.home), false);
+  } finally { h.cleanup(); }
 });
