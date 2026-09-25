@@ -70,6 +70,24 @@ function writeDesc(home, id, desc) {
   return p;
 }
 const ID_A = 'b3f1c2d4-1111-4000-8000-abcdef012345';
+const ID_P = 'c4e2d3f5-2222-4000-8000-abcdef012345';
+// writeAppDb(home, rows) -> path of a minimal fixture DevSwarm app DB (never a
+// real one). Each row: { id, builderType, isActive (default 1), isHidden (0) }.
+// The app-archive TARGET GATE only spawns hivecontrol for an id this DB holds
+// verbatim as an open, non-primary builder.
+function writeAppDb(home, rows) {
+  const { DatabaseSync } = require('node:sqlite');
+  const dbPath = path.join(home, 'fixture-devswarm-app.db');
+  const db = new DatabaseSync(dbPath);
+  db.exec('CREATE TABLE builders (id TEXT PRIMARY KEY, isActive INTEGER, isHidden INTEGER, builderType TEXT, worktreePath TEXT, label TEXT)');
+  const st = db.prepare('INSERT INTO builders (id, isActive, isHidden, builderType, worktreePath, label) VALUES (?, ?, ?, ?, ?, ?)');
+  for (const r of rows) st.run(r.id, r.isActive === undefined ? 1 : r.isActive, r.isHidden || 0, r.builderType === undefined ? 'standard' : r.builderType, r.worktreePath || null, r.label || null);
+  db.close();
+  return dbPath;
+}
+function mutateCalls(fake) {
+  return readCalls(fake.callsFile).filter((c) => c.argv[0] === 'workspace' && (c.argv[1] === 'archive' || c.argv[1] === 'delete') && c.argv[2] !== '--help');
+}
 function seedOne(home, W, id) {
   const repoKey = repokey.repoKeyForWorktree(W);
   const top = inst.resolveWorktree(W);
@@ -78,14 +96,15 @@ function seedOne(home, W, id) {
   return { repoKey, desc };
 }
 
-test('APP ARCHIVE: capability present + hivecontrol succeeds -> archives in the app, EXPLICIT id passed, manualStep is accurate', () => {
+test('APP ARCHIVE: app DB confirms an open STANDARD builder with the exact id + capability present -> archives in the app via the CLI, ONE spawn, EXPLICIT full id, manualStep is accurate', () => {
   const home = tmpHome();
   const W = makeGitRepo('ok');
   try {
     seedOne(home, W, ID_A);
+    const dbPath = writeAppDb(home, [{ id: ID_A, builderType: 'standard' }]);
     const fake = fakeHivecontrol(path.join(home, 'bin'), { version: '2.5.3', workspaceHelp: HELP_253, verbHelp: { archive: ARCHIVE_253 } });
     capsLib.resetCache();
-    const ctx = { home, cwd: W, env: { HOME: home, PATH: fake.dir, ANTIHALL_DEVSWARM_APP_DB: 'off' }, backend: BACKEND };
+    const ctx = { home, cwd: W, env: { HOME: home, PATH: fake.dir, ANTIHALL_DEVSWARM_APP_DB: dbPath }, backend: BACKEND };
     const r = cli.run(['archive', ID_A], ctx);
     assert.strictEqual(r.result.ok, true, JSON.stringify(r.result));
     assert.strictEqual(r.result.appArchive.attempted, true, JSON.stringify(r.result));
@@ -140,7 +159,8 @@ test('APP ARCHIVE: retries ONCE on "Could not confirm terminal process boundary"
       + 'process.exit(2);\n';
     fs.writeFileSync(path.join(bin, 'hivecontrol'), src, { mode: 0o755 });
     capsLib.resetCache();
-    const ctx = { home, cwd: W, env: { HOME: home, PATH: bin, ANTIHALL_DEVSWARM_APP_DB: 'off' }, backend: BACKEND };
+    const dbPath = writeAppDb(home, [{ id: ID_A, builderType: 'standard' }]);
+    const ctx = { home, cwd: W, env: { HOME: home, PATH: bin, ANTIHALL_DEVSWARM_APP_DB: dbPath }, backend: BACKEND };
     const r = cli.run(['archive', ID_A], ctx);
     assert.strictEqual(r.result.ok, true, JSON.stringify(r.result));
     assert.strictEqual(r.result.appArchive.attempted, true, JSON.stringify(r.result));
@@ -159,7 +179,8 @@ test('APP ARCHIVE: a genuinely FAILED archive (not the retryable error) is repor
       version: '2.5.3', workspaceHelp: HELP_253, verbHelp: { archive: ARCHIVE_253 }, mutateExit: 1,
     });
     capsLib.resetCache();
-    const ctx = { home, cwd: W, env: { HOME: home, PATH: fake.dir, ANTIHALL_DEVSWARM_APP_DB: 'off' }, backend: BACKEND };
+    const dbPath = writeAppDb(home, [{ id: ID_A, builderType: 'standard' }]);
+    const ctx = { home, cwd: W, env: { HOME: home, PATH: fake.dir, ANTIHALL_DEVSWARM_APP_DB: dbPath }, backend: BACKEND };
     const r = cli.run(['archive', ID_A], ctx);
     assert.strictEqual(r.result.ok, true, 'the LOCAL archive still succeeds even if the app-side call fails: ' + JSON.stringify(r.result));
     assert.strictEqual(r.result.appArchive.ok, false, JSON.stringify(r.result));
@@ -167,6 +188,67 @@ test('APP ARCHIVE: a genuinely FAILED archive (not the retryable error) is repor
     assert.strictEqual(calls.length, 1, 'a non-retryable failure must not be retried: ' + JSON.stringify(calls));
     assert.match(r.result.manualStep, /app archive attempted and failed/);
   } finally { rm(W); rm(home); }
+});
+
+// ---------------------------------------------------------------------------
+// TARGET GATE — hivecontrol is spawned ONLY for an exact, open, non-primary
+// app builder id, and NEVER from a hook caller (appArchive:false).
+// ---------------------------------------------------------------------------
+
+function gateCase(tag, { descId, rows, run }) {
+  const home = tmpHome();
+  const W = makeGitRepo(tag);
+  try {
+    seedOne(home, W, descId);
+    const dbPath = rows ? writeAppDb(home, rows) : 'off';
+    const fake = fakeHivecontrol(path.join(home, 'bin-' + tag), { version: '2.5.3', workspaceHelp: HELP_253, verbHelp: { archive: ARCHIVE_253 } });
+    capsLib.resetCache();
+    const ctx = { home, cwd: W, env: { HOME: home, PATH: fake.dir, ANTIHALL_DEVSWARM_APP_DB: dbPath }, backend: BACKEND };
+    const result = run ? run(ctx) : cli.run(['archive', descId], ctx).result;
+    return { result, calls: readCalls(fake.callsFile), mutates: mutateCalls(fake) };
+  } finally { rm(W); rm(home); }
+}
+
+test('TARGET GATE: a TRUNCATED id (the app DB holds only the full id) -> local archive only, hivecontrol never spawned', () => {
+  const r = gateCase('trunc', { descId: 'b3f1c2d4', rows: [{ id: ID_A, builderType: 'standard' }] });
+  assert.strictEqual(r.result.ok, true, JSON.stringify(r.result));
+  assert.strictEqual(r.result.appArchive.attempted, false, JSON.stringify(r.result));
+  assert.match(r.result.appArchive.reason, /no app builder with this exact id/);
+  assert.deepStrictEqual(r.calls, [], 'not even a capability probe: ' + JSON.stringify(r.calls));
+});
+
+test('TARGET GATE: a PRIMARY builder (builderType primary) -> hivecontrol never spawned', () => {
+  const r = gateCase('prim', { descId: ID_P, rows: [{ id: ID_P, builderType: 'primary' }] });
+  assert.strictEqual(r.result.ok, true, JSON.stringify(r.result));
+  assert.strictEqual(r.result.appArchive.attempted, false, JSON.stringify(r.result));
+  assert.match(r.result.appArchive.reason, /primary builder/);
+  assert.deepStrictEqual(r.calls, []);
+});
+
+test('TARGET GATE: unknown builderType, a closed builder, a primary-<hash> label id, or no app DB -> hivecontrol never spawned', () => {
+  const unknown = gateCase('unk', { descId: ID_A, rows: [{ id: ID_A, builderType: null }] });
+  assert.match(unknown.result.appArchive.reason, /builderType unknown/);
+  assert.deepStrictEqual(unknown.calls, []);
+  const closed = gateCase('closed', { descId: ID_A, rows: [{ id: ID_A, builderType: 'standard', isActive: 0, isHidden: 1 }] });
+  assert.match(closed.result.appArchive.reason, /not open/);
+  assert.deepStrictEqual(closed.calls, []);
+  const label = gateCase('label', { descId: 'primary-0123456789ab', rows: [{ id: 'primary-0123456789ab', builderType: 'standard' }] });
+  assert.match(label.result.appArchive.reason, /primary-<hash>/);
+  assert.deepStrictEqual(label.calls, []);
+  const noDb = gateCase('nodb', { descId: ID_A, rows: null });
+  assert.match(noDb.result.appArchive.reason, /app DB unreadable/);
+  assert.deepStrictEqual(noDb.calls, []);
+});
+
+test('TARGET GATE: a HOOK caller (appArchive:false) never spawns hivecontrol, even for a confirmed standard builder', () => {
+  const r = gateCase('hook', {
+    descId: ID_A, rows: [{ id: ID_A, builderType: 'standard' }],
+    run: (ctx) => cli.cmdArchive(ID_A, ctx, { appArchive: false }),
+  });
+  assert.strictEqual(r.result.ok, true, JSON.stringify(r.result));
+  assert.strictEqual(r.result.appArchive.attempted, false);
+  assert.match(r.result.appArchive.reason, /local-only/);
+  assert.deepStrictEqual(r.calls, []);
 });
 
 // ---------------------------------------------------------------------------

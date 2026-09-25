@@ -197,6 +197,16 @@ the update.
   removed (env, `/config`, legacy, default) and gates it through the same risky-direction
   check as `set`; a reset that leaves the value unchanged or restores a safe default
   (e.g. `safety.gitGuard` back to `true`) still needs no confirmation.
+- **`cmdArchive`'s new app teardown could reach `hivecontrol workspace archive` with a
+  wrong target, and from a hook.** DevSwarm 2.5.3's archive/delete verbs default to the
+  CURRENT workspace when no id is given, and the phantom-descriptor retire in
+  `devswarm-child-turn.js` (a UserPromptSubmit hook) calls `cmdArchive` with a truncated
+  id. The app call now runs only when the app DB (read-only, fresh read) holds a builder
+  with that EXACT full id that is open and whose `builderType` is known and not
+  `primary`; a truncated id, a `primary-<hash>` label id, an unknown builderType, a
+  closed builder, or an unreadable app DB means no spawn at all (not even the capability
+  probe). `cmdArchive` takes `{appArchive:false}` for a local-only archive, and the hook
+  passes it, so no hook ever spawns hivecontrol or spends its timeout budget on it.
 
 ## 0.108.3
 

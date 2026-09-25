@@ -1315,6 +1315,48 @@ test('F3 RETIRE: registering a real child auto-retires a PROVEN same-worktree ph
   }
 });
 
+test('F3 RETIRE is LOCAL-ONLY: the hook never spawns hivecontrol, even when the app DB lists the phantom id as an open standard builder and hivecontrol 2.5.3 can archive', () => {
+  const h = makeHome();
+  try {
+    const wdir = path.join(h.home, '.anti-hall', 'devswarm', 'workspaces');
+    fs.mkdirSync(wdir, { recursive: true });
+    const phantomId = TRUNCATED_ID;
+    fs.writeFileSync(path.join(wdir, phantomId + '.json'), JSON.stringify({
+      id: phantomId, worktreePath: path.resolve(REPO_CWD), sessionId: 'phantom-dup-1-full-session-id',
+      inboxPath: path.join(h.home, '.anti-hall', 'devswarm', 'inbox', phantomId + '.ndjson'),
+      cursorPath: path.join(h.home, '.anti-hall', 'devswarm', 'cursors', phantomId + '.cursor'),
+    }));
+    // Worst case for the gate: the app DB DOES hold this exact id as an open
+    // standard builder, so only the hook's appArchive:false stops the spawn.
+    const { DatabaseSync } = require('node:sqlite');
+    const dbPath = path.join(h.home, 'fixture-devswarm-app.db');
+    const db = new DatabaseSync(dbPath);
+    db.exec('CREATE TABLE builders (id TEXT PRIMARY KEY, isActive INTEGER, isHidden INTEGER, builderType TEXT, worktreePath TEXT)');
+    db.prepare('INSERT INTO builders VALUES (?, 1, 0, ?, ?)').run(phantomId, 'standard', path.resolve(REPO_CWD));
+    db.close();
+    const FIXD = path.join(__dirname, '..', 'fixtures', 'devswarm-capabilities');
+    const { fakeHivecontrol, readCalls } = require('../helpers/fake-hivecontrol.js');
+    const fake = fakeHivecontrol(path.join(h.home, 'fake-hc'), {
+      version: '2.5.3',
+      workspaceHelp: path.join(FIXD, 'hivecontrol-2.5.3-workspace-help.txt'),
+      verbHelp: { archive: path.join(FIXD, 'hivecontrol-2.5.3-archive-help.txt') },
+    });
+
+    const r = testHook(HOOK, promptPayload('real-child-99', REPO_CWD), {
+      home: h.home,
+      env: {
+        DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main', DEVSWARM_BUILDER_ID: 'real-child-99',
+        PATH: fake.dir + path.delimiter + process.env.PATH, ANTIHALL_DEVSWARM_APP_DB: dbPath,
+      },
+    });
+    assert.strictEqual(r.status, 0);
+    assert.ok(!fs.existsSync(path.join(wdir, phantomId + '.json')), 'precondition: the phantom WAS retired locally this turn');
+    assert.deepStrictEqual(readCalls(fake.callsFile), [], 'a hook must never spawn hivecontrol (no probe, no archive)');
+  } finally {
+    h.cleanup();
+  }
+});
+
 test('F3 RETIRE P1 FIX: a HEALTHY same-worktree descriptor with id !== sessionId (both full UUIDs, distinct namespaces — the NORMAL shape for every real descriptor) is NOT retired', () => {
   const h = makeHome();
   try {

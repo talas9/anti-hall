@@ -714,7 +714,10 @@ function retirePhantomWorktreeDuplicates(dir, keepId, worktreePath, home, env) {
       }
       if (!forwardOk) continue; // abort archive for this candidate — never lose its unread backlog
       try {
+        // appArchive:false — a hook never spawns hivecontrol (timeout budget;
+        // a phantom id must never reach the app's archive verb).
         cliMod.cmdArchive(candId, { home, cwd: worktreePath, env }, {
+          appArchive: false,
           revalidate: (d) => (d && !(TRUNCATED_UUID_RE.test(String(d.id)) && !FULL_UUID_RE.test(String(d.id))))
             ? 'now-consistent' : null,
         });

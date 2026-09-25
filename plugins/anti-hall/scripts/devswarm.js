@@ -12660,8 +12660,36 @@ const APP_ARCHIVE_TIMEOUT_MS = 60000;
 // `manualStep` text below claiming "hivecontrol has no teardown command" was
 // false and is fixed by this function actually calling it. Tests stub
 // pull.defaultRun (hcRun reads it lazily) — never spawns a real hivecontrol.
+//
+// TARGET GATE (appBuilderGate, runs BEFORE the capability probe so a refused
+// target never spawns anything): hivecontrol is only ever called when the app
+// DB (read-only, fresh read) holds a builder with this EXACT full id that is
+// open (isActive) and whose builderType is known and not 'primary'. Unknown
+// builderType, an unreadable app DB, a truncated id, a `primary-<hash>` label
+// id, or any id the app DB does not hold verbatim -> not attempted. DevSwarm
+// 2.5.3's archive/delete verbs default to the CURRENT workspace when no id is
+// given, so a wrong or partial id must never reach hivecontrol at all.
+function appBuilderGate(id, ctx) {
+  const sid = String(id);
+  if (/^primary-/i.test(sid)) return { ok: false, reason: 'primary-<hash> label id is never passed to hivecontrol' };
+  let states = null;
+  try {
+    states = require('../companion/lib/devswarm-app-db.js').builderStates({ home: ctx.home, env: ctx.env, now: ctx.now, fresh: true });
+  } catch (_) { states = null; }
+  if (!states) return { ok: false, reason: 'app DB unreadable — cannot confirm the builder' };
+  const b = states.get(sid);
+  if (!b) return { ok: false, reason: 'no app builder with this exact id' };
+  const bt = String(b.builderType || '').trim().toLowerCase();
+  if (!bt) return { ok: false, reason: 'app builderType unknown' };
+  if (bt === 'primary') return { ok: false, reason: 'primary builder' };
+  if (!b.active || b.archived) return { ok: false, reason: 'app builder is not open' };
+  return { ok: true };
+}
+
 function attemptAppArchive(id, desc, ctx) {
   const home = ctx.home;
+  const target = appBuilderGate(id, ctx);
+  if (!target.ok) return { attempted: false, reason: target.reason };
   let cap;
   try { cap = devswarmCaps.can('workspace.archive', { home, env: ctx.env }); }
   catch (e) { return { attempted: false, reason: 'capability check failed: ' + String((e && e.message) || e) }; }
@@ -13017,7 +13045,12 @@ function cmdArchive(id, ctx, opts) {
   // always, retrying once on the known-flaky boundary-confirmation error.
   // Dormant/failed -> fall back to an ACCURATE manual-step instruction
   // (never the old false "no teardown command" text).
-  const appArchive = attemptAppArchive(id, desc, ctx);
+  // opts.appArchive === false (hook callers, e.g. devswarm-child-turn.js's
+  // phantom-descriptor retire): LOCAL-ONLY — no hivecontrol spawn at all, not
+  // even the capability probe, so a hook never spends its timeout budget on it.
+  const appArchive = (opts && opts.appArchive === false)
+    ? { attempted: false, reason: 'local-only caller (appArchive:false)' }
+    : attemptAppArchive(id, desc, ctx);
   archived.appArchive = appArchive;
   if (appArchive.ok) {
     archived.manualStep = 'archived in the DevSwarm app too (isActive=0/isHidden=1)'
