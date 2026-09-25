@@ -30,6 +30,15 @@
 //     (linkSync, so a lock published meanwhile is never overwritten) and
 //     respected (2f6dd00). A blind unlinkSync(p) here was the reclaim race
 //     where two stealers of one dead holder both "won".
+//   * RECLAIM SIDECAR — rename-aside alone still lost a THREE-way race: A and
+//     B judge the same stale holder, A reclaims + publishes, B renames A's
+//     LIVE lock aside, C publishes into the empty path, B's restore hits
+//     EEXIST and B discards A's lock -> A and C both hold. So reclaimers are
+//     serialized by an O_EXCL sidecar `<p>.reclaim` (same publish primitive,
+//     so it works without hard links; stale after RECLAIM_STALE_MS or when
+//     its pid is dead). Only a reclaimer holding the sidecar may rename or
+//     remove `p`, and under it the holder is RE-READ and RE-JUDGED before the
+//     rename. A plain acquire into an empty path never needs the sidecar.
 //
 // STEAL POLICY (per caller, via options — every caller keeps its old rule):
 //   holder classes: KNOWN (parsed record with a local pid) -> alive | dead;
@@ -45,6 +54,9 @@ const fs = require('fs');
 const os = require('os');
 
 const DEFAULT_STALE_MS = 15 * 60 * 1000;
+// A reclaim holds `<p>.reclaim` for a few fs calls (milliseconds); a sidecar
+// older than this is a crashed/stopped reclaimer and may be taken over.
+const RECLAIM_STALE_MS = 5000;
 
 let SEQ = 0;
 function rand() { return Math.random().toString(36).slice(2); }
@@ -196,12 +208,60 @@ function reclaim(F, p, h) {
   return 'reclaimed';
 }
 
+// takeSidecar(F, p, mode) -> { path, token, fs } | null (another reclaimer is
+// at work, or the sidecar cannot be created). Dated by real wall-clock time
+// and probed with the real pid check — never a caller's injected now/isAlive,
+// which describe the judged holder, not this process.
+function takeSidecar(F, p, mode) {
+  const side = p + '.reclaim';
+  for (let i = 0; i < 2; i++) {
+    const ts = Date.now();
+    const token = newToken(ts);
+    try {
+      publish(F, side, JSON.stringify({ pid: process.pid, host: localHost(), ts, token }), mode);
+      return { path: side, token, fs: F };
+    } catch (e) { if (!e || e.code !== 'EEXIST') return null; }
+    const h = inspect(side, { fs: F });
+    if (h === null) continue; // released meanwhile: retry the create
+    if (!(h.dead || h.ageMs > RECLAIM_STALE_MS)) return null; // a live reclaimer holds it
+    const r = reclaim(F, side, h); // abandoned sidecar: token-verified takeover
+    if (r !== 'reclaimed' && r !== 'gone') return null;
+  }
+  return null;
+}
+
+// reclaimGuarded(F, p, o, stillStealable) -> 'reclaimed' | 'gone' | 'caught'
+// | 'failed' | 'busy'. The only path that renames/removes `p`: under the
+// sidecar, the holder is re-read and re-judged (stillStealable(fresh)) and only
+// then renamed aside. 'busy' = another reclaimer holds the sidecar.
+function reclaimGuarded(F, p, o, stillStealable) {
+  const side = takeSidecar(F, p, o.publish === 'excl' ? 'excl' : 'link');
+  if (!side) return 'busy';
+  try {
+    const fresh = inspect(p, o);
+    if (fresh === null) return 'gone';
+    let ok = false;
+    try { ok = !!stillStealable(fresh); } catch (_) { ok = false; }
+    if (!ok) return 'caught';
+    return reclaim(F, p, fresh);
+  } finally { release(side); }
+}
+
+function sameHolder(a, b) {
+  if (a.token !== b.token) return false;
+  if (a.token !== null) return true;
+  return a.tsFromMtime === b.tsFromMtime && a.ts === b.ts && a.pid === b.pid;
+}
+
 // reclaimStale(lockPath, holder, opts) — the public form of the atomic
-// reclaim for a sweep that judged `holder` (from inspect()) itself.
+// reclaim for a sweep that judged `holder` (from inspect()) itself. Under the
+// sidecar the holder must still be that SAME holder; 'busy' = another
+// reclaimer is at work (nothing touched).
 function reclaimStale(lockPath, holder, opts) {
-  const F = (opts && opts.fs) || fs;
+  const o = opts || {};
+  const F = o.fs || fs;
   if (!holder) return 'gone';
-  return reclaim(F, lockPath, holder);
+  return reclaimGuarded(F, lockPath, o, (fresh) => sameHolder(fresh, holder));
 }
 
 // acquire(lockPath, opts) -> handle | null.
@@ -249,10 +309,13 @@ function acquire(lockPath, opts) {
     if (h === null) continue; // released between our create and the read — retry now
     lastHolder = h;
     if (shouldSteal(h, o)) {
-      const r = reclaim(F, lockPath, h);
+      const r = reclaimGuarded(F, lockPath, o, (fresh) => shouldSteal(fresh, o));
       if (r === 'caught' || r === 'failed') { refused(o, h); return null; }
-      retryNow = r === 'reclaimed';
-      continue; // reclaimed (or already gone): retry the create immediately
+      if (r !== 'busy') {
+        retryNow = r === 'reclaimed';
+        continue; // reclaimed (or already gone): retry the create immediately
+      }
+      // busy: another reclaimer is at work — wait like a respected holder.
     }
     if (Date.now() >= deadline || i + 1 >= maxTries) break;
     sleep(stepMs + (jitterMs > 0 ? Math.floor(Math.random() * jitterMs) : 0));
@@ -343,6 +406,6 @@ async function withLockAsync(lockPath, opts, fn) {
 
 module.exports = {
   acquire, release, refresh, inspect, reclaimStale, withLock, withLockAsync,
-  defaultIsAlive, sleepSync, DEFAULT_STALE_MS,
+  defaultIsAlive, sleepSync, DEFAULT_STALE_MS, RECLAIM_STALE_MS,
   _shouldSteal: shouldSteal,
 };

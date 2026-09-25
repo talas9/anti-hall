@@ -118,6 +118,58 @@ test('stale reclaim race: two reclaimers of the SAME dead holder — exactly one
   } finally { t.cleanup(); }
 });
 
+test('three-way reclaim race: B renames aside while A reclaims and C publishes — never two holders (reclaim sidecar)', () => {
+  // A and B judge the same stale holder; A reclaims and publishes; B renames
+  // A's LIVE lock aside; C publishes into the empty path; B's restore gets
+  // EEXIST and B discarded A's lock -> A and C both held it.
+  const t = tmp();
+  try {
+    fs.mkdirSync(path.dirname(t.p), { recursive: true });
+    fs.writeFileSync(t.p, JSON.stringify({ pid: 999999, ts: Date.now() - 60000, token: 'T1' }));
+    let A = null;
+    let C = null;
+    let armed = true;
+    const Bfs = Object.assign({}, fs, {
+      renameSync(a, b) {
+        const aside = a === t.p && b.includes('.reap-');
+        if (aside && armed) { armed = false; A = L.acquire(t.p, { staleMs: 1000 }); }
+        fs.renameSync(a, b);
+        if (aside && !C) C = L.acquire(t.p, { staleMs: 1000 });
+      },
+    });
+    const B = L.acquire(t.p, { fs: Bfs, staleMs: 1000 });
+    assert.strictEqual(armed, false, 'B reached the rename-aside');
+    const winners = [A, B, C].filter(Boolean);
+    assert.strictEqual(winners.length, 1, 'exactly one holder (A=' + !!A + ' B=' + !!B + ' C=' + !!C + ')');
+    assert.strictEqual(JSON.parse(fs.readFileSync(t.p, 'utf8')).token, winners[0].token, 'the holder\'s lock is the one on disk');
+    assert.ok(!fs.existsSync(t.p + '.reclaim'), 'the reclaim sidecar is released');
+    assert.deepStrictEqual(scratch(path.dirname(t.p)), [], 'no scratch left');
+    winners[0].release();
+  } finally { t.cleanup(); }
+});
+
+test('reclaim sidecar: a fresh live sidecar blocks a reclaim; an abandoned (dead pid / old) one is taken over', () => {
+  const t = tmp();
+  try {
+    fs.mkdirSync(path.dirname(t.p), { recursive: true });
+    const stale = JSON.stringify({ pid: 999999, ts: Date.now() - 60000, token: 'T1' });
+    fs.writeFileSync(t.p, stale);
+    fs.writeFileSync(t.p + '.reclaim', JSON.stringify({ pid: process.pid, ts: Date.now(), token: 'S' }));
+    assert.strictEqual(L.acquire(t.p, { stealDead: true }), null, 'another reclaimer at work: the holder is not touched');
+    assert.strictEqual(JSON.parse(fs.readFileSync(t.p, 'utf8')).token, 'T1');
+    fs.writeFileSync(t.p + '.reclaim', JSON.stringify({ pid: 999999, ts: Date.now(), token: 'S' }));
+    const h = L.acquire(t.p, { stealDead: true });
+    assert.ok(h, 'a dead reclaimer\'s sidecar is taken over');
+    assert.ok(!fs.existsSync(t.p + '.reclaim'));
+    h.release();
+    fs.writeFileSync(t.p, stale);
+    fs.writeFileSync(t.p + '.reclaim', JSON.stringify({ pid: process.pid, ts: Date.now() - L.RECLAIM_STALE_MS - 1000, token: 'S' }));
+    const h2 = L.acquire(t.p, { stealDead: true });
+    assert.ok(h2, 'an old sidecar is taken over');
+    h2.release();
+  } finally { t.cleanup(); }
+});
+
 test('torn-read guard: an empty lock file with a FRESH mtime is a live holder mid-write — never stolen; an old one is', () => {
   const t = tmp();
   try {
