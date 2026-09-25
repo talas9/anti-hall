@@ -19,6 +19,10 @@ const os = require('node:os');
 const path = require('node:path');
 
 const ROOT = path.join(__dirname, '..', '..', 'plugins', 'anti-hall');
+// Isolate the central log before anything that may log is required.
+const LOG_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'ah-lockrace-log-'));
+process.env.ANTI_HALL_LOG_DIR = LOG_DIR;
+process.on('exit', () => { try { fs.rmSync(LOG_DIR, { recursive: true, force: true }); } catch (_) {} });
 
 function tmpHome() { return fs.mkdtempSync(path.join(os.tmpdir(), 'ah-lockrace-')); }
 function rm(d) { fs.rmSync(d, { recursive: true, force: true }); }
@@ -122,4 +126,18 @@ test('retention lock: reclaim race (dead holder) + torn read', (t) => {
     w();
     tornFresh(p, () => ret.acquireLock(home));
   } finally { rm(home); }
+});
+
+test('log rotate lock: reclaim race (stale + dead holder) + torn read', (t) => {
+  const alog = require(path.join(ROOT, 'companion', 'lib', 'anti-hall-log.js'));
+  const p = alog.rotateLockPath();
+  const w = globalReclaimRace(t, p, { pid: 2147483646, ts: 1000, token: 'dead' }, () => alog.acquireRotateLockBlocking());
+  w.release();
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+  fs.writeFileSync(p, '');
+  const t0 = Date.now();
+  assert.strictEqual(alog.acquireRotateLockBlocking(), null, 'a fresh empty (mid-write) lock is waited on, never stolen');
+  assert.ok(Date.now() - t0 >= 250, 'the bounded 300ms wait budget was used');
+  assert.strictEqual(fs.readFileSync(p, 'utf8'), '');
+  fs.unlinkSync(p);
 });
