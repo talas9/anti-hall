@@ -1080,3 +1080,80 @@ test('fp 6-of-2026-09-24 NEGATIVE CONTROL: a bare os.tmpdir() path (not the comp
     p.cleanup();
   }
 });
+
+// ---------------------------------------------------------------------------
+// HARNESS PLAN FILE (~/.claude/plans/*.md). Reported false positive: the
+// coordinator was blocked writing its OWN harness-managed plan file — an
+// ABSOLUTE path OUTSIDE cwd, under the user's home dir. The existing
+// PLAN-MODE-NARROWED exemption only fires when permission_mode === 'plan'; the
+// bug report describes the orchestrator revising the SAME plan file outside
+// plan mode too (e.g. after ExitPlanMode, or between plan-mode turns), which
+// is NOT covered by that exemption and falls through to the normal
+// delegation block. This is the SAME class of file as the existing
+// PLAN.md/STATE.json/CONTINUE-HERE.md orchestrator artifacts (coordinator-
+// owned, never delegated) — it should be unconditionally allowed, not gated
+// on permission_mode.
+function planFilePath(home) {
+  return path.join(home, '.claude', 'plans', 'session-abc.md');
+}
+
+test('HARNESS PLAN FILE: Write to ~/.claude/plans/*.md OUTSIDE plan mode -> ALLOWED', () => {
+  const h = makeHome();
+  try {
+    const plan = planFilePath(h.home);
+    fs.mkdirSync(path.dirname(plan), { recursive: true });
+    const r = testHook(HOOK, editPayload('Write', { filePath: plan, cwd: '/some/project' }),
+      { home: h.home, env: COORD });
+    assert.strictEqual(r.status, 0, `plan file write must be allowed outside plan mode; stdout: ${r.stdout}`);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('HARNESS PLAN FILE: Edit to ~/.claude/plans/*.md IN plan mode -> ALLOWED (unchanged)', () => {
+  const h = makeHome();
+  try {
+    const plan = planFilePath(h.home);
+    fs.mkdirSync(path.dirname(plan), { recursive: true });
+    const payload = editPayload('Edit', { filePath: plan, cwd: '/some/project' });
+    payload.permission_mode = 'plan';
+    const r = testHook(HOOK, payload, { home: h.home, env: COORD });
+    assert.strictEqual(r.status, 0, `plan file edit must be allowed in plan mode; stdout: ${r.stdout}`);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('HARNESS PLAN FILE: a lookalike path outside ~/.claude/plans/ is STILL BLOCKED', () => {
+  const h = makeHome();
+  try {
+    const notPlan = path.join(h.home, '.claude', 'plans-lookalike', 'session-abc.md');
+    fs.mkdirSync(path.dirname(notPlan), { recursive: true });
+    const r = testHook(HOOK, editPayload('Write', { filePath: notPlan, cwd: '/some/project' }),
+      { home: h.home, env: COORD });
+    assert.strictEqual(r.status, 2, `non-plans-dir lookalike must still block; stdout: ${r.stdout}`);
+    assert.ok(r.json && r.json.decision === 'block');
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('HARNESS PLAN FILE: symlink out of ~/.claude/plans/ to a source file is STILL BLOCKED', { skip: process.platform === 'win32' }, () => {
+  const h = makeHome();
+  const p = makeProject();
+  try {
+    const plansDir = path.join(h.home, '.claude', 'plans');
+    fs.mkdirSync(plansDir, { recursive: true });
+    const target = path.join(p.dir, 'command-guard.js');
+    fs.writeFileSync(target, 'ORIGINAL\n', 'utf8');
+    const plan = path.join(plansDir, 'session-abc.md');
+    fs.symlinkSync(target, plan);
+    const r = testHook(HOOK, editPayload('Write', { filePath: plan, cwd: p.dir }),
+      { home: h.home, env: COORD });
+    assert.strictEqual(r.status, 2, `symlinked plan file must still block; stdout: ${r.stdout}`);
+    assert.ok(r.json && r.json.decision === 'block');
+  } finally {
+    h.cleanup();
+    p.cleanup();
+  }
+});

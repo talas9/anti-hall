@@ -517,6 +517,40 @@ function isWithinCwd(filePath, cwd) {
   }
 }
 
+// isHarnessPlanFile(filePath, cwd) -> true when filePath resolves to a '.md'
+// file strictly INSIDE ~/.claude/plans/ — the HARNESS's own per-session plan
+// artifact (distinct from this repo's own PLAN.md/plan.md convention already
+// covered by DEFAULT_ALLOW). Reported false positive: the coordinator was
+// blocked writing/revising this file OUTSIDE plan mode (permission_mode !==
+// 'plan') — e.g. after ExitPlanMode, or on a later turn that refines the same
+// plan — which the existing PLAN-MODE-NARROWED exemption below does not cover
+// (that one only fires while permission_mode === 'plan'). Same rationale as
+// the other coordinator-owned orchestrator artifacts (PLAN.md/STATE.json/
+// CONTINUE-HERE.md): the harness plan file is always coordinator-owned, never
+// delegated, so it is allowed UNCONDITIONALLY (not gated on permission_mode) —
+// this is the actual path the hook input reports via tool_input.file_path,
+// resolved and realpath-honesty-checked at the call site via
+// allowlistIsHonest(), not a hardcoded guess.
+//
+// Uses realpathOrSelf() (defined below) so a not-yet-created plan file (the
+// harness creates it lazily) still resolves correctly against ~/.claude/plans
+// even when neither exists yet, and stays symlink-invariant when both do.
+function isHarnessPlanFile(filePath, cwd) {
+  if (!filePath) return false;
+  try {
+    if (!/\.md$/i.test(String(filePath))) return false;
+    const base = cwd ? String(cwd) : process.cwd();
+    const abs = path.resolve(base, String(filePath));
+    const plansDir = path.join(os.homedir(), '.claude', 'plans');
+    const realAbs = realpathOrSelf(abs);
+    const realPlansDir = realpathOrSelf(plansDir);
+    const rel = path.relative(realPlansDir, realAbs);
+    return !!rel && !rel.startsWith('..') && !path.isAbsolute(rel);
+  } catch (_) {
+    return false; // fail CLOSED
+  }
+}
+
 // isPlanMode(payload) — true when the session is in Claude Code PLAN MODE.
 // The harness sets `permission_mode` on the PreToolUse payload (one of
 // 'default' | 'acceptEdits' | 'plan' | 'auto' | 'dontAsk' | 'bypassPermissions';
@@ -567,6 +601,12 @@ function main() {
   // An allowlist match is honored ONLY when the path is honest (not a symlink /
   // reparse point, and not reached through one) — see allowlistIsHonest().
   if (isAllowed(filePath, cwd) && allowlistIsHonest(filePath, cwd)) process.exit(0);
+
+  // HARNESS PLAN FILE (~/.claude/plans/*.md) — see isHarnessPlanFile() above.
+  // Unconditional (not gated on permission_mode): the reported false positive
+  // was the coordinator blocked revising this file OUTSIDE plan mode, which
+  // the PLAN-MODE-NARROWED exemption further below does not reach.
+  if (isHarnessPlanFile(filePath, cwd) && allowlistIsHonest(filePath, cwd)) process.exit(0);
 
   // OWN-SESSION SCRATCHPAD EXEMPTION — see isOwnScratchpadPath()/
   // ownScratchpadDirs() above for the full rationale and anti-bypass scoping
