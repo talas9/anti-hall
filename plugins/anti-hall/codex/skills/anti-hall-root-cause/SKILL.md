@@ -15,7 +15,7 @@ Workflow:
 2. Verify the relevant code/config/data with tools before making factual claims.
 3. Trace from symptom to root cause. Do not patch the first suspicious line.
 4. If evidence is insufficient, add targeted instrumentation or request the exact missing repro/log.
-5. Apply the smallest fix that addresses the proven cause.
+5. Apply the smallest fix that addresses the proven cause. Fixing an anti-hall bug? First run `node <plugin-root>/scripts/defect.js similar <symptom words> --component <module>` and read the past fixes for this component; if `defect.js recurring` lists it as a hotspot, fix the class, not the instance.
 6. Re-run the authoritative check this turn before saying fixed/passing.
 
 Codex model routing:

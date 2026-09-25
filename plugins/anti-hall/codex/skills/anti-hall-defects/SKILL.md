@@ -1,6 +1,6 @@
 ---
 name: anti-hall-defects
-description: File, list, show, and rule on anti-hall's own defect reports via the durable, home-scoped, two-way defect channel from a Codex session. Use when the user says "file an anti-hall bug", "did they fix my report", "anti-hall defects", or "check my defect reports" while running under Codex.
+description: File, list, show, and rule on anti-hall's own defect reports via the durable, home-scoped, two-way defect channel from a Codex session. Use when the user says "file an anti-hall bug", "did they fix my report", "anti-hall defects", or "check my defect reports", or asks which anti-hall bugs keep recurring or for similar past fixes, while running under Codex.
 ---
 
 # anti-hall defects for Codex
@@ -33,7 +33,7 @@ in `codex/hooks/hooks.json`), which fires once per 24h at session start, same as
 There is no additional low-latency wake path on Codex; do not imply one. If you need a
 fresher read than the once-per-24h nudge, run `list` directly (below) rather than waiting.
 
-## The five verbs
+## The five core verbs
 
 ```bash
 node "$ANTI_HALL_ROOT/scripts/defect.js" report \
@@ -62,6 +62,44 @@ there is no `--note-file` or `--observed-file`.
 `class` (exactly 8, closed vocabulary): `guard-false-positive`, `guard-miss`,
 `hook-crash`, `state-leak`, `messaging`, `doc`, `install`, `other`.
 `sev` (exactly 3): `p0`, `p1`, `p2`. Any other value is rejected, not coerced.
+
+## Bug history: `backfill`, `recurring`, `similar` (maintainer)
+
+These three verbs turn the channel into a bug history, so the same thing is not fixed
+in circles. They read every record: reported defects plus fixes imported from git.
+
+```bash
+node "$ANTI_HALL_ROOT/scripts/defect.js" backfill --repo <anti-hall checkout> --dry-run   # preview, writes nothing
+node "$ANTI_HALL_ROOT/scripts/defect.js" backfill --repo <anti-hall checkout>             # one-time import; a re-run adds nothing
+node "$ANTI_HALL_ROOT/scripts/defect.js" recurring [--since 0.100.0|2026-09-01] [--top 10] [--json]
+node "$ANTI_HALL_ROOT/scripts/defect.js" similar <symptom words...> [--component hooks/devswarm-parent-gate] [--json]
+```
+
+- **`backfill`** imports every `fix:` / `fix(scope):` commit as a record with status
+  `fixed` and `source: "backfill"`, keyed by commit sha. The component is the source
+  file with the most changed lines (tests, docs and manifests are ignored). `fixedIn` is
+  the earliest release tag that contains the commit. The cause comes from keyword rules
+  on the commit message. The matching CHANGELOG bullet is linked when one is found.
+  Records are stored under `~/.anti-hall/defects/history/`, so they never show up in
+  `list`, `list --open` or the defect nudge.
+- **`recurring`** groups all records by component and by cause, with counts, versions
+  and dates. It flags **hotspots**: a component fixed 3 or more times, or the same
+  component and cause fixed 2 or more times. It flags **likely regressions**: the same
+  component and cause fixed again within 5 releases, or a record with an explicit
+  `regressionOf`.
+- **`similar`** lists up to 10 past fixes for a new bug. Records score for a matching
+  `--component` and for words they share with your text. Each row shows the commit,
+  version, component, cause and a one-line summary.
+
+Before fixing an anti-hall bug, run `similar` and read the past fixes for that component.
+If the component is a hotspot, fix the class of bug, not just this instance.
+
+Optional fields on `report` and `rule`: `--component <path or module>` (normalized:
+`plugins/anti-hall/hooks/lib/x.js` becomes `hooks/x`), `--cause <class>` and
+`--regression-of <fp>`. Records without these fields still load. `--cause` must be one of:
+`archived-or-held-state`, `id-mismatch`, `home-or-state-leak`, `lock-or-race`,
+`timing-or-load-flake`, `transcript-parse`, `blocking-hook-loop`, `fail-open-missing`,
+`stale-path-or-version`, `platform-compat`, `wrong-default`, `other`.
 
 ## Safe input — never build a shell string for the body
 

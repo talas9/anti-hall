@@ -46,11 +46,27 @@
 //          Rotation sweep: move ruled+stale (30d) defect files into
 //          archive/<YYYY-MM>/. OPEN defects never move.
 //
+// BUG HISTORY (hooks/lib/defect-history.js):
+//   report/rule also accept the optional --component <path|module>,
+//          --cause <CAUSE_ENUM> and --regression-of <fp> (fixedIn/fixCommit
+//          are rule's existing --fixed-in/--commit).
+//   backfill [--repo <path>] [--dry-run] [--json]
+//          One-time, idempotent import of FIXED bugs from the repo's git
+//          history (fix:/fix(scope): commits) into defects/history/ — never
+//          mixed with reported defects. A re-run adds nothing.
+//   recurring [--since <version|date>] [--top N] [--json]
+//          Group every record (reported + backfill) by component and cause;
+//          flag hotspots and likely regressions.
+//   similar <text...> [--component X] [--top N] [--json]
+//          Past fixes that look like a new bug (component match + token
+//          overlap), top 10.
+//
 // Pure Node built-ins only, cross-platform.
 
 const fs = require('fs');
 const path = require('path');
 const store = require(path.join(__dirname, '..', 'hooks', 'lib', 'defect-store.js'));
+const history = require(path.join(__dirname, '..', 'hooks', 'lib', 'defect-history.js'));
 
 function readVersion() {
   try {
@@ -156,11 +172,15 @@ function mineIdentities(flags, env, cwd) {
 // data loss (defect 479f604daa9c: --observed-file/--note-file were typed
 // as though they existed, silently wrote empty fields, and exited 0).
 const VALID_FLAGS = {
-  report: ['class', 'sev', 'sym', 'repro', 'sym-file', 'repro-file', 'claimed', 'observed', 'proj', 'sid', 'v', 'json'],
+  report: ['class', 'sev', 'sym', 'repro', 'sym-file', 'repro-file', 'claimed', 'observed', 'proj', 'sid', 'v',
+    'component', 'cause', 'regression-of', 'json'],
   list: ['mine', 'open', 'unfinished', 'json'],
   show: ['json'],
-  rule: ['status', 'fixed-in', 'commit', 'note', 'superseded-by', 'json'],
+  rule: ['status', 'fixed-in', 'commit', 'note', 'superseded-by', 'component', 'cause', 'regression-of', 'json'],
   archive: ['json'],
+  backfill: ['repo', 'dry-run', 'json'],
+  recurring: ['since', 'top', 'json'],
+  similar: ['component', 'top', 'json'],
 };
 
 // checkFlags(cmd, flags) -> array of human-readable error strings, or null
@@ -248,6 +268,9 @@ function cmdReport(args) {
     proj: reporterIdentity(f, process.env, cwd),
     sid: f.sid || process.env.CLAUDE_SESSION_ID || process.env.ANTIHALL_SESSION_ID || 'unknown',
     v: f.v || readVersion(),
+    component: typeof f.component === 'string' ? f.component : undefined,
+    cause: typeof f.cause === 'string' ? f.cause : undefined,
+    regressionOf: typeof f['regression-of'] === 'string' ? f['regression-of'] : undefined,
   };
   const result = store.report(input);
   // Re-derive after the verified write so a caller can see the CURRENT
@@ -310,6 +333,9 @@ function cmdRule(args) {
     fixedIn: f['fixed-in'],
     commit: f.commit,
     supersededBy: f['superseded-by'],
+    component: typeof f.component === 'string' ? f.component : undefined,
+    cause: typeof f.cause === 'string' ? f.cause : undefined,
+    regressionOf: typeof f['regression-of'] === 'string' ? f['regression-of'] : undefined,
   };
   const result = store.rule(fp, input);
   printResult(result, !!f.json);
@@ -320,6 +346,55 @@ function cmdRule(args) {
 function cmdArchive(args) {
   const results = store.archiveSweep(Date.now());
   printResult(results, !!args.flags.json);
+  return 0;
+}
+
+function topFlag(f) {
+  const n = parseInt(f.top, 10);
+  return n > 0 ? n : 10;
+}
+
+// backfill: `records` is dropped from the printed result (hundreds of
+// lines); counts + a per-component tally are what a caller needs to check.
+function cmdBackfill(args) {
+  const f = args.flags;
+  const repo = typeof f.repo === 'string' ? f.repo : process.cwd();
+  let res;
+  try {
+    res = history.backfill({ repo, dryRun: !!f['dry-run'] });
+  } catch (e) {
+    process.stderr.write(`error: backfill could not read git history at ${repo}: ${String((e && e.message) || e).split('\n')[0]}\n`);
+    return 1;
+  }
+  const out = {
+    repo: res.repo, dryRun: res.dryRun, scanned: res.scanned,
+    imported: res.imported, existing: res.existing, failed: res.failed,
+    dir: store.historyDir(),
+  };
+  printResult(out, !!f.json);
+  return res.failed ? 1 : 0;
+}
+
+function cmdRecurring(args) {
+  const f = args.flags;
+  const rep = history.recurring(history.loadAllRecords(), { since: typeof f.since === 'string' ? f.since : null });
+  if (f.json) process.stdout.write(JSON.stringify(rep) + '\n');
+  else process.stdout.write(history.formatRecurring(rep, { top: topFlag(f) }));
+  return 0;
+}
+
+function cmdSimilar(args) {
+  const f = args.flags;
+  const text = args._.join(' ');
+  if (!text && typeof f.component !== 'string') {
+    process.stderr.write('usage: defect.js similar <text...> [--component X] [--top N] [--json]\n');
+    return 1;
+  }
+  const list = history.similar(history.loadAllRecords(), text, {
+    component: typeof f.component === 'string' ? f.component : null, top: topFlag(f),
+  });
+  if (f.json) process.stdout.write(JSON.stringify(list) + '\n');
+  else process.stdout.write(history.formatSimilar(list));
   return 0;
 }
 
@@ -341,9 +416,12 @@ function main() {
     case 'show': code = cmdShow(args); break;
     case 'rule': code = cmdRule(args); break;
     case 'archive': code = cmdArchive(args); break;
+    case 'backfill': code = cmdBackfill(args); break;
+    case 'recurring': code = cmdRecurring(args); break;
+    case 'similar': code = cmdSimilar(args); break;
     default:
       process.stderr.write(
-        'usage: defect.js <report|list|show|rule|archive> [...flags]\n'
+        'usage: defect.js <report|list|show|rule|archive|backfill|recurring|similar> [...flags]\n'
       );
       code = 1;
   }
@@ -356,6 +434,7 @@ if (require.main === module) {
 
 module.exports = {
   parseArgs, cmdReport, cmdList, cmdShow, cmdRule, cmdArchive,
+  cmdBackfill, cmdRecurring, cmdSimilar,
   reporterIdentity, mineIdentities, readFileField,
   VALID_FLAGS, checkFlags,
 };

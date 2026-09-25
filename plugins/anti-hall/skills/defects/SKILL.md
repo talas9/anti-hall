@@ -1,6 +1,6 @@
 ---
 name: defects
-description: File, list, show, and rule on anti-hall's own defect reports via the durable, home-scoped, two-way defect channel. Use when the user says "file an anti-hall bug", "did they fix my report", "anti-hall defects", "report this to the maintainer", or "check my defect reports".
+description: File, list, show, and rule on anti-hall's own defect reports via the durable, home-scoped, two-way defect channel. Use when the user says "file an anti-hall bug", "did they fix my report", "anti-hall defects", "report this to the maintainer", or "check my defect reports", or asks which anti-hall bugs keep recurring or for similar past fixes.
 ---
 
 # anti-hall:defects
@@ -13,7 +13,7 @@ anti-hall's own DevSwarm messaging layer (see `hooks/lib/defect-store.js`'s head
 why: a channel for reporting bugs in the messaging layer must not itself depend on that
 layer).
 
-## The five verbs
+## The five core verbs
 
 All invocations are `node plugins/anti-hall/scripts/defect.js <verb> ...` run from an
 anti-hall checkout, or `node <plugin-root>/scripts/defect.js <verb> ...` when resolving
@@ -56,6 +56,44 @@ the plugin root generically (mirrors the `doctor`/`debt` skills' invocation styl
 Unknown flags are REJECTED, not silently dropped — an unrecognized flag exits non-zero
 and nothing is written. Only `--sym-file`/`--repro-file` (on `report`) take file paths;
 there is no `--note-file` or `--observed-file`.
+
+## Bug history: `backfill`, `recurring`, `similar` (maintainer)
+
+These three verbs turn the channel into a bug history, so the same thing is not fixed
+in circles. They read every record: reported defects plus fixes imported from git.
+
+```bash
+node plugins/anti-hall/scripts/defect.js backfill --repo <anti-hall checkout> --dry-run   # preview, writes nothing
+node plugins/anti-hall/scripts/defect.js backfill --repo <anti-hall checkout>             # one-time import; a re-run adds nothing
+node plugins/anti-hall/scripts/defect.js recurring [--since 0.100.0|2026-09-01] [--top 10] [--json]
+node plugins/anti-hall/scripts/defect.js similar <symptom words...> [--component hooks/devswarm-parent-gate] [--json]
+```
+
+- **`backfill`** imports every `fix:` / `fix(scope):` commit as a record with status
+  `fixed` and `source: "backfill"`, keyed by commit sha. The component is the source
+  file with the most changed lines (tests, docs and manifests are ignored). `fixedIn` is
+  the earliest release tag that contains the commit. The cause comes from keyword rules
+  on the commit message. The matching CHANGELOG bullet is linked when one is found.
+  Records are stored under `~/.anti-hall/defects/history/`, so they never show up in
+  `list`, `list --open` or the defect nudge.
+- **`recurring`** groups all records by component and by cause, with counts, versions
+  and dates. It flags **hotspots**: a component fixed 3 or more times, or the same
+  component and cause fixed 2 or more times. It flags **likely regressions**: the same
+  component and cause fixed again within 5 releases, or a record with an explicit
+  `regressionOf`.
+- **`similar`** lists up to 10 past fixes for a new bug. Records score for a matching
+  `--component` and for words they share with your text. Each row shows the commit,
+  version, component, cause and a one-line summary.
+
+Before fixing an anti-hall bug, run `similar` and read the past fixes for that component.
+If the component is a hotspot, fix the class of bug, not just this instance.
+
+Optional fields on `report` and `rule`: `--component <path or module>` (normalized:
+`plugins/anti-hall/hooks/lib/x.js` becomes `hooks/x`), `--cause <class>` and
+`--regression-of <fp>`. Records without these fields still load. `--cause` must be one of:
+`archived-or-held-state`, `id-mismatch`, `home-or-state-leak`, `lock-or-race`,
+`timing-or-load-flake`, `transcript-parse`, `blocking-hook-loop`, `fail-open-missing`,
+`stale-path-or-version`, `platform-compat`, `wrong-default`, `other`.
 
 ## `class` and `sev` (closed vocabularies — copied verbatim from `hooks/lib/defect-store.js`)
 

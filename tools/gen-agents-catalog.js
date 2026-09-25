@@ -108,7 +108,7 @@ function build() {
   out.push('- `scripts/settings.js`: ' + switchVerbs('plugins/anti-hall/scripts/settings.js', 'function main(').map((v) => '`' + v + '`').join(', ') + '; `scripts/auto-handover-config.js`: '
     + usageVerbs('plugins/anti-hall/scripts/auto-handover-config.js', /usage: auto-handover-config\.js ([^']+)'/).map((v) => '`' + v + '`').join(', ') + '.');
   out.push('- `scripts/jev-setup.js`: ' + usageVerbs('plugins/anti-hall/scripts/jev-setup.js', /usage: jev-setup\.js ([^'"`\n]+)/).map((v) => '`' + v + '`').join(', ')
-    + '; `scripts/jev-report.js`: report (default), `label`, `prune-audit`; `scripts/defect.js`: `report`, `list`, `show`, `rule`, `archive`.');
+    + '; `scripts/jev-report.js`: report (default), `label`, `prune-audit`; `scripts/defect.js`: `report`, `list`, `show`, `rule`, `archive`, `backfill`, `recurring`, `similar`.');
   out.push('- `hooks/doctor.js [--repair]`; `skills/update/scripts/update.js [--check]`; `companion/devswarm-recover.js <id>` (the only kill path).');
   out.push('');
   // Settings

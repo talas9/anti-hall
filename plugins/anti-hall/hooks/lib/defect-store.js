@@ -71,6 +71,14 @@ function defectsDir(home) {
 function archiveDir(home) {
   return path.join(defectsDir(home), 'archive');
 }
+// historyDir(home) -> where `defect.js backfill` keeps FIXED-bug records
+// imported from git history (hooks/lib/defect-history.js). A SUBDIRECTORY,
+// so every reader of the open set (listDefects/countOpenFiles/archiveSweep,
+// which only read top-level *.jsonl) never sees them: backfill records can
+// never mix into `list --open` or the maintainer nudge.
+function historyDir(home) {
+  return path.join(defectsDir(home), 'history');
+}
 function nudgeStampFile(home) {
   return path.join(resolveHome(home), '.anti-hall', '.defects-nudge-stamp.json');
 }
@@ -80,6 +88,66 @@ const CLASS_ENUM = [
   'messaging', 'doc', 'install', 'other',
 ];
 const SEVERITY_ENUM = ['p0', 'p1', 'p2'];
+
+// CAUSE_ENUM: the small, fixed ROOT-CAUSE taxonomy for the optional `cause`
+// field (bug-history: `defect.js recurring`/`similar`). Derived from the
+// subjects of this repo's own fix commits — every class below covers a
+// recurring family of real fixes; 'other' is the explicit remainder.
+// Deliberately small: a taxonomy too fine to recur in is useless for spotting
+// "we keep fixing the same KIND of thing".
+const CAUSE_ENUM = [
+  'archived-or-held-state',  // archived/held/retired/orphaned rows treated as live (or vice versa)
+  'id-mismatch',             // identity/session/partition/key resolved to the wrong thing
+  'home-or-state-leak',      // writes escape the isolated HOME/state dir, unbounded growth
+  'lock-or-race',            // lock, TOCTOU, lost update, concurrent writers
+  'timing-or-load-flake',    // timeouts, deadlines, contention, pacing, TTL/grace windows
+  'transcript-parse',        // parsing transcripts/commands/regexes/line formats
+  'blocking-hook-loop',      // a hook/gate blocks, nags or escalates when it should not
+  'fail-open-missing',       // silent failure, swallowed error, fail-open/closed wrong way
+  'stale-path-or-version',   // stale cache/version, wrong/relative path, PATH resolution
+  'platform-compat',         // OS/shell/Node-version specific behavior
+  'wrong-default',           // a default value or opt-in/opt-out was wrong
+  'other',
+];
+
+// normalizeComponent(p) -> the primary MODULE a path names, or null. Used by
+// the optional `component` field and by backfill, so a component typed by a
+// reporter ("plugins/anti-hall/hooks/lib/x.js", "hooks/x.js", "hooks/x")
+// and one derived from git history land in the same bucket:
+//   - backslashes -> '/', leading './' and 'plugins/anti-hall/' dropped;
+//   - a '/lib/' segment is collapsed (hooks/lib/x -> hooks/x): the lib
+//     helper and the hook it serves are one module for recurrence purposes;
+//   - the file extension is dropped.
+function normalizeComponent(p) {
+  if (typeof p !== 'string') return null;
+  let s = p.trim().replace(/\\/g, '/').replace(/^\.\//, '');
+  s = s.replace(/^plugins\/anti-hall\//, '');
+  s = s.replace(/\/lib\//g, '/');
+  s = s.replace(/\.(c|m)?js$|\.(sh|py|ts|json)$/, '');
+  s = s.replace(/[\x00-\x1f\x7f]/g, '').slice(0, 120);
+  return s || null;
+}
+
+// optionalFields(input, tr) -> { fields, error } — validates + clamps the
+// optional bug-history fields shared by report() and rule(). Only keys the
+// caller actually supplied are returned, so a record without them keeps its
+// exact historical shape (no new keys on old-style writes).
+function optionalFields(input, tr) {
+  const out = {};
+  if (input.component) {
+    const c = normalizeComponent(String(input.component));
+    if (c) out.component = tr.take('component', c, 120, false);
+  }
+  if (input.cause) {
+    if (!CAUSE_ENUM.includes(input.cause)) return { error: 'invalid-cause' };
+    out.cause = input.cause;
+  }
+  if (input.regressionOf) {
+    if (!/^[0-9a-f]{12}$/.test(String(input.regressionOf))) return { error: 'invalid-regression-of' };
+    out.regressionOf = String(input.regressionOf);
+  }
+  return { fields: out };
+}
 // 'partial' (added for defect 001e6bb600c5): a fix that landed only in part
 // — e.g. a display bug fixed but a related fold-path deliberately left
 // broken, or a release note that overstated a fix that never fully shipped.
@@ -362,7 +430,16 @@ function deriveState(parsedLines) {
   let rulingCount = 0;
   let staleBuild = false;
   let lastRuling = null; // { status, fixedIn }
+  // Optional bug-history fields: the LAST line carrying each one wins (a
+  // ruling can reclassify what the report guessed). A legacy ruling's
+  // `commit` is the same fact as `fixCommit`. Only fields actually seen are
+  // returned, so old records derive exactly the shape they always did.
+  const extra = {};
   for (const obj of parsedLines) {
+    for (const k of ['component', 'cause', 'regressionOf', 'fixedIn', 'fixCommit', 'source', 'subject']) {
+      if (typeof obj[k] === 'string' && obj[k]) extra[k] = obj[k];
+    }
+    if (obj.t === 'ruling' && typeof obj.commit === 'string' && obj.commit) extra.fixCommit = obj.commit;
     if (typeof obj.at === 'string' && obj.at) {
       if (firstSeen === null) firstSeen = obj.at;
       lastSeen = obj.at;
@@ -379,6 +456,10 @@ function deriveState(parsedLines) {
           }
         }
       }
+    } else if (obj.t === 'backfill') {
+      // A fixed bug imported from git history (defect-history.js backfill):
+      // one self-contained line that carries its own status.
+      if (typeof obj.status === 'string') status = obj.status;
     } else if (obj.t === 'ruling') {
       rulingCount++;
       if (typeof obj.status === 'string') {
@@ -388,10 +469,10 @@ function deriveState(parsedLines) {
       }
     }
   }
-  return {
+  return Object.assign({
     status, occurrences, firstSeen, lastSeen,
     reportCount: occurrences, rulingCount, staleBuild,
-  };
+  }, extra);
 }
 
 // countOpenFiles(home) -> number of *.jsonl files directly under defectsDir
@@ -466,6 +547,9 @@ function appendLine(file, lineStr, opts) {
       try {
         fd = fs.openSync(file, 'wx');
       } catch (e) {
+        // `exclusive` (backfill's idempotence key): an existing file means
+        // "already recorded" — never append a second copy.
+        if (e && e.code === 'EEXIST' && opts.exclusive) return { outcome: 'exists' };
         if (e && e.code === 'EEXIST') {
           return appendLine(file, lineStr, { create: false });
         }
@@ -611,11 +695,13 @@ function report(input) {
   if (!SEVERITY_ENUM.includes(sev)) return { outcome: 'invalid-severity' };
 
   const home = input.home;
-  ensureDir(defectsDir(home));
 
   // Every clamp below goes through the collector so a truncated field is
   // NAMED in the result instead of vanishing silently.
   const tr = truncationCollector();
+  const opt = optionalFields(input, tr);
+  if (opt.error) return { outcome: opt.error };
+  ensureDir(defectsDir(home));
   // sym: reported but never marked — it is the fingerprint input.
   const sym = tr.take('sym', input.sym, FIELD_CAPS.sym, false);
   const fp = fingerprint(cls, sym);
@@ -642,6 +728,7 @@ function report(input) {
     claimed: tr.take('claimed', input.claimed, FIELD_CAPS.claimed, true),
     observed: tr.take('observed', input.observed, FIELD_CAPS.observed, true),
   };
+  Object.assign(lineObj, opt.fields);
   const lineStr = JSON.stringify(lineObj);
   if (Buffer.byteLength(lineStr, 'utf8') > MAX_LINE_BYTES) return withTrunc({ outcome: 'too-large', fp });
 
@@ -719,6 +806,9 @@ function rule(fp, input) {
   if (input.fixedIn) lineObj.fixedIn = tr.take('fixedIn', input.fixedIn, 40, false);
   if (input.commit) lineObj.commit = tr.take('commit', input.commit, 64, false);
   if (input.supersededBy) lineObj.supersededBy = tr.take('supersededBy', input.supersededBy, 12, false);
+  const opt = optionalFields(input, tr);
+  if (opt.error) return { outcome: opt.error, fp };
+  Object.assign(lineObj, opt.fields);
 
   const lineStr = JSON.stringify(lineObj);
   if (Buffer.byteLength(lineStr, 'utf8') > MAX_LINE_BYTES) return withTrunc({ outcome: 'too-large', fp });
@@ -853,6 +943,10 @@ function showDefect(fp, home) {
       const candidate = path.join(archiveDir(home), m, fp + '.jsonl');
       if (fs.existsSync(candidate)) { found = candidate; break; }
     }
+    if (!found) {
+      const h = path.join(historyDir(home), fp + '.jsonl');
+      if (fs.existsSync(h)) found = h;
+    }
     if (!found) return null;
     file = found;
   }
@@ -862,7 +956,8 @@ function showDefect(fp, home) {
 }
 
 module.exports = {
-  defectsDir, archiveDir, nudgeStampFile,
+  defectsDir, archiveDir, historyDir, nudgeStampFile,
+  CAUSE_ENUM, normalizeComponent,
   CLASS_ENUM, SEVERITY_ENUM, RULING_STATUS_ENUM, CLOSED_STATUSES, isUnfinished,
   MAX_OPEN_FILES, MAX_FILE_BYTES, MAX_REPORT_LINES, REGRESSION_EXTRA, MAX_LINE_BYTES,
   MAX_ARCHIVE_FILES, ARCHIVE_AGE_MS, FIELD_CAPS,

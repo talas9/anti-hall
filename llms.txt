@@ -113,7 +113,7 @@ Shared libraries (not hooks): `verify-first-core.js`, `coordinator-detect.js`, `
 `omc-detect.js`, `limit-conserve.js`; `hooks/lib/`: `settings.js` + `settings-schema.js`
 (the settings store), `context-pct.js` + `context-pct-store.js` (context %),
 `auto-handover-config.js`/`-state.js`, `jev-client.js`/`jev-assist.js`/`jev-triage.js`,
-`defect-store.js`, `emit-dedupe.js`, `state-prune.js`, `doctor-repair.js`,
+`defect-store.js` + `defect-history.js`, `emit-dedupe.js`, `state-prune.js`, `doctor-repair.js`,
 `devswarm-detect.js`, `devswarm-wake.js`, `transcript-tail.js`.
 
 ## Claude skills (plugins/anti-hall/skills/, invoke as /anti-hall:<name>)
@@ -177,7 +177,7 @@ Shared libraries (not hooks): `verify-first-core.js`, `coordinator-detect.js`, `
 | scripts/devswarm-store-leak-report.js | Read-only audit of DevSwarm store growth/leaks. |
 | scripts/jev-setup.js | `status \| enable \| disable \| set-key \| test \| mode` (`--transport vercel\|typesafe`). |
 | scripts/jev-report.js | Per-integration calls, precision, cost/efficiency, budget status, credit balance; `--by project\|session`, `--project`, `--weekly`; `label`, `prune-audit`. |
-| scripts/defect.js | `report \| list \| show \| rule \| archive` for the defect channel. |
+| scripts/defect.js | `report \| list \| show \| rule \| archive` for the defect channel; `backfill \| recurring \| similar` for bug history (hotspots, likely regressions, similar past fixes). |
 | scripts/briefing.js | Backs system-briefing. |
 | scripts/capability-scan.js | Harness capability scan (see the update skill). |
 | scripts/harvest-debt.js | Backs the debt skill. |

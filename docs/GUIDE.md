@@ -400,6 +400,16 @@ Invoke via slash command:
   from a scratch directory). The `devswarm` skill now points here too, since that's
   the skill a DevSwarm session actually loads. Codex mirror:
   `codex/skills/anti-hall-defects`.
+  **Bug history** (`hooks/lib/defect-history.js`): `defect.js backfill --repo <path>
+  [--dry-run]` imports every `fix:` commit from git history once (keyed by sha, so a
+  re-run adds nothing, stored in `defects/history/`, never in `list --open`).
+  `defect.js recurring [--since <version|date>] [--top N]` groups reported and imported
+  fixes by component and cause and flags hotspots (a component fixed 3+ times, or the
+  same component and cause 2+ times) and likely regressions (the same component and cause
+  fixed again within 5 releases, or an explicit `--regression-of`).
+  `defect.js similar <text…> [--component X]` shows the 10 closest past fixes. The
+  `root-cause` skill runs `similar` before an anti-hall fix. Reports and rulings also
+  accept the optional `--component`, `--cause` and `--regression-of` fields.
 
 `MODEL-POLICY.md` is the shared TRIO roster (Reviewer = Sonnet `model:"sonnet"` effort `xhigh`;
 Auditor = latest Opus `model:"opus"` divergent regression/coupling lens effort `high`;

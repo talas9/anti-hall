@@ -73,6 +73,9 @@ When the evidence to date does not prove the mechanism:
   predicts the same line.
 
 ### 6. Fix at the root, then verify
+- **Fixing an anti-hall bug?** First run `node <plugin-root>/scripts/defect.js similar
+  <symptom words> --component <module>` and read the past fixes for this component.
+  If `defect.js recurring` lists it as a hotspot, fix the class, not the instance.
 - Apply the minimal fix that addresses the proven root cause.
 - Re-run the reproduction from step 1. Show the actual output proving the symptom is
   gone. "Should work now" is not verification — running it is.
