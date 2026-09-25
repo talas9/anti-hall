@@ -8,6 +8,36 @@ the update.
 
 ## 0.108.5 (unreleased)
 
+### P0: anti-hall could move a git-tracked `.planning/` folder in child worktrees
+
+anti-hall could move a git-tracked `.planning/` folder in child worktrees (and
+submodules). This is now never automatic, it is copy-only, and `doctor` shows how to
+restore.
+
+- **Cause.** `hooks/lib/doctor-repair.js` registered the GSD `.planning/` fold as an
+  automatic repair, so `repair-on-reload` ran it in every session, DevSwarm child
+  worktrees included. `scripts/migrate-state.js migrateGsdPlanning` copied each file
+  into `.anti-hall/history/legacy/planning/` and then deleted the source, which moved
+  git-tracked files.
+- **Never automatic.** The fold is gone from doctor's repair pass, so repair-on-reload,
+  `doctor --repair` and the updater never run it. It is also no longer part of the
+  capability scan's pending-migration check. It runs only as the explicit, human-typed
+  `migrate-state.js --planning`.
+- **Copy-only.** Even when run explicitly it never unlinks, renames or removes a source,
+  and never overwrites a different existing legacy copy. It skips the whole tree, and
+  prints why, when `.planning/` is git-tracked, when the directory is a linked/child
+  worktree rather than the main checkout, when it is inside a submodule, or when the git
+  location cannot be confirmed.
+- **Restore.** `doctor` now reports (it never restores) every worktree of the repo, and
+  their submodules, where tracked `.planning/` files are missing and a legacy copy
+  exists. It prints `git -C <worktree> checkout -- .planning`. The opt-in
+  `node scripts/migrate-state.js --restore-planning [--dir <worktree>]` restores only
+  files that are missing, tracked, and whose legacy copy is byte-identical to `HEAD`.
+  It never deletes the legacy copies.
+- **Audit.** No other automatic migration deletes or moves repo content. The remaining
+  unlink/rm/rename calls in `migrate-state.js`, `migrations.js`, `doctor-repair.js` and
+  `devswarm-migrate.js` act on temp-file renames, lock files, or `~/.anti-hall` state.
+
 ### Fixes
 
 - **Every jev-assist call site now threads `sessionId`/`turnRef` into the logged row.**
