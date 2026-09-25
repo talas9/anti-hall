@@ -377,6 +377,39 @@ test('maybeWriteAuditSnippet: ON + changed -> writes a redacted, <=200-char snip
   } finally { h.cleanup(); }
 });
 
+test('maybeWriteAuditSnippet: ON + shadow (wouldChange only, changed falsy) -> writes snippet with shadow:true', () => {
+  const h = makeHome();
+  try {
+    h.writeState('jev.json', { audit: { snippets: true } });
+    const { maybeWriteAuditSnippet, auditLogPath } = freshLib();
+    maybeWriteAuditSnippet({ home: h.home, id: 'newRequest', hash: 'sh1', state: 'a new request', changed: null, wouldChange: 'changed' });
+    const p = auditLogPath(h.home);
+    const lines = fs.readFileSync(p, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+    assert.strictEqual(lines.length, 1);
+    assert.strictEqual(lines[0].h, 'sh1');
+    assert.strictEqual(lines[0].shadow, true);
+  } finally { h.cleanup(); }
+});
+
+test('maybeWriteAuditSnippet: ON + neither changed nor wouldChange -> no snippet stored', () => {
+  const h = makeHome();
+  try {
+    h.writeState('jev.json', { audit: { snippets: true } });
+    const { maybeWriteAuditSnippet, auditLogPath } = freshLib();
+    maybeWriteAuditSnippet({ home: h.home, id: 'newRequest', hash: 'sh2', state: 'no change either way', changed: null, wouldChange: null });
+    assert.ok(!fs.existsSync(auditLogPath(h.home)));
+  } finally { h.cleanup(); }
+});
+
+test('maybeWriteAuditSnippet: OFF by default -> never writes, even for a would-change-only decision', () => {
+  const h = makeHome();
+  try {
+    const { maybeWriteAuditSnippet, auditLogPath } = freshLib();
+    maybeWriteAuditSnippet({ home: h.home, id: 'newRequest', hash: 'sh3', state: 'a new request', changed: null, wouldChange: 'changed' });
+    assert.ok(!fs.existsSync(auditLogPath(h.home)));
+  } finally { h.cleanup(); }
+});
+
 // ---------------------------------------------------------------------------
 // ask() end-to-end (mock server)
 // ---------------------------------------------------------------------------
@@ -437,6 +470,67 @@ test('ask(): audit.snippets:true + a changed decision -> writes a snippet of the
         assert.strictEqual(rows.length, 1);
         assert.strictEqual(rows[0].h, r.h);
         assert.ok(rows[0].snippet.includes('the plan is probably done'));
+        assert.strictEqual(Object.prototype.hasOwnProperty.call(rows[0], 'shadow'), false, 'an actual on-mode change is not shadow-marked');
+      });
+    });
+  } finally { h.cleanup(); }
+});
+
+test('ask(): shadow mode (default for a non-legacy id) + audit.snippets:true + a would-change decision -> writes a shadow-marked snippet', async () => {
+  const h = makeHome();
+  try {
+    // No `integrations` override -> 'newRequest' defaults to 'shadow' mode
+    // (only 'speculation'/'triage' default to 'on'). A shadow row's `final`
+    // never moves off baseline, but it still WOULD have changed -- that is
+    // exactly the decision the owner/agent needs to label.
+    h.writeState('jev.json', { enabled: true, timeoutMs: 3000, audit: { snippets: true } });
+    await withMockServer(noulHandler(0.95), async (endpoint) => {
+      await withEnv({ HOME: h.home, AI_GATEWAY_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
+        const { ask, auditLogPath } = freshLib();
+        const r = await ask({ id: 'newRequest', question: NOUL_Q, state: 'the user asked for a brand new feature', trust: 'add-block', baseline: false });
+        assert.strictEqual(r.final, false, 'shadow mode never actually changes the outcome');
+        const rows = fs.readFileSync(auditLogPath(h.home), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+        assert.strictEqual(rows.length, 1);
+        assert.strictEqual(rows[0].h, r.h);
+        assert.strictEqual(rows[0].shadow, true);
+        assert.ok(rows[0].snippet.includes('the user asked for a brand new feature'));
+      });
+    });
+  } finally { h.cleanup(); }
+});
+
+test('ask(): shadow mode + audit.snippets:true + NO would-change -> no snippet written', async () => {
+  const h = makeHome();
+  try {
+    h.writeState('jev.json', { enabled: true, timeoutMs: 3000, audit: { snippets: true } });
+    // add-block baseline is already true -> nothing left to add, would-change is null.
+    await withMockServer(noulHandler(0.95), async (endpoint) => {
+      await withEnv({ HOME: h.home, AI_GATEWAY_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
+        const { ask, auditLogPath } = freshLib();
+        await ask({ id: 'newRequest', question: NOUL_Q, state: 'already blocked either way', trust: 'add-block', baseline: true });
+        assert.ok(!fs.existsSync(auditLogPath(h.home)));
+      });
+    });
+  } finally { h.cleanup(); }
+});
+
+test('ask(): label-only choice integration (advisory trust, string answer, shadow mode) would-change -> snippet written', async () => {
+  const h = makeHome();
+  try {
+    // Mirrors task-tracker.js's real newRequest usage: trust:'advisory',
+    // baseline:null, a 'choice' question with a string answer (not a bool).
+    h.writeState('jev.json', { enabled: true, timeoutMs: 3000, audit: { snippets: true } });
+    await withMockServer(choiceHandler('mechanical', 0.9), async (endpoint) => {
+      await withEnv({ HOME: h.home, AI_GATEWAY_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
+        const { ask, auditLogPath } = freshLib();
+        const r = await ask({ id: 'newRequest', question: CHOICE_Q, state: 'classify this prompt', trust: 'advisory', baseline: null });
+        assert.strictEqual(r.final, null, 'shadow mode never actually changes the outcome');
+        const rows = fs.readFileSync(auditLogPath(h.home), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+        assert.strictEqual(rows.length, 1);
+        assert.strictEqual(rows[0].h, r.h);
+        assert.strictEqual(rows[0].shadow, true);
+        const log = readNdjson(path.join(h.home, '.anti-hall', 'logs', 'jev-assist.ndjson'));
+        assert.strictEqual(log[0].wouldChange, 'changed');
       });
     });
   } finally { h.cleanup(); }

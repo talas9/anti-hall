@@ -367,13 +367,22 @@ function rotateAuditIfNeeded(p) {
   }
 }
 
-// maybeWriteAuditSnippet({home, id, hash, state, changed}) — best-effort,
-// never throws. Writes ONLY when jev.audit.snippets is true AND this
-// decision actually changed the outcome (`changed` is the direction string,
-// e.g. 'added'/'relaxed'/'changed', or falsy for no change).
-function maybeWriteAuditSnippet({ home, id, hash, state, changed }) {
+// maybeWriteAuditSnippet({home, id, hash, state, changed, wouldChange}) —
+// best-effort, never throws. Writes when jev.audit.snippets is true AND
+// EITHER this decision actually changed the outcome (`changed`, an 'on'-mode
+// row) OR it WOULD have changed the outcome had mode been 'on' (`wouldChange`
+// — a shadow-mode row; shadow is the default mode for every integration
+// under evaluation, so gating on `changed` alone meant a shadow decision
+// never got a snippet, even with snippets on -- the exact decisions the
+// owner/agent needs to label). Either is the direction string ('added' /
+// 'relaxed' / 'changed'), or falsy for no (would-)change. When the write is
+// triggered by `wouldChange` only (not `changed`), the stored row carries
+// `shadow: true` so `jev-report label` can tell an actual change from a
+// would-have-changed one.
+function maybeWriteAuditSnippet({ home, id, hash, state, changed, wouldChange }) {
   try {
-    if (!changed || typeof state !== 'string' || !state) return;
+    const trigger = changed || wouldChange;
+    if (!trigger || typeof state !== 'string' || !state) return;
     if (!readAuditConfig(home).snippets) return;
     const scrubbed = scrubSecrets(state.slice(0, 2000));
     const snippet = scrubbed.slice(0, 200);
@@ -382,7 +391,9 @@ function maybeWriteAuditSnippet({ home, id, hash, state, changed }) {
     rotateAuditIfNeeded(p);
     const prevUmask = process.umask(0o077);
     try {
-      fs.appendFileSync(p, JSON.stringify({ ts: new Date().toISOString(), id, h: hash, snippet }) + '\n', { encoding: 'utf8', mode: 0o600 });
+      const row = { ts: new Date().toISOString(), id, h: hash, snippet };
+      if (!changed && wouldChange) row.shadow = true;
+      fs.appendFileSync(p, JSON.stringify(row) + '\n', { encoding: 'utf8', mode: 0o600 });
       fs.chmodSync(p, 0o600); // belt-and-suspenders: appendFileSync's mode only applies when it CREATES the file
     } finally {
       process.umask(prevUmask);
@@ -593,9 +604,9 @@ function finalize({ id, home, hash, mode, trust, baseline, judge, threshold, r, 
   // Budget watch: best-effort, only touches disk when watch mode is on, and
   // never affects `final`/`entry` above -- see maybeWarnBudget's own comment.
   if (r) maybeWarnBudget({ home, costUsd });
-  // Audit snippet: opt-in, off by default, ONLY for a changed decision --
-  // see maybeWriteAuditSnippet's own comment.
-  maybeWriteAuditSnippet({ home, id, hash, state, changed: direction });
+  // Audit snippet: opt-in, off by default, for a changed OR would-change
+  // decision -- see maybeWriteAuditSnippet's own comment.
+  maybeWriteAuditSnippet({ home, id, hash, state, changed: direction, wouldChange: wouldChangeDirection });
   appendLog(home, entry);
 
   return {

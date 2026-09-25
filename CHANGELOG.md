@@ -44,6 +44,17 @@ the update.
   and accepts an explicit `project` override for future callers. Rows logged
   before this fix cannot be repaired (no source cwd to recover) and keep
   grouping under `unknown` — this is expected, not a bug.
+- **`jev.audit.snippets` never wrote a snippet for a shadow-mode decision, even
+  with snippets on.** `maybeWriteAuditSnippet` (`hooks/lib/jev-assist.js`)
+  gated on the `changed` direction, which is null-by-construction whenever
+  `mode !== 'on'` — and shadow is the DEFAULT mode for every integration
+  under evaluation, so the exact would-change decisions an owner/agent needs
+  to label had no snippet to show. It now also writes when the row's
+  `wouldChange` signal (the same would-change computation `jev-report.js`
+  already reads) is truthy, marking that row `shadow: true` so `label`
+  readers can tell a would-have-changed decision from an actual one.
+  `jev-report.js`'s `readAuditSnippet` already read by hash only, with no
+  filter on `changed`, so shadow rows surface via `label <hash>` unchanged.
 - **`jev-report.js`'s per-integration table showed a bare `0.0%` in the
   `changed%` column (and `0 changed` in the headline) for label-only
   integrations** (a `choice`/string classifier with no boolean baseline to

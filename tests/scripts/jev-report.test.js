@@ -499,6 +499,14 @@ test('readAuditSnippet: returns the latest snippet stored for the hash', () => {
   } finally { h.cleanup(); }
 });
 
+test('readAuditSnippet: a shadow-marked (would-change) row is read the same as a real change -- not filtered out', () => {
+  const h = makeHome();
+  try {
+    writeAuditRow(h.home, { id: 'newRequest', h: 'sh1', snippet: 'a new request, shadow mode', shadow: true });
+    assert.strictEqual(readAuditSnippet(h.home, 'sh1'), 'a new request, shadow mode');
+  } finally { h.cleanup(); }
+});
+
 test('cmdLabel <hash> (no verdict): read-only, prints unlabeled + no snippet, writes nothing', () => {
   const h = makeHome();
   try {

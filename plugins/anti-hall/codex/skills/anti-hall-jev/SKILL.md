@@ -173,8 +173,10 @@ itself.
 - Audit snippets (opt-in, OFF by default): setting `jev.audit.snippets` (env
   `ANTIHALL_JEV_AUDIT_SNIPPETS`; legacy `jev.json` `"audit": {"snippets": true}` still read) stores a REDACTED ~200-char snippet (secrets scrubbed: Bearer
   tokens, known key prefixes, key=/token= assignments, emails, long
-  base64/hex runs) for every decision that CHANGES an outcome, in a separate
-  `~/.anti-hall/logs/jev-audit.ndjson`, mode 600, keyed by hash. `label
+  base64/hex runs) for every decision that CHANGES an outcome, OR that WOULD
+  have changed it in shadow mode (the default for every integration under
+  evaluation -- a would-have-changed row carries `shadow: true`), in a
+  separate `~/.anti-hall/logs/jev-audit.ndjson`, mode 600, keyed by hash. `label
   <hash>` prints it if one exists. Deletion is manual-only:
   `jev-report.js prune-audit --days N` -- never automatic.
 

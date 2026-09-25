@@ -309,13 +309,18 @@ writing anything.
 Set `jev.audit.snippets` to true (`/anti-hall:settings`, or env
 `ANTIHALL_JEV_AUDIT_SNIPPETS=1`; a legacy `jev.json` `{"audit": {"snippets": true}}`
 still works) to store a small,
-**redacted** local-only snippet for every decision that CHANGES an outcome
-(never for an unchanged call): the first ~200 characters of the text Jev
-judged, after scrubbing common secret shapes (Bearer tokens, known key
-prefixes, `key=`/`token=` assignments, emails, long base64/hex-looking runs).
-Stored separately, in `~/.anti-hall/logs/jev-audit.ndjson`, file mode `600`,
-keyed by the decision's hash. `label <hash>` prints it if one exists.
-Deletion is manual-only, never automatic:
+**redacted** local-only snippet for every decision that CHANGES an outcome, OR
+that WOULD have changed the outcome had the integration's mode been `on`
+(shadow mode is the default for every integration under evaluation, so this
+covers the decisions you actually need to label — never for a call with no
+change either way): the first ~200 characters of the text Jev judged, after
+scrubbing common secret shapes (Bearer tokens, known key prefixes,
+`key=`/`token=` assignments, emails, long base64/hex-looking runs). A
+would-have-changed (shadow) row carries `shadow: true` so you can tell it
+apart from an actual change. Stored separately, in
+`~/.anti-hall/logs/jev-audit.ndjson`, file mode `600`, keyed by the decision's
+hash. `label <hash>` prints it if one exists. Deletion is manual-only, never
+automatic:
 
 ```
 node "${CLAUDE_PLUGIN_ROOT}/scripts/jev-report.js" prune-audit --days N
