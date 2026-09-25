@@ -109,6 +109,15 @@ the update.
   resolves that short name to a local branch literally called `origin/<b>` first. It now
   passes the full `refs/remotes/...` ref to git (an explicit `origin/...` ref too); `via`
   still shows the short name.
+- **The screenshot ask never named a real conflict.** The parent-inbox scoping of
+  `openButMarkedArchived` kept an entry only when its `worktreePath` equalled the Primary's
+  own checkout (`gitTop`), but every conflict is a CHILD worktree, so all of them were
+  dropped. It now scopes by repo identity like the D29 filter: the entry's worktree must
+  resolve to the Primary's `repoKey`. Entries without a `worktreePath`, or whose worktree no
+  longer resolves, still fail closed. The test fixture had stamped the conflict with the
+  Primary's own path, which hid the bug; it now uses a real child worktree plus a
+  foreign-repo entry that must stay hidden. `doctor` was not affected (it compares the
+  app-DB `repositoryId`).
 - **The Stop-time handover pause nag could repeat the same text with no progress.**
   `hooks/auto-handover-pause-nag.js` stored `nagStepPct` and `lastNagPct` but never compared
   them. It now re-nags only when context has risen at least `nagStepPct` points since the
@@ -200,13 +209,14 @@ the update.
   but `hooks/devswarm-parent-inbox.js`'s `uiSyncAsk` passed it straight
   through — the Primary of one repo could be asked for a screenshot about
   workspaces belonging to entirely different repos. The writer now stamps
-  each entry with `repositoryId`, and both the parent-inbox hook and
-  `companion/lib/doctor-devswarm.js` scope the list to the current session's
-  repo (resolved via the existing canonical toplevel resolver
-  (`companion/lib/identity.js` `resolveContext`) + the app-DB's
-  `repositoryForWorktree` — no new fs-walk). An entry with no `repositoryId`
-  (written by 0.108.0-0.108.2, before this fix) or an unresolvable current
-  repo fails CLOSED: it is never shown. `syncAppState` regenerates
+  each entry with `repositoryId` and its canonical `worktreePath`.
+  `companion/lib/doctor-devswarm.js` scopes the list by `repositoryId` (the
+  current repo resolved via `companion/lib/identity.js` `resolveContext` + the
+  app-DB's `repositoryForWorktree`); the parent-inbox hook, whose ask fires
+  only when the app DB is unreadable, scopes by the `repoKey` of the entry's
+  `worktreePath` (see the screenshot-ask fix above). An entry missing the
+  field its reader needs (written by 0.108.0-0.108.2) or an unresolvable
+  current repo fails CLOSED: it is never shown. `syncAppState` regenerates
   app-state.json on every supervisor tick, so pre-fix entries self-repair on
   the next sync — no migration needed.
 - **`primary-session-drift.js` picked "newest session" by transcript START

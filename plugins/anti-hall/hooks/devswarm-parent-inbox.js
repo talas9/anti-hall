@@ -2213,23 +2213,22 @@ function main() {
           // repo the app knows about), so it must be scoped to THIS session's
           // repo before it reaches uiSyncAsk — otherwise the owner gets asked
           // for a screenshot about workspaces in other repos entirely. Scoped
-          // by worktreePath (the canonicalized realpath `scripts/devswarm.js`
-          // syncAppState already stamps on each entry) against THIS session's
-          // own `gitTop` (resolved once above via identity.js resolveContext,
-          // no new fs-walk) — a structural, worktree-root comparison rather
-          // than the app-DB's own repositoryId (same design as the D29
-          // cross-project filter in devswarm-parent-gate.js), because this ask
-          // fires ONLY when the app DB is unreadable (v0.108.3) and there is
-          // then no live snapshot to resolve an app-DB repositoryId against.
-          // Fail CLOSED: an entry lacking worktreePath (written by
-          // 0.108.0-0.108.2, before this fix) or an unresolvable current repo
-          // never matches, so it is never shown (better a missed ask than a
-          // cross-repo one). The writer (scripts/devswarm.js syncAppState)
-          // regenerates app-state.json every supervisor tick, so
-          // 0.108.0-0.108.2 entries self-repair on the next sync — no
-          // migration needed.
-          st.conflicts = gitTop
-            ? as.openButMarkedArchived.filter((c) => c && c.worktreePath && String(c.worktreePath) === gitTop)
+          // by REPO identity, the same way as the D29 filter on the summary
+          // rows above: the repoKey of the entry's worktreePath (the
+          // canonicalized realpath `scripts/devswarm.js` syncAppState stamps
+          // on each entry) must equal this Primary's repoKey. A conflict is a
+          // CHILD worktree, never the Primary's own checkout, so comparing
+          // worktreePath to gitTop dropped every real conflict (0.108.3). Not
+          // the app-DB repositoryId: this ask fires ONLY when the app DB is
+          // unreadable (v0.108.3), so there is no live snapshot to resolve
+          // one against. Fail CLOSED: an entry lacking worktreePath (written
+          // by 0.108.0-0.108.2), a worktree whose repoKey no longer resolves,
+          // or an unresolvable current repo never matches, so it is never
+          // shown (better a missed ask than a cross-repo one). syncAppState
+          // regenerates app-state.json every supervisor tick, so legacy
+          // entries self-repair on the next sync — no migration needed.
+          st.conflicts = repoKey
+            ? as.openButMarkedArchived.filter((c) => c && c.worktreePath && repoKeyOfWorktree(String(c.worktreePath)) === repoKey)
             : [];
         }
       } catch (_) { /* no sync yet */ }

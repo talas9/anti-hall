@@ -141,19 +141,35 @@ test('sync-ui verb: a conflict refuses --yes until --accept-conflicts; bad input
 
 // P1 fix: app-state.json's openButMarkedArchived is HOME-GLOBAL (every repo
 // the app knows about). It must carry the canonicalized worktreePath (written
-// by syncAppState) AND be scoped to THIS session's own worktree root (`gitTop`,
-// resolved via identity.js resolveContext, same canonicalization the writer
-// uses) before it reaches the ask — a cwd inside `f.repoPath` (a real git repo)
-// is what lets that resolution succeed. v0.108.3: the ask also only fires when
+// by syncAppState) AND be scoped to THIS session's repo (the repoKey of that
+// worktreePath must equal the Primary's own repoKey, like the D29 filter)
+// before it reaches the ask — a cwd inside `f.repoPath` (a real git repo) is
+// what lets that resolution succeed. v0.108.3: the ask also only fires when
 // the app DB is unreadable — while it is readable, the app-DB sync retires the
 // stale anti-hall marker itself, so a conflict never needs to ask. Matching by
 // worktreePath (not the app-DB's own repositoryId) is required BECAUSE the ask
 // only fires when unreadable: there is no live snapshot at ask-time to resolve
-// a repositoryId against, so the scoping must be structural (worktree-root),
-// not app-DB-derived (same design as the D29 cross-project filter).
+// a repositoryId against, so the scoping must be structural (git repo
+// identity), not app-DB-derived.
+// 0.108.3: a conflict is a CHILD worktree, never the Primary's own checkout —
+// the fixture used to stamp worktreePath = gitTop, which hid a filter that
+// compared against gitTop and so dropped every real conflict. Scoping is by
+// repo identity (repoKey), so the fixture uses a real linked child worktree of
+// the same repo, and a real repo of a different project for the foreign entry.
+function gitQ(dir, args) {
+  const r = cp.spawnSync('git', ['-C', dir, '-c', 'user.name=T', '-c', 'user.email=t@example.com'].concat(args), { encoding: 'utf8' });
+  if (r.status !== 0) throw new Error('git ' + args.join(' ') + ': ' + r.stderr);
+}
 function conflictAskFixture() {
   const f = buildAppDb();
   cp.spawnSync('git', ['init', '-q', f.repoPath]);
+  gitQ(f.repoPath, ['commit', '-q', '--allow-empty', '-m', 'base']);
+  const childWt = path.join(f.base, 'child-wt');
+  gitQ(f.repoPath, ['worktree', 'add', '-q', '-b', 'feat/child', childWt]);
+  const foreignRepo = path.join(f.base, 'some-other-repo');
+  fs.mkdirSync(foreignRepo);
+  gitQ(foreignRepo, ['init', '-q']);
+  gitQ(foreignRepo, ['commit', '-q', '--allow-empty', '-m', 'other']);
   const KEY = repokey.repoKeyForWorktree(f.repoPath);
   const ds = path.join(f.home, '.anti-hall', 'devswarm');
   fs.mkdirSync(path.join(ds, 'summaries'), { recursive: true });
@@ -169,18 +185,25 @@ function conflictAskFixture() {
       { home: f.home, env: Object.assign({ DEVSWARM_REPO_ID: 'repo-1' }, f.env), expectJson: true });
     return (r.json && r.json.hookSpecificOutput && r.json.hookSpecificOutput.additionalContext) || '';
   };
-  return { f, ds, run, gitTop };
+  assert.notStrictEqual(fs.realpathSync(childWt), gitTop, 'the conflict worktree is a child, not the Primary checkout');
+  assert.strictEqual(repokey.repoKeyForWorktree(childWt), KEY, 'same repo');
+  assert.notStrictEqual(repokey.repoKeyForWorktree(foreignRepo), KEY, 'a different repo');
+  return { f, ds, run, gitTop, childWt: fs.realpathSync(childWt), foreignRepo: fs.realpathSync(foreignRepo) };
 }
 
-test('parent-inbox asks for a screenshot once per session per set, only on a SAME-worktree conflict while the app DB is unreadable', { skip }, () => {
-  const { f, ds, run, gitTop } = conflictAskFixture();
+test('parent-inbox asks for a screenshot once per session per set, only on a SAME-repo child conflict while the app DB is unreadable', { skip }, () => {
+  const { f, ds, run, childWt, foreignRepo } = conflictAskFixture();
   try {
     assert.ok(!/DEVSWARM SYNC/.test(run('s1')), 'no conflict -> no ask');
-    fs.writeFileSync(path.join(ds, 'app-state.json'), JSON.stringify({ v: 1, at: Date.now(), ok: true, openButMarkedArchived: [{ id: 'b-a', label: 'Alpha task', repositoryId: 'repo-1', worktreePath: gitTop }] }));
+    fs.writeFileSync(path.join(ds, 'app-state.json'), JSON.stringify({ v: 1, at: Date.now(), ok: true, openButMarkedArchived: [
+      { id: 'b-a', label: 'Alpha task', repositoryId: 'repo-1', worktreePath: childWt },
+      { id: 'other-a', label: 'Some other repo workspace', repositoryId: 'other-repo', worktreePath: foreignRepo },
+    ] }));
     assert.ok(!/DEVSWARM SYNC/.test(run('s0')), 'v0.108.3: a readable app DB settles the conflict itself -> never a screenshot ask');
     fs.writeFileSync(f.dbFile, 'not a sqlite database'); // app DB file present but unreadable
     const first = run('s1');
     assert.ok(/DEVSWARM SYNC: The DevSwarm app shows 'Alpha task' as open, but anti-hall has it archived/.test(first), first);
+    assert.ok(!/Some other repo workspace/.test(first), 'the foreign-repo entry stays hidden: ' + first);
     assert.ok(!/DEVSWARM SYNC/.test(run('s1')), 'once per session per set');
     assert.ok(/DEVSWARM SYNC/.test(run('s2')), 'a new session asks again');
   } finally { rmFixture(f); appDb.resetCache(); }
@@ -193,10 +216,10 @@ test('parent-inbox asks for a screenshot once per session per set, only on a SAM
 // scoping — that branch is orthogonal to this P1 fix and out of scope here.
 // What the P1 fix must still guarantee: an out-of-scope conflict's row/label
 // is NEVER named in the ask text (better a generic ask than a cross-repo one).
-test('parent-inbox: a CROSS-repo conflict (different worktreePath) is never NAMED in the ask', { skip }, () => {
-  const { f, ds, run } = conflictAskFixture();
+test('parent-inbox: a CROSS-repo conflict (a worktree of a different repo) is never NAMED in the ask', { skip }, () => {
+  const { f, ds, run, foreignRepo } = conflictAskFixture();
   try {
-    fs.writeFileSync(path.join(ds, 'app-state.json'), JSON.stringify({ v: 1, at: Date.now(), ok: true, openButMarkedArchived: [{ id: 'other-a', label: 'Some other repo workspace', repositoryId: 'other-repo', worktreePath: path.join(f.base, 'some-other-repo') }] }));
+    fs.writeFileSync(path.join(ds, 'app-state.json'), JSON.stringify({ v: 1, at: Date.now(), ok: true, openButMarkedArchived: [{ id: 'other-a', label: 'Some other repo workspace', repositoryId: 'other-repo', worktreePath: foreignRepo }] }));
     fs.writeFileSync(f.dbFile, 'not a sqlite database'); // app DB unreadable, so only worktree scoping can suppress this ask
     const ask = run('s1');
     assert.ok(!/Some other repo workspace/.test(ask), 'a conflict belonging to a different worktree must never be named: ' + ask);
