@@ -3625,3 +3625,38 @@ test('SWITCH devswarm.parentGate=false: the same unread backlog no longer blocks
     assert.strictEqual(r.stdout.trim(), '');
   } finally { h.cleanup(); }
 });
+
+// ---------------------------------------------------------------------------
+// 0.109.4 — owner-held ids (devswarm.heldPartitions, devswarm-store.js
+// heldPartitionIdsFrom). Field: a held legacy twin row (primary-68f24b6b)
+// blocked a Primary's Stop. A held id never blocks — except the CURRENT
+// Primary's own live id, which is never excluded.
+// ---------------------------------------------------------------------------
+test('HELD: an id listed in devswarm.heldPartitions with real unread -> no block', () => {
+  const h = makeHome();
+  try {
+    seedWorkspace(h.home, 'primary-68f24b6b', { messages: ['a', 'b'], cursor: 0 });
+    const r = run(h.home, stopPayload('sess-held'), { ANTIHALL_DEVSWARM_HELD_PARTITIONS: 'primary-68f24b6b' });
+    assert.strictEqual(r.status, 0);
+    assert.strictEqual(r.stdout, '', `a held id must never block; stdout=${r.stdout}`);
+  } finally { h.cleanup(); }
+});
+
+test('HELD CONTROL: the same row NOT listed as held still blocks', () => {
+  const h = makeHome();
+  try {
+    seedWorkspace(h.home, 'primary-68f24b6b', { messages: ['a', 'b'], cursor: 0 });
+    const r = run(h.home, stopPayload('sess-held2'));
+    assert.strictEqual(r.json && r.json.decision, 'block', `stdout=${r.stdout}`);
+  } finally { h.cleanup(); }
+});
+
+test('HELD: the CURRENT Primary\'s own id listed as held is NEVER excluded (own unread still blocks)', () => {
+  const h = makeHome();
+  try {
+    writeOwnSummary(h.home, 3);
+    const r = run(h.home, stopPayload('ownsess-held', true), { ANTIHALL_DEVSWARM_HELD_PARTITIONS: OWN_ID });
+    assert.strictEqual(r.json && r.json.decision, 'block', `stdout=${r.stdout}`);
+    assert.match(r.json.reason, /YOU \(the Primary\) have 3 unread parent\/peer message\(s\)/);
+  } finally { h.cleanup(); }
+});

@@ -1031,6 +1031,15 @@ function main() {
   }
   // busyFreshMs (v0.109 safety review): resolved ONCE for the whole scan.
   const busyFreshMs = resolveBusyFreshMin(process.env) * 60000;
+  // heldIds (0.109.4): owner-held ids from the devswarm.heldPartitions setting
+  // (devswarm-store.js heldPartitionIdsFrom — the same list that exempts them
+  // from the ORPHANED MESH warning and reap-orphans). A held row is a legacy
+  // twin/specimen the owner parked on purpose: it never blocks this gate and
+  // never counts toward NEGLECT/escalation, even inside the Primary's own
+  // family — EXCEPT the current Primary's own live id, which is never
+  // excluded. Resolved ONCE; fail-open to an empty set.
+  let heldIds = new Set();
+  try { heldIds = require('../companion/lib/devswarm-store.js').heldPartitionIdsFrom(process.env); } catch (_) { heldIds = new Set(); }
   for (const d of descriptors) {
     // The Primary's OWN descriptor (workspaces/<own.id>.json) is already
     // accounted for by the own row above (readOwnUnread: this reader's own
@@ -1562,6 +1571,7 @@ function main() {
       // archived (per a FRESH supervisor-written cache)".
       appArchived,
       archiveIgnored,
+      held: heldIds.has(String(d.id)) && !(own.id && String(d.id) === String(own.id)),
       status: staleOrEscalated ? status : '',
       verdictPending,
       urgencyMax: null,
@@ -1729,7 +1739,9 @@ function main() {
     // count toward NEGLECT and never drive escalation. Its real unread is only
     // tallied into ONE aggregated stderr advisory after the loop. Dead-worktree
     // (not archived) rows are unchanged: their mail still blocks. The
-    // Primary's OWN family is never filtered.
+    // Primary's OWN family is never filtered by archive state; an owner-held
+    // member (`held`, see heldIds above) is dropped from ANY family, but the
+    // current Primary's own live id is never marked held.
     const famSurvivorId = (fam && fam.survivor && fam.survivor.id != null)
       ? String(fam.survivor.id) : (members[0] && members[0].id != null ? String(members[0].id) : null);
     const famIsChild = !(own.id && famSurvivorId != null && famSurvivorId === String(own.id));
@@ -1759,7 +1771,7 @@ function main() {
     let familyWaitingOnUser = false;
     let familyAgeUnknown = false;
     for (const m of members) {
-      if (famIsChild && m && (m.archived || m.appArchived || m.archiveIgnored)) {
+      if (m && (m.held || (famIsChild && (m.archived || m.appArchived || m.archiveIgnored)))) {
         if (Number.isFinite(m.realUnread) && m.realUnread > 0) archivedMemberUnread += m.realUnread;
         continue;
       }

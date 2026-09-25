@@ -128,3 +128,20 @@ test('cached-0 own summary + genuinely new unread on own descriptor (this reader
     assert.match(r.json.reason, /\b2 unread\b/, `this reader's own row (5) vs live total (7) -> 2 unread; got ${r.json.reason}`);
   } finally { h.cleanup(); }
 });
+
+// 0.109.4: devswarm.heldPartitions excludes held ids from the gate, but the
+// CURRENT Primary's own live id is never excluded, even when listed as held.
+// This shape (cached-0 summary + own descriptor behind the live total) is the
+// one where the own descriptor itself is evaluated, so it pins that guard.
+test('own id listed in devswarm.heldPartitions -> own descriptor\'s new unread STILL blocks (never excluded)', () => {
+  const h = makeHome();
+  try {
+    writeGateSession(h.home, REPO_CWD, STARTED_AT);
+    seedOwn(h.home, { total: 7, floor: 1, ownReaderValue: 5 });
+    const r = testHookRaw(HOOK, JSON.stringify({ hook_event_name: 'Stop', session_id: 'sess-own-desc-held' }), {
+      home: h.home, env: { ...PRIMARY_ENV, ANTIHALL_DEVSWARM_HELD_PARTITIONS: OWN_ID },
+    });
+    assert.strictEqual(r.json && r.json.decision, 'block', `stdout=${r.stdout} stderr=${r.stderr}`);
+    assert.match(r.json.reason, /\b2 unread\b/);
+  } finally { h.cleanup(); }
+});

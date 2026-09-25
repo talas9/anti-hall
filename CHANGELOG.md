@@ -17,6 +17,9 @@ the update.
   At most one summary line is shown instead: "N archived workspace(s) still have
   unread mail (ignored)". This check also reuses the cached copy of the DevSwarm
   app's archived list.
+- **Owner-held workspaces no longer block the Primary either.** An id listed in the
+  `devswarm.heldPartitions` setting is skipped by the Stop gate, even when it is an
+  old twin of the Primary. The Primary's own current mailbox is never skipped.
 - **"Waiting on a human answer" now requires a running session.** A workspace is
   only reported as waiting on a human answer if its session is still running and
   its transcript shows the unanswered question. The gate used to report this for
