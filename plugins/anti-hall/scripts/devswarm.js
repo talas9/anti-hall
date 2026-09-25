@@ -12635,6 +12635,56 @@ function retireIdentityFamilyDescriptors(home, archivedId, desc, opts) {
   } catch (_) { return out; }
 }
 
+// APP_ARCHIVE_RETRYABLE_RE — DevSwarm 2.5.3's own transient failure text, seen
+// on a real substrate test (2026-09-25): the FIRST `hivecontrol workspace
+// archive <id>` call can fail with "Could not confirm terminal process
+// boundary" even though the app archives correctly on a bare retry (no state
+// changed between attempts — verified live). Retrying once on exactly this
+// text is a targeted workaround for a known-flaky app-side check, not a
+// general retry-on-any-failure policy.
+const APP_ARCHIVE_RETRYABLE_RE = /could not confirm terminal process boundary/i;
+// Same bound devswarm-lifecycle.js's own auto-archive hivecontrol call uses
+// (its HC_TIMEOUT_MS) — kept as its own constant here since this file may not
+// import that module's private const.
+const APP_ARCHIVE_TIMEOUT_MS = 60000;
+
+// attemptAppArchive(id, desc, ctx) -> { attempted, ok, reason?, error?, retried? }.
+// Archives the workspace in the DevSwarm APP (not just anti-hall's own
+// descriptor/registry state) via the capability-gated hivecontrol runner —
+// EXPLICIT id always passed (never relies on hivecontrol's "current workspace"
+// default). Gated on companion/lib/devswarm-capabilities.js's
+// can('workspace.archive'): dormant (hivecontrol absent, or present but below
+// the verb's minVersion) -> attempted:false, never spawns. A live substrate
+// test on 2026-09-25 proved `hivecontrol workspace archive <id>` DOES exist
+// and works on DevSwarm 2.5.3 (sets isActive=0/isHidden=1) — the OLD
+// `manualStep` text below claiming "hivecontrol has no teardown command" was
+// false and is fixed by this function actually calling it. Tests stub
+// pull.defaultRun (hcRun reads it lazily) — never spawns a real hivecontrol.
+function attemptAppArchive(id, desc, ctx) {
+  const home = ctx.home;
+  let cap;
+  try { cap = devswarmCaps.can('workspace.archive', { home, env: ctx.env }); }
+  catch (e) { return { attempted: false, reason: 'capability check failed: ' + String((e && e.message) || e) }; }
+  if (!cap || !cap.ok) return { attempted: false, reason: (cap && cap.reason) || 'dormant' };
+  const argv = ['workspace', 'archive', String(id)];
+  const cwd = (desc && desc.worktreePath) || ctx.cwd || process.cwd();
+  const spec = { args: argv, env: ctx.env, cwd, timeout: APP_ARCHIVE_TIMEOUT_MS };
+  let res;
+  try { res = hcRun(spec); } catch (e) { res = { ok: false, error: String((e && e.message) || e) }; }
+  if (res && res.ok) return { attempted: true, ok: true };
+  // Retry ONCE on the specific known-flaky boundary-confirmation error — never
+  // a blind "retry any failure" (that could double-run a genuinely destructive
+  // native verb on a real, non-transient failure).
+  const errText = String((res && res.error) || '');
+  if (APP_ARCHIVE_RETRYABLE_RE.test(errText)) {
+    let res2;
+    try { res2 = hcRun(spec); } catch (e) { res2 = { ok: false, error: String((e && e.message) || e) }; }
+    if (res2 && res2.ok) return { attempted: true, ok: true, retried: true };
+    return { attempted: true, ok: false, retried: true, error: String((res2 && res2.error) || errText) };
+  }
+  return { attempted: true, ok: false, error: errText || 'unknown hivecontrol failure' };
+}
+
 function cmdArchive(id, ctx, opts) {
   const home = ctx.home;
   const revalidate = opts && typeof opts.revalidate === 'function' ? opts.revalidate : null;
@@ -12960,11 +13010,25 @@ function cmdArchive(id, ctx, opts) {
   // fully durable, so a failure here can never leave the primary half-applied.
   // Fail-open by construction (see retireIdentityFamilyDescriptors).
   const familyRetire = retireIdentityFamilyDescriptors(home, id, desc);
-  const archived = {
-    ok: true, action: 'archive', id, descriptorArchived: moved,
-    manualStep: 'hivecontrol has no teardown command — REMOVE workspace ' + id +
-      ' in the DevSwarm app (archive keeps disk contents; never delete without confirmation).',
-  };
+  const archived = { ok: true, action: 'archive', id, descriptorArchived: moved };
+  // APP ARCHIVE (fixes false "hivecontrol has no teardown command" claim —
+  // see attemptAppArchive's own header): when the capability gate allows it,
+  // actually archive this workspace in the DevSwarm app too, EXPLICIT id
+  // always, retrying once on the known-flaky boundary-confirmation error.
+  // Dormant/failed -> fall back to an ACCURATE manual-step instruction
+  // (never the old false "no teardown command" text).
+  const appArchive = attemptAppArchive(id, desc, ctx);
+  archived.appArchive = appArchive;
+  if (appArchive.ok) {
+    archived.manualStep = 'archived in the DevSwarm app too (isActive=0/isHidden=1)'
+      + (appArchive.retried ? ' — succeeded on retry' : '') + '.';
+  } else {
+    archived.manualStep = 'run `hivecontrol workspace archive ' + id + '` (or archive it manually in the '
+      + 'DevSwarm app) to also archive workspace ' + id + ' there — anti-hall\'s own archive only tombstoned '
+      + 'its local descriptor/registry (archive keeps disk contents; never delete without confirmation).'
+      + (appArchive.attempted ? ' [app archive attempted and failed: ' + String(appArchive.error || 'unknown') + ']'
+        : (appArchive.reason ? ' [app archive not attempted: ' + String(appArchive.reason) + ']' : ''));
+  }
   // LIVE-CHILD WARNING (defect df54edf54804 hardening): archiving unlinks the
   // active descriptor + tombstones the registry, but it does NOT — and by
   // design (7e1ae67) never should — stop a STILL-RUNNING child session from
@@ -12975,10 +13039,26 @@ function cmdArchive(id, ctx, opts) {
   // is still attached and may re-register it. Warn loudly rather than
   // silently letting the operator believe archiving is the end of the story;
   // never refuse or alter the archive itself on this signal.
+  //
+  // APP-DB CROSS-CHECK (fixes false positive): a heartbeat alone can be
+  // STALE — e.g. this exact workspace was already DELETED in the DevSwarm
+  // app, whose builder-row removal this anti-hall-side heartbeat file has no
+  // way to observe on its own. Cross-check the app DB's own builder rows
+  // (companion/lib/devswarm-app-db.js builderStates): NO row for this id at
+  // all means the app itself has no record of it running — the warning is
+  // suppressed. Fail-open toward warning (today's behavior) whenever the app
+  // DB is unavailable/unreadable or this id DOES have a row there.
   try {
     if (hasFreshHeartbeat(id, home, { now: ctx.now })) {
-      archived.warning = 'child session still live for ' + id + ' (fresh heartbeat) — it may '
-        + 're-register and reappear; close its terminal or it will keep coming back';
+      let appSaysGone = false;
+      try {
+        const states = require('../companion/lib/devswarm-app-db.js').builderStates({ home, env: ctx.env, now: ctx.now });
+        appSaysGone = !!(states && !states.has(String(id)));
+      } catch (_) { appSaysGone = false; } // fail-open: unreadable app DB -> keep warning
+      if (!appSaysGone) {
+        archived.warning = 'child session still live for ' + id + ' (fresh heartbeat) — it may '
+          + 're-register and reappear; close its terminal or it will keep coming back';
+      }
     }
   } catch (_) { /* fail-open: never let the warning check block a completed archive */ }
   // Surface the whole-group retire ONLY when it did something — a plain archive

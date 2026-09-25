@@ -235,9 +235,12 @@ handoff:
   ambiguous prefix (matches more than one row) archives nothing and lists the candidates
   instead. Exact full-id behavior is unchanged.
   **NEVER auto-archive.** anti-hall never archives mechanically on either side of this
-  handshake — the CLI only ever archives-by-absence on anti-hall's own registry (moves the
-  descriptor to `archived/`, tombstones the store entry) and surfaces a manual "remove
-  workspace in the DevSwarm app" step, because hivecontrol itself has no teardown command.
+  handshake — the CLI archives anti-hall's own registry state (moves the descriptor to
+  `archived/`, tombstones the store entry) and, **v0.108.4**, when the capability gate allows
+  it (DevSwarm >= 2.5.3) also archives the workspace in the DevSwarm app itself via
+  `hivecontrol workspace archive <id>` (explicit id always, retried once on a known-flaky
+  transient error) — dormant/failed falls back to an accurate manual "run `hivecontrol
+  workspace archive <id>`" step instead.
 
 **(v0.93.0) App-side archive vs. informational-vs-blocking.** hivecontrol's `workspace list all`
 carries no archive field, so the supervisor sweep now detects an app-archive-in-the-DevSwarm-app

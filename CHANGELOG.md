@@ -131,6 +131,16 @@ the update.
 
 ### Fixes
 
+- **`cmdArchive` claimed hivecontrol "has no teardown command" — false on DevSwarm >= 2.5.3.**
+  A live substrate test (2026-09-25) proved `hivecontrol workspace archive <id>` exists and
+  works (sets isActive=0/isHidden=1). When the capability gate allows it, `devswarm.js archive`
+  now ALSO archives the workspace in the DevSwarm app, explicit id always, retrying once on
+  the known-flaky "Could not confirm terminal process boundary" error; dormant/failed falls
+  back to an accurate manual-step instruction instead of the old false claim. Also fixed: the
+  post-archive "child session still live" warning fired off a heartbeat file alone, which can
+  be stale (e.g. the workspace was already deleted in the app); it now cross-checks the app
+  DB's own builder rows and suppresses the warning when there is no row for that id at all.
+
 - **`output-verify-guard.js` false positive on zero-count summaries.** A clean `cargo test`
   summary line ("test result: ok. 5 passed; 0 failed") was flagged as a mixed pass/fail
   result because the dual-signal regex matched the literal "0 failed" text. Count-bearing
