@@ -38,18 +38,30 @@ then confirm with the single-key line from `get <section.key>`. Never print the 
 table for a direct change. A validation failure (out-of-range number, unknown enum
 value) comes back as `{ok:false, error}` on `--json` or an `error:` line otherwise —
 relay it and ask for a valid value; never silently coerce or guess one. A question
-about ONE value is a single `get <section.key>`.
+about ONE value is a single `get <section.key>`. A safety key (see below) needs the
+extra `--confirmed` step instead of a plain `set`.
 
-## Safety guards: the human changes these, never you
+## Safety guards: a human direct command, or a confirmed warning — never inferred
 
 `safety.gitGuard`, `safety.commandGuard`, `safety.editGuard`, `safety.swarmGuard`,
 `guards.stashGuard`, `guards.editGuardAllow` and `guards.allowSubagentMailbox` are
-safety keys. `set` and `reset` refuse them with "safety guard — change it yourself in
-/config (anti-hall rows)", and a value written into `~/.anti-hall/settings.json` is
-ignored for them. Codex has no `/config`, so the only way is the env var the user sets
-themselves before starting Codex (`show` lists it, e.g. `ANTIHALL_GIT_GUARD=0`). When
-asked to turn one off, tell the user that; never try another route. A one-off pause is
-still the per-guard `skip.json` escape hatch, only on the user's explicit request.
+safety keys (owner decision: no hard refusal — a human direct command, or a
+confirmation after a clear, plain warning, is enough). `set`/`reset` on one of these
+needs `--confirmed`; without it, nothing changes and the CLI returns one short,
+factual, human-readable line (`{ok:false, needsConfirmation:true, warning}` on
+`--json`) — calm facts, not alarming, built from that key's own one-sentence
+`safetyNote` in the schema.
+
+- **The user directly asked to change that guard** ("turn off git-guard") — that
+  request IS the confirmation. Run `set`/`reset` with `--confirmed` right away.
+- **Otherwise** — Codex has no `AskUserQuestion` tool, so show the one-line warning
+  in prose and ask a plain yes/no: "1) Yes, change it  2) No, keep it". Apply
+  (`--confirmed`) only on yes; on no, or on no answer, leave it unchanged.
+- **Never infer consent**, and never add `--confirmed` on your own initiative to get
+  past the warning.
+
+A one-off pause is still the per-guard `skip.json` escape hatch, only on the user's
+explicit request.
 
 ## Turning a hook off
 

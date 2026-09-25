@@ -1372,7 +1372,7 @@ function main() {
 
   // Escape hatch: honor an explicit, user-consented skip (~/.anti-hall/skip.json).
   if (isSkipped('command-guard')) process.exit(0);
-  // Settings switch safety.commandGuard (0.108.4, human-only: /config or env).
+  // Settings switch safety.commandGuard (0.108.4, safety: set/reset need --confirmed).
   // Off -> the core heavy-command gate below no-ops; the data-safety
   // sub-guards above (DevSwarm read/send/mailbox, armed stash) already ran.
   // Fail-open: any error runs the gate.

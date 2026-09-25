@@ -43,20 +43,29 @@ the update.
   `ANTI_HALL_SCAN_THROTTLE`, `ANTI_HALL_SESSION_END_REAPER` and
   `ANTIHALL_DEVSWARM_APP_SYNC` keep working as the env tier of those settings.
   `userConfig` grows from 39 to 76 `/config` rows (still no `options` field).
-- **Safety guards are human-only.** `safety.gitGuard`, `safety.commandGuard`,
-  `safety.editGuard`, `safety.swarmGuard`, and the knobs that weaken a safety guard
-  (`guards.stashGuard`, `guards.editGuardAllow`, `guards.allowSubagentMailbox`) change
-  only through `/config` or their env var. `settings.js set`/`reset` refuse them ("safety
-  guard — change it yourself in /config (anti-hall rows)"), and `get` ignores
-  `~/.anti-hall/settings.json` for them, so an agent editing that file cannot disable a
-  guard. settings.json may still turn one the safer way (arming `guards.stashGuard`
-  keeps working). `safety.commandGuard` / `safety.editGuard` off turns off the
-  delegation check only; command-guard's data-safety sub-guards stay on. The `skip.json`
+- **Safety guards need a confirmed change, not a hard refusal** (owner decision: no
+  guard needed — a human direct command, or a confirmation after a clear, plain
+  warning, is enough). `safety.gitGuard`, `safety.commandGuard`, `safety.editGuard`,
+  `safety.swarmGuard`, and the knobs that weaken a safety guard (`guards.stashGuard`,
+  `guards.editGuardAllow`, `guards.allowSubagentMailbox`) work through `settings.js
+  set`/`reset` like any other key, but need `--confirmed`. Without it, nothing
+  changes and the call returns one short, factual, human-readable line — "Turning off
+  `<guard>` means `<what it protects, in one plain sentence>`. Ask the user to
+  confirm, then re-run with --confirmed." (calm facts, not alarming) — and
+  `{ok:false, needsConfirmation:true, warning}` on `--json`. The warning text comes
+  from a new per-key `safetyNote` in the schema. Normal precedence (env >
+  `~/.anti-hall/settings.json` > `/config` > legacy > default) is restored for these
+  keys — the confirmation is the protection now, not an ignore rule. The `settings`
+  skill (Claude + Codex) and system-briefing: a direct user ask to change a guard IS
+  the confirmation (apply with `--confirmed` right away); otherwise show the warning
+  and ask (`AskUserQuestion` on Claude, a numbered yes/no on Codex) before applying —
+  never infer consent, never confirm on the agent's own initiative. The `skip.json`
   escape hatch is unchanged, and `"all"` still does not cover git-guard.
-- `settings.js show` lists every section, marks the safety rows, and ends with the parts
-  that have no switch on purpose (skip-guard, coordinator-detect, omc-detect,
-  phase-tracker, fable-availability, codex-availability, emit-dedupe-reset,
-  agent-watchdog, command-guard's data-safety sub-guards) and why.
+- `settings.js show` lists every section, marks the safety rows (`needs --confirmed`),
+  and ends with the parts that have no switch on purpose (skip-guard,
+  coordinator-detect, omc-detect, phase-tracker, fable-availability,
+  codex-availability, emit-dedupe-reset, agent-watchdog, command-guard's data-safety
+  sub-guards) and why.
 
 ### Changed
 

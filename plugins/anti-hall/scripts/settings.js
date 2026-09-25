@@ -9,26 +9,31 @@
 // USAGE
 //   node scripts/settings.js show [--section <key>] [--all] [--json]
 //   node scripts/settings.js get <section.key> [--json]
-//   node scripts/settings.js set <section.key> <value> [--json]
-//   node scripts/settings.js reset <section.key> [--json]
+//   node scripts/settings.js set <section.key> <value> [--confirmed] [--json]
+//   node scripts/settings.js reset <section.key> [--confirmed] [--json]
 //
 // `show --all` includes advanced (tuning/timeout) settings; by default they
 // are collapsed to a count per section. `--section` filters to one section.
 //
 // SAFETY-LOCKED keys (schema `locked: true`, e.g. safety.gitGuard): `set` and
-// `reset` refuse them with "safety guard — change it yourself in /config
-// (anti-hall rows)" — only the human changes those, natively in /config.
+// `reset` need `--confirmed`. Without it nothing changes and the CLI prints
+// one short, factual, human-readable line (built from the key's `safetyNote`)
+// explaining what the guard normally protects, then exits non-zero with
+// `{ok:false, needsConfirmation:true, warning}` on --json. The confirmation
+// is the protection — a human direct command, or the agent asking the user
+// and getting a yes, IS that confirmation.
 
 const path = require('path');
 const schema = require('../hooks/lib/settings-schema.js');
 const settings = require('../hooks/lib/settings.js');
 
 function parseArgs(argv) {
-  const out = { _: [], json: false, all: false, section: null };
+  const out = { _: [], json: false, all: false, section: null, confirmed: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--json') out.json = true;
     else if (a === '--all') out.all = true;
+    else if (a === '--confirmed') out.confirmed = true;
     else if (a === '--section') out.section = argv[++i];
     else out._.push(a);
   }
@@ -68,7 +73,7 @@ function sectionRows(sectionDef, opts, advanced) {
     const value = settings.get(sectionDef.key, s.key, undefined, opts);
     const src = settings.source(sectionDef.key, s.key, opts);
     return [
-      s.key + (s.advanced ? ' (advanced)' : '') + (s.locked ? ' (safety: /config only)' : ''),
+      s.key + (s.advanced ? ' (advanced)' : '') + (s.locked ? ' (safety: needs --confirmed)' : ''),
       fmtValue(value),
       fmtValue(s.default),
       sourceLabel(src),
@@ -169,10 +174,16 @@ function cmdSet(args, opts) {
     process.exitCode = 1;
     return;
   }
-  const result = settings.set(section, key, rawValue, opts);
+  const result = settings.set(section, key, rawValue, Object.assign({}, opts, { confirmed: args.confirmed }));
   if (!result.ok) {
-    if (args.json) process.stdout.write(JSON.stringify({ ok: false, error: result.error }) + '\n');
-    else process.stderr.write('error: ' + result.error + '\n');
+    if (result.needsConfirmation) {
+      if (args.json) process.stdout.write(JSON.stringify({ ok: false, needsConfirmation: true, warning: result.warning }) + '\n');
+      else process.stdout.write(result.warning + '\n');
+    } else if (args.json) {
+      process.stdout.write(JSON.stringify({ ok: false, error: result.error }) + '\n');
+    } else {
+      process.stderr.write('error: ' + result.error + '\n');
+    }
     process.exitCode = 1;
     return;
   }
@@ -189,10 +200,16 @@ function cmdReset(args, opts) {
     process.exitCode = 1;
     return;
   }
-  const result = settings.reset(section, key, opts);
+  const result = settings.reset(section, key, Object.assign({}, opts, { confirmed: args.confirmed }));
   if (!result.ok) {
-    if (args.json) process.stdout.write(JSON.stringify({ ok: false, error: result.error }) + '\n');
-    else process.stderr.write('error: ' + result.error + '\n');
+    if (result.needsConfirmation) {
+      if (args.json) process.stdout.write(JSON.stringify({ ok: false, needsConfirmation: true, warning: result.warning }) + '\n');
+      else process.stdout.write(result.warning + '\n');
+    } else if (args.json) {
+      process.stdout.write(JSON.stringify({ ok: false, error: result.error }) + '\n');
+    } else {
+      process.stderr.write('error: ' + result.error + '\n');
+    }
     process.exitCode = 1;
     return;
   }

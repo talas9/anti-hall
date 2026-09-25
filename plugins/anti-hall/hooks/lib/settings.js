@@ -17,7 +17,9 @@
 //                           to live in (e.g. ~/.anti-hall/jev.json)
 //   5. default            — the `dflt` argument, else the schema's own default
 //
-// LOCKED (safety) keys skip tiers 2 and 4 — see lockedFilter() below.
+// LOCKED (safety) keys read through this SAME chain, no special-casing —
+// only WRITING one (set()/reset()) is gated, by opts.confirmed (0.108.4
+// revised design; see safetyWarning() below).
 //
 // FAIL-OPEN CONTRACT: load() never throws — a missing or corrupt
 // settings.json reads back as {}. set() validates against the schema and
@@ -266,7 +268,7 @@ function lookup(obj, key) {
 }
 
 function readLegacy(entry, opts) {
-  if (!entry.legacy || !entry.legacy.file || entry.locked) return undefined;
+  if (!entry.legacy || !entry.legacy.file) return undefined;
   try {
     const p = path.join(homeDir(opts), '.anti-hall', entry.legacy.file);
     const raw = JSON.parse(fs.readFileSync(p, 'utf8'));
@@ -277,17 +279,21 @@ function readLegacy(entry, opts) {
   }
 }
 
-// SAFETY LOCK (0.108.4). A `locked` schema entry is a safety-guard switch only
-// the human may change: through /config (Claude Code's own settings file, which
-// agents cannot edit) or an env var. So for a locked key, settings.json — a
-// plain file any agent can write — is IGNORED, except a value equal to the
-// entry's `safeValue` (the stronger setting), which may still tighten it (e.g.
-// arming guards.stashGuard). Legacy files are never read for a locked key.
-// set()/reset() refuse a locked key outright (see SAFETY_LOCK_MESSAGE).
-const SAFETY_LOCK_MESSAGE = 'safety guard — change it yourself in /config (anti-hall rows)';
-function lockedFilter(entry, value) {
-  if (value === undefined || !entry.locked) return value;
-  return (entry.safeValue !== undefined && value === entry.safeValue) ? value : undefined;
+// CONFIRMATION GATE (0.108.4, revised). A `locked` schema entry is a safety
+// guard switch. It reads through the SAME precedence chain as every other
+// setting (env > settings.json > /config > legacy > default) — there is no
+// special-cased ignore rule for it. What is gated is WRITING it: set()/reset()
+// need `opts.confirmed` (the CLI's `--confirmed` flag). Without it, nothing
+// changes on disk and a short, factual, human-readable warning is returned
+// instead — built from the entry's own `safetyNote` — so the caller can show
+// it to a human and ask before re-running with --confirmed. The confirmation
+// IS the protection now; there is no separate guard to satisfy.
+function guardNameFor(entry) {
+  return String(entry.key).replace(/([A-Z])/g, '-$1').toLowerCase();
+}
+function safetyWarning(entry) {
+  const note = entry.safetyNote || 'it is a safety guard';
+  return 'Turning off ' + guardNameFor(entry) + ' means ' + note + '. Ask the user to confirm, then re-run with --confirmed.';
 }
 
 // enabled(section, key, opts?) -> false ONLY when an on/off switch resolves to
@@ -317,7 +323,7 @@ function get(section, key, dflt, opts) {
 
   const store = load(opts);
   const fileVal = store ? lookup(store[section], key) : undefined;
-  const coercedFile = lockedFilter(entry, coerceValue(entry, fileVal));
+  const coercedFile = coerceValue(entry, fileVal);
   if (coercedFile !== undefined) return coercedFile;
 
   // Until the one-time forward-migration is stamped for this plugin version,
@@ -416,11 +422,15 @@ function withSettingsLock(opts, fn) {
 
 // set(section, key, value, opts?) -> {ok, error?}. Validates against the
 // schema, then does a read-modify-write of the WHOLE file (preserving every
-// other section/key untouched) with an atomic tmp+rename write.
+// other section/key untouched) with an atomic tmp+rename write. A `locked`
+// (safety) key additionally needs `opts.confirmed` — without it nothing is
+// written and the call returns {ok:false, needsConfirmation:true, warning}.
 function set(section, key, value, opts) {
   const entry = schema.findSetting(section, key);
   if (!entry) return { ok: false, error: 'unknown setting: ' + section + '.' + key };
-  if (entry.locked) return { ok: false, locked: true, error: section + '.' + key + ' is a ' + SAFETY_LOCK_MESSAGE };
+  if (entry.locked && !(opts && opts.confirmed)) {
+    return { ok: false, needsConfirmation: true, warning: safetyWarning(entry) };
+  }
 
   const v = validate(entry, value);
   if (!v.ok) return { ok: false, error: v.error };
@@ -447,11 +457,14 @@ function set(section, key, value, opts) {
 
 // reset(section, key, opts?) -> {ok, error?}. Removes the settings.json
 // override for one key (so /config or legacy/default takes over again).
-// A no-op success when the key was never overridden.
+// A no-op success when the key was never overridden. A `locked` (safety) key
+// needs `opts.confirmed` the same as set() — see there.
 function reset(section, key, opts) {
   const entry = schema.findSetting(section, key);
   if (!entry) return { ok: false, error: 'unknown setting: ' + section + '.' + key };
-  if (entry.locked) return { ok: false, locked: true, error: section + '.' + key + ' is a ' + SAFETY_LOCK_MESSAGE };
+  if (entry.locked && !(opts && opts.confirmed)) {
+    return { ok: false, needsConfirmation: true, warning: safetyWarning(entry) };
+  }
 
   return withSettingsLock(opts, () => {
   const backedUpCorruptTo = backupCorruptIfNeeded(opts);
@@ -487,7 +500,7 @@ function source(section, key, opts) {
   if (readEnvOverride(entry, opts) !== undefined) return 'env';
   const store = load(opts);
   const fileVal = store ? lookup(store[section], key) : undefined;
-  if (lockedFilter(entry, coerceValue(entry, fileVal)) !== undefined) return 'file';
+  if (coerceValue(entry, fileVal) !== undefined) return 'file';
 
   const legacyFirst = !!entry.legacy && !settingsMigrationStamped(opts);
   if (legacyFirst && readLegacy(entry, opts) !== undefined) return 'legacy';
@@ -496,4 +509,4 @@ function source(section, key, opts) {
   return 'default';
 }
 
-module.exports = { load, get, getWithEnv, enabled, set, reset, source, path: settingsPath, validate, lookup, SAFETY_LOCK_MESSAGE };
+module.exports = { load, get, getWithEnv, enabled, set, reset, source, path: settingsPath, validate, lookup, safetyWarning };

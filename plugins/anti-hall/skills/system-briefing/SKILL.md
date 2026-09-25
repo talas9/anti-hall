@@ -106,8 +106,8 @@ the guards fire?", use `doctor`.
 ## Settings (defaults; `*` = advanced)
 
 - **Auto Handover**: `autoHandover.enabled`=true, `autoHandover.pct`=85, `autoHandover.maxTokens`=0, `autoHandover.nag`=true, `autoHandover.nagStepPct`=5, `autoHandover.nagQuietMin`=15
-- **Guards**: `guards.mergeGate`=false, `guards.shipitGate`=false, `guards.outputVerifyGuard`=true, `guards.failureRootCauseNudge`=true, `guards.repoSelfDrift`=true, `guards.stashGuard`=false (human-only), `guards.emitDedupe`=true, `guards.editGuardAllow`=—* (human-only), `guards.allowSubagentMailbox`=false* (human-only), `guards.reaperMatch`=—*, `guards.reaperExclude`=—*, `guards.tasklistWorkThreshold`=3*, `guards.progressFreshMs`=1800000*, `guards.apiGuardThirdparty`=false*, `guards.modelRouting`=strict, `guards.apiGuard`=true, `guards.speculationGuard`=true, `guards.claimLedger`=true, `guards.taskGuard`=true, `guards.tasklistGuard`=true, `guards.scanThrottle`=true
-- **Safety Guards**: `safety.gitGuard`=true (human-only), `safety.commandGuard`=true (human-only), `safety.editGuard`=true (human-only), `safety.swarmGuard`=true (human-only)
+- **Guards**: `guards.mergeGate`=false, `guards.shipitGate`=false, `guards.outputVerifyGuard`=true, `guards.failureRootCauseNudge`=true, `guards.repoSelfDrift`=true, `guards.stashGuard`=false (safety: --confirmed), `guards.emitDedupe`=true, `guards.editGuardAllow`=—* (safety: --confirmed), `guards.allowSubagentMailbox`=false* (safety: --confirmed), `guards.reaperMatch`=—*, `guards.reaperExclude`=—*, `guards.tasklistWorkThreshold`=3*, `guards.progressFreshMs`=1800000*, `guards.apiGuardThirdparty`=false*, `guards.modelRouting`=strict, `guards.apiGuard`=true, `guards.speculationGuard`=true, `guards.claimLedger`=true, `guards.taskGuard`=true, `guards.tasklistGuard`=true, `guards.scanThrottle`=true
+- **Safety Guards**: `safety.gitGuard`=true (safety: --confirmed), `safety.commandGuard`=true (safety: --confirmed), `safety.editGuard`=true (safety: --confirmed), `safety.swarmGuard`=true (safety: --confirmed)
 - **Context Injections**: `context.verifyFirstSession`=true, `context.verifyFirstOrchestration`=true, `context.verifyFirstTurn`=true, `context.verifyFirstSubagent`=true, `context.taskTracker`=true, `context.handoverResume`=true, `context.defectNudge`=true
 - **Maintenance**: `maintenance.repairOnReload`=true, `maintenance.progressPrune`=true, `maintenance.precompactSnapshot`=true, `maintenance.taskLifecycleLog`=true, `maintenance.sessionEndReaper`=true
 - **Version Alerts**: `versionAlerts.antiHall`=true, `versionAlerts.claudeCli`=true, `versionAlerts.devswarm`=true
@@ -120,7 +120,7 @@ the guards fire?", use `doctor`.
 - **Codex Nudge**: `codexNudge.enabled`=true, `codexNudge.min`=3*
 - **Defects**: `defects.defaultProj`=—
 
-Env-only: `ANTIHALL_CONTEXT_WINDOW_TOKENS`, `ANTI_HALL_THROTTLE_PATTERNS`, `ANTIHALL_DEVSWARM_APP_DB` (path or `off`). "(human-only)" = a safety key: `set`/`reset` refuse it and settings.json is ignored for it; the user changes it in `/config` (Claude) or with its env var (both). No switch on purpose: skip-guard, coordinator-detect, omc-detect, phase-tracker, fable-availability, codex-availability, emit-dedupe-reset, agent-watchdog, command-guard's data-safety sub-guards (`settings.js show` gives the reasons).
+Env-only: `ANTIHALL_CONTEXT_WINDOW_TOKENS`, `ANTI_HALL_THROTTLE_PATTERNS`, `ANTIHALL_DEVSWARM_APP_DB` (path or `off`). "(safety: --confirmed)" = a safety key: `set`/`reset` need `--confirmed` (a human direct command, or the agent asking the user and getting a yes) — without it nothing changes and a one-line factual warning is returned instead; a direct user ask to change it IS the confirmation. No switch on purpose: skip-guard, coordinator-detect, omc-detect, phase-tracker, fable-availability, codex-availability, emit-dedupe-reset, agent-watchdog, command-guard's data-safety sub-guards (`settings.js show` gives the reasons).
 
 ## Where to look
 

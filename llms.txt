@@ -51,7 +51,7 @@ Codex: `node plugins/anti-hall/codex/install-codex.js` (project) or `--global`. 
 
 All fail-open. "Codex" = also registered by the Codex port (`codex/hooks/hooks.json`).
 Switch = the setting (and/or env var) that turns the hook off; every hook has one except the
-infrastructure listed under Settings. "human-only" = a safety key: change it in `/config` or env,
+infrastructure listed under Settings. "safety" = a safety key: `set`/`reset` need `--confirmed` (a human direct command, or the agent asking and getting a yes) — /config and env still work too,
 never via `settings.js set` or `settings.json`.
 
 | Event (matcher) | Hook | What it does | Codex | Switch |
@@ -79,17 +79,17 @@ never via `settings.js set` or `settings.json`.
 | UserPromptSubmit | devswarm-child-turn.js | DevSwarm child: turn-authored heartbeat, keep-parent-updated reminder, unread-inbox surfacing. | ✓ | devswarm.childTurn |
 | TaskCreated, TaskCompleted | task-lifecycle-log.js | Appends task events to `.anti-hall/history/<date>/<session>.md`. | — | maintenance.taskLifecycleLog |
 | SubagentStart | verify-first-subagent.js | Re-injects the Iron Law and scope rules into every subagent (no orchestration block). | — | context.verifyFirstSubagent |
-| PreToolUse (Bash) | git-guard.js | Blocks AI self-credit in commits and `gh` PR/issue/release bodies; blocks force-push (`--force`, `-f`, `--force-with-lease`, `+refspec`). | ✓ | safety.gitGuard (human-only) + named skip only |
-| PreToolUse (Bash) | command-guard.js | Coordinator must delegate heavy commands; blocks DevSwarm destructive verbs and native hivecontrol messaging. | ✓ | safety.commandGuard (human-only) |
+| PreToolUse (Bash) | git-guard.js | Blocks AI self-credit in commits and `gh` PR/issue/release bodies; blocks force-push (`--force`, `-f`, `--force-with-lease`, `+refspec`). | ✓ | safety.gitGuard (safety: --confirmed) + named skip only |
+| PreToolUse (Bash) | command-guard.js | Coordinator must delegate heavy commands; blocks DevSwarm destructive verbs and native hivecontrol messaging. | ✓ | safety.commandGuard (safety: --confirmed) |
 | PreToolUse (Bash) | merge-gate.js | Opt-in: blocks auto-merge without a recorded review. | ✓ | `ANTIHALL_MERGE_GATE=on` |
 | PreToolUse (Bash) | scan-throttle.js | Prefixes user-listed heavy scan commands with `taskpolicy`/`nice` (no built-in patterns). | — | guards.scanThrottle; `ANTI_HALL_THROTTLE_PATTERNS` |
 | PreToolUse (Write/Edit/MultiEdit) | api-guard.js | Blocks writing a `module.attr` the installed runtime doesn't have (stdlib/builtins by default). | — | guards.apiGuard; `ANTIHALL_API_GUARD_THIRDPARTY=1` |
 | PreToolUse (Write/Edit/MultiEdit) | ship-it-guard.js | Opt-in: blocks hard-risk code edits with no `PLAN.md`. | — | `ANTIHALL_SHIPIT_GATE=on` |
-| PreToolUse (Write/Edit/MultiEdit/NotebookEdit) | edit-guard.js | Coordinator must delegate file edits (root-anchored allowlist for docs/state). | — | safety.editGuard (human-only); `ANTIHALL_EDIT_GUARD_ALLOW` |
+| PreToolUse (Write/Edit/MultiEdit/NotebookEdit) | edit-guard.js | Coordinator must delegate file edits (root-anchored allowlist for docs/state). | — | safety.editGuard (safety: --confirmed); `ANTIHALL_EDIT_GUARD_ALLOW` |
 | PreToolUse (Read) | inbox-read-guard.js | Blocks a direct Read of a raw DevSwarm inbox file (use the CLI). | — | devswarm.inboxReadGuard |
 | PreToolUse (SendMessage) | devswarm-comms-guard.js | Blocks `SendMessage` to a peer session that is a registered DevSwarm workspace (mesh only); never blocks subagent steering. | — | devswarm.commsGuard |
 | PreToolUse (Agent/Task) | model-routing-guard.js | Routes spawns to the cheapest fitting model: blocks a mechanical spawn with no model (strict default), advises on flagship + mechanical. | — | guards.modelRouting (strict/advisory/off) |
-| PreToolUse (Agent/Task) | swarm-guard.js | Anti-fork-bomb: spawn-rate cap + real free-memory check. | — | safety.swarmGuard (human-only) |
+| PreToolUse (Agent/Task) | swarm-guard.js | Anti-fork-bomb: spawn-rate cap + real free-memory check. | — | safety.swarmGuard (safety: --confirmed) |
 | PreToolUse (Agent/Task) | phase-tracker.js | Records spawns for the statusline and the Stop guards. | — | — |
 | PostToolUse (Bash) | output-verify-guard.js | Advisory: flags a pass claim next to failing runner output. | — | `ANTIHALL_OUTPUT_VERIFY_GUARD=off` |
 | PostToolUse (Bash) | devswarm-parent-reply-tracker.js | Records replies to child `--question`s for the parent gate. | ✓ | devswarm.parentReplyTracker |
@@ -205,11 +205,11 @@ the schema's non-advanced set. Codex: no `/config`, use the skill.
 | autoHandover.enabled / pct / maxTokens / nag / nagStepPct / nagQuietMin | true / 85 / 0 / true / 5 / 15 | `ANTIHALL_AUTO_HANDOVER_PCT`, `ANTIHALL_AUTO_HANDOVER_MAX_TOKENS` |
 | guards.mergeGate / shipitGate | false / false | `ANTIHALL_MERGE_GATE`, `ANTIHALL_SHIPIT_GATE` |
 | guards.outputVerifyGuard / failureRootCauseNudge / repoSelfDrift / emitDedupe | true | `ANTIHALL_OUTPUT_VERIFY_GUARD`, … |
-| guards.stashGuard (human-only) | false | `ANTIHALL_STASH_GUARD` |
+| guards.stashGuard (safety: --confirmed) | false | `ANTIHALL_STASH_GUARD` |
 | guards.modelRouting | strict (strict/advisory/off) | `ANTIHALL_MODEL_ROUTING` |
 | guards.apiGuard / speculationGuard / claimLedger / taskGuard / tasklistGuard / scanThrottle | true | `ANTI_HALL_SCAN_THROTTLE` (scanThrottle) |
-| safety.gitGuard / commandGuard / editGuard / swarmGuard (human-only: `/config` or env; `set`/`reset` refuse; settings.json ignored) | true | `ANTIHALL_GIT_GUARD`, `ANTIHALL_COMMAND_GUARD`, `ANTIHALL_EDIT_GUARD`, `ANTIHALL_SWARM_GUARD` |
-| guards.editGuardAllow / allowSubagentMailbox (advanced, human-only) | "" / false | `ANTIHALL_EDIT_GUARD_ALLOW`, `ANTIHALL_ALLOW_SUBAGENT_MAILBOX` |
+| safety.gitGuard / commandGuard / editGuard / swarmGuard (safety: `set`/`reset` need `--confirmed`; normal precedence applies) | true | `ANTIHALL_GIT_GUARD`, `ANTIHALL_COMMAND_GUARD`, `ANTIHALL_EDIT_GUARD`, `ANTIHALL_SWARM_GUARD` |
+| guards.editGuardAllow / allowSubagentMailbox (advanced, safety: --confirmed) | "" / false | `ANTIHALL_EDIT_GUARD_ALLOW`, `ANTIHALL_ALLOW_SUBAGENT_MAILBOX` |
 | context.verifyFirstSession / verifyFirstOrchestration / verifyFirstTurn / verifyFirstSubagent / taskTracker / handoverResume / defectNudge | true | — |
 | maintenance.repairOnReload / progressPrune / precompactSnapshot / taskLifecycleLog / sessionEndReaper | true | `ANTIHALL_REPAIR_ON_RELOAD`, `ANTI_HALL_SESSION_END_REAPER` |
 | versionAlerts.antiHall / claudeCli / devswarm | true | `ANTIHALL_VERSION_ALERT`, `ANTIHALL_CLAUDE_CLI_VERSION_ALERT`, `ANTIHALL_DEVSWARM_VERSION_ALERT` |

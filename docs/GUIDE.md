@@ -763,9 +763,9 @@ wired resolver.
   ("Auto Handover · Threshold %"). `plugin.json` `userConfig` is hand-kept and
   `tests/hooks/settings-schema.test.js` fails if it drifts from the schema's non-advanced
   set (key, type, default, min/max, title prefix) or if any field declares `options`.
-  Advanced/tuning knobs stay off `/config` (use the CLI below), except the two safety-locked
-  advanced knobs (`guards.editGuardAllow`, `guards.allowSubagentMailbox`), which need a
-  `/config` row because only you may change them.
+  Advanced/tuning knobs stay off `/config` (use the CLI below), except the two safety
+  advanced knobs (`guards.editGuardAllow`, `guards.allowSubagentMailbox`), which keep a
+  `/config` row as one way to change them (any change still needs `--confirmed`).
 - **Ask for it** — say "turn off the merge gate" or "set auto-handover to 80%" and the
   `settings` skill applies it with one `set` (no table dump); "show my anti-hall settings"
   prints the tables only when you ask.
@@ -783,23 +783,28 @@ wired resolver.
   (every non-advanced setting, plus the DevSwarm auto-archive tuning pair, is declared in
   `plugin.json`'s `userConfig` so it shows up there; shown as Source `/config`) → a legacy per-feature config file
   (e.g. `~/.anti-hall/jev.json`) → the schema default. `show`'s Source column tells you
-  which tier answered a given row. Safety-locked keys skip the `settings.json` and legacy
-  tiers (see below).
+  which tier answered a given row. Safety keys read through this SAME chain — there is
+  no special-cased ignore rule for them (see below).
 - **Known limitation (`/config`):** a `/config` value that equals the manifest default
   (`plugin.json` `userConfig` default) is indistinguishable from "never set", so it counts as
   unset and a lower tier (a legacy file, the schema default) answers. To pin a value that
   equals the default, set it in `settings.json` (`/anti-hall:settings`) instead.
-- **Safety guards are human-only ("safety" in the table below).** `safety.gitGuard`, `safety.commandGuard`,
-  `safety.editGuard`, `safety.swarmGuard`, and the knobs that weaken them
-  (`guards.stashGuard`, `guards.editGuardAllow`, `guards.allowSubagentMailbox`) can only be
-  changed by you: in `/config` (their anti-hall rows) or with their env var. `settings.js
-  set`/`reset` refuse them ("safety guard — change it yourself in /config (anti-hall
-  rows)"), and a value an agent writes into `~/.anti-hall/settings.json` is ignored for
-  them. The one exception: settings.json may still turn one of them the SAFER way (e.g.
-  arm `guards.stashGuard`). Turning `safety.commandGuard` or `safety.editGuard` off turns
-  off the delegation check only; command-guard's data-safety sub-guards stay on. The
-  per-guard `skip.json` escape hatch works as before, and `"all"` still never covers
-  git-guard. On Codex there is no `/config`: use the env vars.
+- **Safety guards need a confirmed change, not a hard refusal ("safety" in the table
+  below).** `safety.gitGuard`, `safety.commandGuard`, `safety.editGuard`, `safety.swarmGuard`,
+  and the knobs that weaken them (`guards.stashGuard`, `guards.editGuardAllow`,
+  `guards.allowSubagentMailbox`) are owner decision (0.108.4, revised): no hard refusal —
+  a human direct command, or a confirmation after a clear, plain warning, is enough.
+  `settings.js set`/`reset` on one of these needs `--confirmed`; without it nothing
+  changes and the call returns `{ok:false, needsConfirmation:true, warning}` — one short,
+  factual, human-readable line built from the key's own `safetyNote` in the schema (calm
+  facts, not alarming). A direct user ask to change the guard IS the confirmation; otherwise
+  the skill shows the warning and asks (`AskUserQuestion` on Claude, a numbered yes/no on
+  Codex) before applying it. Once confirmed, the value reads through the SAME precedence
+  chain as any other setting (env > file > /config > legacy > default) — the confirmation
+  is the protection, not an ignore rule. Turning `safety.commandGuard` or `safety.editGuard`
+  off turns off the delegation check only; command-guard's data-safety sub-guards stay on.
+  The per-guard `skip.json` escape hatch works as before, and `"all"` still never covers
+  git-guard. On Codex there is no `/config`: use `--confirmed` or the env var.
 - **Legacy config is never deleted.** `~/.anti-hall/jev.json` (and any future
   per-feature config file the schema maps) keeps working as a fallback forever;
   `doctor --repair` and `/anti-hall:update` forward-migrate its values into
@@ -813,7 +818,7 @@ wired resolver.
 
 ### Every setting
 
-Generated from `hooks/lib/settings-schema.js` (a hygiene test keeps this table and the schema in sync). "adv" = advanced (shown by `show --all`); "safety" = human-only (/config or env; `set`/`reset` refuse it).
+Generated from `hooks/lib/settings-schema.js` (a hygiene test keeps this table and the schema in sync). "adv" = advanced (shown by `show --all`); "safety" = `set`/`reset` need `--confirmed` (see above).
 
 | Setting | Default | Env | Notes |
 |---|---|---|---|
@@ -828,10 +833,10 @@ Generated from `hooks/lib/settings-schema.js` (a hygiene test keeps this table a
 | `guards.outputVerifyGuard` | `true` | `ANTIHALL_OUTPUT_VERIFY_GUARD` | Output-verification guard (blocks unverified completion claims). |
 | `guards.failureRootCauseNudge` | `true` | `ANTIHALL_FAILURE_ROOT_CAUSE_NUDGE` | Nudge toward root-cause analysis after a failure. |
 | `guards.repoSelfDrift` | `true` | `ANTIHALL_REPO_SELF_DRIFT` | anti-hall's own repo-drift self-check hook. |
-| `guards.stashGuard` safety | `false` | `ANTIHALL_STASH_GUARD` | SAFETY (human-only: /config or env; settings.json can only arm it). Arm the git-stash guard in command-guard: block mutating `git stash` (also armed per-repo via .anti-hall/protected-stashes). |
+| `guards.stashGuard` safety | `false` | `ANTIHALL_STASH_GUARD` | SAFETY (confirm to change — see settings.js set/reset). Arm the git-stash guard in command-guard: block mutating `git stash` (also armed per-repo via .anti-hall/protected-stashes). |
 | `guards.emitDedupe` | `true` | `ANTIHALL_EMIT_DEDUPE` | Deduplicate repeated hook-emit output. |
-| `guards.editGuardAllow` adv safety | — | `ANTIHALL_EDIT_GUARD_ALLOW` | SAFETY (human-only: /config or env; widens edit-guard). Extra allowed file globs for edit-guard (comma/colon separated). |
-| `guards.allowSubagentMailbox` adv safety | `false` | `ANTIHALL_ALLOW_SUBAGENT_MAILBOX` | SAFETY (human-only: /config or env; bypasses a data-safety guard). One-off allow for the subagent-mailbox command pattern. |
+| `guards.editGuardAllow` adv safety | — | `ANTIHALL_EDIT_GUARD_ALLOW` | SAFETY (confirm to change — see settings.js set/reset). Extra allowed file globs for edit-guard (comma/colon separated). |
+| `guards.allowSubagentMailbox` adv safety | `false` | `ANTIHALL_ALLOW_SUBAGENT_MAILBOX` | SAFETY (confirm to change — see settings.js set/reset). One-off allow for the subagent-mailbox command pattern. |
 | `guards.reaperMatch` adv | — | `ANTIHALL_REAPER_MATCH` | Extra process-name pattern for the MCP session-end reaper. |
 | `guards.reaperExclude` adv | — | `ANTIHALL_REAPER_EXCLUDE` | Excludes matching processes from the MCP reaper. |
 | `guards.tasklistWorkThreshold` adv | `3` [1..] | `ANTIHALL_TASKLIST_WORK_THRESHOLD` | Minimum work items before tasklist-guard fires. |

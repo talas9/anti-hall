@@ -9,9 +9,10 @@
 //   (3) BEHAVIOUR: a hook that fires with the default settings goes silent
 //       (exit 0, no stdout, no side effect) with its switch off — each case
 //       runs the SAME fixture both ways, so "off" is never a vacuous pass.
-//   (4) SAFETY LOCK: the safety keys are human-only — set/reset refuse them
-//       (lib + CLI), a settings.json value cannot weaken them (the guard still
-//       blocks), while /config (CLAUDE_PLUGIN_OPTION_*) and env still can.
+//   (4) CONFIRMATION GATE (0.108.4, revised): the safety keys read through the
+//       normal precedence chain like any other setting; set/reset need
+//       --confirmed (lib + CLI) or nothing changes and a one-line factual
+//       warning (built from safetyNote) is returned instead.
 // Every spawn uses an isolated HOME (tests/helpers/spawn-hook.js).
 
 const { test } = require('node:test');
@@ -348,7 +349,7 @@ test('SAFETY: every locked key is exactly the expected set and is a /config row'
   }
 });
 
-test('SAFETY: settings.set / settings.reset refuse every locked key and write nothing', () => {
+test('SAFETY: settings.set / settings.reset need --confirmed for every locked key; without it, nothing changes and a warning comes back', () => {
   const home = tmpHome();
   try {
     for (const k of LOCKED_KEYS) {
@@ -357,32 +358,71 @@ test('SAFETY: settings.set / settings.reset refuse every locked key and write no
       const v = e.type === 'boolean' ? String(!e.default) : '**';
       const s = settings.set(sec, key, v, { home });
       assert.strictEqual(s.ok, false, k);
-      assert.strictEqual(s.locked, true, k);
-      assert.match(s.error, /safety guard — change it yourself in \/config \(anti-hall rows\)/);
+      assert.strictEqual(s.needsConfirmation, true, k);
+      assert.strictEqual(s.warning, settings.safetyWarning(e), k);
+      assert.match(s.warning, /^Turning off /, k);
+      assert.match(s.warning, /Ask the user to confirm, then re-run with --confirmed\.$/, k);
+
       const r = settings.reset(sec, key, { home });
       assert.strictEqual(r.ok, false, k);
-      assert.match(r.error, /safety guard — change it yourself in \/config \(anti-hall rows\)/);
+      assert.strictEqual(r.needsConfirmation, true, k);
+      assert.strictEqual(r.warning, settings.safetyWarning(e), k);
     }
-    assert.ok(!fs.existsSync(settings.path({ home })), 'a refused write must not create settings.json');
+    assert.ok(!fs.existsSync(settings.path({ home })), 'an unconfirmed write must not create settings.json');
   } finally { fs.rmSync(home, { recursive: true, force: true }); }
 });
 
-test('SAFETY: the CLI `set` and `reset` refuse locked keys with the /config message (exit 1, text + --json)', () => {
+test('SAFETY: settings.set / settings.reset DO change a locked key once opts.confirmed is true', () => {
+  const home = tmpHome();
+  try {
+    for (const k of LOCKED_KEYS) {
+      const [sec, key] = split(k);
+      const e = schema.findSetting(sec, key);
+      const v = e.type === 'boolean' ? !e.default : '**';
+      const s = settings.set(sec, key, v, { home, confirmed: true });
+      assert.strictEqual(s.ok, true, k + ': ' + JSON.stringify(s));
+      assert.strictEqual(settings.get(sec, key, undefined, { home, env: {} }), v, k);
+
+      const r = settings.reset(sec, key, { home, confirmed: true });
+      assert.strictEqual(r.ok, true, k);
+      assert.strictEqual(settings.source(sec, key, { home, env: {} }), 'default', k + ': reset must clear the override');
+    }
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+test('SAFETY: the CLI `set`/`reset` need --confirmed for locked keys (exit 1, warning text + --json); --confirmed applies it', () => {
   const home = tmpHome();
   try {
     const env = { PATH: process.env.PATH, HOME: home, USERPROFILE: home };
     for (const k of LOCKED_KEYS) {
-      for (const args of [['set', k, 'false'], ['reset', k], ['set', k, 'false', '--json']]) {
-        const r = spawnSync(process.execPath, [CLI, ...args], { env, encoding: 'utf8' });
-        assert.strictEqual(r.status, 1, args.join(' '));
-        assert.match(r.stdout + r.stderr, /safety guard — change it yourself in \/config \(anti-hall rows\)/, args.join(' '));
-      }
+      const [sec, key] = split(k);
+      const e = schema.findSetting(sec, key);
+
+      const noConfirm = spawnSync(process.execPath, [CLI, 'set', k, 'false'], { env, encoding: 'utf8' });
+      assert.strictEqual(noConfirm.status, 1, k);
+      assert.strictEqual(noConfirm.stdout.trim(), settings.safetyWarning(e), k);
+
+      const noConfirmJson = spawnSync(process.execPath, [CLI, 'set', k, 'false', '--json'], { env, encoding: 'utf8' });
+      assert.strictEqual(noConfirmJson.status, 1, k);
+      const parsed = JSON.parse(noConfirmJson.stdout);
+      assert.deepStrictEqual(parsed, { ok: false, needsConfirmation: true, warning: settings.safetyWarning(e) }, k);
+
+      const confirmed = spawnSync(process.execPath, [CLI, 'set', k, 'false', '--confirmed', '--json'], { env, encoding: 'utf8' });
+      assert.strictEqual(confirmed.status, 0, k + ': ' + confirmed.stdout + confirmed.stderr);
+      const expected = e.type === 'boolean' ? false : 'false';
+      assert.strictEqual(JSON.parse(confirmed.stdout).value, expected, k);
+
+      const reset = spawnSync(process.execPath, [CLI, 'reset', k], { env, encoding: 'utf8' });
+      assert.strictEqual(reset.status, 1, k);
+      assert.strictEqual(reset.stdout.trim(), settings.safetyWarning(e), k);
+
+      const resetConfirmed = spawnSync(process.execPath, [CLI, 'reset', k, '--confirmed'], { env, encoding: 'utf8' });
+      assert.strictEqual(resetConfirmed.status, 0, k);
     }
-    assert.ok(!fs.existsSync(path.join(home, '.anti-hall', 'settings.json')));
   } finally { fs.rmSync(home, { recursive: true, force: true }); }
 });
 
-test('SAFETY: a hand-edited settings.json cannot weaken a locked key (get ignores it; source is not "file")', () => {
+test('SAFETY: normal precedence is restored — a hand-edited settings.json DOES take effect for a locked key (the confirmation gate, not an ignore rule, is the protection)', () => {
   const home = tmpHome();
   try {
     writeSettings(home, {
@@ -391,25 +431,16 @@ test('SAFETY: a hand-edited settings.json cannot weaken a locked key (get ignore
     });
     for (const k of ['safety.gitGuard', 'safety.commandGuard', 'safety.editGuard', 'safety.swarmGuard']) {
       const [sec, key] = split(k);
-      assert.strictEqual(settings.get(sec, key, undefined, { home, env: {} }), true, k);
-      assert.strictEqual(settings.enabled(sec, key, { home, env: {} }), true, k);
-      assert.strictEqual(settings.source(sec, key, { home, env: {} }), 'default', k);
+      assert.strictEqual(settings.get(sec, key, undefined, { home, env: {} }), false, k);
+      assert.strictEqual(settings.enabled(sec, key, { home, env: {} }), false, k);
+      assert.strictEqual(settings.source(sec, key, { home, env: {} }), 'file', k);
     }
-    assert.strictEqual(settings.get('guards', 'editGuardAllow', undefined, { home, env: {} }), '');
-    assert.strictEqual(settings.get('guards', 'allowSubagentMailbox', undefined, { home, env: {} }), false);
+    assert.strictEqual(settings.get('guards', 'editGuardAllow', undefined, { home, env: {} }), '**');
+    assert.strictEqual(settings.get('guards', 'allowSubagentMailbox', undefined, { home, env: {} }), true);
   } finally { fs.rmSync(home, { recursive: true, force: true }); }
 });
 
-test('SAFETY: settings.json may still TIGHTEN a locked key (arming guards.stashGuard keeps working)', () => {
-  const home = tmpHome();
-  try {
-    writeSettings(home, { guards: { stashGuard: true } });
-    assert.strictEqual(settings.get('guards', 'stashGuard', undefined, { home, env: {} }), true);
-    assert.strictEqual(settings.source('guards', 'stashGuard', { home, env: {} }), 'file');
-  } finally { fs.rmSync(home, { recursive: true, force: true }); }
-});
-
-test('SAFETY: /config (pluginConfigs in ~/.claude/settings.json) and env DO change a locked key', () => {
+test('SAFETY: /config (pluginConfigs in ~/.claude/settings.json) and env still change a locked key', () => {
   const home = tmpHome();
   try {
     fs.mkdirSync(path.join(home, '.claude'), { recursive: true });
@@ -421,30 +452,22 @@ test('SAFETY: /config (pluginConfigs in ~/.claude/settings.json) and env DO chan
   } finally { fs.rmSync(home, { recursive: true, force: true }); }
 });
 
-test('SAFETY: git-guard still blocks a force-push when settings.json says safety.gitGuard=false', () => {
+test('SAFETY: git-guard still blocks a force-push by default (no settings.json override)', () => {
   const h = makeHome();
   try {
-    writeSettings(h.home, { safety: { gitGuard: false } });
     const r = testHook('git-guard.js', bashPayload('git push --force origin main'), { home: h.home });
-    assert.ok(blocked(r), 'an agent-writable file must not disable git-guard; stdout=' + r.stdout);
-  } finally { h.cleanup(); }
-});
-
-test('SAFETY: edit-guard still blocks when settings.json widens editGuardAllow or turns editGuard off', () => {
-  const h = makeHome();
-  try {
-    writeSettings(h.home, { safety: { editGuard: false }, guards: { editGuardAllow: '**' } });
-    const r = testHook('edit-guard.js', editPayload('Edit', { filePath: 'src/app.js' }), { home: h.home, env: COORD });
     assert.ok(blocked(r), 'stdout=' + r.stdout);
   } finally { h.cleanup(); }
 });
 
-test('SAFETY: command-guard core still blocks when settings.json says safety.commandGuard=false', () => {
+test('SAFETY: git-guard goes silent once settings.json turns it off through the confirmed CLI path', () => {
   const h = makeHome();
   try {
-    writeSettings(h.home, { safety: { commandGuard: false } });
-    const r = testHook('command-guard.js', bashPayload('npm run build'), { home: h.home, env: COORD });
-    assert.ok(blocked(r), 'stdout=' + r.stdout);
+    const env = { PATH: process.env.PATH, HOME: h.home, USERPROFILE: h.home };
+    const r = spawnSync(process.execPath, [CLI, 'set', 'safety.gitGuard', 'false', '--confirmed'], { env, encoding: 'utf8' });
+    assert.strictEqual(r.status, 0, r.stdout + r.stderr);
+    const hookRun = testHook('git-guard.js', bashPayload('git push --force origin main'), { home: h.home });
+    assert.strictEqual(hookRun.status, 0, 'confirmed off must actually silence the guard; stdout=' + hookRun.stdout);
   } finally { h.cleanup(); }
 });
 
@@ -463,7 +486,7 @@ test('show: lists the safety section, marks locked rows, and prints the NOT_TOGG
   try {
     const out = execFileSync(process.execPath, [CLI, 'show'], { env: { PATH: process.env.PATH, HOME: home, USERPROFILE: home }, encoding: 'utf8' });
     for (const sec of schema.SECTIONS) assert.ok(out.includes('## ' + sec.label), 'show is missing section ' + sec.label);
-    assert.match(out, /gitGuard \(safety: \/config only\)/);
+    assert.match(out, /gitGuard \(safety: needs --confirmed\)/);
     assert.match(out, /## Not toggleable/);
     for (const n of schema.NOT_TOGGLEABLE) assert.ok(out.includes('`' + n.name + '`'), n.name);
   } finally { fs.rmSync(home, { recursive: true, force: true }); }
