@@ -928,6 +928,7 @@ Generated from `hooks/lib/settings-schema.js` (a hygiene test keeps this table a
 | `devswarm.heldPartitions` adv | — | `ANTIHALL_DEVSWARM_HELD_PARTITIONS` | Owner-held mesh partition ids (csv). Exempt from the per-turn "ORPHANED MESH" warning and from `reap-orphans`; still shown via `diagnose`/`healthcheck` as held by owner. |
 | `devswarm.childGateStrict` adv | `true` | `ANTIHALL_DEVSWARM_CHILD_GATE_STRICT` | Strict child-gate enforcement. |
 | `devswarm.parentGateCap` adv | `3` [2..5] | `ANTIHALL_DEVSWARM_PARENT_GATE_CAP` | Caps the parent-gate wait/child count, clamped to [2,5]. |
+| `devswarm.parentGateNeglectMinUnread` adv | `0` [0..] | `ANTIHALL_DEVSWARM_PARENT_GATE_NEGLECT_MIN_UNREAD` | Minimum real-unread count a genuinely NOT-busy child needs before the parent Stop gate hard-blocks on it; 0 = any real unread blocks. A BUSY child (fresh heartbeat or a live mid-turn session) never hard-blocks on unread alone — it gets an advisory line instead. |
 | `devswarm.activeFloorPct` adv | `50` [0..100] | `ANTIHALL_DEVSWARM_ACTIVE_FLOOR_PCT` | Min percent of active workspaces kept in the archived cache (0 disables the floor). |
 | `devswarm.archivedCacheMaxAgeMs` adv | — [0..] | `ANTIHALL_DEVSWARM_ARCHIVED_CACHE_MAX_AGE_MS` | computed: no fixed default — 2x the reconcile sweep’s own resolved cooldown (itself env/default-derived), not a literal constant. |
 | `devswarm.archivedGraceMs` adv | `600000` [0..] | `ANTIHALL_DEVSWARM_ARCHIVED_GRACE_MS` | Grace period (ms) before a workspace is considered archived. |

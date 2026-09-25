@@ -10,15 +10,20 @@
 // A growing backlog is still reported (the reason names the current count);
 // the budget re-opens when the condition clears or a new kind appears.
 //
-// D3 (own outbound miscounted as neglect, NDJSON path): a row this Primary
-// itself sent lands in the recipient's own NDJSON inbox awaiting THEIR read,
-// not this Primary's. The store-side UNION path already filtered
-// `row.sender === own.id` (~:1038); the NDJSON-only path (readUnreadMessages)
-// did not, because the NDJSON wire carries no `sender` field on any
-// pre-existing row (verified: 0 occurrences across the existing inbox rows).
-// Fixed DEFENSIVELY: skip a row only when `row.sender` is PRESENT and equals
-// the Primary's own id; a row with no `sender` field still counts exactly as
-// before.
+// D3 SUPERSEDED (v0.109, Bug 1 fix — "gate count mismatch"): this section used
+// to skip a row whose `sender` equalled the Primary's own id on BOTH the
+// NDJSON and store-only paths (own outbound sends "not counting as neglect").
+// That made this gate disagree with devswarm-store.js's unionUnreadFor — the
+// roster / parent-inbox count source of truth — which never applied that
+// filter, so a field incident showed the gate blocking with "(1 unread)"
+// while the roster/parent-inbox line said "4 unread" for the SAME child in
+// the SAME minute (the true, verified count). The sender-based exclusion is
+// REMOVED; both surfaces now read through the same `unionUnread` counting
+// with no per-sender filter. The original problem D3 traced (the Primary
+// self-flagging within seconds of its own send) is now handled by the
+// BUSY/liveness check in devswarm-parent-gate.js instead (a provably busy
+// child gets an advisory line, never an immediate hard block) — see the
+// BUG 2 tests in tests/hooks/devswarm-parent-gate.test.js.
 //
 // D6 RE-SCOPED — ATTRIBUTION, NOT EXCLUSION: a first attempt (exclude
 // archived / app-archived / confirmed-dead-worktree members from the
@@ -46,8 +51,9 @@
 // drain command for every non-own contributor.
 //
 // MUTATION LIST (proven RED against this file):
-//   M1: drop the NDJSON `row.sender === own.id` skip
-//       -> kills "own-sent row (with sender) is skipped on the NDJSON path".
+//   M1 (v0.109, superseded): re-adding the removed NDJSON
+//       `row.sender === own.id` skip -> kills "D3 (NDJSON path, v0.109 Bug 1
+//       fix): a row with sender === own id STILL counts...".
 //   M2: drop the `contributors.length > 1` entry.contributors attachment (or
 //       the ATTRIBUTION emission in buildReason)
 //       -> kills "ATTRIBUTION line names every contributing sibling...".
@@ -146,7 +152,7 @@ test('cap does NOT reset when only the unread COUNT changes (stable block kind, 
 // D3: own-sent rows on the NDJSON path
 // ---------------------------------------------------------------------------
 
-test('D3 (NDJSON path): a row with sender === own id is skipped', () => {
+test('D3 (NDJSON path, v0.109 Bug 1 fix): a row with sender === own id STILL counts — the gate must agree with the roster', () => {
   const h = makeHome();
   const a = makeWorktree();
   try {
@@ -158,7 +164,15 @@ test('D3 (NDJSON path): a row with sender === own id is skipped', () => {
       rows: [{ message: 'outbound message this Primary itself sent', sender: ownId }],
     });
     const r = run(h.home, a.wt);
-    assert.strictEqual(r.json, null, `an own-sent row must not count as neglect; stdout=${r.stdout}`);
+    // v0.109 field defect (count mismatch): the OLD behavior here (skip any
+    // row whose sender === own.id) made the gate disagree with
+    // devswarm-store.js's unionUnreadFor — the roster / parent-inbox source
+    // of truth — which applies NO sender filter at all. A real, unread row
+    // in a child's mailbox is real backlog regardless of who sent it; the
+    // gate must now count it exactly like the roster does. Not-busy here (no
+    // heartbeat/live session seeded), so it hard-blocks.
+    assert.strictEqual(r.json && r.json.decision, 'block', `an own-sent row is real unread and must count; stdout=${r.stdout}`);
+    assert.match(r.json.reason, /1 unread/, `stdout=${r.stdout}`);
   } finally { a.cleanup(); h.cleanup(); }
 });
 

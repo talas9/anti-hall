@@ -110,6 +110,18 @@ AND gets the same proactive mesh reminder every turn that a Claude session gets 
 "Always-listening reception" below. Full detail: `docs/KB-devswarm-hivecontrol.md` §8.5's
 v0.58 bullet and §8.7's "v0.58 mesh-only messaging" note.
 
+**Parent Stop-gate: count parity + busy-vs-neglect (v0.109.0).** `devswarm-parent-gate.js`
+is the SAME file for both agents (no Codex-side fork), so this applies identically here. Two
+field fixes: (1) the gate's unread count for a child no longer excludes rows the Primary sent
+itself — that exclusion made the gate disagree with the roster/`devswarm-parent-inbox.js`
+count (`companion/lib/devswarm-store.js`'s `unionUnreadFor`), which never applied it; both now
+read through the same `unionUnread` primitive. (2) a family whose only reason to block is a
+plain real-unread backlog is downgraded to a non-blocking advisory when the child is provably
+BUSY (fresh heartbeat, or a live mid-turn session) instead of hard-blocking and forcing
+"intentional" as the only escape; a genuinely NOT-busy child still blocks past
+`devswarm.parentGateNeglectMinUnread` (default `0`). Full detail:
+`docs/KB-devswarm-hivecontrol.md`'s parent-gate section.
+
 ## Child-side reception — `devswarm.js inbox pull` (shipped, v0.54.2)
 
 Since the native reads are guard-redirected, the safe way a child RECEIVES parent messages

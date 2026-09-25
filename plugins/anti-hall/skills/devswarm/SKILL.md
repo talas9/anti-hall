@@ -847,6 +847,25 @@ operator can still invoke the script, but only against a `claude` workspace). Th
 themselves are plain Node scripts a Codex session can invoke directly via Bash — nothing
 agent-specific about the script.
 
+**Parent Stop-gate: count parity + busy-vs-neglect (v0.109.0, two field fixes).**
+`hooks/devswarm-parent-gate.js`'s unread count for a child used to additionally exclude any
+row whose `sender` equalled the Primary's own id ("own outbound send, not this Primary's
+neglect"). `companion/lib/devswarm-store.js`'s `unionUnreadFor` — the count `summary.json`/
+the roster table/`devswarm-parent-inbox.js`'s line all read — never applied that exclusion,
+so the two surfaces could disagree on the SAME child in the SAME minute (field incident:
+gate `(1 unread)`, roster `4 unread` — 4 verified real). That sender-based exclusion is
+removed; both surfaces now read through the same `companion/lib/devswarm-unread.js`
+`unionUnread` primitive with no per-sender filter (only content-classified noise,
+`isNoiseText`, is still excluded on both the gate and the count it reports). Separately, a
+family whose ONLY reason to block is a plain real-unread backlog (no unknown-unread axis, no
+corroborated stale/escalated verdict) is now downgraded to a non-blocking advisory
+(`<id>: busy, N queued (oldest Xm)`, stderr) when the child is provably BUSY — a fresh
+heartbeat within the existing freshness window, or a live mid-turn session
+(`isSessionAliveRow`) — instead of hard-blocking and forcing "intentional" as the only
+escape. A genuinely NOT-busy child (no fresh heartbeat, no live session) still hard-blocks
+once its real unread exceeds `devswarm.parentGateNeglectMinUnread` (default `0`: any real
+unread blocks, unchanged sensitivity).
+
 **Child-gate "already-reported" satisfaction.** `hooks/devswarm-child-gate.js` now skips
 its Stop-block entirely, for the current stop episode, when the child's own mesh summary
 shows a `recent[]` row it itself SENT (a real `heartbeat --summary`/`send --broadcast`

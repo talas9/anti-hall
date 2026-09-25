@@ -229,6 +229,29 @@ function resolveCap(env) {
   return DEFAULT_CAP;
 }
 
+// DEFAULT_NEGLECT_MIN_UNREAD — Bug 2 fix (false NEGLECT while the child is
+// busy). Default 0 keeps the pre-existing sensitivity for a genuinely
+// NOT-busy child unchanged (any real unread still blocks); a BUSY child
+// (fresh heartbeat or a live mid-turn session — see `busy` above) never
+// hard-blocks on unread alone regardless of this value, so the setting only
+// ever tunes the NOT-busy path.
+const DEFAULT_NEGLECT_MIN_UNREAD = 0;
+
+// resolveNeglectMinUnread(env) -> int >= 0. Same fail-open shape as resolveCap.
+function resolveNeglectMinUnread(env) {
+  const e = env || {};
+  try {
+    const n = require('./lib/settings.js').getWithEnv('devswarm', 'parentGateNeglectMinUnread', DEFAULT_NEGLECT_MIN_UNREAD, e);
+    return Number.isFinite(n) && n >= 0 ? Math.floor(n) : DEFAULT_NEGLECT_MIN_UNREAD;
+  } catch (_) { /* fall through */ }
+  const raw = e.ANTIHALL_DEVSWARM_PARENT_GATE_NEGLECT_MIN_UNREAD;
+  if (typeof raw === 'string' && /^\d+$/.test(raw.trim())) {
+    const n = parseInt(raw.trim(), 10);
+    if (Number.isFinite(n)) return n;
+  }
+  return DEFAULT_NEGLECT_MIN_UNREAD;
+}
+
 // readVerdict(id, home) -> { status, pending, notDraining } | null. Reads ONLY
 // the supervisor's already-written per-workspace verdict file (no
 // computeLiveness, no git). Absent / unreadable / malformed -> null
@@ -1074,6 +1097,12 @@ function main() {
     // parsed row with no recognizable text field) counts as real.
     let realUnread = 0;
     let unreadUnknown = false;
+    // oldestUnreadAgeMsForDescriptor (Bug 2 — busy/NEGLECT advisory): the age
+    // of this descriptor's oldest unread row, captured below from the SAME
+    // countFor/unionUnread call the store-side UNION already makes (no extra
+    // read). null when unknown/never resolved — the advisory text below
+    // falls back to omitting the age rather than fabricating one.
+    let oldestUnreadAgeMsForDescriptor = null;
     // unreadReason/unreadReasonPath/unreadReasonErrno (regression fix — see
     // this file's own d1c8625 identity-family-collapse note below): a bare
     // `unreadUnknown` boolean gave no way to tell a malformed/phantom
@@ -1187,16 +1216,28 @@ function main() {
         for (const row of u.rows) {
           if (row === null) { realUnread++; continue; } // unparseable -> fail open (real)
           if (isNoiseText(row.message)) continue; // positively-classified noise -> excluded
-          // OUTBOUND-NOT-NEGLECT on the NDJSON path (mirrors the store-side
-          // UNION filter below, ~:1038): a row this Primary itself sent lands
-          // in the recipient's own NDJSON inbox awaiting THEIR read, not this
-          // Primary's. DEFENSIVE: the NDJSON wire carries no `sender` field on
-          // any row written before this fix (verified: 0 occurrences across
-          // the existing inbox rows) — only skip when `row.sender` is PRESENT
-          // and matches this Primary's own id; a row with no resolvable
-          // sender counts as real exactly as before, so this can never turn a
-          // real neglect signal newly silent on old data.
-          if (own.id && row && row.sender != null && String(row.sender) === String(own.id)) continue;
+          // OUTBOUND-NOT-NEGLECT SENDER FILTER REMOVED (v0.109 field defect —
+          // "gate count mismatch"): this used to skip a row whose `sender`
+          // equalled this Primary's own id, on the theory that a message the
+          // Primary itself just sent is "awaiting the CHILD's read, not this
+          // Primary's" and therefore not this Primary's neglect. In practice
+          // that exclusion is exactly what a CHILD's unread backlog against
+          // the Primary IS — it is the durable, verified-real count of
+          // messages the Primary sent that the child has not yet read — and
+          // devswarm-store.js's unionUnreadFor (the roster / parent-inbox
+          // source of truth, computeSummary's `unread` field) applies NO such
+          // filter, so the two surfaces diverged: a field incident showed the
+          // gate blocking with "(1 unread)" while the roster/parent-inbox
+          // line said "4 unread" for the SAME child in the SAME minute — 4
+          // being the true, verified count of direct messages sent. Both
+          // surfaces must now agree by construction (see devswarm-unread.js's
+          // header: unionUnread is the ONE shared primitive both read
+          // through). The original incident this filter existed for (the
+          // Primary self-flagging within seconds of its own send — "369 Stop
+          // blocks in one field transcript") is now handled correctly and
+          // more precisely by the BUSY/liveness check below (a child with
+          // fresh activity gets an advisory, never an immediate hard block)
+          // instead of by permanently hiding real backlog from the count.
           realUnread++;
         }
       }
@@ -1272,10 +1313,19 @@ function main() {
             }
             for (const row of union.storeOnlyUnreadRows) {
               if (isNoiseText(row && row.body)) continue;
-              // This Primary's own outbound send, sitting in the recipient's
-              // mailbox awaiting THEIR read — not parent neglect.
-              if (own.id && row && row.sender != null && String(row.sender) === String(own.id)) continue;
+              // SENDER FILTER REMOVED — see the matching NDJSON-tier comment
+              // above (~:1190): a mesh-direct row this Primary sent IS the
+              // child's real unread backlog and must count identically to how
+              // devswarm-store.js's unionUnreadFor (roster/parent-inbox)
+              // already counts it.
               realUnread++;
+            }
+            // oldestUnreadAgeMsForDescriptor (Bug 2 — busy/NEGLECT): captured
+            // from the SAME countFor/unionUnread call so the advisory text
+            // below can name how old the oldest unread row is, without a
+            // second store read.
+            if (Number.isFinite(union.oldestUnreadAgeMs)) {
+              oldestUnreadAgeMsForDescriptor = union.oldestUnreadAgeMs;
             }
           } finally {
             try { storeHandle.close(); } catch (_) {}
@@ -1330,6 +1380,19 @@ function main() {
       try { idleAlive = isSessionAliveRow({ sessionId: d.sessionId }, home); } catch (_) { idleAlive = false; }
     }
     if (staleOrEscalated && idleAlive) staleOrEscalated = false;
+    // busy (Bug 2 — false NEGLECT while genuinely busy): computed
+    // UNCONDITIONALLY (unlike the staleOrEscalated-gated heartbeat check
+    // above) because it feeds the SEPARATE unread/NEGLECT axis below, not
+    // just the liveness axis. "Provably busy" = a FRESH heartbeat (the same
+    // existing freshness window hasFreshHeartbeat already uses) OR evidence
+    // the child's own session is mid-turn right now (idleAlive, already
+    // computed above — a live harness pid for this sessionId). Either signal
+    // alone is definitive proof-of-life; this is a pure OR, never a new
+    // stricter requirement than either check already applies on its own.
+    let busy = idleAlive;
+    if (!busy) {
+      try { busy = hasFreshHeartbeat(d.id, home); } catch (_) { busy = false; }
+    }
     // FIELD (archived rows still alerting): a workspace the owner already
     // ARCHIVED is done and put away — it must never render as escalated /
     // not-draining. Liveness axis ONLY, same as every suppressor above; the row
@@ -1406,6 +1469,11 @@ function main() {
       verdictPending,
       urgencyMax: null,
       foreignProject,
+      // busy / oldestUnreadAgeMsForDescriptor (Bug 2): REPORT-ONLY provenance
+      // for the family-level busy/NEGLECT decision below — see `busy`'s own
+      // comment above for the definition.
+      busy,
+      oldestUnreadAgeMs: oldestUnreadAgeMsForDescriptor,
     });
   }
 
@@ -1499,6 +1567,10 @@ function main() {
     families = rawEntries.map((e) => ({ key: 'id:' + e.id, members: [e], survivor: e }));
   }
 
+  // neglectMinUnread (Bug 2): resolved ONCE, outside the per-family loop —
+  // see resolveNeglectMinUnread's own header.
+  const neglectMinUnread = resolveNeglectMinUnread(process.env);
+
   const blocking = [];
   for (const fam of families) {
     const members = (fam && fam.members) || [];
@@ -1559,7 +1631,17 @@ function main() {
     // app-archived / worktree-gone) — pure REPORT-ONLY data, consulted only
     // by buildReason() below; it changes no count and no blocking decision.
     const contributors = [];
+    // familyBusy / familyOldestUnreadAgeMs (Bug 2): OR/max across members —
+    // see the per-descriptor `busy` comment above for the definition. Used
+    // below, after corroboration, to downgrade a pure-unread block to an
+    // advisory for a provably busy child.
+    let familyBusy = false;
+    let familyOldestUnreadAgeMs = null;
     for (const m of members) {
+      if (m.busy) familyBusy = true;
+      if (Number.isFinite(m.oldestUnreadAgeMs) && (familyOldestUnreadAgeMs === null || m.oldestUnreadAgeMs > familyOldestUnreadAgeMs)) {
+        familyOldestUnreadAgeMs = m.oldestUnreadAgeMs;
+      }
       const memberRealUnread = Number.isFinite(m.realUnread) ? m.realUnread : 0;
       unionUnread += memberRealUnread;
       const memberWorktreeGone = worktreeIsGone(m.worktreePath);
@@ -1615,6 +1697,33 @@ function main() {
         staleOrEscalated = false;
         status = '';
       }
+    }
+    // BUG 2 FIX — false NEGLECT while genuinely busy. A family whose ONLY
+    // reason to report is a plain unread backlog (no unreadUnknown, no
+    // corroborated staleOrEscalated) is downgraded from a hard block to an
+    // advisory when the child is PROVABLY BUSY (a fresh heartbeat within the
+    // existing freshness window, and/or a live mid-turn session — see the
+    // per-descriptor `busy` comment above). Scoped to CHILD families only
+    // (never the Primary's own mailbox, `own.id`) — the field report this
+    // closes was specifically a child the Primary was actively driving in
+    // long turns, whose only gap was "hasn't reached a mailbox read yet",
+    // not neglect. A NOT-busy child still blocks exactly as before once its
+    // unread exceeds `neglectMinUnread` (default 0: any real unread blocks,
+    // unchanged sensitivity) — "no fresh activity AND unread beyond the
+    // threshold" is still a hard block, never silently dropped.
+    const survivorIdForBusyCheck = (fam && fam.survivor && fam.survivor.id != null)
+      ? String(fam.survivor.id) : (members[0] && members[0].id != null ? String(members[0].id) : null);
+    const isChildFamily = !(own.id && survivorIdForBusyCheck != null && survivorIdForBusyCheck === String(own.id));
+    if (isChildFamily && !unreadUnknown && !staleOrEscalated && unionUnread > 0) {
+      if (familyBusy) {
+        try {
+          const ageTxt = Number.isFinite(familyOldestUnreadAgeMs)
+            ? ' (oldest ' + Math.max(1, Math.round(familyOldestUnreadAgeMs / 60000)) + 'm)' : '';
+          fs.writeSync(2, 'anti-hall: ' + survivorIdForBusyCheck + ': busy, ' + unionUnread + ' queued' + ageTxt + '\n');
+        } catch (_) {}
+        continue; // advisory only — never a hard block for a provably busy child
+      }
+      if (unionUnread <= neglectMinUnread) continue; // below the configured NOT-busy threshold
     }
     if (!(unreadUnknown || unionUnread > 0 || staleOrEscalated)) continue; // this family has nothing to report
     const survivor = fam && fam.survivor;

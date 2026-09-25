@@ -1288,15 +1288,34 @@ test('FIX 3: an OLD heartbeat does NOT suppress the stale nudge (no false proof-
   } finally { h.cleanup(); }
 });
 
-test('FIX 3: a fresh heartbeat does NOT suppress a REAL unread backlog (only the liveness axis)', () => {
+test('BUG 2 FIX (v0.109, supersedes FIX 3): a fresh heartbeat downgrades a plain REAL-unread block to an ADVISORY, not a hard block', () => {
   const h = makeHome();
   try {
     seedWorkspace(h.home, 'ws-hb2', { messages: ['a', 'b'], cursor: 0, verdict: { status: 'stale' } }); // 2 unread + stale
     writeHeartbeat(h.home, 'ws-hb2', Date.now());
     const r = run(h.home);
-    assert.strictEqual(r.json && r.json.decision, 'block', 'real unread on a live workspace still gates');
+    // v0.109 field defect ("false NEGLECT while the child is busy"): the OLD
+    // behavior here (`real unread on a live workspace still gates`) is
+    // exactly what generated the incident — a child alive and actively
+    // working, driven directly by a human, got hard-blocked as NEGLECT for
+    // not yet having reached a mailbox read. The liveness axis (stale) is
+    // already suppressed by the fresh heartbeat (pre-existing); now the
+    // PLAIN unread axis is too, downgraded to a non-blocking advisory on
+    // stderr, since this family's only remaining reason to report is
+    // unionUnread>0 with no unreadUnknown/staleOrEscalated left.
+    assert.strictEqual(r.status, 0);
+    assert.strictEqual(r.stdout, '', `a busy child's plain unread backlog must not hard-block; stdout=${r.stdout}`);
+    assert.match(r.stderr, /ws-hb2: busy, 2 queued/, `must emit the busy advisory; stderr=${r.stderr}`);
+  } finally { h.cleanup(); }
+});
+
+test('BUG 2 CONTROL: the SAME unread backlog WITHOUT a fresh heartbeat (not busy) still hard-blocks', () => {
+  const h = makeHome();
+  try {
+    seedWorkspace(h.home, 'ws-hb2b', { messages: ['a', 'b'], cursor: 0 }); // 2 unread, no verdict, no heartbeat
+    const r = run(h.home);
+    assert.strictEqual(r.json && r.json.decision, 'block', 'a NOT-busy child with real unread still hard-blocks');
     assert.match(r.json.reason, /2 unread/);
-    assert.doesNotMatch(r.json.reason, /stale/, 'the liveness axis is suppressed by the fresh heartbeat, but unread still blocks');
   } finally { h.cleanup(); }
 });
 
@@ -1756,16 +1775,27 @@ test('UNTRUNCATED: an ordinary (non-truncated) projection behaves exactly as tod
 });
 
 // ============================================================================
-// ROOT CAUSE (a)+(b) FIX — live-session bug report (anti-hall 0.75.1): the
-// store-side UNION check (companion/lib/devswarm-unread.js) reads a CHILD
-// descriptor's mailbox partition (workspace_id === recipient === d.id, per
+// ROOT CAUSE (a)+(b) — live-session bug report (anti-hall 0.75.1), part (a)
+// SUPERSEDED in v0.109 (Bug 1 fix, "gate count mismatch"): the store-side
+// UNION check (companion/lib/devswarm-unread.js) reads a CHILD descriptor's
+// mailbox partition (workspace_id === recipient === d.id, per
 // devswarm-store.js appendMeshMessage's D3 wire-contract). A message THIS
 // PRIMARY just sent to that child (`send --to <id>`) lands there with
-// `sender === own.id` and is awaiting the CHILD's read — not this Primary's.
-// (a) that row must not count toward the neglect count. (b) the remediation
-// text the gate emits for a genuine child-unread block must never instruct a
-// cursor advance on a workspace this Primary does not own (destructive by
-// side effect, and structurally refused anyway).
+// `sender === own.id`, awaiting the CHILD's read. 0.75.1's fix (a) excluded
+// that row from the neglect count entirely — but devswarm-store.js's
+// unionUnreadFor (the roster/parent-inbox count source of truth) never
+// applied that exclusion, so the two surfaces diverged: a v0.109 field
+// incident showed the gate blocking with "(1 unread)" while the roster/
+// parent-inbox line said "4 unread" for the SAME child in the SAME minute —
+// 4 being the true, verified count of messages the Primary had sent. The
+// sender-based exclusion is REMOVED (both surfaces now read through the same
+// `unionUnread` primitive with no per-sender filter); the original "blocked
+// within seconds of its own send" concern (a) closed is now handled by the
+// BUSY/liveness check instead (see the BUG 2 tests above) — a provably busy
+// child gets an advisory, never an immediate hard block, without hiding real
+// backlog from the count. (b) the remediation text still must never instruct
+// a cursor advance on a workspace this Primary does not own (destructive by
+// side effect, and structurally refused anyway) — that half is UNCHANGED.
 // ============================================================================
 
 // seedStoreOnlyRow(home, id, from, hash) — a REAL store-direct mesh row
@@ -1781,7 +1811,19 @@ function seedStoreOnlyRow(home, id, from, hash) {
   } finally { s.close(); }
 }
 
-test('FIX 3a: a store-only row whose sender IS this Primary (own outbound send) does NOT count as neglect', () => {
+// drainStoreCursor(home, id) — advances this workspace's store cursor to its
+// CURRENT message count, i.e. genuinely marks every row already seeded as
+// read/drained (not "excluded by sender", real drainage). Used by fixtures
+// that need "store has real, already-drained history" without relying on
+// any sender-based exclusion.
+function drainStoreCursor(home, id) {
+  const s = meshStore.openStore({ home, workspaceId: id, hash: REPO_KEY });
+  try {
+    s.setCursor(id, s.messageCount(id));
+  } finally { s.close(); }
+}
+
+test('FIX 3a SUPERSEDED (v0.109 Bug 1 fix): a store-only row whose sender IS this Primary STILL counts as real unread', () => {
   const h = makeHome();
   const wt = makeLinkedWorktree();
   try {
@@ -1789,7 +1831,10 @@ test('FIX 3a: a store-only row whose sender IS this Primary (own outbound send) 
     seedStoreOnlyRow(h.home, 'ws-out1', OWN_ID, 'test-out-1');
     const r = run(h.home, stopPayload());
     assert.strictEqual(r.status, 0, 'must exit 0');
-    assert.strictEqual(r.stdout, '', `this Primary's own outbound send must never self-flag as neglect; got: ${r.stdout}`);
+    // Not busy (no heartbeat/live session seeded) -> real unread hard-blocks,
+    // matching devswarm-store.js's unionUnreadFor (roster/parent-inbox).
+    assert.strictEqual(r.json && r.json.decision, 'block', `this Primary's own outbound send IS the child's real unread backlog; got: ${r.stdout}`);
+    assert.match(r.json.reason, /1 unread/);
   } finally { h.cleanup(); wt.cleanup(); }
 });
 
@@ -1806,7 +1851,7 @@ test('FIX 3a control: a store-only row from a DIFFERENT sender still counts as r
   } finally { h.cleanup(); wt.cleanup(); }
 });
 
-test('FIX 3a mixed: this Primary\'s own outbound row is excluded while a genuine different-sender row in the SAME workspace still counts', () => {
+test('FIX 3a mixed SUPERSEDED (v0.109 Bug 1 fix): this Primary\'s own outbound row AND a different-sender row in the SAME workspace both count', () => {
   const h = makeHome();
   const wt = makeLinkedWorktree();
   try {
@@ -1815,7 +1860,10 @@ test('FIX 3a mixed: this Primary\'s own outbound row is excluded while a genuine
     seedStoreOnlyRow(h.home, 'ws-out3', 'some-other-sender', 'test-out-3b');
     const r = run(h.home, stopPayload());
     assert.strictEqual(r.json && r.json.decision, 'block');
-    assert.match(r.json.reason, /1 unread/, 'the own-outbound row must be excluded from the displayed count, leaving only the real one');
+    // v0.109: the own-outbound row is REAL unread too, matching
+    // devswarm-store.js's unionUnreadFor exactly — the displayed count is now
+    // the full total (2), never a sender-filtered subset.
+    assert.match(r.json.reason, /2 unread/, 'both rows must count — the gate must agree with the roster/parent-inbox total');
   } finally { h.cleanup(); wt.cleanup(); }
 });
 
@@ -2835,16 +2883,24 @@ test('A2 FIX: LIVE worktree + inbox ENOENT + store partition present with REAL (
     // REPO_KEY) -> NOT a dead descriptor, NOT foreign. No `messages`/`cursor`
     // passed -> the native inbox is never written (ENOENT), reproducing the
     // mid-teardown window verbatim. Seed ONE real store-direct row addressed to
-    // this workspace FROM this Primary itself (OWN_ID) -- the exact live
-    // incident this fix closes: the Primary's OWN message had already been
-    // delivered via the store (storeSeq), so messageCount>0 is REAL history
-    // (not an empty, never-touched partition — see the REAL-HISTORY GUARD
-    // comment in hooks/devswarm-parent-gate.js, which this fixture is
-    // deliberately shaped to satisfy: allRows.length>0). It nets to 0 unread
-    // via the pre-existing FIX-3a own-outbound-is-not-neglect exclusion in the
-    // UNION block, not because the store was empty.
+    // this workspace -- the exact live incident this fix closes: a message had
+    // already been delivered via the store (storeSeq), so messageCount>0 is
+    // REAL history (not an empty, never-touched partition — see the
+    // REAL-HISTORY GUARD comment in hooks/devswarm-parent-gate.js, which this
+    // fixture is deliberately shaped to satisfy: allRows.length>0).
+    //
+    // v0.109 (Bug 1 fix — gate/roster count-mismatch): this used to net to 0
+    // unread via the now-REMOVED FIX-3a own-outbound-is-not-neglect exclusion
+    // (a sender-based filter that made the gate disagree with the roster/
+    // parent-inbox line, which never applied it — see devswarm-unread.js's
+    // header). The A2 axis this test is actually about — ENOENT inbox + a
+    // LIVE worktree + the store conclusively answering — is independent of
+    // WHO sent the message; it must "not block" because the message is
+    // genuinely DRAINED (cursor advanced past it), not because of who sent
+    // it. `drainStoreCursor` makes that true explicitly.
     seedWorkspace(h.home, 'a2-live-drained', { worktreePath: wt.dir });
-    seedStoreOnlyRow(h.home, 'a2-live-drained', OWN_ID, 'test-a2-green-1');
+    seedStoreOnlyRow(h.home, 'a2-live-drained', 'some-other-sender', 'test-a2-green-1');
+    drainStoreCursor(h.home, 'a2-live-drained');
     const r = run(h.home, stopPayload());
     assert.strictEqual(r.status, 0, 'must exit 0');
     assert.strictEqual(r.stdout, '',

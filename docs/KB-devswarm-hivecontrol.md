@@ -631,6 +631,28 @@ prose reminders get ignored; only a mechanical trigger works.
   reads as known/empty rather than absent, closing a false-silence hole. Reads only files
   (the fs cursor + the supervisor's verdict file + the summary
   projection) — no git, no live liveness on the ~30 s Stop path.
+  **v0.109 count-mismatch fix (Bug 1):** the gate used to additionally exclude any row
+  whose `sender` equalled the Primary's own id ("own outbound send, not this Primary's
+  neglect") — but `companion/lib/devswarm-store.js`'s `unionUnreadFor` (the count
+  `computeSummary`/`summary.json` and therefore the roster table + the
+  `devswarm-parent-inbox.js` line both read) never applied that filter, so the two
+  surfaces could disagree on the SAME child in the SAME minute (a field incident: gate
+  "(1 unread)", roster "4 unread" — 4 being the real, verified count). That sender-based
+  exclusion is removed; the gate's unread count is now derived from the SAME
+  `companion/lib/devswarm-unread.js` `unionUnread` primitive with no per-sender filter,
+  so the gate and the roster/parent-inbox line always agree. Only content-classified noise
+  (`isNoiseText`, unchanged, see above) is still excluded.
+  **v0.109 false-NEGLECT-while-busy fix (Bug 2):** a family whose ONLY reason to block is a
+  plain real-unread backlog (no unknown-unread axis, no corroborated stale/escalated
+  verdict) is downgraded from a hard block to a non-blocking advisory line (on stderr, e.g.
+  `<id>: busy, N queued (oldest Xm)`) when the child is PROVABLY BUSY right now — a fresh
+  heartbeat within the existing freshness window, or evidence its own session is live/
+  mid-turn (`isSessionAliveRow`). This closes the "the child was alive and actively
+  working, a human was driving it directly, it just hadn't reached a mailbox read yet"
+  false positive, whose only escape used to be typing "intentional". A genuinely NOT-busy
+  child (no fresh heartbeat, no live session) still hard-blocks once its real unread
+  exceeds the new `devswarm.parentGateNeglectMinUnread` setting (default `0` — any real
+  unread blocks, unchanged sensitivity).
 - `hooks/devswarm-child-turn.js` (UserPromptSubmit, **child only**) — writes a
   turn-authored heartbeat, KEYED BY `DEVSWARM_BUILDER_ID` (`heartbeats/<DEVSWARM_BUILDER_ID>.json`,
   unique per child; falls back to a sanitized/hashed `<branch>` key only when `DEVSWARM_BUILDER_ID`
