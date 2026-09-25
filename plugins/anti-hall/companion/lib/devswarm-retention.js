@@ -154,26 +154,15 @@ function readState(home) {
 function writeState(home, st) { try { writeJsonAtomic(statePath(home), st); return true; } catch (_) { return false; } }
 
 // acquireLock(home) -> release() | null (another retention run holds it).
+// Via companion/lib/lock.js: a dead holder or one older than LOCK_STALE_MS is
+// reclaimed; a live, fresh retention run is respected.
 function acquireLock(home) {
-  const p = lockPath(home);
-  try { fs.mkdirSync(path.dirname(p), { recursive: true }); } catch (_) {}
-  for (let i = 0; i < 2; i++) {
-    const token = process.pid + ':' + Date.now() + ':' + Math.random().toString(36).slice(2);
-    try {
-      const fd = fs.openSync(p, 'wx');
-      try { fs.writeSync(fd, JSON.stringify({ pid: process.pid, ts: Date.now(), token })); } finally { fs.closeSync(fd); }
-      return () => { try { const cur = readJson(p, null); if (cur && cur.token === token) fs.unlinkSync(p); } catch (_) {} };
-    } catch (e) {
-      if (!e || e.code !== 'EEXIST') return null;
-      const h = readJson(p, null);
-      let dead = false;
-      if (h && Number.isFinite(h.pid)) { try { process.kill(h.pid, 0); } catch (err) { dead = !!(err && err.code === 'ESRCH'); } }
-      const stale = !h || !Number.isFinite(h.ts) || (Date.now() - h.ts) > LOCK_STALE_MS;
-      if (dead || stale) { try { fs.unlinkSync(p); } catch (_) {} continue; }
-      return null;
-    }
-  }
-  return null;
+  const h = require('./lock.js').acquire(lockPath(home), {
+    staleMs: LOCK_STALE_MS,
+    liveStaleMs: LOCK_STALE_MS,
+    stealDead: true,
+  });
+  return h ? () => { h.release(); } : null;
 }
 
 // ---- store enumeration ------------------------------------------------------------

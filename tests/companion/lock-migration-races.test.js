@@ -91,3 +91,35 @@ test('pull lock (acquireExclLock, also wake-watch): reclaim race (stale + dead h
     tornFresh(p, (F) => pull.acquireExclLock(p, { fs: F, isAlive: () => false, allowStaleLiveSteal: true }, 60000));
   } finally { rm(home); }
 });
+
+// globalReclaimRace — for a lock whose module has no fs seam: interpose on the
+// real fs.readFileSync for the duration of the outer call.
+function globalReclaimRace(t, lockPath, seed, acquire) {
+  fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+  fs.writeFileSync(lockPath, JSON.stringify(seed));
+  const real = fs.readFileSync;
+  let nested = 'not-run';
+  const m = t.mock.method(fs, 'readFileSync', function (file, enc) {
+    const raw = real.call(fs, file, enc);
+    if (file === lockPath && nested === 'not-run') { nested = null; nested = acquire(); }
+    return raw;
+  });
+  let outer;
+  try { outer = acquire(); } finally { m.mock.restore(); }
+  assert.notStrictEqual(nested, 'not-run', 'precondition: the nested contender ran inside the window');
+  const winners = [outer, nested].filter(isFn);
+  assert.strictEqual(winners.length, 1, 'exactly one contender wins the reclaim, never both');
+  return winners[0];
+}
+
+test('retention lock: reclaim race (dead holder) + torn read', (t) => {
+  const ret = require(path.join(ROOT, 'companion', 'lib', 'devswarm-retention.js'));
+  const home = tmpHome();
+  try {
+    const p = ret.lockPath(home);
+    // pid 2147483646 exceeds any pid_max -> kill(pid,0) is ESRCH (dead).
+    const w = globalReclaimRace(t, p, { pid: 2147483646, ts: Date.now(), token: 'dead' }, () => ret.acquireLock(home));
+    w();
+    tornFresh(p, () => ret.acquireLock(home));
+  } finally { rm(home); }
+});
