@@ -52,6 +52,8 @@ function cmdGet(opts) {
   console.log(`nag: ${effective.nag}`);
   console.log(`nagStepPct: ${effective.nagStepPct}`);
   console.log(`nagQuietMin: ${effective.nagQuietMin}`);
+  console.log(`gateNewWork: ${effective.gateNewWork}`);
+  console.log(`gateBudgetPct: ${effective.gateBudgetPct}`);
 }
 
 function cmdSet(pctArg) {

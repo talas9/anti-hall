@@ -113,6 +113,18 @@ and suggests `/compact` or `/clear`. Follow-up reminders fire every `nagStepPct`
 further points and at a quiet pause (at most once per `nagQuietMin` minutes, and
 never the same percentage twice within one step) unless `nag` is off.
 
+**Post-handover new-work gate (v0.109.0, `gateNewWork`, on by default).** Once
+usage is past the threshold AND this session's handover file has been written,
+each new request gets a short directive: the agent judges the request's size
+itself BEFORE starting it, and if it would need more than `gateBudgetPct` (default
+5) points of the context window it offers two choices — (a) add it to the task
+list and the handover and start it after `/compact` or `/clear`, or (b) proceed
+anyway if you insist (an explicit insistence always overrides the gate). Quick
+questions, finishing the in-flight task the handover names, and spawning a
+DevSwarm workspace pass straight through. A measured backstop sends ONE reminder
+per handover once usage grows more than `gateBudgetPct` points past where the
+handover was saved: refresh the handover and offer to park the rest.
+
 | Key | Default | Meaning |
 |---|---|---|
 | `autoHandover.enabled` | `true` | the whole trigger |
@@ -121,6 +133,8 @@ never the same percentage twice within one step) unless `nag` is off.
 | `autoHandover.nag` | `true` | follow-up reminders |
 | `autoHandover.nagStepPct` | `5` | milestone step, in points |
 | `autoHandover.nagQuietMin` | `15` | minutes between pause reminders |
+| `autoHandover.gateNewWork` | `true` | post-handover new-work gate (size-first, park-or-proceed offer) |
+| `autoHandover.gateBudgetPct` | `5` | post-handover budget in context-window points, 1-50; also the one-shot backstop distance |
 
 "Turn off auto-handover" = `set autoHandover.enabled false`; "set auto-handover to
 80%" = `set autoHandover.pct 80`. The older one-purpose CLI still works as an alias

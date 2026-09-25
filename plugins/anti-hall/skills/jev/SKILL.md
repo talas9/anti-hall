@@ -375,7 +375,7 @@ gather `jev report` data before trusting it), `off` skips it entirely. `speculat
 and `triage` default to `on` once Jev is enabled (pre-existing behavior); every
 other integration defaults to `shadow` until promoted.
 
-**v0.108.4:** each of the 13 integrations below is also its own row/setting in the
+**v0.108.4:** each of the integrations below (13 then; `postHandoverGate` added in v0.109.0) is also its own row/setting in the
 `jevIntegrations` settings-schema section (`jevIntegrations.<id>`, e.g.
 `jevIntegrations.modelRouting`) — its own table in `/anti-hall:settings`
 (`node "${CLAUDE_PLUGIN_ROOT}/scripts/settings.js" show --section jevIntegrations`)
@@ -404,9 +404,10 @@ into the new key automatically (see `companion/lib/migrations.js`
 | `supervisorBlockerLabel` | is a stale child waiting-on-parent or genuinely wedged | `advisory` (cache-only, zero network) | `shadow` | yes | no — `companion/devswarm-supervisor.js` identity-binds to `claude --resume` processes specifically |
 | `codexNudgeSubstantial` | are these file edits genuinely substantial (not just formatting) | `relax-block` | `shadow` | yes | no — nudges a Claude session to seek an independent Codex review; self-referential/meaningless inside a Codex session |
 | `findingDedup` | do two deadly-loop TRIO findings describe the same underlying issue | `advisory` | `on` — 65/65 correct at confidence ≥0.85 on a 30-day, 3-project offline benchmark (see CHANGELOG 0.108.4) | yes | yes |
+| `postHandoverGate` | does this new request fit in the remaining post-handover context budget | `advisory` | `shadow` (log-only; never changes the gate directive) | yes | yes |
 
 `gitGuardSelfCredit`/`modelRouting`/`claimLedger`/`mergeGateHedge`/`tasklistTrivial`/
-`codexNudgeSubstantial`/`findingDedup` use a real classifier call (`ask`/`askSync`/`askDetached`);
+`codexNudgeSubstantial`/`findingDedup`/`postHandoverGate` use a real classifier call (`ask`/`askSync`/`askDetached`);
 `parentGateQuestion`/`supervisorBlockerLabel` never make a network call at all —
 both reuse an ALREADY-cached `hooks/lib/jev-triage.js` label populated by a
 different surface that classified the same message earlier, so promoting either

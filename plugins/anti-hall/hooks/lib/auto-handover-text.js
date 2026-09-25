@@ -170,8 +170,50 @@ function buildPauseNag(pct, payload) {
   );
 }
 
+// budgetLabel(budgetPct, max) -> '~5% of the context window (~10K tokens)'.
+function budgetLabel(budgetPct, max) {
+  const tokK = Number.isFinite(max) && max > 0 ? Math.round((max * budgetPct) / 100 / 1000) : null;
+  return '~' + budgetPct + '% of the context window' + (tokK ? ' (~' + tokK + 'K tokens)' : '');
+}
+
+// buildGateDirective(result, latch, cfg, payload) — the post-handover
+// new-work gate (hooks/lib/auto-handover-gate.js), injected on every prompt
+// while armed. The size judgment is the AGENT's own, made before starting.
+function buildGateDirective(result, latch, cfg, payload) {
+  const platform = detectPlatform(payload);
+  const w = WORDS[platform];
+  const ask = platform === 'codex'
+    ? 'ask the user to choose between two options'
+    : 'ask the user with AskUserQuestion (two options)';
+  return (
+    'POST-HANDOVER NEW-WORK GATE (context ~' + Math.round(result.pct) + '%, handover saved at ~' +
+    Math.round(latch.handoverPct) + '%; budget ' + budgetLabel(cfg.gateBudgetPct, result.max) + '). ' +
+    'BEFORE starting this request, judge YOURSELF whether it needs more than that budget. ' +
+    'No gate for: a quick question, finishing the in-flight task the handover names, or spawning a ' +
+    'DevSwarm workspace (it runs in its own context). If it is bigger than the budget, do not start it — ' +
+    ask + ': (a) add it to the task list and the handover, then start it after ' + w.reset + '; ' +
+    '(b) proceed now anyway. If the user has explicitly insisted on proceeding, that overrides this gate — proceed.'
+  );
+}
+
+// buildGateBackstop(pct, latch, cfg, payload) — the ONE measured reminder
+// per handover baseline once usage grew more than gateBudgetPct points past it.
+function buildGateBackstop(pct, latch, cfg, payload) {
+  const platform = detectPlatform(payload);
+  const w = WORDS[platform];
+  return (
+    'POST-HANDOVER BUDGET EXCEEDED: context is ~' + Math.round(pct) + '%, more than ' + cfg.gateBudgetPct +
+    ' points past the ~' + Math.round(latch.handoverPct) + '% at which the handover was saved. ' +
+    'REFRESH the handover now (' + w.skill + ' — write the next HANDOVER-<n>.md) so it covers the work done ' +
+    'since, then offer the user to park the rest of the work in the task list + handover and continue after ' +
+    w.reset + '. This reminder fires once per handover.'
+  );
+}
+
 module.exports = {
   BLOAT_SENTENCE,
+  buildGateDirective,
+  buildGateBackstop,
   detectPlatform,
   buildFireDirective,
   expectedHandoverPath,

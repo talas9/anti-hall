@@ -24,6 +24,17 @@
 // hooks/lib/auto-handover-state.js's latch. `autoHandover.nag=false`
 // silences both nag paths; the initial fire directive still fires.
 //
+// POST-HANDOVER NEW-WORK GATE (autoHandover.gateNewWork, default on): once
+// the fire directive has gone out AND this session's handover file exists
+// (hooks/lib/auto-handover-gate.js), every prompt carries a short directive:
+// judge the request's size BEFORE starting; above autoHandover.gateBudgetPct
+// (default 5) of the window, offer (a) park it in the task list + handover
+// until after /compact or /clear, or (b) proceed if the user insists. Quick
+// questions, the in-flight task and DevSwarm workspace spawns pass through.
+// A measured BACKSTOP fires once per handover baseline when usage grows more
+// than gateBudgetPct points past the pct recorded when the handover was first
+// seen: refresh the handover, offer to park the rest.
+//
 // Context % is ESTIMATED from the transcript's own recorded token usage
 // (hooks/lib/context-pct.js) — see that file for why this, not the
 // statusline, is the source. NEVER fires for a subagent/sidechain turn
@@ -51,7 +62,38 @@ const { isSkipped } = require('./skip-guard.js');
 const { getContextPct } = require('./lib/context-pct.js');
 const { resolveEffective, overThreshold } = require('./lib/auto-handover-config.js');
 const { sessionTag, readLatch, writeLatch } = require('./lib/auto-handover-state.js');
-const { buildFireDirective, buildMilestoneNag, buildSoftAdvisory } = require('./lib/auto-handover-text.js');
+const { buildFireDirective, buildMilestoneNag, buildSoftAdvisory, buildGateDirective, buildGateBackstop } = require('./lib/auto-handover-text.js');
+const gate = require('./lib/auto-handover-gate.js');
+
+// consultJevShadow — the `postHandoverGate` Jev integration (default mode
+// "shadow"): fire-and-forget "does this request fit in the remaining
+// post-handover budget?" via askDetached (zero latency on this critical-path
+// hook). The answer lands in jev-assist.ndjson only; it NEVER changes the
+// injected text — the size judgment stays the agent's own. Best-effort.
+function consultJevShadow(payload, settings, result) {
+  if (typeof payload.prompt !== 'string' || !payload.prompt.trim()) return;
+  try {
+    const jevAssist = require('./lib/jev-assist.js');
+    const tokK = Number.isFinite(result.max) && result.max > 0
+      ? ' (about ' + Math.round((result.max * settings.gateBudgetPct) / 100 / 1000) + 'K tokens)' : '';
+    jevAssist.askDetached({
+      id: 'postHandoverGate',
+      question: {
+        type: 'noul',
+        instructions: 'The session is past its auto-handover threshold and a handover is saved. Does the ' +
+          'user\'s request below fit in the remaining post-handover budget of about ' + settings.gateBudgetPct +
+          '% of the context window' + tokK + ' — e.g. a quick question, finishing the in-flight task, or ' +
+          'spawning a separate workspace — rather than needing a fresh context?',
+        criteria: { true: 'fits in the remaining budget', false: 'needs more than the remaining budget' },
+      },
+      state: payload.prompt.slice(0, 4000),
+      trust: 'advisory',
+      baseline: null,
+      sessionId: payload.session_id ? String(payload.session_id) : undefined,
+      turnRef: jevAssist.turnRefFromTranscript(payload.transcript_path),
+    });
+  } catch (_) { /* best-effort — never affects the injected context */ }
+}
 
 function main() {
   let payload = null;
@@ -94,12 +136,42 @@ function main() {
                   lastNagPct: result.pct, lastNagAt: now, softFired: false,
                 });
               }
-            } else if (settings.nag) {
-              const lastNagPct = Number.isFinite(latch.lastNagPct) ? latch.lastNagPct : (latch.firedPct || settings.pct);
-              if (result.pct >= lastNagPct + settings.nagStepPct) {
-                text = buildMilestoneNag(result.pct, payload);
-                writeLatch(home, tag, Object.assign({}, latch, { lastNagPct: result.pct, lastNagAt: now }));
+            } else {
+              // Already fired this arm. POST-HANDOVER NEW-WORK GATE
+              // (hooks/lib/auto-handover-gate.js): once this session's
+              // handover file exists, every prompt carries the gate
+              // directive, plus ONE measured backstop per handover baseline.
+              let cur = latch;
+              let dirty = false;
+              const parts = [];
+              let backstop = false;
+              if (settings.gateNewWork) {
+                const noted = gate.noteHandover(cur, payload, result.pct, now);
+                if (noted) { cur = noted; dirty = true; }
+                if (gate.isArmed(settings, cur)) {
+                  if (gate.backstopDue(settings, cur, result.pct)) {
+                    parts.push(buildGateBackstop(result.pct, cur, settings, payload));
+                    // The backstop also serves as this step's milestone nag.
+                    cur = Object.assign({}, cur, {
+                      gateBackstopAt: now, gateBackstopPct: result.pct, lastNagPct: result.pct, lastNagAt: now,
+                    });
+                    dirty = true;
+                    backstop = true;
+                  }
+                  parts.push(buildGateDirective(result, cur, settings, payload));
+                  consultJevShadow(payload, settings, result);
+                }
               }
+              if (!backstop && settings.nag) {
+                const lastNagPct = Number.isFinite(cur.lastNagPct) ? cur.lastNagPct : (cur.firedPct || settings.pct);
+                if (result.pct >= lastNagPct + settings.nagStepPct) {
+                  parts.push(buildMilestoneNag(result.pct, payload));
+                  cur = Object.assign({}, cur, { lastNagPct: result.pct, lastNagAt: now });
+                  dirty = true;
+                }
+              }
+              if (dirty) writeLatch(home, tag, cur);
+              text = parts.join('\n\n');
             }
           }
         }

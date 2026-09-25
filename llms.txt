@@ -203,7 +203,7 @@ the schema's non-advanced set. Codex: no `/config`, use the skill.
 
 | Setting | Default | Env |
 |---|---|---|
-| autoHandover.enabled / pct / maxTokens / nag / nagStepPct / nagQuietMin | true / 85 / 0 / true / 5 / 15 | `ANTIHALL_AUTO_HANDOVER_PCT`, `ANTIHALL_AUTO_HANDOVER_MAX_TOKENS` |
+| autoHandover.enabled / pct / maxTokens / nag / nagStepPct / nagQuietMin / gateNewWork / gateBudgetPct | true / 85 / 0 / true / 5 / 15 / true / 5 | `ANTIHALL_AUTO_HANDOVER_PCT`, `ANTIHALL_AUTO_HANDOVER_MAX_TOKENS` |
 | guards.mergeGate / shipitGate | false / false | `ANTIHALL_MERGE_GATE`, `ANTIHALL_SHIPIT_GATE` |
 | guards.outputVerifyGuard / failureRootCauseNudge / repoSelfDrift / emitDedupe | true | `ANTIHALL_OUTPUT_VERIFY_GUARD`, … |
 | guards.stashGuard (safety: --confirmed) | false | `ANTIHALL_STASH_GUARD` |
@@ -220,7 +220,7 @@ the schema's non-advanced set. Codex: no `/config`, use the skill.
 | jev.budget.mode / usdPerDay / usdPerWeek / minCreditUsd | unlimited / — / — / — | — (watch only warns; never disables Jev) |
 | jev.audit.snippets, jev.prices (advanced) | false, — | `ANTIHALL_JEV_AUDIT_SNIPPETS` |
 | jev.weeklyNotice | true | — |
-| jevIntegrations.speculation / triage / newRequest / claimLedger / outputVerifyGuard / gitGuardSelfCredit / modelRouting / tasklistTrivial / codexNudgeSubstantial / mergeGateHedge / parentGateQuestion / supervisorBlockerLabel / findingDedup (one row each; legacy jev.json / jev["integrations.<id>"] auto-migrate) | on (speculation, triage, findingDedup) / shadow (rest) | `ANTIHALL_JEV_<ID>=0` forces an integration off |
+| jevIntegrations.speculation / triage / newRequest / claimLedger / outputVerifyGuard / gitGuardSelfCredit / modelRouting / tasklistTrivial / codexNudgeSubstantial / mergeGateHedge / parentGateQuestion / supervisorBlockerLabel / findingDedup / postHandoverGate (one row each; legacy jev.json / jev["integrations.<id>"] auto-migrate) | on (speculation, triage, findingDedup) / shadow (rest) | `ANTIHALL_JEV_<ID>=0` forces an integration off |
 | devswarm.hivecontrol / supervisorMode / requiredGates / inboxCmd | "" / auto / done,merged,tests_passed / "" | `ANTIHALL_DEVSWARM_*` |
 | devswarm.autoArchive.mode (+ idleMin, maxPerSweep advanced) | on (30, 3) | `ANTIHALL_DEVSWARM_AUTO_ARCHIVE_MODE` |
 | devswarm.retention.days / maxStoreMB / keepPerPartition / archive / archiveMaxMB (advanced) | 30 / 100 / 200 / true / 0 (no cap) | `ANTIHALL_DEVSWARM_RETENTION_*` |

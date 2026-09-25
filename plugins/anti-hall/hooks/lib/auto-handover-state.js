@@ -14,6 +14,9 @@
 //   lastPauseNagPct : the rounded pct the last natural-pause nag showed —
 //                the pause-nag hook never repeats that identical text within
 //                the same nagStepPct step
+//   handoverMtime / handoverPath / handoverPct / handoverSeenAt /
+//   gateBackstopAt / gateBackstopPct : the post-handover new-work gate's
+//                baseline + one-shot backstop (hooks/lib/auto-handover-gate.js)
 //
 // tag: session_id (sanitized) if present, else sha1(transcript_path).slice(0,16)
 // — the same fallback scheme skills/handover/SKILL.md documents.

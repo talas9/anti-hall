@@ -176,7 +176,7 @@ function envNameFor(id) {
 }
 
 // getMode(id, fileCfg) -> 'on' | 'shadow' | 'off'. Never throws.
-// Every one of the 13 0.108.4 integration ids has its own settings-schema
+// Every integration id (the 13 from 0.108.4, plus postHandoverGate in 0.109.0) has its own settings-schema
 // entry (jevIntegrations.<id>) and resolves through the unified settings
 // store (env > settings.json > /config > legacy jev.json "integrations" map
 // > default). A future id with no schema entry falls through to undefined

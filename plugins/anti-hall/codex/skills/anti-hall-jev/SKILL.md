@@ -87,9 +87,12 @@ itself.
   all default `shadow`; `findingDedup` (advisory: do two deadly-loop TRIO findings
   describe the same underlying issue, called from the standalone
   `scripts/finding-dedup.js` CLI, not a hook) defaults `on` — 65/65 correct at
-  confidence ≥0.85 on a 30-day, 3-project offline benchmark, see CHANGELOG 0.108.4
+  confidence ≥0.85 on a 30-day, 3-project offline benchmark, see CHANGELOG 0.108.4;
+  `postHandoverGate` (advisory: does a new request fit in the remaining
+  post-handover context budget, asked fire-and-forget from the shared
+  `auto-handover.js` while the post-handover gate is armed) defaults `shadow`
   (settings `jevIntegrations.<id>`, e.g. `jevIntegrations.modelRouting`
-  — v0.108.4 gives every one of the 13 its own settings-schema row; a pre-existing
+  — v0.108.4 gave every one of the 13 its own settings-schema row (`postHandoverGate` has one since v0.109.0); a pre-existing
   `jev.json integrations.<id>` or pre-0.108.4 `jev.integrations.<id>` value keeps
   working and forward-migrates automatically, nothing deleted). In `on`,
   `tasklistTrivial`/`codexNudgeSubstantial` ask synchronously (1.5 s cap, fail-open)

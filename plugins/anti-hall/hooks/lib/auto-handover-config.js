@@ -2,7 +2,8 @@
 // trigger (hooks/auto-handover.js, hooks/auto-handover-pause-nag.js), backed
 // by the CANONICAL shared settings store (hooks/lib/settings.js +
 // settings-schema.js) — section "autoHandover":
-//   { enabled, pct (1-99), maxTokens (>=0, 0 = no ceiling), nag, nagStepPct, nagQuietMin }
+//   { enabled, pct (1-99), maxTokens (>=0, 0 = no ceiling), nag, nagStepPct, nagQuietMin,
+//     gateNewWork, gateBudgetPct (1-50) }
 // declared in settings-schema.js's SECTIONS, with `pct` wired to env
 // ANTIHALL_AUTO_HANDOVER_PCT and `maxTokens` to ANTIHALL_AUTO_HANDOVER_MAX_TOKENS there. This file calls ONLY settings.js's public
 // surface (load/get/set/path) — it owns no file I/O or schema logic of its
@@ -37,6 +38,9 @@ const DEFAULT_PCT = 85;
 const DEFAULT_NAG = true;
 const DEFAULT_NAG_STEP_PCT = 5;
 const DEFAULT_NAG_QUIET_MIN = 15;
+// Post-handover new-work gate (hooks/lib/auto-handover-gate.js).
+const DEFAULT_GATE_NEW_WORK = true;
+const DEFAULT_GATE_BUDGET_PCT = 5;
 // Absolute token ceiling, fired on whichever of pct / maxTokens comes first.
 // DEFAULT IS OFF (0): the `pct` trigger (default 85, see DEFAULT_PCT above)
 // is measured against this session's ACTUAL context window (see
@@ -75,6 +79,8 @@ function writeConfig(home, mutator) {
     nagStepPct: settings.get(SECTION, 'nagStepPct', DEFAULT_NAG_STEP_PCT, { home }),
     nagQuietMin: settings.get(SECTION, 'nagQuietMin', DEFAULT_NAG_QUIET_MIN, { home }),
     maxTokens: settings.get(SECTION, 'maxTokens', DEFAULT_MAX_TOKENS, { home }),
+    gateNewWork: settings.get(SECTION, 'gateNewWork', DEFAULT_GATE_NEW_WORK, { home }),
+    gateBudgetPct: settings.get(SECTION, 'gateBudgetPct', DEFAULT_GATE_BUDGET_PCT, { home }),
   };
   const next = mutator(Object.assign({}, current)) || current;
   for (const key of Object.keys(next)) {
@@ -112,7 +118,8 @@ function overThreshold(result, cfg) {
   return null;
 }
 
-// resolveEffective({home, env}) -> { enabled, pct, maxTokens, nag, nagStepPct, nagQuietMin, source }
+// resolveEffective({home, env}) -> { enabled, pct, maxTokens, nag, nagStepPct, nagQuietMin,
+//   gateNewWork, gateBudgetPct, source }
 //   source: 'env' | 'file' | 'default' — where `pct` came from (tests only;
 //   a plugin-option/legacy hit from settings.js also reports as 'file' here,
 //   since this feature has neither wired).
@@ -127,7 +134,7 @@ function resolveEffective(opts) {
   if (envRaw !== undefined && envRaw !== null && String(envRaw).trim() !== '') {
     const envN = parseInt(envRaw, 10);
     if (envN === 0) {
-      return { enabled: false, pct: 0, maxTokens: 0, nag: false, nagStepPct: DEFAULT_NAG_STEP_PCT, nagQuietMin: DEFAULT_NAG_QUIET_MIN, source: 'env' };
+      return { enabled: false, pct: 0, maxTokens: 0, nag: false, nagStepPct: DEFAULT_NAG_STEP_PCT, nagQuietMin: DEFAULT_NAG_QUIET_MIN, gateNewWork: false, gateBudgetPct: DEFAULT_GATE_BUDGET_PCT, source: 'env' };
     }
     // A valid 1-99 env value flows through settings.get() below normally
     // (the schema's own `pct` entry declares this same env var), so no
@@ -139,13 +146,15 @@ function resolveEffective(opts) {
   const nag = settings.get(SECTION, 'nag', DEFAULT_NAG, { home, env });
   const nagStepPct = settings.get(SECTION, 'nagStepPct', DEFAULT_NAG_STEP_PCT, { home, env });
   const nagQuietMin = settings.get(SECTION, 'nagQuietMin', DEFAULT_NAG_QUIET_MIN, { home, env });
+  const gateBudgetPct = settings.get(SECTION, 'gateBudgetPct', DEFAULT_GATE_BUDGET_PCT, { home, env });
 
   if (!enabled) {
-    return { enabled: false, pct: 0, maxTokens: 0, nag: false, nagStepPct, nagQuietMin, source: 'file' };
+    return { enabled: false, pct: 0, maxTokens: 0, nag: false, nagStepPct, nagQuietMin, gateNewWork: false, gateBudgetPct, source: 'file' };
   }
 
   const pct = settings.get(SECTION, 'pct', DEFAULT_PCT, { home, env });
   const maxTokens = Math.floor(settings.get(SECTION, 'maxTokens', DEFAULT_MAX_TOKENS, { home, env }));
+  const gateNewWork = settings.get(SECTION, 'gateNewWork', DEFAULT_GATE_NEW_WORK, { home, env });
 
   let source = 'default';
   if (envRaw !== undefined && envRaw !== null && String(envRaw).trim() !== '' && isValidPct(parseInt(envRaw, 10))) {
@@ -155,7 +164,7 @@ function resolveEffective(opts) {
     if (Object.prototype.hasOwnProperty.call(raw, 'pct')) source = 'file';
   }
 
-  return { enabled: true, pct, maxTokens, nag, nagStepPct, nagQuietMin, source };
+  return { enabled: true, pct, maxTokens, nag, nagStepPct, nagQuietMin, gateNewWork, gateBudgetPct, source };
 }
 
 module.exports = {
@@ -171,5 +180,7 @@ module.exports = {
   DEFAULT_NAG,
   DEFAULT_NAG_STEP_PCT,
   DEFAULT_NAG_QUIET_MIN,
+  DEFAULT_GATE_NEW_WORK,
+  DEFAULT_GATE_BUDGET_PCT,
   SECTION,
 };

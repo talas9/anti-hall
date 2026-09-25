@@ -47,7 +47,7 @@ const KNOWN_INTEGRATIONS = [
   'speculation', 'triage', 'modelRouting', 'claimLedger', 'mergeGateHedge',
   'newRequest', 'outputVerifyGuard', 'gitGuardSelfCredit', 'parentGateQuestion',
   'tasklistTrivial', 'supervisorBlockerLabel', 'codexNudgeSubstantial',
-  'findingDedup',
+  'findingDedup', 'postHandoverGate',
 ];
 const LEGACY_ON_DEFAULT = new Set(['speculation', 'triage']);
 
