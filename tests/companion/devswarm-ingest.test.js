@@ -1335,45 +1335,44 @@ test('a lock leaked by NO earlier release is still released when store-open thro
 // itself to ~intervalSec between spawns on the success path, without touching
 // the failure/backoff path.
 
-function busyWaitMs(ms) {
-  const start = Date.now();
-  while (Date.now() - start < ms) { /* deliberate spin: simulate a fast-returning run() */ }
-}
-
-// Wraps `run` so the test can compute the EXPECTED pace from the run() call's
-// own real wall-clock span (iterationStart is captured immediately before the
-// `run` call in production — see its comment above the loop) instead of just
-// checking "some positive number under the cap". A constant near-busy-spin
-// sleep (e.g. a broken `sleep(1)`) will diverge from this expectation by tens
-// to thousands of ms and fail the tolerance check below.
-function withTimedRun(runImpl) {
-  const timings = [];
-  const run = (...args) => {
-    const start = Date.now();
-    const result = runImpl(...args);
-    timings.push({ start, end: Date.now() });
-    return result;
+// fakeClock(sequence) -> o.clock: a deterministic wall-clock stand-in for
+// runIngestLoop's pacing window (iterationStart/elapsed — see pacingClock in
+// devswarm-ingest.js). Returns each value in `sequence` in call order, then
+// keeps returning the last value once exhausted. Each success iteration calls
+// it once for iterationStart, and once more for the elapsed read UNLESS it's
+// the final iteration (pacing is skipped there — nothing left to pace before).
+//
+// This replaces measuring REAL wall-clock time via busyWaitMs()+Date.now(),
+// which is what made "pacing is ELAPSED-AWARE" flake on a loaded CI runner
+// (macOS + node 24, run 36163517496): busyWaitMs(40) is a best-effort spin,
+// not a guaranteed 40ms — under scheduler contention the actual measured span
+// can be far shorter (observed: "expected ~114ms, got 24ms") or longer,
+// blowing PACE_TOLERANCE_MS. A fake clock makes iterationStart/elapsed EXACT
+// numbers chosen by the test, so the expected pace is computed, not measured,
+// and every run of these tests is bit-for-bit reproducible under any load.
+function fakeClock(sequence) {
+  let i = 0;
+  return () => {
+    const v = sequence[Math.min(i, sequence.length - 1)];
+    i++;
+    return v;
   };
-  return { run, timings };
 }
-
-// Tolerance for comparing an expected pace (derived from measured wall-clock
-// elapsed) against the actual sleep() argument. Generous enough to absorb
-// scheduler/CI jitter and the small amount of production work (heartbeat
-// write, etc.) between measuring `elapsed` and calling sleep(), but far
-// tighter than the gap a near-busy-spin bug (e.g. a constant 1ms sleep)
-// produces against a ~100ms expected pace.
-const PACE_TOLERANCE_MS = 35;
 
 test('runIngestLoop PACES the success path — a fast-returning run() does not busy-spin', () => {
   const home = tmpHome();
   try {
     const sleepCalls = [];
     const intervalMs = 100;
-    const { run, timings } = withTimedRun(() => { busyWaitMs(5); return { ok: true, raw: '[]' }; }); // "instant" success
+    // Deterministic clock: each success iteration's run() "costs" exactly 5ms
+    // of the pacing window (iter0: 0 -> 5, iter1: 10 -> 15); iter2 is the
+    // final iteration, so only its iterationStart (20) is ever read.
+    const clock = fakeClock([0, 5, 10, 15, 20]);
+    const run = () => ({ ok: true, raw: '[]' }); // "instant" success — clock alone drives elapsed
     const summary = ingest.runIngestLoop({
       home, backend: 'journal', workspaceId: 'p', maxIterations: 3,
       run, sleep: (ms) => sleepCalls.push(ms), intervalSec: intervalMs / 1000, // 100ms cadence, short so the test stays fast
+      clock,
     });
     assert.equal(summary.started, true);
     assert.equal(summary.stats.iterations, 3);
@@ -1382,16 +1381,8 @@ test('runIngestLoop PACES the success path — a fast-returning run() does not b
     // already used — see the loop's sleep() call sites, there are only two:
     // backoffWithHeartbeat's slice sleep and the ELOCKFS/ELOCKUNAVAIL retry).
     assert.equal(sleepCalls.length, 2, 'paces after each success iteration except the final one (2 of 3)');
-    for (let idx = 0; idx < sleepCalls.length; idx++) {
-      const elapsed = timings[idx].end - timings[idx].start;
-      const expectedPace = intervalMs - elapsed;
-      assert.ok(sleepCalls[idx] > 0 && sleepCalls[idx] <= intervalMs,
-        `pace should be capped to ~intervalSec*1000 (${intervalMs}ms), got ${sleepCalls[idx]}ms`);
-      // The real assertion against near-busy-spin: the sleep must track the
-      // ACTUAL measured pace duration, not just be "some positive number".
-      assert.ok(Math.abs(sleepCalls[idx] - expectedPace) <= PACE_TOLERANCE_MS,
-        `pace[${idx}] should be ~${expectedPace}ms (interval ${intervalMs}ms - measured elapsed ${elapsed}ms), got ${sleepCalls[idx]}ms`);
-    }
+    // Exact, not approximate: pace = intervalMs(100) - elapsed(5) = 95, every time.
+    assert.deepEqual(sleepCalls, [95, 95], 'pace must exactly track intervalMs - elapsed for each paced iteration');
   } finally { rm(home); }
 });
 
@@ -1400,22 +1391,21 @@ test('runIngestLoop pacing is ELAPSED-AWARE — requires a nonzero, magnitude-co
   try {
     const sleepCalls = [];
     const intervalMs = 200;
-    // run() burns ~40ms of the 200ms budget — pacing should top up only the
-    // remainder (proving pace = intervalMs - elapsed, not a flat sleep), and
-    // MUST be nonzero: permitting zero calls here would also let a "pacing
-    // silently disabled" regression pass undetected.
-    const { run, timings } = withTimedRun(() => { busyWaitMs(40); return { ok: true, raw: '[]' }; });
+    // Deterministic clock: iteration 0's run() "costs" exactly 40ms of the
+    // 200ms budget (0 -> 40) — pacing should top up only the remainder
+    // (proving pace = intervalMs - elapsed, not a flat sleep). Iteration 1 is
+    // the last iteration, so only its iterationStart (200) is ever read.
+    const clock = fakeClock([0, 40, 200]);
+    const run = () => ({ ok: true, raw: '[]' });
     ingest.runIngestLoop({
       home, backend: 'journal', workspaceId: 'p', maxIterations: 2,
       run, sleep: (ms) => sleepCalls.push(ms), intervalSec: intervalMs / 1000,
+      clock,
     });
     assert.equal(sleepCalls.length, 1, 'iteration 0 must pace exactly once (iteration 1 is last, unpaced)');
-    const elapsed = timings[0].end - timings[0].start;
-    const expectedPace = intervalMs - elapsed;
-    assert.ok(sleepCalls[0] > 0,
-      'pace must be nonzero when elapsed < interval — a zero (or near-zero) pace here is the busy-spin regression this test guards against');
-    assert.ok(Math.abs(sleepCalls[0] - expectedPace) <= PACE_TOLERANCE_MS,
-      `expected pace ~${expectedPace}ms (interval ${intervalMs}ms - measured elapsed ${elapsed}ms), got ${sleepCalls[0]}ms`);
+    // Exact, not approximate: pace = intervalMs(200) - elapsed(40) = 160.
+    assert.equal(sleepCalls[0], 160,
+      'pace must be exactly intervalMs - elapsed — nonzero here, proving this is not the busy-spin regression this test guards against');
   } finally { rm(home); }
 });
 
@@ -1424,12 +1414,16 @@ test('runIngestLoop pacing yields ~ZERO wait once elapsed already meets/exceeds 
   try {
     const sleepCalls = [];
     const intervalMs = 100;
-    // run() alone burns MORE than the full interval budget — pacing must not
-    // add any further wait (pace clamps to 0 via Math.max(0, ...)).
-    const run = () => { busyWaitMs(130); return { ok: true, raw: '[]' }; };
+    // Deterministic clock: iteration 0's run() "costs" exactly 130ms — MORE
+    // than the full 100ms interval budget — so pacing must not add any
+    // further wait (pace clamps to 0 via Math.max(0, ...)). Iteration 1 is
+    // the last iteration, so only its iterationStart (130) is ever read.
+    const clock = fakeClock([0, 130, 130]);
+    const run = () => ({ ok: true, raw: '[]' });
     ingest.runIngestLoop({
       home, backend: 'journal', workspaceId: 'p', maxIterations: 2,
       run, sleep: (ms) => sleepCalls.push(ms), intervalSec: intervalMs / 1000,
+      clock,
     });
     assert.equal(sleepCalls.length, 0, 'elapsed >= interval must produce a zero pace — backoffWithHeartbeat is skipped entirely (pace > 0 guard)');
   } finally { rm(home); }

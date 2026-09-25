@@ -1376,6 +1376,12 @@ function* ingestLoopGen(opts) {
   // below, unchanged) instead of parking the daemon — and its lock — forever.
   // Explicit o.hardTimeoutMs (tests / tuning) still wins.
   const hardTimeoutMs = Number.isFinite(o.hardTimeoutMs) ? o.hardTimeoutMs : (timeoutSec * 1000) + 10000;
+  // pacingClock — the wall-clock source for the SUCCESS-path pacing window
+  // (iterationStart / elapsed below). Defaults to real Date.now(); o.clock lets
+  // tests substitute a deterministic sequence so pacing assertions don't depend
+  // on measured real-time spans (CI load skews those by 10s-100s of ms). Must
+  // stay independent of o.now (see the iterationStart comment below).
+  const pacingClock = typeof o.clock === 'function' ? o.clock : Date.now;
 
   // hivecontrol binary — resolved ONCE per daemon process (option > env var >
   // ordinary PATH lookup) and reused for every iteration, so a scheduler-
@@ -1749,10 +1755,13 @@ function* ingestLoopGen(opts) {
       // fork/exec/reap of the hivecontrol binary. That drove both a sustained
       // macOS kernel-allocator leak (data.kalloc.1024, ~220/sec observed) and
       // ~11% steady-state CPU from a daemon that should be idling between polls.
-      // iterationStart is real Date.now() (NOT the injectable o.now, which tests
-      // use as a fixed business-logic timestamp and would make elapsed always 0)
-      // so pacing reflects actual wall-clock spend regardless of test overrides.
-      const iterationStart = Date.now();
+      // iterationStart uses the WALL-CLOCK pacing clock (o.clock, defaulting to
+      // Date.now) — NOT the injectable o.now, which tests use as a fixed
+      // business-logic timestamp and would make elapsed always 0 — so pacing
+      // reflects actual wall-clock spend regardless of o.now overrides. o.clock
+      // exists solely so pacing tests can drive elapsed deterministically instead
+      // of measuring real wall time (see devswarm-ingest.test.js's pacing block).
+      const iterationStart = pacingClock();
       // The monitor call is a YIELDED effect: the async driver (the real
       // daemon, runIngestLoopAsync) awaits a non-blocking child_process.spawn
       // while a timer keeps both liveness signals fresh (`beat`); the sync
@@ -1922,7 +1931,7 @@ function* ingestLoopGen(opts) {
       if (i + 1 < maxIterations) {
         const paceIntervalSec = Number.isFinite(intervalSec) && intervalSec > 0
           ? intervalSec : DEFAULT_MONITOR_INTERVAL_SEC;
-        const elapsed = Date.now() - iterationStart;
+        const elapsed = pacingClock() - iterationStart;
         // Clamp the effective interval to MAX_PACE_MS BEFORE subtracting elapsed,
         // and guard against a non-finite product (huge paceIntervalSec * 1000
         // overflowing to Infinity) — either would otherwise make `pace` Infinity,
