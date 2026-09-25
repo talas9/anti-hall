@@ -6,6 +6,48 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.108.1 (2026-09-25)
+
+### Fixes
+
+- **jev report: shadow-mode yield was invisible to KEEP/REMOVE verdicts.** A
+  shadow-mode row's `changed` field is always `null` by construction
+  (`jev-assist.js`'s `finalize()` only applies a change when `mode==='on'`), so
+  reading only `row.changed` meant a shadow integration's changed-decision rate
+  was always 0 — it could hit REMOVE at >=200 calls no matter how good Jev's
+  shadow answers actually were. `finalize()` now also logs `wouldChange` — the
+  same trust-rule outcome computed WITHOUT the mode gate — and `jev-report.js`
+  reads it for shadow/off rows. Label-only integrations (a `choice` classifier
+  with no boolean baseline, e.g. `newRequest`) are excluded from changed-rate
+  entirely, regardless of mode.
+- **jev report: REMOVE/KEEP could fire with zero labelled outcomes.** A
+  changed-rate<1% or a high failure rate alone used to earn REMOVE with no
+  labelled outcomes behind it (observed: 3 changed / 304 fresh hit REMOVE via
+  changed-rate alone). KEEP and REMOVE now both require a labelled sample
+  (tp+fp, human+auto) of at least `MIN_LABELED_FOR_VERDICT` (20); below that,
+  `REVIEW (needs labels: n/20)`. Changed-rate<1% is now a low-yield note only,
+  never a REMOVE trigger by itself. The label-only guard now runs BEFORE
+  REMOVE/KEEP are evaluated (it used to run after REMOVE, so it could never
+  actually fire once REMOVE's changed-rate<1% path caught a label-only row
+  first).
+- **jev report: `--since`/`--until`/`--exclude-window`** exclude a known-bad
+  run from the report by `ts`, without editing `jev-assist.ndjson` directly —
+  e.g. excluding an accidental `supervisorBlockerLabel` run.
+- **DevSwarm: `acquireLock` TOCTOU let two sessions both adopt the same closed
+  Primary seat.** `companion/lib/recovery.js`'s per-id advisory lock published
+  its holder via `openSync(p, 'wx')` immediately followed by a SEPARATE
+  `writeSync(fd, ...)` call; a second `acquireLock` that hit EEXIST in the
+  window between those two syscalls could read the lock file while it was
+  still empty, misread the unparseable/null holder as unconditionally stale,
+  and steal a lock its rightful, live, milliseconds-old owner was still
+  writing — breaking the "ONE Primary per project" invariant under real
+  concurrent adoption. Fixed by publishing the lock via write-then-link (full
+  content written to a private temp file, then made visible atomically with
+  `linkSync`), which can no longer expose partial content. This was the real
+  root cause of the `devswarm-primary-seat.test.js` "concurrent adoption" test
+  flaking once on macOS CI; that test was also hardened (barrier + bounded
+  retry instead of a bare timing-dependent race) as defense in depth.
+
 ## 0.108.0 (2026-09-24)
 
 > **UPGRADE NOTE — coming from 0.107.x or earlier:** run
