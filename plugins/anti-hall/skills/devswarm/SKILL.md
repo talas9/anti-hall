@@ -310,8 +310,9 @@ reported at, and gate (a) ignores that report once HEAD moves on. A `done` set w
 DIRECT-only (0.108.3): a broadcast/FYI backlog in the child's own inbox never blocks this
 gate, only unread DIRECT rows addressed to it or unread rows FROM it the Primary hasn't
 seen (e.g. its done report); the plan shows the split (`to_direct=`/`to_broadcast=`/`from=`),
-(e) it isn't the Primary (the app DB's `builderType` decides; when it is missing, empty or whitespace-only for the row, the main-checkout rule does; a `primary-<hash>` descriptor id never does), (f) the owner hasn't selected it in the app for 10 min, and
-(g) it has been idle >= `idleMin`. A fact that can't be read counts as not proven.
+(e) it isn't the Primary (the app DB's `builderType` decides; when it is missing, empty or whitespace-only for the row, the main-checkout rule does; a `primary-<hash>` descriptor id never does), (f) the owner hasn't selected it in the app for 10 min,
+(g) it has been idle >= `idleMin`, and (h) the sweep hasn't already auto-archived it at the
+current HEAD (0.108.3). A fact that can't be read counts as not proven.
 `hivecontrol workspace check-merge` is never used as a probe, because it can create a source
 worktree. Settings live in `~/.anti-hall/settings.json`:
 
@@ -324,7 +325,11 @@ worktree. Settings live in `~/.anti-hall/settings.json`:
 `node scripts/devswarm.js auto-archive` prints the current plan (read-only), with the proof
 or the blockers for each workspace. Each archive (default `mode: "on"`) sends the Primary one line
 with an undo hint (unarchive it from the DevSwarm app's archived list) and is logged to
-`~/.anti-hall/logs/devswarm-auto-archive.ndjson`. The "archive-ready" reminder is then
+`~/.anti-hall/logs/devswarm-auto-archive.ndjson` with the HEAD it archived at (`doneHead`).
+Unarchiving in the app is the only undo, and it sticks: gate (h) reads that log and never
+auto-archives the same workspace again at the same HEAD, even though its `done` gate is
+still set. It becomes eligible again only after a new `done` at a new HEAD. The log is
+append-only and nothing retires, restores or deletes it. The "archive-ready" reminder is then
 skipped for the workspaces the sweep owns. Archive is recoverable: the worktree is kept.
 
 **Prune old archived workspaces (owner-approved only).** Deletion is permanent. The flow is

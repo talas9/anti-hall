@@ -455,6 +455,38 @@ test('mode on + 2.5.3 fake: archives (rate-limited), logs, tells the Primary wit
   assert.strictEqual(L.autoArchiveOwns(fx.home, 'c2', { now: NOW, env: fx.env }), false);
 });
 
+// 0.108.3 gate (h): the owner's only undo is unarchiving in the DevSwarm app.
+// The done gate at that HEAD is still set, so without the auto-archive record
+// the sweep re-archived it once the focus/idle windows passed.
+test('gate (h): an owner-unarchived workspace is never re-archived at the same HEAD; a new done at a new HEAD re-arms', { skip }, () => {
+  const fx = fixture(V253, [{ id: 'c1', done: false, gates: { done: true }, head: 'h1', doneHead: 'h1' }]);
+  const archiveCalls = () => readCalls(fx.bin.callsFile).filter((c) => c.argv[1] === 'archive' && c.argv[2] !== '--help');
+  const first = L.autoArchiveSweep(opts(fx, { settings: ON }));
+  assert.deepStrictEqual(first.archived, ['c1']);
+  const logFile = path.join(fx.home, '.anti-hall', 'logs', 'devswarm-auto-archive.ndjson');
+  const rec = JSON.parse(fs.readFileSync(logFile, 'utf8').trim().split('\n')[0]);
+  assert.strictEqual(rec.id, 'c1');
+  assert.strictEqual(rec.doneHead, 'h1');
+  assert.strictEqual(rec.at, NOW);
+  // The fake archive never touches the app DB: c1 reads open again, exactly
+  // what the owner's unarchive leaves behind. Later sweeps, windows long past:
+  const later = { now: NOW + 5 * 60 * MIN };
+  const again = L.autoArchiveSweep(opts(fx, Object.assign({ settings: ON }, later)));
+  assert.deepStrictEqual(again.archived, []);
+  assert.deepStrictEqual(again.wouldArchive, []);
+  assert.strictEqual(archiveCalls().length, 1, 'no second archive spawn');
+  const c = L.planAutoArchive(opts(fx, Object.assign({ settings: DRY }, later))).candidates[0];
+  assert.deepStrictEqual(c.blockers.map((b) => b.gate), ['h-rearchive']);
+  assert.strictEqual(c.soft, false, 'the sweep does not own it (not idle/viewed-only)');
+  // A new done-report at a new HEAD makes it eligible again.
+  fx.byId.c1.head = 'h2'; fx.byId.c1.doneHead = 'h2';
+  const third = L.autoArchiveSweep(opts(fx, Object.assign({ settings: ON }, later)));
+  assert.deepStrictEqual(third.archived, ['c1']);
+  assert.strictEqual(archiveCalls().length, 2);
+  // ...and is again protected at h2.
+  assert.deepStrictEqual(L.autoArchiveSweep(opts(fx, Object.assign({ settings: ON }, later))).archived, []);
+});
+
 test('mode off: nothing planned, nothing spawned', { skip }, () => {
   const fx = fixture(V253, [{ id: 'c1' }]);
   const r = L.autoArchiveSweep(opts(fx, { settings: { mode: 'off', idleMin: 30, maxPerSweep: 3 } }));

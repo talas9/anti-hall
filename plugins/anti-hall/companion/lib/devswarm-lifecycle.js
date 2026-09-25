@@ -27,6 +27,10 @@
 //                     A `primary-<hash>` descriptor id never decides it.
 //     (f) not being viewed — app DB builders.lastSelectedAt older than 10 min
 //     (g) idle      — last heartbeat/transcript activity >= idleMin ago
+//     (h) not already auto-archived at this HEAD — the owner's only undo is
+//                     unarchiving in the DevSwarm app, so a workspace this
+//                     sweep archived at HEAD X is never auto-archived again at
+//                     X (see autoArchivedAt). A new done at a new HEAD re-arms.
 //   Any fact that cannot be READ counts as not proven -> no archive.
 //   Settings (<home>/.anti-hall/settings.json):
 //     devswarm.autoArchive.mode        "on" (default, owner decision) | "dry-run" | "off"
@@ -406,11 +410,41 @@ function evaluateCandidate(c, o, deps, db, settings, now) {
   if (act === null || now - act < settings.idleMin * 60000) {
     blockers.push({ gate: 'g-idle', detail: act === null ? 'no activity signal' : 'active ' + facts.idleMin + 'm ago' });
   }
+  // Gate (h): the owner unarchived what this sweep archived (the app's
+  // archived list is the ONLY undo). The done gate at that HEAD is still set,
+  // so without this the sweep re-archives it once the focus/idle windows pass.
+  facts.head = head;
+  const prior = autoArchivedAt(o.home, c.ids, head);
+  if (prior) {
+    blockers.push({ gate: 'h-rearchive', detail: 'auto-archived at ' + head.slice(0, 12) + ' (' + prior.ts
+      + ') and unarchived since — never re-archived at the same HEAD; a new done at a new HEAD re-enables' });
+  }
   const soft = blockers.length > 0 && blockers.every((x) => x.gate === 'g-idle' || x.gate === 'f-viewed');
   return {
     id: String(b.id), label: b.label || null, branch: b.branchName || null, repositoryId: b.repositoryId || null,
     worktreePath: b.worktreePath || null, repoKey, eligible: blockers.length === 0, soft, blockers, facts,
   };
+}
+
+// autoArchivedAt(home, ids, head) -> { id, doneHead, ts } | null — the
+// successful auto-archive of one of `ids` recorded at `head` in the
+// auto-archive log (<home>/.anti-hall/logs/devswarm-auto-archive.ndjson:
+// append-only, never deleted or rewritten; no retire/restore/rotation path
+// touches it). Records before 0.108.3 carry no doneHead and never match.
+function autoArchivedAt(home, ids, head) {
+  if (!head) return null;
+  let lines = [];
+  try { lines = fs.readFileSync(path.join(logsDir(home), 'devswarm-auto-archive.ndjson'), 'utf8').split('\n'); } catch (_) { return null; }
+  for (const l of lines) {
+    if (!l) continue;
+    try {
+      const r = JSON.parse(l);
+      if (r && r.action === 'auto-archive' && r.ok === true && r.doneHead === head && ids.includes(String(r.id))) {
+        return { id: String(r.id), doneHead: r.doneHead, ts: r.ts };
+      }
+    } catch (_) {}
+  }
+  return null;
 }
 
 // planAutoArchive(opts) -> { ok, mode, settings, capability, candidates, toArchive, dormant? }
@@ -506,7 +540,9 @@ function autoArchiveSweep(opts) {
     if (!argv) { summary.failed.push({ id, reason: 'no-workspace-id' }); continue; }
     const cwd = (db && primaryWorktreeFor(db, cand.repositoryId)) || cand.worktreePath;
     const res = deps.run({ args: argv, env: o.env, cwd, timeout: HC_TIMEOUT_MS });
-    const rec = { ts: new Date(now).toISOString(), action: 'auto-archive', id, branch: cand.branch, label: cand.label, argv, ok: !!(res && res.ok), error: res && !res.ok ? String(res.error || '') : null };
+    // doneHead + at: the HEAD this archive acted on — gate (h) reads it back so
+    // an owner-unarchived workspace is never re-archived at the same HEAD.
+    const rec = { ts: new Date(now).toISOString(), at: now, action: 'auto-archive', id, doneHead: cand.facts.head || null, branch: cand.branch, label: cand.label, argv, ok: !!(res && res.ok), error: res && !res.ok ? String(res.error || '') : null };
     appendNdjson(path.join(logsDir(o.home), 'devswarm-auto-archive.ndjson'), rec);
     if (!res || !res.ok) { summary.failed.push({ id, reason: rec.error }); continue; }
     summary.archived.push(id);

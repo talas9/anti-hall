@@ -436,6 +436,9 @@ anti-hall depends on it.
   sends the Primary one `[[ANTIHALL_DONE]]` message, and the roster shows it
   `done`/`archive-pending`, so nobody archives finished workspaces by hand. The Primary is
   recognised by the app DB's `builderType`, never by a `primary-<hash>` descriptor id.
+  The undo is unarchiving it in the DevSwarm app, and it sticks: the sweep logs the HEAD it
+  archived at and never auto-archives that workspace again at the same HEAD; only a new
+  `done` at a new HEAD makes it eligible again.
   Deleting archived ones only via owner-approved `prune-archived`.
 - **Store hygiene.** Message retention (archive then prune old bodies), housekeeping sweeps,
   supervisor log rotation; every setting is in the `devswarm` section of `/anti-hall:settings`.

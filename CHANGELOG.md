@@ -97,6 +97,13 @@ the update.
   migration `retire-stale-archived-markers` (`doctor --repair`) applies the same rules
   to existing markers. The screenshot ask now fires only when the app DB is unreadable.
   Nothing is unarchived in the app itself.
+- **Auto-archive re-archived a workspace the owner had just unarchived.** The owner's only
+  undo is unarchiving in the DevSwarm app (there is no CLI), but the `done` gate at that HEAD
+  stayed set, so the sweep archived it again once the focus and idle windows passed. Each
+  successful auto-archive now logs `{id, doneHead, at}` in
+  `~/.anti-hall/logs/devswarm-auto-archive.ndjson`, and new gate (h) (`h-rearchive`) never
+  auto-archives the same workspace again at that HEAD. A new `done` at a new HEAD makes it
+  eligible again. The log is append-only and no retire/restore path touches it.
 - **The Stop-time handover pause nag could repeat the same text with no progress.**
   `hooks/auto-handover-pause-nag.js` stored `nagStepPct` and `lastNagPct` but never compared
   them. It now re-nags only when context has risen at least `nagStepPct` points since the
