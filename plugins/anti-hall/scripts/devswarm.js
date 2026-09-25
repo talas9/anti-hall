@@ -18421,7 +18421,23 @@ const VERB_HELP = {
   reconcile: { synopsis: 'rehome/heal descriptors across stores', mutates: 'MUTATES the store — rehomes descriptors, heals the registry, spawns `inbox pull` per descriptor' },
   'reap-stale': { synopsis: 'reap stale workspaces past their liveness window', mutates: 'MUTATES the store — archives/tombstones stale rows' },
   'reconcile-active': { synopsis: 'reconcile active workspaces against liveness', mutates: 'MUTATES the store' },
-  spawn: { synopsis: 'spawn a new workspace via hivecontrol (raw argv pass-through)', mutates: 'MUTATES — forwards the raw argv tail straight to the hivecontrol child process' },
+  // A (peer request, verified 2026-09-26 via `hivecontrol workspace create --help` on the
+  // installed DevSwarm CLI, read-only): `spawn` is a THIN raw-argv-tail pass-through
+  // straight to `hivecontrol workspace create <branch>` (see cmdSpawn's own header) —
+  // every flag below is hivecontrol's OWN grammar, forwarded byte-for-byte, EXCEPT
+  // `--from-local`, which anti-hall strips before forwarding (hivecontrol would reject
+  // it; it overrides the spawnFromOrigin freshness refusal — see spawnSourceFreshness).
+  spawn: { synopsis: 'spawn <branch> [-s|--source <branch>] [-a|--agent <agent>] [-p|--prompt <text>] [-r|--remote] [-t|--title <title>] [--from-local] — create a new workspace '
+    + 'via `hivecontrol workspace create` (raw argv tail forwarded verbatim; anti-hall adds ONLY `--from-local`, which it strips before forwarding). '
+    + '-s/--source: source branch to branch from (default: your current branch). -a/--agent: AI agent to use (default: repo default, then claude). '
+    + '-p/--prompt: initial prompt for the AI to start on immediately (also used to derive the workspace title when -t is absent). '
+    + '-r/--remote: use an existing remote branch (fetches from origin). -t/--title: display title (defaults to the branch name; anti-hall applies it via a separate '
+    + 'update-title follow-up, reported as `titled`). --from-local: spawn from local HEAD even when it is stale/diverged from origin (anti-hall\'s own freshness gate; never forwarded to hivecontrol). '
+    + 'Example: `spawn feature/foo -p "implement X end to end" -t "Feature X"`. '
+    + 'Follow-up brief to an already-spawned child: `send --to <childId> --message "..."` (mesh-direct, this file\'s own delivery+ack path) — hivecontrol\'s own '
+    + '`workspace message-child <branch> "<message>"` also exists but bypasses anti-hall\'s mesh/ack bookkeeping, so prefer `send`. '
+    + 'Read a child\'s status: `roster` (mesh-wide liveness/gates) or `inbox pull <childId>`/`inbox messages <childId>` (its own inbox).',
+    mutates: 'MUTATES — forwards the raw argv tail straight to the hivecontrol child process' },
   merge: { synopsis: 'check-merge + merge-into-source via hivecontrol (raw argv pass-through)', mutates: 'MUTATES — forwards to hivecontrol AND unconditionally sends a mesh broadcast reporting the outcome' },
   skip: { synopsis: 'skip <guard> [--ttl <minutes>] — temporarily disable an anti-hall guard', mutates: 'writes a skip-file entry' },
   'gate-intent': { synopsis: 'record a stated-intent signal for the Stop-hook parent gate', mutates: 'writes a gate-intent record' },

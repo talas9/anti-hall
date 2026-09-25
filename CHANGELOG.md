@@ -125,6 +125,11 @@ the update.
   than guessing. Verifies the relayed byte length against the source and
   refuses (`ok:false`) on a mismatch or an empty source body — never a silent
   partial relay.
+- **`spawn` help text now documents the real hivecontrol args.**
+  `devswarm.js help spawn` names every `hivecontrol workspace create` flag
+  (`-s/--source`, `-a/--agent`, `-p/--prompt`, `-r/--remote`, `-t/--title`)
+  plus anti-hall's own `--from-local`, with an example and pointers to
+  `send`/`roster`/`inbox` for following up with a spawned child.
 
 ## 0.110.0 (2026-09-26)
 
