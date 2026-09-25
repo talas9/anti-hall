@@ -45,6 +45,10 @@ the update.
   requirement.** Obligation phrasing in requirement or acceptance-criteria
   context (e.g. "the result must be idempotent") is exempted; real
   speculative claims are still caught.
+  The exemption covers only true obligation verbs (measured/verified/tested/...):
+  state claims like "should be done by now" or "should be deployed" are still
+  flagged, every must-be/should-be in a reply is checked, and the
+  requirement-label context counts only at the start of a line.
 - **Command guard allowlists read-only/append-only defect commands.**
   `node scripts/defect.js report|list|show` no longer requires approval;
   `rule` and `archive` remain gated.
