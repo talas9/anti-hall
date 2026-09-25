@@ -108,8 +108,8 @@ function defaultIsAlive(pid) {
 // holder pid is dead OR the lock is older than LOCK_STALE_MS; a live, fresh
 // holder is respected -> null (caller aborts rather than double-resume).
 //
-// LOCK_SCRATCH_STALE_MS — how old an orphaned `*.lock.tmp-*` / `*.lock.reap-*`
-// scratch file must be before doctor --repair's sweep (below) will remove it.
+// LOCK_SCRATCH_STALE_MS — how old an orphaned lock.js scratch file
+// (LOCK_SCRATCH_RE below) must be before doctor --repair's sweep will remove it.
 // Both are normally cleaned up inline by lock.js; this is only the backstop
 // for a crash/kill between "create" and "cleanup" -- 15 minutes, same horizon
 // as LOCK_STALE_MS itself, so nothing from an in-flight acquire is touched.
@@ -127,38 +127,69 @@ function acquireLock(id, home, io) {
   return h ? function release() { h.release(); } : null;
 }
 
+// LOCK_SCRATCH_RE — lock.js's own scratch names, and nothing else:
+//   <lock>.tmp-<pid>-<rand>   write-then-publish temp
+//   <lock>.reap-<pid>-<rand>  rename-aside reclaim copy
+//   <lock>.hb.<pid>-<rand>    refresh() tmp+rename temp
+//   <lock>.reclaim            the reclaim sidecar (plus its own tmp/reap)
+const LOCK_SCRATCH_RE = /\.lock\.(?:reclaim\.)?(?:tmp|reap|hb)[-.]|\.lock\.reclaim$/;
+
+// lockScratchDirs(home) -> every directory a migrated lock.js caller keeps a
+// lock in: devswarm/locks/ (recovery, supervisor, migrate, pull, retention,
+// ingest, wake-watch), ~/.anti-hall/ (settings, repair-on-reload,
+// swarm-guard), ~/.anti-hall/logs/ (log rotation; an ANTI_HALL_LOG_DIR
+// override is not home-scoped and is not swept) and each
+// devswarm/store/<hash>/journal/ (store journal locks).
+function lockScratchDirs(home, F) {
+  const ah = path.dirname(devswarmRoot(home)); // ~/.anti-hall
+  const dirs = [path.join(devswarmRoot(home), 'locks'), ah, path.join(ah, 'logs')];
+  const storeRoot = path.join(devswarmRoot(home), 'store');
+  let hashes = [];
+  try { hashes = F.readdirSync(storeRoot); } catch (_) { hashes = []; }
+  for (const h of hashes) dirs.push(path.join(storeRoot, h, 'journal'));
+  return dirs;
+}
+
 // sweepStaleLockScratchFiles(home, { dryRun, now, io }) -> { pending, detail,
-// swept: [path,...] }. doctor --repair AUTO-SAFE backstop: removes any
-// `<id>.lock.tmp-*` (write-then-publish scratch) or `<id>.lock.reap-*`
-// (stale-reclaim verification scratch) file under devswarm/locks/ older than
-// LOCK_SCRATCH_STALE_MS. Both are normally self-cleaning (see acquireLock
-// above); this only ever touches leftovers from a crash/kill mid-acquire, and
-// only once they are unambiguously old enough that no in-flight acquire could
-// still own them. Read-only when dryRun; never touches an actual `<id>.lock`
-// file itself (those are covered by acquireLock's own dead/stale-holder
-// logic, not this sweep).
+// swept: [path,...] }. doctor --repair AUTO-SAFE backstop: removes lock.js
+// scratch files (LOCK_SCRATCH_RE) older than LOCK_SCRATCH_STALE_MS from every
+// lock directory (lockScratchDirs). All are normally self-cleaning; this only
+// ever touches leftovers from a crash/kill mid-acquire/refresh/reclaim, once
+// they are unambiguously old enough that no in-flight operation could still
+// own them. Read-only when dryRun; never touches an actual `<name>.lock` file
+// (those are covered by lock.js's own dead/stale-holder logic) or any file not
+// matching LOCK_SCRATCH_RE. `detail` names every file removed (the doctor
+// report is the log).
 function sweepStaleLockScratchFiles(home, opts) {
   const o = opts || {};
   const F = (o.io && o.io.fs) || fs;
   const now = Number.isFinite(o.now) ? o.now : Date.now();
-  const dir = path.join(devswarmRoot(home), 'locks');
-  let entries = [];
-  try { entries = F.readdirSync(dir); } catch (_) { return { pending: false, detail: 'no locks dir', swept: [] }; }
+  const base = path.dirname(devswarmRoot(home));
   const stale = [];
-  for (const name of entries) {
-    if (!/\.lock\.(tmp|reap)-/.test(name)) continue;
-    const full = path.join(dir, name);
-    let mtimeMs = null;
-    try { mtimeMs = F.statSync(full).mtimeMs; } catch (_) { continue; }
-    if (Number.isFinite(mtimeMs) && (now - mtimeMs) > LOCK_SCRATCH_STALE_MS) stale.push(full);
+  let seen = 0;
+  for (const dir of lockScratchDirs(home, F)) {
+    let entries;
+    try { entries = F.readdirSync(dir); } catch (_) { continue; }
+    seen++;
+    for (const name of entries) {
+      if (!LOCK_SCRATCH_RE.test(name)) continue;
+      const full = path.join(dir, name);
+      let st = null;
+      try { st = F.statSync(full); } catch (_) { continue; }
+      if (!st || (typeof st.isFile === 'function' && !st.isFile())) continue;
+      if (Number.isFinite(st.mtimeMs) && (now - st.mtimeMs) > LOCK_SCRATCH_STALE_MS) stale.push(full);
+    }
   }
+  if (!seen) return { pending: false, detail: 'no lock dirs', swept: [] };
+  const swept = [];
   if (!o.dryRun) {
-    for (const full of stale) { try { F.unlinkSync(full); } catch (_) { /* best-effort */ } }
+    for (const full of stale) { try { F.unlinkSync(full); swept.push(full); } catch (_) { /* best-effort */ } }
   }
+  const list = stale.length ? ': ' + stale.map((full) => path.relative(base, full)).join(', ') : '';
   return {
     pending: stale.length > 0,
-    detail: stale.length + ' stale lock scratch file(s)' + (stale.length ? ': ' + stale.map((full) => path.basename(full)).join(', ') : ''),
-    swept: stale,
+    detail: stale.length + ' stale lock scratch file(s)' + list,
+    swept: o.dryRun ? stale : swept,
   };
 }
 

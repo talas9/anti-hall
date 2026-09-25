@@ -1303,8 +1303,10 @@ function runRepairs(opts) {
   // happy path -- `<id>.lock.tmp-<pid>-<rand>` and `<id>.lock.reap-<pid>-
   // <rand>` -- and both clean up after themselves inline. This sweep is the
   // belt-and-suspenders backstop for a crash/kill between "create" and
-  // "cleanup": a PURE file-age scan+unlink under devswarm/locks/ (no daemon/
-  // scheduler side effect) -> AUTO-SAFE, same posture as the migrations
+  // "cleanup": a PURE file-age scan+unlink of lock.js scratch names (tmp/
+  // reap/hb and the .reclaim sidecar) in every lock dir -- devswarm/locks/,
+  // ~/.anti-hall/, logs/, store journals (no daemon/scheduler side effect)
+  // -> AUTO-SAFE, same posture as the migrations
   // above. Never touches an actual `<id>.lock` file, and never anything
   // younger than LOCK_SCRATCH_STALE_MS (15 min), so a scratch file from an
   // acquire still genuinely in flight is never at risk.

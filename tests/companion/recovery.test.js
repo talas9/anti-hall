@@ -466,6 +466,44 @@ test('sweepStaleLockScratchFiles: removes *.lock.tmp-* / *.lock.reap-* older tha
   } finally { cleanup(); }
 });
 
+test('sweepStaleLockScratchFiles: covers every migrated lock dir (~/.anti-hall, logs, store journals) incl. .hb. and stale .reclaim; never other files', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const ah = path.join(home, '.anti-hall');
+    const logs = path.join(ah, 'logs');
+    const journal = path.join(ah, 'devswarm', 'store', 'abc123', 'journal');
+    const locks = path.join(ah, 'devswarm', 'locks');
+    for (const d of [logs, journal, locks]) fs.mkdirSync(d, { recursive: true });
+    const old = (Date.now() - (M.LOCK_SCRATCH_STALE_MS + 60000)) / 1000;
+    const mk = (full, age) => { fs.writeFileSync(full, '{}'); if (age) fs.utimesSync(full, age, age); return full; };
+    const doomed = [
+      mk(path.join(ah, 'settings.json.lock.tmp-1-a'), old),
+      mk(path.join(ah, 'repair-on-reload.lock.hb.2-b'), old),
+      mk(path.join(logs, 'devswarm.jsonl.rotate.lock.reap-3-c'), old),
+      mk(path.join(journal, 'messages.lock.tmp-4-d'), old),
+      mk(path.join(locks, 'pull-x.lock.reclaim'), old),
+      mk(path.join(locks, 'retention.lock.reclaim.tmp-5-e'), old),
+    ];
+    const kept = [
+      mk(path.join(ah, 'settings.json.lock.tmp-6-f')), // fresh
+      mk(path.join(locks, 'sweep.lock.reclaim')), // fresh sidecar: a reclaim in flight
+      mk(path.join(ah, 'settings.json'), old), // not lock scratch
+      mk(path.join(ah, 'swarm-spawns.lock'), old), // a real lock
+      mk(path.join(logs, 'devswarm.jsonl'), old),
+      mk(path.join(ah, 'notes.tmp-7-g'), old), // tmp-like but not a lock's
+    ];
+    const dry = M.sweepStaleLockScratchFiles(home, { dryRun: true });
+    assert.strictEqual(dry.pending, true);
+    assert.ok(doomed.every((f) => fs.existsSync(f)), 'dry-run deletes nothing');
+    const applied = M.sweepStaleLockScratchFiles(home, { dryRun: false });
+    assert.deepStrictEqual(applied.swept.slice().sort(), doomed.slice().sort());
+    for (const f of doomed) assert.ok(applied.detail.includes(path.basename(f)), 'detail names ' + path.basename(f));
+    for (const f of doomed) assert.strictEqual(fs.existsSync(f), false, f + ' removed');
+    for (const f of kept) assert.strictEqual(fs.existsSync(f), true, f + ' left alone');
+    assert.strictEqual(M.sweepStaleLockScratchFiles(home, { dryRun: true }).pending, false);
+  } finally { cleanup(); }
+});
+
 test('resume prompt PREPENDS the state-check guardrail before the backlog', () => {
   const { home, cleanup } = makeHome();
   try {
