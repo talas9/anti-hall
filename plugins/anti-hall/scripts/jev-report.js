@@ -1371,8 +1371,18 @@ async function main() {
   // --project <name>: filter to rows tagged with that project key BEFORE
   // anything else (report, cost windows, budget) -- 'unknown' matches rows
   // that never got a project tagged (see groupKeyOf's own header).
+  //
+  // triageRows (jev-triage.ndjson, see hooks/lib/jev-triage.js's
+  // appendTriageLog) are scoped the SAME way, via the same groupKeyOf --
+  // otherwise a triage-decision row (which never carries `project`/
+  // `sessionId` at all, so it always groups as 'unknown') would leak into
+  // EVERY --project group's triage counts instead of being excluded like
+  // any other project-less row. This is a real behavior change from before:
+  // real triage rows now only ever appear under `--project unknown` (or
+  // unfiltered), never duplicated into a named project's report.
   if (opts.project) {
     rows = rows.filter((r) => groupKeyOf(r, 'project') === opts.project);
+    triageRows = triageRows.filter((r) => groupKeyOf(r, 'project') === opts.project);
   }
 
   // --weekly: a compact, ALWAYS-7-day per-integration summary (verdict +
@@ -1393,10 +1403,16 @@ async function main() {
   // instead of the single combined report below.
   if (opts.by === 'project' || opts.by === 'session') {
     const groups = groupRowsBy(rows, opts.by);
+    // triageRows split by the SAME key (groupKeyOf), so each group's triage
+    // counts are scoped to that group instead of every group showing the
+    // combined total (see the --project comment above for why this matters
+    // -- real triage rows, having no project/session of their own, all fall
+    // under the 'unknown' group here, disjoint from every named group).
+    const triageGroups = groupRowsBy(triageRows, opts.by);
     const byGroup = {};
     for (const [key, groupRows] of groups) {
       byGroup[key] = buildReport(groupRows, {
-        days: opts.days, costPerCall, triageRows, humanLabelByHash, windowLabel: 'window',
+        days: opts.days, costPerCall, triageRows: triageGroups.get(key) || [], humanLabelByHash, windowLabel: 'window',
       });
     }
     if (opts.json) {

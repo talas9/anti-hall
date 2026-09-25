@@ -513,6 +513,58 @@ test('SAFETY: reset()\'s confirmation gate reads settings.json INSIDE the lock (
   } finally { fs.rmSync(home, { recursive: true, force: true }); }
 });
 
+test('SAFETY: set()\'s confirmation gate reads settings.json INSIDE the lock (mirrors reset()\'s rc-v0.108.4.2 fix) — a concurrent writer that narrows editGuardAllow between the old pre-lock read and the write must not let a redundant "add" of the just-removed token slip through unconfirmed', () => {
+  const home = tmpHome();
+  try {
+    const opts = { home, env: {} };
+    const file = settings.path(opts);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    // Start with 'secrets/**' already allowed. A stale PRE-LOCK read (the
+    // old, buggy shape) would see this and wrongly decide "secrets/** is
+    // already present, re-adding it changes nothing -> not risky".
+    fs.writeFileSync(file, JSON.stringify({ guards: { editGuardAllow: 'secrets/**' } }) + '\n', 'utf8');
+
+    const realReadFileSync = fs.readFileSync;
+    // Capture the pre-race snapshot BEFORE any interception — the very first
+    // physical read of settings.json must return this, so the race is
+    // genuinely "read started before the concurrent write landed".
+    const staleSnapshot = realReadFileSync.call(fs, file, 'utf8');
+    let armed = false;
+    fs.readFileSync = (p, ...rest) => {
+      if (p === file && !armed) {
+        armed = true;
+        // Simulate a concurrent writer (another session/CLI invocation)
+        // narrowing the allow-list right as this set() call's first read
+        // begins -- a SAFE removal -- but that in-flight read still returns
+        // the stale (pre-write) bytes it already started with; every read
+        // AFTER this one sees the narrowed list.
+        fs.writeFileSync(file, JSON.stringify({ guards: {} }) + '\n', 'utf8');
+        return staleSnapshot;
+      }
+      return realReadFileSync.call(fs, p, ...rest);
+    };
+    let result;
+    try {
+      // Re-adding 'secrets/**' -- against the STALE snapshot this is a
+      // no-op (already present); against the real, concurrently-narrowed
+      // state it is a genuine addition and must require confirmation.
+      result = settings.set('guards', 'editGuardAllow', 'secrets/**', opts);
+    } finally {
+      fs.readFileSync = realReadFileSync;
+    }
+
+    // The fix: every read of settings.json for this call happens INSIDE
+    // withSettingsLock, so the confirmation decision and the write see the
+    // SAME (already-narrowed-by-the-concurrent-writer) snapshot — set()
+    // correctly requires confirmation instead of silently resurrecting the
+    // just-removed allow-list entry.
+    assert.strictEqual(result.ok, false, JSON.stringify(result));
+    assert.strictEqual(result.needsConfirmation, true, JSON.stringify(result));
+    assert.strictEqual(result.warning, 'Adding secrets/** to edit-guard\'s allow list means those files can be edited without edit-guard\'s protection. Ask the user to confirm, then re-run with --confirmed.');
+    assert.strictEqual(settings.get('guards', 'editGuardAllow', undefined, opts), '', 'the concurrently-narrowed allow-list must still be empty — nothing was written');
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
 test('SAFETY: guards.editGuardAllow is risky only when ADDING a path not already present; removal-only and no-op changes need no confirmation', () => {
   const home = tmpHome();
   try {

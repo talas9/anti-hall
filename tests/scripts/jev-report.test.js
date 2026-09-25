@@ -1212,3 +1212,122 @@ test('buildReport: boolean integration is unaffected by the choice-label fix (la
   assert.strictEqual(r.suggestion, 'KEEP');
   assert.ok(Math.abs(r.goodOutcomeRate - 0.9) < 1e-9);
 });
+
+// ---------------------------------------------------------------------------
+// P1 fix: triageRows (jev-triage.ndjson) must be scoped by --project / --by
+// the SAME way `rows` (jev-assist.ndjson) already are. Before the fix,
+// `triageRows` was filtered only by time window (filterByTimeWindow) and
+// then handed UNSCOPED to every --project filter and every --by group's
+// buildReport call -- so a single project's/session's triage table showed
+// EVERY project's/session's triage decisions. groupKeyOf(row, 'project'|
+// 'session') is reused for triageRows exactly like it already is for rows,
+// falling back to 'unknown' when a triage row carries no project/session
+// (the real shape jev-triage.js's appendTriageLog writes -- see that file).
+// ---------------------------------------------------------------------------
+
+const { execFileSync } = require('node:child_process');
+
+const JEV_REPORT_CLI = path.join(__dirname, '../../plugins/anti-hall/scripts/jev-report.js');
+
+// runJevReportCli(home, args) -> parsed --json output. HOME is pinned to the
+// disposable fixture home (both via env, since jev-client.js's credit check
+// reads os.homedir() directly with no override, and via --home for every
+// other read path) so this never touches the real machine's jev.json/creds
+// (tests-never-touch-real-home). No jev.json exists in the fixture home, so
+// loadJevConfig() reports disabled and the credit check short-circuits with
+// zero network calls.
+function runJevReportCli(home, args) {
+  const out = execFileSync(process.execPath, [JEV_REPORT_CLI, ...args, '--home', home, '--json'], {
+    env: { ...process.env, HOME: home, USERPROFILE: home },
+    encoding: 'utf8',
+  });
+  return JSON.parse(out);
+}
+
+// writeAssistRow / writeTriageRow: append directly to the ndjson files the
+// way jev-assist.js / jev-triage.js's own appendTriageLog would, mirroring
+// writeAuditRow's existing convention in this file.
+function writeAssistRow(home, obj) {
+  const p = path.join(home, '.anti-hall', 'logs', 'jev-assist.ndjson');
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+  fs.appendFileSync(p, JSON.stringify(obj) + '\n', 'utf8');
+}
+
+function writeTriageRow(home, obj) {
+  const p = path.join(home, '.anti-hall', 'logs', 'jev-triage.ndjson');
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+  fs.appendFileSync(p, JSON.stringify(obj) + '\n', 'utf8');
+}
+
+test('CLI --project foo: triage counts are scoped to foo, never leak bar\'s triage decisions', () => {
+  const h = makeHome();
+  try {
+    const ts = new Date().toISOString();
+    // rows create the 'foo'/'bar' project groups (triage rows themselves
+    // never carry a project -- see jev-triage.js -- but here we simulate a
+    // future/edge case where one does, to prove groupKeyOf scoping applies
+    // uniformly; the 'unknown'-bucketing case is covered separately below).
+    writeAssistRow(h.home, { ts, id: 'speculation', h: 'r1', project: 'foo', base: false, jev: true, backend: 'jev', mode: 'on' });
+    writeAssistRow(h.home, { ts, id: 'speculation', h: 'r2', project: 'bar', base: false, jev: true, backend: 'jev', mode: 'on' });
+    writeTriageRow(h.home, { ts, hash: 't1', backend: 'jev', kind: 'blocker', project: 'foo' });
+    writeTriageRow(h.home, { ts, hash: 't2', backend: 'jev', kind: 'blocker', project: 'foo' });
+    writeTriageRow(h.home, { ts, hash: 't3', backend: 'jev', kind: 'blocker', project: 'bar' });
+
+    const fooReport = runJevReportCli(h.home, ['--project', 'foo']);
+    const fooTriage = fooReport.integrations.find((r) => r.id === 'triage');
+    assert.ok(fooTriage, 'foo must still show a triage row');
+    assert.strictEqual(fooTriage.calls, 2, 'only foo\'s 2 triage rows, never bar\'s');
+
+    const barReport = runJevReportCli(h.home, ['--project', 'bar']);
+    const barTriage = barReport.integrations.find((r) => r.id === 'triage');
+    assert.ok(barTriage);
+    assert.strictEqual(barTriage.calls, 1, 'only bar\'s 1 triage row, never foo\'s');
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('CLI --by project: each group\'s triage counts are disjoint, not the combined total duplicated into every group', () => {
+  const h = makeHome();
+  try {
+    const ts = new Date().toISOString();
+    writeAssistRow(h.home, { ts, id: 'speculation', h: 'r1', project: 'foo', base: false, jev: true, backend: 'jev', mode: 'on' });
+    writeAssistRow(h.home, { ts, id: 'speculation', h: 'r2', project: 'bar', base: false, jev: true, backend: 'jev', mode: 'on' });
+    writeTriageRow(h.home, { ts, hash: 't1', backend: 'jev', kind: 'blocker', project: 'foo' });
+    writeTriageRow(h.home, { ts, hash: 't2', backend: 'jev', kind: 'blocker', project: 'foo' });
+    writeTriageRow(h.home, { ts, hash: 't3', backend: 'jev', kind: 'blocker', project: 'bar' });
+
+    const out = runJevReportCli(h.home, ['--by', 'project']);
+    const fooTriage = out.groups.foo.integrations.find((r) => r.id === 'triage');
+    const barTriage = out.groups.bar.integrations.find((r) => r.id === 'triage');
+    assert.ok(fooTriage && barTriage, 'both groups must show a triage row');
+    assert.strictEqual(fooTriage.calls, 2, 'foo group must only see its own 2 triage rows');
+    assert.strictEqual(barTriage.calls, 1, 'bar group must only see its own 1 triage row, not foo\'s 2');
+    assert.notStrictEqual(fooTriage.calls, barTriage.calls + 2, 'sanity: groups must not both show the combined total (3)');
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('CLI --by project: a REAL-shape triage row (no project/session field at all, matching jev-triage.js\'s actual appendTriageLog) falls into the "unknown" group only, never duplicated into a named project group', () => {
+  const h = makeHome();
+  try {
+    const ts = new Date().toISOString();
+    writeAssistRow(h.home, { ts, id: 'speculation', h: 'r1', project: 'foo', base: false, jev: true, backend: 'jev', mode: 'on' });
+    // A project-less assist row too, so groupRowsBy(rows, 'project') creates
+    // the 'unknown' group the real (also project-less) triage row below
+    // must land in.
+    writeAssistRow(h.home, { ts, id: 'modelRouting', h: 'r2', base: false, jev: true, backend: 'jev', mode: 'on' });
+    // Exactly what appendTriageLog writes: no `project`/`sessionId` field.
+    writeTriageRow(h.home, { ts, hash: 't1', backend: 'jev', kind: 'blocker' });
+
+    const out = runJevReportCli(h.home, ['--by', 'project']);
+    const fooTriage = out.groups.foo && out.groups.foo.integrations.find((r) => r.id === 'triage');
+    assert.strictEqual(fooTriage, undefined, 'a project-less triage row must not leak into the "foo" group');
+    const unknownTriage = out.groups.unknown.integrations.find((r) => r.id === 'triage');
+    assert.ok(unknownTriage);
+    assert.strictEqual(unknownTriage.calls, 1);
+  } finally {
+    h.cleanup();
+  }
+});

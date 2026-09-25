@@ -471,13 +471,25 @@ function withSettingsLock(opts, fn) {
 // RISKY direction (see isRiskyChange/safetyWarning above) — without it
 // nothing is written and the call returns {ok:false, needsConfirmation:true,
 // warning}. The safe direction (re-arming a guard, narrowing an allow-list)
-// never needs confirmation.
+// never needs confirmation. The check runs INSIDE withSettingsLock (same
+// TOCTOU fix as reset()'s, rc-v0.108.4.2 review, P2): it used to read the
+// current value and decide BEFORE acquiring the lock, so a concurrent writer
+// (another session, or a hook) could change settings.json between that
+// pre-lock read and this call's own write below — e.g. a concurrent writer
+// narrows guards.editGuardAllow (a safe removal) while a stale pre-lock read
+// still sees the removed token as "already present", so an add of that same
+// token looks like a no-op and slips through unconfirmed, silently
+// resurrecting the just-removed allow-list entry.
 function set(section, key, value, opts) {
   const entry = schema.findSetting(section, key);
   if (!entry) return { ok: false, error: 'unknown setting: ' + section + '.' + key };
 
   const v = validate(entry, value);
   if (!v.ok) return { ok: false, error: v.error };
+
+  return withSettingsLock(opts, () => {
+  const backedUpCorruptTo = backupCorruptIfNeeded(opts);
+  const store = load(opts);
 
   if (entry.locked) {
     const currentValue = get(section, key, undefined, opts);
@@ -486,9 +498,6 @@ function set(section, key, value, opts) {
     }
   }
 
-  return withSettingsLock(opts, () => {
-  const backedUpCorruptTo = backupCorruptIfNeeded(opts);
-  const store = load(opts);
   const next = Object.assign({}, store);
   next[section] = Object.assign({}, store[section]);
   next[section][key] = v.value;
