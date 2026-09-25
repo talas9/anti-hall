@@ -66,8 +66,10 @@ const { buildFireDirective, buildMilestoneNag, buildSoftAdvisory, buildGateDirec
 const gate = require('./lib/auto-handover-gate.js');
 
 // consultJevShadow — the `postHandoverGate` Jev integration (default mode
-// "shadow"): fire-and-forget "does this request fit in the remaining
-// post-handover budget?" via askDetached (zero latency on this critical-path
+// "off": an offline benchmark, n=299, found no gain over the agent's own
+// size judgment plus the measured budget backstop — see CHANGELOG). When
+// promoted to shadow/on, it fire-and-forgets "does this request fit in the
+// remaining post-handover budget?" via askDetached (zero latency on this critical-path
 // hook). The answer lands in jev-assist.ndjson only; it NEVER changes the
 // injected text — the size judgment stays the agent's own. Best-effort.
 function consultJevShadow(payload, settings, result) {

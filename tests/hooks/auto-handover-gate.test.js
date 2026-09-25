@@ -193,9 +193,33 @@ test('gate re-arms (clears) once usage drops back below the threshold', () => {
   } finally { s.h.cleanup(); }
 });
 
-test('jev: postHandoverGate is consulted in shadow only — a decision row lands, the text is unchanged', () => {
+test('jev: postHandoverGate is OFF by default — logged mode:off, Jev never actually consulted, the text is unchanged', () => {
   const s = setup();
   try {
+    s.prompt(86);
+    writeHandover(s.cwd);
+    const t = ctx(s.prompt(87));
+    assert.match(t, GATE_RE);
+    // An offline benchmark (n=299) found this integration no better than the
+    // agent's own size judgment plus the measured budget backstop, so it
+    // defaults off. askDetached still logs a row (every ask()/askSync()/
+    // askDetached() call always logs, matching finalize()'s call-volume/
+    // failure-rate contract) but with mode:'off' and no judge call
+    // (backend:'baseline-only', jev:null) — it never spawns the worker/asks
+    // the gateway.
+    const log = fs.readFileSync(path.join(s.h.home, '.anti-hall', 'logs', 'jev-assist.ndjson'), 'utf8');
+    const rows = log.trim().split('\n').map((l) => JSON.parse(l)).filter((r) => r.id === 'postHandoverGate');
+    assert.strictEqual(rows.length, 1, log);
+    assert.strictEqual(rows[0].mode, 'off');
+    assert.strictEqual(rows[0].jev, null);
+    assert.strictEqual(rows[0].backend, 'baseline-only');
+  } finally { s.h.cleanup(); }
+});
+
+test('jev: postHandoverGate, promoted to shadow, is consulted — a decision row lands, the text is unchanged', () => {
+  const s = setup();
+  try {
+    s.h.writeState('settings.json', { jevIntegrations: { postHandoverGate: 'shadow' } });
     s.prompt(86);
     writeHandover(s.cwd);
     const t = ctx(s.prompt(87));
@@ -206,16 +230,16 @@ test('jev: postHandoverGate is consulted in shadow only — a decision row lands
   } finally { s.h.cleanup(); }
 });
 
-test('jev: postHandoverGate defaults to shadow (schema + getMode)', () => {
+test('jev: postHandoverGate defaults to off (schema + getMode)', () => {
   const schema = require('../../plugins/anti-hall/hooks/lib/settings-schema.js');
   const e = schema.findSetting('jevIntegrations', 'postHandoverGate');
   assert.ok(e, 'schema row missing');
-  assert.strictEqual(e.default, 'shadow');
+  assert.strictEqual(e.default, 'off');
   assert.deepStrictEqual(e.values, ['on', 'shadow', 'off']);
   const h = makeHome();
   try {
     const { getMode } = require('../../plugins/anti-hall/hooks/lib/jev-assist.js');
-    assert.strictEqual(getMode('postHandoverGate', { enabled: true }, h.home), 'shadow');
+    assert.strictEqual(getMode('postHandoverGate', { enabled: true }, h.home), 'off');
   } finally { h.cleanup(); }
 });
 

@@ -167,7 +167,7 @@ test('show --section jevIntegrations: renders all 14 rows as its own table, defa
     assert.strictEqual(parsed.jevIntegrations.modelRouting.source, 'default');
     assert.strictEqual(parsed.jevIntegrations.findingDedup.value, 'on');
     assert.strictEqual(parsed.jevIntegrations.findingDedup.source, 'default');
-    assert.strictEqual(parsed.jevIntegrations.postHandoverGate.value, 'shadow');
+    assert.strictEqual(parsed.jevIntegrations.postHandoverGate.value, 'off');
 
     const md = run(['show', '--section', 'jevIntegrations'], home.home);
     assert.match(md.stdout, /## Jev integration/);

@@ -425,7 +425,7 @@ into the new key automatically (see `companion/lib/migrations.js`
 | `supervisorBlockerLabel` | is a stale child waiting-on-parent or genuinely wedged | `advisory` (cache-only, zero network) | `shadow` | yes | no — `companion/devswarm-supervisor.js` identity-binds to `claude --resume` processes specifically |
 | `codexNudgeSubstantial` | are these file edits genuinely substantial (not just formatting) | `relax-block` | `shadow` | yes | no — nudges a Claude session to seek an independent Codex review; self-referential/meaningless inside a Codex session |
 | `findingDedup` | do two deadly-loop TRIO findings describe the same underlying issue | `advisory` | `on` — 65/65 correct at confidence ≥0.85 on a 30-day, 3-project offline benchmark (see CHANGELOG 0.108.4) | yes | yes |
-| `postHandoverGate` | does this new request fit in the remaining post-handover context budget | `advisory` | `shadow` (log-only; never changes the gate directive) | yes | yes |
+| `postHandoverGate` | does this new request fit in the remaining post-handover context budget | `advisory` | `off` — an offline benchmark (n=299) found park-recall 17.6% vs 28.8% for the agent's own size judgment plus the measured budget backstop, no gain over that baseline | yes | yes |
 
 `gitGuardSelfCredit`/`modelRouting`/`claimLedger`/`mergeGateHedge`/`tasklistTrivial`/
 `codexNudgeSubstantial`/`findingDedup`/`postHandoverGate` use a real classifier call (`ask`/`askSync`/`askDetached`);
