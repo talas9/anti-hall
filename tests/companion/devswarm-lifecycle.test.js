@@ -67,7 +67,7 @@ function fixture(fake, children, opts) {
     ins.run(c.id, 'r1', 'feat/' + c.id, 'main', wt, c.builderType || 'standard', c.archived ? 0 : 1, c.archived ? 1 : 0,
       c.lastSelectedAt === undefined ? null : c.lastSelectedAt, 'Task ' + c.id, null);
     if (c.pr) db.prepare('INSERT INTO pull_requests VALUES (?,?,?,?,?)').run('pr-' + c.id, 'r1', 'feat/' + c.id, c.pr, 'main');
-    facts[wt] = Object.assign({ id: c.id, ancestor: true, porcelain: '', done: true, unread: 0, unreadFrom: 0, activity: NOW - 60 * MIN }, c);
+    facts[wt] = Object.assign({ id: c.id, ancestor: true, porcelain: '', done: true, unread: 0, broadcastUnread: 0, unreadFrom: 0, activity: NOW - 60 * MIN }, c);
   }
   db.close();
   const env = { HOME: home, PATH: bin.dir, ANTIHALL_DEVSWARM_APP_DB: dbFile, ANTIHALL_DEVSWARM_APP_DB_CACHE_MS: '0' };
@@ -77,7 +77,7 @@ function fixture(fake, children, opts) {
   const deps = {
     descriptors: () => Object.values(byId).map((f) => ({ id: f.id, worktreePath: f.wt, sessionId: 's-' + f.id })),
     repoKey: () => 'proj-abc123',
-    summary: () => ({ workspaces: Object.fromEntries(Object.values(byId).map((f) => [f.id, { id: f.id, archive_ready: f.done, gates: f.gates || {}, doneHead: f.doneHead, mergedVerified: f.mergedVerified, mergedVerifiedHead: f.mergedVerifiedHead, unread: f.unread, broadcastUnread: 0, cursor: 0 }])) }),
+    summary: () => ({ workspaces: Object.fromEntries(Object.values(byId).map((f) => [f.id, { id: f.id, archive_ready: f.done, gates: f.gates || {}, doneHead: f.doneHead, mergedVerified: f.mergedVerified, mergedVerifiedHead: f.mergedVerifiedHead, unread: f.unread, broadcastUnread: f.broadcastUnread || 0, cursor: 0 }])) }),
     unreadFrom: (h, k, ids) => ids.reduce((n, id) => n + ((byId[id] && byId[id].unreadFrom) || 0), 0),
     activityTs: (d) => byId[d.id].activity,
     git: (cwd, args) => {
@@ -134,6 +134,37 @@ for (const [name, over, gate] of PRECONDITIONS) {
     assert.ok(!readCalls(fx.bin.callsFile).some((c) => c.argv[1] === 'archive' && c.argv[2] !== '--help'));
   });
 }
+
+// 0.108.3 — gate (d) is DIRECT-only: a broadcast/FYI backlog in the child's
+// own inbox must never block auto-archive (field evidence: d-unread(to=197
+// from=0) on a finished lane whose "unread" was entirely mesh broadcast).
+test('gate (d): broadcast-only backlog does not block auto-archive', { skip }, () => {
+  const fx = fixture(V253, [{ id: 'c1', unread: 0, broadcastUnread: 197 }]);
+  const plan = L.planAutoArchive(opts(fx, { settings: DRY }));
+  const c = plan.candidates[0];
+  assert.strictEqual(c.eligible, true, JSON.stringify(c.blockers));
+  assert.deepStrictEqual(c.facts.unread, { toChild: 0, toDirect: 0, toBroadcast: 197, fromChild: 0 });
+});
+
+test('gate (d): one unread DIRECT message still blocks, split reported', { skip }, () => {
+  const fx = fixture(V253, [{ id: 'c1', unread: 1, broadcastUnread: 197 }]);
+  const plan = L.planAutoArchive(opts(fx, { settings: DRY }));
+  const c = plan.candidates[0];
+  assert.strictEqual(c.eligible, false);
+  const b = c.blockers.find((x) => x.gate === 'd-unread');
+  assert.ok(b, JSON.stringify(c.blockers));
+  assert.strictEqual(b.detail, 'to_direct=1 to_broadcast=197 from=0');
+});
+
+test('gate (d): unread FROM the child (its done report) still blocks', { skip }, () => {
+  const fx = fixture(V253, [{ id: 'c1', unread: 0, broadcastUnread: 197, unreadFrom: 1 }]);
+  const plan = L.planAutoArchive(opts(fx, { settings: DRY }));
+  const c = plan.candidates[0];
+  assert.strictEqual(c.eligible, false);
+  const b = c.blockers.find((x) => x.gate === 'd-unread');
+  assert.ok(b, JSON.stringify(c.blockers));
+  assert.strictEqual(b.detail, 'to_direct=0 to_broadcast=197 from=1');
+});
 
 // 0.108.3 — gate (a) accepts the child's structured done-report (the `done`
 // gate row alone) when the merge is PROVEN (gate b) and c-g pass.

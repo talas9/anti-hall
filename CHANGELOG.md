@@ -217,6 +217,17 @@ the update.
   hygiene test `tests/hygiene/readme-doc-links.test.js` guards this going
   forward (every git-tracked `docs/*.md` linked from README.md AND
   `docs/KB.md`; every relative docs/ link in README.md resolves).
+- **Auto-archive gate (d) blocked a finished lane on its own broadcast backlog.**
+  Field evidence: `d-unread (to=197 from=0)` on a done, merged, clean, idle child — all
+  197 were mesh-wide broadcast/FYI rows in the child's own inbox, not mail addressed to
+  it, so gate (d) could never clear and the Primary couldn't ack another partition's
+  cursor either. `devswarm-lifecycle.js`'s `unreadFact` was summing `w.unread` (direct)
+  AND `w.broadcastUnread` (the shared mesh partition, `computeSummary`'s own split) into
+  gate (d)'s blocking count. Gate (d) is now DIRECT-only: it blocks only on unread
+  DIRECT rows addressed to the child, or unread rows FROM the child in another partition
+  (e.g. its done report) — never on broadcast/mesh-wide rows. The plan's blocker detail
+  now reports the split, e.g. `to_direct=0 to_broadcast=197 from=0`. Scoped to gate (d)
+  alone: the separate `prune-archived` unread check is unchanged.
 
 ## 0.108.2 (2026-09-25)
 

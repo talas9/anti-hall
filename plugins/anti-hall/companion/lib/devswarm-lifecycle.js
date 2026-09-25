@@ -310,21 +310,31 @@ function cleanFact(wt, deps) {
   return { clean: r.out.trim() === '', reason: r.out.trim() ? 'uncommitted-changes' : null };
 }
 
-// unreadFact(ids, repoKey) -> { toChild, fromChild } (null = unknown)
-function unreadFact(home, repoKey, ids, deps) {
-  if (!repoKey) return { toChild: null, fromChild: null };
+// unreadFact(ids, repoKey, deps, opts) -> { toChild, toDirect, toBroadcast, fromChild }
+// (null = unknown). By default `toChild` folds in broadcastUnread (the
+// pre-0.108.3 behavior, still used by the prune gate below). Pass
+// { excludeBroadcast: true } (auto-archive gate d, 0.108.3) to make `toChild`
+// DIRECT-only — see the gate-d comment at evaluateCandidate for why: a
+// broadcast/FYI backlog in the child's own inbox is not mail addressed to it
+// and must never block auto-archive.
+function unreadFact(home, repoKey, ids, deps, opts) {
+  const o = opts || {};
+  if (!repoKey) return { toChild: null, toDirect: null, toBroadcast: null, fromChild: null };
   const summary = deps.summary(home, repoKey);
-  if (!summary || !summary.workspaces) return { toChild: null, fromChild: null, summary: null };
-  let toChild = 0;
+  if (!summary || !summary.workspaces) return { toChild: null, toDirect: null, toBroadcast: null, fromChild: null, summary: null };
+  let toDirect = 0;
+  let toBroadcast = 0;
   let known = false;
   for (const id of ids) {
     const w = summary.workspaces[id];
     if (!w) continue;
     known = true;
-    toChild += (Number(w.unread) || 0) + (Number(w.broadcastUnread) || 0);
+    toDirect += Number(w.unread) || 0;
+    toBroadcast += Number(w.broadcastUnread) || 0;
   }
+  const toChild = known ? (o.excludeBroadcast ? toDirect : toDirect + toBroadcast) : null;
   const fromChild = deps.unreadFrom(home, repoKey, ids, summary);
-  return { toChild: known ? toChild : null, fromChild, summary };
+  return { toChild, toDirect: known ? toDirect : null, toBroadcast: known ? toBroadcast : null, fromChild, summary };
 }
 
 // ---------- FEATURE 1: auto-archive ----------
@@ -354,7 +364,11 @@ function evaluateCandidate(c, o, deps, db, settings, now) {
   const facts = {};
   if (isPrimaryBuilder(b, db, o)) blockers.push({ gate: 'e-primary', detail: 'Primary workspace' });
   const repoKey = deps.repoKey(b.worktreePath || c.descriptors[0].worktreePath);
-  const un = unreadFact(o.home, repoKey, c.ids, deps);
+  // Gate (d), 0.108.3: DIRECT-only. A broadcast/FYI backlog in the child's own
+  // inbox (mesh-wide rows it was never individually addressed by) must never
+  // block auto-archive — only unread DIRECT rows TO it, or unread rows FROM it
+  // the Primary hasn't seen (e.g. its done report), count.
+  const un = unreadFact(o.home, repoKey, c.ids, deps, { excludeBroadcast: true });
   const head = worktreeHead(b.worktreePath, deps);
   const done = doneFact(un.summary, c.ids, head);
   facts.done = done.done;
@@ -370,9 +384,12 @@ function evaluateCandidate(c, o, deps, db, settings, now) {
   const cl = cleanFact(b.worktreePath, deps);
   facts.clean = cl.clean;
   if (cl.clean !== true) blockers.push({ gate: 'c-clean', detail: cl.reason });
-  facts.unread = { toChild: un.toChild, fromChild: un.fromChild };
+  facts.unread = { toChild: un.toChild, toDirect: un.toDirect, toBroadcast: un.toBroadcast, fromChild: un.fromChild };
   if (un.toChild !== 0 || un.fromChild !== 0) {
-    blockers.push({ gate: 'd-unread', detail: 'to=' + un.toChild + ' from=' + un.fromChild });
+    blockers.push({
+      gate: 'd-unread',
+      detail: 'to_direct=' + un.toDirect + ' to_broadcast=' + un.toBroadcast + ' from=' + un.fromChild,
+    });
   }
   if (!db.hasLastSelected) {
     blockers.push({ gate: 'f-viewed', detail: 'lastSelectedAt unavailable' });

@@ -306,7 +306,10 @@ blocks: a reused branch with new commits, and a squash merge (the app DB has no 
 so a squash-merged child needs a manual archive). The `done` verb records the HEAD it
 reported at, and gate (a) ignores that report once HEAD moves on. A `done` set with a plain
 `gate --set done` needs the git proof),
-(c) `git status --porcelain` is empty, (d) there's no unread mail to it or from it,
+(c) `git status --porcelain` is empty, (d) there's no unread mail to it or from it —
+DIRECT-only (0.108.3): a broadcast/FYI backlog in the child's own inbox never blocks this
+gate, only unread DIRECT rows addressed to it or unread rows FROM it the Primary hasn't
+seen (e.g. its done report); the plan shows the split (`to_direct=`/`to_broadcast=`/`from=`),
 (e) it isn't the Primary (the app DB's `builderType` decides; when it is missing, empty or whitespace-only for the row, the main-checkout rule does; a `primary-<hash>` descriptor id never does), (f) the owner hasn't selected it in the app for 10 min, and
 (g) it has been idle >= `idleMin`. A fact that can't be read counts as not proven.
 `hivecontrol workspace check-merge` is never used as a probe, because it can create a source
