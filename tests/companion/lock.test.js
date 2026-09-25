@@ -274,6 +274,44 @@ test('foreign host: a holder on another host is never "dead" by pid — only sta
   } finally { t.cleanup(); }
 });
 
+test('hostname drift: a renamed host on THIS machine (same boot/pidns) is still probed; a foreign machine is not', () => {
+  // macOS renames the host with the network: a live local holder must stay
+  // "alive" (never stolen by a never-steal-live caller once old) and a dead
+  // one must stay "dead" (immediate stealDead reclaim).
+  const t = tmp();
+  try {
+    fs.mkdirSync(path.dirname(t.p), { recursive: true });
+    const m = L._localMachine();
+    assert.ok(Number.isFinite(m.boot), 'this platform reports a boot time');
+    const now = 1_000_000;
+    const drifted = (pid, extra) => JSON.stringify(Object.assign({ pid, host: 'renamed-by-dhcp.invalid', ts: now - 1000, token: 'd', boot: m.boot }, m.pidns ? { pidns: m.pidns } : {}, extra || {}));
+    const live = (pid) => pid === 4242;
+    // live local holder, long past staleMs: a never-steal-live caller respects it
+    fs.writeFileSync(t.p, drifted(4242));
+    const hLive = L.inspect(t.p, { now: () => now, isAlive: live });
+    assert.strictEqual(hLive.known, true);
+    assert.strictEqual(hLive.alive, true);
+    assert.strictEqual(L.acquire(t.p, { now: () => now + 3600000, isAlive: live, staleMs: 60000 }), null, 'live local holder never stolen by age');
+    // dead local holder, fresh: stealDead reclaims it immediately
+    fs.writeFileSync(t.p, drifted(4243));
+    const h = L.acquire(t.p, { now: () => now, isAlive: live, stealDead: true, staleMs: 60000 });
+    assert.ok(h, 'dead local holder reclaimed at once despite the host rename');
+    h.release();
+    // a different boot = another machine: staleness-only, never "dead" by pid
+    fs.writeFileSync(t.p, drifted(4243, { boot: m.boot - 86400 }));
+    assert.strictEqual(L.inspect(t.p, { now: () => now, isAlive: live }).unknown, true);
+    assert.strictEqual(L.acquire(t.p, { now: () => now, isAlive: live, stealDead: true, staleMs: 60000 }), null);
+    // a different pid namespace (another container on this kernel): unknown too
+    fs.writeFileSync(t.p, drifted(4243, { pidns: 'pid:[1]' }));
+    assert.strictEqual(L.inspect(t.p, { now: () => now, isAlive: live }).unknown, true);
+    // our own records carry the machine id
+    fs.unlinkSync(t.p);
+    const own = L.acquire(t.p);
+    assert.strictEqual(JSON.parse(fs.readFileSync(t.p, 'utf8')).boot, m.boot);
+    own.release();
+  } finally { t.cleanup(); }
+});
+
 test('crash safety: a SIGKILLed holder leaves its lock; the next acquirer reclaims it (dead pid) with no scratch left', () => {
   const t = tmp();
   try {

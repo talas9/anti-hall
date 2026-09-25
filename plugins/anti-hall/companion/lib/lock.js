@@ -14,6 +14,17 @@
 //     `host` scopes the pid: a holder on ANOTHER host (a shared SMB/NFS home)
 //     can never be probed with kill(pid, 0), so its pid is treated as unknown
 //     (staleness-only) instead of "dead".
+//   * MACHINE ID — the hostname is NOT a machine identity: macOS renames the
+//     host when the network changes, which turned a live LOCAL holder into
+//     "unknown" (stealable by age even for never-steal-live callers, and no
+//     immediate dead-holder reclaim). Records therefore also carry `boot`
+//     (boot time, epoch seconds, from os.uptime()) and, on Linux, `pidns`
+//     (the /proc/self/ns/pid link — containers share the kernel's boot time
+//     but not its pid space). A differing host whose record matches our boot
+//     (within BOOT_SLOP_S) and pid namespace is this machine, so its pid IS
+//     probed. Probing unconditionally was rejected: on a genuinely foreign
+//     host ESRCH proves nothing, and a live remote holder would read as dead.
+//     A record without `boot` (older versions) keeps the host-only rule.
 //   * PUBLISH — publish:'link' (default) writes the FULL record to a private
 //     temp file and publishes it with linkSync (fails EEXIST like O_EXCL, but
 //     the lock is never visible empty — 7858c56). When linkSync itself is
@@ -41,8 +52,9 @@
 //     rename. A plain acquire into an empty path never needs the sidecar.
 //
 // STEAL POLICY (per caller, via options — every caller keeps its old rule):
-//   holder classes: KNOWN (parsed record with a local pid) -> alive | dead;
-//                   UNKNOWN (torn/unparseable, no pid, or a foreign host).
+//   holder classes: KNOWN (parsed record with a local pid: same host, or a
+//                   renamed host whose boot/pidns match) -> alive | dead;
+//                   UNKNOWN (torn/unparseable, no pid, or a foreign machine).
 //   age = now - (record.ts, else file mtime); stat failure -> Infinity.
 //   - dead holder:    stolen when opts.stealDead, else once age > staleMs.
 //   - live holder:    stolen once age > liveStaleMs (default Infinity = never).
@@ -66,6 +78,42 @@ let HOST = null;
 function localHost() {
   if (HOST === null) { try { HOST = os.hostname(); } catch (_) { HOST = ''; } }
   return HOST;
+}
+
+// localMachine() -> { boot, pidns } — boot: epoch seconds of this boot (null
+// when unavailable); pidns: Linux pid-namespace link, '' elsewhere. Cached.
+const BOOT_SLOP_S = 5; // os.uptime() is whole seconds; allow clock slew
+let MACHINE = null;
+function localMachine() {
+  if (MACHINE === null) {
+    let boot = null;
+    try {
+      const up = os.uptime();
+      if (Number.isFinite(up) && up > 0) boot = Math.floor(Date.now() / 1000 - up);
+    } catch (_) { boot = null; }
+    let pidns = '';
+    if (process.platform === 'linux') { try { pidns = fs.readlinkSync('/proc/self/ns/pid'); } catch (_) { pidns = ''; } }
+    MACHINE = { boot, pidns };
+  }
+  return MACHINE;
+}
+
+// sameMachine(record) -> true iff the record was written on THIS boot of
+// this machine (in this pid namespace), whatever its hostname said.
+function sameMachine(record) {
+  if (!record || !Number.isFinite(record.boot)) return false;
+  const m = localMachine();
+  if (m.boot === null || Math.abs(record.boot - m.boot) > BOOT_SLOP_S) return false;
+  return (typeof record.pidns === 'string' ? record.pidns : '') === m.pidns;
+}
+
+// ownerRecord(ts, token) -> the identity part of every record we publish.
+function ownerRecord(ts, token) {
+  const m = localMachine();
+  const r = { pid: process.pid, host: localHost(), ts, token };
+  if (m.boot !== null) r.boot = m.boot;
+  if (m.pidns) r.pidns = m.pidns;
+  return r;
 }
 
 // defaultIsAlive(pid) -> bool. kill(pid,0): ESRCH = gone; EPERM = exists but
@@ -114,7 +162,7 @@ function inspect(lockPath, opts) {
   }
   const t = now();
   const ageMs = ts === null ? Infinity : Math.max(0, t - ts);
-  const known = pid !== null && (host === null || host === localHost());
+  const known = pid !== null && (host === null || host === localHost() || sameMachine(record));
   let alive = null;
   if (known) { try { alive = !!isAlive(pid); } catch (_) { alive = true; } }
   return {
@@ -218,7 +266,7 @@ function takeSidecar(F, p, mode) {
     const ts = Date.now();
     const token = newToken(ts);
     try {
-      publish(F, side, JSON.stringify({ pid: process.pid, host: localHost(), ts, token }), mode);
+      publish(F, side, JSON.stringify(ownerRecord(ts, token)), mode);
       return { path: side, token, fs: F };
     } catch (e) { if (!e || e.code !== 'EEXIST') return null; }
     const h = inspect(side, { fs: F });
@@ -294,7 +342,7 @@ function acquire(lockPath, opts) {
     retryNow = false;
     const ts = now();
     const token = newToken(ts);
-    const record = Object.assign({ pid: process.pid, host: localHost(), ts, token }, o.fields || {});
+    const record = Object.assign(ownerRecord(ts, token), o.fields || {});
     for (const k of Object.keys(record)) if (record[k] === undefined) delete record[k];
     try {
       publish(F, lockPath, JSON.stringify(record), mode);
@@ -407,5 +455,5 @@ async function withLockAsync(lockPath, opts, fn) {
 module.exports = {
   acquire, release, refresh, inspect, reclaimStale, withLock, withLockAsync,
   defaultIsAlive, sleepSync, DEFAULT_STALE_MS, RECLAIM_STALE_MS,
-  _shouldSteal: shouldSteal,
+  _shouldSteal: shouldSteal, _localMachine: localMachine,
 };
