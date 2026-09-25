@@ -36,17 +36,57 @@ test('buildReport: below MIN_CALLS_FOR_VERDICT -> REVIEW (not enough data)', () 
   assert.match(r.suggestion, /not enough data/);
 });
 
-test('buildReport: >=200 calls, changed<1%, no bad outcomes -> REMOVE', () => {
+// FIX (v0.108.1, proven bug 2): REMOVE used to fire on changedRate<1% or a
+// high failure rate ALONE, with zero labelled outcomes behind it (a real
+// production case: 3 changed / 304 fresh hit REMOVE via changedRate alone).
+// KEEP and REMOVE now BOTH require a labelled sample (tp+fp, human+auto) of
+// at least MIN_LABELED_FOR_VERDICT (20) before either can fire; below that,
+// the verdict is REVIEW (needs labels: n/20), no matter how the raw rates look.
+
+test('buildReport: >=200 calls, changed<1%, no LABELLED outcomes -> REVIEW (needs labels), never REMOVE', () => {
   const rows = [];
   for (let i = 0; i < 200; i++) {
     rows.push(row({ id: 'noop-integration', h: 'h' + i, jev: false, base: false, changed: null }));
   }
   const report = buildReport(rows, {});
   const r = report.integrations.find((x) => x.id === 'noop-integration');
-  assert.strictEqual(r.suggestion, 'REMOVE');
+  assert.match(r.suggestion, /^REVIEW \(needs labels: 0\/20\)$/);
 });
 
-test('buildReport: >=200 calls, high failure rate -> REMOVE', () => {
+test('buildReport: changed<1% is a LOW YIELD note, never a REMOVE trigger by itself, once labelled', () => {
+  const rows = [];
+  // 20 changed decisions out of 2500 fresh calls = 0.8% changed rate, each
+  // with a GOOD outcome (so goodOutcomeRate=100%, failureRate=0%) -- neither
+  // REMOVE condition is met, and changedRate<1% must not remove on its own.
+  for (let i = 0; i < 20; i++) {
+    rows.push(row({ id: 'low-yield', h: 'h' + i, changed: 'added' }));
+    rows.push({ ts: new Date().toISOString(), type: 'outcome', id: 'low-yield', h: 'h' + i, outcome: 'evidence-added' });
+  }
+  for (let i = 0; i < 2480; i++) {
+    rows.push(row({ id: 'low-yield', h: 'u' + i, jev: false, base: false, changed: null }));
+  }
+  const report = buildReport(rows, {});
+  const r = report.integrations.find((x) => x.id === 'low-yield');
+  assert.ok(r.changedRate < 0.01, `expected <1% changed rate, got ${r.changedRate}`);
+  assert.notStrictEqual(r.suggestion, 'REMOVE', 'low yield alone must never remove');
+  assert.match(r.suggestion, /low yield: changed/);
+});
+
+test('buildReport: >=200 calls, high failure rate BUT below MIN_LABELED_FOR_VERDICT -> REVIEW (needs labels), never REMOVE', () => {
+  const rows = [];
+  for (let i = 0; i < 200; i++) {
+    const failing = i < 50; // 25% failures
+    rows.push(row({
+      id: 'flaky-unlabeled', h: 'h' + i, jev: failing ? null : true, backend: failing ? 'baseline-only' : 'jev',
+      reason: failing ? 'timeout' : undefined, changed: failing ? null : 'added',
+    }));
+  }
+  const report = buildReport(rows, {});
+  const r = report.integrations.find((x) => x.id === 'flaky-unlabeled');
+  assert.match(r.suggestion, /^REVIEW \(needs labels: 0\/20\)$/);
+});
+
+test('buildReport: >=200 calls, high failure rate AND a labelled sample -> REMOVE', () => {
   const rows = [];
   for (let i = 0; i < 200; i++) {
     const failing = i < 50; // 25% failures
@@ -55,24 +95,43 @@ test('buildReport: >=200 calls, high failure rate -> REMOVE', () => {
       reason: failing ? 'timeout' : undefined, changed: failing ? null : 'added',
     }));
   }
+  // Reach MIN_LABELED_FOR_VERDICT (20) via good auto-TP outcomes on 20 of the
+  // successful, changed decisions -- the failure rate alone still earns
+  // REMOVE once a labelled sample exists, regardless of those 20 being good.
+  for (let i = 50; i < 70; i++) {
+    rows.push({ ts: new Date().toISOString(), type: 'outcome', id: 'flaky', h: 'h' + i, outcome: 'evidence-added' });
+  }
   const report = buildReport(rows, {});
   const r = report.integrations.find((x) => x.id === 'flaky');
   assert.strictEqual(r.suggestion, 'REMOVE');
 });
 
-test('buildReport: changed>=5% and good-outcome>=80% -> KEEP', () => {
+test('buildReport: changed>=5% and good-outcome>=80% with a labelled sample -> KEEP', () => {
   const rows = [];
   for (let i = 0; i < 100; i++) {
-    const changed = i < 10; // 10% changed
+    const changed = i < 30; // 30% changed -- reaches the 20-label floor below
     rows.push(row({ id: 'speculation', h: 'h' + i, changed: changed ? 'added' : null }));
   }
-  // 10 changed decisions, 9 good outcomes, 1 bad
-  for (let i = 0; i < 9; i++) rows.push({ ts: new Date().toISOString(), type: 'outcome', id: 'speculation', h: 'h' + i, outcome: 'evidence-added' });
-  rows.push({ ts: new Date().toISOString(), type: 'outcome', id: 'speculation', h: 'h9', outcome: 'user-override' });
+  // 30 changed decisions, 27 good outcomes, 3 bad -- labelledSample=30 >= 20.
+  for (let i = 0; i < 27; i++) rows.push({ ts: new Date().toISOString(), type: 'outcome', id: 'speculation', h: 'h' + i, outcome: 'evidence-added' });
+  for (let i = 27; i < 30; i++) rows.push({ ts: new Date().toISOString(), type: 'outcome', id: 'speculation', h: 'h' + i, outcome: 'user-override' });
   const report = buildReport(rows, {});
   const r = report.integrations.find((x) => x.id === 'speculation');
   assert.strictEqual(r.suggestion, 'KEEP');
   assert.ok(Math.abs(r.goodOutcomeRate - 0.9) < 1e-9);
+});
+
+test('buildReport: changed>=5% and good-outcome>=80% but BELOW MIN_LABELED_FOR_VERDICT -> REVIEW (needs labels), never KEEP', () => {
+  const rows = [];
+  for (let i = 0; i < 100; i++) {
+    const changed = i < 10; // 10% changed, but only 10 outcomes below (< 20 floor)
+    rows.push(row({ id: 'thin-speculation', h: 'h' + i, changed: changed ? 'added' : null }));
+  }
+  for (let i = 0; i < 9; i++) rows.push({ ts: new Date().toISOString(), type: 'outcome', id: 'thin-speculation', h: 'h' + i, outcome: 'evidence-added' });
+  rows.push({ ts: new Date().toISOString(), type: 'outcome', id: 'thin-speculation', h: 'h9', outcome: 'user-override' });
+  const report = buildReport(rows, {});
+  const r = report.integrations.find((x) => x.id === 'thin-speculation');
+  assert.match(r.suggestion, /^REVIEW \(needs labels: 10\/20\)$/);
 });
 
 test('buildReport: outcome join by hash', () => {
@@ -735,4 +794,60 @@ test('buildWeeklyScorecard: mode defaults per getMode when jevCfg has no integra
   const scorecard = buildWeeklyScorecard(makeRows('speculation', 3), { jevCfg: { enabled: true } });
   const r = scorecard.integrations.find((x) => x.id === 'speculation');
   assert.strictEqual(r.mode, 'on', 'speculation is a LEGACY_ON_DEFAULT integration');
+});
+
+// ---------------------------------------------------------------------------
+// FIX (v0.108.1, proven bug 1): a shadow-mode integration's `changed` field
+// is always null by construction (jev-assist.js's finalize() only applies a
+// change when mode==='on'), so reading `row.changed` for a shadow row always
+// saw changedRate=0 and could hit REMOVE regardless of how good Jev's shadow
+// answers actually were. jev-report.js now reads `row.wouldChange` for shadow
+// rows instead (the same trust-rule outcome, computed without the mode gate).
+// ---------------------------------------------------------------------------
+
+function shadowRow(overrides) {
+  return Object.assign({
+    ts: new Date().toISOString(), id: 'shadowed', h: 'h1', base: true, jev: false,
+    conf: 0.95, ms: 100, backend: 'jev', final: true, changed: null, cached: false, mode: 'shadow',
+  }, overrides);
+}
+
+test('buildReport: shadow-mode rows use wouldChange for yield, not changed (which is always null in shadow)', () => {
+  const rows = [];
+  for (let i = 0; i < 60; i++) {
+    // 60 shadow rows (>= MIN_CALLS_FOR_VERDICT), all "would have relaxed" --
+    // changed is null (shadow never applies it) but wouldChange carries the
+    // real trust-rule outcome.
+    rows.push(shadowRow({ h: 'h' + i, wouldChange: 'relaxed' }));
+    rows.push({ ts: new Date().toISOString(), type: 'outcome', id: 'shadowed', h: 'h' + i, outcome: 'evidence-added' });
+  }
+  const report = buildReport(rows, {});
+  const r = report.integrations.find((x) => x.id === 'shadowed');
+  assert.strictEqual(r.changed.relaxed, 60, 'wouldChange direction is counted the same way changed would be for an \'on\' row');
+  assert.strictEqual(r.changedUnique, 60);
+  assert.strictEqual(r.changedRate, 1);
+  assert.strictEqual(r.suggestion, 'KEEP', 'a shadow integration with a real, good wouldChange signal can now earn KEEP/REMOVE like an \'on\' one');
+});
+
+test('buildReport: shadow-mode rows with changed:null and no wouldChange (pre-fix log shape) still yield changedRate 0, not a crash', () => {
+  const rows = [];
+  for (let i = 0; i < 200; i++) rows.push(shadowRow({ h: 'h' + i })); // no wouldChange field at all
+  const report = buildReport(rows, {});
+  const r = report.integrations.find((x) => x.id === 'shadowed');
+  assert.strictEqual(r.changedUnique, 0);
+  assert.strictEqual(r.changedRate, 0);
+});
+
+test('buildReport: label-only rows (string jev answer) are excluded from changedRate even if `changed`/`wouldChange` is set', () => {
+  const rows = [];
+  for (let i = 0; i < 60; i++) {
+    // A malformed/defensive row where a label-only answer somehow carries a
+    // changed/wouldChange direction -- must still be excluded, since a
+    // string `jev` answer has no boolean baseline to have "changed" at all.
+    rows.push(shadowRow({ id: 'newRequest', h: 'h' + i, jev: 'new-request', base: null, wouldChange: 'changed' }));
+  }
+  const report = buildReport(rows, {});
+  const r = report.integrations.find((x) => x.id === 'newRequest');
+  assert.strictEqual(r.changedUnique, 0, 'label-only rows never contribute to changedRate');
+  assert.match(r.suggestion, /label-only/);
 });

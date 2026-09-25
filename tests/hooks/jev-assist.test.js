@@ -412,6 +412,7 @@ test('ask(): add-block, confident true -> block added, mode on', async () => {
         assert.strictEqual(log[0].base, false);
         assert.strictEqual(log[0].final, true);
         assert.strictEqual(log[0].mode, 'on');
+        assert.strictEqual(Object.prototype.hasOwnProperty.call(log[0], 'wouldChange'), false, 'wouldChange is only written for non-\'on\' rows (would just duplicate `changed`)');
         // no message body / credential in the log line
         assert.ok(!JSON.stringify(log[0]).includes('hello'));
         assert.ok(!JSON.stringify(log[0]).includes('k'.repeat(1)) || !('state' in log[0]));
@@ -531,6 +532,13 @@ test('ask(): shadow mode calls Jev + logs but NEVER changes the outcome', async 
         assert.strictEqual(log[0].mode, 'shadow');
         assert.strictEqual(log[0].changed, null, 'shadow logs no change even though Jev would have relaxed it');
         assert.strictEqual(log[0].jev, 'authoring');
+        // FIX (v0.108.1): `changed` is always null in shadow mode by
+        // construction (mode gates whether a change is APPLIED), which meant
+        // jev-report.js could never compute a shadow integration's real yield
+        // -- it read only `changed`. `wouldChange` reports the SAME trust-rule
+        // outcome WITHOUT the mode gate, so jev-report.js can see what Jev
+        // would have done.
+        assert.strictEqual(log[0].wouldChange, 'relaxed', 'wouldChange reports what the trust rule would have done, even though shadow never applies it');
       });
     });
   } finally { h.cleanup(); }

@@ -41,18 +41,48 @@
 // estimate, not a bill), and a KEEP / REVIEW / REMOVE suggestion.
 //
 // THRESHOLDS (documented here, not buried in code — tune by editing these):
-//   MIN_CALLS_FOR_VERDICT = 50   below this, always "REVIEW (not enough data)"
-//   REMOVE if, over >= 200 calls:
-//     - changed-decision rate < 1%  (Jev almost never moves the outcome), OR
+//   MIN_CALLS_FOR_VERDICT = 50     below this, always "REVIEW (not enough data)"
+//   MIN_LABELED_FOR_VERDICT = 20   below this many labelled outcomes (tp+fp,
+//     human+auto combined), KEEP and REMOVE are BOTH withheld -- the verdict is
+//     "REVIEW (needs labels: n/20)" instead. A high changed-decision rate or a
+//     low one proves nothing about whether Jev is RIGHT without labelled
+//     outcomes behind it (this is what let a 3-changed/304-fresh integration
+//     hit REMOVE with zero labelled outcomes -- see the fix note below). This
+//     guard, and the label-only guard right after it, run BEFORE either
+//     KEEP or REMOVE is evaluated.
+//   Label-only integrations (a `choice` classifier with a string `jev`
+//     answer, e.g. newRequest — see "LABEL-ONLY INTEGRATIONS" below) NEVER use
+//     changedRate at all: they have no boolean baseline to have "changed", so
+//     their `changedHashByFresh` stays empty and they report
+//     "REVIEW (label-only, no outcome signal yet)" until a human labels some
+//     outcomes.
+//   REMOVE if, over >= 200 calls AND at least MIN_LABELED_FOR_VERDICT labelled
+//     outcomes:
 //     - good-outcome rate < 60% among changed decisions with a known outcome, OR
 //     - failure rate (backend baseline-only due to a real jevDecide error,
 //       i.e. NOT counting 'disabled'/'off'/'not-applicable') > 20%
+//     A changed-decision rate < 1% is LOW YIELD, not evidence of a wrong
+//     verdict on its own -- it is reported as a note on whatever REVIEW/KEEP/
+//     REMOVE verdict the other numbers already produced, and can never trigger
+//     REMOVE by itself.
 //   KEEP if changed-decision rate >= 5% AND good-outcome rate >= 80% AND at
-//     least one outcome has actually been observed (a NULL good-outcome rate
-//     — no outcome signal at all yet — can NEVER earn KEEP, regardless of
-//     changed-decision rate; it earns REVIEW instead).
+//     least MIN_LABELED_FOR_VERDICT labelled outcomes exist (a NULL
+//     good-outcome rate — no outcome signal at all yet — can NEVER earn KEEP,
+//     regardless of changed-decision rate; it earns REVIEW instead).
 //   REVIEW otherwise (includes: p95 latency > the integration's own configured
 //     budget, or anything not meeting KEEP/REMOVE above).
+//
+// SHADOW-MODE YIELD (fix, v0.108.1): a shadow-mode row's `changed` field is
+// ALWAYS null by construction (jev-assist.js's finalize() only applies/reports
+// a change when mode==='on' — shadow never changes the real outcome), so
+// reading `row.changed` for a shadow integration always saw changedRate=0 and
+// could hit REMOVE at >=200 calls no matter how good Jev's shadow answers
+// were. Shadow (and off) rows now also carry `row.wouldChange` -- the SAME
+// trust-rule direction computed WITHOUT the mode gate (see jev-assist.js's
+// finalize()) -- and this script uses `row.wouldChange` for shadow rows,
+// `row.changed` for 'on' rows (identical by construction), and neither for
+// label-only rows (string `jev` answers never have a real "changed" concept;
+// see MIN_LABELED_FOR_VERDICT above).
 //
 // DEDUPE BY DECISION (content hash `h`): a Stop-hook retry (or any caller
 // re-asking the same content) produces MULTIPLE log rows sharing one hash --
@@ -119,12 +149,13 @@ const os = require('os');
 const path = require('path');
 
 const MIN_CALLS_FOR_VERDICT = 50;
+const MIN_LABELED_FOR_VERDICT = 20; // tp+fp (human+auto), required before KEEP or REMOVE
 const REMOVE_MIN_CALLS = 200;
-const REMOVE_CHANGED_RATE = 0.01;
 const REMOVE_GOOD_OUTCOME_RATE = 0.60;
 const REMOVE_FAILURE_RATE = 0.20;
 const KEEP_CHANGED_RATE = 0.05;
 const KEEP_GOOD_OUTCOME_RATE = 0.80;
+const LOW_YIELD_CHANGED_RATE = 0.01; // note-only -- never a REMOVE trigger by itself
 
 // Outcome names treated as evidence Jev's changed decision was WRONG. Every
 // other named outcome (e.g. 'evidence-added', 'answered') counts as "good".
@@ -667,8 +698,20 @@ function buildReport(rows, opts = {}) {
     // changed-decision rate and any cost-per-decision metric. Same hash from
     // multiple fresh calls (e.g. a cache eviction re-triggers the same
     // content) still collapses to one entry via the Map key.
-    if (row.h && row.changed && row.backend !== 'cache') {
-      bucket.changedHashByFresh.set(row.h, row.changed);
+    //
+    // Which direction field to read depends on mode (see the SHADOW-MODE
+    // YIELD doc note above): an 'on' row's real, applied direction is
+    // `row.changed`; a shadow (or off) row's `row.changed` is ALWAYS null by
+    // construction, so `row.wouldChange` (the same trust-rule outcome,
+    // computed without the mode gate) is read instead. A label-only row
+    // (`typeof row.jev === 'string'` -- a `choice` classifier with no boolean
+    // baseline) is excluded from changedRate entirely, regardless of mode.
+    const isLabelOnly = typeof row.jev === 'string';
+    const effectiveDirection = isLabelOnly
+      ? null
+      : (row.mode === 'on' ? row.changed : row.wouldChange);
+    if (row.h && effectiveDirection && row.backend !== 'cache') {
+      bucket.changedHashByFresh.set(row.h, effectiveDirection);
     }
     if (Number.isFinite(row.ms)) bucket.latencies.push(row.ms);
   }
@@ -732,15 +775,39 @@ function buildReport(rows, opts = {}) {
     const failureRate = bucket.calls > 0 ? bucket.failures / bucket.calls : 0;
     const budgetMs = opts.budgetMsById && opts.budgetMsById[bucket.id];
 
+    // Labelled sample size (tp+fp, human+auto combined) -- KEEP and REMOVE
+    // BOTH require at least MIN_LABELED_FOR_VERDICT of these before either can
+    // fire (see the module doc note above); below that, the verdict is always
+    // REVIEW, regardless of calls/changedRate/goodOutcomeRate/failureRate.
+    const labeledSample = humanTP + humanFP + autoTP + autoFP;
+    const lowYieldNote = changedRate < LOW_YIELD_CHANGED_RATE
+      ? `low yield: changed ${pct(changedRate)} < 1%` : null;
+
     let suggestion;
     if (bucket.calls < MIN_CALLS_FOR_VERDICT) {
       suggestion = `REVIEW (not enough data: ${bucket.calls} < ${MIN_CALLS_FOR_VERDICT} calls)`;
+    } else if (bucket.labeled > 0 && known === 0) {
+      // Label-only integration (a `choice` classifier, no boolean baseline):
+      // changedHashByFresh is never populated for these rows at all (see
+      // above), so this MUST run before the labelled-sample/REMOVE/KEEP
+      // checks below -- otherwise it would always read as "0/20 labels" and
+      // report the wrong reason.
+      suggestion = 'REVIEW (label-only, no outcome signal yet)';
+    } else if (labeledSample < MIN_LABELED_FOR_VERDICT) {
+      // Neither KEEP nor REMOVE may fire on an unlabelled sample -- a
+      // changed-decision rate (high OR low) says nothing about whether Jev's
+      // moves were actually RIGHT without labelled outcomes behind it (this is
+      // what previously let e.g. 3 changed / 304 fresh hit REMOVE on
+      // changedRate alone, with zero labelled outcomes).
+      suggestion = `REVIEW (needs labels: ${labeledSample}/${MIN_LABELED_FOR_VERDICT})`;
     } else if (
       bucket.calls >= REMOVE_MIN_CALLS &&
-      (changedRate < REMOVE_CHANGED_RATE ||
-        (goodOutcomeRate !== null && goodOutcomeRate < REMOVE_GOOD_OUTCOME_RATE) ||
+      ((goodOutcomeRate !== null && goodOutcomeRate < REMOVE_GOOD_OUTCOME_RATE) ||
         failureRate > REMOVE_FAILURE_RATE)
     ) {
+      // A changed-decision rate < 1% is NOT a REMOVE trigger on its own (see
+      // LOW_YIELD_CHANGED_RATE above) -- only a proven bad-outcome rate or a
+      // real failure rate ever earns REMOVE.
       suggestion = 'REMOVE';
     } else if (
       changedRate >= KEEP_CHANGED_RATE &&
@@ -750,14 +817,10 @@ function buildReport(rows, opts = {}) {
       // a high changed-decision rate alone (Jev moving lots of decisions)
       // proves nothing about whether those moves were good ones.
       suggestion = 'KEEP';
-    } else if (bucket.labeled > 0 && known === 0) {
-      // Label-only integration (a `choice` classifier, no boolean baseline)
-      // with zero human-supplied outcomes yet: never KEEP, always REVIEW.
-      suggestion = 'REVIEW (label-only, no outcome signal yet)';
     } else if (Number.isFinite(budgetMs) && Number.isFinite(p95) && p95 > budgetMs) {
       suggestion = 'REVIEW (p95 latency exceeds budget)';
     } else {
-      suggestion = 'REVIEW';
+      suggestion = lowYieldNote ? `REVIEW (${lowYieldNote})` : 'REVIEW';
     }
 
     let topLabel = null; let labelPct = null;
@@ -845,8 +908,10 @@ function weeklyReason(r) {
     return `changed ${pct(r.changedRate)}, good-outcome ${pct(r.goodOutcomeRate)} over ${r.calls} calls`;
   }
   if (r.suggestion === 'REMOVE') {
+    // changedRate < 1% is low-yield-only, never a REMOVE reason on its own
+    // (see LOW_YIELD_CHANGED_RATE) -- only a proven bad-outcome or failure
+    // rate ever earns REMOVE, so those are the only reasons listed here.
     const reasons = [];
-    if (r.changedRate < 0.01) reasons.push(`changed ${pct(r.changedRate)} < 1%`);
     if (r.goodOutcomeRate !== null && r.goodOutcomeRate < 0.60) reasons.push(`good-outcome ${pct(r.goodOutcomeRate)} < 60%`);
     if (r.failureRate > 0.20) reasons.push(`failure-rate ${pct(r.failureRate)} > 20%`);
     return reasons.length ? reasons.join(', ') : `${r.calls} calls`;

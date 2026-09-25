@@ -46,17 +46,24 @@ function writeKeepWorthyLog(home, id) {
   fs.writeFileSync(path.join(dir, 'jev-assist.ndjson'), lines.join('\n') + '\n');
 }
 
-// writeRemoveWorthyLog(home, id) -- >=200 calls, <1% changed -> REMOVE.
+// writeRemoveWorthyLog(home, id) -- >=200 calls, a labelled sample (>=20
+// tp+fp) with good-outcome rate <60% -> REMOVE. (v0.108.1: changedRate<1%
+// alone no longer triggers REMOVE, and REMOVE now requires a labelled sample
+// -- see jev-report.js's fix note -- so this fixture carries 25 changed
+// decisions with real, labelled outcomes: 10 good, 15 bad = 40% good-outcome.)
 function writeRemoveWorthyLog(home, id) {
   const dir = path.join(home, '.anti-hall', 'logs');
   fs.mkdirSync(dir, { recursive: true });
   const lines = [];
   for (let i = 0; i < 220; i++) {
+    const changed = i < 25;
     lines.push(JSON.stringify({
-      ts: new Date().toISOString(), id, h: 'h' + i, base: false, jev: false, conf: 0.95,
-      ms: 100, backend: 'jev', final: false, changed: null, cached: false, mode: 'on',
+      ts: new Date().toISOString(), id, h: 'h' + i, base: false, jev: changed, conf: 0.95,
+      ms: 100, backend: 'jev', final: changed, changed: changed ? 'added' : null, cached: false, mode: 'on',
     }));
   }
+  for (let i = 0; i < 10; i++) lines.push(JSON.stringify({ type: 'outcome', id, h: 'h' + i, outcome: 'evidence-added' }));
+  for (let i = 10; i < 25; i++) lines.push(JSON.stringify({ type: 'outcome', id, h: 'h' + i, outcome: 'user-override' }));
   fs.writeFileSync(path.join(dir, 'jev-assist.ndjson'), lines.join('\n') + '\n');
 }
 

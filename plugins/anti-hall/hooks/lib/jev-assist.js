@@ -522,6 +522,17 @@ function finalize({ id, home, hash, mode, trust, baseline, judge, threshold, r, 
   const changed = mode === 'on' && wouldBe !== baseline;
   const final = mode === 'on' ? wouldBe : baseline;
   const direction = directionFor(trust, changed);
+  // wouldChange -- the SAME trust-rule outcome computed WITHOUT the mode==='on'
+  // gate above. `changed`/`direction` are null-by-construction for shadow/off
+  // rows (mode gates them so a shadow row never actually changes anything),
+  // which meant `jev-report.js` could never see a shadow integration's yield --
+  // it read only `changed` and a shadow row's was always null, so changedRate
+  // was always 0 and REMOVE fired regardless of how good Jev's shadow answers
+  // actually were. This field reports what the trust rule WOULD have done had
+  // mode been 'on', for every mode -- `jev-report.js` uses it for shadow rows
+  // only (an 'on' row's `wouldChange` is identical to `changed` by construction,
+  // so the report keeps reading `changed` there).
+  const wouldChangeDirection = directionFor(trust, (r && r.ok) ? (wouldBe !== baseline) : false);
 
   const backend = !r ? 'baseline-only' : (cachedFlag ? 'cache' : (r.ok ? 'jev' : 'baseline-only'));
   const { costUsd, costSource } = r ? computeCostUsd({ r, cachedFlag, home }) : { costUsd: null, costSource: null };
@@ -537,6 +548,10 @@ function finalize({ id, home, hash, mode, trust, baseline, judge, threshold, r, 
     backend,
     final,
     changed: direction,
+    // wouldChange: only written when it differs in meaning from `changed`
+    // (mode !== 'on') -- an 'on' row's value would just duplicate `changed`,
+    // and older/other readers never expect this field at all.
+    ...(mode !== 'on' ? { wouldChange: wouldChangeDirection } : {}),
     cached: !!cachedFlag,
     mode,
     // project: always populated (cwd-basename fallback, `jev report --by
