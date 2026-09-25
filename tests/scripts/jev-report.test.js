@@ -852,6 +852,38 @@ test('buildReport: label-only rows (string jev answer) are excluded from changed
   assert.match(r.suggestion, /label-only/);
 });
 
+// FIX (v0.108.3): a label-only integration's changed% used to render as a
+// bare "0" / "0 changed" -- indistinguishable from "Jev never changed
+// anything here" -- even though there is no boolean outcome to diff at all.
+// The report must instead surface the real distinct-decision count (unique
+// content hashes) split fresh vs cache, both in the table's status note and
+// in buildHeadline()'s one-line summary.
+test('buildReport: label-only integration reports distinct-decision count (fresh vs cache), not a bare 0', () => {
+  const rows = [];
+  // 25 distinct decisions, each first seen fresh, then re-answered from
+  // cache 3x (a real retry pattern) -- the fresh/cache split must count
+  // each decision ONCE regardless of how many cache hits share its hash.
+  for (let i = 0; i < 25; i++) {
+    rows.push(shadowRow({ id: 'supervisorBlockerLabel', h: 'h' + i, jev: 'wedged', base: null, backend: 'jev' }));
+    for (let c = 0; c < 3; c++) {
+      rows.push(shadowRow({ id: 'supervisorBlockerLabel', h: 'h' + i, jev: 'wedged', base: null, backend: 'cache', cached: true }));
+    }
+  }
+  const report = buildReport(rows, {});
+  const r = report.integrations.find((x) => x.id === 'supervisorBlockerLabel');
+  assert.strictEqual(r.isLabelOnly, true);
+  assert.strictEqual(r.changedUnique, 0, 'still no boolean changed count');
+  assert.strictEqual(r.labelDistinctDecisions, 25, 'all rows (fresh+cache) collapse to 25 distinct hashes');
+  assert.strictEqual(r.labelDistinctFresh, 25, 'exactly the fresh occurrence of each hash counts');
+  assert.strictEqual(
+    r.labelOnlyNote,
+    'label-only: no boolean outcome to compare; 25 distinct decisions (25 fresh)',
+  );
+  const headline = buildHeadline(r, '24h');
+  assert.match(headline, /25 distinct decisions\/24h \(label-only\)/);
+  assert.doesNotMatch(headline, /^supervisorBlockerLabel: 0 changed/);
+});
+
 // ---------------------------------------------------------------------------
 // FIX (v0.108.1, proven bug 3): --since/--until/--exclude-window let a report
 // exclude a known-accidental run (e.g. the 2026-09-24T19:56Z..22:23Z
