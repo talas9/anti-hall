@@ -184,7 +184,96 @@ function findOrphans(procList, extraRe, excludeRe) {
   return orphans;
 }
 
-module.exports = { parsePs, isReaperParent, matchesMcp, findOrphans, argv0Basename, MCP_RE, REAPER_CMD_RE };
+// --- Codex app-server-broker class (ADDITIVE, kept OUT of matchesMcp/MCP_TOKEN_RE) ---
+// app-server-broker.mjs (the openai-codex Claude Code plugin's scripts/app-server-broker.mjs)
+// is NOT an MCP-protocol server — it is that plugin's own JSON-RPC broker in front of
+// Codex's "app-server" backend, unix-socket based. It is deliberately excluded from
+// matchesMcp() above, which is intentionally "generic, AGNOSTIC ... match the protocol,
+// not any user's servers" (see file header). This class exists SEPARATELY because the
+// FAILURE MODE is identical to what this whole tool targets: a per-session helper with no
+// PR_SET_PDEATHSIG on macOS, reparented to init when its Claude/Codex session dies, whose
+// open cwd then pins a (possibly archived) DevSwarm worktree submodule open and blocks
+// cleanup — exactly the reaper's own documented purpose (file header: "leaked when their
+// spawner (a Claude / codex / npm / node session) exited"). Matched narrowly and kept in
+// its own function so widening THIS class can never loosen the generic MCP matcher above.
+//
+// Exact script-name match (not a substring anywhere in a log path/grep arg), AND the cmd
+// must carry a literal `/codex/` path segment before it (the plugin's own install path,
+// e.g. `.../cache/openai-codex/codex/1.0.6/scripts/app-server-broker.mjs`) — this rejects
+// an unrelated project's own same-named script that happens to live outside a codex path.
+const CODEX_BROKER_SCRIPT_RE = /(^|[\s/\\])app-server-broker\.mjs(\s|$)/i;
+const CODEX_BROKER_PATH_RE = /[/\\]codex[/\\][^\s]*app-server-broker\.mjs(\s|$)/i;
+
+// matchesCodexBroker(cmd) -> bool. Excludes our own reaper tooling (belt-and-suspenders;
+// mcp-reaper.js never carries "app-server-broker.mjs" in its own cmdline anyway).
+function matchesCodexBroker(cmd) {
+  if (!cmd) return false;
+  if (/mcp-reaper/i.test(cmd)) return false;
+  if (!CODEX_BROKER_SCRIPT_RE.test(cmd)) return false;
+  return CODEX_BROKER_PATH_RE.test(cmd);
+}
+
+// Same default as hooks/session-end-mcp-reaper.js's own DEFAULT_MIN_AGE_S — reused as
+// precedent for "how old before an orphan helper is safe to reap", not re-derived.
+const DEFAULT_CODEX_BROKER_MIN_AGE_S = 60;
+
+// findCodexBrokerOrphans(procList, opts) -> orphans of the codex-broker class only.
+// opts: { enabled, excludeRe, minAgeS, getAgesForPids(pids) -> Map<pid, ageSeconds> }.
+// Applies the SAME parent invariant as findOrphans (ppid===1, or a reparented-to-reaper
+// parent that IS present in the snapshot; an absent non-pid-1 parent is UNSURE -> skip),
+// PLUS an age floor: a pid with an UNKNOWN age (getAgesForPids didn't resolve it) is
+// treated as "not old enough" and skipped — fail-soft toward never reaping.
+function findCodexBrokerOrphans(procList, opts) {
+  const o = opts || {};
+  if (!o.enabled) return [];
+  const list = Array.isArray(procList) ? procList : [];
+  const byPid = new Map();
+  for (const p of list) byPid.set(p.pid, p);
+
+  const candidates = [];
+  for (const p of list) {
+    if (!matchesCodexBroker(p.cmd)) continue;
+    if (o.excludeRe && o.excludeRe.test(p.cmd)) continue; // user opt-out
+    if (Number(p.ppid) === 1) {
+      candidates.push(p);
+      continue;
+    }
+    const parent = byPid.get(p.ppid);
+    if (!parent) continue; // unsure -> skip
+    if (isReaperParent(p.ppid, parent.cmd)) candidates.push(p);
+  }
+  if (!candidates.length) return candidates;
+
+  const minAgeS = Number.isFinite(o.minAgeS) ? o.minAgeS : DEFAULT_CODEX_BROKER_MIN_AGE_S;
+  if (minAgeS <= 0) return candidates; // no age floor configured
+  if (typeof o.getAgesForPids !== 'function') return []; // can't verify age -> skip all
+
+  let ages;
+  try {
+    ages = o.getAgesForPids(candidates.map((c) => c.pid));
+  } catch (_e) {
+    return []; // age lookup failed -> skip all, fail-soft
+  }
+  if (!(ages instanceof Map)) return [];
+
+  return candidates.filter((c) => {
+    const age = ages.get(c.pid);
+    return typeof age === 'number' && age >= minAgeS;
+  });
+}
+
+module.exports = {
+  parsePs,
+  isReaperParent,
+  matchesMcp,
+  findOrphans,
+  argv0Basename,
+  MCP_RE,
+  REAPER_CMD_RE,
+  matchesCodexBroker,
+  findCodexBrokerOrphans,
+  DEFAULT_CODEX_BROKER_MIN_AGE_S,
+};
 
 // ---------------------------------------------------------------------------
 // Run section — only when executed directly. Wrapped fail-safe; never throws.
@@ -246,20 +335,47 @@ function main() {
     // Parse grace; honor an explicit 0 (don't let `|| 3` swallow it). Finite & >= 0 wins.
     const graceParsed = Number(process.env.MCP_REAP_GRACE);
     const grace = Number.isFinite(graceParsed) && graceParsed >= 0 ? graceParsed : 3;
-    let reaperMatch, reaperExclude;
+    let reaperMatch, reaperExclude, reaperCodexBroker, reaperCodexBrokerMinAgeS;
     try {
       const settingsLib = require('../hooks/lib/settings.js');
       reaperMatch = settingsLib.get('guards', 'reaperMatch');
       reaperExclude = settingsLib.get('guards', 'reaperExclude');
+      reaperCodexBroker = settingsLib.get('guards', 'reaperCodexBroker');
+      reaperCodexBrokerMinAgeS = settingsLib.get('guards', 'reaperCodexBrokerMinAgeS');
     } catch (_) {
       reaperMatch = process.env.ANTIHALL_REAPER_MATCH;
       reaperExclude = process.env.ANTIHALL_REAPER_EXCLUDE;
+      // No settings.js -> fall back to the env knob, defaulting ON (same "opted in by
+      // virtue of this script running at all" reasoning as the schema default).
+      reaperCodexBroker = process.env.ANTIHALL_REAPER_CODEX_BROKER !== '0';
+      const envMinAge = Number(process.env.ANTIHALL_REAPER_CODEX_BROKER_MIN_AGE_S);
+      reaperCodexBrokerMinAgeS = Number.isFinite(envMinAge) ? envMinAge : DEFAULT_CODEX_BROKER_MIN_AGE_S;
     }
     const extraRe = buildExtraRe(reaperMatch);
     const excludeRe = buildExtraRe(reaperExclude);
 
-    const procs = enumerate();
-    const orphans = findOrphans(procs, extraRe, excludeRe);
+    // Age lookup reused from hooks/session-end-mcp-reaper.js (require()-ing it has zero
+    // side effects — it only runs main() under its own require.main === module guard).
+    let getAgesForPids = null;
+    try {
+      getAgesForPids = require('../hooks/session-end-mcp-reaper.js').getAgesForPids;
+    } catch (_e) {
+      getAgesForPids = null; // unavailable -> codex-broker class fails-soft to "skip all"
+    }
+
+    function scanOrphans() {
+      const procs = enumerate();
+      const mcpOrphans = findOrphans(procs, extraRe, excludeRe);
+      const codexBrokerOrphans = findCodexBrokerOrphans(procs, {
+        enabled: !!reaperCodexBroker,
+        excludeRe,
+        minAgeS: reaperCodexBrokerMinAgeS,
+        getAgesForPids,
+      });
+      return mcpOrphans.concat(codexBrokerOrphans);
+    }
+
+    const orphans = scanOrphans();
 
     if (orphans.length === 0) {
       logLine(logFile, 'scan: no orphans');
@@ -291,7 +407,7 @@ function main() {
     // SIGKILL survivors. Re-enumerate and RE-APPLY THE FULL INVARIANT on fresh data,
     // then kill only PIDs that are STILL orphans — defends against the (unlikely) case
     // of an orphan PID being recycled into a live process during the grace window.
-    const stillOrphanPids = new Set(findOrphans(enumerate(), extraRe, excludeRe).map((p) => p.pid));
+    const stillOrphanPids = new Set(scanOrphans().map((p) => p.pid));
     for (const o of orphans) {
       if (!stillOrphanPids.has(o.pid)) continue;
       try {

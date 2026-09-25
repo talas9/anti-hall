@@ -15,6 +15,21 @@ children, a *live* MCP's parent is always a live spawner — never a reaper — 
 true orphan. For that target case (a session-leaked orphan), killing an in-use MCP
 is prevented by construction.
 
+## Codex app-server-broker class
+
+Additionally reaps orphaned `app-server-broker.mjs` helper processes from the
+openai-codex Claude Code plugin — a JSON-RPC broker, not an MCP-protocol server,
+so it is matched separately from the generic MCP signature above and never
+loosens it. Same failure mode: no `PR_SET_PDEATHSIG` on macOS means a dead
+session's broker reparents to init and its held `--cwd` can pin a (possibly
+archived) DevSwarm worktree submodule open. Selected only if it is (a) an exact
+`app-server-broker.mjs` script match under a literal `/codex/` path segment,
+(b) parented to init/launchd/dead-session (same invariant as above), and (c)
+older than `guards.reaperCodexBrokerMinAgeS` (default 60s; an unresolvable age
+is always skipped, never reaped). Toggle: `guards.reaperCodexBroker` (default
+on, since this script only runs at all once the reaper is opted in via
+`install-reaper.js`) / env `ANTIHALL_REAPER_CODEX_BROKER=0` to disable.
+
 ## Limitations
 
 This holds for **session-leaked** orphans only. If you run an MCP server as a macOS

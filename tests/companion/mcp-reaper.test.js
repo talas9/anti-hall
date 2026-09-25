@@ -273,3 +273,129 @@ test('truncation-safety: partial list with a dropped non-pid-1 parent yields NO 
   assert.strictEqual(m.findOrphans(truncated).length, 0,
     'a truncated snapshot that drops the live parent must not cause a kill');
 });
+
+// =====================================================================
+// Codex app-server-broker class (additive, field report 2026-09-25): orphaned
+// openai-codex plugin app-server-broker.mjs processes leaked with PPID 1,
+// pinning archived DevSwarm worktree submodules open. This is NOT an
+// MCP-protocol server (matchesMcp stays untouched), so it is matched and
+// gated separately via matchesCodexBroker / findCodexBrokerOrphans.
+// =====================================================================
+
+const REAL_BROKER_CMD =
+  '/Users/talas9/.nvm/versions/node/v24.14.0/bin/node ' +
+  '/Users/talas9/.claude/plugins/cache/openai-codex/codex/1.0.6/scripts/app-server-broker.mjs ' +
+  'serve --endpoint unix:/var/folders/x/T/cxc-abc/broker.sock ' +
+  '--cwd /Users/talas9/.devswarm/repos/0/11f7ff9d/fix-roster-image-only-message/skyflutter ' +
+  '--pid-file /var/folders/x/T/cxc-abc/broker.pid';
+
+test('matchesCodexBroker: true for the real observed app-server-broker.mjs cmdline', () => {
+  assert.ok(m.matchesCodexBroker(REAL_BROKER_CMD));
+});
+
+test('matchesCodexBroker: false for a similarly-named unrelated process (no /codex/ path segment)', () => {
+  assert.ok(
+    !m.matchesCodexBroker('/usr/local/bin/node /Users/x/myproject/scripts/app-server-broker.mjs serve')
+  );
+  // A path that merely CONTAINS "codex" as a substring but not as its own segment
+  // (e.g. a project named "codex-tools") must not match either.
+  assert.ok(
+    !m.matchesCodexBroker('/usr/local/bin/node /Users/x/codex-tools/scripts/app-server-broker.mjs serve')
+  );
+  // A file that only mentions the script name (grep/log/editor) must not match.
+  assert.ok(!m.matchesCodexBroker('grep app-server-broker.mjs /var/log/codex/history.log'));
+  assert.ok(!m.matchesCodexBroker(''));
+  assert.ok(!m.matchesCodexBroker(undefined));
+});
+
+function agesOf(map) {
+  return (pids) => new Map(pids.filter((p) => map.has(p)).map((p) => [p, map.get(p)]));
+}
+
+test('findCodexBrokerOrphans: orphan broker (ppid==1, old enough) IS selected', () => {
+  const procs = [{ pid: 2000, ppid: 1, cmd: REAL_BROKER_CMD }];
+  const orphans = m.findCodexBrokerOrphans(procs, {
+    enabled: true,
+    minAgeS: 60,
+    getAgesForPids: agesOf(new Map([[2000, 3600]])), // 1h old
+  });
+  assert.strictEqual(orphans.length, 1);
+  assert.strictEqual(orphans[0].pid, 2000);
+});
+
+test('findCodexBrokerOrphans: broker with a LIVE parent is NOT selected', () => {
+  const procs = [
+    { pid: 500, ppid: 1, cmd: 'node /Users/x/.claude/cli.js' }, // live Codex/Claude session
+    { pid: 2000, ppid: 500, cmd: REAL_BROKER_CMD },
+  ];
+  const orphans = m.findCodexBrokerOrphans(procs, {
+    enabled: true,
+    minAgeS: 60,
+    getAgesForPids: agesOf(new Map([[2000, 3600]])),
+  });
+  assert.strictEqual(orphans.length, 0, 'a broker under a live spawner must never be reaped');
+});
+
+test('findCodexBrokerOrphans: a YOUNG orphan broker is NOT selected', () => {
+  const procs = [{ pid: 2000, ppid: 1, cmd: REAL_BROKER_CMD }];
+  const orphans = m.findCodexBrokerOrphans(procs, {
+    enabled: true,
+    minAgeS: 60,
+    getAgesForPids: agesOf(new Map([[2000, 5]])), // 5s old, below the 60s floor
+  });
+  assert.strictEqual(orphans.length, 0);
+});
+
+test('findCodexBrokerOrphans: a similarly-named unrelated process is NOT selected', () => {
+  const procs = [
+    { pid: 2000, ppid: 1, cmd: '/usr/local/bin/node /Users/x/myproject/scripts/app-server-broker.mjs serve' },
+  ];
+  const orphans = m.findCodexBrokerOrphans(procs, {
+    enabled: true,
+    minAgeS: 60,
+    getAgesForPids: agesOf(new Map([[2000, 3600]])),
+  });
+  assert.strictEqual(orphans.length, 0);
+});
+
+test('findCodexBrokerOrphans: disabled (enabled:false) selects nothing, even a textbook orphan', () => {
+  const procs = [{ pid: 2000, ppid: 1, cmd: REAL_BROKER_CMD }];
+  const orphans = m.findCodexBrokerOrphans(procs, {
+    enabled: false,
+    minAgeS: 60,
+    getAgesForPids: agesOf(new Map([[2000, 3600]])),
+  });
+  assert.strictEqual(orphans.length, 0);
+});
+
+test('findCodexBrokerOrphans: unresolvable age (getAgesForPids omits the pid) is skipped, never reaped', () => {
+  const procs = [{ pid: 2000, ppid: 1, cmd: REAL_BROKER_CMD }];
+  const orphans = m.findCodexBrokerOrphans(procs, {
+    enabled: true,
+    minAgeS: 60,
+    getAgesForPids: agesOf(new Map()), // age unknown
+  });
+  assert.strictEqual(orphans.length, 0);
+});
+
+test('findCodexBrokerOrphans: no getAgesForPids available (settings.js/hook require failed) skips all', () => {
+  const procs = [{ pid: 2000, ppid: 1, cmd: REAL_BROKER_CMD }];
+  const orphans = m.findCodexBrokerOrphans(procs, { enabled: true, minAgeS: 60, getAgesForPids: null });
+  assert.strictEqual(orphans.length, 0);
+});
+
+test('findCodexBrokerOrphans: truncation-safety — dropped non-pid-1 parent yields no orphan', () => {
+  const procs = [{ pid: 2000, ppid: 500, cmd: REAL_BROKER_CMD }]; // parent 500 missing from snapshot
+  const orphans = m.findCodexBrokerOrphans(procs, {
+    enabled: true,
+    minAgeS: 60,
+    getAgesForPids: agesOf(new Map([[2000, 3600]])),
+  });
+  assert.strictEqual(orphans.length, 0);
+});
+
+test('exports include the codex-broker class', () => {
+  assert.strictEqual(typeof m.matchesCodexBroker, 'function');
+  assert.strictEqual(typeof m.findCodexBrokerOrphans, 'function');
+  assert.strictEqual(typeof m.DEFAULT_CODEX_BROKER_MIN_AGE_S, 'number');
+});
