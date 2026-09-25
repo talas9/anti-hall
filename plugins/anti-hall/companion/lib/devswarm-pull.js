@@ -130,72 +130,42 @@ function isAliveDefault(pid) {
 // `ageMs` is already computed from) so a caller can render an absolute
 // "acquired at" timestamp instead of only a relative age.
 function acquireExclLock(lockPath, io, staleMs) {
-  const F = (io && io.fs) || fs;
-  const isAlive = (io && io.isAlive) || isAliveDefault;
-  const now = (io && io.now) || Date.now;
   const stale = Number.isFinite(staleMs) ? staleMs : PULL_LOCK_STALE_MS;
-  const allowStaleLiveSteal = !!(io && io.allowStaleLiveSteal);
   const version = (io && typeof io.version === 'string') ? io.version : null;
   const sessionId = (io && typeof io.sessionId === 'string' && io.sessionId) ? io.sessionId : undefined;
-  try { F.mkdirSync(path.dirname(lockPath), { recursive: true }); } catch (_) {}
-  for (let attempt = 0; attempt < 2; attempt++) {
-    const ts = now();
-    const token = process.pid + ':' + ts + ':' + Math.random().toString(36).slice(2);
-    try {
-      const fd = F.openSync(lockPath, 'wx');
-      try { F.writeSync(fd, JSON.stringify({ pid: process.pid, ts, token, version, sessionId })); } finally { F.closeSync(fd); }
-      const release = function release() {
-        try { const cur = JSON.parse(F.readFileSync(lockPath, 'utf8')); if (cur && cur.token === token) F.unlinkSync(lockPath); } catch (_) {}
-      };
-      // restamp() — re-write `ts` (and version/sessionId) IN PLACE, same
-      // pid/token, so a healthy long-lived holder's lock never reads as
-      // stale to a steal-check even though the process itself never
-      // releases between ticks. A no-op (fails silently) once another
-      // holder owns the token — e.g. after this process's own lock was
-      // reclaimed while it was hung.
-      release.restamp = function restamp() {
-        try {
-          const cur = JSON.parse(F.readFileSync(lockPath, 'utf8'));
-          if (!cur || cur.token !== token) return false;
-          F.writeFileSync(lockPath, JSON.stringify({ pid: process.pid, ts: now(), token, version, sessionId }));
-          return true;
-        } catch (_) { return false; }
-      };
-      return release;
-    } catch (e) {
-      if (!e || e.code !== 'EEXIST') return null;
-      let holder = null;
-      try { holder = JSON.parse(F.readFileSync(lockPath, 'utf8')); } catch (_) {}
-      const holderPid = holder && Number.isFinite(holder.pid) ? holder.pid : null;
-      const holderVersion = holder && typeof holder.version === 'string' ? holder.version : null;
-      const holderSessionId = holder && typeof holder.sessionId === 'string' && holder.sessionId ? holder.sessionId : null;
-      let holderTs = holder && Number.isFinite(holder.ts) ? holder.ts : null;
-      if (holderTs === null) {
-        // TORN-READ GUARD: a live holder is briefly a 0-byte file between openSync('wx')
-        // and writeSync. A concurrent reader that catches it empty/unparseable must NOT
-        // treat it as absent — fall back to the file's MTIME for liveness. A FRESH mtime =
-        // live pull mid-write -> back off (never steal); only an OLD mtime (or a stat
-        // failure) reads as a dead holder we may reclaim. Mirrors devswarm-store acquireOnce.
-        try { holderTs = F.statSync(lockPath).mtimeMs; } catch (_) { holderTs = null; }
-      }
-      const alive = holderPid !== null && isAlive(holderPid);
-      const isStale = holderTs === null || (now() - holderTs) > stale;
-      if (isStale && (!alive || allowStaleLiveSteal)) { try { F.unlinkSync(lockPath); } catch (_) {} continue; }
-      if (io && typeof io.onRefused === 'function') {
-        try {
-          io.onRefused({
-            pid: holderPid,
-            ageMs: holderTs === null ? null : Math.max(0, now() - holderTs),
-            version: holderVersion,
-            sessionId: holderSessionId,
-            ts: holderTs,
-          });
-        } catch (_) {}
-      }
-      return null; // live holder, or a fresh lock -> refuse
-    }
-  }
-  return null;
+  const onRefused = io && typeof io.onRefused === 'function' ? io.onRefused : null;
+  // Shared primitive (companion/lib/lock.js): torn-read mtime guard, rename-
+  // aside reclaim, token-checked release. Steal rule unchanged: only a STALE
+  // holder that is not alive (or any stale holder under allowStaleLiveSteal).
+  const h = require('./lock.js').acquire(lockPath, {
+    fs: io && io.fs,
+    isAlive: (io && io.isAlive) || isAliveDefault,
+    now: io && io.now,
+    staleMs: stale,
+    liveStaleMs: (io && io.allowStaleLiveSteal) ? stale : Infinity,
+    fields: { version, sessionId },
+    onRefused: onRefused ? (holder) => {
+      const r = holder.record || {};
+      onRefused({
+        pid: holder.pid,
+        ageMs: holder.ts === null ? null : holder.ageMs,
+        version: typeof r.version === 'string' ? r.version : null,
+        sessionId: typeof r.sessionId === 'string' && r.sessionId ? r.sessionId : null,
+        ts: holder.ts,
+      });
+    } : undefined,
+  });
+  if (!h) return null;
+  const release = function release() { h.release(); };
+  // restamp() — re-write `ts` (and version/sessionId) atomically, same
+  // pid/token, so a healthy long-lived holder's lock never reads as stale to a
+  // steal-check even though the process itself never releases between ticks.
+  // false once another holder owns the token (e.g. after this process's own
+  // lock was reclaimed while it was hung) or on any write failure.
+  release.restamp = function restamp() {
+    return h.refresh({ pid: process.pid, version, sessionId }) === true;
+  };
+  return release;
 }
 
 // defaultRun(spec) -> { ok, raw, error, status?, signal?, stderr? }. ONE injectable

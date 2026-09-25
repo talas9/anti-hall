@@ -79,3 +79,15 @@ test('migrate lock: reclaim race (stale + dead holder) + torn read', () => {
     tornFresh(p, (F) => mig.acquireMigrateLock(home, { fs: F, isAlive: () => false }));
   } finally { rm(home); }
 });
+
+test('pull lock (acquireExclLock, also wake-watch): reclaim race (stale + dead holder) + torn read', () => {
+  const pull = require(path.join(ROOT, 'companion', 'lib', 'devswarm-pull.js'));
+  const home = tmpHome();
+  try {
+    const p = path.join(home, 'locks', 'pull-x.lock');
+    const w = reclaimRace(p, { pid: 999999, ts: 1000, token: 'dead' },
+      (F) => pull.acquireExclLock(p, { fs: F, isAlive: (pid) => pid === process.pid }, 60000));
+    w();
+    tornFresh(p, (F) => pull.acquireExclLock(p, { fs: F, isAlive: () => false, allowStaleLiveSteal: true }, 60000));
+  } finally { rm(home); }
+});
