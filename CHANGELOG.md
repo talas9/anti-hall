@@ -48,6 +48,11 @@ the update.
   the exact `/compact` (or `/clear`, or Codex `/new`) command to run next —
   or, if the handover has gone stale since it was written, to refresh it
   first. Turn it off to revert to the plain handover wording.
+- **Decisive prompt freshness uses the tasklist guard's own work detection.**
+  Subagent edits and Bash writes (`cp`, `mv`, `rm`, `>` redirects, ...) after
+  the handover now mark it stale; with no readable transcript (including
+  Codex) the line is a neutral "📝 Handover saved at ..." instead of 🟢; and
+  "Next action" means done only when it reads exactly none/done/complete/nothing.
 
 ## 0.109.4
 

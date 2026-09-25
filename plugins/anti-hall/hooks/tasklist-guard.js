@@ -52,108 +52,17 @@ const DEFAULT_WORK_THRESHOLD = 3;
 const DEFAULT_PROGRESS_FRESH_MS = 30 * 60 * 1000; // 1,800,000 ms
 const UNKNOWN_SESSION = 'unknown-session';
 
-// File-mutating tool names (each tool_use = +1 to WORK_COUNT).
-const MUTATING_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
-
-// A Bash command counts as work when it commits or writes. This is a FAIL-OPEN
-// nudge heuristic only — Edit/Write/MultiEdit/NotebookEdit remain the primary +1
-// work signals; this just improves Bash coverage. All branches are ReDoS-safe (no
-// nested quantifiers; only simple \s*/\s+; linear). Built via concatenated strings
-// + new RegExp with the `m` flag so `^` matches at the start of EACH line.
-//
-// Tested against a QUOTE-NEUTRALIZED copy of the command (neutralizeQuotedContents
-// below, mirrors command-guard.js's helper of the same name): quoted string
-// CONTENTS are blanked to spaces before matching, so text that only appears
-// inside a quoted argument (a commit message, a --format string, a sentence —
-// e.g. `git log --format="%an <%ae>"`, `echo "do not touch this"`) can never be
-// mistaken for a real write. Real unquoted commands are untouched and still match.
-//
-//   (1) ALWAYS-work tokens, matched anywhere (compound/multi-word, low
-//       false-positive risk once quoted text is neutralized):
-//         git commit/rebase/merge/cherry-pick/stash/reset/apply/am
-//         git checkout/switch/restore/clean
-//         sed -i · npm install|i|ci · (pnpm|yarn) add|install · pip install
-//   (2) COMMAND-POSITION-ONLY bare verbs (rm / cp / mv / tee / mkdir / touch /
-//       make / chmod): short, common-word verbs over-match mid-command, inside
-//       quoted strings, or in URL-ish paths like "/cp/" if matched anywhere, so
-//       we anchor them to command position — start-of-line (m-flag), or
-//       immediately after one of:  ; & |  ( ` $(  or a newline — each optionally
-//       followed by whitespace. This catches command-substitution / subshell
-//       contexts:  (rm f)   echo $(rm f)   echo `rm f`   "...\nrm f"
-//   (3) SHELL REDIRECT > / >> TO A FILE: matches anywhere (unambiguous shell
-//       syntax once quoted text is neutralized) EXCEPT fd-only redirects
-//       `2>`, `>&`, `2>&1` — a negative lookbehind rejects a preceding digit/`&`
-//       and a negative lookahead rejects a following `&`, so stderr-to-terminal
-//       and fd-duplication forms (`2>/dev/null`, `2>&1`, `>&2`) are excluded —
-//       they redirect a descriptor, not a file write.
-const CMD_BOUNDARY = '(?:^|[;&|`(]|\\$\\(|\\n)\\s*';
-// ALWAYS_WORK_SRC — the high-confidence, unambiguous mutation verbs (real git
-// history/dependency mutations). Factored out from BASH_WORK_RE so it can also
-// be tested ALONE by the scratchpad-noise filter below (FIX 7): these always
-// count as work even when a scratchpad/tmp path also appears in the same
-// command line, whereas the generic bare-verb/redirect matches (2)/(3) do not
-// when the ONLY path touched is the session's own scratchpad.
-const ALWAYS_WORK_SRC =
-  '\\bgit\\s+(?:commit|rebase|merge|cherry-pick|stash|reset|apply|am)\\b' +
-  '|\\bgit\\s+(?:checkout|switch|restore|clean)\\b' +
-  '|\\bsed\\s+-i' +
-  '|\\bnpm\\s+(?:install|i|ci)\\b' +
-  '|\\b(?:pnpm|yarn)\\s+(?:add|install)\\b' +
-  '|\\bpip\\s+install\\b' +
-  // `patch` (unlike `git apply`, already listed above) mutates whatever files
-  // its diff headers name — never discoverable from the command line's own
-  // arguments (the patch FILE itself may sit anywhere, including scratchpad,
-  // via `patch < …/scratchpad/x.patch`) — so it must always count as work
-  // regardless of what path also appears on the line.
-  '|\\bpatch\\b';
-const ALWAYS_WORK_RE = new RegExp('(' + ALWAYS_WORK_SRC + ')', 'im');
-const BASH_WORK_RE = new RegExp(
-  '(' +
-    // (1) always-work, anywhere
-    ALWAYS_WORK_SRC +
-    // (2) command-position-only bare verbs
-    '|' + CMD_BOUNDARY + '(?:rm|cp|mv|tee|mkdir|touch|make|chmod)\\b' +
-    // (3) file redirect, excluding fd-only `2>` / `>&` / `2>&1`
-    '|(?<![0-9&])>{1,2}(?!&)' +
-  ')',
-  'im'
-);
-// SCRATCHPAD_PATH_RE (FIX 7, root cause of #17 per real-transcript evidence):
-// the harness's own per-session scratchpad — literally named "scratchpad" in
-// its own path segment (see this file's own guidance to agents: "always use
-// [the scratchpad] ... instead of /tmp") — holds inter-agent message-passing
-// and scratch artifacts, never PROJECT work. In two independently-reproduced
-// SkyCrew Primary sessions, 70-90% of the Bash "work" counted between two
-// consecutive progress-staleness blocks was `cat >`/`mkdir`/`touch` traffic
-// into this exact scratchpad directory (message relaying to child agents),
-// not project edits. That churn shifts workBucket (floor(workCount/threshold))
-// on every Stop, defeating the hash-based dedup and re-firing the SAME
-// already-complied-with "update your progress file" cause every time the
-// freshness window lapses — even though the file was written to the exact
-// expected path within seconds of each prior nag (confirmed against the real
-// transcripts; ruled out: path mismatch, date rollover, session-id mismatch,
-// mtime race — the mtime read was always correct and fresh immediately after
-// the write).
-const SCRATCHPAD_PATH_RE = /\/scratchpad\//;
-
-// allPathsUnderScratchpad(neutralized) -> bool. Conservative companion to
-// SCRATCHPAD_PATH_RE above (Codex review fix): the original check only asked
-// "does /scratchpad/ appear ANYWHERE on the line", which wrongly excluded a
-// command whose SOURCE happens to sit in scratchpad but whose real write
-// target does not — e.g. `cp /…/scratchpad/x.py /real/repo/dest.py` or
-// `python3 /…/scratchpad/x.py > /real/repo/out.txt` genuinely mutate the repo.
-// Requires that EVERY path-looking token (anything containing "/") on the
-// (quote-neutralized) line sits under scratchpad; a single non-scratch path
-// token means this command is NOT scratch-only (counted as work — the safe,
-// loss-free direction: over-count real work rather than hide it).
-function allPathsUnderScratchpad(neutralized) {
-  const tokens = neutralized.split(/\s+/).filter(Boolean);
-  for (const tok of tokens) {
-    if (tok.indexOf('/') === -1) continue;
-    if (!SCRATCHPAD_PATH_RE.test(tok)) return false;
-  }
-  return true;
-}
+// Work detection (what counts as a file-changing action) lives in ONE shared
+// helper, hooks/lib/work-detect.js, so the auto-handover freshness check
+// (hooks/lib/handover-freshness.js) judges "work after the handover" with
+// exactly the same rules as this guard.
+const {
+  MUTATING_TOOLS,
+  BASH_WORK_RE,
+  isCountedWork,
+  neutralizeQuotedContents,
+  collectToolUses,
+} = require('./lib/work-detect.js');
 
 // commandWritesToPath(cmd, targetPath) -> bool. Used ONLY to attribute a
 // progress-file WRITE (never a read) to lastProgressWriteTs (Codex review
@@ -177,32 +86,6 @@ function commandWritesToPath(cmd, targetPath) {
     if (last === targetPath) return true;
   }
   return false;
-}
-
-// neutralizeQuotedContents — blank out the CONTENTS of single- and double-quoted
-// string literals (delimiters included) so BASH_WORK_RE cannot match text that is
-// merely quoted DATA rather than a real shell command. Same name/semantics as
-// command-guard.js's helper; duplicated here rather than imported since
-// command-guard.js is a standalone script with no exports.
-function neutralizeQuotedContents(segment) {
-  let out = '';
-  let i = 0;
-  const n = segment.length;
-  let inSingle = false;
-  let inDouble = false;
-  while (i < n) {
-    const c = segment[i];
-    const c2 = i + 1 < n ? segment[i + 1] : '';
-    if (inSingle) { out += ' '; if (c === "'") inSingle = false; i++; continue; }
-    if (inDouble) {
-      if (c === '\\' && c2) { out += '  '; i += 2; continue; }
-      out += ' '; if (c === '"') inDouble = false; i++; continue;
-    }
-    if (c === "'") { inSingle = true; out += ' '; i++; continue; }
-    if (c === '"') { inDouble = true; out += ' '; i++; continue; }
-    out += c; i++;
-  }
-  return out;
 }
 
 function main() {
@@ -851,9 +734,9 @@ function scanTranscript(filePath, opts) {
 
       if (MUTATING_TOOLS.has(name)) {
         const fp = tu.input && typeof tu.input.file_path === 'string' ? tu.input.file_path : '';
-        // FIX 7: a direct Edit/Write/etc into the session's own scratchpad is
-        // not project work (see SCRATCHPAD_PATH_RE above) — don't count it.
-        if (!SCRATCHPAD_PATH_RE.test(fp)) {
+        // isCountedWork (hooks/lib/work-detect.js) excludes the session's own
+        // scratchpad (FIX 7) — the same rule handover-freshness.js applies.
+        if (isCountedWork(tu)) {
           workCount++;
           if (Number.isFinite(entryTs) && entryTs > lastWorkTs) lastWorkTs = entryTs;
         }
@@ -868,27 +751,17 @@ function scanTranscript(filePath, opts) {
 
       if (name === 'Bash') {
         const cmd = tu.input && typeof tu.input.command === 'string' ? tu.input.command : '';
-        const neutralized = cmd ? neutralizeQuotedContents(cmd) : '';
-        if (cmd && BASH_WORK_RE.test(neutralized)) {
-          // FIX 7 (root cause of #17, confirmed against real SkyCrew Primary
-          // transcripts): a command whose ONLY matched work signal is a
-          // generic bare-verb/redirect (mkdir/touch/cat >/tee/…) AND that
-          // targets the session's own scratchpad is inter-agent message
-          // traffic, not project work — don't count it. A genuine mutation
-          // verb (git commit/rebase/…, npm/pip install, sed -i) ALWAYS
-          // counts regardless of what path also appears on the line.
-          const isScratchOnly = SCRATCHPAD_PATH_RE.test(cmd) && !ALWAYS_WORK_RE.test(neutralized)
-            && allPathsUnderScratchpad(neutralized);
-          if (!isScratchOnly) {
-            workCount++;
-            if (Number.isFinite(entryTs) && entryTs > lastWorkTs) lastWorkTs = entryTs;
-          }
-          if (
-            progressAbsPath && commandWritesToPath(cmd, progressAbsPath) &&
-            Number.isFinite(entryTs) && entryTs > lastProgressWriteTs
-          ) {
-            lastProgressWriteTs = entryTs;
-          }
+        // FIX 7 scratchpad-only traffic is excluded inside isCountedWork.
+        if (isCountedWork(tu)) {
+          workCount++;
+          if (Number.isFinite(entryTs) && entryTs > lastWorkTs) lastWorkTs = entryTs;
+        }
+        if (
+          cmd && progressAbsPath && BASH_WORK_RE.test(neutralizeQuotedContents(cmd)) &&
+          commandWritesToPath(cmd, progressAbsPath) &&
+          Number.isFinite(entryTs) && entryTs > lastProgressWriteTs
+        ) {
+          lastProgressWriteTs = entryTs;
         }
         continue;
       }
@@ -1118,21 +991,6 @@ function findPriorSessionStateFile(cwd, date, thisSessionId) {
     }
   }
   return best;
-}
-
-function collectToolUses(node) {
-  if (!node || typeof node !== 'object') return [];
-  const results = [];
-  if (node.type === 'tool_use' && node.name) results.push(node);
-  for (const key of ['content', 'message', 'messages', 'tool_uses', 'parts']) {
-    const val = node[key];
-    if (Array.isArray(val)) {
-      for (const item of val) results.push(...collectToolUses(item));
-    } else if (val && typeof val === 'object') {
-      results.push(...collectToolUses(val));
-    }
-  }
-  return results;
 }
 
 try {

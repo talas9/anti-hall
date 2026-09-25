@@ -170,8 +170,10 @@ function buildSoftAdvisory(pct) {
 //   fresh + in-progress task -> 🟢 GOOD POINT TO /compact NOW
 //   fresh + handover reads as done -> 🟢 GOOD POINT TO /clear (or /new) NOW
 //   stale (work continued since the handover was written) -> ⚠️ refresh first
-// freshness: true | null (fresh/unprovable -> the good-point line) | false
-// (stale -> the refresh line). taskComplete only matters when fresh.
+//   unknown (no readable/parseable transcript, e.g. Codex) -> 📝 neutral line
+// freshness: true (fresh -> the good-point line) | false (stale -> the
+// refresh line) | null (UNKNOWN -> neutral line; never 🟢 on an unprovable
+// freshness). taskComplete only matters when fresh.
 function buildDecisiveSuffix(payload, handoverPath, freshness, taskComplete) {
   const platform = detectPlatform(payload);
   const clearCmd = platform === 'codex' ? '/new' : '/clear';
@@ -180,6 +182,10 @@ function buildDecisiveSuffix(payload, handoverPath, freshness, taskComplete) {
       '⚠️ **Refresh the handover first**, then /compact.';
   }
   const path = handoverPath || '<the HANDOVER*.md path you saved>';
+  if (freshness !== true) {
+    return '\n\nEnd your reply to the user with exactly this line, verbatim: ' +
+      '📝 Handover saved at ' + path + ". If you've continued working since, refresh it; then /compact.";
+  }
   if (taskComplete) {
     return '\n\nEnd your reply to the user with exactly this line, verbatim: ' +
       '🟢 **GOOD POINT TO ' + clearCmd + ' NOW**: handover saved at ' + path + '. ' +

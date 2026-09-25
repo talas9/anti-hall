@@ -79,7 +79,7 @@ function decision(r) {
 const OPEN_ITEMS = '## Open items\n1. finish the thing\n\n';
 const DONE_OPEN_ITEMS = '## Open items\nnone\n\n';
 const NEXT_ACTION_OPEN = '## Next action\nkeep going on the feature\n\n';
-const NEXT_ACTION_DONE = '## Next action\nnone — task is finished\n\n';
+const NEXT_ACTION_DONE = '## Next action\nnone\n\n';
 
 test('decisive: fresh handover at Stop pause-nag -> the directive contains the good-point line and /compact', () => {
   const s = setup();
@@ -234,4 +234,94 @@ test('resolveEffective(): decisivePrompt defaults to true', () => {
     const r = resolveEffective({ home: h.home, env: {} });
     assert.strictEqual(r.decisivePrompt, true);
   } finally { h.cleanup(); }
+});
+
+// --- 0.109.5 review P1: freshness reuses tasklist-guard's work detection;
+// unknown freshness never shows the green line; strict "Next action" done ---
+
+function toolLine(tool, input, tsOffsetMs, extra) {
+  return JSON.stringify(Object.assign({
+    type: 'assistant', isSidechain: false,
+    timestamp: new Date(Date.now() + (tsOffsetMs || 0)).toISOString(),
+    message: { role: 'assistant', content: [{ type: 'tool_use', name: tool, input }] },
+  }, extra || {}));
+}
+
+function runPauseNag(s, transcriptLines, handoverBody, payloadExtra) {
+  const tag = sessionTag({ session_id: SID });
+  writeLatch(s.h.home, tag, firedLatch());
+  writeHandover(s.cwd, handoverBody || ('# Handover\n\n' + NEXT_ACTION_OPEN + OPEN_ITEMS), -60000);
+  const tp = s.h.writeTranscript([]);
+  fs.writeFileSync(tp, transcriptLines.join('\n') + '\n', 'utf8');
+  const payload = Object.assign({ hook_event_name: 'Stop', session_id: SID, cwd: s.cwd, transcript_path: tp }, payloadExtra || {});
+  return decision(testHook(HOOK, payload, { home: s.h.home, env: KNOWN_WINDOW, expectJson: true }));
+}
+
+test('decisive (review P1): a SUBAGENT (sidechain) edit after the handover -> ⚠️ refresh', () => {
+  const s = setup();
+  try {
+    const reason = runPauseNag(s, [
+      assistantUsageLine(pctToTokens(90)),
+      toolLine('Edit', { file_path: path.join(s.cwd, 'src', 'a.js') }, 0, { isSidechain: true }),
+    ]);
+    assert.match(reason, /⚠️ \*\*Refresh the handover first\*\*/);
+    assert.doesNotMatch(reason, /GOOD POINT/);
+  } finally { s.h.cleanup(); }
+});
+
+test('decisive (review P1): a Bash `cp` after the handover -> ⚠️ refresh', () => {
+  const s = setup();
+  try {
+    const reason = runPauseNag(s, [
+      assistantUsageLine(pctToTokens(90)),
+      toolLine('Bash', { command: 'cp src/a.js src/b.js' }, 0),
+    ]);
+    assert.match(reason, /⚠️ \*\*Refresh the handover first\*\*/);
+  } finally { s.h.cleanup(); }
+});
+
+test('decisive (review P1): MISSING transcript -> freshness unknown -> 📝 neutral line, never 🟢', () => {
+  const s = setup();
+  try {
+    const store = require('../../plugins/anti-hall/hooks/lib/context-pct-store.js');
+    store.write(s.h.home, store.tagFromSessionId(SID), { pct: 90, usedTokens: 180000, maxTokens: 200000 });
+    const tag = sessionTag({ session_id: SID });
+    writeLatch(s.h.home, tag, firedLatch());
+    writeHandover(s.cwd, '# Handover\n\n' + NEXT_ACTION_OPEN + OPEN_ITEMS, -60000);
+    const missing = path.join(s.h.home, 'no-such-transcript.jsonl');
+    const r = testHook(HOOK, { hook_event_name: 'Stop', session_id: SID, cwd: s.cwd, transcript_path: missing }, { home: s.h.home, env: KNOWN_WINDOW, expectJson: true });
+    const reason = decision(r);
+    assert.ok(reason, 'expected a nag');
+    assert.match(reason, /📝 Handover saved at .*HANDOVER\.md\. If you've continued working since, refresh it; then \/compact\./);
+    assert.doesNotMatch(reason, /🟢|GOOD POINT/);
+  } finally { s.h.cleanup(); }
+});
+
+test('decisive (review P1): Codex rollout transcript (no Claude-shape entries) -> 📝 neutral, never 🟢', () => {
+  const s = setup();
+  try {
+    const codexLine = JSON.stringify({ timestamp: new Date().toISOString(), type: 'event_msg', payload: { type: 'token_count', info: { total_token_usage: { total_tokens: 180000 }, model_context_window: 200000 } } });
+    const reason = runPauseNag(s, [codexLine], null, { turn_id: 't1' });
+    assert.ok(reason, 'expected a nag');
+    assert.match(reason, /📝 Handover saved at/);
+    assert.doesNotMatch(reason, /🟢|GOOD POINT/);
+  } finally { s.h.cleanup(); }
+});
+
+test('handover-freshness.isFresh (review P1): unreadable/absent transcript -> null; parsed with no work -> true', () => {
+  assert.strictEqual(freshness.isFresh(null, Date.now()), null);
+  assert.strictEqual(freshness.isFresh(['not json', ''], Date.now()), null);
+  assert.strictEqual(freshness.isFresh([assistantUsageLine(1000)], Date.now()), true);
+});
+
+test('handover-freshness.isTaskComplete (review P1): "mark T3 done after CI" is NOT complete -> /compact', () => {
+  assert.strictEqual(freshness.isTaskComplete('# H\n\n## Next action\nmark T3 done after CI\n\n' + OPEN_ITEMS), false);
+  assert.strictEqual(freshness.isTaskComplete('# H\n\n## Next action\nDone.\n\n' + OPEN_ITEMS), true);
+  const s = setup();
+  try {
+    const reason = runPauseNag(s, [assistantUsageLine(pctToTokens(90))], '# Handover\n\n## Next action\nmark T3 done after CI\n\n' + OPEN_ITEMS);
+    // handover mtime is 60s old but no work after it -> fresh
+    assert.match(reason, /🟢 \*\*GOOD POINT TO \/compact NOW\*\*/);
+    assert.doesNotMatch(reason, /GOOD POINT TO \/clear/);
+  } finally { s.h.cleanup(); }
 });

@@ -128,14 +128,19 @@ handover was saved: refresh the handover and offer to park the rest.
 **Decisive compact/new prompt (v0.109.5, `decisivePrompt`, on by default).** At a
 turn-ending Stop point (the fire-once or the natural-pause nag in
 `hooks/auto-handover-pause-nag.js`), once this session's `HANDOVER*.md` exists and
-is fresh (no counted file-changing action happened after it was written — the same
-staleness logic `tasklist-guard.js` uses), the directive tells the agent to END its
+is fresh (no counted file-changing action — including subagent edits and Bash
+writes — happened after it was written; the same shared detector
+`tasklist-guard.js` uses), the directive tells the agent to END its
 reply with one prominent, glyph-led line naming the exact command: `🟢 **GOOD POINT
 TO /compact NOW**: handover saved at <path>. /compact keeps working on the same
 task; /new if the next task is different.` — or, when the handover's own "Open
 items"/"Next action" read as done, `🟢 **GOOD POINT TO /new NOW**` instead. If the
 handover has gone STALE since it was written, the line becomes `⚠️ **Refresh the
-handover first**, then /compact` and never claims a "good point". Off reverts to the
+handover first**, then /compact` and never claims a "good point". If freshness cannot
+be determined (no readable transcript, e.g. a Codex rollout), the line is a neutral
+`📝 Handover saved at <path>. If you've continued working since, refresh it; then
+/compact.` — never 🟢. "Next action" counts as done only when it reads exactly
+none/done/complete/nothing. Off reverts to the
 plain (non-decisive) fire/pause-nag wording.
 
 | Key | Default | Meaning |

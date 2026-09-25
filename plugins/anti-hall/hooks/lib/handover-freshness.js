@@ -3,15 +3,17 @@
 // session's saved handover file still fresh, and does its content look like
 // the current task is done (so /clear, not /compact, is the right nudge)?
 //
-// STALENESS mirrors hooks/tasklist-guard.js's own "thread 7b" staleness rail
-// (a counted file-changing action's transcript timestamp landing AFTER the
-// newest HANDOVER*.md's mtime -> stale) — same MTIME_GRACE_MS, same "no
-// counted work seen at all -> unprovable, never claim stale" rule. It cannot
-// be `require()`d directly: tasklist-guard.js is a standalone Stop-hook
-// script that runs main() at load time (see its own header) and reads stdin
-// synchronously, so hooks/auto-handover-pause-nag.js already mirrors its
-// hasOpenTasks() logic for the same reason — this file follows that existing
-// precedent rather than inventing a new one.
+// STALENESS uses hooks/tasklist-guard.js's own work detection, shared via
+// hooks/lib/work-detect.js (isCountedWork): a counted file-changing action
+// (Edit/Write/MultiEdit/NotebookEdit, or a Bash write — rm/cp/mv/tee/mkdir/
+// touch/make/chmod/`>` redirects/git commit/...), INCLUDING sidechain/subagent
+// entries, whose transcript timestamp lands AFTER the handover's mtime ->
+// stale. Same MTIME_GRACE_MS as tasklist-guard's thread-7b rail.
+//
+// UNKNOWN is a first-class answer: a missing transcript, or one with no
+// parseable Claude-shape entry (e.g. a Codex rollout, whose tool calls this
+// detector does not understand), yields null — callers must NOT show the
+// green "good point" line then.
 //
 // FAIL-OPEN: every function returns a safe default (null / false) on any
 // error; nothing here throws. Pure Node built-ins only.
@@ -19,40 +21,26 @@
 'use strict';
 
 const fs = require('fs');
+const { collectToolUses, isCountedWork } = require('./work-detect.js');
 
-// Matches tasklist-guard.js's own MUTATING_TOOLS set.
-const MUTATING_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
-// A deliberately narrower mirror of tasklist-guard.js's BASH_WORK_RE — this
-// file only needs "did a real mutation happen after the handover was
-// written", not the full work-counting/scratchpad-exclusion machinery that
-// feeds tasklist-guard's own block threshold.
-const BASH_WORK_RE = /\b(git\s+(commit|rebase|merge|cherry-pick|revert)|npm\s+(install|ci)|pip\s+install|sed\s+-i)\b/i;
 // Matches tasklist-guard.js's own MTIME_GRACE_MS (thread 7b): absorbs
 // whole-second mtime rounding on some filesystems without masking real
 // staleness.
 const MTIME_GRACE_MS = 1000;
 
-function collectToolUses(node) {
-  if (!node || typeof node !== 'object') return [];
-  const results = [];
-  if (node.type === 'tool_use' && node.name) results.push(node);
-  for (const key of ['content', 'message', 'messages', 'tool_uses', 'parts']) {
-    const val = node[key];
-    if (Array.isArray(val)) {
-      for (const item of val) results.push(...collectToolUses(item));
-    } else if (val && typeof val === 'object') {
-      results.push(...collectToolUses(val));
-    }
-  }
-  return results;
+// isClaudeEntry(entry) -> true for a Claude Code transcript entry (carries a
+// `message` object). Codex rollout lines ({type:'event_msg'|'response_item',
+// payload}) do not, so a Codex transcript reads as "unknown", not "fresh".
+function isClaudeEntry(entry) {
+  return !!(entry && typeof entry === 'object' && entry.message && typeof entry.message === 'object');
 }
 
-// lastWorkTs(lines) -> ms epoch of the newest counted file-changing action in
-// the transcript tail (an array of raw JSONL strings, e.g. from
-// transcript-tail.js's readTail()), or 0 if none/unknown.
-function lastWorkTs(lines) {
-  if (!Array.isArray(lines)) return 0;
-  let last = 0;
+// scanWork(lines) -> { recognized, last }. recognized: at least one
+// Claude-shape entry parsed. last: ms epoch of the newest counted work (0 =
+// none seen).
+function scanWork(lines) {
+  const out = { recognized: false, last: 0 };
+  if (!Array.isArray(lines)) return out;
   for (const line of lines) {
     if (!line) continue;
     let entry;
@@ -61,35 +49,35 @@ function lastWorkTs(lines) {
     } catch (_) {
       continue;
     }
-    if (!entry || entry.isSidechain === true) continue;
+    if (!isClaudeEntry(entry)) continue;
+    out.recognized = true;
     const entryTs = typeof entry.timestamp === 'string' ? Date.parse(entry.timestamp) : NaN;
     if (!Number.isFinite(entryTs)) continue;
     for (const tu of collectToolUses(entry)) {
-      const name = tu.name || '';
-      if (MUTATING_TOOLS.has(name)) {
-        if (entryTs > last) last = entryTs;
-        continue;
-      }
-      if (name === 'Bash') {
-        const cmd = tu.input && typeof tu.input.command === 'string' ? tu.input.command : '';
-        if (cmd && BASH_WORK_RE.test(cmd) && entryTs > last) last = entryTs;
-      }
+      if (isCountedWork(tu) && entryTs > out.last) out.last = entryTs;
     }
   }
-  return last;
+  return out;
+}
+
+// lastWorkTs(lines) -> ms epoch of the newest counted file-changing action in
+// the transcript tail (an array of raw JSONL strings, e.g. from
+// transcript-tail.js's readTail()), or 0 if none/unknown.
+function lastWorkTs(lines) {
+  return scanWork(lines).last;
 }
 
 // isFresh(lines, handoverMtimeMs) -> true | false | null.
-//   true  : the handover's mtime is at/after the newest counted work (fresh).
+//   true  : the transcript was readable and no counted work landed after the
+//           handover's mtime (fresh).
 //   false : counted work happened after the handover was written (stale).
-//   null  : no counted work seen at all in the visible tail -- unprovable,
-//           same "never claim unprovable staleness" rule tasklist-guard.js
-//           follows; callers treat null as fresh (safe default).
+//   null  : UNKNOWN — no transcript, or no parseable Claude-shape entry (e.g.
+//           Codex). Callers show a neutral line, never the green one.
 function isFresh(lines, handoverMtimeMs) {
   if (!Number.isFinite(handoverMtimeMs)) return null;
-  const work = lastWorkTs(lines);
-  if (work <= 0) return null;
-  return work <= handoverMtimeMs + MTIME_GRACE_MS;
+  const scan = scanWork(lines);
+  if (!scan.recognized) return null;
+  return scan.last <= handoverMtimeMs + MTIME_GRACE_MS;
 }
 
 // extractSection(text, heading) -> the trimmed body of a `## <heading>`
@@ -107,7 +95,10 @@ function extractSection(text, heading) {
 }
 
 const OPEN_ITEMS_EMPTY_RE = /^(none|n\/a|-|—|\(none\))\.?$/i;
-const NEXT_ACTION_DONE_RE = /\b(done|complete(d)?|nothing (further|left|remaining)|no (further|open) (action|items?)|task is finished)\b/i;
+// Strict whole-section match: the Next action body must be exactly one of
+// none/done/complete/nothing (optional trailing period). "mark T3 done after
+// CI" is an open action, not completion.
+const NEXT_ACTION_DONE_RE = /^(none|done|complete|nothing)\.?$/i;
 
 // isTaskComplete(handoverText) -> true when the handover's own "Open items"
 // section reads as empty, or its "Next action" section reads as already

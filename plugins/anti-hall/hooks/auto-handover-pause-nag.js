@@ -185,16 +185,16 @@ function relativeHandoverPath(payload, filePath) {
 // session has no handover file yet (nothing to be decisive ABOUT — the
 // fire directive's own "write it, then urge /compact" wording already
 // covers that case). Otherwise the good-point / stale-refresh line built
-// from hooks/lib/handover-freshness.js's mirror of tasklist-guard.js's own
-// staleness rail (see that file's header for why it mirrors rather than
-// imports).
+// from hooks/lib/handover-freshness.js, which judges "work after the
+// handover" with tasklist-guard.js's own detector (hooks/lib/work-detect.js);
+// an unknown freshness (no readable transcript) gets a neutral line.
 function decisiveSuffixFor(payload, settings, lines) {
   if (!settings.decisivePrompt) return '';
   let h = null;
   try { h = sessionHandover(payload); } catch (_) { h = null; }
   if (!h) return '';
   const fresh = freshness.isFresh(lines, h.mtimeMs);
-  const taskComplete = fresh !== false ? freshness.isTaskCompleteFromFile(h.filePath) : false;
+  const taskComplete = fresh === true ? freshness.isTaskCompleteFromFile(h.filePath) : false;
   return buildDecisiveSuffix(payload, relativeHandoverPath(payload, h.filePath), fresh, taskComplete);
 }
 
