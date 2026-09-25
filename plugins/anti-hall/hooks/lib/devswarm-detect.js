@@ -42,6 +42,21 @@ function isDevswarmActive(env) {
   }
 }
 
+// isRealDevswarm(env) -> boolean. STRICT gate: true only when this process
+// genuinely runs under DevSwarm (DEVSWARM_REPO_ID set), and the feature is
+// not killed/forced off. supervisorMode=on alone is NOT enough — it forces
+// the supervisor context for testing/diagnosis, but must never trigger
+// persistent side effects such as a first-ever Primary seat registration.
+function isRealDevswarm(env) {
+  try {
+    const e = env || process.env;
+    if (!isDevswarmActive(e)) return false;
+    return nonEmpty(e.DEVSWARM_REPO_ID);
+  } catch (_) {
+    return false;
+  }
+}
+
 function detect(env) {
   const e = env || process.env;
   let repoId = null;
@@ -87,4 +102,4 @@ function hasOnDiskDevswarmState(home, repoKey, io) {
   }
 }
 
-module.exports = { detect, isDevswarmActive, hasOnDiskDevswarmState };
+module.exports = { detect, isDevswarmActive, isRealDevswarm, hasOnDiskDevswarmState };

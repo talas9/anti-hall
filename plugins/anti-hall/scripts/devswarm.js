@@ -10935,15 +10935,20 @@ function adoptPrimarySeat(ctx, flags) {
   const seat = require('../companion/lib/primary-seat.js');
   const sid = seatSessionId(ctx, flags);
   const verdict = () => seat.seatVerdict({ home: ctx.home, env: ctx.env, cwd: ctx.cwd || process.cwd(), sessionId: sid });
+  // First-ever registration ('none') is a persistent write: it requires REAL
+  // DevSwarm (DEVSWARM_REPO_ID), never supervisorMode=on alone (review P2).
+  let realDevswarm = false;
+  try { realDevswarm = require('../hooks/lib/devswarm-detect.js').isRealDevswarm(ctx.env || process.env); } catch (_) { realDevswarm = false; }
+  const eligible = (st) => st === 'adopt' || (st === 'none' && realDevswarm);
   const v0 = verdict();
-  if (v0.state !== 'adopt' && v0.state !== 'none') return { verdict: v0, adopted: false };
+  if (!eligible(v0.state)) return { verdict: v0, adopted: false };
   // Check-then-write under the Primary id's lock (identity review): two
   // sessions adopting at once serialize; the second re-reads the seat AFTER
   // the first's write and gets the conflict verdict (and its notice), never a
   // silent overwrite or a silent block.
   const res = withIdLock(v0.id, ctx.home, () => {
     const v = verdict();
-    if (v.state !== 'adopt' && v.state !== 'none') return { verdict: v, adopted: false };
+    if (!eligible(v.state)) return { verdict: v, adopted: false };
     const desc = readDescriptorFile(ctx.home, v.id);
     const regFlags = { worktree: [v.worktree], session: [sid] };
     if (desc && desc.cursorPath) regFlags.cursor = [String(desc.cursorPath)];

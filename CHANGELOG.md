@@ -19,6 +19,8 @@ the update.
   Fixed by threading the resolved id through both directives and by
   registering a Primary seat on its very first use, not only when it is
   adopted from a previously closed one.
+  First-use registration happens only under real DevSwarm (`DEVSWARM_REPO_ID`
+  set) — forcing `devswarm.supervisorMode=on` alone never registers a seat.
 - **DevSwarm wake-watch no longer needs a manual re-arm after every release.**
   When a newer build's watcher is available, the running watcher now hands
   the stream off to it automatically instead of printing a re-arm instruction

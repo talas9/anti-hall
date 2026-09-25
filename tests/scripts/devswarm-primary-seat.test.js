@@ -243,3 +243,35 @@ test('concurrent adoption: two live sessions race for a closed seat -> exactly o
     assert.equal(anchorSid(f), winner);
   } finally { f.cleanup(); }
 });
+
+// ---------------------------------------------------------------------------
+// 0.109.5 review P2: first-ever registration ('none') needs REAL DevSwarm
+// (DEVSWARM_REPO_ID), never supervisorMode=on alone.
+// ---------------------------------------------------------------------------
+function descPath(f) { return path.join(f.home, '.anti-hall', 'devswarm', 'workspaces', f.id + '.json'); }
+
+test('(review P2) never-registered seat + supervisorMode=on but NO DEVSWARM_REPO_ID -> NOT registered (adoptPrimarySeat + SessionStart)', () => {
+  const f = fixture();
+  try {
+    sessionFile(f, 'sess-X');
+    const env = { CLAUDE_CODE_SESSION_ID: 'sess-X', ANTIHALL_DEVSWARM_SUPERVISOR: 'on', ANTIHALL_DEVSWARM_APP_DB: 'off' };
+    const res = cli.adoptPrimarySeat({ home: f.home, env, cwd: f.repo });
+    assert.equal(res.adopted, false, JSON.stringify(res));
+    assert.equal(fs.existsSync(descPath(f)), false, 'no descriptor may be written without real DevSwarm');
+    const r = testHook('devswarm-child-role.js', { hook_event_name: 'SessionStart', session_id: 'sess-X', cwd: f.repo, source: 'startup' },
+      { home: f.home, env: { ANTIHALL_DEVSWARM_SUPERVISOR: 'on', ANTIHALL_DEVSWARM_APP_DB: 'off' }, expectJson: true });
+    const c = (r.json && r.json.hookSpecificOutput && r.json.hookSpecificOutput.additionalContext) || '';
+    assert.doesNotMatch(c, /registered Primary/, c);
+    assert.equal(fs.existsSync(descPath(f)), false, 'SessionStart must not register without real DevSwarm');
+  } finally { f.cleanup(); }
+});
+
+test('(review P2) never-registered seat WITH DEVSWARM_REPO_ID -> registered (first run)', () => {
+  const f = fixture();
+  try {
+    sessionFile(f, 'sess-Y');
+    const res = cli.adoptPrimarySeat({ home: f.home, env: f.env('sess-Y'), cwd: f.repo });
+    assert.equal(res.adopted, true, JSON.stringify(res));
+    assert.equal(anchorSid(f), 'sess-Y');
+  } finally { f.cleanup(); }
+});
