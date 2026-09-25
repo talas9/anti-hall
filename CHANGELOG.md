@@ -6,10 +6,57 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
-## Unreleased
+## 0.110.0 (2026-09-26)
+
+### Features
+
+- **Bug history for the defect channel.** `defect.js` has three new maintainer verbs:
+  - `backfill [--repo <path>] [--dry-run]` imports every `fix:` / `fix(scope):` commit
+    from git history as a fixed record. The component comes from the source file with the
+    most changed lines (tests and docs are ignored). `fixedIn` is the earliest release tag
+    that contains the commit. The cause comes from keyword rules. The matching CHANGELOG
+    bullet is linked when found. Records are keyed by commit sha, so a re-run adds nothing.
+    They are stored in `~/.anti-hall/defects/history/` and never appear in
+    `list --open` or the defect nudge.
+  - `recurring [--since <version|date>] [--top N] [--json]` groups reported and imported
+    fixes by component and by cause. It flags hotspots (a component fixed 3+ times, or
+    the same component and cause 2+ times) and likely regressions (the same component
+    and cause fixed again within 5 releases, or an explicit `regressionOf`).
+  - `similar <text…> [--component X]` lists the 10 past fixes closest to a new bug.
+- `report` and `rule` accept optional `--component`, `--cause` (a fixed 12-class
+  root-cause list) and `--regression-of <fp>`. Existing records without these fields
+  still load unchanged.
+- The `root-cause` skill (Claude and Codex) now runs `defect.js similar` before an
+  anti-hall fix. If the component is a hotspot, fix the class of bug, not just this
+  instance. The `defects` skill documents the new verbs on both ports.
+- The command guard exempts the two new read-only verbs, `defect.js recurring` and
+  `defect.js similar`, alongside `report`/`list`/`show`, so the root-cause skill's
+  `similar` step runs on the main thread. `backfill` writes history records and stays
+  gated.
+
+### Changed
+
+- **One row-eligibility projection (`companion/lib/row-eligibility.js`).** Every workspace row is now judged once for archived (anti-hall marker, DevSwarm app DB, active-list absence, with `archivedBy` provenance), held (`devswarm.heldPartitions`), ignored (archive-ignore marker) and live/busy/waiting-on-user. It has a memoized per-invocation context and a batch API. The parent Stop gate, the per-turn parent-inbox table (plus its archive-ready nudge and stale-registry filter), and the CLI's routing, `roster` and `diagnose` read it instead of combining the predicates one axis at a time. There is no behavior change.
+- **Hygiene ratchet** (`tests/hygiene/archived-predicates-single-projection.test.js`). A direct call to an archived/held predicate outside the projection and the helpers it wraps now fails CI. The remaining partition-level and app-DB write-guard call sites are allowlisted with exact counts and reasons.
+- **One lock primitive.** New `companion/lib/lock.js` replaces 12 hand-written cross-process locks: swarm-guard, repair-on-reload, settings, recovery per-id, supervisor sweep, ingest (plus its orphan sweep and legacy probe), migrate, pull/wake-watch, the store journal, log rotation and retention. It keeps recovery.js's design: write-then-link publish, with an O_EXCL fallback on filesystems without hard links (SMB/exFAT), atomic rename-aside reclaim, and token-checked release. It adds a host-scoped owner record, an mtime torn-read guard, and per-caller steal policy. Each caller keeps its timeouts, stale windows, retry budgets and fail-open/fail-closed contract.
+- A hygiene ratchet (`tests/hygiene/lock-single-primitive.test.js`) forbids new O_EXCL, linkSync or lock-unlink code outside lock.js.
 
 ### Fixes
 
+- **Lock reclaim race.** Two processes that judged the same dead or stale lock holder both deleted it. The second deletion removed the first process's fresh lock, so both ran the critical section. Affected: supervisor sweep, migrate, pull/wake-watch, retention, log rotation, store journal (duplicate dedupe rows), ingest (two monitor consumers), settings (lost key), swarm-guard (spawns past the cap) and repair-on-reload (two `doctor --repair` spawns).
+- **Lock torn-read steal.** An empty lock file is normal while its live holder is still writing it. The supervisor sweep, retention, settings and repair-on-reload locks read that empty file as ownerless and stole it.
+- **Lock blind release.** The settings lock released by deleting the file without checking the owner token, so it could delete a successor's lock. It now checks the token.
+- **Ingest orphan-sweep race.** The ingest orphan sweep and legacy-lock probe re-read a lock and then deleted it. A fresh lock published between those two steps was deleted. Both now reclaim atomically.
+- **Handover's terminal line is now trigger-aware, not an unconditional compact signal.**
+  HANDOVER.md must record a `Trigger:` line (`auto-threshold` / `user-request` /
+  `restart-pending` / `task-boundary`, plus context % from the statusline or
+  `~/.anti-hall/auto-handover/<tag>.json`'s `firedPct`). The terminal line only claims
+  "🟢 HANDOVER COMPLETE — GOOD POINT TO /compact NOW" for `auto-threshold` or an explicit
+  compact/clear request; any other trigger below the threshold gets a neutral
+  "📝 Handover saved (proactive, ...): no need to compact now" line instead. Fixes a field
+  incident where a proactive handover below the 85% auto threshold was misread as a
+  signal to stop/compact. Mirrored in the Codex port
+  (`plugins/anti-hall/codex/skills/anti-hall-handover/SKILL.md`).
 - **`shell-scan-differential.test.js` no longer misreads a timed-out/killed
   guard spawn as ALLOW.** `spawnGuard` compared `spawnSync`'s `res.status`
   directly against `2` (BLOCK); under load, a child killed by the 10s timeout
