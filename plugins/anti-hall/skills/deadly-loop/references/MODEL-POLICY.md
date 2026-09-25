@@ -263,6 +263,18 @@ that fact is missing or stale (e.g. long-running session, PATH changed mid-sessi
 `codex:codex-rescue`; Opus is the FALLBACK, taken only when a spawn actually returns
 null — never skip straight to Opus just because you haven't re-checked.
 
+**A shared `quota` field short-circuits a known outage.** When a `codex:codex-rescue`
+Agent call comes back with a quota/rate-limit exhaustion message, the PostToolUse
+`codex-quota-detect.js` hook (`guards.codexQuotaDetect`, default on) records it into
+the SAME file as `quota: {available:false, until, reason, recordedAt}` (merged, never
+overwriting the PATH-probe fields) via `lib/codex-quota.js`. `readQuota()` treats an
+expired `until` as absent (fail-open toward "assume available"). If `quota.available`
+is `false` and `until` is still in the future, do NOT spawn `codex:codex-rescue` again
+before then — route correctness review to Sonnet instead; the next SessionStart also
+surfaces this automatically ("Codex unavailable until X; route correctness review to
+Sonnet"). `guards.injectionRepeatEvery` (see settings) is unrelated to this — it
+throttles unconditional per-turn reminder text, not the quota gate.
+
 Resolve the Critic path at runtime with this branch logic:
 
 Prefer this pure-Node probe — it is OS-agnostic (Windows, macOS, Linux), uses no

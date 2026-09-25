@@ -23,6 +23,34 @@ the update.
   invocation) keeps the whole line blocked. Full suites, builds, installs, deploys and
   pushes stay gated. New setting `guards.allowReadOnlyVerify` (default on).
 
+### Fixes
+
+- **Static per-turn reminder blocks (VERIFY-FIRST, the DEVSWARM PRIMARY
+  dispatch-tier and top-fan-out-tier suffixes) no longer repeat every single
+  turn.** They now follow the same once-per-session / once-after-compact-or-
+  clear / once-every-N-turns cadence as the existing DevSwarm workspace-table
+  dedupe, via `lib/emit-dedupe.js`'s keepalive rule. New setting
+  `guards.injectionRepeatEvery` (default 10 turns; 0 restores every-turn
+  injection). `task-tracker.js`'s own FULL/SHORT + freshness-note logic and
+  `devswarm-child-turn.js`'s COMMS OVERRIDE reassertion are unchanged (the
+  latter is deliberately per-turn — DevSwarm's `--system-prompt-file` erases
+  the child's system prompt at every spawn, so per-turn reassertion is the
+  only lever against that erasure).
+- **A Codex quota/rate-limit exhaustion is now recorded once and shared,
+  instead of every lane rediscovering it independently.** New PostToolUse
+  hook `codex-quota-detect.js` (matcher `Agent`) detects a quota-exhaustion
+  message in a `codex:codex-rescue` Agent result and records
+  `{available:false, until, reason}` into
+  `~/.anti-hall/codex-availability.json` (`lib/codex-quota.js`, merged with
+  the existing PATH-probe fields, never clobbering them). The SessionStart
+  `codex-availability.js` hook now also surfaces a live outage even when the
+  PATH probe alone found nothing to report, with the routing fallback
+  ("Codex unavailable until X; route correctness review to Sonnet"). New
+  setting `guards.codexQuotaDetect` (default on). The exact Codex CLI quota
+  message wording was not found verified anywhere in this repo or machine at
+  authoring time, so detection matches conservatively on quota/rate-limit
+  exhaustion vocabulary rather than one fixed string.
+
 ## 0.110.0 (2026-09-26)
 
 ### Features

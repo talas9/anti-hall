@@ -465,8 +465,33 @@ function burst(hook, n, env, payload, match) {
 test('verify-first hook: 5 queued prompts (distinct text) -> 1 VERIFY-FIRST, emits again after delivery; vacuity off -> 5', () => {
   const p = (i) => ({ hook_event_name: 'UserPromptSubmit', session_id: 'burst', prompt: 'cron tick ' + i, cwd: '/tmp/x' });
   const m = (c) => c.startsWith('VERIFY-FIRST:');
-  assert.deepStrictEqual(burst('verify-first.js', 5, ON, p, m), [1, 1]);
+  // guards.injectionRepeatEvery=0 isolates the burst-collapse (rule a) concern
+  // this test is about from the separate once-per-N-turns keepalive (rule b,
+  // 0.111 item 1) — a keepalive test lives below.
+  const NO_KEEPALIVE = { ANTIHALL_INJECTION_REPEAT_EVERY: '0' };
+  assert.deepStrictEqual(burst('verify-first.js', 5, { ...ON, ...NO_KEEPALIVE }, p, m), [1, 1]);
   assert.deepStrictEqual(burst('verify-first.js', 5, OFF, p, m), [5, 1]);
+});
+
+test('verify-first hook: guards.injectionRepeatEvery wires a real once-per-N-turns keepalive (not just burst collapse)', () => {
+  const home = tmpHome();
+  try {
+    const tp = mkTranscript(home);
+    // A large keepaliveTurns proves the keepalive branch engaged at all — with
+    // it OFF (rule a only, the pre-0.111-item-1 behavior), a genuinely NEW
+    // delivered turn always re-emits (see the burst test above with
+    // ANTIHALL_INJECTION_REPEAT_EVERY=0); with it wired in, a single new
+    // delivered turn stays suppressed until the count exceeds the setting.
+    const env = { ANTIHALL_INGEST_DRY_RUN: '1', ANTIHALL_INJECTION_REPEAT_EVERY: '1000' };
+    const payload = (i) => ({ hook_event_name: 'UserPromptSubmit', session_id: 'ka', prompt: 'turn ' + i, transcript_path: tp, cwd: '/tmp/x' });
+
+    const first = ctx(testHook('verify-first.js', payload(0), { home, env }));
+    assert.ok(first.startsWith('VERIFY-FIRST:'), 'first turn of a session must emit');
+    fs.appendFileSync(tp, attLine(Date.now(), first)); // delivered
+
+    const second = ctx(testHook('verify-first.js', payload(1), { home, env }));
+    assert.strictEqual(second, '', 'a new delivered turn well inside the keepalive window must stay suppressed');
+  } finally { rm(home); }
 });
 
 test('task-tracker hook: 5 queued prompts -> 1 TASK-LIST block, emits again after delivery; vacuity off -> 5', () => {

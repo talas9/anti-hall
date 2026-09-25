@@ -86,3 +86,46 @@ test('FAIL-OPEN: empty PATH -> available:false, exit 0, no throw', () => {
     h.cleanup();
   }
 });
+
+// 0.111 item 2: a live recorded quota outage (lib/codex-quota.js) must
+// surface even when the PATH probe alone found nothing worth reporting, and
+// must state the routing fallback + until-time.
+test('QUOTA: a live recorded quota outage is surfaced with the routing fallback, even with codex off PATH', () => {
+  const h = makeHome();
+  try {
+    const until = Date.now() + 30 * 60 * 1000;
+    require('../../plugins/anti-hall/hooks/lib/codex-quota.js').recordQuota({
+      until, reason: 'out of quota until later today', home: h.home,
+    });
+
+    const r = testHook(HOOK, {}, { home: h.home, env: { PATH: '' }, expectJson: true });
+
+    assert.strictEqual(r.status, 0);
+    assert.ok(r.json, `expected JSON context on stdout, got: ${r.stdout}`);
+    assert.match(r.json.hookSpecificOutput.additionalContext, /Codex unavailable until/);
+    assert.match(r.json.hookSpecificOutput.additionalContext, /route correctness review to Sonnet/);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('QUOTA: an expired quota record is treated as available again — no prefix, PATH probe controls emission', () => {
+  const h = makeHome();
+  try {
+    // recordQuota() self-heals an already-past `until` (never records an
+    // instantly-expired outage) — write the record directly to simulate real
+    // time having passed since it was legitimately recorded in the future.
+    const quota = require('../../plugins/anti-hall/hooks/lib/codex-quota.js');
+    fs.mkdirSync(path.dirname(quota.statePath(h.home)), { recursive: true });
+    fs.writeFileSync(quota.statePath(h.home), JSON.stringify({
+      quota: { available: false, until: Date.now() - 1000, reason: 'stale', recordedAt: Date.now() - 5000 },
+    }));
+
+    const r = testHook(HOOK, {}, { home: h.home, env: { PATH: '' } });
+
+    assert.strictEqual(r.status, 0);
+    assert.strictEqual(r.stdout.trim(), '', 'expired quota record must not force emission');
+  } finally {
+    h.cleanup();
+  }
+});

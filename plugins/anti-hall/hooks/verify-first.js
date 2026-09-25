@@ -134,9 +134,22 @@ function main() {
       transcriptPath = pl.transcript_path || null;
     } catch (_) { sessionId = null; }
     const isPrimary = nudge.endsWith(DEVSWARM_PRIMARY_NUDGE);
+    // KEEPALIVE (0.111 item 1): the normalize() below already collapses every
+    // rotating facet to one of two constant markers, so this key's "same
+    // content" check already treats every turn as a repeat of the last —
+    // adding keepaliveTurns turns the existing burst-only collapse (rule a)
+    // into a real once-per-N-turns throttle (rule b) for the whole block
+    // (VERIFY-FIRST body + the DEVSWARM-PRIMARY top-fan-out-tier suffix),
+    // while still emitting in full on the first turn of a session and again
+    // after any /compact or /clear (emit-dedupe-reset.js resets state on
+    // every SessionStart source). guards.injectionRepeatEvery=0 restores
+    // every-turn injection.
+    let repeatEvery = 10;
+    try { repeatEvery = require('./lib/settings.js').get('guards', 'injectionRepeatEvery', 10); } catch (_) {}
     const emit = require('./lib/emit-dedupe.js').shouldEmit({
       home: require('os').homedir(), sessionId, transcriptPath, key: 'verify-first', content: additionalContext,
       normalize: () => (isPrimary ? 'VERIFY-FIRST+PRIMARY' : 'VERIFY-FIRST'),
+      keepaliveTurns: Number.isFinite(repeatEvery) && repeatEvery > 0 ? repeatEvery : 0,
     });
     if (!emit) return;
   } catch (_) {}

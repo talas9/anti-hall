@@ -499,7 +499,27 @@ try {
     const note = freshnessNote(payload);
     if (note) text = text + ' ' + note;
     // DevSwarm PRIMARY only: name the workspace tier at the dispatch point.
-    if (isDevswarmPrimary(process.env)) text = text + ' ' + DEVSWARM_PRIMARY;
+    // KEEPALIVE (0.111 item 1): DEVSWARM_PRIMARY is static and was previously
+    // appended to `text` EVERY turn regardless of the FULL/SHORT window above
+    // (freshnessNote varies turn to turn, so the combined-text dedupe below
+    // never collapsed it) — its own key + keepaliveTurns throttles it to
+    // once per session / once after compact-clear / once every N turns,
+    // independent of the live freshness note. guards.injectionRepeatEvery=0
+    // restores every-turn injection.
+    if (isDevswarmPrimary(process.env)) {
+      let emitPrimary = true;
+      try {
+        let repeatEvery = 10;
+        try { repeatEvery = require('./lib/settings.js').get('guards', 'injectionRepeatEvery', 10); } catch (_) {}
+        emitPrimary = require('./lib/emit-dedupe.js').shouldEmit({
+          home: os.homedir(), sessionId: payload && payload.session_id,
+          transcriptPath: payload && payload.transcript_path,
+          key: 'task-tracker-primary', content: DEVSWARM_PRIMARY,
+          keepaliveTurns: Number.isFinite(repeatEvery) && repeatEvery > 0 ? repeatEvery : 0,
+        });
+      } catch (_) { emitPrimary = true; }
+      if (emitPrimary) text = text + ' ' + DEVSWARM_PRIMARY;
+    }
   }
 
   // Queued-prompt burst collapse (lib/emit-dedupe.js rule a): one copy per

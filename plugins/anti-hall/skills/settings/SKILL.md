@@ -89,7 +89,13 @@ parent gate" and the like are one `set <section.key> false`. The switch keys:
 `context.*` (verify-first injections, task tracker, handover resume, defect nudge),
 `maintenance.*` (repair-on-reload, progress prune, pre-compact snapshot, task
 lifecycle log, session-end MCP reaper), `guards.*` (api, speculation, claim ledger,
-task, task-list, scan throttle; `guards.modelRouting` takes `strict|advisory|off`),
+task, task-list, scan throttle; `guards.modelRouting` takes `strict|advisory|off`;
+`guards.injectionRepeatEvery` — turns between full re-injections of a static
+per-turn reminder block (VERIFY-FIRST, the DevSwarm PRIMARY dispatch-tier/
+top-fan-out-tier suffixes) once its first-turn/post-compact copy is consumed,
+default 10, 0 = every turn; `guards.codexQuotaDetect` — record a Codex
+quota/rate-limit exhaustion seen in a `codex:codex-rescue` result so other
+sessions stop rediscovering it independently, default on),
 and `devswarm.*` (parentGate, childGate, parentInbox, childTurn, childRole, childDrain,
 parentReplyTracker, commsGuard, inboxReadGuard, wakeWatch, appSync, screenshotSync, spawnFromOrigin).
 Settings are read when each hook runs, so a change applies from the next hook call.

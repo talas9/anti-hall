@@ -84,6 +84,7 @@ const SWITCHES = {
   'speculation-judge.js': 'jev.semanticJudge',
   'jev-weekly-scorecard.js': 'jev.weeklyNotice',
   'silent-agent-nudge.js': 'guards.silentAgentNudge',
+  'codex-quota-detect.js': 'guards.codexQuotaDetect',
 };
 // Non-hook features with a 0.108.4 switch (file -> key).
 const COMPANION_SWITCHES = {
@@ -312,6 +313,18 @@ const CASES = [
     setup: (h) => { const now = Date.now(); fs.writeFileSync(path.join(h.antiHall, 'swarm-spawns.log'), Array.from({ length: 20 }, () => String(now - 1000)).join('\n') + '\n'); return {}; },
     payload: () => ({ hook_event_name: 'PreToolUse', tool_name: 'Task', tool_input: { description: 'x', prompt: 'y' }, session_id: 't' }),
     fired: blocked,
+  },
+  {
+    hook: 'codex-quota-detect.js', key: 'guards.codexQuotaDetect',
+    payload: () => ({
+      hook_event_name: 'PostToolUse', tool_name: 'Agent',
+      tool_input: { subagent_type: 'codex:codex-rescue', prompt: 'review this diff' },
+      tool_response: { content: 'Error: out of quota until 2026-09-27T00:00:00Z. Try again later.' },
+      session_id: 't',
+    }),
+    fired: (r, s, h) => fs.existsSync(require(path.join(PLUGIN, 'hooks', 'lib', 'codex-quota.js')).statePath(h.home)) &&
+      JSON.parse(fs.readFileSync(require(path.join(PLUGIN, 'hooks', 'lib', 'codex-quota.js')).statePath(h.home), 'utf8')).quota &&
+      JSON.parse(fs.readFileSync(require(path.join(PLUGIN, 'hooks', 'lib', 'codex-quota.js')).statePath(h.home), 'utf8')).quota.available === false,
   },
 ];
 

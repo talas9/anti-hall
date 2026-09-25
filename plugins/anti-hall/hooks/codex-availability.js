@@ -73,20 +73,44 @@ function probeCodexOnPath() {
   }));
 }
 
+// MERGE, never clobber: lib/codex-quota.js may have already written a
+// `quota` sub-object into this same file (0.111 item 2) — a plain overwrite
+// here would silently erase a live quota-outage record on the very next
+// SessionStart.
 function writeState(available) {
   fs.mkdirSync(path.dirname(STATE_FILE), { recursive: true });
-  fs.writeFileSync(STATE_FILE, JSON.stringify({
+  let existing = {};
+  try {
+    const parsed = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) existing = parsed;
+  } catch (_) { existing = {}; }
+  fs.writeFileSync(STATE_FILE, JSON.stringify(Object.assign({}, existing, {
     available,
     checkedAt: Date.now(),
     source: 'path-probe',
-  }), 'utf8');
+  })), 'utf8');
 }
 
-function emitContext() {
+// quotaNote() -> a short prefix line when lib/codex-quota.js has a live
+// (unexpired) recorded quota outage, else ''. 0.111 item 2: lets a session
+// that never itself hit the quota error still learn about it, instead of
+// spending its own spawn+wait to rediscover the same outage.
+function quotaNote() {
+  try {
+    const q = require('./lib/codex-quota.js').readQuota({ home: os.homedir() });
+    if (!q.exhausted) return '';
+    return 'Codex unavailable until ' + new Date(q.until).toISOString() +
+      ' (' + q.reason + '); route correctness review to Sonnet until then. ';
+  } catch (_) {
+    return '';
+  }
+}
+
+function emitContext(prefix) {
   const out = {
     hookSpecificOutput: {
       hookEventName: 'SessionStart',
-      additionalContext: CONTEXT,
+      additionalContext: (prefix || '') + CONTEXT,
     },
   };
   fs.writeSync(1, JSON.stringify(out) + '\n');
@@ -106,7 +130,12 @@ function main() {
     return;
   }
 
-  if (available === true) emitContext();
+  const prefix = quotaNote();
+  // Emit whenever the binary is reachable OR a live quota outage exists —
+  // the quota case is the one place this hook must speak even though the
+  // PATH probe alone would have stayed silent (available===false previously
+  // meant "no context", but a session needs to be told routing changed).
+  if (available === true || prefix) emitContext(prefix);
 }
 
 try {
