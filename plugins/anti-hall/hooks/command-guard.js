@@ -934,16 +934,27 @@ function buildDevswarmReason(kind, env) {
 // splitter (kept self-contained — hooks are standalone scripts). This is what
 // makes per-segment heuristics work: `cd app && npm test` is two segments, and
 // `npm test` is correctly seen as heavy even though the FIRST verb is `cd`.
-function splitSegments(cmd) {
+// splitSegmentsDetailed(cmd) -> { segments, delims }. Same single scan as
+// splitSegments (below, now a thin wrapper around this) — NOT a second
+// parser: it is the identical character-by-character walk, only additionally
+// recording WHICH delimiter terminated each segment (delims[i] is what
+// followed segments[i] — '|', '&&', '||', ';', '&', '\n', 'heredoc', 'group',
+// 'subst', or 'end'). The narrow-allow bounded-verification check (below)
+// needs this to tell a real `<check> | tail` PIPE from a merely-adjacent
+// `<check> ; tail` sequence, which splitSegments' plain string array cannot
+// distinguish. segments/delims stay 1:1 and in the same order splitSegments
+// has always produced.
+function splitSegmentsDetailed(cmd) {
   const segments = [];
+  const delims = [];
   let cur = '';
   let i = 0;
   const n = cmd.length;
   let inSingle = false;
   let inDouble = false;
 
-  function flush() {
-    if (cur.trim().length) segments.push(cur);
+  function flush(delim) {
+    if (cur.trim().length) { segments.push(cur); delims.push(delim); }
     cur = '';
   }
 
@@ -973,27 +984,37 @@ function splitSegments(cmd) {
         cur += parsed.openerText;
         i = parsed.end;
         // The heredoc construct closes the current logical command/segment.
-        flush();
+        flush('heredoc');
         continue;
       }
     }
 
-    if (c === '&' && c2 === '&') { flush(); i += 2; continue; }
-    if (c === '|' && c2 === '|') { flush(); i += 2; continue; }
-    if (c === '|') { flush(); i++; continue; }
-    if (c === ';') { flush(); i++; continue; }
-    if (c === '&') { flush(); i++; continue; }
-    if (c === '\n') { flush(); i++; continue; }
+    if (c === '&' && c2 === '&') { flush('&&'); i += 2; continue; }
+    if (c === '|' && c2 === '|') { flush('||'); i += 2; continue; }
+    if (c === '|') { flush('|'); i++; continue; }
+    if (c === ';') { flush(';'); i++; continue; }
+    if (c === '&') { flush('&'); i++; continue; }
+    if (c === '\n') { flush('\n'); i++; continue; }
     // Subshell / grouping / command-substitution boundaries -> segment splits.
-    if (c === ')' || c === '(' || c === '{' || c === '}') { flush(); i++; continue; }
-    if (c === '$' && c2 === '(') { flush(); i += 2; continue; }
-    if (c === '`') { flush(); i++; continue; }
+    if (c === ')' || c === '(' || c === '{' || c === '}') { flush('group'); i++; continue; }
+    if (c === '$' && c2 === '(') { flush('subst'); i += 2; continue; }
+    if (c === '`') { flush('subst'); i++; continue; }
 
     cur += c;
     i++;
   }
-  flush();
-  return segments;
+  flush('end');
+  return { segments, delims };
+}
+
+// Split a full command line into logical segments on the shell operators
+// ; && || | (and newlines), honoring single/double quotes so an operator inside
+// a quoted string does not create a spurious segment. Mirrors git-guard.js's
+// splitter (kept self-contained — hooks are standalone scripts). This is what
+// makes per-segment heuristics work: `cd app && npm test` is two segments, and
+// `npm test` is correctly seen as heavy even though the FIRST verb is `cd`.
+function splitSegments(cmd) {
+  return splitSegmentsDetailed(cmd).segments;
 }
 
 // basename() is imported from ./lib/shell-scan.js (shared with git-guard.js).
@@ -1699,6 +1720,222 @@ function classifyHeavy(command, depth) {
   return null;
 }
 
+// ---------------------------------------------------------------------------
+// "Narrow allow" read-only verification carve-out (owner-approved 2026-09-26,
+// "Narrow allow"). Lets the COORDINATOR run a short, BOUNDED, single-target
+// verification command inline (e.g. re-running one test file to verify a
+// subagent's "done" claim — rule L) instead of delegating it, even though
+// isHeavyCommand() would otherwise flag it. This is checked ONLY as a final
+// override AFTER a command is already classified heavy (main() calls it
+// right before building the block reason) — it never widens what counts as
+// heavy, and it never touches subagent context (subagents already pass
+// through everything). Gated by guards.allowReadOnlyVerify (default true).
+//
+// Reuses splitSegmentsDetailed/effectiveVerb/neutralizeQuotedContents/
+// blankPatternArgument/HEAVY_VERBS/HEAVY_PATTERNS — no new parser (a
+// recurring bug class here is a second/third hand-rolled segment splitter).
+//
+// ALL of these must hold, or the command stays blocked:
+//   1. every segment is either the qualifying single-target check, a
+//      PIPE-fed bounded-output sink (tail/head/grep -c/grep -m N/wc), or
+//      trivially safe (cd/pwd/true) — a segment that is none of these
+//      (including a second, different heavy command) disqualifies the WHOLE
+//      line. This is what keeps `pytest -q x.py; npm test`,
+//      `node --test $(ls tests)`, `ksh -c "..."`, and a `--check` hidden
+//      inside an otherwise-heavy invocation (`npm run build --check`, still
+//      classified heavy because npm IS a HEAVY_VERB) blocked.
+//   2. the bounded sink must be reached via an actual `|` (checked against
+//      splitSegmentsDetailed's own delimiter for the PRECEDING segment) —
+//      `<check> ; tail` (sequential, not piped) does not count as bounded
+//      output and disqualifies the line.
+//   3. no write redirect (`>`, `>>`, `tee`) to a path outside the session
+//      scratchpad or a tmp root, on ANY segment.
+// ---------------------------------------------------------------------------
+
+const VERIFY_CHECK_FLAG_RE = /(^|\s)--(?:check|dry-run|list)(?:=\S+)?(?=\s|$)/;
+const VERIFY_SYNTAX_ONLY_COMPILERS = new Set(['c++', 'cc', 'gcc', 'clang', 'clang++', 'g++']);
+const VERIFY_TRIVIAL_VERBS = new Set(['cd', 'pwd', 'true']);
+
+// A --check/--dry-run/--list flag only counts when the segment is NOT
+// otherwise already classified heavy (its own verb is not a HEAVY_VERB and
+// it does not match a HEAVY_PATTERN on quote-neutralized text) — this is the
+// specific fix for "hidden inside a heavy command": `npm run build --check`
+// stays blocked (npm is a HEAVY_VERB) rather than being waved through just
+// because it also carries a --check-shaped token. The flag itself is also
+// checked on the QUOTE-NEUTRALIZED segment, so `git commit -m "deploy
+// --check"` (a flag-shaped substring inside quoted DATA) does not qualify.
+function isGenericCheckFlagCommand(segment) {
+  const verb = effectiveVerb(segment);
+  if (verb && HEAVY_VERBS.has(verb)) return false;
+  let forPatterns = neutralizeQuotedContents(segment);
+  forPatterns = blankPatternArgument(forPatterns, verb);
+  for (const re of HEAVY_PATTERNS) {
+    if (re.test(forPatterns)) return false;
+  }
+  const neutralized = neutralizeQuotedContents(segment);
+  return VERIFY_CHECK_FLAG_RE.test(' ' + neutralized + ' ');
+}
+
+function isSyntaxOnlyCompileCheck(segment) {
+  const verb = effectiveVerb(segment);
+  if (!verb || !VERIFY_SYNTAX_ONLY_COMPILERS.has(verb)) return false;
+  return /(^|\s)-fsyntax-only(?=\s|$)/.test(segment);
+}
+
+// `python3 -m pytest -q <single file or file::test>` — the exact documented
+// shape only: no globs, no directory target, no extra args past the one
+// target token.
+function isSinglePytestFileCheck(segment) {
+  const m = segment.trim().match(/^python3\s+-m\s+pytest\s+-q\s+(\S+)$/);
+  if (!m) return false;
+  const target = m[1];
+  if (/[*?\[\]]/.test(target)) return false;
+  if (target.endsWith('/')) return false;
+  return true;
+}
+
+// `node --test <one or two explicit test files>` — no globs, no dirs, no
+// extra flags; each target must look like an explicit JS/TS test file.
+function isBoundedNodeTestCheck(segment) {
+  const tokens = segment.trim().split(/\s+/).filter(Boolean);
+  if (tokens.length < 3 || tokens.length > 4) return false;
+  if (basename(tokens[0]).toLowerCase() !== 'node') return false;
+  if (tokens[1] !== '--test') return false;
+  const files = tokens.slice(2);
+  for (const f of files) {
+    if (f.startsWith('-')) return false;
+    if (/[*?\[\]]/.test(f)) return false;
+    if (f.endsWith('/')) return false;
+    if (!/\.(?:m?js|cjs|ts)$/i.test(f)) return false;
+  }
+  return true;
+}
+
+function isCtestNameCheck(segment) {
+  return /^ctest\s+-R\s+\S+$/.test(segment.trim());
+}
+
+// tmpRoots() -> known tmp roots (os.tmpdir(), '/tmp', '/private/tmp'),
+// de-duplicated. Deliberately simple (string-prefix match, no symlink
+// resolution like edit-guard.js's full ownScratchpadDirs/isOwnScratchpadPath
+// machinery) — this carve-out is scoped to a git-clone DESTINATION path
+// only, and fails CLOSED (not exempt) on anything ambiguous.
+function verifyTmpRoots() {
+  const roots = [];
+  const seen = new Set();
+  const add = (r) => { if (typeof r === 'string' && r && !seen.has(r)) { seen.add(r); roots.push(r); } };
+  try { add(os.tmpdir()); } catch (_) { /* ignore */ }
+  add('/tmp');
+  add('/private/tmp');
+  return roots;
+}
+
+function isScratchpadOrTmpPath(p) {
+  if (typeof p !== 'string' || !p) return false;
+  const unquoted = p.replace(/^['"]|['"]$/g, '');
+  if (/\/scratchpad(\/|$)/.test(unquoted)) return true;
+  let resolved = unquoted;
+  try { resolved = path.resolve(unquoted); } catch (_) { /* keep raw */ }
+  for (const root of verifyTmpRoots()) {
+    const r = root.replace(/\/+$/, '');
+    if (resolved === r || resolved.startsWith(r + '/')) return true;
+  }
+  return false;
+}
+
+// `git clone --depth 1 <url> <dest>` (dest in scratchpad/tmp), or
+// `git clone <local path> <dest-in-scratchpad>` (src is NOT a remote
+// URL/scp-style shorthand — a real local-to-local clone only).
+function isSafeScratchpadGitClone(segment) {
+  const trimmed = segment.trim();
+  let m = trimmed.match(/^git\s+clone\s+--depth\s+1\s+(\S+)\s+(\S+)$/);
+  if (m) return isScratchpadOrTmpPath(m[2]);
+  m = trimmed.match(/^git\s+clone\s+(\S+)\s+(\S+)$/);
+  if (m) {
+    const src = m[1];
+    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(src)) return false; // scheme URL (https://, git://, ...)
+    if (/^[\w.-]+@[\w.-]+:/.test(src)) return false; // scp-style ssh shorthand
+    return isScratchpadOrTmpPath(m[2]);
+  }
+  return false;
+}
+
+function isQualifyingSingleTargetCheck(segment) {
+  if (isSyntaxOnlyCompileCheck(segment)) return true;
+  if (isSinglePytestFileCheck(segment)) return true;
+  if (isBoundedNodeTestCheck(segment)) return true;
+  if (isCtestNameCheck(segment)) return true;
+  if (isSafeScratchpadGitClone(segment)) return true;
+  if (isGenericCheckFlagCommand(segment)) return true;
+  return false;
+}
+
+function isBoundedSinkSegment(segment) {
+  const verb = effectiveVerb(segment);
+  if (!verb) return false;
+  if (verb === 'tail' || verb === 'head' || verb === 'wc') return true;
+  if (verb === 'grep') {
+    return /(^|\s)-c(?=\s|$)/.test(segment) || /(^|\s)-m\s*\d+(?=\s|$)/.test(segment);
+  }
+  return false;
+}
+
+function isTriviallySafeSegment(segment) {
+  const verb = effectiveVerb(segment);
+  return !!verb && VERIFY_TRIVIAL_VERBS.has(verb);
+}
+
+// Any write redirect (`>`, `>>`) or `tee` target that resolves outside the
+// scratchpad/tmp disqualifies the whole command. `2>&1`/`&>`-style fd-dup
+// targets (no real path) are ignored.
+function hasDisallowedWriteRedirect(segment) {
+  const re = /(^|[^<>&])(>>?)\s*(\S+)/g;
+  let m;
+  while ((m = re.exec(segment))) {
+    const target = m[3];
+    if (/^&\d*$/.test(target)) continue;
+    if (!isScratchpadOrTmpPath(target)) return true;
+  }
+  const verb = effectiveVerb(segment);
+  if (verb === 'tee') {
+    const tokens = segment.trim().split(/\s+/).filter(Boolean);
+    for (let i = 1; i < tokens.length; i++) {
+      const t = tokens[i];
+      if (t.startsWith('-')) continue;
+      return !isScratchpadOrTmpPath(t);
+    }
+  }
+  return false;
+}
+
+// isBoundedVerificationCommand(command) -> bool. See the header block above
+// for the full rule. No command-substitution/`bash -c`/`eval` unwrapping is
+// performed here on purpose — this exception is scoped to a literal, visible
+// command line only; anything obfuscated through those never qualifies.
+function isBoundedVerificationCommand(command) {
+  if (typeof command !== 'string' || !command.trim()) return false;
+  const { segments, delims } = splitSegmentsDetailed(command);
+  if (!segments.length) return false;
+
+  let sawQualifying = false;
+  let sawPipedBoundedSink = false;
+  for (let idx = 0; idx < segments.length; idx++) {
+    const seg = segments[idx].trim();
+    if (!seg) continue;
+    if (hasDisallowedWriteRedirect(seg)) return false;
+    if (isQualifyingSingleTargetCheck(seg)) { sawQualifying = true; continue; }
+    if (isBoundedSinkSegment(seg)) {
+      const precedingDelim = idx > 0 ? delims[idx - 1] : null;
+      if (precedingDelim !== '|') return false; // sequential (;/&&), not piped: not bounded
+      sawPipedBoundedSink = true;
+      continue;
+    }
+    if (isTriviallySafeSegment(seg)) continue;
+    return false;
+  }
+  return sawQualifying && sawPipedBoundedSink;
+}
+
 function main() {
   // Read + parse the payload FIRST — coordinator/subagent detection needs the
   // payload's agent_id/agent_type markers (the only reliable signal under cmux).
@@ -1870,6 +2107,19 @@ function main() {
     process.exit(0);
   }
 
+  // Narrow allow (owner-approved 2026-09-26): a bounded, single-target
+  // read-only verification command is let through even though it classified
+  // heavy above — e.g. re-running one delegated test file to verify a
+  // subagent's "done" claim. Fail-closed on any error (falls through to the
+  // ordinary block below). See isBoundedVerificationCommand's header.
+  try {
+    if (settingsGet('guards', 'allowReadOnlyVerify') !== false && isBoundedVerificationCommand(command)) {
+      process.exit(0);
+    }
+  } catch (_) {
+    // fail-closed: never let a bug in this carve-out bypass the heavy-command gate.
+  }
+
   // Classification label is derived from a closed, code-defined set (heavy verb
   // allowlist or a fixed category name) — NEVER raw command/stdin text — so no
   // attacker-controlled content is reflected into the model-visible reason.
@@ -1909,7 +2159,8 @@ function main() {
        'small/scoped work (one command, a lookup, a scoped check): delegate to a subagent ' +
        '(cheap model: Haiku or similar) that runs it and returns only a tight summary. Do ' +
        'NOT hand a workspace-scale matter to a subagent. Heavy command detected ' + detail +
-       ' — spin a workspace, or delegate to a subagent if it is genuinely small.')
+       ' — spin a workspace, or delegate to a subagent if it is genuinely small. ' +
+       'Verifying delegated work with a bounded single-target check is allowed: pipe it to tail/head/grep -c.')
     : ('COMMAND-DELEGATION RULE: heavy/long/state-changing commands must NEVER run ' +
        'inline in the main coordinator context — they fill the main thread with raw ' +
        'output and the most counterproductive thing a coordinator can do. ' +
@@ -1917,7 +2168,8 @@ function main() {
        'spawn a subagent, pass the command, let it run and return only a tight ' +
        'summary. The coordinator synthesizes the summary; raw output never reaches ' +
        'the main thread. Heavy command detected ' + detail +
-       ' — delegate to a subagent.');
+       ' — delegate to a subagent. ' +
+       'Verifying delegated work with a bounded single-target check is allowed: pipe it to tail/head/grep -c.');
 
   process.stdout.write(JSON.stringify({ decision: 'block', reason }) + '\n');
   process.exit(2);

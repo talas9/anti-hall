@@ -6,6 +6,23 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## Unreleased
+
+### Features
+
+- **command-guard "narrow allow": bounded read-only verification for the coordinator.**
+  The coordinator may now run a short, single-target, read-only verification command
+  inline instead of delegating it — e.g. re-running one delegated test file to verify a
+  subagent's "done" claim — when it is a `--check`/`--dry-run`/`--list` flag, a
+  `-fsyntax-only` compile check, one `python3 -m pytest -q <file>`, one or two explicit
+  `node --test <files>`, `ctest -R <name>`, or a scratchpad-scoped `git clone`, AND its
+  output is piped to `tail`/`head`/`grep -c`/`grep -m N`/`wc`, AND no write redirect
+  targets a path outside the scratchpad/tmp, AND every other segment on the line is
+  trivially safe (`cd`/`pwd`/`true`) or the piped sink itself — any other segment
+  (including a chained second heavy command, or a `--check` hidden inside a still-heavy
+  invocation) keeps the whole line blocked. Full suites, builds, installs, deploys and
+  pushes stay gated. New setting `guards.allowReadOnlyVerify` (default on).
+
 ## 0.110.0 (2026-09-26)
 
 ### Features

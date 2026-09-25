@@ -182,6 +182,58 @@ const BLOCK = [
   'npm run build -- node statusline/phase.js clear',
   'npm run build -- node hooks/agent-watchdog.js',
   'npm run build -- node scripts/devswarm.js roster',
+  // ---------------------------------------------------------------------
+  // "Narrow allow" bounded-verification carve-out — BYPASS ATTEMPTS that
+  // must stay blocked (owner-approved 2026-09-26). Each mirrors a real
+  // allowed shape closely enough that a sloppy implementation would let it
+  // through; every one below must fail at least one of the four required
+  // conditions (single qualifying segment / piped bounded sink / no
+  // disallowed write redirect / no other unaccounted-for segment).
+  // ---------------------------------------------------------------------
+  // Chaining a real heavy command after a narrow single-file pytest form —
+  // the second segment does not itself qualify or count as trivially safe.
+  'python3 -m pytest -q x.py; npm test',
+  'pytest -q x.py; npm test',
+  // A glob/dir target disqualifies the node --test / python3 pytest forms
+  // outright — AND (independently) these bare forms were never classified
+  // heavy in the first place, so no override is even reachable; they stay
+  // allowed for the SAME reason as always, not because of this feature.
+  // The ksh -c shell-wrapper bypass: this exception never unwraps `-c`
+  // payloads, so a heavy command hidden behind a shell invocation stays
+  // blocked exactly as before.
+  'ksh -c "npm test" | tail',
+  'bash -c "npm test" | tail -5',
+  // A --check flag riding along on a genuinely heavy verb invocation (npm
+  // IS a HEAVY_VERB) must not be waved through just because --check is
+  // present as a token — the generic flag rule explicitly excludes any
+  // segment whose own verb is a HEAVY_VERB.
+  'npm run build --check | tail',
+  'npm test --check | tail -20',
+  // A --check flag hidden inside quoted DATA (not a real flag token) must
+  // not satisfy the generic-flag rule via mere substring match; the second,
+  // unrelated segment is a genuinely heavy `firebase deploy` and must also
+  // never be shadowed by the first segment's carve-out check.
+  'git commit -m "run deploy --check" && firebase deploy --only functions',
+  // The bounded sink must be reached by an actual PIPE on the qualifying
+  // segment's own segment boundary — a semicolon (sequential, not piped)
+  // does not bound anything, even against an otherwise-qualifying, otherwise
+  // already-heavy (HEAVY_PATTERNS git-clone) primary segment.
+  'git clone --depth 1 https://example.com/repo.git /tmp/x; tail -5',
+  // A write redirect outside the scratchpad/tmp on the SINK segment itself
+  // disqualifies the whole line even though the primary segment and the
+  // pipe shape both otherwise qualify.
+  'git clone --depth 1 https://example.com/repo.git /tmp/x | tail > /Users/talas9/Projects/anti-hall/out.log',
+  // `tee` is not one of the allowed bounded sinks (tail/head/grep -c/grep -m
+  // N/wc only) — piping an otherwise-qualifying git clone into `tee` (even
+  // to a tmp destination) does not satisfy the "bounded output" condition.
+  'git clone --depth 1 https://example.com/repo.git /tmp/x | tee /tmp/out.log',
+  // git clone --depth 1 to a destination OUTSIDE the scratchpad/tmp must
+  // stay blocked (git clone is HEAVY_PATTERNS-matched).
+  'git clone --depth 1 https://example.com/repo.git /Users/talas9/Projects/anti-hall/x | tail -1',
+  // git clone whose SOURCE is a remote URL does not satisfy the "local path"
+  // form even when the dest is in tmp and no --depth 1 is given — plain
+  // (no --depth 1) remote-URL clones are not one of the two allowed shapes.
+  'git clone https://example.com/repo.git /tmp/x | tail -1',
 ];
 
 const ALLOW = [
@@ -304,6 +356,41 @@ const ALLOW = [
   'node plugins/anti-hall/scripts/defect.js similar gate blocks archived --component hooks/devswarm-parent-gate',
   'cd /repo && node scripts/defect.js list --open',
   'FOO=1 node scripts/defect.js list',
+  // ---------------------------------------------------------------------
+  // "Narrow allow" bounded-verification carve-out (owner-approved
+  // 2026-09-26) — cases that PROVE the override, i.e. the base command was
+  // ALREADY classified heavy (git clone matches HEAVY_PATTERNS) and only
+  // allows through the narrow shape.
+  // ---------------------------------------------------------------------
+  'git clone --depth 1 https://example.com/repo.git /tmp/verify-clone-x | tail -1',
+  'git clone --depth 1 https://example.com/repo.git /tmp/verify-clone-y | head -3',
+  'git clone --depth 1 https://example.com/repo.git /tmp/verify-clone-z | wc -l',
+  // A generic --check flag on a NON-heavy-verb command, bounded via a pipe.
+  './scripts/verify.sh --check | tail',
+  './scripts/verify.sh --dry-run | head -20',
+  './scripts/verify.sh --list | wc -l',
+  // ---------------------------------------------------------------------
+  // The remaining documented "single-target check" shapes (syntax-only
+  // compile check, a single python3 -m pytest -q file, one/two explicit
+  // node --test files, ctest -R <name>) were NEVER classified heavy by
+  // command-guard's existing verb/pattern rules in the first place (none of
+  // c++/cc/gcc/clang/python3/node/ctest are HEAVY_VERBS, and none of these
+  // exact shapes match a HEAVY_PATTERN) — so these ALLOW whether or not the
+  // narrow-allow carve-out fires at all. Kept here as regression coverage
+  // for the shape-matching helpers themselves (isSyntaxOnlyCompileCheck /
+  // isSinglePytestFileCheck / isBoundedNodeTestCheck / isCtestNameCheck),
+  // not as proof of the override (git clone above is the proof).
+  'c++ -fsyntax-only foo.cpp | tail',
+  'gcc -fsyntax-only foo.c | grep -c error',
+  'python3 -m pytest -q tests/x.py | tail -5',
+  'node --test tests/a.test.js tests/b.test.js | tail',
+  'ctest -R mytest | wc -l',
+  // node --test with a command-substitution target: unaffected by this
+  // feature either way (was already allowed before it existed, since bare
+  // `node --test ...` never matched a HEAVY_VERB/HEAVY_PATTERN) — kept as a
+  // negative control proving the carve-out did not need to (and does not)
+  // intervene here.
+  'node --test $(ls tests) | tail',
 ];
 
 for (const cmd of BLOCK) {
@@ -997,7 +1084,8 @@ const BASELINE_REASON =
   'DELEGATE to a subagent (cheap model: Haiku or similar): ' +
   'spawn a subagent, pass the command, let it run and return only a tight ' +
   'summary. The coordinator synthesizes the summary; raw output never reaches ' +
-  'the main thread. Heavy command detected (verb: npm) — delegate to a subagent.';
+  'the main thread. Heavy command detected (verb: npm) — delegate to a subagent. ' +
+  'Verifying delegated work with a bounded single-target check is allowed: pipe it to tail/head/grep -c.';
 
 test('DEVSWARM PRIMARY heavy command: still BLOCKED, reason names `devswarm.js spawn` as the primary exit', () => {
   const r = runHeavy('npm run build', PRIMARY_ENV);
