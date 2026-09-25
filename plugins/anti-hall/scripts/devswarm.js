@@ -5733,6 +5733,7 @@ function messageGaps(home, env, snap, now) {
 // syncAppState(home, ctx) -> result. v0.108.0 RUNNER step (the supervisor sweep
 // calls this every tick; also `devswarm.js app-sync`). ONE fresh snapshot, then:
 //   (1) markAppArchivedDescriptors — archived / deleted-in-app markers (never a delete)
+//   (1b) retireStaleArchivedMarkers — markers the app shows OPEN are retired (never a delete)
 //   (2) refreshNamesFromApp — names cache follows the app's title
 //   (3) app-state.json (atomic): summary, session map (active AI terminals),
 //       builders active in the app that anti-hall has no descriptor for, schema
@@ -5761,6 +5762,10 @@ function syncAppState(home, ctx) {
     out.appDb = true;
     const archived = markAppArchivedDescriptors(home, { env, now, dryRun });
     out.archived = { marked: archived.marked, pending: archived.pending, deletedInApp: archived.deletedInApp || 0, errors: archived.errors };
+    // v0.108.3: a marker the app DB shows OPEN is stale -> retired (never deleted),
+    // BEFORE the archived set below is read, so it stops reporting as a conflict.
+    const retiredMarkers = retireStaleArchivedMarkers(home, { env, now, dryRun, snap });
+    out.retiredMarkers = { retired: retiredMarkers.retired, pending: retiredMarkers.pending, errors: retiredMarkers.errors };
     const descs = readJsonDescriptors(workspacesDir(home));
     const archivedDescs = readJsonDescriptors(archivedDir(home));
     const namesRes = dryRun ? { checked: 0, refreshed: 0 } : refreshNamesFromApp(home, env, descs.concat(archivedDescs), now);
@@ -5790,9 +5795,18 @@ function syncAppState(home, ctx) {
       });
       const wtKey = w.worktreePath ? (canonicalWorktreeRealPath(w.worktreePath) || w.worktreePath) : null;
       if (w.builderType !== 'primary' && !known.has(w.id) && !(wtKey && knownWt.has(wtKey))) unknownToAntiHall.push({ id: w.id, label: w.label });
-      // Conflict (report only — never auto-unarchived): open in the app, but
-      // anti-hall holds an archived marker for it.
-      if (archivedIds.has(w.id)) openButMarkedArchived.push({ id: w.id, label: w.label, repositoryId: w.repositoryId });
+      // Open in the app, but anti-hall still holds an archived marker for it
+      // (dry run, inside the retire grace, or a retire that failed). The app is
+      // never touched; retireStaleArchivedMarkers above retires the marker.
+      // repositoryId AND the canonicalized worktreePath (wtKey, already computed
+      // above) are stamped so readers can scope conflicts to the current repo
+      // (P1 fix, same scoping as doctor-devswarm.js). worktreePath is the
+      // structural signal (matches D29's cross-project filter design — a
+      // worktree-root comparison, not the app-DB's own repositoryId) that
+      // devswarm-parent-inbox.js relies on, since it must scope even when the
+      // app DB itself is unreadable (no live snapshot to resolve repositoryId
+      // against at ask-time).
+      if (archivedIds.has(w.id)) openButMarkedArchived.push({ id: w.id, label: w.label, repositoryId: w.repositoryId, worktreePath: wtKey });
     }
     active.sort((a, b) => (a.repositoryId || '').localeCompare(b.repositoryId || '') || ((a.rank == null ? Infinity : a.rank) - (b.rank == null ? Infinity : b.rank)));
     const gapCooldown = Number.isFinite(c.gapCooldownMs) ? c.gapCooldownMs : APP_GAP_COOLDOWN_MS;
@@ -5806,7 +5820,7 @@ function syncAppState(home, ctx) {
       counts: { builders: snap.workspaces.length, active: active.length, archived: snap.workspaces.filter((w) => w.archived).length },
       focused, active, sessions, unknownToAntiHall, openButMarkedArchived,
       scheduledForDeletion: appDb.scheduledForDeletion(home, env) || [],
-      archived: out.archived, names: out.names, gaps,
+      archived: out.archived, retiredMarkers: out.retiredMarkers, names: out.names, gaps,
     };
     out.unknownToAntiHall = unknownToAntiHall.length;
     out.gapTotal = gaps ? gaps.repos.reduce((n, r) => n + r.gap, 0) : null;
@@ -5865,7 +5879,7 @@ function formatAppState(r) {
     L.push('| ' + (a.rank == null ? '—' : a.rank) + ' | ' + title + ' | ' + (a.builderType || '—') + ' | ' + (a.finish || '—') + ' | ' + (a.brief || '—') + ' | ' + sess + ' |');
   }
   if (r.unknownToAntiHall.length) L.push('open in the app, unknown to anti-hall: ' + r.unknownToAntiHall.map((u) => (u.label || u.id) + ' (' + String(u.id).slice(0, 8) + ')').join('; '));
-  if (r.openButMarkedArchived.length) L.push('⚠ open in the app but archived in anti-hall (conflict, report only — `devswarm.js unarchive <id>` if it is live): ' + r.openButMarkedArchived.map((u) => (u.label || u.id) + ' (' + String(u.id).slice(0, 8) + ')').join('; '));
+  if (r.openButMarkedArchived.length) L.push('⚠ open in the app but archived in anti-hall (stale marker — the app is right; the next app-DB sync retires it): ' + r.openButMarkedArchived.map((u) => (u.label || u.id) + ' (' + String(u.id).slice(0, 8) + ')').join('; '));
   if (r.wouldMark) L.push('next sync marks ' + r.wouldMark + ' descriptor(s) archived (app-archived or deleted in the app)');
   if (r.scheduledForDeletion.length) L.push('pending app deletion (report only): ' + r.scheduledForDeletion.join(', '));
   const g = r.gaps;
@@ -6010,6 +6024,92 @@ function markAppArchivedDescriptors(home, ctx) {
     }
   }
   if (!dryRun) out.pending = Math.max(0, out.pending - out.marked);
+  return out;
+}
+
+// retireStaleArchivedMarkers(home, ctx) -> { ok, dryRun, appDb, scanned,
+//   pending, retired, left[], errors, results }. v0.108.3 (owner decision
+// "retire marker, trust app"): an archived/<id>.json marker whose workspace the
+// READABLE app DB shows OPEN (isActive=1 AND isHidden=0, same builder id, same
+// worktree when both are known) is stale — the app is the ground truth. The
+// marker is RETIRED, never deleted: renamed out of archived/ into
+// archived-retired/<id>.<ms>.json and re-written there (tmp+rename, so a
+// hardlinked active descriptor is never touched) with a `retired` record
+// { at, by, reason }. Nothing that reads archived/ sees it any more (roster,
+// reconcile, ui-sync, parent gate/inbox), and the app itself is never touched.
+// A marker younger than RETIRE_MARKER_GRACE_MS is left alone so a just-run
+// local `archive` is not undone before the owner archives it in the app.
+// Under the per-id lock; idempotent (a retired marker is gone from archived/);
+// fail-open (no/unreadable app DB -> nothing to do, errors are counted).
+// ctx.snap reuses a caller's fresh snapshot; ctx.dryRun or
+// ANTIHALL_INGEST_DRY_RUN=1 -> report only.
+const RETIRE_MARKER_GRACE_MS = 10 * 60 * 1000;
+function retiredMarkersDir(home) { return path.join(devswarmRoot(home), 'archived-retired'); }
+function retireStaleArchivedMarkers(home, ctx) {
+  const c = ctx || {};
+  const env = c.env || process.env;
+  const now = Number.isFinite(c.now) ? c.now : Date.now();
+  const dryRun = !!c.dryRun || String((env && env.ANTIHALL_INGEST_DRY_RUN) || '') === '1';
+  const out = { ok: true, dryRun, appDb: false, scanned: 0, pending: 0, retired: 0, left: [], errors: 0, results: [] };
+  let snap = c.snap || null;
+  try { if (!snap) snap = require('../companion/lib/devswarm-app-db.js').snapshot({ home, env, now, fresh: true }); } catch (_) { snap = null; }
+  if (!snap || !Array.isArray(snap.workspaces)) return out; // unreadable: no evidence, retire nothing
+  out.appDb = true;
+  const open = new Map();
+  for (const w of snap.workspaces) if (w && w.active === true && w.isHidden === false) open.set(String(w.id), w);
+  const dirState = checkedArchivedDir(home);
+  if (!dirState.ok || !dirState.exists) return out;
+  let names = [];
+  try { names = fs.readdirSync(dirState.path); } catch (_) { names = []; }
+  const wtKey = (p) => (p ? (canonicalWorktreeRealPath(String(p)) || String(p)) : null);
+  for (const n of names) {
+    if (!n.endsWith('.json')) continue;
+    const id = n.slice(0, -'.json'.length);
+    if (!isSafeId(id)) continue;
+    out.scanned++;
+    const w = open.get(id);
+    if (!w) continue;
+    const markerPath = path.join(dirState.path, n);
+    try {
+      let marker;
+      try { marker = JSON.parse(fs.readFileSync(markerPath, 'utf8')); } catch (_) { continue; }
+      if (!marker || typeof marker !== 'object' || Array.isArray(marker)) continue;
+      const mw = wtKey(marker.worktreePath);
+      const aw = wtKey(w.worktreePath);
+      if (mw && aw && mw !== aw) continue; // a reused id on another worktree: not this workspace's marker
+      const markedAt = Number.isFinite(marker.archivedAt) ? marker.archivedAt : fs.lstatSync(markerPath).ctimeMs;
+      if (now - markedAt < RETIRE_MARKER_GRACE_MS) continue;
+      out.pending++;
+      if (dryRun) { out.results.push({ id, action: 'would-retire' }); continue; }
+      const r = withIdLock(id, home, () => {
+        if (!fs.existsSync(markerPath)) return { ok: false, reason: 'marker-gone' };
+        const dir = retiredMarkersDir(home);
+        fs.mkdirSync(dir, { recursive: true });
+        const st = fs.lstatSync(dir);
+        if (!st.isDirectory() || st.isSymbolicLink()) return { ok: false, reason: 'retired dir is not a real directory' };
+        const dest = path.join(dir, id + '.' + now + '.json');
+        if (fs.existsSync(dest)) return { ok: false, reason: 'retired-exists' };
+        const body = fs.readFileSync(markerPath, 'utf8');
+        fs.renameSync(markerPath, dest); // leave archived/ first; bytes kept
+        let prior = {};
+        try { prior = JSON.parse(body); } catch (_) { prior = { raw: body }; }
+        const rec = Object.assign({}, prior, {
+          retired: { at: now, by: 'devswarm-app-sync', reason: 'open in the DevSwarm app (isActive=1, isHidden=0)', builderId: String(w.id) },
+        });
+        const tmp = dest + '.' + process.pid + '.tmp';
+        fs.writeFileSync(tmp, JSON.stringify(rec));
+        fs.renameSync(tmp, dest); // new inode: a hardlinked active descriptor is never rewritten
+        return { ok: true, to: dest };
+      });
+      if (r && r.ok) { out.retired++; out.results.push({ id, action: 'retired', to: r.to }); }
+      else if (r && r.reason === 'marker-gone') { out.pending--; }
+      else { out.left.push({ id, reason: r && r.lockBusy ? 'lock-busy' : ((r && r.reason) || 'retire-failed') }); }
+    } catch (e) {
+      out.errors++;
+      out.results.push({ id, error: String((e && e.message) || e) });
+    }
+  }
+  if (!dryRun) out.pending = Math.max(0, out.pending - out.retired);
   return out;
 }
 
@@ -17922,7 +18022,7 @@ module.exports = {
   deriveInstanceNonce,
   // mesh redesign B5 / Phase 3 — THE nonce every production site uses, plus the
   // reader_cursors adapters:
-  deriveReaderNonce, callerReaderKey, commitNdAck, floorCursor, importReaderCursorsAllStores, repairReaderFloorsAllStores, markAppArchivedDescriptors, deriveTitleFromBrief, appSessionOnWorktree, refreshNamesFromApp, syncAppState, messageGaps, appStatePath, cmdAppState, cmdSyncUi, repairChildSenderLabelsAllStores,
+  deriveReaderNonce, callerReaderKey, commitNdAck, floorCursor, importReaderCursorsAllStores, repairReaderFloorsAllStores, markAppArchivedDescriptors, retireStaleArchivedMarkers, deriveTitleFromBrief, appSessionOnWorktree, refreshNamesFromApp, syncAppState, messageGaps, appStatePath, cmdAppState, cmdSyncUi, repairChildSenderLabelsAllStores,
   senderIdentityDetailed, childSenderId, isPrimaryCheckout,
   refreshAnchorSession,
   childLabelRefusal,

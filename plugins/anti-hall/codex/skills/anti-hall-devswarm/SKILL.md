@@ -442,6 +442,7 @@ What it gives you:
 - **`[⚠ brief not delivered]` / `[⚠ brief withheld]`.** The spawned child never received its task. Resend it with `send --to <id>`.
 - **`[on screen]`.** The owner has that workspace focused in the app, so nags about it are suppressed while it stays focused (2 min, `ANTIHALL_DEVSWARM_FOCUS_MS`).
 - **Identity.** The app maps each Claude session to its worktree. Where Claude's own transcript confirms that mapping, it decides the Primary's self-identification (anchor ack, `register-primary` takeover). Otherwise the existing liveness rules decide.
+- **Stale archived markers (v0.108.3).** When the app DB is readable and shows a workspace open (`isActive=1`, `isHidden=0`) but anti-hall holds an `archived/<id>.json` marker for it (same id, same worktree, marker older than 10 min), the app wins: the sync retires the marker. It is moved to `archived-retired/<id>.<ms>.json` with a `retired` record (`at`, `by`, `reason`) and is never deleted, so it stops counting as archived in the roster, reconcile, the parent gate and ui-sync. `doctor --repair` retires existing ones (migration `retire-stale-archived-markers`). Nothing in the app is ever unarchived.
 - **Runner.** The supervisor syncs every tick (see `app-sync`). `doctor` reports:
   - schema drift ("DevSwarm app schema changed: <col>");
   - briefs that were never delivered;
@@ -450,7 +451,7 @@ What it gives you:
 
 ### Screenshot sync — when the app DB can't settle it
 
-The parent-inbox hook asks ONCE per session per set, in a line starting `DEVSWARM SYNC:`, when the app DB is unreadable or disagrees with anti-hall. Also run this flow when the owner says "here's a screenshot of my DevSwarm workspaces", "update your records" with an image, "sync my workspaces", or "which are finished so I can archive them".
+The parent-inbox hook asks ONCE per session per set, in a line starting `DEVSWARM SYNC:`, only when the app DB is unreadable. It never asks while the DB is readable: a disagreement is settled by retiring the stale anti-hall marker (above). Also run this flow when the owner says "here's a screenshot of my DevSwarm workspaces", "update your records" with an image, "sync my workspaces", or "which are finished so I can archive them".
 
 1. Transcribe every sidebar row **verbatim**, top to bottom. Keep any "…". Write a JSON array to a scratchpad file.
 2. `devswarm.js sync-ui --titles-json <file>`. This is a dry run.

@@ -41,6 +41,14 @@ the update.
   still has to prove the merge from git ancestry or the PR, and gates (c)-(g) are
   unchanged. Chat text such as "DONE" never counts. Only the auto-archive decision
   changed; `archive_ready` means the same for the parent gate and the merge gate.
+- **A stale anti-hall archived marker overrode the DevSwarm app.** A workspace open in the
+  app (`isActive=1`, `isHidden=0`) but still holding `archived/<id>.json` kept counting as
+  archived and triggered a screenshot ask. The supervisor's app-DB sync now retires such a
+  marker (same id and worktree, older than 10 min): it is moved to
+  `archived-retired/<id>.<ms>.json` with a `retired` record (when, by whom, why) and never
+  deleted. The new migration `retire-stale-archived-markers` (`doctor --repair`) retires
+  existing ones. The screenshot ask now fires only when the app DB is unreadable. Nothing
+  is unarchived in the app itself.
 - **`recordOutcome()` (`hooks/lib/jev-assist.js`) never populated `project`
   on its `type:'outcome'` rows**, unlike every decision row `ask()`/`askSync()`/
   `askDetached()` log via `finalize()`. `triage`'s answer-latency join

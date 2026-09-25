@@ -39,6 +39,7 @@ function fakeDw(opts) {
     reconcileDualPartitionAcksAllStores: mk('reconcileDualPartitionAcksAllStores', (p, e) => ({ wouldRaise: p, rows: p, stores: 1, errors: e })),
     mergeSplitBackendStoresAllStores: mk('mergeSplitBackendStoresAllStores', (p, e) => ({ ok: true, pending: p, stores: 1, splitStores: p, errors: e })),
     markAppArchivedDescriptors: mk('markAppArchivedDescriptors', (p, e) => ({ ok: true, appDb: true, pending: p, scanned: 1, errors: e })),
+    retireStaleArchivedMarkers: mk('retireStaleArchivedMarkers', (p, e) => ({ ok: true, appDb: true, pending: p, scanned: 1, retired: 0, left: [], errors: e })),
     repairChildSenderLabelsAllStores: mk('repairChildSenderLabelsAllStores', (p, e) => ({ ok: true, pending: p, labels: p, stores: 1, left: [], errors: e })),
     foldReadReceiptsAllStores: mk('foldReadReceiptsAllStores', (p, e) => ({ ok: true, pending: p, ids: p, stores: 1, folded: p, errors: e })),
     reRetireResurrectedRowsAllStores: () => { throw new Error('deletion-class entry must never run from runMigrations'); },
@@ -48,7 +49,7 @@ function fakeDw(opts) {
 test('registry: every default entry is non-deleting; the deletion-class entry is opt-in only', () => {
   const defaults = M.defaultMigrations();
   assert.deepStrictEqual(defaults.map((m) => m.id),
-    ['merge-split-backend-stores', 'fold-all-stores', 'heal-orphan-partitions', 'fold-archived-rows', 'fold-archived-family-descriptors', 'repair-reader-floors', 'reconcile-dual-partition-acks', 'mark-app-archived', 'repair-child-sender-labels', 'fold-read-receipts']);
+    ['merge-split-backend-stores', 'fold-all-stores', 'heal-orphan-partitions', 'fold-archived-rows', 'fold-archived-family-descriptors', 'repair-reader-floors', 'reconcile-dual-partition-acks', 'mark-app-archived', 'retire-stale-archived-markers', 'repair-child-sender-labels', 'fold-read-receipts']);
   for (const m of defaults) assert.ok(!m.deletes && !m.optIn, m.id + ' must not be deletion-class');
   const rr = M.byId('re-retire-resurrected');
   assert.ok(rr && rr.optIn && rr.deletes, 're-retire-resurrected is registered as opt-in + deletion-class');
@@ -60,15 +61,15 @@ test('bootstrap: no marker -> one live scan; clean + nothing pending -> marker w
     const dw = fakeDw({ pending: false });
     const r1 = M.runMigrations({ home, version: '9.9.9', devswarm: dw });
     assert.ok(r1.every((r) => r.status === 'skipped' && /nothing to migrate/.test(r.msg)), JSON.stringify(r1));
-    assert.strictEqual(dw.calls.length, 10, 'one dry-run scan per default entry');
+    assert.strictEqual(dw.calls.length, 11, 'one dry-run scan per default entry');
     const state = M.readMarkers(home);
     for (const m of M.defaultMigrations()) assert.strictEqual(state[m.key].completedVersion, '9.9.9', m.key);
     const r2 = M.runMigrations({ home, version: '9.9.9', devswarm: dw });
     assert.ok(r2.every((r) => /already applied for 9\.9\.9/.test(r.msg)), JSON.stringify(r2));
-    assert.strictEqual(dw.calls.length, 10, 'a marked entry costs no scan at all');
+    assert.strictEqual(dw.calls.length, 11, 'a marked entry costs no scan at all');
     // A new version re-scans (a new build may carry a new migration shape).
     M.runMigrations({ home, version: '9.9.10', devswarm: dw });
-    assert.strictEqual(dw.calls.length, 20);
+    assert.strictEqual(dw.calls.length, 22);
   } finally { rm(home); }
 });
 
@@ -78,7 +79,7 @@ test('pending work: applied once, re-detected, reported fixed, then marked', () 
     const dw = fakeDw({ pending: true });
     const r = M.runMigrations({ home, version: '1.0.0', devswarm: dw });
     assert.ok(r.every((x) => x.status === 'fixed'), JSON.stringify(r));
-    assert.strictEqual(dw.calls.filter((c) => !c.dryRun).length, 10, 'each entry applied exactly once');
+    assert.strictEqual(dw.calls.filter((c) => !c.dryRun).length, 11, 'each entry applied exactly once');
     assert.strictEqual(M.readMarkers(home).foldAllStores.completedVersion, '1.0.0');
   } finally { rm(home); }
 });

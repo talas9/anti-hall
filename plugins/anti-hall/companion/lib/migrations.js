@@ -341,6 +341,26 @@ const MIGRATIONS = [
     },
   },
   {
+    // v0.108.3: an archived/<id>.json marker whose workspace the readable app
+    // DB shows OPEN (isActive=1, isHidden=0) is stale. Retires it — renamed into
+    // archived-retired/<id>.<ms>.json with a `retired` {at, by, reason} record,
+    // never deleted — so it stops driving "archived". Idempotent; no app DB =
+    // nothing to do. The supervisor's app-DB sync does the same every tick.
+    id: 'retire-stale-archived-markers',
+    key: 'retireStaleArchivedMarkers',
+    fn: 'retireStaleArchivedMarkers',
+    detect(dw, home, ctx) {
+      const r = dw.retireStaleArchivedMarkers(home, Object.assign({}, ctx, { dryRun: true })) || {};
+      return {
+        pending: (r.pending || 0) > 0,
+        raw: Object.assign({}, r, { pending: 0 }),
+        detail: (r.pending || 0) + ' archived marker(s) of workspace(s) open in the DevSwarm app to retire'
+          + (r.appDb ? '' : ' (no readable DevSwarm app database)')
+          + (r.errors ? ' (' + r.errors + ' error(s), fail-open)' : ''),
+      };
+    },
+  },
+  {
     // v0.108.0: a CHILD worktree's old `primary-<hash>` sender label. Aliases it
     // to the child's registry id (sender-aliases.json — display) and, when the
     // label row is not live, forwards its unread direct mail into the child's

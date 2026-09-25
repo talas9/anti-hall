@@ -266,16 +266,17 @@ function uiSyncAskPath(home, sessionId, ids) {
 
 // uiSyncAsk(home, sessionId, appDbState, rowIds, now) -> string | null. ONE line
 // asking the owner for a screenshot of the DevSwarm sidebar, emitted at most once
-// per session per set, and ONLY when the app DB cannot settle it:
-//   - conflict: app-state.json (supervisor sync) lists workspaces open in the app
-//     but archived in anti-hall;
-//   - unreadable: an app DB file exists but no snapshot could be read.
+// per session per set, and ONLY when the app DB cannot settle it — i.e. only
+// when an app DB file exists but no snapshot could be read (v0.108.3: never
+// while it is readable; a readable DB settles a conflict itself, because the
+// app-DB sync retires the stale anti-hall marker). A conflict listed in
+// app-state.json names the rows in the ask only in that unreadable case.
 // The screenshot then goes through `devswarm.js sync-ui` (skills/devswarm).
 function uiSyncAsk(home, sessionId, appDbState, rowIds, now) {
   try {
     let ids = [];
     let why = '';
-    if (appDbState.conflicts && appDbState.conflicts.length) {
+    if (appDbState.unreadable && appDbState.conflicts && appDbState.conflicts.length) {
       ids = appDbState.conflicts.map((c) => String(c.id));
       why = 'The DevSwarm app shows ' + appDbState.conflicts.map((c) => "'" + (c.label || c.id) + "'").join(', ')
         + ' as open, but anti-hall has it archived. I can\'t tell which is right.';
@@ -2211,22 +2212,24 @@ function main() {
           // P1 fix: app-state.json's openButMarkedArchived is HOME-GLOBAL (every
           // repo the app knows about), so it must be scoped to THIS session's
           // repo before it reaches uiSyncAsk — otherwise the owner gets asked
-          // for a screenshot about workspaces in other repos entirely. Resolve
-          // the current repositoryId through the SAME app-DB reader/canonical
-          // toplevel (`gitTop`, resolved once above via identity.js
-          // resolveContext) that already backs repositoryForWorktree elsewhere
-          // in this hook — no new fs-walk. Fail CLOSED: an entry lacking
-          // repositoryId (written by 0.108.0-0.108.2, before this fix) or an
-          // unresolvable current repo never matches, so it is never shown
-          // (better a missed ask than a cross-repo one). The writer
-          // (scripts/devswarm.js syncAppState) regenerates app-state.json every
-          // supervisor tick, so 0.108.0-0.108.2 entries self-repair on the next
-          // sync — no migration needed.
-          const snapForRepo = appDbLib ? appSnap() : null;
-          const curRepo = (appDbLib && snapForRepo && gitTop) ? appDbLib.repositoryForWorktree(snapForRepo, gitTop) : null;
-          const curRepoId = (curRepo && curRepo.id != null) ? String(curRepo.id) : null;
-          st.conflicts = curRepoId
-            ? as.openButMarkedArchived.filter((c) => c && c.repositoryId != null && String(c.repositoryId) === curRepoId)
+          // for a screenshot about workspaces in other repos entirely. Scoped
+          // by worktreePath (the canonicalized realpath `scripts/devswarm.js`
+          // syncAppState already stamps on each entry) against THIS session's
+          // own `gitTop` (resolved once above via identity.js resolveContext,
+          // no new fs-walk) — a structural, worktree-root comparison rather
+          // than the app-DB's own repositoryId (same design as the D29
+          // cross-project filter in devswarm-parent-gate.js), because this ask
+          // fires ONLY when the app DB is unreadable (v0.108.3) and there is
+          // then no live snapshot to resolve an app-DB repositoryId against.
+          // Fail CLOSED: an entry lacking worktreePath (written by
+          // 0.108.0-0.108.2, before this fix) or an unresolvable current repo
+          // never matches, so it is never shown (better a missed ask than a
+          // cross-repo one). The writer (scripts/devswarm.js syncAppState)
+          // regenerates app-state.json every supervisor tick, so
+          // 0.108.0-0.108.2 entries self-repair on the next sync — no
+          // migration needed.
+          st.conflicts = gitTop
+            ? as.openButMarkedArchived.filter((c) => c && c.worktreePath && String(c.worktreePath) === gitTop)
             : [];
         }
       } catch (_) { /* no sync yet */ }

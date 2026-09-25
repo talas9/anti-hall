@@ -801,7 +801,7 @@ function appDbChecks(opts) {
       ? st.openButMarkedArchived.filter((u) => u && u.repositoryId != null && String(u.repositoryId) === curRepoId)
       : [];
     if (scopedConflicts.length) {
-      out.push({ status: WARN, message: 'open in the DevSwarm app but archived in anti-hall (conflict, report only — `devswarm.js unarchive <id>` if it is live): ' + scopedConflicts.map((u) => (u.label || u.id) + ' (' + String(u.id).slice(0, 8) + ')').join('; ') });
+      out.push({ status: WARN, message: 'open in the DevSwarm app but archived in anti-hall (stale marker — the app is right; the next app-DB sync retires it, `doctor --repair` does it now): ' + scopedConflicts.map((u) => (u.label || u.id) + ' (' + String(u.id).slice(0, 8) + ')').join('; ') });
     }
   }
   if (st.gaps && Array.isArray(st.gaps.repos)) {
