@@ -44,7 +44,6 @@
 // sweeps siblings, mirroring every other per-session state file in this repo).
 
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
 
@@ -125,7 +124,7 @@ function recordAck(home, sessionId, hook, signature, now) {
 // nudge's reason text, telling the agent how to ack it once the user has
 // explicitly confirmed the condition is a false positive.
 function ackHint(hook, signature, home, sessionId) {
-  const p = statePath(home || os.homedir(), sessionId || 'nosession');
+  const p = statePath(require('../../companion/lib/test-home-guard.js').resolveHome(home), sessionId || 'nosession');
   return 'If the user has explicitly confirmed this exact condition is fine, ack it for the ' +
     'rest of this session (advisory only afterward, never blocks again for this exact signature) ' +
     'by writing {"' + ackKey(hook, signature) + '": ' + Date.now() + '} into ' + p + ' (merge with any existing keys).';

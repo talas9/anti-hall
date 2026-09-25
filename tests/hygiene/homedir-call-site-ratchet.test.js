@@ -44,7 +44,14 @@ const EXCLUDED_FILES = new Set([
 // migrated their homeDir() helpers to resolveHome(); is 313 now. Lower this
 // number as more call sites migrate; raise it only with a comment explaining
 // the new call site's own test-isolation story.
-const BASELINE = 313;
+// 0.111: +2 -> 315. Both are text inside hooks/lib/stable-launcher.js's
+// GENERATED launcher source (the `'    const home = os.homedir();'` string
+// lines): that file is written to ~/.anti-hall/bin/ and runs standalone
+// across plugin versions, so it cannot require companion/lib/test-home-
+// guard.js. It is never loaded by a test process; the launcher's own tests
+// run it with an isolated HOME. The 0.111 lanes' real call sites were all
+// migrated to resolveHome().
+const BASELINE = 315;
 
 const HOMEDIR_CALL_RE = /\bos\s*\.\s*homedir\s*\(\s*\)/g;
 

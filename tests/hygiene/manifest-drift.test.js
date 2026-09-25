@@ -93,6 +93,9 @@ const CLAUDE_ONLY_ALLOWLIST = [
   { event: 'PreToolUse', file: 'model-routing-guard.js', reason: 'Agent/Task-tool matcher — Claude Code subagent dispatch; no Codex equivalent tool matcher' },
   { event: 'PreToolUse', file: 'swarm-guard.js', reason: 'Agent/Task-tool matcher — Claude Code subagent dispatch; no Codex equivalent tool matcher' },
   { event: 'PreToolUse', file: 'phase-tracker.js', reason: 'Agent/Task-tool matcher — Claude Code subagent dispatch; no Codex equivalent tool matcher' },
+  // PostToolUse Agent: reads the result of a Claude-side codex:codex-rescue
+  // Agent dispatch to record a Codex quota outage for later Claude sessions.
+  { event: 'PostToolUse', file: 'codex-quota-detect.js', reason: 'Agent-tool matcher — inspects a Claude Code codex:codex-rescue subagent result; no Codex equivalent tool matcher' },
   // PreToolUse SendMessage: DevSwarm mesh tool name specific to the Claude
   // Task-tool ecosystem.
   { event: 'PreToolUse', file: 'devswarm-comms-guard.js', reason: 'SendMessage-tool matcher — Claude-side DevSwarm mesh tool; no Codex equivalent tool matcher' },

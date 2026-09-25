@@ -24,12 +24,11 @@
 // whatever the file already holds instead of clobbering the PATH-probe half.
 
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
 
 function statePath(home) {
-  return path.join(home || os.homedir(), '.anti-hall', 'codex-availability.json');
+  return path.join(require('../../companion/lib/test-home-guard.js').resolveHome(home), '.anti-hall', 'codex-availability.json');
 }
 
 function readRaw(home) {

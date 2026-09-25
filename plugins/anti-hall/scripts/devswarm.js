@@ -18429,7 +18429,7 @@ const VERB_HELP = {
   logs: { synopsis: 'query the shared devswarm JSONL log', mutates: 'read-only' },
   'migrate-owner-keys': { synopsis: 'forward-migrate descriptor owner keys', mutates: 'MUTATES descriptor files on disk' },
   send: { synopsis: 'send a mesh message: --to <id>|--to-primary|--broadcast --message TEXT|--message-file <path>|--message-stdin [--urgency low|normal|high|urgent] [--question] [--answers] [--quiet] [--cc-primary]. `--quiet` prints one line ("sent seq N -> X, B bytes, ok") instead of the full JSON, and still prints "ok:false ..." + a non-zero exit on failure. `--cc-primary` (direct --to sends only) ALSO copies the Primary with the identical message body, best-effort — reported under the result\'s `ccPrimary`, never flips the primary send\'s own ok/exit code.', mutates: 'MUTATES the store — appends a mesh message (and, with --cc-primary, a second one to the Primary) and may wake recipients' },
-  relay: { synopsis: 'relay <seq|receipt> --to <id> [--note-file <path>] — forward a message THIS caller already received (its own inbox) to <id> verbatim, prefixed with a provenance header ("relayed from X, seq N, M bytes"). <seq> is the row\'s own `seq` (from `inbox messages`/`read-primary`); <receipt> is a read-primary readReceiptId and resolves only when it covers exactly one message. Verifies the relayed byte length against the source and refuses (ok:false) on a mismatch or an empty source body — never a silent partial relay. Example: `relay 42 --to sibling-workspace-id`.', mutates: 'MUTATES the store — appends one mesh message (via `send`, under this file\'s own Primary-seat gate)' },
+  relay: { synopsis: 'relay <seq|receipt> --to <id> [--note-file <path>] — forward a message THIS caller already received (its own inbox) to <id> verbatim, prefixed with a provenance header ("relayed from X, seq N, M bytes"). <seq> is the row\'s own `seq` (from `inbox messages`/`read-primary`); <receipt> is a read-primary readReceiptId and resolves only when it covers exactly one message. relay never acks: the read still needs its own `inbox ack-primary --receipt <receipt>`. Verifies the relayed byte length against the source and refuses (ok:false) on a mismatch or an empty source body — never a silent partial relay. Example: `relay 42 --to sibling-workspace-id`.', mutates: 'MUTATES the store — appends one mesh message (via `send`, under this file\'s own Primary-seat gate)' },
   roster: { synopsis: 'show the mesh roster (--ack clears your own broadcast-unread)', mutates: 'read-only, unless --ack is passed (clears broadcastUnread)' },
   'wake-directive': { synopsis: 'reprint the SessionStart mailbox wake directive', mutates: 'read-only' },
   diagnose: { synopsis: 'read-only mesh-health projection', mutates: 'read-only' },
@@ -19045,7 +19045,8 @@ function emitKnownWarning(argv, result) {
 // inboxReadPrimaryTextLines(result) -> the `inbox read-primary --format text`
 // rendering (peer request C): one `from/seq/body` block per message, plain
 // text — a failed/empty read still renders something legible rather than a
-// blank line.
+// blank line. Rendering is read-only: the ack step stays
+// `inbox ack-primary --receipt <r>` unless --ack-after-print was passed.
 function inboxReadPrimaryTextLines(result) {
   if (!result || !result.ok) {
     return 'ok:false ' + String((result && result.error) || (result && result.reason) || 'inbox read-primary failed');

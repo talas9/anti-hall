@@ -56,7 +56,7 @@ const TARGETS = {
 };
 
 function binDir(home) {
-  return path.join(home || os.homedir(), ...BIN_DIR_SEGMENTS);
+  return path.join(require('../../companion/lib/test-home-guard.js').resolveHome(home), ...BIN_DIR_SEGMENTS);
 }
 
 function launcherPath(kind, home) {

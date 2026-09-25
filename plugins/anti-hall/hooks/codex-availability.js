@@ -97,7 +97,7 @@ function writeState(available) {
 // spending its own spawn+wait to rediscover the same outage.
 function quotaNote() {
   try {
-    const q = require('./lib/codex-quota.js').readQuota({ home: os.homedir() });
+    const q = require('./lib/codex-quota.js').readQuota({ home: require('../companion/lib/test-home-guard.js').resolveHome() });
     if (!q.exhausted) return '';
     return 'Codex unavailable until ' + new Date(q.until).toISOString() +
       ' (' + q.reason + '); route correctness review to Sonnet until then. ';

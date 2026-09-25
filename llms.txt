@@ -95,6 +95,7 @@ and getting a yes); re-arming a guard never does. /config, env and a `settings.j
 | PostToolUse (Bash) | output-verify-guard.js | Advisory: flags a pass claim next to failing runner output. | — | `ANTIHALL_OUTPUT_VERIFY_GUARD=off` |
 | PostToolUse (Bash) | devswarm-parent-reply-tracker.js | Records replies to child `--question`s for the parent gate. | ✓ | devswarm.parentReplyTracker |
 | PostToolUse (Bash) | devswarm-child-drain.js | DevSwarm child: mid-turn inbox drain (throttled). | ✓ | devswarm.childDrain |
+| PostToolUse (Agent) | codex-quota-detect.js | Records a Codex quota/rate-limit exhaustion from a `codex:codex-rescue` result so other lanes reuse it. | — | guards.codexQuotaDetect |
 | PostToolUseFailure (Bash) | failure-root-cause-nudge.js | One-line pointer to `/anti-hall:root-cause` after a failed command. | — | `ANTIHALL_FAILURE_ROOT_CAUSE_NUDGE=off` |
 | Stop | task-guard.js | Blocks once when ending with genuinely open tasks. | ✓ | guards.taskGuard |
 | Stop | tasklist-guard.js | Requires a live task list + fresh progress file for non-trivial work. | ✓ | guards.tasklistGuard; `ANTIHALL_TASKLIST_WORK_THRESHOLD` |

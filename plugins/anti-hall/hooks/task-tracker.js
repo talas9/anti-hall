@@ -512,7 +512,7 @@ try {
         let repeatEvery = 10;
         try { repeatEvery = require('./lib/settings.js').get('guards', 'injectionRepeatEvery', 10); } catch (_) {}
         emitPrimary = require('./lib/emit-dedupe.js').shouldEmit({
-          home: os.homedir(), sessionId: payload && payload.session_id,
+          home: require('../companion/lib/test-home-guard.js').resolveHome(), sessionId: payload && payload.session_id,
           transcriptPath: payload && payload.transcript_path,
           key: 'task-tracker-primary', content: DEVSWARM_PRIMARY,
           keepaliveTurns: Number.isFinite(repeatEvery) && repeatEvery > 0 ? repeatEvery : 0,

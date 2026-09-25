@@ -390,7 +390,7 @@ function main() {
   // fix, if any, may already be on disk waiting on a restart. Downgrade this
   // block to advisory (skip it) until then.
   try {
-    if (require('./lib/stop-version-gate.js').isStale(path.join(__dirname, '..'), { env: process.env, home: os.homedir() })) {
+    if (require('./lib/stop-version-gate.js').isStale(path.join(__dirname, '..'), { env: process.env, home: require('../companion/lib/test-home-guard.js').resolveHome() })) {
       process.exit(0);
     }
   } catch (_) { /* fail-open: block normally on any error */ }
@@ -401,7 +401,11 @@ function main() {
   // `hash` (real signal change) is a new signature and blocks normally.
   const stopAck = require('./lib/stop-ack.js');
   const ackSignature = stopAck.signatureFor(hash);
-  if (sessionId && stopAck.isAcked(os.homedir(), sessionId, 'tasklist-guard', ackSignature)) {
+  // Canonical home (test-home-guard.js#resolveHome). A refusal/error leaves it
+  // null, and isAcked(null, ...) is false -> the nudge blocks normally.
+  let ackHome = null;
+  try { ackHome = require('../companion/lib/test-home-guard.js').resolveHome(); } catch (_) { ackHome = null; }
+  if (sessionId && stopAck.isAcked(ackHome, sessionId, 'tasklist-guard', ackSignature)) {
     process.exit(0);
   }
 
@@ -600,7 +604,7 @@ function main() {
   }
 
   if (sessionId) {
-    try { finalReason = sanitizeReason(finalReason + ' ' + stopAck.ackHint('tasklist-guard', ackSignature, os.homedir(), sessionId)); }
+    try { finalReason = sanitizeReason(finalReason + ' ' + stopAck.ackHint('tasklist-guard', ackSignature, ackHome, sessionId)); }
     catch (_) { /* best-effort — the block still fires without the hint */ }
   }
 

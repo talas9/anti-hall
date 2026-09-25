@@ -49,8 +49,8 @@ debates reference the living docs for evidence; the *current* state and the
 ## 1. Current plugin ground truth
 
 > [UPDATE 2026-09-24, v0.108.0] Re-verified against the working tree on **2026-09-24**:
-> `plugin.json` version is `0.108.0`. Hooks: **62** `.js` files under
-> `plugins/anti-hall/hooks/` (incl. shared library modules; 51 scripts registered in
+> `plugin.json` version is `0.108.0`. Hooks: **63** `.js` files under
+> `plugins/anti-hall/hooks/` (incl. shared library modules; 52 scripts registered in
 > `hooks.json`, 35 of them also in `codex/hooks/hooks.json`). New hooks this release:
 > `auto-handover.js` (UserPromptSubmit), `auto-handover-pause-nag.js` (Stop),
 > `repair-on-reload.js` (SessionStart + UserPromptSubmit); unreleased on top of that

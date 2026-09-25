@@ -2235,7 +2235,7 @@ function main() {
   // be downgraded. State above is already persisted normally either way.
   if (blocking.length > 0 && !unanswered.length && !truncated && !escalateTimes && !qEscalateTimes) {
     try {
-      if (require('./lib/stop-version-gate.js').isStale(path.join(__dirname, '..'), { env: process.env, home: os.homedir() })) {
+      if (require('./lib/stop-version-gate.js').isStale(path.join(__dirname, '..'), { env: process.env, home: require('../companion/lib/test-home-guard.js').resolveHome() })) {
         return;
       }
     } catch (_) { /* fail-open: block normally on any error */ }
