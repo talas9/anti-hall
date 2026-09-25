@@ -80,6 +80,7 @@ function fixture(fake, children, opts) {
     summary: () => ({ workspaces: Object.fromEntries(Object.values(byId).map((f) => [f.id, { id: f.id, archive_ready: f.done, gates: f.gates || {}, doneHead: f.doneHead, mergedVerified: f.mergedVerified, mergedVerifiedHead: f.mergedVerifiedHead, unread: f.unread, broadcastUnread: f.broadcastUnread || 0, cursor: 0 }])) }),
     unreadFrom: (h, k, ids) => ids.reduce((n, id) => n + ((byId[id] && byId[id].unreadFrom) || 0), 0),
     activityTs: (d) => byId[d.id].activity,
+    lastInboundTs: (h, k, ids) => ids.reduce((n, id) => Math.max(n, (byId[id] && byId[id].inbound) || 0), 0),
     git: (cwd, args) => {
       const f = facts[cwd];
       if (!f) return { ok: false, status: 128, out: '' };
@@ -607,17 +608,17 @@ test('mode off: nothing planned, nothing spawned', { skip }, () => {
 
 test('settings: default ON; dry-run/off selectable; junk falls back to on', () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ah-lc-set-'));
-  assert.deepStrictEqual(L.readSettings(home), { mode: 'on', idleMin: 30, maxPerSweep: 3 });
+  assert.deepStrictEqual(L.readSettings(home), { mode: 'on', idleMin: 30, maxPerSweep: 3, ignorePings: true });
   fs.mkdirSync(path.join(home, '.anti-hall'));
   fs.writeFileSync(path.join(home, '.anti-hall', 'settings.json'), JSON.stringify({ devswarm: { autoArchive: { mode: 'on', idleMin: 45, maxPerSweep: 99 } } }));
-  assert.deepStrictEqual(L.readSettings(home), { mode: 'on', idleMin: 45, maxPerSweep: 20 });
+  assert.deepStrictEqual(L.readSettings(home), { mode: 'on', idleMin: 45, maxPerSweep: 20, ignorePings: true });
   fs.writeFileSync(path.join(home, '.anti-hall', 'settings.json'), JSON.stringify({ devswarm: { autoArchive: { mode: 'yes', idleMin: 1 } } }));
   // v0.108.0 unified settings: out-of-range numbers CLAMP to the schema bound
   // (idleMin min 5), junk enums fall back to the default.
-  assert.deepStrictEqual(L.readSettings(home), { mode: 'on', idleMin: 5, maxPerSweep: 3 });
+  assert.deepStrictEqual(L.readSettings(home), { mode: 'on', idleMin: 5, maxPerSweep: 3, ignorePings: true });
   // the flat form `settings.js set` writes is read too
   fs.writeFileSync(path.join(home, '.anti-hall', 'settings.json'), JSON.stringify({ devswarm: { 'autoArchive.mode': 'dry-run', 'autoArchive.idleMin': 60 } }));
-  assert.deepStrictEqual(L.readSettings(home), { mode: 'dry-run', idleMin: 60, maxPerSweep: 3 });
+  assert.deepStrictEqual(L.readSettings(home), { mode: 'dry-run', idleMin: 60, maxPerSweep: 3, ignorePings: true });
   // env beats the file
   assert.strictEqual(L.readSettings(home, null, { ANTIHALL_DEVSWARM_AUTO_ARCHIVE_MODE: 'off' }).mode, 'off');
   fs.writeFileSync(path.join(home, '.anti-hall', 'settings.json'), JSON.stringify({ devswarm: { autoArchive: { mode: 'dry-run' } } }));
@@ -895,3 +896,194 @@ for (const [label, bt] of [['NULL', null], ['empty', ''], ['whitespace-only', ' 
     } finally { try { fs.rmSync(base, { recursive: true, force: true }); } catch (_) {} }
   });
 }
+
+// ---------------------------------------------------------------------------
+// 0.109.0 — gate (g) ignores ONLY the child's own mailbox-wake / ping /
+// heartbeat / status-report turns (companion/lib/devswarm-idle.js). Field case:
+// a done child woken every 10-30 min by its own cron/Monitor/Stop-hook nag;
+// each wake rewrote the heartbeat and the transcript, so idle never expired.
+// Real work (an AI turn, tool activity, a new inbound message, a commit) must
+// still reset idle. Transcripts are written under the isolated fixture home.
+const liveness = require(path.join(ROOT, 'companion', 'lib', 'liveness.js'));
+const CLI = '/x/anti-hall/scripts/devswarm.js';
+const iso = (t) => new Date(t).toISOString();
+
+function tr() {
+  const lines = [];
+  const api = {
+    prompt(t, text, extra) { lines.push(Object.assign({ type: 'user', timestamp: iso(t), message: { role: 'user', content: text } }, extra || {})); return api; },
+    cron(t, text) { lines.push({ type: 'system', subtype: 'scheduled_task_fire', timestamp: iso(t) }); return api.prompt(t, text, { isMeta: true }); },
+    tool(t, name, input) {
+      lines.push({ type: 'assistant', timestamp: iso(t), message: { role: 'assistant', content: [{ type: 'tool_use', id: 'tu' + lines.length, name, input }] } });
+      lines.push({ type: 'user', timestamp: iso(t + 500), message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu' + lines.length, content: 'ok' }] } });
+      return api;
+    },
+    say(t, text) { lines.push({ type: 'assistant', timestamp: iso(t), message: { role: 'assistant', content: [{ type: 'text', text }] } }); return api; },
+    stop(t) { lines.push({ type: 'system', subtype: 'stop_hook_summary', timestamp: iso(t) }); lines.push({ type: 'system', subtype: 'turn_duration', timestamp: iso(t) }); return api; },
+    text() { return lines.map((l) => JSON.stringify(l)).join('\n') + '\n'; },
+  };
+  return api;
+}
+// a done child's own wake turns: cron tick, Monitor re-arm, Stop-hook heartbeat.
+function pingTurns(t, at) {
+  return t
+    .cron(at, 'Mailbox wake: run `node ' + CLI + ' inbox tick c1 --child`.')
+    .tool(at + 1000, 'Bash', { command: 'node ' + CLI + ' inbox tick c1 --child 2>&1 | grep -o -E \'"(ok|unreadTotal)":[a-z0-9]+\' | tr \'\\n\' \' \'' })
+    .say(at + 3000, 'No unread mail; still done, awaiting auto-archive.')
+    .stop(at + 3500)
+    .prompt(at + 60000, '<task-notification>\n<summary>Monitor event: "devswarm mailbox wake watcher"</summary>\n<event>[Monitor expired after 30m]</event>\n</task-notification>')
+    .tool(at + 61000, 'Monitor', { command: 'node /x/anti-hall/companion/lib/devswarm-wake-watch.js', description: 'devswarm mailbox wake watcher' })
+    .say(at + 62000, 'Watcher re-armed.')
+    .prompt(at + 62500, 'Stop hook feedback:\nDEVSWARM CHILD WORKSPACE — emit a heartbeat', { isMeta: true })
+    .tool(at + 63000, 'Bash', { command: 'node "' + CLI + '" heartbeat c1 --summary "done; idle && awaiting auto-archive" 2>&1 | head -1' })
+    .say(at + 64000, 'Heartbeat sent.')
+    .stop(at + 64500);
+}
+function realWorkThenPings(pingsAt) {
+  const t = tr()
+    .prompt(NOW - 120 * MIN, 'Fix the migration and report done when merged.')
+    .tool(NOW - 119 * MIN, 'Edit', { file_path: '/wt/x.js' })
+    .tool(NOW - 95 * MIN, 'Bash', { command: 'node ' + CLI + ' done --summary "merged"' })
+    .say(NOW - 90 * MIN, 'Done.')
+    .stop(NOW - 90 * MIN);
+  for (const at of pingsAt) pingTurns(t, at);
+  return t;
+}
+function writeTranscript(fx, id, t) {
+  const wt = fx.byId[id].wt;
+  const dir = liveness.projectDirFor(wt, fx.home);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 's-' + id + '.jsonl'), t.text());
+}
+const PINGS = [NOW - 60 * MIN, NOW - 30 * MIN, NOW - 3 * MIN];
+
+test('0.109 idle: a done child with ONLY its own pings since done becomes idle and is archived (fake hivecontrol)', { skip }, () => {
+  // heartbeat/transcript-mtime (legacy activity) refreshed by the last ping, 1 min ago.
+  const fx = fixture(V253, [{ id: 'c1', activity: NOW - 1 * MIN }]);
+  writeTranscript(fx, 'c1', realWorkThenPings(PINGS));
+  const r = L.autoArchiveSweep(opts(fx, { settings: ON }));
+  assert.deepStrictEqual(r.archived, ['c1'], JSON.stringify(r));
+  const calls = readCalls(fx.bin.callsFile).filter((c) => c.argv[1] === 'archive' && c.argv[2] !== '--help');
+  assert.deepStrictEqual(calls.map((c) => c.argv), [['workspace', 'archive', 'c1']], 'exact full builder id, archive (never delete)');
+  assert.ok(!readCalls(fx.bin.callsFile).some((c) => c.argv[1] === 'delete' && c.argv[2] !== '--help'));
+});
+
+test('0.109 idle: ping-only activity never resets the idle clock (measured from the last real turn)', { skip }, () => {
+  const fx = fixture(V253, [{ id: 'c1', activity: NOW - 1 * MIN }]);
+  writeTranscript(fx, 'c1', realWorkThenPings(PINGS));
+  const c = L.planAutoArchive(opts(fx, { settings: DRY })).candidates[0];
+  assert.strictEqual(c.facts.idleMin, 90, JSON.stringify(c.facts));
+  assert.strictEqual(c.facts.idleVia, 'real-work');
+  assert.ok(!c.blockers.some((b) => b.gate === 'g-idle'), JSON.stringify(c.blockers));
+});
+
+test('0.109 idle: a follow-up the child is answering with read-only tool work -> NOT archived', { skip }, () => {
+  const fx = fixture(V253, [{ id: 'c1', activity: NOW - 1 * MIN, inbound: NOW - 12 * MIN }]);
+  const t = realWorkThenPings([NOW - 60 * MIN, NOW - 30 * MIN])
+    .prompt(NOW - 11 * MIN, '<task-notification>\n<summary>Monitor event: "devswarm mailbox wake watcher"</summary>\n<event>[wake-watch] new mesh mail for child c1</event>\n</task-notification>')
+    .tool(NOW - 11 * MIN, 'Bash', { command: 'node ' + CLI + ' inbox read-primary c1' })
+    .tool(NOW - 10 * MIN, 'Read', { file_path: '/wt/x.js' })
+    .tool(NOW - 9 * MIN, 'Grep', { pattern: 'migrate' });
+  writeTranscript(fx, 'c1', t); // turn still open: no stop marker yet
+  const r = L.autoArchiveSweep(opts(fx, { settings: ON }));
+  assert.deepStrictEqual(r.archived, []);
+  const c = L.planAutoArchive(opts(fx, { settings: ON })).candidates[0];
+  assert.ok(c.blockers.some((b) => b.gate === 'g-idle'), JSON.stringify(c.blockers));
+  assert.ok(!readCalls(fx.bin.callsFile).some((x) => x.argv[1] === 'archive' && x.argv[2] !== '--help'));
+});
+
+test('0.109 idle: a long real turn still open (older than idleMin) blocks; the same turn once finished does not', { skip }, () => {
+  const fx = fixture(V253, [{ id: 'c1', activity: NOW - 1 * MIN }]);
+  const t = realWorkThenPings([NOW - 80 * MIN])
+    .prompt(NOW - 45 * MIN, 'Stop hook feedback:\nDEVSWARM CHILD INBOX — you have unread mail', { isMeta: true })
+    .tool(NOW - 44 * MIN, 'Bash', { command: 'node ' + CLI + ' inbox read-primary c1' })
+    .tool(NOW - 43 * MIN, 'Agent', { prompt: 'investigate the follow-up (read-only)' });
+  writeTranscript(fx, 'c1', t);
+  let c = L.planAutoArchive(opts(fx, { settings: DRY })).candidates[0];
+  assert.ok(c.blockers.some((b) => b.gate === 'g-idle' && /turn/.test(b.detail)), JSON.stringify(c.blockers));
+  writeTranscript(fx, 'c1', t.say(NOW - 42 * MIN, 'Answered.').stop(NOW - 42 * MIN));
+  c = L.planAutoArchive(opts(fx, { settings: DRY })).candidates[0];
+  assert.strictEqual(c.facts.idleMin, 42);
+  assert.ok(!c.blockers.some((b) => b.gate === 'g-idle'), JSON.stringify(c.blockers));
+});
+
+test('0.109 idle: a new inbound direct message resets idle even before the child acts on it', { skip }, () => {
+  const fx = fixture(V253, [{ id: 'c1', activity: NOW - 1 * MIN, inbound: NOW - 5 * MIN }]);
+  writeTranscript(fx, 'c1', realWorkThenPings(PINGS));
+  const c = L.planAutoArchive(opts(fx, { settings: DRY })).candidates[0];
+  assert.strictEqual(c.facts.idleMin, 5);
+  assert.ok(c.blockers.some((b) => b.gate === 'g-idle'), JSON.stringify(c.blockers));
+});
+
+test('0.109 idle: an unmerged child with only pings is NOT archived', { skip }, () => {
+  const fx = fixture(V253, [{ id: 'c1', activity: NOW - 1 * MIN, ancestor: false }]);
+  writeTranscript(fx, 'c1', realWorkThenPings(PINGS));
+  const r = L.autoArchiveSweep(opts(fx, { settings: ON }));
+  assert.deepStrictEqual(r.archived, []);
+  const c = L.planAutoArchive(opts(fx, { settings: ON })).candidates[0];
+  assert.ok(c.blockers.some((b) => b.gate === 'b-merged'), JSON.stringify(c.blockers));
+  assert.ok(!c.blockers.some((b) => b.gate === 'g-idle'), 'idle is not what blocks it');
+});
+
+test('0.109 idle: a wake turn that does real work (send, other Bash, a human prompt) counts as real', { skip }, () => {
+  for (const [label, extend] of [
+    ['send reply', (t) => t.cron(NOW - 8 * MIN, 'Mailbox wake').tool(NOW - 8 * MIN, 'Bash', { command: 'node ' + CLI + ' send --to-primary --message-file /tmp/a' }).say(NOW - 7 * MIN, 'x').stop(NOW - 7 * MIN)],
+    ['git in a wake', (t) => t.cron(NOW - 8 * MIN, 'Mailbox wake').tool(NOW - 8 * MIN, 'Bash', { command: 'node ' + CLI + ' inbox tick c1 --child && git log -1' }).say(NOW - 7 * MIN, 'x').stop(NOW - 7 * MIN)],
+    ['sed -i in a pipe', (t) => t.cron(NOW - 8 * MIN, 'Mailbox wake').tool(NOW - 8 * MIN, 'Bash', { command: 'node ' + CLI + ' inbox tick c1 | sed -i s/a/b/ f' }).say(NOW - 7 * MIN, 'x').stop(NOW - 7 * MIN)],
+    ['human text-only turn', (t) => t.prompt(NOW - 8 * MIN, 'what was the root cause?').say(NOW - 7 * MIN, 'the x').stop(NOW - 7 * MIN)],
+  ]) {
+    const fx = fixture(V253, [{ id: 'c1', activity: NOW - 1 * MIN }]);
+    writeTranscript(fx, 'c1', extend(realWorkThenPings(PINGS)));
+    const c = L.planAutoArchive(opts(fx, { settings: DRY })).candidates[0];
+    assert.strictEqual(c.facts.idleMin, 7, label + ' ' + JSON.stringify(c.facts));
+    assert.ok(c.blockers.some((b) => b.gate === 'g-idle'), label);
+  }
+});
+
+test('0.109 idle: a commit after the last real turn resets idle', { skip }, () => {
+  const fx = fixture(V253, [{ id: 'c1', activity: NOW - 1 * MIN }]);
+  writeTranscript(fx, 'c1', realWorkThenPings(PINGS));
+  const git = fx.deps.git;
+  fx.deps.git = (cwd, args) => (args[0] === 'log' ? { ok: true, status: 0, out: String(Math.floor((NOW - 4 * MIN) / 1000)) + '\n' } : git(cwd, args));
+  const c = L.planAutoArchive(opts(fx, { settings: DRY })).candidates[0];
+  assert.strictEqual(c.facts.idleMin, 4);
+  assert.ok(c.blockers.some((b) => b.gate === 'g-idle'));
+});
+
+test('0.109 idle: in doubt -> the pre-0.109 rule (no transcript / other session / store unreadable / setting off)', { skip }, () => {
+  // no transcript: legacy heartbeat activity (1 min) blocks.
+  let fx = fixture(V253, [{ id: 'c1', activity: NOW - 1 * MIN }]);
+  let c = L.planAutoArchive(opts(fx, { settings: DRY })).candidates[0];
+  assert.strictEqual(c.facts.idleVia, 'activity');
+  assert.ok(c.blockers.some((b) => b.gate === 'g-idle'));
+  // heartbeat written by a different session than the descriptor names.
+  fx = fixture(V253, [{ id: 'c1', activity: NOW - 1 * MIN }]);
+  writeTranscript(fx, 'c1', realWorkThenPings(PINGS));
+  const hb = liveness.heartbeatPathFor('c1', fx.home);
+  fs.mkdirSync(path.dirname(hb), { recursive: true });
+  fs.writeFileSync(hb, JSON.stringify({ ts: NOW - MIN, source: 'child-turn', sessionId: 'another-session' }));
+  c = L.planAutoArchive(opts(fx, { settings: DRY })).candidates[0];
+  assert.strictEqual(c.facts.idleVia, 'activity');
+  assert.ok(c.blockers.some((b) => b.gate === 'g-idle'));
+  // store unreadable (inbound unknown).
+  fx = fixture(V253, [{ id: 'c1', activity: NOW - 1 * MIN }]);
+  writeTranscript(fx, 'c1', realWorkThenPings(PINGS));
+  fx.deps.lastInboundTs = () => null;
+  c = L.planAutoArchive(opts(fx, { settings: DRY })).candidates[0];
+  assert.strictEqual(c.facts.idleVia, 'activity');
+  assert.ok(c.blockers.some((b) => b.gate === 'g-idle'));
+  // setting off.
+  fx = fixture(V253, [{ id: 'c1', activity: NOW - 1 * MIN }]);
+  writeTranscript(fx, 'c1', realWorkThenPings(PINGS));
+  c = L.planAutoArchive(opts(fx, { settings: Object.assign({}, DRY, { ignorePings: false }) })).candidates[0];
+  assert.strictEqual(c.facts.idleVia, 'activity');
+  assert.ok(c.blockers.some((b) => b.gate === 'g-idle'));
+});
+
+test('0.109 idle: settings — autoArchive.ignorePings defaults on, false turns it off', () => {
+  const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ah-lifecycle-set-')));
+  fs.mkdirSync(path.join(home, '.anti-hall'), { recursive: true });
+  assert.strictEqual(L.readSettings(home, null, {}).ignorePings, true);
+  fs.writeFileSync(path.join(home, '.anti-hall', 'settings.json'), JSON.stringify({ devswarm: { autoArchive: { ignorePings: false } } }));
+  assert.strictEqual(L.readSettings(home, null, {}).ignorePings, false);
+});

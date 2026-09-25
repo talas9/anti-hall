@@ -959,6 +959,7 @@ Generated from `hooks/lib/settings-schema.js` (a hygiene test keeps this table a
 | `devswarm.autoArchive.mode` | `on` (on/dry-run/off) | `ANTIHALL_DEVSWARM_AUTO_ARCHIVE_MODE` | Auto-archive finished workspaces (needs DevSwarm ≥ 2.5.3). |
 | `devswarm.autoArchive.idleMin` adv | `30` [5..] | `ANTIHALL_DEVSWARM_AUTO_ARCHIVE_IDLE_MIN` | Minutes idle before a finished workspace is eligible for auto-archive. |
 | `devswarm.autoArchive.maxPerSweep` adv | `3` [1..20] | `ANTIHALL_DEVSWARM_AUTO_ARCHIVE_MAX_PER_SWEEP` | Max workspaces auto-archived in one sweep. |
+| `devswarm.autoArchive.ignorePings` adv | `true` | `ANTIHALL_DEVSWARM_AUTO_ARCHIVE_IGNORE_PINGS` | Idle timer ignores a finished workspace's own mailbox-wake/heartbeat/status turns; real work (an AI turn, a tool call, a new message, a commit) still resets it. |
 | `devswarm.retention.days` adv | `30` [0..] | `ANTIHALL_DEVSWARM_RETENTION_DAYS` | Days of message bodies kept before archive+prune; 0 = retention off. |
 | `devswarm.retention.maxStoreMB` adv | `100` [0..] | `ANTIHALL_DEVSWARM_RETENTION_MAX_STORE_MB` | Store size limit (MB): above it, oldest bodies are pruned regardless of age; 0 = no limit. |
 | `devswarm.retention.keepPerPartition` adv | `200` [0..] | `ANTIHALL_DEVSWARM_RETENTION_KEEP_PER_PARTITION` | Newest messages per partition that are never pruned (age or size). |

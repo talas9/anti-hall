@@ -76,6 +76,7 @@
     "devswarm_auto_archive_mode": { "type": "string", "title": "DevSwarm · Auto-archive", "description": "Auto-archive finished workspaces, needs DevSwarm >= 2.5.3. Allowed: on | dry-run | off.", "default": "on" },
     "devswarm_auto_archive_idle_min": { "type": "number", "title": "DevSwarm · Auto-archive idle minutes", "description": "Minutes idle before a finished workspace is eligible for auto-archive.", "default": 30, "min": 5 },
     "devswarm_auto_archive_max_per_sweep": { "type": "number", "title": "DevSwarm · Auto-archive max per sweep", "description": "Max workspaces auto-archived in one sweep.", "default": 3, "min": 1, "max": 20 },
+    "devswarm_auto_archive_ignore_pings": { "type": "boolean", "title": "DevSwarm · Auto-archive ignores status pings", "description": "Idle timer ignores a finished workspace's own mailbox-wake, heartbeat and status turns. Real work still resets it.", "default": true },
     "statusline_base": { "type": "string", "title": "Statusline · Base command", "description": "Shell command run as the line-1 base in consolidated statusline mode.", "default": "" },
     "statusline_no_email": { "type": "boolean", "title": "Statusline · Hide email", "description": "Suppress the email segment in the statusline.", "default": false },
     "codex_nudge_enabled": { "type": "boolean", "title": "Codex Nudge · Codex hand-off nudge", "description": "Enable the Codex hand-off nudge hook.", "default": true },

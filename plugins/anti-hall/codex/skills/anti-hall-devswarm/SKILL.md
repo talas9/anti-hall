@@ -298,7 +298,10 @@ DIRECT-only (0.108.3): a broadcast/FYI backlog in the child's own inbox never bl
 gate, only unread DIRECT rows addressed to it or unread rows FROM it the Primary hasn't
 seen (e.g. its done report); the plan shows the split (`to_direct=`/`to_broadcast=`/`from=`),
 (e) it isn't the Primary (the app DB's `builderType` decides; when it is missing, empty or whitespace-only for the row, the main-checkout rule does; a `primary-<hash>` descriptor id never does), (f) the owner hasn't selected it in the app for 10 min,
-(g) it has been idle >= `idleMin`, and (h) the sweep hasn't already auto-archived it at the
+(g) it has been idle >= `idleMin` — idle means no REAL work (0.109.0): the child's own mailbox-wake,
+ping, heartbeat and status-report turns don't count, but any other AI turn, tool call, new inbound
+message or commit resets it, and an AI turn still doing real work blocks outright; when the
+transcript can't be read, any activity resets it (the older rule) — and (h) the sweep hasn't already auto-archived it at the
 current HEAD (0.108.3). A fact that can't be read counts as not proven.
 `hivecontrol workspace check-merge` is never used as a probe, because it can create a source
 worktree. Settings live in `~/.anti-hall/settings.json`:
@@ -308,6 +311,7 @@ worktree. Settings live in `~/.anti-hall/settings.json`:
 | `devswarm.autoArchive.mode` | `"on"` / `"dry-run"` / `"off"` | `"on"` (`"dry-run"` only reports what WOULD be archived and writes nothing; `"off"` disables) |
 | `devswarm.autoArchive.idleMin` | minutes, >= 5 | `30` |
 | `devswarm.autoArchive.maxPerSweep` | 1..20 | `3` |
+| `devswarm.autoArchive.ignorePings` | `true` / `false` | `true` (`false` = any activity, pings included, resets the idle timer) |
 
 `node scripts/devswarm.js auto-archive` prints the current plan (read-only), with the proof
 or the blockers for each workspace. Each archive (default `mode: "on"`) sends the Primary one line

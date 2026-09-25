@@ -29,7 +29,14 @@
 //                     without that column, the Primary seat's main checkout.
 //                     A `primary-<hash>` descriptor id never decides it.
 //     (f) not being viewed — app DB builders.lastSelectedAt older than 10 min
-//     (g) idle      — last heartbeat/transcript activity >= idleMin ago
+//     (g) idle      — last REAL work >= idleMin ago, and no real AI turn
+//                     open (0.109.0, devswarm-idle.js): the transcript is
+//                     classified turn by turn and the child's own mailbox-
+//                     wake / ping / heartbeat / status-report turns are
+//                     ignored; any other AI turn, tool call, a new inbound
+//                     direct message, or a commit resets it. Transcript
+//                     unreadable -> the pre-0.109 rule (heartbeat +
+//                     transcript mtime), which can only block.
 //     (h) not already auto-archived at this HEAD — the owner's only undo is
 //                     unarchiving in the DevSwarm app, so a workspace this
 //                     sweep archived at HEAD X is never auto-archived again at
@@ -39,6 +46,8 @@
 //     devswarm.autoArchive.mode        "on" (default, owner decision) | "dry-run" | "off"
 //     devswarm.autoArchive.idleMin     30   (min 5)
 //     devswarm.autoArchive.maxPerSweep 3    (1..20)
+//     devswarm.autoArchive.ignorePings true (false = gate g uses the pre-0.109
+//                                      heartbeat + transcript-mtime rule)
 //   dry-run writes NOTHING and spawns nothing mutating: the plan rides the
 //   supervisor's stdout line and `devswarm.js auto-archive`. "on" archives at
 //   most maxPerSweep per sweep (facts re-gathered immediately before each
@@ -80,6 +89,7 @@ const GIT_TIMEOUT_MS = 10000;
 const HC_TIMEOUT_MS = 60000;
 const SIZE_WALK_CAP = 200000;
 const DEFAULT_SETTINGS = Object.freeze({ mode: 'on', idleMin: 30, maxPerSweep: 3 });
+const DEFAULT_IGNORE_PINGS = true;
 const UNDO_HINT = 'undo: unarchive it from the archived workspaces list in the DevSwarm app';
 
 function devswarmDir(home) { return path.join(home, '.anti-hall', 'devswarm'); }
@@ -96,6 +106,7 @@ function readSettings(home, override, env) {
     mode: settings.get('devswarm', 'autoArchive.mode', DEFAULT_SETTINGS.mode, opts),
     idleMin: settings.get('devswarm', 'autoArchive.idleMin', DEFAULT_SETTINGS.idleMin, opts),
     maxPerSweep: settings.get('devswarm', 'autoArchive.maxPerSweep', DEFAULT_SETTINGS.maxPerSweep, opts),
+    ignorePings: settings.get('devswarm', 'autoArchive.ignorePings', DEFAULT_IGNORE_PINGS, opts),
   }, override || {});
   const mode = ['on', 'off', 'dry-run'].includes(a.mode) ? a.mode : DEFAULT_SETTINGS.mode;
   const idle = Number(a.idleMin);
@@ -104,6 +115,7 @@ function readSettings(home, override, env) {
     mode,
     idleMin: Number.isFinite(idle) && idle >= 5 ? Math.floor(idle) : DEFAULT_SETTINGS.idleMin,
     maxPerSweep: Number.isFinite(max) && max >= 1 ? Math.min(20, Math.floor(max)) : DEFAULT_SETTINGS.maxPerSweep,
+    ignorePings: a.ignorePings !== false && a.ignorePings !== 'false',
   };
 }
 
@@ -185,6 +197,33 @@ function defaultActivityTs(desc, home) {
   try { return require('./liveness.js').readActivityTs(desc, home).ts; } catch (_) { return null; }
 }
 
+function defaultRealActivity(desc, home) {
+  try { return require('./devswarm-idle.js').realActivity(desc, home); } catch (_) { return { known: false }; }
+}
+
+// defaultLastInboundTs -> ms of the newest DIRECT message another workspace
+// sent to any of `ids` (0 = none), or null when the store cannot be read.
+// Broadcasts and the child's own rows never count.
+function defaultLastInboundTs(home, repoKey, ids) {
+  if (!repoKey) return null;
+  const store = require('./devswarm-store.js');
+  try { if (!fs.existsSync(store.storeDirForHash(home, repoKey))) return null; } catch (_) { return null; }
+  let s = null;
+  try {
+    s = store.openStore({ home, hash: repoKey, readOnly: true });
+    let best = 0;
+    for (const id of ids) {
+      for (const r of s.listMessages(id) || []) {
+        if (!r || r.mtype !== 'direct' || r.isHeartbeat || ids.includes(String(r.sender))) continue;
+        if (Number.isFinite(r.ts) && r.ts > best) best = r.ts;
+      }
+    }
+    return best;
+  } catch (_) {
+    return null;
+  } finally { try { if (s) s.close(); } catch (_) {} }
+}
+
 function defaultDescriptors(home) {
   try { return require('../devswarm-supervisor.js').readDescriptors(home); } catch (_) { return []; }
 }
@@ -198,6 +237,8 @@ function resolveDeps(o) {
     summary: d.summary || defaultSummary,
     unreadFrom: d.unreadFrom || defaultUnreadFrom,
     activityTs: d.activityTs || defaultActivityTs,
+    realActivity: d.realActivity || defaultRealActivity,
+    lastInboundTs: d.lastInboundTs || defaultLastInboundTs,
     descriptors: d.descriptors || defaultDescriptors,
     run: d.run || ((spec) => caps.gatedRun(require('./devswarm-pull.js').defaultRun)(spec)),
     can: d.can || ((name) => caps.can(name, { env: o.env, home: o.home })),
@@ -370,6 +411,56 @@ function gatherCandidates(o, deps, db) {
     .map((c) => Object.assign(c, { ids: [...new Set([String(c.builder.id)].concat(c.descriptors.map((d) => String(d.id))))] }));
 }
 
+// idleFact -> { ts, via, openRealTurn } — gate (g)'s activity time (0.109.0).
+// ignorePings on (default): per descriptor, the newest REAL-work turn from the
+// classified transcript (devswarm-idle.js), which skips only the child's own
+// wake/ping/heartbeat/status turns — heartbeat files are not read, since every
+// writer of one is such a turn. Folded in as floors: the newest inbound DIRECT
+// message (a follow-up resets idle even before the child acts on it) and the
+// HEAD commit time. A descriptor whose transcript cannot be classified keeps
+// the pre-0.109 rule (heartbeat + transcript mtime) for itself; no classified
+// descriptor at all, or an unreadable store, falls back to that rule for the
+// whole candidate — it can only block, never archive early.
+function idleFact(c, o, deps, settings, repoKey, wt) {
+  const legacy = () => {
+    let t = null;
+    for (const d of c.descriptors) {
+      const x = deps.activityTs(d, o.home);
+      if (Number.isFinite(x) && (t === null || x > t)) t = x;
+    }
+    return { ts: t, via: 'activity', openRealTurn: false };
+  };
+  if (settings.ignorePings === false) return legacy();
+  let act = null;
+  let open = false;
+  let anyKnown = false;
+  for (const d of c.descriptors) {
+    let r = null;
+    try { r = deps.realActivity(d, o.home); } catch (_) { r = null; }
+    let t;
+    if (r && r.known === true && Number.isFinite(r.ts)) {
+      anyKnown = true;
+      t = r.ts;
+      if (r.openRealTurn) open = true;
+    } else {
+      t = deps.activityTs(d, o.home); // this descriptor: the pre-0.109 rule
+      if (!Number.isFinite(t)) continue;
+    }
+    if (act === null || t > act) act = t;
+  }
+  if (!anyKnown) return legacy();
+  let inbound = null;
+  try { inbound = deps.lastInboundTs(o.home, repoKey, c.ids); } catch (_) { inbound = null; }
+  if (!Number.isFinite(inbound)) return legacy();
+  if (inbound > act) act = inbound;
+  if (wt && fs.existsSync(wt)) {
+    const g = deps.git(wt, ['log', '-1', '--format=%ct', 'HEAD']);
+    const sec = g && g.ok ? Number(String(g.out).trim()) : NaN;
+    if (Number.isFinite(sec) && sec > 0 && sec * 1000 > act) act = sec * 1000;
+  }
+  return { ts: act, via: 'real-work', openRealTurn: open };
+}
+
 // evaluateCandidate -> { id, label, branch, eligible, blockers:[{gate, detail}], soft }
 function evaluateCandidate(c, o, deps, db, settings, now) {
   const b = c.builder;
@@ -410,14 +501,14 @@ function evaluateCandidate(c, o, deps, db, settings, now) {
     const t = Date.parse(b.lastSelectedAt);
     if (!Number.isFinite(t) || now - t < VIEWED_GRACE_MS) blockers.push({ gate: 'f-viewed', detail: 'selected ' + (Number.isFinite(t) ? Math.round((now - t) / 60000) + 'm ago' : 'at unknown time') });
   }
-  let act = null;
-  for (const d of c.descriptors) {
-    const t = deps.activityTs(d, o.home);
-    if (Number.isFinite(t) && (act === null || t > act)) act = t;
-  }
+  const idle = idleFact(c, o, deps, settings, repoKey, b.worktreePath);
+  const act = idle.ts;
   facts.idleMin = act === null ? null : Math.floor((now - act) / 60000);
-  if (act === null || now - act < settings.idleMin * 60000) {
-    blockers.push({ gate: 'g-idle', detail: act === null ? 'no activity signal' : 'active ' + facts.idleMin + 'm ago' });
+  facts.idleVia = idle.via;
+  if (idle.openRealTurn) {
+    blockers.push({ gate: 'g-idle', detail: 'an AI turn doing real work is still open' });
+  } else if (act === null || now - act < settings.idleMin * 60000) {
+    blockers.push({ gate: 'g-idle', detail: act === null ? 'no activity signal' : 'active ' + facts.idleMin + 'm ago' + (idle.via === 'real-work' ? ' (real work)' : '') });
   }
   // Gate (h): the owner unarchived what this sweep archived (the app's
   // archived list is the ONLY undo). The done gate at that HEAD is still set,
