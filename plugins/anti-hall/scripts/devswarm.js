@@ -185,6 +185,15 @@ const readerIdentity = require('../companion/lib/reader-identity.js');
 // Phase 4: THE one row-state derivation (archived / app-archived / active /
 // unknown). Every read-side "is this row archived?" question goes through it.
 const rowStateLib = require('../companion/lib/row-state.js');
+// row-eligibility.js: THE one per-row projection over every archive source
+// (plus held / archive-ignore / liveness). Row-level "is this archived?"
+// questions (routing, roster, diagnose) read its `archived`.
+const rowEligibilityLib = require('../companion/lib/row-eligibility.js');
+// cliRowLog(event, details, id): the alog sink every eligibility context in
+// this file shares (row-state's superseded-marker event, tagged with the row).
+function cliRowLog(event, details, id) {
+  try { alog.logEvent('devswarm-cli', event, 'info', Object.assign({ row: id }, details || {})); } catch (_) {}
+}
 // SHARED archive-resurrection gate (defect df54edf54804 item 4) — the same
 // bulk-reregistration decision companion/devswarm-migrate.js's one-time store
 // migration uses, reused here by healOrphanPartitions so a worktree-group
@@ -550,12 +559,10 @@ function isArchivedForRouting(row, home) {
   if (!row || row.id == null) return false;
   let repoKey = null;
   try { repoKey = descriptorRegisteredRepoKey(readDescriptorFile(home, row.id), row.id); } catch (_) { repoKey = null; }
-  return rowStateLib.isRowArchived({
-    home, id: row.id, worktreePath: row.worktreePath, sessionId: row.sessionId || null, repoKey,
-    log(event, details) {
-      try { alog.logEvent('devswarm-cli', event, 'info', Object.assign({ row: row.id }, details || {})); } catch (_) {}
-    },
-  });
+  return rowEligibilityLib.rowEligibility(
+    { id: row.id, worktreePath: row.worktreePath, sessionId: row.sessionId || null, repoKey },
+    { home, log: cliRowLog }
+  ).archived;
 }
 
 // isRoutingLiveRowStrict(row, home, opts) -> bool. D11-A (f56dcc08f048): the
@@ -15440,15 +15447,13 @@ function rosterHints(home, id, worktreePath, now, sessionId, opts) {
   // devswarm-archived.js for why archived/<id>.json alone is not the test).
   // One derivation (row-state.js): anti-hall's own archived marker first, then
   // the app-side archived-set cache when the row's repoKey is known.
+  // opts.elig: the caller's shared eligibility context (cmdRoster builds ONE
+  // per invocation); otherwise a one-off context with the same inputs.
   let archived = false;
   try {
-    archived = rowStateLib.isRowArchived({
-      home, id, worktreePath, repoKey: (opts && opts.repoKey) || null,
-      env: opts && opts.env, cache: opts && opts.cache, now,
-      log(event, details) {
-        try { alog.logEvent('devswarm-cli', event, 'info', Object.assign({ row: id }, details || {})); } catch (_) {}
-      },
-    });
+    const elig = (opts && opts.elig)
+      || rowEligibilityLib.createContext({ home, env: opts && opts.env, cache: opts && opts.cache, now, log: cliRowLog });
+    archived = elig.of({ id, worktreePath, repoKey: (opts && opts.repoKey) || null }).archived;
   } catch (_) { archived = false; }
   if (archived) {
     hints.push('archived');
@@ -15643,6 +15648,8 @@ function cmdRoster(flags, ctx) {
   // applied inside readActiveCache — stale/missing/malformed yields nothing).
   let appArchivedCache = null;
   try { appArchivedCache = archivedCacheLib.readActiveCache({ home, env: ctx.env, now }); } catch (_) { appArchivedCache = null; }
+  // ONE eligibility context for every roster row (memoized per row).
+  const rosterElig = rowEligibilityLib.createContext({ home, env: ctx.env, cache: appArchivedCache, now, log: cliRowLog });
   const workspaces = Object.values(sum.workspaces || {}).map((w) => {
     // DEMOTE (archived-still-active fix): a store-sourced row whose workspace is
     // genuinely archived is labeled source:'archived' + hinted, instead of being
@@ -15650,7 +15657,7 @@ function cmdRoster(flags, ctx) {
     // or deleted — same no-delete posture as the archived/ scan below); only its
     // label changes, so an archived workspace can no longer read as active.
     const archivedOnly = isArchivedOnlyWorkspace(home, w.id);
-    const hints = rosterHints(home, w.id, w.worktreePath, now, w.sessionId, { repoKey, env: ctx.env, cache: appArchivedCache, registryBacked: true });
+    const hints = rosterHints(home, w.id, w.worktreePath, now, w.sessionId, { repoKey, env: ctx.env, cache: appArchivedCache, elig: rosterElig, registryBacked: true });
     if (archivedOnly) hints.unshift('archived');
     // instance-split (defect d3d571495bf6, item b): additive ONLY when this
     // row's own outbound rows carried at least one instanceNonce within the
@@ -15692,7 +15699,7 @@ function cmdRoster(flags, ctx) {
       directUnread: null, broadcastUnread: null, urgencyMax: null,
       worktreePath: child.path || null, source: 'native',
       meshId: rosterMeshId(child.path || null),
-      hints: rosterHints(home, id, child.path || null, now, null, { repoKey, env: ctx.env, cache: appArchivedCache, registryBacked: false }), // native hivecontrol child has no mesh descriptor / sessionId — never eligible for `phantom` (E fix)
+      hints: rosterHints(home, id, child.path || null, now, null, { repoKey, env: ctx.env, cache: appArchivedCache, elig: rosterElig, registryBacked: false }), // native hivecontrol child has no mesh descriptor / sessionId — never eligible for `phantom` (E fix)
       // wsName: hivecontrol's own `label`, straight from this native fold —
       // no fs cache lookup needed here, we already have the live value.
       wsName: child.label || null,
@@ -15725,7 +15732,7 @@ function cmdRoster(flags, ctx) {
             broadcastUnread: pw.broadcastUnread, urgencyMax: pw.urgencyMax,
             worktreePath: pw.worktreePath || null, source: 'store-fallback',
             meshId: rosterMeshId(pw.worktreePath),
-            hints: rosterHints(home, pw.id, pw.worktreePath, now, pw.sessionId, { repoKey: fallbackHash, env: ctx.env, cache: appArchivedCache, registryBacked: true }),
+            hints: rosterHints(home, pw.id, pw.worktreePath, now, pw.sessionId, { repoKey: fallbackHash, env: ctx.env, cache: appArchivedCache, elig: rosterElig, registryBacked: true }),
             wsName: names.readName(home, pw.id),
           });
         }
@@ -16020,6 +16027,7 @@ function computeDiagnosis(s, ctx) {
   // app-archived" for every row (its own documented fail-open contract).
   let appArchivedCache = null;
   try { appArchivedCache = archivedCacheLib.readActiveCache({ home: c.home, env: c.env, now: c.now }); } catch (_) { appArchivedCache = null; }
+  const diagElig = rowEligibilityLib.createContext({ home: c.home, env: c.env, cache: appArchivedCache, now: c.now, log: cliRowLog });
   const rows = registry.filter((d) => d && d.id != null).map((d) => {
     const w = workspaces[d.id] || {};
     const registrySid = d.sessionId || null;
@@ -16043,15 +16051,11 @@ function computeDiagnosis(s, ctx) {
     // "was this put away", so it must never suppress the archived label.
     let archivedInApp = false;
     try {
-      archivedInApp = rowStateLib.isRowArchived({
-        home: c.home, id: d.id, worktreePath: d.worktreePath,
+      archivedInApp = diagElig.of({
+        id: d.id, worktreePath: d.worktreePath,
         sessionId: isRealSid(sid, d.id) ? sid : null,
         repoKey: (() => { try { return descriptorRegisteredRepoKey(desc, d.id) || null; } catch (_) { return null; } })(),
-        env: c.env, cache: appArchivedCache, now: c.now,
-        log(event, details) {
-          try { alog.logEvent('devswarm-cli', event, 'info', Object.assign({ row: d.id }, details || {})); } catch (_) {}
-        },
-      });
+      }).archived;
     } catch (_) { archivedInApp = false; }
     let live = false;
     if (!archivedInApp) {
