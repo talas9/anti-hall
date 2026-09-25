@@ -49,6 +49,7 @@ async function main() {
       compare: input && input.compare,
       project: input && input.project,
       sessionId: input && input.sessionId,
+      turnRef: input && input.turnRef,
     });
   } catch (_) {
     // nothing left to report to — this process's result is never observed.

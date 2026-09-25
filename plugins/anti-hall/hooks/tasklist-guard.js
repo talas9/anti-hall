@@ -413,6 +413,7 @@ function main() {
       trust: 'relax-block',
       baseline: true,
       sessionId: rawSessionId || undefined,
+      turnRef: require('./lib/jev-assist.js').turnRefFromTranscript(transcriptPath),
     });
   } catch (_) { /* best-effort — never affects the nudge below */ }
   if (jevRelax && jevRelax.final === false) process.exit(0); // on + confident "trivial" -> no nudge

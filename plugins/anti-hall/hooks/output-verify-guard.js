@@ -275,6 +275,7 @@ function main() {
       state: blob.slice(0, 4000),
       trust: 'advisory',
       baseline: mismatch,
+      sessionId: payload && payload.session_id ? String(payload.session_id) : undefined,
     });
   } catch (_) { /* best-effort — never affects the advisory below */ }
 

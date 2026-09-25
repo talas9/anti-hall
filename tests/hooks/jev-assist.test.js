@@ -632,6 +632,97 @@ test('ask(): omitting `compare` writes no `compare` field (backward compatible)'
   } finally { h.cleanup(); }
 });
 
+test('ask(): sessionId is logged verbatim when the caller passes one', async () => {
+  const h = makeHome();
+  try {
+    h.writeState('jev.json', { enabled: true, timeoutMs: 3000 });
+    await withMockServer(noulHandler(0.95), async (endpoint) => {
+      await withEnv({ HOME: h.home, AI_GATEWAY_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
+        const { ask } = freshLib();
+        const r = await ask({
+          id: 'speculation', question: NOUL_Q, state: 'hello', trust: 'add-block',
+          baseline: false, sessionId: 'sess-abc123',
+        });
+        assert.strictEqual(r.final, true);
+        const log = readNdjson(path.join(h.home, '.anti-hall', 'logs', 'jev-assist.ndjson'));
+        assert.strictEqual(log[0].sessionId, 'sess-abc123');
+      });
+    });
+  } finally { h.cleanup(); }
+});
+
+test('ask(): omitting sessionId writes no sessionId field (backward compatible)', async () => {
+  const h = makeHome();
+  try {
+    h.writeState('jev.json', { enabled: true, timeoutMs: 3000 });
+    await withMockServer(noulHandler(0.95), async (endpoint) => {
+      await withEnv({ HOME: h.home, AI_GATEWAY_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
+        const { ask } = freshLib();
+        const r = await ask({ id: 'speculation', question: NOUL_Q, state: 'hello', trust: 'add-block', baseline: false });
+        assert.strictEqual(r.final, true);
+        const log = readNdjson(path.join(h.home, '.anti-hall', 'logs', 'jev-assist.ndjson'));
+        assert.ok(!('sessionId' in log[0]));
+      });
+    });
+  } finally { h.cleanup(); }
+});
+
+test('ask(): turnRef is logged verbatim when the caller passes one', async () => {
+  const h = makeHome();
+  try {
+    h.writeState('jev.json', { enabled: true, timeoutMs: 3000 });
+    await withMockServer(noulHandler(0.95), async (endpoint) => {
+      await withEnv({ HOME: h.home, AI_GATEWAY_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
+        const { ask } = freshLib();
+        const r = await ask({
+          id: 'speculation', question: NOUL_Q, state: 'hello', trust: 'add-block',
+          baseline: false, sessionId: 'sess-xyz', turnRef: '2026-09-25T00:00:00.000Z',
+        });
+        assert.strictEqual(r.final, true);
+        const log = readNdjson(path.join(h.home, '.anti-hall', 'logs', 'jev-assist.ndjson'));
+        assert.strictEqual(log[0].turnRef, '2026-09-25T00:00:00.000Z');
+      });
+    });
+  } finally { h.cleanup(); }
+});
+
+test('turnRefFromTranscript: reads the last line\'s ISO timestamp field', () => {
+  const h = makeHome();
+  try {
+    const { turnRefFromTranscript } = freshLib();
+    const tp = path.join(h.home, 'transcript.jsonl');
+    fs.writeFileSync(
+      tp,
+      [
+        JSON.stringify({ role: 'user', timestamp: '2026-09-25T10:00:00.000Z' }),
+        JSON.stringify({ role: 'assistant', timestamp: '2026-09-25T10:00:05.000Z' }),
+      ].join('\n') + '\n',
+      'utf8'
+    );
+    assert.strictEqual(turnRefFromTranscript(tp), '2026-09-25T10:00:05.000Z');
+  } finally { h.cleanup(); }
+});
+
+test('turnRefFromTranscript: no timestamp field anywhere -> falls back to a line-count tag', () => {
+  const h = makeHome();
+  try {
+    const { turnRefFromTranscript } = freshLib();
+    const tp = path.join(h.home, 'transcript.jsonl');
+    fs.writeFileSync(tp, [JSON.stringify({ role: 'user' }), JSON.stringify({ role: 'assistant' })].join('\n') + '\n', 'utf8');
+    assert.strictEqual(turnRefFromTranscript(tp), 'L2');
+  } finally { h.cleanup(); }
+});
+
+test('turnRefFromTranscript: missing file -> null, never throws', () => {
+  const h = makeHome();
+  try {
+    const { turnRefFromTranscript } = freshLib();
+    assert.strictEqual(turnRefFromTranscript(path.join(h.home, 'nope.jsonl')), null);
+    assert.strictEqual(turnRefFromTranscript(undefined), null);
+    assert.strictEqual(turnRefFromTranscript(''), null);
+  } finally { h.cleanup(); }
+});
+
 test('ask(): logs costUsd:null/costSource:null when the response carries no cost/usage (the observed default)', async () => {
   const h = makeHome();
   try {
@@ -938,6 +1029,27 @@ test('askDetached(): mode off -> no network call (baseline-only), still returns 
       assert.strictEqual(hit.backend, 'baseline-only');
       assert.strictEqual(hit.jev, null, 'mode off must never reach the network, so jev must be null');
       assert.strictEqual(hit.final, hit.base);
+    });
+  } finally { h.cleanup(); }
+});
+
+test('askDetached(): sessionId/turnRef ride along to the logged row via the detached worker', async () => {
+  const h = makeHome();
+  try {
+    h.writeState('jev.json', { enabled: true, integrations: { claimLedger: 'shadow' } });
+    await withMockServer(noulHandler(0.9), async (endpoint) => {
+      await withEnv({ HOME: h.home, AI_GATEWAY_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
+        const { askDetached } = freshLib();
+        askDetached({
+          id: 'claimLedger', question: NOUL_Q, state: 'hi', trust: 'relax-block',
+          baseline: true, sessionId: 'sess-detached', turnRef: 'L42',
+        });
+        const p = path.join(h.home, '.anti-hall', 'logs', 'jev-assist.ndjson');
+        const hit = await waitForLog(p, (r) => r.id === 'claimLedger');
+        assert.ok(hit, 'expected a decision row for claimLedger');
+        assert.strictEqual(hit.sessionId, 'sess-detached');
+        assert.strictEqual(hit.turnRef, 'L42');
+      });
     });
   } finally { h.cleanup(); }
 });

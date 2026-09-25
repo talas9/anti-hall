@@ -248,7 +248,7 @@ const JEV_ROUTING_QUESTION = {
 // Fully synchronous (askSync spawns the Jev call in a subprocess with its own
 // hard timeout) since this hook's main() cannot await. Any failure -> false
 // (block proceeds), matching jev-assist's own fail-open contract.
-function consultModelRoutingJev(corpus) {
+function consultModelRoutingJev(corpus, payload) {
   try {
     const { askSync } = require('./lib/jev-assist.js');
     const result = askSync({
@@ -259,6 +259,7 @@ function consultModelRoutingJev(corpus) {
       baseline: true,
       judge: (answer) => answer === 'mechanical',
       budgetMs: 1200,
+      sessionId: payload && payload.session_id != null ? String(payload.session_id) : undefined,
     });
     return result.final === false;
   } catch (_) {
@@ -390,7 +391,7 @@ function main() {
         "model:'haiku' (or 'sonnet' if it authors code)."
       );
     }
-    if (consultModelRoutingJev(corpus)) {
+    if (consultModelRoutingJev(corpus, payload)) {
       advise(
         'MODEL-ROUTING (advisory, Jev-relaxed): this spawn looks execution-shaped ' +
         "on a flagship model ('" + model + "') by keyword, but Jev classified it as " +
@@ -407,7 +408,7 @@ function main() {
   //   advisory opt-out : set ANTIHALL_MODEL_ROUTING=advisory to downgrade to advisory.
   if (isMechanicalOnly && modelOmitted && isGenericAgent) {
     if (strict) {
-      if (consultModelRoutingJev(corpus)) {
+      if (consultModelRoutingJev(corpus, payload)) {
         advise(
           'MODEL-ROUTING (advisory, Jev-relaxed): this omitted-model spawn looks ' +
           'execution-shaped by keyword, but Jev classified it as non-mechanical ' +

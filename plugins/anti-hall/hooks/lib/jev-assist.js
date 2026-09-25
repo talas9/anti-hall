@@ -118,6 +118,48 @@ function logPath(home) {
   return path.join(homeDir(home), '.anti-hall', 'logs', 'jev-assist.ndjson');
 }
 
+// turnRefFromTranscript(transcriptPath) -> a short, best-effort pointer to
+// WHICH turn a decision row was about: the ISO `timestamp` field of the LAST
+// JSONL line in the transcript (assistant or otherwise -- the goal is "what
+// turn was this decision made during", not role-filtering), read via a cheap
+// tail scan (last 64KB) so a large transcript never costs a full read. Falls
+// back to the transcript's own line count (e.g. "L123") when no line in the
+// window carries a parseable `timestamp`. Returns null on any error, a
+// missing/non-string path, or an empty file -- callers pass this straight
+// through as ask()/askSync()/askDetached()'s optional `turnRef`, which is
+// itself omitted (not logged as null) when this returns null. Never throws.
+function turnRefFromTranscript(transcriptPath) {
+  if (typeof transcriptPath !== 'string' || !transcriptPath) return null;
+  try {
+    const WINDOW = 65536;
+    const size = fs.statSync(transcriptPath).size;
+    let data;
+    if (size <= WINDOW) {
+      data = fs.readFileSync(transcriptPath, 'utf8');
+    } else {
+      const buf = Buffer.alloc(WINDOW);
+      const fd = fs.openSync(transcriptPath, 'r');
+      try {
+        const bytesRead = fs.readSync(fd, buf, 0, WINDOW, size - WINDOW);
+        data = buf.toString('utf8', 0, bytesRead);
+      } finally {
+        fs.closeSync(fd);
+      }
+    }
+    const lines = data.split(/\r?\n/).filter((l) => l.trim());
+    if (!lines.length) return null;
+    for (let i = lines.length - 1; i >= 0; i--) {
+      try {
+        const entry = JSON.parse(lines[i]);
+        if (entry && typeof entry.timestamp === 'string' && entry.timestamp) return entry.timestamp;
+      } catch (_) { /* partial/invalid line at a window boundary -- skip */ }
+    }
+    return 'L' + lines.length;
+  } catch (_) {
+    return null;
+  }
+}
+
 function readJevJson(home) {
   try {
     const raw = fs.readFileSync(jevConfigPath(home), 'utf8');
@@ -572,7 +614,7 @@ function defaultProject() {
   try { return path.basename(process.cwd()) || 'unknown'; } catch (_) { return 'unknown'; }
 }
 
-function finalize({ id, home, hash, mode, trust, baseline, judge, threshold, r, cachedFlag, compare, state, project, sessionId }) {
+function finalize({ id, home, hash, mode, trust, baseline, judge, threshold, r, cachedFlag, compare, state, project, sessionId, turnRef }) {
   const confident = !!(r && r.ok && Number.isFinite(r.confidence) && r.confidence >= threshold);
   const jevBool = (r && r.ok)
     ? (typeof judge === 'function' ? !!judge(r.answer) : r.answer)
@@ -623,6 +665,11 @@ function finalize({ id, home, hash, mode, trust, baseline, judge, threshold, r, 
     project: (typeof project === 'string' && project) ? project : defaultProject(),
   };
   if (typeof sessionId === 'string' && sessionId) entry.sessionId = sessionId;
+  // turnRef: a short, caller-supplied pointer to WHICH turn this decision was
+  // about (e.g. the ts of the last assistant message the caller judged, or a
+  // transcript line count) — see turnRefFromTranscript() below. Optional,
+  // same omitted-not-null convention as sessionId/compare.
+  if (typeof turnRef === 'string' && turnRef) entry.turnRef = turnRef;
   if (r && !r.ok && r.reason) entry.reason = r.reason;
   // costUsd/costSource are only written when a decision was actually
   // evaluated (r truthy) -- an 'off'/skipped call logs no cost fields at
@@ -690,11 +737,11 @@ function prepare({ id, home, trust, baseline, cacheKey, state }) {
 // ask({id, question, state, trust, baseline, judge, cacheKey, budgetMs, home})
 //   -> Promise<{final, jev, baseline, confidence, ms, backend, h}>
 async function ask(opts = {}) {
-  const { id, question, state, trust, baseline, judge, cacheKey, budgetMs, home, compare, project, sessionId } = opts;
+  const { id, question, state, trust, baseline, judge, cacheKey, budgetMs, home, compare, project, sessionId, turnRef } = opts;
   const { h, mode, hash, threshold, skip } = prepare({ id, home, trust, baseline, cacheKey, state });
 
   if (skip) {
-    return finalize({ id, home: h, hash, mode, trust, baseline, judge, threshold, r: null, cachedFlag: false, compare, state, project, sessionId });
+    return finalize({ id, home: h, hash, mode, trust, baseline, judge, threshold, r: null, cachedFlag: false, compare, state, project, sessionId, turnRef });
   }
 
   const cache = readCache(h);
@@ -716,7 +763,7 @@ async function ask(opts = {}) {
     }
   }
 
-  return finalize({ id, home: h, hash, mode, trust, baseline, judge, threshold, r, cachedFlag, compare, state, project, sessionId });
+  return finalize({ id, home: h, hash, mode, trust, baseline, judge, threshold, r, cachedFlag, compare, state, project, sessionId, turnRef });
 }
 
 // askSync(...) — same contract as ask(), but fully synchronous: the network
@@ -725,11 +772,11 @@ async function ask(opts = {}) {
 // uses. For callers (e.g. model-routing-guard) whose main() is synchronous
 // and cannot await.
 function askSync(opts = {}) {
-  const { id, question, state, trust, baseline, judge, cacheKey, budgetMs, home, compare, project, sessionId } = opts;
+  const { id, question, state, trust, baseline, judge, cacheKey, budgetMs, home, compare, project, sessionId, turnRef } = opts;
   const { h, mode, hash, threshold, skip } = prepare({ id, home, trust, baseline, cacheKey, state });
 
   if (skip) {
-    return finalize({ id, home: h, hash, mode, trust, baseline, judge, threshold, r: null, cachedFlag: false, compare, state, project, sessionId });
+    return finalize({ id, home: h, hash, mode, trust, baseline, judge, threshold, r: null, cachedFlag: false, compare, state, project, sessionId, turnRef });
   }
 
   const cache = readCache(h);
@@ -747,7 +794,7 @@ function askSync(opts = {}) {
     }
   }
 
-  return finalize({ id, home: h, hash, mode, trust, baseline, judge, threshold, r, cachedFlag, compare, state, project, sessionId });
+  return finalize({ id, home: h, hash, mode, trust, baseline, judge, threshold, r, cachedFlag, compare, state, project, sessionId, turnRef });
 }
 
 // askDetached(opts) — fire-and-forget variant for callers on the user's
@@ -769,7 +816,7 @@ function askSync(opts = {}) {
 // other I/O path in this file).
 function askDetached(opts = {}) {
   try {
-    const { id, question, state, trust, baseline, cacheKey, budgetMs, home, compare, project, sessionId } = opts;
+    const { id, question, state, trust, baseline, cacheKey, budgetMs, home, compare, project, sessionId, turnRef } = opts;
     // Check the integration mode BEFORE spawning — an 'off' integration (or
     // Jev disabled entirely, or a relax-block guard on a non-blocking
     // baseline) must cost this caller a single sync config read, never a
@@ -780,10 +827,10 @@ function askDetached(opts = {}) {
     // call to wait on either way, so a spawn would only add overhead.
     const { h, mode, hash, threshold, skip } = prepare({ id, home, trust, baseline, cacheKey, state });
     if (skip) {
-      finalize({ id, home: h, hash, mode, trust, baseline, judge: null, threshold, r: null, cachedFlag: false, compare, state, project, sessionId });
+      finalize({ id, home: h, hash, mode, trust, baseline, judge: null, threshold, r: null, cachedFlag: false, compare, state, project, sessionId, turnRef });
       return;
     }
-    const input = JSON.stringify({ id, question, state, trust, baseline, cacheKey, budgetMs, home, compare, project, sessionId });
+    const input = JSON.stringify({ id, question, state, trust, baseline, cacheKey, budgetMs, home, compare, project, sessionId, turnRef });
     const child = spawn(process.execPath, [DETACHED_WORKER_PATH], {
       detached: true,
       stdio: ['pipe', 'ignore', 'ignore'],
@@ -824,6 +871,7 @@ module.exports = {
   askSync,
   askDetached,
   consultRelax,
+  turnRefFromTranscript,
   RELAX_SYNC_CAP_MS,
   // finalize is exported for the small set of callers that already HAVE a
   // Jev answer from a cache another feature populated (e.g. jev-triage.js's

@@ -316,7 +316,8 @@ function main() {
   // mergeGateHedge would need to switch back to askSync deliberately,
   // trading latency for enforcement. Shadow logs to jev-assist.ndjson only.
   try {
-    require('./lib/jev-assist.js').askDetached({
+    const jevAssist = require('./lib/jev-assist.js');
+    jevAssist.askDetached({
       id: 'mergeGateHedge',
       question: {
         type: 'noul',
@@ -328,6 +329,8 @@ function main() {
       state: text.slice(-4000),
       trust: 'relax-block',
       baseline: unresolved,
+      sessionId: payload && payload.session_id ? String(payload.session_id) : undefined,
+      turnRef: jevAssist.turnRefFromTranscript(tp),
     });
   } catch (_) { /* best-effort — never affects the gate's own decision */ }
 

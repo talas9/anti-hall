@@ -305,6 +305,7 @@ function main() {
   // ran; askDetached costs this hook nothing.
   try {
     const jevAssist = require('./lib/jev-assist.js');
+    const turnRef = jevAssist.turnRefFromTranscript(transcriptPath);
     for (const flag of flags) {
       jevAssist.askDetached({
         id: 'claimLedger',
@@ -319,6 +320,8 @@ function main() {
         trust: 'relax-block',
         baseline: true,
         cacheKey: flag.kind + '\u0001' + flag.token + '\u0001' + flag.context,
+        sessionId,
+        turnRef,
       });
     }
   } catch (_) { /* jev-assist unavailable — ledger-only behavior unaffected */ }

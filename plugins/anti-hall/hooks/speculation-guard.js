@@ -497,6 +497,11 @@ async function main() {
         // "rate Jev said not-speculative", not real agreement with the
         // regex heuristic.
         compare: regexWouldBlock,
+        // sessionId/turnRef: this is the live speculation add-block path (Jev
+        // 'on' can add a block here), so every logged row must be joinable
+        // back to the transcript it decided on -- see jev-assist.js header.
+        sessionId,
+        turnRef: require('./lib/jev-assist.js').turnRefFromTranscript(transcriptPath),
       });
       if (result.jev === null) {
         // Either the 'speculation' integration is switched off via jev.json's

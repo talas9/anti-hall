@@ -467,7 +467,8 @@ try {
   // label distribution/agreement once a human has judged some outcomes.
   if (!skipped && typeof payload.prompt === 'string' && payload.prompt.trim()) {
     try {
-      require('./lib/jev-assist.js').askDetached({
+      const jevAssist = require('./lib/jev-assist.js');
+      jevAssist.askDetached({
         id: 'newRequest',
         question: {
           type: 'choice',
@@ -482,6 +483,8 @@ try {
         state: payload.prompt.slice(0, 4000),
         trust: 'advisory',
         baseline: null,
+        sessionId: payload && payload.session_id ? String(payload.session_id) : undefined,
+        turnRef: jevAssist.turnRefFromTranscript(payload && payload.transcript_path),
       });
     } catch (_) { /* best-effort — never affects the injected context */ }
   }
