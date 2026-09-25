@@ -46,6 +46,14 @@ the update.
   (`-s/--source`, `-a/--agent`, `-p/--prompt`, `-r/--remote`, `-t/--title`)
   plus anti-hall's own `--from-local`, with an example and pointers to
   `send`/`roster`/`inbox` for following up with a spawned child.
+- **`devswarm.js help --short`.** Peer request: a DevSwarm Primary spent a day
+  driving raw hivecontrol because it never discovered `devswarm.js archive`
+  existed. Prints one line per verb (`verb — purpose`), generated from the
+  SAME source of truth as the full `help`/`help <verb>` listing (the
+  dispatcher's own verb list + `VERB_HELP`), so it can never drift out of
+  sync. A hygiene test independently scans the dispatcher's `case '<verb>':`
+  statements and asserts every one appears in the short list. The Primary's
+  SessionStart directive now names it as the pointer to the full verb list.
 - **`devswarm.js ready-check <sha>`.** A generic, read-only readiness verdict
   for a child's "READY \<sha\>" claim — works against any git repo, not
   DevSwarm-specific. Reports `ff` (is `--base`, default `origin/main`, an

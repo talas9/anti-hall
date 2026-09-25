@@ -133,6 +133,16 @@ const PARENT_QUESTION_LINE =
   'genuine human call (destructive/irreversible, scope-changing, unsafe to assume). ' +
   'Ladder: child -> parent -> human, never child -> human.';
 
+// PARENT_VERB_LIST_LINE (peer request, 2026-09-26): a Primary spent a day
+// driving raw hivecontrol because it never discovered `devswarm.js archive`
+// existed — this file only ever names the handful of verbs OVERRIDE_CORE/
+// PARENT_QUESTION_LINE use, never the full set. One line, Primary only, kept
+// tight against the hook-injection budget: points at `help --short` (the
+// one-line-per-verb index, generated from the same source of truth as the
+// dispatcher itself — see buildShortHelpText() in scripts/devswarm.js).
+const PARENT_VERB_LIST_LINE =
+  ' Full verb list: `node ' + CLI + ' help --short`.';
+
 // MAILBOX WAKE (v0.59): appended for BOTH roles (both have mailboxes). A workspace
 // that finishes its turn goes IDLE and nothing wakes it, so a message landing after
 // that point is never read. The fix is a directive — the agent itself CronList-checks
@@ -168,6 +178,7 @@ function buildAdditionalContext(isChild, env, explicitId) {
     (isChild ? CHILD_QUESTION_LINE : PARENT_QUESTION_LINE) +
     (isChild ? CHILD_DONE_LINE : '') +
     (isChild ? CHILD_IDLE_LINE : '') +
+    (isChild ? '' : PARENT_VERB_LIST_LINE) +
     wakeLine(env, isChild, explicitId);
 }
 

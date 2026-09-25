@@ -2416,7 +2416,7 @@ const VALUE_REQUIRED_FLAGS = new Set(['message', 'message-file']);
 // a mid-argv `--help` (e.g. `inbox read --help ws1`) would swallow the
 // FOLLOWING positional as its own value via the generic heuristic below,
 // same failure class BOOLEAN_ONLY_FLAGS already exists to close.
-const BOOLEAN_ONLY_FLAGS = new Set(['force', 'peek', 'answers', 'help', 'ack-after-print', 'quiet', 'cc-primary']);
+const BOOLEAN_ONLY_FLAGS = new Set(['force', 'peek', 'answers', 'help', 'ack-after-print', 'quiet', 'cc-primary', 'short']);
 // parseArgs(argv) -> { positionals: string[], flags: { name: string[] } }.
 // Supports `--name value`, `--name=value`, repeatable (`--set a --set b`), and
 // bare boolean flags (`--json`). Values are collected as arrays so a caller can
@@ -18701,6 +18701,39 @@ function buildHelpResult(verb) {
     usage: text,
   };
 }
+// SHORT_HELP_LINE_MAX — `help --short` prints ONE line per verb ("verb —
+// purpose"), so a multi-clause VERB_HELP synopsis (several of them run to
+// full paragraphs documenting every flag — send/spawn/relay/inbox) is cut to
+// its first line and capped at this length, ellipsised if still over.
+const SHORT_HELP_LINE_MAX = 100;
+function shortSynopsis(text) {
+  const line = String(text == null ? '' : text).split('\n')[0].trim();
+  if (line.length <= SHORT_HELP_LINE_MAX) return line;
+  return line.slice(0, SHORT_HELP_LINE_MAX - 1).trimEnd() + '…';
+}
+// buildShortHelpText() / buildShortHelpResult() — peer request (a DevSwarm
+// Primary spent a day driving raw hivecontrol because it never knew
+// `devswarm.js archive` existed): a one-line-per-verb index, generated from
+// the SAME source of truth as the full help (verbListFromSwitch() +
+// VERB_HELP) so it can never drift from the real dispatcher or from
+// `help`/`help <verb>`. ZERO side effects, same as buildHelpResult().
+function buildShortHelpText() {
+  const verbs = verbListFromSwitch();
+  const lines = [];
+  for (const v of verbs) {
+    const info = VERB_HELP[v] || { synopsis: '(no synopsis on file)' };
+    lines.push(v + ' — ' + shortSynopsis(info.synopsis));
+  }
+  return lines.join('\n');
+}
+function buildShortHelpResult() {
+  const verbs = verbListFromSwitch();
+  return {
+    ok: true, action: 'help', short: true, verb: null, known: true,
+    verbs,
+    usage: buildShortHelpText(),
+  };
+}
 // isHelpRequest(positionals, flags) -> true when this argv is asking for help
 // rather than dispatching a real verb. Deliberately checked in run() BEFORE
 // the switch, so it short-circuits every verb including the raw-argv-tail
@@ -18746,6 +18779,11 @@ function run(argv, ctx0) {
   // verb, including spawn/merge's raw-argv-tail forwarding.
   if (isHelpRequest(positionals, flags)) {
     const verb = cmd === 'help' ? positionals[1] : (cmd === '-h' ? undefined : cmd);
+    // `help --short` / `--help --short` (no verb): one line per verb, same
+    // source of truth as the full listing — see buildShortHelpResult().
+    if (flags.short && !verb) {
+      return { code: 0, result: buildShortHelpResult() };
+    }
     return { code: 0, result: buildHelpResult(verb) };
   }
   // Arm the cursor-door seat guard for THIS invocation (see
