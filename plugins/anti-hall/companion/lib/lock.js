@@ -225,7 +225,13 @@ function acquire(lockPath, opts) {
   const deadline = Date.now() + waitMs;
   mkdirParent(F, lockPath);
   let lastHolder = null;
+  let retryNow = false; // one immediate retry is always allowed after a reclaim
   for (let i = 0; i < maxTries; i++) {
+    // An unbounded try count is bounded by the wait budget instead — checked on
+    // EVERY pass, so a filesystem that keeps answering EEXIST for a path that
+    // is not there can never spin forever.
+    if (i > 0 && !retryNow && !Number.isFinite(maxTries) && Date.now() >= deadline) break;
+    retryNow = false;
     const ts = now();
     const token = newToken(ts);
     const record = Object.assign({ pid: process.pid, host: localHost(), ts, token }, o.fields || {});
@@ -245,6 +251,7 @@ function acquire(lockPath, opts) {
     if (shouldSteal(h, o)) {
       const r = reclaim(F, lockPath, h);
       if (r === 'caught' || r === 'failed') { refused(o, h); return null; }
+      retryNow = r === 'reclaimed';
       continue; // reclaimed (or already gone): retry the create immediately
     }
     if (Date.now() >= deadline || i + 1 >= maxTries) break;

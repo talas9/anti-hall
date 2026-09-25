@@ -159,6 +159,9 @@ test('SMB-like O_EXCL errors: openSync(wx) EEXIST is contention; EPERM fails ope
       },
     });
     assert.strictEqual(L.acquire(t.p, { fs: spy }), null, 'EEXIST with no file on disk -> retried, then refused (never a crash)');
+    const t0 = Date.now();
+    assert.strictEqual(L.acquire(t.p, { fs: spy, maxTries: Infinity, waitMs: 50 }), null, 'an unbounded try count is bounded by the wait budget');
+    assert.ok(Date.now() - t0 < 2000);
     mode = 'eperm';
     assert.strictEqual(L.acquire(t.p, { fs: spy }), null, 'EPERM -> fail-open null');
     assert.throws(() => L.acquire(t.p, { fs: spy, throwOnError: true }), (e) => e.code === 'EPERM');
