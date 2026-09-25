@@ -6,7 +6,7 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
-## 0.108.3 (unreleased)
+## 0.108.3
 
 ### Fixes
 
@@ -32,6 +32,34 @@ the update.
   distinct decisions (M fresh)`, deduped by content hash so repeated cache
   hits of the same decision count once. KEEP/REMOVE/REVIEW verdict gating is
   unchanged.
+
+### Docs / tests
+
+- **Codex parity audit of the six Jev-bearing hooks named in the 0.108.3
+  census** (`output-verify-guard.js`, `model-routing-guard.js`,
+  `speculation-guard.js`/`speculation-judge.js`, `tasklist-guard.js`,
+  `devswarm-parent-gate.js`, `claim-ledger.js`): verified against the live
+  `plugins/anti-hall/codex/hooks/hooks.json`,
+  `plugins/anti-hall/codex/install-codex.js`, and
+  `tests/hygiene/manifest-drift.test.js`'s `CLAUDE_ONLY_ALLOWLIST` that a
+  decision already exists for all six — the census was stale. Five
+  (`speculation-guard.js`, `speculation-judge.js`, `tasklist-guard.js`,
+  `devswarm-parent-gate.js`, `claim-ledger.js`) are already registered under
+  `Stop` in both hooks.json files with platform-neutral payloads
+  (`session_id`/`cwd`/`transcript_path`, no Claude-specific `tool_name`
+  reads). `model-routing-guard.js` and `output-verify-guard.js` are correctly
+  documented Claude-only — Codex has no `PreToolUse` Agent/Task-tool call
+  (subagent spawn is a separate `SubagentStart`/`SubagentStop` event with no
+  pre-spawn `tool_input` to classify), and the Codex shell tool's
+  `PostToolUse` `tool_response` shape is unverified, so wiring either would
+  register a trigger that never fires as intended. Added
+  `tests/codex/codex-jev-hooks-parity.test.js`, spawning each of the five
+  already-wired hooks with a Codex-shaped Stop payload to prove they run and
+  fail open (exit 0) — closes the runtime-behavior gap
+  `tests/hygiene/manifest-drift.test.js` (structure-only) does not cover.
+  Added a Claude/Codex parity column to the Jev "All integrations" table in
+  `plugins/anti-hall/skills/jev/SKILL.md` and the equivalent note in the
+  Codex mirror `plugins/anti-hall/codex/skills/anti-hall-jev/SKILL.md`.
 
 ## 0.108.2 (2026-09-25)
 

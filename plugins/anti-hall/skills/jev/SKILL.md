@@ -344,20 +344,20 @@ other integration defaults to `shadow` until promoted.
 
 ### All integrations
 
-| id | judges | trust | default mode |
-|---|---|---|---|
-| `speculation` | is this claim unsupported speculation | `add-block` | `on` (legacy) |
-| `triage` | mesh message urgency/kind label (own client, not this table's trust model) | n/a | `on` (legacy) |
-| `modelRouting` | is this agent-spawn task actually mechanical | `relax-block` | `shadow` |
-| `claimLedger` | is a flagged claim genuinely unsupported by evidence | `relax-block` | `shadow` |
-| `mergeGateHedge` | does this text hedge on merge-readiness | `relax-block` | `shadow` |
-| `newRequest` | classify a prompt: new-request/follow-up/correction/question | `advisory` | `shadow` |
-| `outputVerifyGuard` | does this test-runner output actually indicate a pass | `advisory` | `shadow` |
-| `gitGuardSelfCredit` | does this commit/PR message contain paraphrased AI self-credit | `add-block` **(never relaxes)** | `shadow` |
-| `parentGateQuestion` | is this unread child message really a question awaiting reply | `add-block` (cache-only, zero network) | `shadow` |
-| `tasklistTrivial` | is this session a genuinely non-trivial, multi-part effort | `relax-block` | `shadow` |
-| `supervisorBlockerLabel` | is a stale child waiting-on-parent or genuinely wedged | `advisory` (cache-only, zero network) | `shadow` |
-| `codexNudgeSubstantial` | are these file edits genuinely substantial (not just formatting) | `relax-block` | `shadow` |
+| id | judges | trust | default mode | Claude | Codex |
+|---|---|---|---|---|---|
+| `speculation` | is this claim unsupported speculation | `add-block` | `on` (legacy) | yes | yes |
+| `triage` | mesh message urgency/kind label (own client, not this table's trust model) | n/a | `on` (legacy) | yes | yes |
+| `modelRouting` | is this agent-spawn task actually mechanical | `relax-block` | `shadow` | yes | no — Codex has no `PreToolUse` Agent/Task-tool call to classify; subagent spawn is a separate `SubagentStart`/`SubagentStop` event with no pre-spawn `tool_input` |
+| `claimLedger` | is a flagged claim genuinely unsupported by evidence | `relax-block` | `shadow` | yes | yes |
+| `mergeGateHedge` | does this text hedge on merge-readiness | `relax-block` | `shadow` | yes | yes |
+| `newRequest` | classify a prompt: new-request/follow-up/correction/question | `advisory` | `shadow` | yes | yes |
+| `outputVerifyGuard` | does this test-runner output actually indicate a pass | `advisory` | `shadow` | yes | no — reads a `PostToolUse` Bash `tool_response` whose exact shape on Codex's shell tool is unverified (no captured payload); not wired until proven, to avoid a hook whose trigger never actually fires as intended |
+| `gitGuardSelfCredit` | does this commit/PR message contain paraphrased AI self-credit | `add-block` **(never relaxes)** | `shadow` | yes | yes |
+| `parentGateQuestion` | is this unread child message really a question awaiting reply | `add-block` (cache-only, zero network) | `shadow` | yes | yes |
+| `tasklistTrivial` | is this session a genuinely non-trivial, multi-part effort | `relax-block` | `shadow` | yes | yes |
+| `supervisorBlockerLabel` | is a stale child waiting-on-parent or genuinely wedged | `advisory` (cache-only, zero network) | `shadow` | yes | no — `companion/devswarm-supervisor.js` identity-binds to `claude --resume` processes specifically |
+| `codexNudgeSubstantial` | are these file edits genuinely substantial (not just formatting) | `relax-block` | `shadow` | yes | no — nudges a Claude session to seek an independent Codex review; self-referential/meaningless inside a Codex session |
 
 `gitGuardSelfCredit`/`modelRouting`/`claimLedger`/`mergeGateHedge`/`tasklistTrivial`/
 `codexNudgeSubstantial` use a real classifier call (`ask`/`askSync`/`askDetached`);

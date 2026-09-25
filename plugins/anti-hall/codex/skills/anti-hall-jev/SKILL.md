@@ -82,6 +82,16 @@ itself.
   `tasklistTrivial`/`codexNudgeSubstantial` ask synchronously (1.5 s cap, fail-open)
   and a confident "trivial" verdict skips the nudge. Full per-id trust/hook/API table:
   `docs/KB-jev-classifier.md` §10.
+  **Claude/Codex parity**: `speculation`, `triage`, `claimLedger`, `mergeGateHedge`,
+  `newRequest`, `gitGuardSelfCredit`, `parentGateQuestion`, `tasklistTrivial` run on
+  BOTH platforms (their backing hooks are registered in this port's own
+  `hooks/hooks.json`). `modelRouting` (no `PreToolUse` Agent/Task-tool call exists
+  here — subagent spawn is a separate `SubagentStart`/`SubagentStop` event with no
+  pre-spawn payload to classify), `outputVerifyGuard` (the shell tool's
+  `PostToolUse` `tool_response` shape is unverified on this platform, so it is not
+  wired until proven), `supervisorBlockerLabel` (the liveness supervisor
+  identity-binds to `claude --resume` processes), and `codexNudgeSubstantial`
+  (self-referential inside a Codex session) are Claude-only.
 - "how is jev doing" / "jev scorecard": run `jev-report.js`, then for each row
   explain KEEP (promote-worthy) / REMOVE (offer to set mode off) / REVIEW (not
   enough data, needs more labels, label-only, or p95 latency over budget).
