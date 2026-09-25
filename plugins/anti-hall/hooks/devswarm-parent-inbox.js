@@ -464,21 +464,29 @@ function formatRelative(ts, now) {
 // `entry.gates.done === true` OR `entry.archive_ready === true` (the manual
 // gate path); "merged" is proven ONLY by `entry.mergedVerified === true` — the
 // CACHED, report-only projection of the SAME gitMergeProof `gate --set merged`
-// already ran and recorded (companion/lib/devswarm-store.js), never a fresh
-// git spawn here. An unset/false mergedVerified is honestly "not merged (yet
-// proven)", not "not merged" — see riskMarker's identical "merged
-// (unverified)" posture for the same field.
-//   'done ✓ merged'    — done reported AND the merge is proven
-//   'done, not merged' — done reported, merge not (yet) proven
-//   'working' (+ %)    — no done report yet; an optional heartbeat
-//                        progress_pct is appended when present, the only
-//                        remaining advisory signal for an in-progress row
+// already ran and recorded (companion/lib/devswarm-store.js). It is a
+// TRI-STATE field (devswarm-store.js's own MERGED-GATE VERIFICATION comment):
+// `true`/`false` only when cmdGate's git ancestry check actually resolved one
+// way or the other, and UNSET (`undefined`) when it never ran or came back
+// unresolvable — never fabricated either way. Collapsing unset into "not
+// merged" (the prior bug) claimed a NEGATIVE that was never actually checked;
+// the label now distinguishes "checked, and it is not merged" from "never
+// checked" — still zero git calls, since this only branches on the field
+// that is already cached on the entry.
+//   'done ✓ merged'          — done reported AND the merge is proven true
+//   'done, not merged'       — done reported AND the merge was checked and is false
+//   'done, merge unverified' — done reported, merge never (successfully) checked
+//   'working' (+ %)          — no done report yet; an optional heartbeat
+//                              progress_pct is appended when present, the only
+//                              remaining advisory signal for an in-progress row
 function doneStateLabel(summary, id, heartbeat) {
   const entry = summaryEntry(summary, id);
   const gates = entry && entry.gates && typeof entry.gates === 'object' ? entry.gates : {};
   const doneReported = !!(entry && (gates.done === true || entry.archive_ready === true));
   if (doneReported) {
-    return (entry && entry.mergedVerified === true) ? 'done ✓ merged' : 'done, not merged';
+    if (entry && entry.mergedVerified === true) return 'done ✓ merged';
+    if (entry && entry.mergedVerified === false) return 'done, not merged';
+    return 'done, merge unverified';
   }
   const pct = heartbeat && Number.isFinite(heartbeat.progress_pct) ? heartbeat.progress_pct : null;
   return pct !== null ? 'working (' + pct + '%)' : 'working';

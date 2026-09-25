@@ -243,7 +243,25 @@ function defaultRun(spec) {
     if (o.env && typeof o.env === 'object') opts.env = o.env;
     if (typeof o.cwd === 'string' && o.cwd) opts.cwd = o.cwd;
     const r = spawnSync(bin, args, opts);
-    if (r.error) return { ok: false, raw: '', error: String(r.error.message || r.error) };
+    if (r.error) {
+      // TIMEOUT (dead-branch fix): a `timeout`-killed spawnSync sets BOTH
+      // `r.error` (code ETIMEDOUT) AND `r.signal`/`r.status` (SIGTERM/null) —
+      // but this branch used to return before the signal check below ever
+      // ran, so it always dropped `status`/`signal` off the result. A caller
+      // gating on `res.signal && res.status == null` (scripts/devswarm.js
+      // cmdSpawn) could then never detect a timeout at all. Propagate the
+      // real fields, and flag `timedOut` explicitly off `r.error.code` — the
+      // one unambiguous signal a `timeout` option kill leaves.
+      return {
+        ok: false,
+        raw: '',
+        error: String(r.error.message || r.error),
+        status: (r.status === undefined ? null : r.status),
+        signal: (r.signal || null),
+        stderr: String(r.stderr || ''),
+        timedOut: !!(r.error && r.error.code === 'ETIMEDOUT'),
+      };
+    }
     const raw = String(r.stdout || '');
     const stderr = String(r.stderr || '');
     const detail = stderr.trim() ? ': ' + stderr.trim() : '';

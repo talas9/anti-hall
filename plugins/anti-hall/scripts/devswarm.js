@@ -17523,20 +17523,27 @@ function gitCommonDirFor(cwd) {
 }
 
 // remoteRefAgeSec(cwd, remoteRef, now) -> seconds since the remote-tracking
-// ref was last updated by a fetch, or null when unknown (never fetched, or
-// unreadable). Uses the NEWER of two on-disk signals — the ref's own reflog
-// (`logs/refs/remotes/origin/<def>`, appended on every fetch that moves it)
-// and `FETCH_HEAD`'s mtime (updated on EVERY fetch, even a no-op one that
-// left the ref unmoved) — so a repeated fetch against an already-current
-// remote still counts as "just checked", not "stale since the ref last
-// moved". Resolved against the COMMON dir so a linked worktree shares the
-// same freshness signal as the main checkout (there is only one origin).
+// ref ITSELF (e.g. `refs/remotes/origin/<def>`) was last updated, or null
+// when unknown (never fetched, or unreadable — e.g. packed-refs with no
+// loose ref and no reflog, which is treated as stale so the caller fetches).
+//
+// FETCH_HEAD is deliberately NOT consulted (fixed defect): it is updated by
+// ANY fetch against this repo — a different branch, a different remote, even
+// a fetch this same devswarm run made for an unrelated ref — so using it as
+// the freshness signal for `origin/<def>` could report "just checked" when
+// <def> itself had not been touched in days. The reflog
+// (`logs/refs/remotes/origin/<def>`, appended on every fetch that moves the
+// ref) and, when the ref has no reflog yet, the loose ref file's own mtime
+// (`refs/remotes/origin/<def>`) are the ONLY signals used — both are scoped
+// to THIS ref. Resolved against the COMMON dir so a linked worktree shares
+// the same freshness signal as the main checkout (there is only one origin).
 function remoteRefAgeSec(cwd, remoteRef, now) {
   const common = gitCommonDirFor(cwd);
   if (!common) return null;
+  const parts = remoteRef.split('/');
   const stamps = [];
-  try { stamps.push(fs.statSync(path.join(common, 'logs', 'refs', 'remotes', ...remoteRef.split('/'))).mtimeMs); } catch (_) {}
-  try { stamps.push(fs.statSync(path.join(common, 'FETCH_HEAD')).mtimeMs); } catch (_) {}
+  try { stamps.push(fs.statSync(path.join(common, 'logs', 'refs', 'remotes', ...parts)).mtimeMs); } catch (_) {}
+  try { stamps.push(fs.statSync(path.join(common, 'refs', 'remotes', ...parts)).mtimeMs); } catch (_) {}
   if (!stamps.length) return null;
   const newest = Math.max(...stamps);
   return Math.max(0, Math.floor((now - newest) / 1000));
@@ -17577,6 +17584,7 @@ function spawnSourceFreshness(rest, ctx) {
       fetchNote = 'skipped (fresh, ' + ageSec + 's ago)';
     }
   }
+  let submoduleFetch;
   if (fetchNote === 'ran') {
     // `--recurse-submodules=on-demand` (0.109.0): without it, `git fetch` never
     // touches submodule objects, so a repo-setup script run against the fresh
@@ -17587,21 +17595,30 @@ function spawnSourceFreshness(rest, ctx) {
     // unconditionally.
     const f = git(['fetch', '--quiet', '--recurse-submodules=on-demand', 'origin', def], SPAWN_FETCH_TIMEOUT_MS);
     if (!f || f.error || f.signal || f.status !== 0) {
-      return { status: 'fetch-failed', source, fetch: fetchNote, warning: 'could not fetch ' + remoteRef + ' (offline?); spawning from local ' + def + ' as it is' };
+      // RETRY WITHOUT SUBMODULES: a broken/unreachable submodule remote (dead
+      // link, auth change, deleted repo) must not fail the whole parent
+      // fetch — the parent branch itself may be perfectly reachable. Retry
+      // once with `--no-recurse-submodules` before declaring the fetch
+      // failed; if THAT also fails, it really is offline/unreachable.
+      const f2 = git(['fetch', '--quiet', '--no-recurse-submodules', 'origin', def], SPAWN_FETCH_TIMEOUT_MS);
+      if (!f2 || f2.error || f2.signal || f2.status !== 0) {
+        return { status: 'fetch-failed', source, fetch: fetchNote, warning: 'could not fetch ' + remoteRef + ' (offline?); spawning from local ' + def + ' as it is' };
+      }
+      submoduleFetch = 'failed';
     }
   }
   const local = out(git(['rev-parse', '-q', '--verify', 'refs/heads/' + def + '^{commit}']));
   const remote = out(git(['rev-parse', '-q', '--verify', 'refs/remotes/' + remoteRef + '^{commit}']));
-  if (!local || !remote) return { status: 'skipped', source, fetch: fetchNote, warning: 'could not resolve ' + def + ' or ' + remoteRef + '; spawning without the check' };
-  if (local === remote) return { status: 'up-to-date', source, fetch: fetchNote, sha: local };
+  if (!local || !remote) return { status: 'skipped', source, fetch: fetchNote, submoduleFetch, warning: 'could not resolve ' + def + ' or ' + remoteRef + '; spawning without the check' };
+  if (local === remote) return { status: 'up-to-date', source, fetch: fetchNote, submoduleFetch, sha: local };
   const counts = out(git(['rev-list', '--left-right', '--count', local + '...' + remote]));
   const [ahead, behind] = String(counts || '').split(/\s+/).map((n) => parseInt(n, 10));
-  if (!Number.isFinite(ahead) || !Number.isFinite(behind)) return { status: 'skipped', source, fetch: fetchNote, warning: 'could not compare ' + def + ' with ' + remoteRef + '; spawning without the check' };
-  if (behind === 0) return { status: 'ahead', source, fetch: fetchNote, sha: local, ahead };
+  if (!Number.isFinite(ahead) || !Number.isFinite(behind)) return { status: 'skipped', source, fetch: fetchNote, submoduleFetch, warning: 'could not compare ' + def + ' with ' + remoteRef + '; spawning without the check' };
+  if (behind === 0) return { status: 'ahead', source, fetch: fetchNote, submoduleFetch, sha: local, ahead };
 
   const refuse = (why) => fromLocal
-    ? { status: 'from-local', source, fetch: fetchNote, sha: local, ahead, behind, warning: why + ' (--from-local given: spawning from it anyway)' }
-    : { status: 'refused', source, fetch: fetchNote, ahead, behind, refuse: true, error: why + '. Update local ' + def + ', or pass --from-local to spawn from it anyway.' };
+    ? { status: 'from-local', source, fetch: fetchNote, submoduleFetch, sha: local, ahead, behind, warning: why + ' (--from-local given: spawning from it anyway)' }
+    : { status: 'refused', source, fetch: fetchNote, submoduleFetch, ahead, behind, refuse: true, error: why + '. Update local ' + def + ', or pass --from-local to spawn from it anyway.' };
   const staleLine = 'local ' + def + ' is ' + behind + ' commit' + (behind === 1 ? '' : 's') + ' behind ' + remoteRef
     + '; spawning from it would give the child outdated tools';
   if (ahead > 0) return refuse(staleLine + ' (it also has ' + ahead + ' local commit' + (ahead === 1 ? '' : 's') + ' not on ' + remoteRef + ', so it cannot be fast-forwarded)');
@@ -17625,12 +17642,29 @@ function spawnSourceFreshness(rest, ctx) {
     r = git(['update-ref', '-m', 'anti-hall spawn: fast-forward to ' + remoteRef, 'refs/heads/' + def, remote, local]);
   }
   if (!r || r.error || r.signal || r.status !== 0) return refuse(staleLine + ' (fast-forward failed: ' + String((r && (r.stderr || (r.error && r.error.message))) || 'unknown').trim().split('\n')[0] + ')');
-  return { status: 'fast-forwarded', source, fetch: fetchNote, from: local, sha: remote, behind };
+  return { status: 'fast-forwarded', source, fetch: fetchNote, submoduleFetch, from: local, sha: remote, behind };
 }
 
 const SPAWN_CREATE_TIMEOUT_MS_DEFAULT = 180000;
 
-// parseSubmoduleWorktreeFailures(res) -> [{ path, error }]. TOLERANT,
+// submodulePathsFor(cwd) -> string[] | null. Best-effort read of `.gitmodules`
+// at cwd's root (a linked worktree's own `.gitmodules` is a normal tracked
+// file, not the git-dir indirection gitCommonDirFor guards against) for the
+// `path = ...` of each declared submodule. null when unreadable/absent —
+// callers fall back to the text-shape heuristic, never fabricate a list.
+function submodulePathsFor(cwd) {
+  if (!cwd) return null;
+  try {
+    const text = fs.readFileSync(path.join(cwd, '.gitmodules'), 'utf8');
+    const paths = [];
+    const re = /^\s*path\s*=\s*(.+?)\s*$/gm;
+    let m;
+    while ((m = re.exec(text))) paths.push(m[1]);
+    return paths.length ? paths : null;
+  } catch (_) { return null; }
+}
+
+// parseSubmoduleWorktreeFailures(res, cwd) -> [{ path, error }]. TOLERANT,
 // TEXT-based extraction (hivecontrol's `workspace create` does NOT document a
 // per-submodule failure JSON shape — the KB has no pinned field for it, and
 // inventing one here would be exactly the kind of guessed structure this
@@ -17639,30 +17673,48 @@ const SPAWN_CREATE_TIMEOUT_MS_DEFAULT = 180000;
 // `ok:true` even when ONE of several `git worktree add` calls it runs for a
 // multi-repo/submodule workspace fails ("fatal: '<path>' already exists"),
 // because that failure is only visible in the subprocess's own stderr/stdout
-// text, never in a structured field. Scans BOTH stdout (`res.raw`) and
-// stderr (`res.stderr`) for `fatal: '<path>' already exists` lines (the
-// exact shape evidenced) and, more generally, any other `fatal:` line, so an
-// unrecognized-but-real failure is still surfaced (as `path: null`) instead
-// of silently dropped. Never throws; an unparseable/absent res -> [].
-function parseSubmoduleWorktreeFailures(res) {
+// text, never in a structured field.
+//
+// NARROWED (fixed defect): the original generic `fatal:\s*(.+)` fallback
+// matched ANY fatal: line from the whole create invocation — including one
+// with nothing to do with a submodule worktree at all (`fatal: no upstream
+// configured` from an unrelated git call the same subprocess happened to run)
+// — and reported it as a submodule failure. Every match is now gated to
+// something ACTUALLY tied to submodule worktree creation: the `fatal:
+// '<path>' already exists` shape only counts when `<path>` is a submodule
+// dir listed in `.gitmodules` (when readable via `cwd`) or the combined text
+// otherwise shows an actual `git worktree add` invocation; a bare `fatal:`
+// line only counts when it itself mentions `worktree` or names a known
+// submodule path. `cwd` is optional — omitted (or `.gitmodules` unreadable),
+// the `worktree`-mention heuristic is the only gate; never throws; an
+// unparseable/absent res -> [].
+function parseSubmoduleWorktreeFailures(res, cwd) {
   const out = [];
   if (!res) return out;
   const text = [res.raw, res.stderr].filter((s) => typeof s === 'string' && s).join('\n');
   if (!text) return out;
+  const submodulePaths = submodulePathsFor(cwd);
+  const isKnownSubmodulePath = (p) => Array.isArray(submodulePaths)
+    && submodulePaths.some((sp) => p === sp || p.endsWith('/' + sp));
+  const mentionsWorktree = /\bworktree\b/i.test(text);
   const seen = new Set();
   const exists = /fatal:\s*'([^']+)'\s*already exists/g;
   let m;
   while ((m = exists.exec(text))) {
-    const key = 'exists:' + m[1];
+    const p = m[1];
+    if (!(isKnownSubmodulePath(p) || mentionsWorktree)) continue; // not tied to a submodule worktree add
+    const key = 'exists:' + p;
     if (seen.has(key)) continue;
     seen.add(key);
-    out.push({ path: m[1], error: 'already exists' });
+    out.push({ path: p, error: 'already exists' });
   }
   const existsLine = /fatal:\s*'[^']+'\s*already exists/;
   const generic = /fatal:\s*(.+)/g;
   while ((m = generic.exec(text))) {
     if (existsLine.test(m[0])) continue; // already captured above with its path
     const line = m[1].trim();
+    const mentionsSubmodulePath = Array.isArray(submodulePaths) && submodulePaths.some((sp) => line.includes(sp));
+    if (!(/\bworktree\b/i.test(line) || mentionsSubmodulePath)) continue; // not tied to a submodule worktree add
     const key = 'generic:' + line;
     if (seen.has(key)) continue;
     seen.add(key);
@@ -17706,11 +17758,24 @@ function cmdSpawn(rest, ctx) {
   const res = run({ args, env: ctx.env, cwd, timeout: createTimeoutMs });
   timings.createMs = Date.now() - createStart;
   if (!res || !res.ok) {
-    const timedOut = !!(res && res.signal && res.status == null);
+    // TIMEOUT DETECTION: `res.timedOut` is defaultRun's own explicit flag
+    // (companion/lib/devswarm-pull.js, off `r.error.code === 'ETIMEDOUT'`);
+    // the `res.signal && res.status == null` check is kept ONLY as a fallback
+    // for an injected `io.run` (tests, alternate runners) that reports the
+    // signal shape without the `timedOut` flag.
+    const timedOut = !!(res && (res.timedOut || (res.signal && res.status == null)));
     const error = (res && res.error) || 'hivecontrol workspace create failed';
+    // PARTIAL WORKSPACE ON TIMEOUT: the create subprocess was killed mid-flight
+    // — hivecontrol may have already created the worktree/branch before the
+    // kill landed. Report that plainly, name the exact branch, and say how to
+    // check — NEVER auto-clean or delete anything here.
+    const timeoutError = 'workspace create timed out after ' + createTimeoutMs + 'ms'
+      + ' (only the create subprocess was killed, nothing else). A partial workspace for'
+      + ' branch "' + branch + '" may already exist — check with `git worktree list` in this'
+      + ' repo or `devswarm list`; nothing was deleted automatically.';
     return {
       ok: false,
-      error: timedOut ? error + ' (spawn create timed out after ' + createTimeoutMs + 'ms — only the create subprocess was killed, nothing else)' : error,
+      error: timedOut ? timeoutError : error,
       branch, sourceCheck, timings: Object.assign(timings, { totalMs: Date.now() - spawnWallStart }),
     };
   }
@@ -17719,7 +17784,7 @@ function cmdSpawn(rest, ctx) {
   // failed — see parseSubmoduleWorktreeFailures's own header. NEVER flips
   // `ok` (the workspace itself was created and may still be perfectly usable
   // for the primary repo) and NEVER auto-repaired — report only.
-  const submoduleFailures = parseSubmoduleWorktreeFailures(res);
+  const submoduleFailures = parseSubmoduleWorktreeFailures(res, cwd);
 
   // Title derivation is pure/no I/O — computed up front, but the actual
   // update-title CALL only fires inside the worktreePath-resolved branch

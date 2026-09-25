@@ -7,9 +7,15 @@
 // could still show "1/3" or "—", looking barely started.
 //
 // doneStateLabel now reflects the actual done-rule state in plain words:
-//   'done ✓ merged'    — a done report AND a proven merge (entry.mergedVerified)
-//   'done, not merged' — a done report, merge not (yet) proven
-//   'working' [+ pct]  — no done report yet
+//   'done ✓ merged'          — a done report AND a proven merge (mergedVerified === true)
+//   'done, not merged'       — a done report AND the merge was checked and is false (mergedVerified === false)
+//   'done, merge unverified' — a done report, merge never (successfully) checked (mergedVerified unset)
+//   'working' [+ pct]        — no done report yet
+//
+// Fixed defect: the label used to collapse BOTH "checked and false" and
+// "never checked" into the same "done, not merged" string — an honest
+// negative and an unknown were indistinguishable, even though git ancestry
+// may already prove the merge once mergedVerified is populated.
 
 const { test } = require('node:test');
 const assert = require('node:assert');
@@ -30,9 +36,9 @@ test('done-rule state: done report via archive_ready, merge proven -> "done ✓ 
   assert.strictEqual(inbox.doneStateLabel(summary, 'w1', null), 'done ✓ merged');
 });
 
-test('done-rule state: done report, merge NOT proven -> "done, not merged" (never fabricates a merge claim)', () => {
+test('done-rule state: done report, mergedVerified never set -> "done, merge unverified" (does not claim a checked negative)', () => {
   const summary = summaryWith({ gates: { done: true } }); // no merged/tests_passed gates, no mergedVerified at all
-  assert.strictEqual(inbox.doneStateLabel(summary, 'w1', null), 'done, not merged');
+  assert.strictEqual(inbox.doneStateLabel(summary, 'w1', null), 'done, merge unverified');
 });
 
 test('done-rule state: done report, merge gate set but never verified (mergedVerified explicitly false) -> "done, not merged"', () => {

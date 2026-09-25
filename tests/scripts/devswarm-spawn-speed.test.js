@@ -28,6 +28,7 @@ process.env.ANTI_HALL_LOG_DIR = LOG_DIR;
 process.on('exit', () => { try { fs.rmSync(LOG_DIR, { recursive: true, force: true }); } catch (_) {} });
 
 const cli = require('../../plugins/anti-hall/scripts/devswarm.js');
+const pull = require('../../plugins/anti-hall/companion/lib/devswarm-pull.js');
 
 const GIT_ENV = Object.assign({}, process.env, {
   HOME: LOG_DIR, USERPROFILE: LOG_DIR,
@@ -65,8 +66,19 @@ const rm = (f) => { try { fs.rmSync(f.root, { recursive: true, force: true }); }
 test('spawnSourceFreshness: TTL skips the fetch when the remote ref is fresh, and reports it', () => {
   const f = fixture();
   try {
-    // A prior fetch already happened (simulated by fetching once here).
+    // A prior fetch already happened. `primary` was JUST cloned, so
+    // origin/main hasn't moved since — a real `git fetch` here is a genuine
+    // no-op that (correctly) writes neither a reflog entry nor a loose ref
+    // file, since origin/main stays packed from the clone (verified: a fresh
+    // clone's tracking refs live in packed-refs, not a loose file). Simulate
+    // the "freshly fetched" evidence the same way a real MOVING fetch would
+    // leave it: a loose `refs/remotes/origin/main` file with a just-now
+    // mtime — exactly the signal remoteRefAgeSec reads.
     git(f.primary, ['fetch', 'origin', 'main']);
+    const common = cli.gitCommonDirFor(f.primary);
+    const sha = git(f.primary, ['rev-parse', 'refs/remotes/origin/main']);
+    fs.mkdirSync(path.join(common, 'refs', 'remotes', 'origin'), { recursive: true });
+    fs.writeFileSync(path.join(common, 'refs', 'remotes', 'origin', 'main'), sha + '\n');
     const r1 = cli.spawnSourceFreshness(['child'], { home: f.home, env: {}, cwd: f.primary });
     assert.strictEqual(r1.fetch, 'skipped (fresh, 0s ago)', JSON.stringify(r1));
     assert.strictEqual(r1.status, 'up-to-date');
@@ -108,23 +120,117 @@ test('remoteRefAgeSec: null when never fetched', () => {
   } finally { rm(f); }
 });
 
-test('spawnSourceFreshness: an actual fetch passes --recurse-submodules=on-demand', () => {
+test('remoteRefAgeSec / spawnSourceFreshness: FETCH_HEAD is fresh but origin/<def> itself is old -> treated as stale, fetch happens (fixed defect: FETCH_HEAD moves on ANY fetch, not just this ref)', () => {
   const f = fixture();
   try {
-    const calls = [];
-    const origSpawnSync = cp.spawnSync;
-    const gitBin = require('child_process').spawnSync;
-    // Intercept via monkeypatching require cache is fragile; instead assert
-    // indirectly: run with ttl=0 (always fetch) and confirm the fetch actually
-    // reaches origin (status up-to-date/ahead), then directly inspect the
-    // command devswarm.js would run by calling the same code path and
-    // capturing argv through a wrapped PATH shim is overkill for a unit test —
-    // instead this test greps the source for the literal flag, pinned to the
-    // exact fetch call site so a regression is caught mechanically.
-    const src = fs.readFileSync(require.resolve('../../plugins/anti-hall/scripts/devswarm.js'), 'utf8');
-    assert.ok(/git\(\['fetch', '--quiet', '--recurse-submodules=on-demand', 'origin', def\]/.test(src),
-      'the fetch call must pass --recurse-submodules=on-demand');
-    void calls; void origSpawnSync; void gitBin;
+    // A prior fetch of `main` established origin/main locally (packed from
+    // the clone, same no-op-fetch situation as the TTL-fresh test above).
+    // Manufacture the loose-ref evidence a real fetch-that-moved-the-ref
+    // would leave, aged 10s (see that test's comment for why this is needed
+    // instead of relying on git's own reflog/loose-ref writes here).
+    git(f.primary, ['fetch', 'origin', 'main']);
+    const common = cli.gitCommonDirFor(f.primary);
+    const sha = git(f.primary, ['rev-parse', 'refs/remotes/origin/main']);
+    fs.mkdirSync(path.join(common, 'refs', 'remotes', 'origin'), { recursive: true });
+    fs.writeFileSync(path.join(common, 'refs', 'remotes', 'origin', 'main'), sha + '\n');
+    const old = new Date(Date.now() - 10000);
+    for (const p of [path.join(common, 'logs', 'refs', 'remotes', 'origin', 'main'), path.join(common, 'refs', 'remotes', 'origin', 'main')]) {
+      try { fs.utimesSync(p, old, old); } catch (_) {}
+    }
+    // A SEPARATE fetch (an unrelated ref/branch) touches FETCH_HEAD's mtime
+    // just now, without touching origin/main at all.
+    fs.writeFileSync(path.join(common, 'FETCH_HEAD'), '0000000000000000000000000000000000000000\t\tbranch \'unrelated\' of somewhere\n');
+    // FETCH_HEAD is "just now" — if it were consulted, age would read ~0s and
+    // the TTL would wrongly report the ref as fresh.
+    const fetchHeadAgeIfUsed = Math.floor((Date.now() - fs.statSync(path.join(common, 'FETCH_HEAD')).mtimeMs) / 1000);
+    assert.ok(fetchHeadAgeIfUsed < 2, 'FETCH_HEAD must look fresh for this test to be meaningful');
+
+    const age = cli.remoteRefAgeSec(f.primary, 'origin/main', Date.now());
+    assert.ok(age !== null && age >= 9, 'remoteRefAgeSec must report the REF\'s own age, not FETCH_HEAD\'s; got ' + age);
+
+    const r = cli.spawnSourceFreshness(['child'], { home: f.home, env: { ANTIHALL_DEVSWARM_SPAWN_FETCH_TTL_SEC: '5' }, cwd: f.primary });
+    assert.strictEqual(r.fetch, 'ran', 'a stale origin/main ref must trigger a fetch even though FETCH_HEAD is fresh; got ' + JSON.stringify(r));
+  } finally { rm(f); }
+});
+
+// A behavioral shim for `git` on PATH that records every argv it was called
+// with (as a plain text log) and then execs the real git, so
+// spawnSourceFreshness still does real, verifiable work — a source-regex
+// test (the prior version of this test) is not evidence of the actual
+// runtime call. `spawnSourceFreshness`'s internal `git()` helper does not
+// forward `ctx.env` to the child process (it inherits ambient `process.env`),
+// so the shim is installed via `process.env.PATH` itself, restored in
+// `finally`.
+function withGitArgLogger(fn) {
+  const shimDir = fs.mkdtempSync(path.join(os.tmpdir(), 'anti-hall-gitshim-'));
+  const logFile = path.join(shimDir, 'calls.log');
+  const realGit = cp.spawnSync('which', ['git'], { encoding: 'utf8' }).stdout.trim() || '/usr/bin/git';
+  const shimPath = path.join(shimDir, 'git');
+  fs.writeFileSync(shimPath, '#!/bin/sh\n'
+    + 'printf \'%s\\n\' "$*" >> ' + JSON.stringify(logFile) + '\n'
+    + 'exec ' + JSON.stringify(realGit) + ' "$@"\n');
+  fs.chmodSync(shimPath, 0o755);
+  const origPath = process.env.PATH;
+  process.env.PATH = shimDir + path.delimiter + origPath;
+  try {
+    return fn({ calls: () => (fs.existsSync(logFile) ? fs.readFileSync(logFile, 'utf8').trim().split('\n') : []) });
+  } finally {
+    process.env.PATH = origPath;
+    try { fs.rmSync(shimDir, { recursive: true, force: true }); } catch (_) {}
+  }
+}
+
+test('spawnSourceFreshness: an actual fetch passes --recurse-submodules=on-demand (behavioral: captured argv)', () => {
+  const f = fixture();
+  try {
+    withGitArgLogger(({ calls }) => {
+      const r = cli.spawnSourceFreshness(['child'], { home: f.home, env: { ANTIHALL_DEVSWARM_SPAWN_FETCH_TTL_SEC: '0' }, cwd: f.primary });
+      void r;
+      const fetchCalls = calls().filter((line) => /\bfetch\b/.test(line));
+      assert.ok(fetchCalls.length >= 1, 'expected at least one git fetch call; saw: ' + JSON.stringify(calls()));
+      assert.ok(fetchCalls.some((line) => line.includes('--recurse-submodules=on-demand')),
+        'the fetch call must pass --recurse-submodules=on-demand; saw: ' + JSON.stringify(fetchCalls));
+    });
+  } finally { rm(f); }
+});
+
+// A `git` shim whose `fetch --recurse-submodules=on-demand` call fails (a
+// broken/unreachable submodule remote), but which otherwise delegates to the
+// real git — including a plain `fetch --no-recurse-submodules` retry, which
+// must succeed. Logs argv the same way withGitArgLogger does.
+function withFailingSubmoduleFetchGit(fn) {
+  const shimDir = fs.mkdtempSync(path.join(os.tmpdir(), 'anti-hall-gitshim-submodule-'));
+  const logFile = path.join(shimDir, 'calls.log');
+  const realGit = cp.spawnSync('which', ['git'], { encoding: 'utf8' }).stdout.trim() || '/usr/bin/git';
+  const shimPath = path.join(shimDir, 'git');
+  fs.writeFileSync(shimPath, '#!/bin/sh\n'
+    + 'printf \'%s\\n\' "$*" >> ' + JSON.stringify(logFile) + '\n'
+    + 'case "$*" in\n'
+    + '  *"fetch"*"--recurse-submodules=on-demand"*) echo "fatal: unable to access submodule remote" >&2; exit 1 ;;\n'
+    + '  *) exec ' + JSON.stringify(realGit) + ' "$@" ;;\n'
+    + 'esac\n');
+  fs.chmodSync(shimPath, 0o755);
+  const origPath = process.env.PATH;
+  process.env.PATH = shimDir + path.delimiter + origPath;
+  try {
+    return fn({ calls: () => (fs.existsSync(logFile) ? fs.readFileSync(logFile, 'utf8').trim().split('\n') : []) });
+  } finally {
+    process.env.PATH = origPath;
+    try { fs.rmSync(shimDir, { recursive: true, force: true }); } catch (_) {}
+  }
+}
+
+test('spawnSourceFreshness: submodule fetch fails -> retries once with --no-recurse-submodules, reports submoduleFetch:"failed", does not fail the whole spawn', () => {
+  const f = fixture();
+  try {
+    withFailingSubmoduleFetchGit(({ calls }) => {
+      const r = cli.spawnSourceFreshness(['child'], { home: f.home, env: { ANTIHALL_DEVSWARM_SPAWN_FETCH_TTL_SEC: '0' }, cwd: f.primary });
+      assert.strictEqual(r.status, 'up-to-date', JSON.stringify(r));
+      assert.strictEqual(r.submoduleFetch, 'failed', JSON.stringify(r));
+      const fetchCalls = calls().filter((line) => /\bfetch\b/.test(line));
+      assert.ok(fetchCalls.some((l) => l.includes('--recurse-submodules=on-demand')), JSON.stringify(fetchCalls));
+      assert.ok(fetchCalls.some((l) => l.includes('--no-recurse-submodules')), 'must retry with --no-recurse-submodules: ' + JSON.stringify(fetchCalls));
+    });
   } finally { rm(f); }
 });
 
@@ -132,9 +238,11 @@ function fakeHiveCreate(f, { stderr, timeout } = {}) {
   return ({ args, cwd, timeout: t }) => {
     if (args[0] === 'workspace' && args[1] === 'create') {
       if (timeout) {
-        // Simulate a hang: spawnSync with our own tiny timeout should return signal.
-        const r = cp.spawnSync(process.execPath, ['-e', 'setTimeout(()=>{}, 999999)'], { timeout: t || 50 });
-        return { ok: false, raw: '', error: 'devswarm create killed by signal ' + (r.signal || 'SIGTERM'), signal: r.signal || 'SIGTERM', status: null, stderr: '' };
+        // Simulate a hang using the REAL spawnSync-timeout shape (r.error with
+        // code ETIMEDOUT, alongside r.signal/r.status) by routing through
+        // pull.defaultRun itself — the shape a wedged real `hivecontrol`
+        // process actually produces, not a hand-typed approximation.
+        return pull.defaultRun({ hivecontrol: process.execPath, args: ['-e', 'setTimeout(()=>{}, 999999)'], timeout: t || 50 });
       }
       const rest = args.slice(2);
       const child = rest[0];
@@ -189,15 +297,27 @@ test('cmdSpawn: no submodule failures -> submoduleFailures/warnings are absent, 
   } finally { rm(f); }
 });
 
-test('cmdSpawn: create timeout is reported clearly and never flips into a silent hang', () => {
+test('cmdSpawn: create timeout is reported clearly, with the exact plain-language message, and never flips into a silent hang', () => {
   const f = fixture();
   try {
+    // spawnCreateTimeoutMs has a `min: 1000` floor (settings-schema.js) — use
+    // the floor itself so the fake create's own kill timeout (also 1000ms)
+    // and the message's reported figure agree.
     const r = cli.run(['spawn', 'child-timeout'], {
-      home: f.home, backend: 'journal', env: { ANTIHALL_DEVSWARM_SPAWN_CREATE_TIMEOUT_MS: '50' },
+      home: f.home, backend: 'journal', env: { ANTIHALL_DEVSWARM_SPAWN_CREATE_TIMEOUT_MS: '1000' },
       cwd: f.primary, io: { run: fakeHiveCreate(f, { timeout: true }) },
     }).result;
     assert.strictEqual(r.ok, false);
-    assert.ok(/timed out|signal/i.test(r.error), r.error);
+    // Exact message, not a loose /timed out|signal/ — proves both the
+    // ETIMEDOUT detection AND the partial-workspace-may-exist disclosure
+    // (never auto-cleaned) fire together.
+    assert.strictEqual(
+      r.error,
+      'workspace create timed out after 1000ms (only the create subprocess was killed, nothing else).'
+        + ' A partial workspace for branch "child-timeout" may already exist — check with `git worktree list`'
+        + ' in this repo or `devswarm list`; nothing was deleted automatically.',
+      r.error,
+    );
     assert.ok(r.timings, 'timings must still be present on a failed create');
   } finally { rm(f); }
 });
@@ -212,4 +332,25 @@ test('parseSubmoduleWorktreeFailures: a generic fatal: line with no quoted path 
 test('parseSubmoduleWorktreeFailures: no fatal lines -> []', () => {
   assert.deepStrictEqual(cli.parseSubmoduleWorktreeFailures({ raw: '{}', stderr: '' }), []);
   assert.deepStrictEqual(cli.parseSubmoduleWorktreeFailures(null), []);
+});
+
+test('parseSubmoduleWorktreeFailures: a generic unrelated fatal: line (no "worktree", no submodule path) is NOT counted (fixed defect: the old regex was too broad)', () => {
+  const out = cli.parseSubmoduleWorktreeFailures({ raw: '', stderr: 'fatal: no upstream configured for branch \'main\'\n' });
+  assert.deepStrictEqual(out, []);
+});
+
+test('parseSubmoduleWorktreeFailures: an "already exists" fatal: line whose path is NOT a known submodule and the text has no "worktree" mention -> NOT counted', () => {
+  const out = cli.parseSubmoduleWorktreeFailures({ raw: '', stderr: "fatal: '/tmp/unrelated-dir' already exists\n" });
+  assert.deepStrictEqual(out, []);
+});
+
+test('parseSubmoduleWorktreeFailures: an "already exists" fatal: line whose path IS a known submodule (per .gitmodules) counts even with no "worktree" mention nearby', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'anti-hall-gitmodules-'));
+  try {
+    fs.writeFileSync(path.join(root, '.gitmodules'), '[submodule "skyflutter"]\n\tpath = skyflutter\n\turl = https://example.invalid/skyflutter.git\n');
+    const out = cli.parseSubmoduleWorktreeFailures({ raw: '', stderr: "fatal: 'skyflutter' already exists\n" }, root);
+    assert.strictEqual(out.length, 1, JSON.stringify(out));
+    assert.strictEqual(out[0].path, 'skyflutter');
+    assert.strictEqual(out[0].error, 'already exists');
+  } finally { try { fs.rmSync(root, { recursive: true, force: true }); } catch (_) {} }
 });
