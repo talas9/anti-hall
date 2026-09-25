@@ -106,9 +106,15 @@ test('run: an ambiguous target -> the REAL recover() abstains end to end (never 
 });
 
 test('resolveCliThresholds: byte-for-byte defaults; env overrides maxRecoveries/graceMs, decoupled from the sweep', () => {
-  assert.deepStrictEqual(M.resolveCliThresholds({}), { maxRecoveries: 3, graceMs: 5000 });
-  assert.strictEqual(M.resolveCliThresholds({ ANTIHALL_DEVSWARM_MAX_RECOVERIES: '5' }).maxRecoveries, 5);
-  assert.strictEqual(M.resolveCliThresholds({ ANTIHALL_DEVSWARM_GRACE_SEC: '10' }).graceMs, 10000);
+  // An env with no HOME makes settings fall back to os.homedir() — the real
+  // home, which the test-home guard refuses. Give it an isolated fixture home.
+  const { home, cleanup } = makeHome();
+  try {
+    const base = { HOME: home, USERPROFILE: home };
+    assert.deepStrictEqual(M.resolveCliThresholds(base), { maxRecoveries: 3, graceMs: 5000 });
+    assert.strictEqual(M.resolveCliThresholds({ ...base, ANTIHALL_DEVSWARM_MAX_RECOVERIES: '5' }).maxRecoveries, 5);
+    assert.strictEqual(M.resolveCliThresholds({ ...base, ANTIHALL_DEVSWARM_GRACE_SEC: '10' }).graceMs, 10000);
+  } finally { cleanup(); }
 });
 
 test('end-to-end: a lone INTERACTIVE claude session is confirmed + killed (its group too) via the CLI', () => {
