@@ -118,7 +118,14 @@ audit spawns — state this explicitly when you dispatch.
    block. (Codex `--fresh` avoids a resume prompt.)
 4. **Collect.** As each of the 3N agents reports, gather all findings. Do not present
    them raw — the deliverable is ONE reconciled report, not 3N dumps.
-5. **Reconcile + validate (the core value).** Produce a single consolidated report:
+5. **Reconcile + validate (the core value).** Before you dedup by hand, write the collected
+   3N findings to a scratch JSON array (`{id, severity, file, line, text, round, seat}`) and
+   run `node "${CLAUDE_PLUGIN_ROOT}/scripts/finding-dedup.js" --file <scratch findings.json>`
+   — the opt-in Jev `findingDedup` integration (default `on`; see the base deadly-loop's
+   Phase B3 and CHANGELOG 0.108.4). It prints advisory "possible duplicates: A ~ B (conf
+   0.93)" lines; treat them as a hint, never an auto-collapse — you still validate against
+   the actual code. Fail-open (Jev off/unconfigured/erroring) → dedup by hand as before.
+   Produce a single consolidated report:
    - **Dedup** by file:line + claim.
    - **Validate each finding against the actual code yourself** before including it —
      agreement between agents raises confidence, but a finding is only "confirmed" if the

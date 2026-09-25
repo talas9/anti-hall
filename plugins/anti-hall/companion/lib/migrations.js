@@ -435,7 +435,7 @@ const JEV_INTEGRATION_IDS = [
   'speculation', 'triage', 'newRequest', 'claimLedger', 'outputVerifyGuard',
   'gitGuardSelfCredit', 'modelRouting', 'tasklistTrivial',
   'codexNudgeSubstantial', 'mergeGateHedge', 'parentGateQuestion',
-  'supervisorBlockerLabel',
+  'supervisorBlockerLabel', 'findingDedup',
 ];
 
 // migrateJevIntegrationsSection(home) -> {migrated, errors}. Idempotent,

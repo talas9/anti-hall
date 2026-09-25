@@ -23,7 +23,15 @@ Round structure:
    - Reviewer: correctness/architecture, **frontier** category
    - Auditor: regression/coupling, **frontier** category
    - Critic: adversarial failure-mode hunter, **frontier** category
-4. Synthesize findings by evidence, not by vote alone.
+4. Synthesize findings by evidence, not by vote alone. Before dedup-by-hand, write the
+   three lenses' combined findings to a scratch JSON array
+   (`{id, severity, file, line, text, round, seat}`) and run
+   `node plugins/anti-hall/scripts/finding-dedup.js --file <scratch findings.json>` — the
+   opt-in Jev `findingDedup` integration (default `on`; see the Claude-side
+   `deadly-loop` skill and CHANGELOG 0.108.4). It prints advisory "possible duplicates: A
+   ~ B (conf 0.93)" lines to stderr; treat them as a hint, never an auto-collapse — you
+   still validate each pair against the actual code. Fail-open: Jev disabled,
+   unconfigured, or erroring → no groups, exit 0 — dedup by hand as before.
 5. Fix confirmed P0/P1 issues in scoped waves.
 6. Re-run the full three-lens round after any code change.
 7. Stop only when a non-degraded round has zero unadjudicated P0/P1 blockers and no new P0s or P1s.

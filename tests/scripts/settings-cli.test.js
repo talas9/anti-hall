@@ -147,7 +147,7 @@ test('get: every /config-exposed key set via CLAUDE_PLUGIN_OPTION_<KEY> reports 
 // jevIntegrations (v0.108.4) — the dedicated per-integration section.
 // ---------------------------------------------------------------------------
 
-test('show --section jevIntegrations: renders all 12 rows as its own table, defaults intact', () => {
+test('show --section jevIntegrations: renders all 13 rows as its own table, defaults intact', () => {
   const home = makeHome();
   try {
     const r = run(['show', '--section', 'jevIntegrations', '--json'], home.home);
@@ -157,7 +157,7 @@ test('show --section jevIntegrations: renders all 12 rows as its own table, defa
       'speculation', 'triage', 'newRequest', 'claimLedger', 'outputVerifyGuard',
       'gitGuardSelfCredit', 'modelRouting', 'tasklistTrivial',
       'codexNudgeSubstantial', 'mergeGateHedge', 'parentGateQuestion',
-      'supervisorBlockerLabel',
+      'supervisorBlockerLabel', 'findingDedup',
     ];
     assert.strictEqual(Object.keys(parsed.jevIntegrations).length, ids.length);
     for (const id of ids) assert.ok(id in parsed.jevIntegrations, id + ' row missing');
@@ -165,10 +165,13 @@ test('show --section jevIntegrations: renders all 12 rows as its own table, defa
     assert.strictEqual(parsed.jevIntegrations.triage.value, 'on');
     assert.strictEqual(parsed.jevIntegrations.modelRouting.value, 'shadow');
     assert.strictEqual(parsed.jevIntegrations.modelRouting.source, 'default');
+    assert.strictEqual(parsed.jevIntegrations.findingDedup.value, 'on');
+    assert.strictEqual(parsed.jevIntegrations.findingDedup.source, 'default');
 
     const md = run(['show', '--section', 'jevIntegrations'], home.home);
     assert.match(md.stdout, /## Jev integration/);
     assert.match(md.stdout, /\| modelRouting \| shadow \| shadow \| default \|/);
+    assert.match(md.stdout, /\| findingDedup \| on \| on \| default \|/);
   } finally {
     home.cleanup();
   }

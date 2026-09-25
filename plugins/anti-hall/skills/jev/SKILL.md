@@ -359,7 +359,7 @@ gather `jev report` data before trusting it), `off` skips it entirely. `speculat
 and `triage` default to `on` once Jev is enabled (pre-existing behavior); every
 other integration defaults to `shadow` until promoted.
 
-**v0.108.4:** each of the 12 integrations below is also its own row/setting in the
+**v0.108.4:** each of the 13 integrations below is also its own row/setting in the
 `jevIntegrations` settings-schema section (`jevIntegrations.<id>`, e.g.
 `jevIntegrations.modelRouting`) — its own table in `/anti-hall:settings`
 (`node "${CLAUDE_PLUGIN_ROOT}/scripts/settings.js" show --section jevIntegrations`)
@@ -387,16 +387,21 @@ into the new key automatically (see `companion/lib/migrations.js`
 | `tasklistTrivial` | is this session a genuinely non-trivial, multi-part effort | `relax-block` | `shadow` | yes | yes |
 | `supervisorBlockerLabel` | is a stale child waiting-on-parent or genuinely wedged | `advisory` (cache-only, zero network) | `shadow` | yes | no — `companion/devswarm-supervisor.js` identity-binds to `claude --resume` processes specifically |
 | `codexNudgeSubstantial` | are these file edits genuinely substantial (not just formatting) | `relax-block` | `shadow` | yes | no — nudges a Claude session to seek an independent Codex review; self-referential/meaningless inside a Codex session |
+| `findingDedup` | do two deadly-loop TRIO findings describe the same underlying issue | `advisory` | `on` — 65/65 correct at confidence ≥0.85 on a 30-day, 3-project offline benchmark (see CHANGELOG 0.108.4) | yes | yes |
 
 `gitGuardSelfCredit`/`modelRouting`/`claimLedger`/`mergeGateHedge`/`tasklistTrivial`/
-`codexNudgeSubstantial` use a real classifier call (`ask`/`askSync`/`askDetached`);
+`codexNudgeSubstantial`/`findingDedup` use a real classifier call (`ask`/`askSync`/`askDetached`);
 `parentGateQuestion`/`supervisorBlockerLabel` never make a network call at all —
 both reuse an ALREADY-cached `hooks/lib/jev-triage.js` label populated by a
 different surface that classified the same message earlier, so promoting either
 to `on` is a config change only, no extra cost. `mergeGateHedge` uses `askDetached` (fire-and-forget): promoting it to `on` only
 changes what gets LOGGED for now. `tasklistTrivial`/`codexNudgeSubstantial` log
 fire-and-forget in shadow, but in `on` they ask synchronously (1.5 s cap,
-fail-open to the nudge) and a confident "trivial" verdict skips the nudge. See `docs/KB-jev-classifier.md` §10 for the full table
+fail-open to the nudge) and a confident "trivial" verdict skips the nudge.
+`findingDedup` is called from `scripts/finding-dedup.js` (a standalone CLI, not a
+hook), one async `ask()` call per candidate finding pair, concurrency 4, capped at
+200 pairs per run — see the `deadly-loop`/`deadly-loop-multi` skills' Phase B3/step-5
+wiring. See `docs/KB-jev-classifier.md` §10 for the full table
 with hook/event/API details.
 
 ## Never do this

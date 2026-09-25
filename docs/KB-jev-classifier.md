@@ -259,6 +259,15 @@ exists to cover.
   bench script's stated rate), measured against the Vercel AI Gateway's billing at the
   time of the run; gateway pricing can change.
 
+**`findingDedup` offline benchmark [measured, 2026-09]:** the exact "do finding A and
+finding B describe the SAME underlying root-cause issue?" question (verbatim wording in
+`scripts/finding-dedup.js`) was run against finding pairs drawn from 30 days of real
+deadly-loop TRIO reviews across 3 projects: Jev answered **65/65 correct at confidence
+≥0.85**. A same-file ±10-lines heuristic baseline (no semantic judgment, just proximity)
+was **45% precise** on the same pairs. This is the basis for `findingDedup` defaulting
+`"on"` rather than the `"shadow"` every other 0.108.4 integration ships with — see
+CHANGELOG 0.108.4.
+
 ## 8. Limits and risks
 
 - **Vendor age / maturity.** TypeSafe is a young vendor; Jev is not a widely
@@ -479,6 +488,7 @@ the stdin JSON boundary) — a caller needing custom answer normalization uses
 | `tasklistTrivial` | tasklist-guard.js (`Stop`) | `relax-block` | `consultRelax`: `askDetached` in shadow; `askSync` (1.5 s cap, fail-open to the nudge) in `on`, where a confident "trivial" skips the nudge | `shadow` | none wired |
 | `supervisorBlockerLabel` | devswarm-supervisor.js (periodic sweep, Claude-only) | `advisory` | none — cache-only decision via `jev-assist.js`'s `finalize()`/`prepare()`, reusing `hooks/lib/jev-triage.js`'s own pending-inbound cache (zero network) | `shadow` | none wired |
 | `codexNudgeSubstantial` | codex-nudge.js (`Stop`, Claude-only, no Codex mirror) | `relax-block` | `consultRelax`: `askDetached` in shadow; `askSync` (1.5 s cap, fail-open to the nudge) in `on`, where a confident "trivial" skips the nudge | `shadow` | none wired |
+| `findingDedup` | `scripts/finding-dedup.js` (standalone CLI, not a hook; called from the `deadly-loop`/`deadly-loop-multi` skills, Claude + Codex, after each round's TRIO findings are collected) | `advisory` | `ask`, one call per candidate finding pair, concurrency 4, capped at 200 pairs/run | `on` — 65/65 correct at confidence ≥0.85 on a 30-day, 3-project offline benchmark (§7) | none wired |
 
 `claimLedger`/`mergeGateHedge`/`newRequest`/`outputVerifyGuard`/`tasklistTrivial`/
 `codexNudgeSubstantial` were shipped shadow-only in this release specifically so

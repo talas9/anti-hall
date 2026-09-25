@@ -254,7 +254,21 @@ Run independently of the Reviewer and Auditor agents.
 
 ### B3. Synthesis (you do this on receipt)
 
-All three seats return → dedup their findings → categorize, applying the **round governance** in `references/MODEL-POLICY.md`:
+All three seats return → **before** you dedup by hand, write their combined findings to a
+scratch JSON array (`{id, severity, file, line, text, round, seat}` per finding — `seat` is
+`'reviewer'|'auditor'|'critic'`) and run
+`node "${CLAUDE_PLUGIN_ROOT}/scripts/finding-dedup.js" --file <scratch findings.json>`.
+This is the opt-in Jev `findingDedup` integration (default `on` — 65/65 correct at
+confidence ≥0.85 on a 30-day, 3-project offline benchmark; see CHANGELOG 0.108.4 and the
+`jev` skill's integrations table): it groups findings the classifier judges to describe
+the SAME underlying issue and prints them as advisory lines, e.g. "possible duplicates:
+round-2-critic-4 ~ round-1-reviewer-9 (conf 0.93)" — show these to yourself as a hint
+("these look like duplicates of round-N finding X; confirm before merging"), **never
+auto-collapse**: you still read the actual findings and decide whether they are the same
+issue. Jev disabled/unconfigured/off/erroring → the script prints no groups and exits 0
+(fail-open) — dedup by hand as before.
+
+Then dedup their findings → categorize, applying the **round governance** in `references/MODEL-POLICY.md`:
 - **GO from all three (a non-degraded round)** → proceed to Phase D (merge). A GO requires zero un-adjudicated HOLD blockers AND a full, non-degraded round — a **DEGRADED round (a seat dead after its one retry) can NEVER grant a final GO**; the missing seat must sit in a full follow-up round first.
 - **HOLD from any seat** → write Wave N work list, dispatch Phase C.
 - **≥2-of-3 agreement on a finding = confirmed-real** → highest priority, definitely real.

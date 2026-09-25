@@ -29,6 +29,19 @@ the update.
   `jevIntegrations.<id>` settings.json key (still also writes `jev.json` for back-compat).
 - Docs: `docs/GUIDE.md`, the `jev`/`settings` skills (Claude + Codex), and the
   system-briefing operator guide (Claude + Codex) all cover the new section/keys.
+- **New Jev integration: `findingDedup`, wired into deadly-loop.** `scripts/finding-dedup.js`
+  groups deadly-loop TRIO (Reviewer/Auditor/Critic) findings that Jev judges to describe the
+  SAME underlying issue, via `jev-assist.js`'s `ask()` path (id `findingDedup`, trust
+  `advisory`) — candidate pairs are same-file within ±40 lines or the same id recurring
+  across rounds, capped at 200 pairs/run, concurrency 4, union-find grouped at confidence
+  ≥0.85. Offline benchmark (2026-09, 3 projects, 30 days of real reviews): Jev answered the
+  exact "same underlying issue?" question 65/65 correct at confidence ≥0.85, vs 45%
+  precision for a same-file ±10-lines heuristic baseline — the 13th `jevIntegrations`
+  settings row, defaulting `on` (unlike every other 0.108.4 integration, which defaults
+  `shadow`) on the strength of that result. Fail-open throughout: Jev off/unconfigured/
+  erroring → no groups, exit 0. `deadly-loop`/`deadly-loop-multi` (Claude + Codex mirror)
+  show its output as an advisory hint after each round's findings are collected — it never
+  auto-collapses; the agent still decides.
 - **Every feature is now controllable from settings.** Each hook anti-hall registers
   (Claude and Codex) has an on/off switch whose default is the old behaviour. The hook
   checks it first and does nothing when it is off; a settings error always leaves the

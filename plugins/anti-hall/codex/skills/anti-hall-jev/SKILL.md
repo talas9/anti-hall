@@ -78,8 +78,12 @@ itself.
   `outputVerifyGuard`, `gitGuardSelfCredit` (add-block, never relaxes),
   `parentGateQuestion` (cache-only, zero network), `tasklistTrivial`,
   `supervisorBlockerLabel` (cache-only, zero network), `codexNudgeSubstantial` —
-  all default `shadow` (settings `jevIntegrations.<id>`, e.g. `jevIntegrations.modelRouting`
-  — v0.108.4 gives every one of the 12 its own settings-schema row; a pre-existing
+  all default `shadow`; `findingDedup` (advisory: do two deadly-loop TRIO findings
+  describe the same underlying issue, called from the standalone
+  `scripts/finding-dedup.js` CLI, not a hook) defaults `on` — 65/65 correct at
+  confidence ≥0.85 on a 30-day, 3-project offline benchmark, see CHANGELOG 0.108.4
+  (settings `jevIntegrations.<id>`, e.g. `jevIntegrations.modelRouting`
+  — v0.108.4 gives every one of the 13 its own settings-schema row; a pre-existing
   `jev.json integrations.<id>` or pre-0.108.4 `jev.integrations.<id>` value keeps
   working and forward-migrates automatically, nothing deleted). In `on`,
   `tasklistTrivial`/`codexNudgeSubstantial` ask synchronously (1.5 s cap, fail-open)
@@ -96,7 +100,8 @@ itself.
   `PostToolUse` `tool_response` shape is unverified on this platform, so it is not
   wired until proven), `supervisorBlockerLabel` (the liveness supervisor
   identity-binds to `claude --resume` processes), and `codexNudgeSubstantial`
-  (self-referential inside a Codex session) are Claude-only.
+  (self-referential inside a Codex session) are Claude-only. `findingDedup` runs on
+  BOTH platforms — see the `anti-hall-deadly-loop` skill's synthesis step.
 - "how is jev doing" / "jev scorecard": run `jev-report.js`, then for each row
   explain KEEP (promote-worthy) / REMOVE (offer to set mode off) / REVIEW (not
   enough data, needs more labels, label-only, or p95 latency over budget).
