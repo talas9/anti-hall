@@ -426,3 +426,21 @@ test('FAIL-OPEN: an UNLOADABLE devswarm-wake lib -> hook still exits 0 and emits
     h.cleanup();
   }
 });
+
+test('0.108.3: a child is told to run the absolute-path `done` verb when merged/finished; the Primary is not', () => {
+  const h = makeHome();
+  try {
+    const child = ctx(testHook(HOOK, sessionPayload(), {
+      home: h.home, expectJson: true, env: { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main' },
+    }));
+    const m = child.match(/`node ([^`]*?devswarm\.js) done --summary/);
+    assert.ok(m, `child must get the done directive; ctx=${child}`);
+    assert.ok(path.isAbsolute(m[1]) && fs.existsSync(m[1]), `done directive must carry an absolute, existing CLI path: ${m[1]}`);
+    const primary = ctx(testHook(HOOK, sessionPayload(), {
+      home: h.home, expectJson: true, env: { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: '' },
+    }));
+    assert.ok(!/devswarm\.js done\b/.test(primary), `Primary must NOT get the child done directive; ctx=${primary}`);
+  } finally {
+    h.cleanup();
+  }
+});

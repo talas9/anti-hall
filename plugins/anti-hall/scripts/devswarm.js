@@ -62,6 +62,12 @@
 //   gate <id> [--set CSV] [--clear CSV]
 //                  mark/unmark named completion gates (append-only in the store).
 //                  anti-hall is AGNOSTIC about gate meaning — the consumer sets them.
+//   done [<id>] [--summary TEXT]
+//                  0.108.3 CHILD verb: sets the `done` gate on the caller's OWN
+//                  workspace id (resolved from cwd; an explicit <id> must match)
+//                  and sends ONE `[[ANTIHALL_DONE]]` direct message to the Primary
+//                  (hash keyed on id + HEAD, so a re-run adds nothing). Never sets
+//                  merged/tests_passed: auto-archive proves the merge itself.
 //   nudge <id>     poke-or-escalate the workspace (reuses recovery.pokeOrEscalate).
 //   archive <id>   archive-by-absence on OUR registry ONLY: move the descriptor to
 //                  archived/ + tombstone the store registry. hivecontrol has NO
@@ -13364,6 +13370,74 @@ function cmdArchiveRequest(id, flags, ctx) {
   });
 }
 
+// cmdDone(idArg, flags, ctx) — 0.108.3 child-facing structured done-report.
+// A child runs `devswarm.js done [<id>] [--summary TEXT]` once its work is
+// merged/finished. It (1) sets the `done` gate on the caller's OWN workspace id
+// (the cmdGate path; never merged/tests_passed — auto-archive gate (b) proves
+// the merge independently), then (2) sends ONE `[[ANTIHALL_DONE]]` direct
+// message to the Primary. Idempotent: the message hash is keyed on id + the
+// worktree HEAD, so a re-run on the same commit inserts nothing. Fail-open on
+// the message leg: the gate row is the authority auto-archive reads.
+function cmdDone(idArg, flags, ctx) {
+  const home = ctx.home;
+  const cwd = ctx.cwd || process.cwd();
+  const repoKey = repokey.repoKeyForWorktree(cwd);
+  if (!repoKey) return { ok: false, action: 'done', reason: 'no-project' };
+  const callerIc = identityContext(cwd, CALLER_CWD);
+  if (isPrimaryCheckout(callerIc.worktreeRoot, callerIc.mainWorktree, home, ctx.env)) {
+    return { ok: false, action: 'done', reason: 'primary-checkout', error: 'done is a child verb — the Primary checkout has no done-report' };
+  }
+  const who = senderIdentityDetailed(ctx.env, cwd, registrySnapshot(ctx, repoKey), home);
+  const id = who.identity;
+  if (idArg !== undefined && idArg !== id && idArg !== who.meshId) {
+    return { ok: false, action: 'done', reason: 'not-own-workspace', id: idArg, identity: id,
+      error: 'done ' + JSON.stringify(idArg) + ' is not the caller\'s own workspace (' + JSON.stringify(id) + ') — a child reports only itself' };
+  }
+  if (!isSafeId(id)) return { ok: false, action: 'done', reason: 'no-identity', error: 'could not resolve this workspace\'s id' };
+  const labelRefusal = childLabelRefusal(id, flags, ctx);
+  if (labelRefusal) return Object.assign({ action: 'done' }, labelRefusal);
+  const g = cmdGate(id, { set: ['done'], by: ['devswarm-done'] }, ctx);
+  if (!g.ok) {
+    return Object.assign({}, g, { ok: false, action: 'done', id, gateSet: false,
+      error: g.error || ('workspace ' + JSON.stringify(id) + ' is not registered in this project\'s mesh — nothing surfaces its done gate') });
+  }
+  const summaryText = one(flags, 'summary');
+  const message = store.DONE_REPORT_MARKER + ' ' + id + ' reports done'
+    + (summaryText ? ': ' + String(summaryText) : '')
+    + ' — auto-archive retires it once the merge is proven and it is clean, read and idle.';
+  let head = null;
+  try {
+    const r = spawnSync('git', ['-C', callerIc.worktreeRoot || cwd, 'rev-parse', 'HEAD'], { encoding: 'utf8', timeout: 10000 });
+    if (r.status === 0) head = String(r.stdout || '').trim() || null;
+  } catch (_) { head = null; }
+  const out = { ok: true, action: 'done', id, gateSet: true, gates: g.gates, messaged: false, head };
+  try {
+    // THE identity resolver: the Primary's mesh id is the main worktree's.
+    const primaryMeshId = callerIc.primaryMeshId || null;
+    if (!primaryMeshId) return Object.assign(out, { messageReason: 'no-primary-worktree' });
+    const now = Number.isFinite(ctx.now) ? ctx.now : Date.now();
+    const s = store.openStore({ home, hash: repoKey, backend: ctx.backend, env: ctx.env });
+    try {
+      const target = resolveMeshTarget(s, primaryMeshId, home);
+      if (!target) return Object.assign(out, { messageReason: 'primary-unregistered' });
+      const fields = { from: id, to: String(target.id), type: 'direct', message, timestamp: now, urgency: 'normal' };
+      const hash = 'done:' + id + ':' + (head || 'nohead');
+      const row = Object.assign({}, fields, { hash, instanceNonce: module.exports.deriveReaderNonce(ctx) });
+      const w = appendIntoPartition(s, home, String(target.id), [row], { via: 'mesh' });
+      if (w.status !== 'ok') return Object.assign(out, { messageReason: 'primary-' + w.status });
+      store.deriveSummary(s, { home, env: ctx.env, now });
+      out.messaged = true;
+      out.duplicate = w.inserted === 0;
+      out.to = String(target.id);
+      out.kind = 'done';
+    } finally { s.close(); }
+  } catch (e) {
+    out.messageReason = 'error';
+    out.messageError = String((e && e.message) || e);
+  }
+  return out;
+}
+
 function cmdMigrate(ctx) {
   return migrate.migrateToStore({ home: ctx.home, backend: ctx.backend, env: ctx.env, now: ctx.now });
 }
@@ -15141,6 +15215,9 @@ function cmdRoster(flags, ctx) {
     // baseline (no `instances` key at all), never a fabricated `instances:0`.
     const instInfo = instanceNonceCounts.get(String(w.id));
     if (instInfo && instInfo.instances > 1) hints.push('instance-split');
+    // 0.108.3: the child's structured done-report (`done` verb / `done` gate)
+    // — auto-archive retires it once the merge is proven and gates c-g pass.
+    if (!archivedOnly && w.gates && w.gates.done === true) hints.push('done', 'archive-pending');
     const row = {
       id: w.id, working_on: w.working_on, directUnread: w.directUnread,
       broadcastUnread: w.broadcastUnread, urgencyMax: w.urgencyMax,
@@ -17382,6 +17459,7 @@ const VERB_HELP = {
   inbox: { synopsis: 'inbox subcommands: count | read | ack | pull | messages | read-primary | ack-primary | peek-primary | drain-primary-legacy (drain = read-primary, consume, then the returned ack-primary --receipt command)', mutates: '`pull`/`ack`/`ack-primary`/`drain-primary-legacy` mutate cursors; `read-primary` writes only a read receipt; the rest are read-only' },
   workspaces: { synopsis: 'list registered workspaces', mutates: 'read-only' },
   gate: { synopsis: 'set/clear merge gates on a workspace (--set/--clear)', mutates: 'writes gate state to the store' },
+  done: { synopsis: 'child: report this workspace done (sets the `done` gate on your own id + one [[ANTIHALL_DONE]] message to the Primary; idempotent) [--summary TEXT]', mutates: 'writes the done gate + one mesh-direct message to the Primary' },
   nudge: { synopsis: 'send a nudge command to a workspace', mutates: 'runs the configured nudge command against the workspace' },
   archive: { synopsis: 'archive (tombstone) a workspace registry row', mutates: 'writes an archive tombstone to the store' },
   'reap-orphans': { synopsis: 'clean up orphaned partitions across stores', mutates: 'mutates store partitions; may rehome/heal registry rows' },
@@ -17604,6 +17682,13 @@ function runArmed(cmd, positionals, flags, ctx, argv) {
         const id = positionals[1];
         if (!isSafeId(id)) return { code: 2, result: { ok: false, error: 'invalid or missing workspace id' } };
         const r = cmdGate(id, flags, ctx);
+        return { code: r.ok ? 0 : 2, result: r };
+      }
+      case 'done': {
+        // 0.108.3: child-facing structured done-report (sets the `done` gate on
+        // the caller's OWN id + one [[ANTIHALL_DONE]] message to the Primary).
+        const r = cmdDone(positionals[1], flags, ctx);
+        logVerbOutcome('done', r && r.id, r, ctx);
         return { code: r.ok ? 0 : 2, result: r };
       }
       case 'nudge': {

@@ -71,6 +71,15 @@ const CHILD_IDLE_LINE =
   'me"` so the parent orchestrator\'s task list stays honest instead of you sitting ' +
   'idle unnoticed.';
 
+// CHILD_DONE_LINE (0.108.3) — appended for a child only: the structured
+// done-report. `done` sets the `done` gate on the child's own id and sends ONE
+// [[ANTIHALL_DONE]] message to the Primary; auto-archive then retires the
+// workspace once the merge is proven and it is clean, read and idle — no user
+// archive step.
+const CHILD_DONE_LINE =
+  ' WHEN YOUR WORK IS MERGED/FINISHED: run `node ' + CLI + ' done --summary "<what shipped>"` ' +
+  'once — it reports done to the parent; the workspace is then auto-archived (never ask your user to archive it).';
+
 // CHILD_QUESTION_LINE / PARENT_QUESTION_LINE — the blocking-question escalation
 // protocol, condensed from skills/devswarm/SKILL.md "Blocking questions — CHILD
 // asks, PARENT answers (never child -> human)". That section is the canonical
@@ -125,6 +134,7 @@ function wakeLine(env, isChild) {
 function buildAdditionalContext(isChild, env) {
   return OVERRIDE_CORE +
     (isChild ? CHILD_QUESTION_LINE : PARENT_QUESTION_LINE) +
+    (isChild ? CHILD_DONE_LINE : '') +
     (isChild ? CHILD_IDLE_LINE : '') +
     wakeLine(env, isChild);
 }

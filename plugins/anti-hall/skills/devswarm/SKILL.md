@@ -292,12 +292,14 @@ call at all without one.
 
 **Auto-archive (supervisor sweep).** The supervisor archives a child workspace only when ALL
 of these are proven: (a) it is done: either every finish gate is set (`archive_ready`), or the
-child sent its structured done-report, which is the `done` gate on its own (`devswarm.js gate <id>
---set done`); chat text such as "DONE" never counts and `tests_passed` is not required here,
+child sent its structured done-report: the child runs `devswarm.js done [--summary "..."]`
+once its work is merged, which sets the `done` gate on its own id and sends the Primary one
+`[[ANTIHALL_DONE]]` message (idempotent; the roster then shows the child `done`/`archive-pending`,
+and nobody has to archive it by hand); chat text such as "DONE" never counts and `tests_passed` is not required here,
 because (b) proves the merge and an archive can be undone; (b) its branch is merged
 into its source (`git merge-base --is-ancestor`, else the app's PR row says merged),
 (c) `git status --porcelain` is empty, (d) there's no unread mail to it or from it,
-(e) it isn't the Primary, (f) the owner hasn't selected it in the app for 10 min, and
+(e) it isn't the Primary (the app DB's `builderType` decides; a `primary-<hash>` descriptor id never does), (f) the owner hasn't selected it in the app for 10 min, and
 (g) it has been idle >= `idleMin`. A fact that can't be read counts as not proven.
 `hivecontrol workspace check-merge` is never used as a probe, because it can create a source
 worktree. Settings live in `~/.anti-hall/settings.json`:
@@ -683,6 +685,12 @@ other directly, not just its own parent/child pair.
 - `node scripts/devswarm.js roster [--ack]` — this project's shared registry + `working_on` +
   a `recent[]` broadcast digest. `--ack` clears your own `broadcastUnread` (alias of `mesh read`).
 - `node scripts/devswarm.js mesh read` — same as `roster --ack`.
+- `node scripts/devswarm.js done [<id>] [--summary "TEXT"]` — **(0.108.3) CHILD verb**, run once
+  when your work is merged/finished: sets the `done` gate on your OWN workspace id (resolved from
+  cwd; an explicit `<id>` must match) and sends the Primary ONE `[[ANTIHALL_DONE]]` direct message
+  (`kind:'done'` in the result). Idempotent: a re-run on the same HEAD adds nothing. It never sets
+  `merged`/`tests_passed` — auto-archive proves the merge itself — and it is refused from the
+  Primary checkout. The roster shows the child with the `done` + `archive-pending` hints.
 - `node scripts/devswarm.js heartbeat <id> --summary "TEXT" [--urgency ...]` — the existing
   heartbeat verb now ALSO broadcasts a mesh status ping (default urgency `low`) that feeds
   `roster`'s `working_on` field.
@@ -881,7 +889,10 @@ active task, proactively run `node scripts/devswarm.js heartbeat <id> --summary 
 reassign me or archive me"` (as of v0.58 — the mesh CLI; the native `hivecontrol workspace
 message-parent` this used to name is now guard-blocked, see "command-guard's native-SEND
 block" above), so the parent's task list stays honest instead of the child sitting
-unnoticed. This is **cooperative** — it only works if the child is still capable of
+unnoticed. **(0.108.3)** It also tells the child: when its work is merged/finished, run
+`node <plugin>/scripts/devswarm.js done --summary "<what shipped>"` once (the absolute CLI
+path is injected) — the structured done-report auto-archive reads, so the user never has to
+archive a finished workspace. This is **cooperative** — it only works if the child is still capable of
 executing a turn at all. A truly wedged child (the failure mode this whole feature exists
 for) cannot self-report; that's what Layers 2–3 are for. **As of v0.58**, this SAME
 `SessionStart` hook also fires for the **Primary** role (previously child-only) to inject

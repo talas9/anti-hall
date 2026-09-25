@@ -41,6 +41,21 @@ the update.
   still has to prove the merge from git ancestry or the PR, and gates (c)-(g) are
   unchanged. Chat text such as "DONE" never counts. Only the auto-archive decision
   changed; `archive_ready` means the same for the parent gate and the merge gate.
+- **Nothing made a child set the `done` gate, so auto-archive still never fired.** New
+  child verb `devswarm.js done [<id>] [--summary "..."]`: it sets the `done` gate on the
+  caller's own workspace id (never `merged`/`tests_passed`) and sends the Primary one
+  `[[ANTIHALL_DONE]]` message (`kind:'done'`). A re-run on the same HEAD adds nothing; a
+  foreign id or the Primary checkout is refused. The child SessionStart directive
+  (`devswarm-child-role.js`, Claude and Codex) now tells a child to run it once its work is
+  merged, and the roster shows such a child with the `done` + `archive-pending` hints.
+  Auto-archive then retires it once the merge is proven and gates (c)-(g) pass, so the user
+  no longer archives finished workspaces by hand.
+- **Auto-archive treated a child as the Primary.** Gate (e) counted any `primary-<hash>`
+  descriptor id sharing a builder's worktree as the Primary, and a legacy child descriptor
+  carries exactly that label, so a standard child was never archived. The app DB's
+  `builderType` is now the authority; without that column the Primary seat's main-checkout
+  rule decides; a `primary-` id prefix never does. An unreadable app DB still archives
+  nothing.
 - **A stale anti-hall archived marker overrode the DevSwarm app.** A workspace open in the
   app (`isActive=1`, `isHidden=0`) but still holding `archived/<id>.json` kept counting as
   archived and triggered a screenshot ask. The supervisor's app-DB sync now retires such a

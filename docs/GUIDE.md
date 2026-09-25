@@ -428,9 +428,13 @@ anti-hall depends on it.
   markers, titles, pins, PRs, session map; screenshot sync (`sync-ui`) only as a fallback.
 - **Lifecycle.** Auto-archive of proven-done workspaces (default on, DevSwarm ≥ 2.5.3,
   always by explicit id). "Done" means every finish gate is set, or the child sent its
-  structured done-report (`devswarm.js gate <id> --set done`) and its merge is proven from
-  git ancestry or the PR; chat text never counts. Deleting archived ones only via
-  owner-approved `prune-archived`.
+  structured done-report and its merge is proven from git ancestry or the PR; chat text
+  never counts. A child reports done by running `devswarm.js done [--summary "..."]` once
+  its work is merged (its SessionStart directive tells it to): that sets its `done` gate and
+  sends the Primary one `[[ANTIHALL_DONE]]` message, and the roster shows it
+  `done`/`archive-pending`, so nobody archives finished workspaces by hand. The Primary is
+  recognised by the app DB's `builderType`, never by a `primary-<hash>` descriptor id.
+  Deleting archived ones only via owner-approved `prune-archived`.
 - **Store hygiene.** Message retention (archive then prune old bodies), housekeeping sweeps,
   supervisor log rotation; every setting is in the `devswarm` section of `/anti-hall:settings`.
 - **Capability gate.** Every `hivecontrol` verb / app-DB column is gated by version +

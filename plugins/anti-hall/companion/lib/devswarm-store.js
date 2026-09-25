@@ -565,6 +565,13 @@ const DEFAULT_PENDING_QUESTIONS_CAP = 200;
 // a single source of truth, no byte-identical-copy drift risk.
 const ARCHIVE_REQUEST_MARKER = '[[ANTIHALL_ARCHIVE_REQUEST]]';
 
+// DONE_REPORT_MARKER (0.108.3) — the machine-readable kind a child's
+// `scripts/devswarm.js done` prefixes onto its ONE structured done message to
+// the Primary. The authoritative done fact is the `done` gate row the same
+// verb sets (auto-archive gate (a)); this marker only lets a reader tell the
+// report apart from ordinary chatter.
+const DONE_REPORT_MARKER = '[[ANTIHALL_DONE]]';
+
 // ensureMessagesMeshColumns(db) — additive migration for a `messages` table that
 // pre-dates the v0.57 mesh columns (an on-disk store created by <=0.56). A brand
 // new table already has them via CREATE TABLE; this is a no-op there. For an
@@ -3296,6 +3303,8 @@ module.exports = {
   BROADCAST_PARTITION_ID, meshMessageHash, appendMeshMessage,
   // v0.58 (archive-request store write, deriveSummary archive_requested):
   ARCHIVE_REQUEST_MARKER,
+  // 0.108.3 (child `done` verb's structured done message):
+  DONE_REPORT_MARKER,
   // GC — age-based summaries/ pruning, never touching an in-use repoKey:
   gcStaleSummaries, GC_STALE_SUMMARIES_DAYS_DEFAULT,
 };

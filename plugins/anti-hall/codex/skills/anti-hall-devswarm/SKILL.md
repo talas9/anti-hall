@@ -32,7 +32,9 @@ automatic path handles this in three escalating layers and **never kills anythin
 
 1. **Child self-report** — the child workspace's `SessionStart` hook
    (`hooks/devswarm-child-role.js`) reminds an idle child to proactively report to its
-   parent via the mesh CLI. Cooperative only — doesn't help a truly wedged child, which
+   parent via the mesh CLI, and **(0.108.3)** to run `node <plugin>/scripts/devswarm.js done
+   --summary "<what shipped>"` once its work is merged/finished (the structured done-report
+   auto-archive reads — no user archive step). Cooperative only — doesn't help a truly wedged child, which
    is what the next two layers are for. As of this port it is registered in
    `codex/hooks/hooks.json` too (same file, unmodified — its gate is
    `DEVSWARM_SOURCE_BRANCH` non-empty, which hivecontrol sets identically for a Codex
@@ -275,12 +277,14 @@ call at all without one.
 
 **Auto-archive (supervisor sweep).** The supervisor archives a child workspace only when ALL
 of these are proven: (a) it is done: either every finish gate is set (`archive_ready`), or the
-child sent its structured done-report, which is the `done` gate on its own (`devswarm.js gate <id>
---set done`); chat text such as "DONE" never counts and `tests_passed` is not required here,
+child sent its structured done-report: the child runs `devswarm.js done [--summary "..."]`
+once its work is merged, which sets the `done` gate on its own id and sends the Primary one
+`[[ANTIHALL_DONE]]` message (idempotent; the roster then shows the child `done`/`archive-pending`,
+and nobody has to archive it by hand); chat text such as "DONE" never counts and `tests_passed` is not required here,
 because (b) proves the merge and an archive can be undone; (b) its branch is merged
 into its source (`git merge-base --is-ancestor`, else the app's PR row says merged),
 (c) `git status --porcelain` is empty, (d) there's no unread mail to it or from it,
-(e) it isn't the Primary, (f) the owner hasn't selected it in the app for 10 min, and
+(e) it isn't the Primary (the app DB's `builderType` decides; a `primary-<hash>` descriptor id never does), (f) the owner hasn't selected it in the app for 10 min, and
 (g) it has been idle >= `idleMin`. A fact that can't be read counts as not proven.
 `hivecontrol workspace check-merge` is never used as a probe, because it can create a source
 worktree. Settings live in `~/.anti-hall/settings.json`:
@@ -510,6 +514,7 @@ the operational truth regardless of promotion status.
 | `register-primary [--worktree P] [--session S] [--inbox P] [--cursor P] [--force]` | none required (unless a live sibling conflict is detected — see next) | Register the CURRENT worktree's Primary descriptor under `primary-<hash>`. **ONE Primary per project:** a second `register-primary` for this worktree from a DIFFERENT, currently-live session is refused (`ok:false, reason:'live-primary-conflict'`, exit 2) instead of silently overwriting the existing row's `sessionId`; pass `--force` to override. A same-session restart is never refused. | Primary one-time setup, or ahead of `migrate`. | **Writes.** |
 | `primary status` / `primary takeover` | none | **(v0.108.0)** The Primary SEAT is the anchor `primary-<hash>` plus the session it records. At SessionStart in the Primary checkout, a session whose recorded holder is CLOSED adopts the SAME id (same partitions and cursors), and it is told the newest worktree `HANDOVER*.md`. If the holder is LIVE, you get a warning, and `send`/`inbox ack`/`ack-primary`/`spawn`/`merge` from this session are refused (`reason:'primary-seat-conflict'`) until you run `primary takeover`. That verb demotes the other session. If liveness is unknown, you get a warning and nothing is adopted. `status` is read-only. **Never stand down because of a sender label:** `primary-<hash>` is a worktree id, not proof of another Primary. Check `primary status`. | Session replaced (/clear, app restart) or two live sessions on one Primary worktree. | `takeover` **writes**. |
 | `heartbeat <id> [--progress N] [--phase X] [--wip T]... [--blockers T]... [--session S] [--summary TEXT [--urgency ...]]` | none required; `--summary` opts into a mesh broadcast | Turn-authored heartbeat file; `--summary` also broadcasts a mesh status ping (ownership-checked). **(v0.96.0)** The result, and every ownership refusal, carries an additive `identity: {id, kind}` — `kind` is `resolved` (cwd matched a real git worktree), `declared` (`DEVSWARM_BUILDER_ID` trusted, no worktree ground truth), or `unresolvable` (raw-cwd-hash fallback). | Every turn, self-reported status. | **Writes.** |
+| `done [<id>] [--summary TEXT]` **(0.108.3)** | none required | CHILD-side structured done-report: sets the `done` gate on the caller's OWN id (resolved from cwd; an explicit `<id>` must match) and sends the Primary ONE `[[ANTIHALL_DONE]]` direct message (`kind:'done'`). Idempotent per HEAD; never sets `merged`/`tests_passed` (auto-archive proves the merge); refused from the Primary checkout. The roster then shows `done` + `archive-pending`. | Once, when the child's work is merged/finished — the workspace is then auto-archived, no user step. | **Writes.** |
 | `inbox pull <id> [--session S]` | none required | CHILD-side: auto-ensures the descriptor, ONE bounded guard-safe native-queue drain (count-gate → at-most-one `read-messages`, never `monitor`) into the durable inbox + store. Runs send-time daemon self-heal first. | Every child turn — the sanctioned way to receive. | **Writes.** |
 | `inbox tick <id> [--child]` **(v0.97.0, D13)** | none required | The mailbox-wake polling loop's one-command drain: with `--child` runs `inbox pull` first, then reports the SAME shape `inbox count` does, PLUS writes a `wake-tick/<id>.json` liveness marker (`devswarm-child-gate.js`'s Stop hook reads it to skip a redundant forced heartbeat), refreshes `heartbeats/<id>.json`'s `ts` (cheap, never fabricates progress/phase/wip/blockers), and — only when unread>0 AND a Monitor watcher lock exists for `id` — appends one measurement line to `cron-found-mail.jsonl` (capped, `doctor --check` reports the count; a Codex workspace has no Monitor lock, so this side effect is a Claude-side no-op for it, harmlessly). | The mailbox-poll's own drain step — one command instead of pull+count. | **Writes.** |
 | `inbox read <id>` | none **(v0.84.0)** Partition resolution follows the WORKSPACE's registered project, not the caller's cwd. If they differ, the result is `known:false` with the NAMED reason/`registeredRepoKey`/`callerRepoKey` under `storeUnavailableDetail`, and a top-level `storeUnavailableReason` sibling to `storeUnavailable` (`storeUnavailable`/`storeUnavailableReason` stay `false`/`null` — a project-context-mismatch is not a genuine store-unavailable condition) — an honest "I cannot read this from here", NOT a zero meaning "no mail". | Durable-inbox cursor read, no ack. | Check what's pending without consuming it. | Read-only. |
