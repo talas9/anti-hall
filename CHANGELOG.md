@@ -242,28 +242,26 @@ the update.
   checked out at `$HOME` could resolve its toplevel to the home directory itself, which
   would redirect every write into anti-hall's own global `~/.anti-hall/` store; that case
   now also falls back to the raw cwd.
-- **The DevSwarm parent gate's unread count could disagree with the roster, and a busy
-  child kept hard-blocking the Primary.** The gate excluded any child-mailbox row sent by
-  the Primary itself, but `devswarm-store.js`'s `unionUnreadFor` (the roster's and
-  `devswarm-parent-inbox.js`'s own count source of truth) never applied that exclusion, so
-  the two surfaces could disagree on the same child in the same minute; the gate now reads
-  through the same `unionUnread` primitive with no per-sender filter. Separately, a family
-  whose only reason to block was a plain real-unread backlog now downgrades to a
-  non-blocking advisory when the child is provably busy (a fresh heartbeat within the
-  existing freshness window, or a live mid-turn session) — a genuinely not-busy child
-  still hard-blocks. **New setting:** `devswarm.parentGateNeglectMinUnread` (default `0`,
-  unchanged sensitivity), also in `/config`.
-- **A child waiting on its own unanswered question no longer gets waved through as
-  "busy."** The busy-downgrade above was too wide: a child stuck on its own unresolved
-  `AskUserQuestion` (or otherwise mid-turn waiting on a human) also has a fresh heartbeat
-  and a live pid, but the Primary cannot unblock it through the mesh, so the block is
-  correct there. A new `waitingOnUserInput()` helper (reusing the existing transcript
-  classifier) now forces `busy=false` in that case, so the family falls through to its
-  normal hard block instead of the advisory, and the block reason names the wait.
-- **Jev postHandoverGate ships off, not shadow.** An offline benchmark showed no gain over
-  the agent's own size judgment plus the measured budget backstop, so the new
-  `postHandoverGate` integration (added above) defaults to `off` instead of `shadow`; see
-  the Features entry above for the measured numbers.
+- **Correction: Jev integration `postHandoverGate` defaults to `off`, not `shadow`.**
+  Replace the earlier "New Jev integration `postHandoverGate` (shadow only, default
+  `shadow`)" bullet: the row exists (`jevIntegrations.postHandoverGate`), but it ships
+  `off`. Set it to `shadow` to log Jev's view without changing what the gate says.
+- **DevSwarm parent Stop gate: "busy" now needs real evidence.** A child with unread mail
+  only gets the non-blocking `busy, N queued` line when its own transcript was written in
+  the last `devswarm.parentGateBusyFreshMin` minutes (default 5) and its latest turn is
+  real work. A live process or a fresh heartbeat no longer counts, so an idle child
+  sitting at its prompt with old mail blocks and escalates again. A missing or unreadable
+  transcript (including a Codex child) also blocks.
+- **Waiting children always block.** A child stuck on an unanswered question, a plan
+  approval (`ExitPlanMode`), or any tool call while its transcript has gone quiet (a
+  permission prompt or a hung tool) blocks with a "waiting on a human answer" line. In a
+  family of twin descriptors, one waiting member makes the whole family block.
+- **Age cap on the busy advisory.** Even a busy child blocks once its oldest unread is
+  older than `devswarm.parentGateBusyMaxAgeMin` (default 60): "<title>: busy but hasn't
+  read mail in Xm". A busy pass no longer resets the forced-ack count, so escalation
+  still fires after the usual number of blocks.
+- **New settings:** `devswarm.parentGateBusyFreshMin` (minutes, default `5`) and
+  `devswarm.parentGateBusyMaxAgeMin` (minutes, default `60`), both also in `/config`.
 
 ## 0.108.5
 
