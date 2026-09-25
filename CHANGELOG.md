@@ -29,6 +29,40 @@ the update.
   `jevIntegrations.<id>` settings.json key (still also writes `jev.json` for back-compat).
 - Docs: `docs/GUIDE.md`, the `jev`/`settings` skills (Claude + Codex), and the
   system-briefing operator guide (Claude + Codex) all cover the new section/keys.
+- **Every feature is now controllable from settings.** Each hook anti-hall registers
+  (Claude and Codex) has an on/off switch whose default is the old behaviour. The hook
+  checks it first and does nothing when it is off; a settings error always leaves the
+  hook running. New sections: `safety` (4 keys), `context` (7: the verify-first
+  injections, task tracker, handover resume, defect nudge) and `maintenance` (5:
+  repair-on-reload, progress prune, pre-compact snapshot, task lifecycle log, session-end
+  MCP reaper). `guards` gains 7 (`modelRouting` strict/advisory/off, `apiGuard`,
+  `speculationGuard`, `claimLedger`, `taskGuard`, `tasklistGuard`, `scanThrottle`) and
+  `devswarm` gains 12 (parent/child gates, the roster and inbox injections, reply
+  tracker, comms and inbox-read guards, the wake watcher, app-DB sync, screenshot sync).
+  The env-only switches `ANTIHALL_MODEL_ROUTING`, `ANTIHALL_REPAIR_ON_RELOAD`,
+  `ANTI_HALL_SCAN_THROTTLE`, `ANTI_HALL_SESSION_END_REAPER` and
+  `ANTIHALL_DEVSWARM_APP_SYNC` keep working as the env tier of those settings.
+  `userConfig` grows from 39 to 76 `/config` rows (still no `options` field).
+- **Safety guards are human-only.** `safety.gitGuard`, `safety.commandGuard`,
+  `safety.editGuard`, `safety.swarmGuard`, and the knobs that weaken a safety guard
+  (`guards.stashGuard`, `guards.editGuardAllow`, `guards.allowSubagentMailbox`) change
+  only through `/config` or their env var. `settings.js set`/`reset` refuse them ("safety
+  guard — change it yourself in /config (anti-hall rows)"), and `get` ignores
+  `~/.anti-hall/settings.json` for them, so an agent editing that file cannot disable a
+  guard. settings.json may still turn one the safer way (arming `guards.stashGuard`
+  keeps working). `safety.commandGuard` / `safety.editGuard` off turns off the
+  delegation check only; command-guard's data-safety sub-guards stay on. The `skip.json`
+  escape hatch is unchanged, and `"all"` still does not cover git-guard.
+- `settings.js show` lists every section, marks the safety rows, and ends with the parts
+  that have no switch on purpose (skip-guard, coordinator-detect, omc-detect,
+  phase-tracker, fable-availability, codex-availability, emit-dedupe-reset,
+  agent-watchdog, command-guard's data-safety sub-guards) and why.
+
+### Changed
+
+- A boolean env switch now accepts every true/false token (`0`/`off`/`false`/`no`), not
+  only the one literal it used to check. The wake watcher's refusal vocabulary gains
+  `disabled-by-settings`.
 
 ## 0.108.3
 

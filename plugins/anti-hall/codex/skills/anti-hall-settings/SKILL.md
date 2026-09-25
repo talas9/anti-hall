@@ -40,6 +40,28 @@ value) comes back as `{ok:false, error}` on `--json` or an `error:` line otherwi
 relay it and ask for a valid value; never silently coerce or guess one. A question
 about ONE value is a single `get <section.key>`.
 
+## Safety guards: the human changes these, never you
+
+`safety.gitGuard`, `safety.commandGuard`, `safety.editGuard`, `safety.swarmGuard`,
+`guards.stashGuard`, `guards.editGuardAllow` and `guards.allowSubagentMailbox` are
+safety keys. `set` and `reset` refuse them with "safety guard — change it yourself in
+/config (anti-hall rows)", and a value written into `~/.anti-hall/settings.json` is
+ignored for them. Codex has no `/config`, so the only way is the env var the user sets
+themselves before starting Codex (`show` lists it, e.g. `ANTIHALL_GIT_GUARD=0`). When
+asked to turn one off, tell the user that; never try another route. A one-off pause is
+still the per-guard `skip.json` escape hatch, only on the user's explicit request.
+
+## Turning a hook off
+
+Every hook the Codex port registers reads the same switch as on Claude Code, so "turn
+off X" is one `set <section.key> false`: `context.*` (verify-first injections, task
+tracker, handover resume, defect nudge), `maintenance.*` (repair-on-reload, progress
+prune, pre-compact snapshot, task lifecycle log), `guards.*` (speculation, claim ledger,
+task, task-list; `guards.modelRouting` takes `strict|advisory|off`), and `devswarm.*`
+(parentGate, childGate, parentInbox, childTurn, childRole, childDrain,
+parentReplyTracker, wakeWatch, appSync, screenshotSync). `show` ends with the parts that
+have no switch on purpose, and why.
+
 ## Browsing (only when the user asks to see or pick settings)
 
 1. `show` prints every section's tables — run it ONLY when the user explicitly asks to
@@ -51,8 +73,9 @@ about ONE value is a single `get <section.key>`.
 
 2. To help the user pick without a wall of tables, Codex has no `AskUserQuestion`
    tool, so use **numbered lists** in prose:
-   - Number the sections (autoHandover, guards, jev, jevIntegrations, limitConserve,
-     devswarm, statusline, codexNudge, versionAlerts, updates, defects); ask for one.
+   - Number the sections (autoHandover, guards, safety, context, maintenance, jev,
+     jevIntegrations, limitConserve, devswarm, statusline, codexNudge, versionAlerts,
+     updates, defects); ask for one.
    - Show just that section (`show --section <key>`), number its settings, ask again.
    - For a `boolean` or `enum` setting, number its allowed values (enum `values`
      from the schema; boolean is 1) true / 2) false). For a `number` or

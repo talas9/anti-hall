@@ -50,60 +50,62 @@ Codex: `node plugins/anti-hall/codex/install-codex.js` (project) or `--global`. 
 ## Hooks (plugins/anti-hall/hooks/, registered in hooks.json)
 
 All fail-open. "Codex" = also registered by the Codex port (`codex/hooks/hooks.json`).
-Env names are the per-hook switches; every user-facing one is also a setting (see Settings).
+Switch = the setting (and/or env var) that turns the hook off; every hook has one except the
+infrastructure listed under Settings. "human-only" = a safety key: change it in `/config` or env,
+never via `settings.js set` or `settings.json`.
 
 | Event (matcher) | Hook | What it does | Codex | Switch |
 |---|---|---|---|---|
-| SessionStart | verify-first-full.js | Injects the verify-first foundation: Iron Law, rationalization table, positive rules, scope & fidelity, output-presentation rule K. | ✓ | — |
-| SessionStart | verify-first-orch.js | Injects the orchestration ruleset (rules A–N, DevSwarm-Primary rule W); split out for the ~10k injection cap. | ✓ | — |
+| SessionStart | verify-first-full.js | Injects the verify-first foundation: Iron Law, rationalization table, positive rules, scope & fidelity, output-presentation rule K. | ✓ | context.verifyFirstSession |
+| SessionStart | verify-first-orch.js | Injects the orchestration ruleset (rules A–N, DevSwarm-Primary rule W); split out for the ~10k injection cap. | ✓ | context.verifyFirstOrchestration |
 | SessionStart | version-alert.js | Tells the user when anti-hall is behind: remote newer → update then reload; plugin-cache mirror newer → reload only. Once per session; 2 h detached refresh. | ✓ | `ANTIHALL_VERSION_ALERT=off` |
 | SessionStart | claude-cli-version.js | Flags Claude Code CLI drift from the version anti-hall's harness KB was verified against. | ✓ | `ANTIHALL_CLAUDE_CLI_VERSION_ALERT=off` |
 | SessionStart | devswarm-version.js | Flags DevSwarm/hivecontrol version drift (DevSwarm only). | ✓ | `ANTIHALL_DEVSWARM_VERSION_ALERT=off` |
 | SessionStart | repo-self-drift.js | Network-free self-check of anti-hall's own repo docs vs. code counts. | ✓ | `ANTIHALL_REPO_SELF_DRIFT=off` |
 | SessionStart | fable-availability.js | Detects Fable model availability from the local model cache; silent unless available. | — | — |
 | SessionStart | codex-availability.js | Caches whether a `codex` executable is on PATH (`~/.anti-hall/codex-availability.json`). | ✓ | — |
-| SessionStart | devswarm-child-role.js | DevSwarm child: reminds it to self-report idleness over the mesh. | ✓ | — |
-| SessionStart | progress-prune.js | Archives stale per-session progress files into the history ledger, deleting only after the append succeeds; throttled per cwd. | ✓ | — |
-| SessionStart | handover-resume.js | Surfaces the latest `.anti-hall/handovers/` entry after startup, `/clear` or compaction. | ✓ | — |
+| SessionStart | devswarm-child-role.js | DevSwarm child: reminds it to self-report idleness over the mesh. | ✓ | devswarm.childRole |
+| SessionStart | progress-prune.js | Archives stale per-session progress files into the history ledger, deleting only after the append succeeds; throttled per cwd. | ✓ | maintenance.progressPrune |
+| SessionStart | handover-resume.js | Surfaces the latest `.anti-hall/handovers/` entry after startup, `/clear` or compaction. | ✓ | context.handoverResume |
 | SessionStart | emit-dedupe-reset.js | Marks a context loss so repeated per-turn blocks are re-emitted. | ✓ | — |
 | SessionStart | jev-weekly-scorecard.js | Jev enabled only: once a week names one integration worth promoting (KEEP) or turning off (REMOVE). | ✓ | jev.weeklyNotice |
-| SessionStart | defect-nudge.js | Once-a-day count of open defect reports (counts only, never reporter text). | ✓ | — |
-| SessionStart + UserPromptSubmit | repair-on-reload.js | When any repair migration isn't stamped for the running version, spawns one detached `doctor.js --repair --migrations-only --quiet` (data migrations only; never writes user config — legacy/GSD migrations touch the project's `.anti-hall/history/legacy/` and `.planning/`; lock-guarded; at most once an hour; newest 5 logs kept). | ✓ | `ANTIHALL_REPAIR_ON_RELOAD=off` |
-| UserPromptSubmit | verify-first.js | Short rotating one-line verify-first nudge. | ✓ | — |
-| UserPromptSubmit | task-tracker.js | Task-list discipline directive plus a freshness note when tasks are open/stale. | ✓ | — |
+| SessionStart | defect-nudge.js | Once-a-day count of open defect reports (counts only, never reporter text). | ✓ | context.defectNudge |
+| SessionStart + UserPromptSubmit | repair-on-reload.js | When any repair migration isn't stamped for the running version, spawns one detached `doctor.js --repair --migrations-only --quiet` (data migrations only; never writes user config — legacy/GSD migrations touch the project's `.anti-hall/history/legacy/` and `.planning/`; lock-guarded; at most once an hour; newest 5 logs kept). | ✓ | maintenance.repairOnReload (`ANTIHALL_REPAIR_ON_RELOAD=off`) |
+| UserPromptSubmit | verify-first.js | Short rotating one-line verify-first nudge. | ✓ | context.verifyFirstTurn |
+| UserPromptSubmit | task-tracker.js | Task-list discipline directive plus a freshness note when tasks are open/stale. | ✓ | context.taskTracker |
 | UserPromptSubmit | limit-conserve-inject.js | Token-conservation nudge at the usage threshold (auto mode reads the OMC usage cache). | ✓ | `ANTIHALL_LIMIT_CONSERVE`, `ANTIHALL_LIMIT_THRESHOLD` |
 | UserPromptSubmit | auto-handover.js | At 85% context (known window) or 170k tokens: write a handover unasked, tell the user, urge `/compact`/`/clear`; milestone nags every +5 points; unknown window → one soft advisory only. | ✓ | `ANTIHALL_AUTO_HANDOVER_PCT` (`0` = off) |
-| UserPromptSubmit | devswarm-parent-inbox.js | DevSwarm Primary: per-turn workspace table (app titles, sidebar order, finish/PR state, unread, `stale anti-hall <v>`) and neglect nags (after a 120 s grace for fresh unread). | ✓ | — |
-| UserPromptSubmit | devswarm-child-turn.js | DevSwarm child: turn-authored heartbeat, keep-parent-updated reminder, unread-inbox surfacing. | ✓ | — |
-| TaskCreated, TaskCompleted | task-lifecycle-log.js | Appends task events to `.anti-hall/history/<date>/<session>.md`. | — | — |
-| SubagentStart | verify-first-subagent.js | Re-injects the Iron Law and scope rules into every subagent (no orchestration block). | — | — |
-| PreToolUse (Bash) | git-guard.js | Blocks AI self-credit in commits and `gh` PR/issue/release bodies; blocks force-push (`--force`, `-f`, `--force-with-lease`, `+refspec`). | ✓ | named skip only |
-| PreToolUse (Bash) | command-guard.js | Coordinator must delegate heavy commands; blocks DevSwarm destructive verbs and native hivecontrol messaging. | ✓ | — |
+| UserPromptSubmit | devswarm-parent-inbox.js | DevSwarm Primary: per-turn workspace table (app titles, sidebar order, finish/PR state, unread, `stale anti-hall <v>`) and neglect nags (after a 120 s grace for fresh unread). | ✓ | devswarm.parentInbox |
+| UserPromptSubmit | devswarm-child-turn.js | DevSwarm child: turn-authored heartbeat, keep-parent-updated reminder, unread-inbox surfacing. | ✓ | devswarm.childTurn |
+| TaskCreated, TaskCompleted | task-lifecycle-log.js | Appends task events to `.anti-hall/history/<date>/<session>.md`. | — | maintenance.taskLifecycleLog |
+| SubagentStart | verify-first-subagent.js | Re-injects the Iron Law and scope rules into every subagent (no orchestration block). | — | context.verifyFirstSubagent |
+| PreToolUse (Bash) | git-guard.js | Blocks AI self-credit in commits and `gh` PR/issue/release bodies; blocks force-push (`--force`, `-f`, `--force-with-lease`, `+refspec`). | ✓ | safety.gitGuard (human-only) + named skip only |
+| PreToolUse (Bash) | command-guard.js | Coordinator must delegate heavy commands; blocks DevSwarm destructive verbs and native hivecontrol messaging. | ✓ | safety.commandGuard (human-only) |
 | PreToolUse (Bash) | merge-gate.js | Opt-in: blocks auto-merge without a recorded review. | ✓ | `ANTIHALL_MERGE_GATE=on` |
-| PreToolUse (Bash) | scan-throttle.js | Prefixes user-listed heavy scan commands with `taskpolicy`/`nice` (no built-in patterns). | — | `ANTI_HALL_THROTTLE_PATTERNS` |
-| PreToolUse (Write/Edit/MultiEdit) | api-guard.js | Blocks writing a `module.attr` the installed runtime doesn't have (stdlib/builtins by default). | — | `ANTIHALL_API_GUARD_THIRDPARTY=1` |
+| PreToolUse (Bash) | scan-throttle.js | Prefixes user-listed heavy scan commands with `taskpolicy`/`nice` (no built-in patterns). | — | guards.scanThrottle; `ANTI_HALL_THROTTLE_PATTERNS` |
+| PreToolUse (Write/Edit/MultiEdit) | api-guard.js | Blocks writing a `module.attr` the installed runtime doesn't have (stdlib/builtins by default). | — | guards.apiGuard; `ANTIHALL_API_GUARD_THIRDPARTY=1` |
 | PreToolUse (Write/Edit/MultiEdit) | ship-it-guard.js | Opt-in: blocks hard-risk code edits with no `PLAN.md`. | — | `ANTIHALL_SHIPIT_GATE=on` |
-| PreToolUse (Write/Edit/MultiEdit/NotebookEdit) | edit-guard.js | Coordinator must delegate file edits (root-anchored allowlist for docs/state). | — | `ANTIHALL_EDIT_GUARD_ALLOW` |
-| PreToolUse (Read) | inbox-read-guard.js | Blocks a direct Read of a raw DevSwarm inbox file (use the CLI). | — | — |
-| PreToolUse (SendMessage) | devswarm-comms-guard.js | Blocks `SendMessage` to a peer session that is a registered DevSwarm workspace (mesh only); never blocks subagent steering. | — | — |
-| PreToolUse (Agent/Task) | model-routing-guard.js | Routes spawns to the cheapest fitting model: blocks a mechanical spawn with no model (strict default), advises on flagship + mechanical. | — | `ANTIHALL_MODEL_ROUTING=advisory` |
-| PreToolUse (Agent/Task) | swarm-guard.js | Anti-fork-bomb: spawn-rate cap + real free-memory check. | — | — |
+| PreToolUse (Write/Edit/MultiEdit/NotebookEdit) | edit-guard.js | Coordinator must delegate file edits (root-anchored allowlist for docs/state). | — | safety.editGuard (human-only); `ANTIHALL_EDIT_GUARD_ALLOW` |
+| PreToolUse (Read) | inbox-read-guard.js | Blocks a direct Read of a raw DevSwarm inbox file (use the CLI). | — | devswarm.inboxReadGuard |
+| PreToolUse (SendMessage) | devswarm-comms-guard.js | Blocks `SendMessage` to a peer session that is a registered DevSwarm workspace (mesh only); never blocks subagent steering. | — | devswarm.commsGuard |
+| PreToolUse (Agent/Task) | model-routing-guard.js | Routes spawns to the cheapest fitting model: blocks a mechanical spawn with no model (strict default), advises on flagship + mechanical. | — | guards.modelRouting (strict/advisory/off) |
+| PreToolUse (Agent/Task) | swarm-guard.js | Anti-fork-bomb: spawn-rate cap + real free-memory check. | — | safety.swarmGuard (human-only) |
 | PreToolUse (Agent/Task) | phase-tracker.js | Records spawns for the statusline and the Stop guards. | — | — |
 | PostToolUse (Bash) | output-verify-guard.js | Advisory: flags a pass claim next to failing runner output. | — | `ANTIHALL_OUTPUT_VERIFY_GUARD=off` |
-| PostToolUse (Bash) | devswarm-parent-reply-tracker.js | Records replies to child `--question`s for the parent gate. | ✓ | — |
-| PostToolUse (Bash) | devswarm-child-drain.js | DevSwarm child: mid-turn inbox drain (throttled). | ✓ | — |
+| PostToolUse (Bash) | devswarm-parent-reply-tracker.js | Records replies to child `--question`s for the parent gate. | ✓ | devswarm.parentReplyTracker |
+| PostToolUse (Bash) | devswarm-child-drain.js | DevSwarm child: mid-turn inbox drain (throttled). | ✓ | devswarm.childDrain |
 | PostToolUseFailure (Bash) | failure-root-cause-nudge.js | One-line pointer to `/anti-hall:root-cause` after a failed command. | — | `ANTIHALL_FAILURE_ROOT_CAUSE_NUDGE=off` |
-| Stop | task-guard.js | Blocks once when ending with genuinely open tasks. | ✓ | — |
-| Stop | tasklist-guard.js | Requires a live task list + fresh progress file for non-trivial work. | ✓ | `ANTIHALL_TASKLIST_WORK_THRESHOLD` |
-| Stop | speculation-guard.js | Tier 2: flags hedge-word speculation (optionally Jev-backed). | ✓ | — |
-| Stop | claim-ledger.js | Tier 2.5, ledger-only (never blocks): records confident claims with no supporting evidence in the turn. | ✓ | — |
+| Stop | task-guard.js | Blocks once when ending with genuinely open tasks. | ✓ | guards.taskGuard |
+| Stop | tasklist-guard.js | Requires a live task list + fresh progress file for non-trivial work. | ✓ | guards.tasklistGuard; `ANTIHALL_TASKLIST_WORK_THRESHOLD` |
+| Stop | speculation-guard.js | Tier 2: flags hedge-word speculation (optionally Jev-backed). | ✓ | guards.speculationGuard |
+| Stop | claim-ledger.js | Tier 2.5, ledger-only (never blocks): records confident claims with no supporting evidence in the turn. | ✓ | guards.claimLedger |
 | Stop | speculation-judge.js | Tier 3, opt-in: LLM judge for confident unverified assertions. | ✓ | `ANTIHALL_SEMANTIC_JUDGE=1` |
 | Stop | codex-nudge.js | Once per session: suggests an independent Codex review of substantial code. | — | `ANTIHALL_CODEX_NUDGE=off` |
 | Stop | auto-handover-pause-nag.js | Delivers the handover directive once at a Stop if a long turn never reached a new prompt; afterwards, at a quiet pause, reminds at most once per 15 min. | ✓ | autoHandover.nag |
-| Stop | devswarm-parent-gate.js | DevSwarm Primary: blocks ending the turn with child unread/stale/escalated or own unread (capped). | ✓ | — |
-| Stop | devswarm-child-gate.js | DevSwarm child: must heartbeat/self-report before idling (capped). | ✓ | — |
-| PreCompact | precompact-snapshot.js | Before every compaction writes a mechanical `PRECOMPACT-<n>.md` (git state, task list, last 10 user messages, newest handover pointer); never blocks. | ✓ | — |
-| SessionEnd | session-end-mcp-reaper.js | On clean exit, reaps MCP servers orphaned by earlier crashed sessions (audit-logged). | — | `ANTI_HALL_SESSION_END_REAPER=0` |
+| Stop | devswarm-parent-gate.js | DevSwarm Primary: blocks ending the turn with child unread/stale/escalated or own unread (capped). | ✓ | devswarm.parentGate |
+| Stop | devswarm-child-gate.js | DevSwarm child: must heartbeat/self-report before idling (capped). | ✓ | devswarm.childGate |
+| PreCompact | precompact-snapshot.js | Before every compaction writes a mechanical `PRECOMPACT-<n>.md` (git state, task list, last 10 user messages, newest handover pointer); never blocks. | ✓ | maintenance.precompactSnapshot |
+| SessionEnd | session-end-mcp-reaper.js | On clean exit, reaps MCP servers orphaned by earlier crashed sessions (audit-logged). | — | maintenance.sessionEndReaper (`ANTI_HALL_SESSION_END_REAPER=0`) |
 
 Shared libraries (not hooks): `verify-first-core.js`, `coordinator-detect.js`, `skip-guard.js`,
 `omc-detect.js`, `limit-conserve.js`; `hooks/lib/`: `settings.js` + `settings-schema.js`
@@ -186,7 +188,7 @@ Shared libraries (not hooks): `verify-first-core.js`, `coordinator-detect.js`, `
 | companion/devswarm-migrate.js | Legacy DevSwarm state → store migration. |
 | companion/devswarm-recover.js | The only DevSwarm path that kills: on-demand, one named workspace. |
 | statusline/ | `statusline.js` dispatcher, `statusline-rich.js` (line 1), `phase-bar.js` (line 2; also persists the context window for auto-handover), `phase.js` (progress writer), `install-statusline.js`/`uninstall-statusline.js`. |
-| monitors/monitors.json | Registers `devswarm-wake-watch.js` (Monitor-based wake). |
+| monitors/monitors.json | Registers `devswarm-wake-watch.js` (Monitor-based wake; off: `devswarm.wakeWatch`). |
 
 ## Settings (user-facing; `/anti-hall:settings`, `scripts/settings.js show --all` for advanced)
 
@@ -203,7 +205,13 @@ the schema's non-advanced set. Codex: no `/config`, use the skill.
 | autoHandover.enabled / pct / maxTokens / nag / nagStepPct / nagQuietMin | true / 85 / 0 / true / 5 / 15 | `ANTIHALL_AUTO_HANDOVER_PCT`, `ANTIHALL_AUTO_HANDOVER_MAX_TOKENS` |
 | guards.mergeGate / shipitGate | false / false | `ANTIHALL_MERGE_GATE`, `ANTIHALL_SHIPIT_GATE` |
 | guards.outputVerifyGuard / failureRootCauseNudge / repoSelfDrift / emitDedupe | true | `ANTIHALL_OUTPUT_VERIFY_GUARD`, … |
-| guards.stashGuard | false | `ANTIHALL_STASH_GUARD` |
+| guards.stashGuard (human-only) | false | `ANTIHALL_STASH_GUARD` |
+| guards.modelRouting | strict (strict/advisory/off) | `ANTIHALL_MODEL_ROUTING` |
+| guards.apiGuard / speculationGuard / claimLedger / taskGuard / tasklistGuard / scanThrottle | true | `ANTI_HALL_SCAN_THROTTLE` (scanThrottle) |
+| safety.gitGuard / commandGuard / editGuard / swarmGuard (human-only: `/config` or env; `set`/`reset` refuse; settings.json ignored) | true | `ANTIHALL_GIT_GUARD`, `ANTIHALL_COMMAND_GUARD`, `ANTIHALL_EDIT_GUARD`, `ANTIHALL_SWARM_GUARD` |
+| guards.editGuardAllow / allowSubagentMailbox (advanced, human-only) | "" / false | `ANTIHALL_EDIT_GUARD_ALLOW`, `ANTIHALL_ALLOW_SUBAGENT_MAILBOX` |
+| context.verifyFirstSession / verifyFirstOrchestration / verifyFirstTurn / verifyFirstSubagent / taskTracker / handoverResume / defectNudge | true | — |
+| maintenance.repairOnReload / progressPrune / precompactSnapshot / taskLifecycleLog / sessionEndReaper | true | `ANTIHALL_REPAIR_ON_RELOAD`, `ANTI_HALL_SESSION_END_REAPER` |
 | versionAlerts.antiHall / claudeCli / devswarm | true | `ANTIHALL_VERSION_ALERT`, `ANTIHALL_CLAUDE_CLI_VERSION_ALERT`, `ANTIHALL_DEVSWARM_VERSION_ALERT` |
 | updates.quiet | false | `ANTIHALL_UPDATE_QUIET` |
 | limitConserve.mode / threshold | auto / 85 | `ANTIHALL_LIMIT_CONSERVE`, `ANTIHALL_LIMIT_THRESHOLD` |
@@ -214,15 +222,17 @@ the schema's non-advanced set. Codex: no `/config`, use the skill.
 | devswarm.hivecontrol / supervisorMode / requiredGates / inboxCmd | "" / auto / done,merged,tests_passed / "" | `ANTIHALL_DEVSWARM_*` |
 | devswarm.autoArchive.mode (+ idleMin, maxPerSweep advanced) | on (30, 3) | `ANTIHALL_DEVSWARM_AUTO_ARCHIVE_MODE` |
 | devswarm.retention.days / maxStoreMB / keepPerPartition / archive / archiveMaxMB (advanced) | 30 / 100 / 200 / true / 0 (no cap) | `ANTIHALL_DEVSWARM_RETENTION_*` |
+| devswarm.parentGate / childGate / parentInbox / childTurn / childRole / childDrain / parentReplyTracker / commsGuard / inboxReadGuard / wakeWatch / appSync / screenshotSync | true | `ANTIHALL_DEVSWARM_APP_SYNC` (appSync) |
 | statusline.base / noEmail | "" / false | `ANTIHALL_STATUSLINE_BASE`, `ANTIHALL_STATUSLINE_NO_EMAIL` |
 | codexNudge.enabled | true | `ANTIHALL_CODEX_NUDGE` |
 | defects.defaultProj | "" | `ANTIHALL_DEFECT_PROJ` |
 
-Env-only switches: `ANTIHALL_REPAIR_ON_RELOAD=off`, `ANTIHALL_MODEL_ROUTING=advisory`,
-`ANTIHALL_CONTEXT_WINDOW_TOKENS`, `ANTI_HALL_THROTTLE_PATTERNS`,
-`ANTI_HALL_SESSION_END_REAPER=0`, `ANTIHALL_REAPER_MATCH/EXCLUDE`,
-`ANTIHALL_DEVSWARM_APP_DB` (path or `off`), `ANTIHALL_DEVSWARM_APP_SYNC=0`. The ~35 DevSwarm
-tuning knobs are advanced settings (`show --section devswarm --all`).
+Env-only: `ANTIHALL_CONTEXT_WINDOW_TOKENS`, `ANTI_HALL_THROTTLE_PATTERNS`,
+`ANTIHALL_DEVSWARM_APP_DB` (path or `off`). The ~35 DevSwarm tuning knobs are advanced
+settings (`show --section devswarm --all`). No switch on purpose (`settings.js show` lists
+the reasons): skip-guard, coordinator-detect, omc-detect, phase-tracker, fable-availability,
+codex-availability, emit-dedupe-reset, agent-watchdog, command-guard's data-safety
+sub-guards.
 
 ## State files (~/.anti-hall/)
 

@@ -737,8 +737,13 @@ See `statusline/STATUSLINE.md` for details and how to revert.
 ## Settings (`/anti-hall:settings`)
 
 Every user-facing anti-hall setting lives in ONE place: `~/.anti-hall/settings.json`,
-organized into sections (`autoHandover`, `guards`, `jev`, `limitConserve`, `devswarm`,
-`statusline`, `codexNudge`, `versionAlerts`, `updates`, `defects`). The declarative
+organized into sections (`autoHandover`, `guards`, `safety`, `context`, `maintenance`,
+`jev`, `limitConserve`, `devswarm`, `statusline`, `codexNudge`, `versionAlerts`,
+`updates`, `defects`). Since 0.108.4 every hook anti-hall registers (Claude and Codex)
+has an on/off switch whose default is the old behaviour; the hook checks it first and
+does nothing when it is off. The few parts with no switch on purpose (shared libraries,
+bookkeeping hooks other features read) are listed with the reason at the end of
+`settings.js show`. The declarative
 registry of every setting (key, type, allowed values, default, env-var override, legacy
 source, description) is `hooks/lib/settings-schema.js`; the read/write API is
 `hooks/lib/settings.js`. Every `devswarm` knob's consumer takes an explicit `env`
@@ -758,7 +763,9 @@ wired resolver.
   ("Auto Handover · Threshold %"). `plugin.json` `userConfig` is hand-kept and
   `tests/hooks/settings-schema.test.js` fails if it drifts from the schema's non-advanced
   set (key, type, default, min/max, title prefix) or if any field declares `options`.
-  Advanced/tuning knobs stay off `/config`; use the CLI below.
+  Advanced/tuning knobs stay off `/config` (use the CLI below), except the two safety-locked
+  advanced knobs (`guards.editGuardAllow`, `guards.allowSubagentMailbox`), which need a
+  `/config` row because only you may change them.
 - **Ask for it** — say "turn off the merge gate" or "set auto-handover to 80%" and the
   `settings` skill applies it with one `set` (no table dump); "show my anti-hall settings"
   prints the tables only when you ask.
@@ -776,11 +783,23 @@ wired resolver.
   (every non-advanced setting, plus the DevSwarm auto-archive tuning pair, is declared in
   `plugin.json`'s `userConfig` so it shows up there; shown as Source `/config`) → a legacy per-feature config file
   (e.g. `~/.anti-hall/jev.json`) → the schema default. `show`'s Source column tells you
-  which tier answered a given row.
+  which tier answered a given row. Safety-locked keys skip the `settings.json` and legacy
+  tiers (see below).
 - **Known limitation (`/config`):** a `/config` value that equals the manifest default
   (`plugin.json` `userConfig` default) is indistinguishable from "never set", so it counts as
   unset and a lower tier (a legacy file, the schema default) answers. To pin a value that
   equals the default, set it in `settings.json` (`/anti-hall:settings`) instead.
+- **Safety guards are human-only ("safety" in the table below).** `safety.gitGuard`, `safety.commandGuard`,
+  `safety.editGuard`, `safety.swarmGuard`, and the knobs that weaken them
+  (`guards.stashGuard`, `guards.editGuardAllow`, `guards.allowSubagentMailbox`) can only be
+  changed by you: in `/config` (their anti-hall rows) or with their env var. `settings.js
+  set`/`reset` refuse them ("safety guard — change it yourself in /config (anti-hall
+  rows)"), and a value an agent writes into `~/.anti-hall/settings.json` is ignored for
+  them. The one exception: settings.json may still turn one of them the SAFER way (e.g.
+  arm `guards.stashGuard`). Turning `safety.commandGuard` or `safety.editGuard` off turns
+  off the delegation check only; command-guard's data-safety sub-guards stay on. The
+  per-guard `skip.json` escape hatch works as before, and `"all"` still never covers
+  git-guard. On Codex there is no `/config`: use the env vars.
 - **Legacy config is never deleted.** `~/.anti-hall/jev.json` (and any future
   per-feature config file the schema maps) keeps working as a fallback forever;
   `doctor --repair` and `/anti-hall:update` forward-migrate its values into
@@ -794,7 +813,7 @@ wired resolver.
 
 ### Every setting
 
-Generated from `hooks/lib/settings-schema.js` (a hygiene test keeps this table and the schema in sync). "adv" = advanced (shown by `show --all`).
+Generated from `hooks/lib/settings-schema.js` (a hygiene test keeps this table and the schema in sync). "adv" = advanced (shown by `show --all`); "safety" = human-only (/config or env; `set`/`reset` refuse it).
 
 | Setting | Default | Env | Notes |
 |---|---|---|---|
@@ -809,15 +828,38 @@ Generated from `hooks/lib/settings-schema.js` (a hygiene test keeps this table a
 | `guards.outputVerifyGuard` | `true` | `ANTIHALL_OUTPUT_VERIFY_GUARD` | Output-verification guard (blocks unverified completion claims). |
 | `guards.failureRootCauseNudge` | `true` | `ANTIHALL_FAILURE_ROOT_CAUSE_NUDGE` | Nudge toward root-cause analysis after a failure. |
 | `guards.repoSelfDrift` | `true` | `ANTIHALL_REPO_SELF_DRIFT` | anti-hall's own repo-drift self-check hook. |
-| `guards.stashGuard` | `false` | `ANTIHALL_STASH_GUARD` | Arm stash-protection warnings in git-guard (also armed per-repo via .anti-hall/protected-stashes). |
+| `guards.stashGuard` safety | `false` | `ANTIHALL_STASH_GUARD` | SAFETY (human-only: /config or env; settings.json can only arm it). Arm the git-stash guard in command-guard: block mutating `git stash` (also armed per-repo via .anti-hall/protected-stashes). |
 | `guards.emitDedupe` | `true` | `ANTIHALL_EMIT_DEDUPE` | Deduplicate repeated hook-emit output. |
-| `guards.editGuardAllow` adv | — | `ANTIHALL_EDIT_GUARD_ALLOW` | Extra allowed file globs for edit-guard (comma/colon separated). |
-| `guards.allowSubagentMailbox` adv | `false` | `ANTIHALL_ALLOW_SUBAGENT_MAILBOX` | One-off allow for the subagent-mailbox command pattern. |
+| `guards.editGuardAllow` adv safety | — | `ANTIHALL_EDIT_GUARD_ALLOW` | SAFETY (human-only: /config or env; widens edit-guard). Extra allowed file globs for edit-guard (comma/colon separated). |
+| `guards.allowSubagentMailbox` adv safety | `false` | `ANTIHALL_ALLOW_SUBAGENT_MAILBOX` | SAFETY (human-only: /config or env; bypasses a data-safety guard). One-off allow for the subagent-mailbox command pattern. |
 | `guards.reaperMatch` adv | — | `ANTIHALL_REAPER_MATCH` | Extra process-name pattern for the MCP session-end reaper. |
 | `guards.reaperExclude` adv | — | `ANTIHALL_REAPER_EXCLUDE` | Excludes matching processes from the MCP reaper. |
 | `guards.tasklistWorkThreshold` adv | `3` [1..] | `ANTIHALL_TASKLIST_WORK_THRESHOLD` | Minimum work items before tasklist-guard fires. |
 | `guards.progressFreshMs` adv | `1800000` [0..] | `ANTIHALL_PROGRESS_FRESH_MS` | Freshness window (ms) for the progress file in tasklist-guard. |
 | `guards.apiGuardThirdparty` adv | `false` | `ANTIHALL_API_GUARD_THIRDPARTY` | Also verify installed 3rd-party package APIs, not just stdlib/builtins. |
+| `guards.modelRouting` | `strict` (strict/advisory/off) | `ANTIHALL_MODEL_ROUTING` | model-routing-guard (PreToolUse Agent/Task): strict blocks a mis-tiered spawn, advisory only warns, off disables the hook. |
+| `guards.apiGuard` | `true` | — | api-guard (PreToolUse Write/Edit): block fabricated stdlib/builtin APIs in written code. |
+| `guards.speculationGuard` | `true` | — | speculation-guard (Stop): block a turn that ends on unverified hedged claims. |
+| `guards.claimLedger` | `true` | — | claim-ledger (Stop, never blocks): record claims in the last reply that nothing in the session backs. |
+| `guards.taskGuard` | `true` | — | task-guard (Stop): block stopping while tracked tasks are still open. |
+| `guards.tasklistGuard` | `true` | — | tasklist-guard (Stop): require a task list / progress file for multi-step work. |
+| `guards.scanThrottle` | `true` | `ANTI_HALL_SCAN_THROTTLE` | scan-throttle (PreToolUse Bash): run heavy repo-wide scans at background priority (nice/taskpolicy). |
+| `safety.gitGuard` safety | `true` | `ANTIHALL_GIT_GUARD` | git-guard: block force-push and AI self-credit in commits and gh pr/issue/release bodies. |
+| `safety.commandGuard` safety | `true` | `ANTIHALL_COMMAND_GUARD` | command-guard core: make the coordinator delegate heavy commands (build/test/deploy/push). Its data-safety sub-guards (DevSwarm read/send/mailbox, armed stash guard) stay on. |
+| `safety.editGuard` safety | `true` | `ANTIHALL_EDIT_GUARD` | edit-guard core: make the coordinator delegate file edits outside its own plan/state/handover files. |
+| `safety.swarmGuard` safety | `true` | `ANTIHALL_SWARM_GUARD` | swarm-guard: block agent spawns past the spawn-rate cap or under critical memory pressure. |
+| `context.verifyFirstSession` | `true` | — | verify-first-full (SessionStart): inject the full verify-first protocol (also re-injected after compaction). |
+| `context.verifyFirstOrchestration` | `true` | — | verify-first-orch (SessionStart): inject the orchestration discipline for the main thread. |
+| `context.verifyFirstTurn` | `true` | — | verify-first (UserPromptSubmit): the short per-turn verify-first nudge. |
+| `context.verifyFirstSubagent` | `true` | — | verify-first-subagent (SubagentStart): inject the protocol into every subagent. |
+| `context.taskTracker` | `true` | — | task-tracker (UserPromptSubmit): the task-list discipline directive and per-turn reminder. |
+| `context.handoverResume` | `true` | — | handover-resume (SessionStart): point a fresh or compacted session at the newest handover. |
+| `context.defectNudge` | `true` | — | defect-nudge (SessionStart): the once-a-day note about the defect channel. |
+| `maintenance.repairOnReload` | `true` | `ANTIHALL_REPAIR_ON_RELOAD` | repair-on-reload (SessionStart/UserPromptSubmit): re-apply safe doctor repairs after a plugin update. |
+| `maintenance.progressPrune` | `true` | — | progress-prune (SessionStart): archive stale per-session progress files into the history ledger. |
+| `maintenance.precompactSnapshot` | `true` | — | precompact-snapshot (PreCompact): write a mechanical continuation snapshot before compaction. |
+| `maintenance.taskLifecycleLog` | `true` | — | task-lifecycle-log (TaskCreated/TaskCompleted): append task events to the per-session history ledger. |
+| `maintenance.sessionEndReaper` | `true` | `ANTI_HALL_SESSION_END_REAPER` | session-end-mcp-reaper (SessionEnd): kill orphaned MCP-server processes this session left behind. |
 | `versionAlerts.antiHall` | `true` | `ANTIHALL_VERSION_ALERT` | Alert when a newer anti-hall version is available. |
 | `versionAlerts.claudeCli` | `true` | `ANTIHALL_CLAUDE_CLI_VERSION_ALERT` | Alert when a newer Claude CLI version is available. |
 | `versionAlerts.devswarm` | `true` | `ANTIHALL_DEVSWARM_VERSION_ALERT` | Alert when a newer DevSwarm/hivecontrol version is available. |
@@ -901,6 +943,18 @@ Generated from `hooks/lib/settings-schema.js` (a hygiene test keeps this table a
 | `devswarm.retention.keepPerPartition` adv | `200` [0..] | `ANTIHALL_DEVSWARM_RETENTION_KEEP_PER_PARTITION` | Newest messages per partition that are never pruned (age or size). |
 | `devswarm.retention.archive` adv | `true` | `ANTIHALL_DEVSWARM_RETENTION_ARCHIVE` | Write pruned bodies to the gzip archive first (restorable via `devswarm.js retention restore`). |
 | `devswarm.retention.archiveMaxMB` adv | `0` [0..] | `ANTIHALL_DEVSWARM_RETENTION_ARCHIVE_MAX_MB` | Archive size cap (MB); 0 (default) = never evict; above a set cap the oldest archive months are dropped. doctor warns past 500 MB. |
+| `devswarm.parentGate` | `true` | — | devswarm-parent-gate (Stop): make a Primary attend to a child with unread mail or a stale verdict before stopping. |
+| `devswarm.childGate` | `true` | — | devswarm-child-gate (Stop): make a child workspace heartbeat/report to its parent before going idle. |
+| `devswarm.parentInbox` | `true` | — | devswarm-parent-inbox (UserPromptSubmit): inject the workspace roster and unread child mail into a Primary. |
+| `devswarm.childTurn` | `true` | — | devswarm-child-turn (UserPromptSubmit): inject a child workspace's pending mail each turn. |
+| `devswarm.childRole` | `true` | — | devswarm-child-role (SessionStart): inject the mesh-only messaging directive into Primary and child sessions. |
+| `devswarm.childDrain` | `true` | — | devswarm-child-drain (PostToolUse Bash): re-surface a child's unread mail mid-task (throttled). |
+| `devswarm.parentReplyTracker` | `true` | — | devswarm-parent-reply-tracker (PostToolUse Bash): record the Primary's direct replies so the parent gate can tell read from answered. |
+| `devswarm.commsGuard` | `true` | — | devswarm-comms-guard (PreToolUse SendMessage): block SendMessage to a DevSwarm workspace (mesh messaging only). |
+| `devswarm.inboxReadGuard` | `true` | — | inbox-read-guard (PreToolUse Read): block raw Read-tool reads of the DevSwarm inbox/store (use the wrapper). |
+| `devswarm.wakeWatch` | `true` | — | devswarm-wake-watch monitor: wake an idle session the moment new mesh mail lands (the cron fallback stays). |
+| `devswarm.appSync` | `true` | `ANTIHALL_DEVSWARM_APP_SYNC` | Supervisor app-DB sync: apply the DevSwarm app database (archive state, names, drift) every tick. |
+| `devswarm.screenshotSync` | `true` | — | `devswarm.js sync-ui`: reconcile a transcribed sidebar screenshot against the app DB. |
 | `statusline.base` | — | `ANTIHALL_STATUSLINE_BASE` | Shell command run as the line-1 base in consolidated statusline mode. |
 | `statusline.noEmail` | `false` | `ANTIHALL_STATUSLINE_NO_EMAIL` | Suppress the email segment in the statusline. |
 | `codexNudge.enabled` | `true` | `ANTIHALL_CODEX_NUDGE` | Enable the Codex hand-off nudge hook. |

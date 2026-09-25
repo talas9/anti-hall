@@ -6,10 +6,12 @@ description: Show or change any anti-hall setting. Use when the user says "anti-
 # Settings
 
 anti-hall keeps every user-facing setting in ONE place: `~/.anti-hall/settings.json`,
-organized into sections (autoHandover, guards, jev, jevIntegrations, limitConserve,
-devswarm, statusline, ...). `scripts/settings.js` is the only thing that reads or
-writes it. `jevIntegrations` (v0.108.4) is a dedicated section holding all 12
-per-integration Jev trust modes as their own rows/settings — see the `jev` skill's
+organized into sections (autoHandover, guards, safety, context, maintenance, jev,
+jevIntegrations, limitConserve, devswarm, statusline, ...). `scripts/settings.js` is the
+only thing that reads or writes it. Every hook anti-hall registers has an on/off switch
+(default = on, the old behaviour); `show` ends with the short list of parts that have no
+switch on purpose, and why. `jevIntegrations` (v0.108.4) is a dedicated section holding
+all 12 per-integration Jev trust modes as their own rows/settings — see the `jev` skill's
 "Per-integration modes" for the full table.
 
 ## Default: point the user at `/config`
@@ -17,7 +19,7 @@ per-integration Jev trust modes as their own rows/settings — see the `jev` ski
 Every non-advanced setting is a row in Claude Code's native **`/config`** panel
 (declared in `plugin.json`'s `userConfig`). Titles carry the section as a prefix
 ("Auto Handover · Threshold %", "Guards · Merge-readiness gate"); enum settings are
-pickers; everything is edited with the arrow keys, no model involved. When the user just
+text fields whose description lists the allowed values; no model involved. When the user just
 says "anti-hall settings" / "change my settings", tell them that in one or two lines:
 
 > Change settings in `/config` (the anti-hall rows) — arrow keys, no model; or tell me
@@ -44,6 +46,29 @@ A value set this way is stored in settings.json and WINS over `/config` from the
 so the `/config` row takes over again. Known limitation: a `/config` value equal to the
 manifest default counts as unset (a lower tier answers); to pin a default-valued
 setting, `set` it here.
+
+## Safety guards: the human changes these, never you
+
+`safety.gitGuard`, `safety.commandGuard`, `safety.editGuard`, `safety.swarmGuard`,
+`guards.stashGuard`, `guards.editGuardAllow` and `guards.allowSubagentMailbox` are
+safety keys. `set` and `reset` refuse them with "safety guard — change it yourself in
+/config (anti-hall rows)", and a value written into `~/.anti-hall/settings.json` is
+ignored for them. When the user asks to turn one off, do not try another route: tell
+them to change the anti-hall row in `/config` themselves (on Codex: the env var from
+`show`, e.g. `ANTIHALL_GIT_GUARD=0`). A one-off pause is still the per-guard `skip.json`
+escape hatch, only on the user's explicit request.
+
+## Turning a hook off
+
+"Turn off the task-list nudge", "stop the per-turn verify-first line", "disable the
+parent gate" and the like are one `set <section.key> false`. The switch keys:
+`context.*` (verify-first injections, task tracker, handover resume, defect nudge),
+`maintenance.*` (repair-on-reload, progress prune, pre-compact snapshot, task
+lifecycle log, session-end MCP reaper), `guards.*` (api, speculation, claim ledger,
+task, task-list, scan throttle; `guards.modelRouting` takes `strict|advisory|off`),
+and `devswarm.*` (parentGate, childGate, parentInbox, childTurn, childRole, childDrain,
+parentReplyTracker, commsGuard, inboxReadGuard, wakeWatch, appSync, screenshotSync).
+Settings are read when each hook runs, so a change applies from the next hook call.
 
 ## `show` only when asked
 
