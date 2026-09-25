@@ -38,9 +38,15 @@ A broker is reaped only if its script/path signature matches, it is older than
 one of:
 - (a) its `--cwd` directory no longer exists (the worktree was
   removed/archived); or
-- (b) no live `claude`/`codex` process has a cwd at or under that `--cwd`
-  (checked via `/proc/<pid>/cwd` on Linux, `lsof -a -d cwd -p <pid>` on
-  macOS/BSD).
+- (b) no live `claude`/`codex` process has a cwd **equal to, an ancestor of, or
+  a descendant of** that `--cwd` (checked via `/proc/<pid>/cwd` on Linux,
+  `lsof -a -d cwd -p <pid>` on macOS/BSD). The ancestor direction matters: a
+  Claude session commonly runs at a workspace **root** while a broker it owns
+  runs `--cwd` inside a **git submodule** under that root (the real field
+  case) — a descendant-only check would have reaped that live broker after
+  the age floor. Path comparison is segment-boundary-safe (`/a/bc` is never
+  mistaken for being related to `/a/b`). An owner whose cwd is `/` or `$HOME`
+  then blocks every reap under it — an accepted safe-side failure mode.
 
 Anything unresolvable (the `--cwd` can't be parsed, an owner-process cwd
 lookup fails) is **skipped, never reaped**. Toggle: `guards.reaperCodexBroker`

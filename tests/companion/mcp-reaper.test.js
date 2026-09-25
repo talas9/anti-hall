@@ -337,6 +337,39 @@ test('hasLiveOwnerAtCwd: fail-soft true when a candidate owner\'s cwd cannot be 
   assert.strictEqual(m.hasLiveOwnerAtCwd(BROKER_CWD, procs, cwdOf), true);
 });
 
+// BLOCKER (2026-09-25): the real field case has the broker's --cwd INSIDE a git
+// submodule (`<workspace>/skyflutter`) while the owning Claude session's cwd is the
+// workspace ROOT — an ANCESTOR of the broker's --cwd, not the same dir or a
+// descendant. A descendant-only check would have reaped that live broker.
+test('hasLiveOwnerAtCwd: true when the owner is at an ANCESTOR dir (workspace root) of a submodule broker', () => {
+  const workspaceRoot = '/Users/talas9/.devswarm/repos/0/11f7ff9d/fix-roster-image-only-message';
+  const submoduleBrokerCwd = workspaceRoot + '/skyflutter';
+  const procs = [{ pid: 500, ppid: 1, cmd: '/opt/homebrew/bin/claude' }];
+  const cwdOf = (pid) => (pid === 500 ? workspaceRoot : null);
+  assert.ok(
+    m.hasLiveOwnerAtCwd(submoduleBrokerCwd, procs, cwdOf),
+    'an owner at the workspace root must count as owning a broker in a submodule under it'
+  );
+});
+
+test('isPathAncestorOrSame: segment-boundary-safe — /a/bc is NOT related to /a/b', () => {
+  assert.strictEqual(m.isPathAncestorOrSame('/a/b', '/a/bc'), false);
+  assert.strictEqual(m.isPathAncestorOrSame('/a/bc', '/a/b'), false);
+  // Sanity: real ancestor/descendant/same relationships DO hold.
+  assert.strictEqual(m.isPathAncestorOrSame('/a/b', '/a/b'), true);
+  assert.strictEqual(m.isPathAncestorOrSame('/a/b', '/a/b/c'), true);
+  assert.strictEqual(m.isPathAncestorOrSame('/a/b/c', '/a/b'), false);
+});
+
+test('hasLiveOwnerAtCwd: sibling-prefix path /a/bc does NOT count as owning a broker at /a/b', () => {
+  const procs = [{ pid: 500, ppid: 1, cmd: '/opt/homebrew/bin/claude' }];
+  const cwdOf = (pid) => (pid === 500 ? '/a/bc' : null); // sibling dir, shares a string prefix only
+  assert.strictEqual(m.hasLiveOwnerAtCwd('/a/b', procs, cwdOf), false);
+  // And the reverse direction: an owner at /a/b must not count for a broker at /a/bc.
+  const cwdOfB = (pid) => (pid === 500 ? '/a/b' : null);
+  assert.strictEqual(m.hasLiveOwnerAtCwd('/a/bc', procs, cwdOfB), false);
+});
+
 function agesOf(map) {
   return (pids) => new Map(pids.filter((p) => map.has(p)).map((p) => [p, map.get(p)]));
 }
@@ -356,6 +389,28 @@ test('findCodexBrokerOrphans: a LIVE broker (PPID 1, live claude owns its cwd) i
     existsSync: () => true,
   });
   assert.strictEqual(orphans.length, 0, 'PPID 1 must never be treated as evidence of death for this class');
+});
+
+test('findCodexBrokerOrphans: end-to-end submodule case — owner at the workspace root is NOT selected', () => {
+  const workspaceRoot = '/Users/talas9/.devswarm/repos/0/11f7ff9d/fix-roster-image-only-message';
+  const submoduleBrokerCmd =
+    '/Users/talas9/.nvm/versions/node/v24.14.0/bin/node ' +
+    '/Users/talas9/.claude/plugins/cache/openai-codex/codex/1.0.6/scripts/app-server-broker.mjs ' +
+    'serve --endpoint unix:/var/folders/x/T/cxc-abc/broker.sock ' +
+    `--cwd ${workspaceRoot}/skyflutter ` +
+    '--pid-file /var/folders/x/T/cxc-abc/broker.pid';
+  const procs = [
+    { pid: 500, ppid: 1, cmd: '/opt/homebrew/bin/claude' }, // owning session cwd = workspace ROOT
+    { pid: 2000, ppid: 1, cmd: submoduleBrokerCmd }, // broker --cwd = a SUBMODULE under that root
+  ];
+  const orphans = m.findCodexBrokerOrphans(procs, {
+    enabled: true,
+    minAgeS: 1800,
+    getAgesForPids: agesOf(new Map([[2000, 999999]])), // well past the age floor
+    existsSync: () => true,
+    cwdOf: (pid) => (pid === 500 ? workspaceRoot : null),
+  });
+  assert.strictEqual(orphans.length, 0, 'an owner at an ancestor dir must block the reap');
 });
 
 test('findCodexBrokerOrphans: a broker whose --cwd is gone IS selected', () => {
@@ -476,6 +531,7 @@ test('findCodexBrokerOrphans: unparseable --cwd is skipped, never reaped', () =>
 test('exports include the codex-broker class', () => {
   assert.strictEqual(typeof m.matchesCodexBroker, 'function');
   assert.strictEqual(typeof m.extractBrokerCwd, 'function');
+  assert.strictEqual(typeof m.isPathAncestorOrSame, 'function');
   assert.strictEqual(typeof m.hasLiveOwnerAtCwd, 'function');
   assert.strictEqual(typeof m.findCodexBrokerOrphans, 'function');
   assert.strictEqual(typeof m.defaultCwdOf, 'function');

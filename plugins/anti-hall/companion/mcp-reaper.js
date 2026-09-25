@@ -212,9 +212,14 @@ function findOrphans(procList, extraRe, excludeRe) {
 // higher than the generic MCP class since PPID gives zero signal here) AND AT LEAST ONE
 // of these two INDEPENDENT proofs that its owner is gone holds:
 //   (a) its --cwd directory no longer exists (the worktree was removed/archived); or
-//   (b) no live `claude`/`codex` process has a cwd at-or-under that --cwd (checked via
-//       /proc/<pid>/cwd on Linux, `lsof -a -d cwd -p <pid> -Fn` on macOS/BSD — mirrors
-//       companion/lib/target-session.js's own defaultRunners().cwdOf).
+//   (b) no live `claude`/`codex` process has a cwd equal to, an ANCESTOR of, or a
+//       DESCENDANT of that --cwd (checked via /proc/<pid>/cwd on Linux, `lsof -a -d cwd
+//       -p <pid> -Fn` on macOS/BSD — mirrors companion/lib/target-session.js's own
+//       defaultRunners().cwdOf). The ancestor direction matters: a Claude session
+//       commonly runs at a workspace ROOT while a broker it owns runs `--cwd` inside a
+//       git submodule under that root (the real field case) — a descendant-only check
+//       would have reaped that live broker. See hasLiveOwnerAtCwd for the segment-
+//       boundary-safe comparison (`/a/bc` is never mistaken for a relative of `/a/b`).
 // Anything unresolvable (cwd can't be parsed from the cmdline, the owner-process cwd
 // lookup itself fails) -> SKIP, never reaped. This is a proof-of-abandonment gate, not a
 // parent-liveness gate — matchesMcp's own invariant is completely untouched.
@@ -258,10 +263,27 @@ const OWNER_PROC_RE = /(^|[\s/\\])(claude|codex)(\s|$)/i;
 // age is one of the few remaining safety margins against a fresh false "no owner found".
 const DEFAULT_CODEX_BROKER_MIN_AGE_S = 1800;
 
+// isPathAncestorOrSame(ancestor, other) -> bool. Segment-boundary-safe: `/a/b` is an
+// ancestor of `/a/b/c` (next char after the prefix is path.sep), but NOT of `/a/bc`
+// (next char is `c`, not a boundary) — a naive `startsWith` would wrongly match that.
+function isPathAncestorOrSame(ancestor, other) {
+  if (ancestor === other) return true;
+  return other.startsWith(ancestor.endsWith(path.sep) ? ancestor : ancestor + path.sep);
+}
+
 // hasLiveOwnerAtCwd(brokerCwd, procs, cwdOfFn) -> bool. True if ANY live claude/codex
-// process's cwd is the broker's --cwd or a descendant of it, OR if a candidate owner
-// process exists but its cwd could not be resolved (fail-soft: an unresolved candidate is
-// treated as "might still own this broker", never as proof of absence).
+// process's cwd is EQUAL TO, an ANCESTOR of, or a DESCENDANT of the broker's --cwd — a
+// Claude session commonly runs at a workspace root while the broker it owns runs `--cwd`
+// inside a git submodule several levels under that root (the real field case: broker
+// `--cwd .../fix-roster-image-only-message/skyflutter`, owning session cwd
+// `.../fix-roster-image-only-message`, an ANCESTOR, not the same dir or a descendant — a
+// descendant-only check would have reaped that live broker after the age floor). Segment
+// boundaries matter both directions: an owner at `/a/bc` never counts for a broker at
+// `/a/b` (see isPathAncestorOrSame). An owner cwd of `/` or `$HOME` then blocks every
+// reap of every broker under it — accepted as the safe-side failure mode. Also true (fail-
+// soft) if a candidate owner process exists but its cwd could not be resolved — an
+// unresolved candidate is treated as "might still own this broker", never as proof of
+// absence.
 function hasLiveOwnerAtCwd(brokerCwd, procs, cwdOfFn) {
   const target = path.resolve(brokerCwd);
   let unresolvedCandidate = false;
@@ -278,7 +300,7 @@ function hasLiveOwnerAtCwd(brokerCwd, procs, cwdOfFn) {
       continue;
     }
     const resolved = path.resolve(cwd);
-    if (resolved === target || resolved.startsWith(target + path.sep)) return true;
+    if (isPathAncestorOrSame(resolved, target) || isPathAncestorOrSame(target, resolved)) return true;
   }
   return unresolvedCandidate; // can't rule ownership out -> fail-soft "has an owner"
 }
@@ -379,6 +401,7 @@ module.exports = {
   REAPER_CMD_RE,
   matchesCodexBroker,
   extractBrokerCwd,
+  isPathAncestorOrSame,
   hasLiveOwnerAtCwd,
   findCodexBrokerOrphans,
   defaultCwdOf,
