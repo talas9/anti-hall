@@ -85,6 +85,40 @@ const HEAVY_PATTERNS = [
   /\bdeno\s+(?:run|task)\b/i,
 ];
 
+// anchoredAntiHallCli(dir, script, tailSrc) -> RegExp for one of anti-hall's
+// own CLI allowlist entries below. Every entry MUST be built through this one
+// helper so a future addition can't forget the anchoring discipline that
+// bcd0d69 first applied to the defect.js entry alone (a real, shipped bypass:
+// the un-anchored `\b`-only form matches ANYWHERE in the segment, so `npm run
+// build -- node scripts/devswarm.js list` / `... settings.js show` slipped a
+// heavy command through just by mentioning an allowlisted script as trailing
+// args).
+//
+// The produced regex requires the SEGMENT to literally START with (optional
+// leading `KEY=val` env assignments, then) `node <path>/<dir>/<script>.js`:
+//   - `^\s*` anchors to the segment start (segments are already split on
+//     `;`/`&&`/`||`/`|`/newlines by splitSegments before this runs).
+//   - `(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*` allows leading env assignments
+//     only (e.g. `FOO=1 node scripts/defect.js list`), matching the one
+//     allowance the pre-existing defect.js anchor already granted.
+//   - `node\s+(?:\S*[\\/])?<dir>[\\/]<script>\.js` requires `node` to be the
+//     segment's OWN verb (not merely present later in the line), with an
+//     optional arbitrary path prefix before `<dir>/<script>.js` (both `/`
+//     and `\` accepted for Windows parity), same discipline every pre-
+//     existing entry already used for the parent-dir segment.
+//   - `tailSrc` is the caller's own subcommand/flag restriction (already
+//     regex source, not a literal), appended unchanged right after the
+//     script name — e.g. `\s+(?:-\S+\s+)*status\b` for jev-setup.js.
+function anchoredAntiHallCli(dir, script, tailSrc) {
+  const dirSrc = dir.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const scriptSrc = script.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(
+    '^\\s*(?:[A-Za-z_][A-Za-z0-9_]*=\\S*\\s+)*node\\s+(?:\\S*[\\\\/])?' +
+      dirSrc + '[\\\\/]' + scriptSrc + '\\.js' + tailSrc,
+    'i'
+  );
+}
+
 // Commands that look heavy by verb but are actually lightweight inspection commands.
 // We allow these even if the verb matches HEAVY_VERBS.
 const LIGHT_EXCEPTIONS = [
@@ -128,33 +162,37 @@ const LIGHT_EXCEPTIONS = [
   // (not the whole script), mirroring the devswarm.js carve-out's anchoring
   // discipline (parent dir segment anchored at token start or path separator,
   // both `/` and `\` accepted) so a look-alike prefix is never exempted.
+  //
+  // ALL of the entries below are built with anchoredAntiHallCli() (see its
+  // doc comment further down this file for why). Every one is ALSO anchored
+  // to the START of the segment (optional leading env assignments only):
+  // `node` must be the segment's own verb, so a heavy command merely
+  // carrying an allowlisted script as trailing args (`npm run build -- node
+  // scripts/devswarm.js list`) is never exempted. bcd0d69 anchored only the
+  // defect.js entry this way; every entry below now shares that same
+  // discipline through the one helper so a future addition can't forget it.
   //   jev-setup.js status        — read-only status report (enable/disable/
   //                                 set-key/test/mode are NOT matched, still gated)
+  anchoredAntiHallCli('scripts', 'jev-setup', '\\s+(?:-\\S+\\s+)*status\\b'),
   //   settings.js show|get       — read-only (set/reset are NOT matched)
+  anchoredAntiHallCli('scripts', 'settings', '\\s+(?:-\\S+\\s+)*(?:show|get)\\b'),
   //   jev-report.js (default)    — read-only report/scorecard UNLESS its first
   //                                 positional argument is the mutating `label`
   //                                 or `prune-audit` subcommand (negative lookahead)
-  /\bnode\s+(?:\S*[\\/])?scripts[\\/]jev-setup\.js\s+(?:-\S+\s+)*status\b/i,
-  /\bnode\s+(?:\S*[\\/])?scripts[\\/]settings\.js\s+(?:-\S+\s+)*(?:show|get)\b/i,
-  /\bnode\s+(?:\S*[\\/])?scripts[\\/]jev-report\.js\b(?![^\n]*\b(?:label|prune-audit)\b)/i,
+  anchoredAntiHallCli('scripts', 'jev-report', '\\b(?![^\\n]*\\b(?:label|prune-audit)\\b)'),
   //   defect.js report|list|show — anti-hall's own defect-report CLI (see
   //   scripts/defect.js). ONLY these three subcommands are exempt: `report`
   //   appends one line to a defect file (never rewrites/deletes), and
   //   `list`/`show` are pure reads. Deliberately NARROWER than this: `rule`
   //   (maintainer ruling) and `archive` (rotation sweep — MOVES files between
   //   directories) are NOT matched here, so they stay gated like every other
-  //   mutating command — anchored the same way as the exemptions above
-  //   (parent dir segment anchored at token start or path separator).
-  //   ALSO anchored to the START of the segment (optional leading env
-  //   assignments only): `node` must be the segment's own verb, so a heavy
-  //   command merely carrying it as trailing args (`npm run build -- node
-  //   scripts/defect.js list`) is never exempted.
-  /^\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*node\s+(?:\S*[\\/])?scripts[\\/]defect\.js\s+(?:-\S+\s+)*(?:report|list|show)\b/i,
+  //   mutating command.
+  anchoredAntiHallCli('scripts', 'defect', '\\s+(?:-\\S+\\s+)*(?:report|list|show)\\b'),
   // hooks/doctor.js: read-only diagnostics by default — --repair/--fix (and the
   // explicit opt-in repair flags, including --reclaim-ingest-lock, which forces
   // a stale-lock takeover — a mutating action) switch it to a mutating repair
   // pass, so any of those flags anywhere on the line disqualifies the exemption.
-  /\bnode\s+(?:\S*[\\/])?hooks[\\/]doctor\.js\b(?![^\n]*--(?:repair|fix|repair-ingest-orphans|repair-test-stores|reclaim-ingest-lock)\b)/i,
+  anchoredAntiHallCli('hooks', 'doctor', '\\b(?![^\\n]*--(?:repair|fix|repair-ingest-orphans|repair-test-stores|reclaim-ingest-lock)\\b)'),
   // anti-hall's own coordinator-owned phase-state helpers. These are documented
   // to run INLINE on the main thread on purpose — phase-state is written by the
   // coordinator, never a subagent (orchestration/SKILL.md, ship-it/SKILL.md).
@@ -165,8 +203,8 @@ const LIGHT_EXCEPTIONS = [
   // token start or immediately after a path separator) so a look-alike prefix
   // (`evilstatusline/phase.js`) or an arbitrary `node evil.js` is NOT exempted.
   // Both `/` and `\` separators are accepted so it resolves identically on Windows.
-  /\bnode\s+(?:\S*[\\/])?statusline[\\/]phase\.js\b/i,
-  /\bnode\s+(?:\S*[\\/])?hooks[\\/]agent-watchdog\.js\b/i,
+  anchoredAntiHallCli('statusline', 'phase', '\\b'),
+  anchoredAntiHallCli('hooks', 'agent-watchdog', '\\b'),
   // anti-hall's own DevSwarm CLI wrapper (scripts/devswarm.js). It is THE
   // structured interface the guard steers users toward (CLI over MCP), so the
   // generic `node <file>.js` HEAVY_PATTERN blocking its own wrapper is the exact
@@ -181,7 +219,7 @@ const LIGHT_EXCEPTIONS = [
   // command (`send`, `heartbeat`, `roster`, `mesh`, `inbox`, `archive-request`,
   // `reconcile`, `spawn`, `merge`) already runs inline, exempt from the heavy-
   // command gate, with no further change needed here.
-  /\bnode\s+(?:\S*[\\/])?scripts[\\/]devswarm\.js\b/i,
+  anchoredAntiHallCli('scripts', 'devswarm', '\\b'),
 ];
 
 // DevSwarm destructive-read redirect: the two CONSUMING native hivecontrol inbox

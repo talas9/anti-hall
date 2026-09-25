@@ -52,6 +52,13 @@ the update.
 - **Command guard allowlists read-only/append-only defect commands.**
   `node scripts/defect.js report|list|show` no longer requires approval;
   `rule` and `archive` remain gated.
+- **Command guard's own-CLI allowlist is anchored to the segment start
+  everywhere, not just for defect.js.** `jev-setup.js`, `settings.js`,
+  `jev-report.js`, `doctor.js`, `phase.js`, `agent-watchdog.js`, and
+  `devswarm.js` previously matched anywhere in the segment, so a heavy
+  command mentioning one as trailing args (`npm run build -- node
+  scripts/devswarm.js list`) slipped through unblocked; every entry now goes
+  through one shared anchoring helper so a future addition can't forget it.
 
 ### Added
 

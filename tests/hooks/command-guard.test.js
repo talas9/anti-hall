@@ -167,6 +167,18 @@ const BLOCK = [
   // not be exempted.
   'npm run build -- node scripts/defect.js list',
   'make all node scripts/defect.js show abc123',
+  // Same segment-start-anchoring bypass, but for EVERY OTHER anti-hall CLI
+  // allowlist entry (jev-setup.js, settings.js, jev-report.js, doctor.js,
+  // phase.js, agent-watchdog.js, devswarm.js) — only defect.js was anchored
+  // by bcd0d69; a heavy command merely carrying one of these scripts as
+  // trailing args after `--` must not be exempted either.
+  'npm run build -- node plugins/anti-hall/scripts/jev-setup.js status',
+  'npm run build -- node plugins/anti-hall/scripts/settings.js show',
+  'npm run build -- node plugins/anti-hall/scripts/jev-report.js',
+  'npm run build -- node plugins/anti-hall/hooks/doctor.js',
+  'npm run build -- node statusline/phase.js clear',
+  'npm run build -- node hooks/agent-watchdog.js',
+  'npm run build -- node scripts/devswarm.js roster',
 ];
 
 const ALLOW = [
