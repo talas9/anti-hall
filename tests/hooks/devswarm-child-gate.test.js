@@ -1413,3 +1413,18 @@ test('STOP POLICY: native probe FAILURE is unknown -> blocks with a warning, cap
     h.cleanup();
   }
 });
+
+// 0.108.4: the per-hook settings switch. Same fixture as the positive test
+// above, switch off -> silent no-op (exit 0, no stdout).
+test('SWITCH devswarm.childGate=false: a child Stop is no longer blocked', () => {
+  const { switchOff } = require('../helpers/settings-switch.js');
+  const h = makeHome();
+  seedAllTestDescriptors(h.home);
+  try {
+    switchOff(h.home, 'devswarm', 'childGate');
+    const r = testHook(HOOK, stopPayload(), { home: h.home, env: CHILD_ENV });
+    assert.strictEqual(r.status, 0);
+    assert.strictEqual(r.stdout.trim(), '');
+    assert.ok(!fs.existsSync(stateFile(h.home, 's1')), 'no gate state written when off');
+  } finally { h.cleanup(); }
+});

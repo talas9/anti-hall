@@ -722,9 +722,9 @@ test('readPrimarySnapshot (real store, not mocked): 50 broadcast/heartbeat rows 
 // ---------------------------------------------------------------------------
 
 // REFUSAL_LINE_RE — the fixed shape a REFUSED TO ARM line must take: the
-// literal prefix plus exactly one of the three closed-vocabulary reasons and
+// literal prefix plus exactly one of the closed-vocabulary reasons and
 // nothing else (no interpolated id/cwd/error text can slip in undetected).
-const REFUSAL_LINE_RE = /^\[wake-watch\] REFUSED TO ARM: (not-a-devswarm-session|identity-unresolved|lock-held)\n$/;
+const REFUSAL_LINE_RE = /^\[wake-watch\] REFUSED TO ARM: (not-a-devswarm-session|identity-unresolved|lock-held|disabled-by-settings)\n$/;
 
 test('lock-refused: a live-held lock emits exactly one REFUSED TO ARM (lock-held) stdout line and a stderr line, exit 0', (t) => {
   const home = tmpHome();
@@ -984,4 +984,22 @@ test('resolveOwnSessionId: falls back to ANTIHALL_SESSION_ID when neither Claude
 test('resolveOwnSessionId: returns undefined (never null/empty) when no session env var is set', () => {
   const id = withEnv({}, resolveOwnSessionId);
   assert.strictEqual(id, undefined);
+});
+
+// 0.108.4: setting devswarm.wakeWatch=false -> the SAME DevSwarm-active env that
+// arms above refuses with the closed-vocabulary 'disabled-by-settings' line,
+// exits 0 and never creates its lock.
+test('main(): devswarm.wakeWatch=false refuses to arm (disabled-by-settings), exit 0, no lock', () => {
+  const { switchOff } = require('../helpers/settings-switch.js');
+  const home = tmpHome();
+  try {
+    const id = 'arm-test-child-off';
+    switchOff(home, 'devswarm', 'wakeWatch');
+    const env = { PATH: process.env.PATH, HOME: home, USERPROFILE: home, DEVSWARM_REPO_ID: 'r1', DEVSWARM_SOURCE_BRANCH: 'main', DEVSWARM_BUILDER_ID: id };
+    const res = spawnSync(process.execPath, [MODULE_PATH], { env, encoding: 'utf8', timeout: 5000 });
+    assert.strictEqual(res.status, 0);
+    assert.strictEqual(res.stdout, '[wake-watch] REFUSED TO ARM: ' + REFUSAL_REASONS.DISABLED + '\n');
+    assert.match(res.stdout, REFUSAL_LINE_RE);
+    assert.ok(!fs.existsSync(path.dirname(lockPathFor(home, id))), 'no watch-lock directory when disabled');
+  } finally { rm(home); }
 });

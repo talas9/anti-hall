@@ -1054,6 +1054,8 @@ function scanCommand(cmd, depth) {
 }
 
 function main() {
+  // Settings switch safety.gitGuard (0.108.4): off -> no-op. Fail-open: any error runs the hook.
+  try { if (!require('./lib/settings.js').enabled('safety', 'gitGuard')) return; } catch (_) { /* run */ }
   let raw = '';
   try {
     raw = fs.readFileSync(0, 'utf8');

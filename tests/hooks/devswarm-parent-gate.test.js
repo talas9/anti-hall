@@ -3339,3 +3339,18 @@ test('parentGateQuestion: mode "on" -> a REPLIED-to jev candidate clears exactly
     assert.strictEqual(after.stdout, '', 'a real reply clears a jev-added question exactly like any other');
   } finally { h.cleanup(); }
 });
+
+// 0.108.4: the per-hook settings switch. Same fixture as the positive test
+// above, switch off -> silent no-op (exit 0, no stdout).
+test('SWITCH devswarm.parentGate=false: the same unread backlog no longer blocks', () => {
+  const { switchOff } = require('../helpers/settings-switch.js');
+  const h = makeHome();
+  try {
+    seedWorkspace(h.home, 'ws1', { messages: ['a', 'b', 'c'], cursor: 1 });
+    assert.strictEqual(run(h.home).json.decision, 'block', 'fixture must block with the default settings');
+    switchOff(h.home, 'devswarm', 'parentGate');
+    const r = run(h.home, stopPayload('sess-off'));
+    assert.strictEqual(r.status, 0);
+    assert.strictEqual(r.stdout.trim(), '');
+  } finally { h.cleanup(); }
+});

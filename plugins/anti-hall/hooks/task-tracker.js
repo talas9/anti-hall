@@ -446,6 +446,11 @@ function oneLine(s, max) {
 }
 
 try {
+  // Settings switch context.taskTracker (0.108.4): off -> no-op. Fail-open.
+  let trackerOn = true;
+  try { trackerOn = require('./lib/settings.js').enabled('context', 'taskTracker'); } catch (_) { trackerOn = true; }
+  if (!trackerOn) process.exit(0);
+
   let payload = {};
   try { payload = JSON.parse(fs.readFileSync(0, 'utf8')); } catch (_) { payload = {}; }
 

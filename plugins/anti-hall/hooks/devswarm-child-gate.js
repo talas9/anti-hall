@@ -674,6 +674,8 @@ function tickMarkerFreshZero(env, home, now) {
 }
 
 function main() {
+  // Settings switch devswarm.childGate (0.108.4): off -> no-op. Fail-open: any error runs the hook.
+  try { if (!require('./lib/settings.js').enabled('devswarm', 'childGate')) return; } catch (_) { /* run */ }
   // Read stdin (fd 0 — cross-platform; /dev/stdin is Windows-unsafe).
   let raw = '';
   try {

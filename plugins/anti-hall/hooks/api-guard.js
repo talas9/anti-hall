@@ -436,6 +436,8 @@ function pyBin() {
 }
 
 function main() {
+  // Settings switch guards.apiGuard (0.108.4): off -> no-op. Fail-open: any error runs the hook.
+  try { if (!require('./lib/settings.js').enabled('guards', 'apiGuard')) return; } catch (_) { /* run */ }
   const deadline = Date.now() + TOTAL_DEADLINE_MS;
   let raw = '';
   try { raw = fs.readFileSync(0, 'utf8'); } catch (_) { process.exit(0); }

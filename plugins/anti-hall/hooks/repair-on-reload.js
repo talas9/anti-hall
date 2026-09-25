@@ -65,7 +65,8 @@
 //     pid, harmless) — the NEXT invocation's pidIsAlive check reclaims it.
 //
 // Escape hatches:
-//   - ANTIHALL_REPAIR_ON_RELOAD=off disables the hook.
+//   - ANTIHALL_REPAIR_ON_RELOAD=off, or setting maintenance.repairOnReload=false,
+//     disables the hook.
 //   - skip.json { "repair-on-reload": <future-ms> } (or "all") disables it.
 //   - A subagent/sidechain payload (agent_id/agent_type present) is skipped —
 //     repairs belong to the main session, not a Task-tool subagent turn.
@@ -282,7 +283,9 @@ function spawnDetachedRepair(home, runningVersion) {
 }
 
 function main() {
-  if ((process.env.ANTIHALL_REPAIR_ON_RELOAD || '').toLowerCase() === 'off') return;
+  // Setting maintenance.repairOnReload (env ANTIHALL_REPAIR_ON_RELOAD=off still
+  // wins). Fail-open: any error runs the hook.
+  try { if (!require('./lib/settings.js').enabled('maintenance', 'repairOnReload')) return; } catch (_) { /* run */ }
 
   let payload = null;
   try {

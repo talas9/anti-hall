@@ -1293,6 +1293,8 @@ function buildStaleRegistrySegment(list) {
 }
 
 function main() {
+  // Settings switch devswarm.parentInbox (0.108.4): off -> no-op. Fail-open: any error runs the hook.
+  try { if (!require('./lib/settings.js').enabled('devswarm', 'parentInbox')) return; } catch (_) { /* run */ }
   // Parse stdin for `cwd` — the ONE field this hook needs from the payload (to
   // resolve the CURRENT worktree's daemon heartbeat below); every other field is
   // unused (role/liveness come from env + fs). Malformed/absent stdin -> payload

@@ -1713,3 +1713,20 @@ test('ID SUBSTITUTION (735b179362e8): an UNSAFE DEVSWARM_BUILDER_ID (path traver
     assert.ok(c.includes('<DEVSWARM_BUILDER_ID>'), `must fall back to the placeholder on an unsafe id; ctx=${c}`);
   } finally { h.cleanup(); }
 });
+
+// 0.108.4: the per-hook settings switch. Same fixture as the positive test
+// above, switch off -> silent no-op (exit 0, no stdout).
+test('SWITCH devswarm.childTurn=false: no reminder and no heartbeat', () => {
+  const { switchOff } = require('../helpers/settings-switch.js');
+  const h = makeHome();
+  try {
+    switchOff(h.home, 'devswarm', 'childTurn');
+    const r = testHook(HOOK, promptPayload('sess-abc'), {
+      home: h.home,
+      env: { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main', DEVSWARM_BUILDER_ID: 'b-1', DEVSWARM_BUILDER_NAME: 'main-repo1' },
+    });
+    assert.strictEqual(r.status, 0);
+    assert.strictEqual(r.stdout.trim(), '');
+    assert.ok(!fs.existsSync(path.join(heartbeatDir(h.home), 'b-1.json')), 'no heartbeat written when off');
+  } finally { h.cleanup(); }
+});

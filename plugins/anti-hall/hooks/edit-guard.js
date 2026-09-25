@@ -530,6 +530,8 @@ function isPlanMode(payload) {
 }
 
 function main() {
+  // Settings switch safety.editGuard (0.108.4): off -> no-op. Fail-open: any error runs the hook.
+  try { if (!require('./lib/settings.js').enabled('safety', 'editGuard')) return; } catch (_) { /* run */ }
   // Read stdin first (fail-open on any read error).
   let raw = '';
   try {

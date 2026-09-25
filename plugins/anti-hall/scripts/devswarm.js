@@ -5918,6 +5918,10 @@ function cmdSyncUi(flags, ctx) {
   const home = ctx.home;
   const env = ctx.env || process.env;
   const now = Number.isFinite(ctx.now) ? ctx.now : Date.now();
+  // Setting devswarm.screenshotSync (0.108.4): off -> refuse, change nothing.
+  let screenshotSyncOn = true;
+  try { screenshotSyncOn = require('../hooks/lib/settings.js').get('devswarm', 'screenshotSync', true, { env, home }) !== false; } catch (_) { screenshotSyncOn = true; }
+  if (!screenshotSyncOn) return { ok: false, action: 'sync-ui', disabled: true, error: 'screenshot sync is off (setting devswarm.screenshotSync=false); turn it on with /anti-hall:settings' };
   let raw = null;
   const file = one(flags, 'titles-json');
   try {

@@ -131,6 +131,8 @@ function reporterLine(store, home, cwd, now) {
 }
 
 function main() {
+  // Settings switch context.defectNudge (0.108.4): off -> no-op. Fail-open: any error runs the hook.
+  try { if (!require('./lib/settings.js').enabled('context', 'defectNudge')) return; } catch (_) { /* run */ }
   const store = require(path.join(__dirname, 'lib', 'defect-store.js'));
 
   try {

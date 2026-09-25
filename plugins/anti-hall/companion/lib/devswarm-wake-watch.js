@@ -374,6 +374,7 @@ const REFUSAL_REASONS = {
   NOT_DEVSWARM_SESSION: 'not-a-devswarm-session',
   IDENTITY_UNRESOLVED: 'identity-unresolved',
   LOCK_HELD: 'lock-held',
+  DISABLED: 'disabled-by-settings',
 };
 
 // formatRefusalLine(reason) -> the ONE stdout line emitted when the watcher
@@ -1016,6 +1017,17 @@ function main() {
   // reading it before the gate is safe and lets the gate's tiers (c)/(d)
   // evaluate against the real cwd.
   const cwd = process.cwd();
+
+  // Settings switch devswarm.wakeWatch (0.108.4): off -> refuse to arm, one
+  // closed-vocabulary line, exit 0 (the cron wake fallback is unaffected).
+  // Reads config only (no disk writes). Fail-open: any error arms as before.
+  let wakeWatchOn = true;
+  try { wakeWatchOn = require('../../hooks/lib/settings.js').getWithEnv('devswarm', 'wakeWatch', true, env) !== false; } catch (_) { wakeWatchOn = true; }
+  if (!wakeWatchOn) {
+    try { emitLine(formatRefusalLine(REFUSAL_REASONS.DISABLED)); } catch (_) {}
+    process.exitCode = 0;
+    return;
+  }
 
   // GATE — must be the very first disk/stdout-touching thing main() does (see
   // isDevswarmActiveGate comment above). Refusal now ALSO gets exactly one

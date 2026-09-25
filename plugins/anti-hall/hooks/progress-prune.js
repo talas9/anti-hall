@@ -110,6 +110,8 @@ function pruneProject(cwd, now) {
 }
 
 function main() {
+  // Settings switch maintenance.progressPrune (0.108.4): off -> no-op. Fail-open: any error runs the hook.
+  try { if (!require('./lib/settings.js').enabled('maintenance', 'progressPrune')) return; } catch (_) { /* run */ }
   const payload = readPayload();
   const cwd = payload && typeof payload.cwd === 'string' ? payload.cwd : '';
   if (!cwd) return;

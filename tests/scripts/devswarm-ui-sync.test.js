@@ -235,3 +235,20 @@ test('parent-inbox: a LEGACY entry with no worktreePath (0.108.0-0.108.2 shape) 
     assert.ok(!/Alpha task/.test(ask), 'an entry that cannot be proven same-worktree must never be named (fail closed): ' + ask);
   } finally { rmFixture(f); appDb.resetCache(); }
 });
+
+// 0.108.4: setting devswarm.screenshotSync=false -> the verb refuses and
+// writes nothing, even with --yes on a fixture that would archive + rename.
+test('sync-ui verb: devswarm.screenshotSync=false refuses and writes nothing', { skip }, () => {
+  const { writeSettings } = require('../helpers/settings-switch.js');
+  const { f, titles } = verbFixture();
+  try {
+    writeSettings(f.home, { devswarm: { screenshotSync: false } });
+    const ctx = { home: f.home, env: f.env, cwd: f.repoPath };
+    const before = listFiles(f.home);
+    const r = dw.run(['sync-ui', '--titles-json', titles, '--yes'], ctx).result;
+    assert.strictEqual(r.ok, false);
+    assert.strictEqual(r.disabled, true);
+    assert.match(r.error, /devswarm\.screenshotSync=false/);
+    assert.deepStrictEqual(listFiles(f.home), before, 'nothing written when off');
+  } finally { rmFixture(f); }
+});

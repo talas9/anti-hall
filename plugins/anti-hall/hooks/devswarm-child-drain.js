@@ -106,6 +106,8 @@ function buildMessage(count, id, oldestMs) {
 }
 
 function main() {
+  // Settings switch devswarm.childDrain (0.108.4): off -> no-op. Fail-open: any error runs the hook.
+  try { if (!require('./lib/settings.js').enabled('devswarm', 'childDrain')) return; } catch (_) { /* run */ }
   let payload = {};
   try { payload = JSON.parse(fs.readFileSync(0, 'utf8')) || {}; } catch (_) { payload = {}; }
 

@@ -218,3 +218,15 @@ test('(7) roster: app title, sidebar-rank order, app fields; no app DB -> unchan
     assert.ok(off.result.workspaces.every((w) => w.app === undefined), 'no app DB -> no app fields');
   } finally { rmFixture(f); }
 });
+
+// 0.108.4: setting devswarm.appSync=false in settings.json (resolved against
+// the home the supervisor's env implies) skips the sync like the env switch.
+test('(5b) supervisor appDbSyncIfDue: devswarm.appSync=false in settings.json skips the sync', { skip }, () => {
+  const { writeSettings } = require('../helpers/settings-switch.js');
+  const f = setup();
+  try {
+    const env = Object.assign({}, f.env, { HOME: f.home, USERPROFILE: f.home });
+    writeSettings(f.home, { devswarm: { appSync: false } });
+    assert.deepStrictEqual(sup.appDbSyncIfDue({ home: f.home, env }), { ran: false, reason: 'app-sync-disabled' });
+  } finally { rmFixture(f); }
+});

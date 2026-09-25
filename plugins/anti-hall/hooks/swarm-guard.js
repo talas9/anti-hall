@@ -263,6 +263,8 @@ function describeSpawn(payload) {
 }
 
 function main() {
+  // Settings switch safety.swarmGuard (0.108.4): off -> no-op. Fail-open: any error runs the hook.
+  try { if (!require('./lib/settings.js').enabled('safety', 'swarmGuard')) return; } catch (_) { /* run */ }
   // Read stdin and parse it JUST enough to label a trip (tool/agent name).
   // Never required for the block/allow logic itself — a parse failure simply
   // leaves toolLabel as 'unknown'.

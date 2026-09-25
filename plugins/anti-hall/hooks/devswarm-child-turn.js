@@ -817,6 +817,8 @@ function registerStoreDescriptor(desc, home) {
 }
 
 function main() {
+  // Settings switch devswarm.childTurn (0.108.4): off -> no-op. Fail-open: any error runs the hook.
+  try { if (!require('./lib/settings.js').enabled('devswarm', 'childTurn')) return; } catch (_) { /* run */ }
   // Read stdin for contract completeness; the only field we use is session_id
   // (a heartbeat correlator). Absent/malformed stdin is fine — fail-open.
   let payload = {};

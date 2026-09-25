@@ -444,3 +444,16 @@ test('0.108.3: a child is told to run the absolute-path `done` verb when merged/
     h.cleanup();
   }
 });
+
+// 0.108.4: the per-hook settings switch. Same fixture as the positive test
+// above, switch off -> silent no-op (exit 0, no stdout).
+test('SWITCH devswarm.childRole=false: no SessionStart override injection', () => {
+  const { switchOff } = require('../helpers/settings-switch.js');
+  const h = makeHome();
+  try {
+    switchOff(h.home, 'devswarm', 'childRole');
+    const r = testHook(HOOK, sessionPayload(), { home: h.home, env: { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main' } });
+    assert.strictEqual(r.status, 0);
+    assert.strictEqual(r.stdout.trim(), '');
+  } finally { h.cleanup(); }
+});

@@ -384,3 +384,16 @@ test('P1b: a spawn that fails never stamps the cooldown (the next prompt retries
     assert.strictEqual(fs.existsSync(path.join(h.home, '.anti-hall', 'repair-on-reload.last.json')), false, 'no cooldown after a failed spawn');
   } finally { h.cleanup(); }
 });
+
+// 0.108.4: the per-hook settings switch. Same fixture as the positive test
+// above, switch off -> silent no-op (exit 0, no stdout).
+test('SWITCH maintenance.repairOnReload=false (settings.json) disables the hook entirely', () => {
+  const { switchOff } = require('../helpers/settings-switch.js');
+  const h = makeHome();
+  try {
+    switchOff(h.home, 'maintenance', 'repairOnReload');
+    const r = testHook(HOOK, sessionStartPayload(), { home: h.home });
+    assert.strictEqual(r.status, 0, `stderr: ${r.stderr}`);
+    assert.strictEqual(fs.existsSync(lockFile(h.home)), false);
+  } finally { h.cleanup(); }
+});

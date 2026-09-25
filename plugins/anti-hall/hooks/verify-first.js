@@ -85,6 +85,8 @@ function isDevswarmPrimary(env) {
 }
 
 function main() {
+  // Settings switch context.verifyFirstTurn (0.108.4): off -> no-op. Fail-open: any error runs the hook.
+  try { if (!require('./lib/settings.js').enabled('context', 'verifyFirstTurn')) return; } catch (_) { /* run */ }
   let input = '';
   try {
     // fd 0 is stdin on every platform; '/dev/stdin' does not exist on Windows.

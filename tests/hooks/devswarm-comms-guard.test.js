@@ -377,3 +377,19 @@ test('MUTANT KILL 3: inverting the isDevswarmActive gate makes non-DevSwarm-cont
 // (they were never exercising the block path). Restoring the real hook body
 // (this commit's content) turns both BLOCK tests GREEN with the rest unchanged
 // — see the totals pasted in the task report for the full-file GREEN run.
+
+// 0.108.4: the per-hook settings switch. Same fixture as the positive test
+// above, switch off -> silent no-op (exit 0, no stdout).
+test('SWITCH devswarm.commsGuard=false: SendMessage to a workspace-backed peer is allowed', () => {
+  const { switchOff } = require('../helpers/settings-switch.js');
+  const h = makeHome();
+  try {
+    const wsCwd = path.join(h.home, '.devswarm', 'repos', '0', 'abc123', 'fix-atlas-login-unknownerror2');
+    fs.mkdirSync(wsCwd, { recursive: true });
+    seedSession(h.home, '111.json', { name: 'fix-atlas-login-unknownerror2-9f', cwd: wsCwd });
+    switchOff(h.home, 'devswarm', 'commsGuard');
+    const r = testHook(HOOK, sendMessagePayload('fix-atlas-login-unknownerror2-9f'), { home: h.home, env: DEVSWARM_ENV });
+    assert.strictEqual(r.status, 0, r.stdout);
+    assert.strictEqual(r.stdout.trim(), '');
+  } finally { h.cleanup(); }
+});

@@ -241,6 +241,8 @@ function block(reason) {
 }
 
 function main() {
+  // Settings switch guards.modelRouting (0.108.4): off -> no-op. Fail-open: any error runs the hook.
+  try { if (!require('./lib/settings.js').enabled('guards', 'modelRouting')) return; } catch (_) { /* run */ }
   // Read stdin (bounded scan downstream; read is unbounded but a brief is small).
   let raw = '';
   try { raw = fs.readFileSync(0, 'utf8'); } catch (_) { raw = ''; }
@@ -281,9 +283,12 @@ function main() {
   // COMPLEX-ANYWHERE veto: any planning signal => never block (rows 1-3 can't fire).
   const isMechanicalOnly = mechanical > 0 && complex === 0;
 
-  // Strict mode (now the default). Env-driven; never inferred.
-  // Set ANTIHALL_MODEL_ROUTING=advisory to revert to advisory-only behavior.
-  const strict = process.env.ANTIHALL_MODEL_ROUTING !== 'advisory';
+  // Strict mode (now the default). Setting guards.modelRouting (env
+  // ANTIHALL_MODEL_ROUTING > settings.json > /config > 'strict'); never inferred.
+  // 'advisory' reverts to advisory-only behavior ('off' already returned above).
+  let routingMode = 'strict';
+  try { routingMode = require('./lib/settings.js').get('guards', 'modelRouting'); } catch (_) { routingMode = process.env.ANTIHALL_MODEL_ROUTING; }
+  const strict = routingMode !== 'advisory';
 
   // Exemption: role word against DESCRIPTION ONLY (description tokens, not prompt).
   // INTENTIONAL ASYMMETRY (R1-8): the role-word test runs on the RAW description

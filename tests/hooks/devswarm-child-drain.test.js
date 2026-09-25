@@ -171,3 +171,18 @@ test('NO-OP: DevSwarm not active at all -> silent no-op', () => {
     assert.strictEqual(r.stdout.trim(), '', 'inactive supervisor must produce zero output regardless of backlog');
   } finally { h.cleanup(); }
 });
+
+// 0.108.4: the per-hook settings switch. Same fixture as the positive test
+// above, switch off -> silent no-op (exit 0, no stdout).
+test('SWITCH devswarm.childDrain=false: store-only unread is not re-surfaced', () => {
+  const { switchOff } = require('../helpers/settings-switch.js');
+  const h = makeHome();
+  try {
+    seedDescriptor(h.home, 'child-1');
+    seedStoreOnlyDirect(h.home, 'child-1', 'parent ruling: use approach B');
+    switchOff(h.home, 'devswarm', 'childDrain');
+    const r = testHook(HOOK, payload(), { home: h.home, env: CHILD_ENV });
+    assert.strictEqual(r.status, 0);
+    assert.strictEqual(r.stdout.trim(), '');
+  } finally { h.cleanup(); }
+});

@@ -36,7 +36,8 @@
 //      segment splitter below skips heredoc bodies as opaque data and is
 //      quote-aware), so a scan-looking command that only appears as literal
 //      text/data is never matched.
-//   5. Kill switch: ANTI_HALL_SCAN_THROTTLE=0 disables this hook entirely.
+//   5. Kill switch: ANTI_HALL_SCAN_THROTTLE=0, or setting guards.scanThrottle=false,
+//      disables this hook entirely.
 //
 // COMPOSITION WITH OTHER PreToolUse:Bash HOOKS — what was actually verified,
 // and where. docs/KB-claude-code-hooks.md does NOT document how multiple
@@ -303,7 +304,9 @@ function emit(hookSpecificOutputExtra) {
 }
 
 function main() {
-  if (process.env.ANTI_HALL_SCAN_THROTTLE === '0') return;
+  // Setting guards.scanThrottle (env ANTI_HALL_SCAN_THROTTLE=0 still wins).
+  // Fail-open: any error runs the hook.
+  try { if (!require('./lib/settings.js').enabled('guards', 'scanThrottle')) return; } catch (_) { /* run */ }
 
   let raw = '';
   try {

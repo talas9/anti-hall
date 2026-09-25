@@ -2226,3 +2226,17 @@ test('ORPHANS+STALE: malformed/absent fields -> no throw, nothing extra rendered
     assert.ok(c.includes('DEVSWARM PARENT INBOX'), `unrelated segments must still render; ctx=${c}`);
   } finally { h.cleanup(); }
 });
+
+// 0.108.4: the per-hook settings switch. Same fixture as the positive test
+// above, switch off -> silent no-op (exit 0, no stdout).
+test('SWITCH devswarm.parentInbox=false: a Primary gets no roster/override injection', () => {
+  const { switchOff } = require('../helpers/settings-switch.js');
+  const h = makeHome();
+  try {
+    assert.ok(ctx(testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true })).length > 0, 'fixture injects by default');
+    switchOff(h.home, 'devswarm', 'parentInbox');
+    const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV });
+    assert.strictEqual(r.status, 0);
+    assert.strictEqual(r.stdout.trim(), '');
+  } finally { h.cleanup(); }
+});

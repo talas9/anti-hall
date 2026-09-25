@@ -61,6 +61,8 @@ const os = require('os');
 const crypto = require('crypto');
 
 function main() {
+  // Settings switch guards.taskGuard (0.108.4): off -> no-op. Fail-open: any error runs the hook.
+  try { if (!require('./lib/settings.js').enabled('guards', 'taskGuard')) return; } catch (_) { /* run */ }
   // Read stdin synchronously (fd 0 - cross-platform; /dev/stdin is Windows-unsafe).
   let raw = '';
   try {

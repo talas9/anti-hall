@@ -80,6 +80,8 @@ const DISCIPLINES_INDEX = [
 const FOUNDATION = [...CORE_LINES, ...DISCIPLINES_INDEX].join('\n');
 
 function main() {
+  // Settings switch context.verifyFirstSession (0.108.4): off -> no-op. Fail-open: any error runs the hook.
+  try { if (!require('./lib/settings.js').enabled('context', 'verifyFirstSession')) return; } catch (_) { /* run */ }
   let raw = '';
   try {
     raw = fs.readFileSync(0, 'utf8');

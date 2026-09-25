@@ -1372,6 +1372,11 @@ function main() {
 
   // Escape hatch: honor an explicit, user-consented skip (~/.anti-hall/skip.json).
   if (isSkipped('command-guard')) process.exit(0);
+  // Settings switch safety.commandGuard (0.108.4, human-only: /config or env).
+  // Off -> the core heavy-command gate below no-ops; the data-safety
+  // sub-guards above (DevSwarm read/send/mailbox, armed stash) already ran.
+  // Fail-open: any error runs the gate.
+  try { if (!require('./lib/settings.js').enabled('safety', 'commandGuard')) process.exit(0); } catch (_) { /* run */ }
   const { isCoordinator } = require('./coordinator-detect.js');
 
   // Only block heavy commands in coordinator context (subagents pass through).

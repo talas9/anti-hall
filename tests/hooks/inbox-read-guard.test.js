@@ -239,3 +239,16 @@ test('SPAWN FAIL-OPEN: malformed JSON -> allow', () => {
     assert.strictEqual(testHookRaw(HOOK, '{bad', { home: h.home, env: DEVSWARM }).status, 0);
   } finally { h.cleanup(); }
 });
+
+// 0.108.4: the per-hook settings switch. Same fixture as the positive test
+// above, switch off -> silent no-op (exit 0, no stdout).
+test('SWITCH devswarm.inboxReadGuard=false: a raw inbox Read is allowed', () => {
+  const { switchOff } = require('../helpers/settings-switch.js');
+  const h = makeHome();
+  try {
+    switchOff(h.home, 'devswarm', 'inboxReadGuard');
+    const r = testHook(HOOK, readPayload(inboxPath(h), {}), { home: h.home, env: Object.assign({}, DEVSWARM) });
+    assert.strictEqual(r.status, 0, r.stdout);
+    assert.strictEqual(r.stdout.trim(), '');
+  } finally { h.cleanup(); }
+});

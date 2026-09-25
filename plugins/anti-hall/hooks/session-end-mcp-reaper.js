@@ -71,7 +71,8 @@
 //         ts-node, tsx, `next dev`, webpack) for defense against a file
 //         merely NAMED *mcp-server* being misread as a real MCP process.
 // Capped at ANTI_HALL_SESSION_END_REAPER_MAX (default 16). Kill-switch:
-// ANTI_HALL_SESSION_END_REAPER=0 -> no-op, exit 0 immediately.
+// ANTI_HALL_SESSION_END_REAPER=0 (or setting maintenance.sessionEndReaper=false)
+// -> no-op, exit 0 immediately.
 //
 // === TWO ADDITIVE NARROWINGS (2026-09-05, final review round) — false
 // positives for OTHER users' machines, not this maintainer's ===
@@ -467,7 +468,11 @@ function main(opts) {
   const logFile = o.logFile || path.join(logDir, 'session-end-reaper.log');
 
   try {
-    if (String(process.env.ANTI_HALL_SESSION_END_REAPER) === '0') return;
+    // Setting maintenance.sessionEndReaper (env ANTI_HALL_SESSION_END_REAPER=0
+    // still wins). Fail-open: any error runs the sweep.
+    let reaperOn = true;
+    try { reaperOn = require('./lib/settings.js').enabled('maintenance', 'sessionEndReaper'); } catch (_) { reaperOn = true; }
+    if (!reaperOn) return;
 
     // Read + parse the SessionEnd payload the same bounded, fail-soft way
     // other hooks do: a single fs.readFileSync(0, 'utf8') wrapped in

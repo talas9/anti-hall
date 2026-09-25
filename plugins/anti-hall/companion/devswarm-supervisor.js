@@ -1498,10 +1498,16 @@ function deferredSweepIfDue(opts) {
 // this supervisor is a one-shot launchd/systemd tick with no long-lived process
 // to host one. The 60-120 s sweep is the cadence.
 //
-// appSyncEnabled(env): ANTIHALL_DEVSWARM_APP_SYNC=0 disables (default on).
+// appSyncEnabled(env): setting devswarm.appSync (env ANTIHALL_DEVSWARM_APP_SYNC=0
+// > settings.json > /config > default on), resolved against the home THIS env
+// implies. Fail-open to the env-only rule if settings.js is unavailable.
 function appSyncEnabled(env) {
-  const v = String(((env || process.env) || {}).ANTIHALL_DEVSWARM_APP_SYNC || '').trim().toLowerCase();
-  return !(v === '0' || v === 'false' || v === 'off' || v === 'no');
+  const e = env || process.env;
+  try { return require('../hooks/lib/settings.js').getWithEnv('devswarm', 'appSync', true, e) !== false; }
+  catch (_) {
+    const v = String((e || {}).ANTIHALL_DEVSWARM_APP_SYNC || '').trim().toLowerCase();
+    return !(v === '0' || v === 'false' || v === 'off' || v === 'no');
+  }
 }
 
 // appDbSyncIfDue(opts) -> { ran, ...summary } | { ran:false, reason }. Never throws.

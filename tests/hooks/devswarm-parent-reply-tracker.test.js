@@ -586,3 +586,21 @@ test('ON-DISK FALLBACK negative control: a repo with NO DevSwarm state on disk a
     h.cleanup();
   }
 });
+
+// 0.108.4: the per-hook settings switch. Same fixture as the positive test
+// above, switch off -> silent no-op (exit 0, no stdout).
+test('SWITCH devswarm.parentReplyTracker=false: a genuine direct send is not recorded', () => {
+  const { switchOff } = require('../helpers/settings-switch.js');
+  const h = makeHome();
+  try {
+    switchOff(h.home, 'devswarm', 'parentReplyTracker');
+    const payload = postToolUseBashPayload(
+      'node scripts/devswarm.js send --to child-1 --question --message "hi"',
+      { stdout: sendResponse(), sessionId: 'sess-1' }
+    );
+    const r = run(h.home, payload);
+    assert.strictEqual(r.status, 0);
+    assert.strictEqual(r.stdout.trim(), '');
+    assert.strictEqual(readReplyState(REPO_KEY, h.home)['child-1'], undefined, 'nothing recorded when off');
+  } finally { h.cleanup(); }
+});
