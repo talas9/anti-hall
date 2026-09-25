@@ -47,6 +47,30 @@ the update.
   root cause of the `devswarm-primary-seat.test.js` "concurrent adoption" test
   flaking once on macOS CI; that test was also hardened (barrier + bounded
   retry instead of a bare timing-dependent race) as defense in depth.
+- **DevSwarm: two code-review follow-ups to the `acquireLock` fix above, same
+  release.**
+  - *Regression the write-then-link fix itself introduced:* a `linkSync`
+    failure for any reason OTHER than EEXIST (EPERM/ENOTSUP/EXDEV/ENOSYS —
+    e.g. `~/.anti-hall` mounted on SMB/exFAT, where hardlinks don't work even
+    though a normal local disk supports them) used to be treated as
+    fail-open/no-lock, meaning EVERY acquire on such a filesystem returned
+    null and `withIdLock` refused every DevSwarm mutation it gates,
+    permanently. `acquireLock` now falls back to the pre-fix create-then-write
+    (`openSync(p, 'wx')` + `writeSync`) for that one attempt instead.
+  - *Pre-existing, not introduced by the fix above:* the stale-holder RECLAIM
+    step used a blind `unlinkSync(p)`, which deletes WHATEVER currently sits
+    at that path, not specifically the dead/stale holder just read. Two
+    callers that both read the same dead holder concurrently could both
+    decide to steal it; whichever unlinked second deleted the first's
+    brand-new, legitimately-published lock, and both then "won". Fixed by
+    moving the file aside atomically with `renameSync` first, re-reading the
+    moved copy, and only discarding it if its token still matches the one
+    read before the rename — a token mismatch (a real racer's fresh lock)
+    restores it and respects it instead.
+  - `doctor --repair` now sweeps stale `*.lock.tmp-*` / `*.lock.reap-*`
+    scratch files (both fixes' own temp artifacts, normally self-cleaning)
+    under `devswarm/locks/` older than 15 minutes — a belt-and-suspenders
+    backstop for a crash/kill mid-acquire, never touching an actual lock file.
 
 ## 0.108.0 (2026-09-24)
 
