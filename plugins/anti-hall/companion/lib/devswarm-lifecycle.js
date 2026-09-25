@@ -7,7 +7,7 @@
 //     (a) done      — EITHER the mesh summary's archive_ready (every required
 //                     gate: done,merged,tests_passed by default) OR the child's
 //                     structured done-report: the `done` gate row alone
-//                     (`devswarm.js gate <id> --set done`). See doneFact.
+//                     (the child's `devswarm.js done` verb). See doneFact.
 //     (b) merged    — `git merge-base --is-ancestor HEAD <source>` in the
 //                     worktree (local ref, then origin/<source>), else the app
 //                     DB pull_requests row for the branch has state=merged.
@@ -16,7 +16,9 @@
 //     (c) clean     — `git status --porcelain` is empty
 //     (d) no unread — zero unread TO the child and zero unread FROM it in any
 //                     other partition of the project's mesh store
-//     (e) not the Primary (builderType primary / primary-<hash> id)
+//     (e) not the Primary — app DB builderType 'primary' (the authority);
+//                     without that column, the Primary seat's main checkout.
+//                     A `primary-<hash>` descriptor id never decides it.
 //     (f) not being viewed — app DB builders.lastSelectedAt older than 10 min
 //     (g) idle      — last heartbeat/transcript activity >= idleMin ago
 //   Any fact that cannot be READ counts as not proven -> no archive.
@@ -190,9 +192,21 @@ function resolveDeps(o) {
 }
 
 // ---------- shared fact helpers ----------
-function isPrimaryBuilder(b, ids) {
-  if (b && String(b.builderType || '').toLowerCase() === 'primary') return true;
-  return (ids || []).some((id) => /^primary-/.test(String(id)));
+// isPrimaryBuilder(b, db, o) — gate (e). Authority: the app DB's builderType
+// when that column is readable. Otherwise the anti-hall Primary seat's own
+// definition (primary-seat.js primaryCheckout: the project's main checkout).
+// NEVER a `primary-<hash>` descriptor id: that is also the worktree label a
+// legacy CHILD descriptor carries, and matching it made a standard child count
+// as the Primary. Unresolvable -> true (fail-safe: stays blocked).
+function isPrimaryBuilder(b, db, o) {
+  if (db && db.hasBuilderType) return String((b && b.builderType) || '').toLowerCase() === 'primary';
+  const wt = b && b.worktreePath;
+  if (!wt || !fs.existsSync(wt)) return true;
+  try {
+    const ic = require('./identity.js').resolveContext(wt, { memo: false, missingPath: 'ancestor' });
+    if (!ic || !ic.worktreeRoot) return true;
+    return !!require('./primary-seat.js').primaryCheckout({ home: o.home, env: o.env, cwd: wt });
+  } catch (_) { return true; }
 }
 
 function mergedFact(b, db, deps) {
@@ -218,8 +232,8 @@ function mergedFact(b, db, deps) {
 // Passes on EITHER:
 //   'gates'       — archive_ready: every required gate set (the original path)
 //   'done-report' — the child's structured done-report: the `done` row in the
-//                   mesh store's gates table (`devswarm.js gate <id> --set
-//                   done`), projected as summary.workspaces[id].gates.done.
+//                   mesh store's gates table (set by the child's `devswarm.js
+//                   done` verb), projected as summary.workspaces[id].gates.done.
 // tests_passed is deliberately NOT required here: gate (b) independently
 // PROVES the merge from git ancestry / PR state, and an archive is reversible.
 // Free chat text ("DONE", a heartbeat --summary) never counts.
@@ -280,7 +294,7 @@ function evaluateCandidate(c, o, deps, db, settings, now) {
   const b = c.builder;
   const blockers = [];
   const facts = {};
-  if (isPrimaryBuilder(b, c.ids)) blockers.push({ gate: 'e-primary', detail: 'Primary workspace' });
+  if (isPrimaryBuilder(b, db, o)) blockers.push({ gate: 'e-primary', detail: 'Primary workspace' });
   const repoKey = deps.repoKey(b.worktreePath || c.descriptors[0].worktreePath);
   const un = unreadFact(o.home, repoKey, c.ids, deps);
   const done = doneFact(un.summary, c.ids);
@@ -495,7 +509,7 @@ function evaluateArchived(b, o, deps, db, now, olderThanDays) {
   const ageDays = since && Number.isFinite(since.ts) ? Math.floor((now - since.ts) / 86400000) : null;
   if (ageDays === null) blockers.push('archive-age-unknown');
   else if (ageDays < olderThanDays) blockers.push('younger-than-' + olderThanDays + 'd');
-  if (isPrimaryBuilder(b, [id])) blockers.push('primary');
+  if (isPrimaryBuilder(b, db, o)) blockers.push('primary');
   const m = mergedFact(b, db, deps);
   if (!m.merged) blockers.push('not-merged(' + m.via + ')');
   const cl = cleanFact(b.worktreePath, deps);
@@ -590,7 +604,7 @@ function executePrune(opts) {
     let refuse = null;
     if (!b) refuse = 'builder-not-found';
     else if (!(Number(b.isActive) === 0 && Number(b.isHidden) === 1)) refuse = 'no-longer-archived';
-    else if (isPrimaryBuilder(b, [id])) refuse = 'primary';
+    else if (isPrimaryBuilder(b, db, o)) refuse = 'primary';
     else {
       const cl = cleanFact(b.worktreePath, deps);
       if (cl.clean !== true) refuse = cl.reason || 'unclean';

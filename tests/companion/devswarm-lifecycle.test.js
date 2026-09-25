@@ -388,3 +388,84 @@ test('verbArgv always passes the explicit workspace id, never --yes; no id -> no
   assert.strictEqual(L.verbArgv('archive', detail, { id: '' }), null);
   assert.strictEqual(L.verbArgv('archive', detail, { id: '--help' }), null);
 });
+
+// 0.108.3 Fix B — gate (e) authority. A legacy CHILD descriptor labelled
+// `primary-<hash>` (the child worktree's label, e.g. primary-af7e82fd sharing a
+// standard builder's worktree) must not make that builder count as the Primary.
+function withLegacyLabel(fx, id, label) {
+  const f = fx.byId[id];
+  const descs = fx.deps.descriptors;
+  return Object.assign({}, fx.deps, {
+    descriptors: () => descs().concat([{ id: label, worktreePath: f.wt, sessionId: null }]),
+    activityTs: (d) => (d.id === label ? null : fx.byId[d.id].activity),
+  });
+}
+
+test('standard builder + legacy primary-<hash> descriptor on the same worktree is NOT the Primary', { skip }, () => {
+  const fx = fixture(V252, [{ id: 'c1' }]);
+  const deps = withLegacyLabel(fx, 'c1', 'primary-af7e82fd');
+  const c = L.planAutoArchive(Object.assign(opts(fx, { settings: DRY }), { deps })).candidates[0];
+  assert.ok(c.facts && c.id === 'c1');
+  assert.ok(!c.blockers.some((b) => b.gate === 'e-primary'), JSON.stringify(c.blockers));
+  assert.strictEqual(c.eligible, true, JSON.stringify(c.blockers));
+});
+
+test('a real builderType primary is still blocked, with or without a legacy label', { skip }, () => {
+  const fx = fixture(V252, [{ id: 'c1', builderType: 'primary' }]);
+  const deps = withLegacyLabel(fx, 'c1', 'primary-af7e82fd');
+  const c = L.planAutoArchive(Object.assign(opts(fx, { settings: DRY }), { deps })).candidates[0];
+  assert.deepStrictEqual(c.blockers.map((b) => b.gate), ['e-primary']);
+});
+
+test('app DB unreadable -> nothing archived (fail-safe), readable -> archived', { skip }, () => {
+  const fx = fixture(V252, [{ id: 'c1' }]);
+  assert.deepStrictEqual(L.autoArchiveSweep(opts(fx, { settings: DRY })).wouldArchive, ['c1']);
+  fs.writeFileSync(fx.env.ANTIHALL_DEVSWARM_APP_DB, 'not a sqlite database');
+  const plan = L.planAutoArchive(opts(fx, { settings: DRY }));
+  assert.strictEqual(plan.reason, 'app-db-unavailable');
+  assert.deepStrictEqual(plan.toArchive, []);
+  assert.deepStrictEqual(L.autoArchiveSweep(opts(fx, { settings: ON })).archived, []);
+});
+
+test('no builderType column: the Primary seat (main checkout) decides, never the primary- id prefix', { skip }, () => {
+  const cp = require('node:child_process');
+  const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ah-lifecycle-seat-')));
+  const home = path.join(base, 'home'); fs.mkdirSync(home);
+  const repo = path.join(base, 'main');
+  cp.spawnSync('git', ['init', '-q', repo]);
+  cp.spawnSync('git', ['-C', repo, '-c', 'user.email=a@b.c', '-c', 'user.name=T', 'commit', '-q', '--allow-empty', '-m', 'init']);
+  const child = path.join(base, 'child');
+  cp.spawnSync('git', ['-C', repo, 'worktree', 'add', '-q', child, '-b', 'feat/child']);
+  const dbFile = path.join(base, 'devswarm.db');
+  const db = new sqlite.DatabaseSync(dbFile);
+  db.exec('CREATE TABLE builders (id TEXT PRIMARY KEY, repositoryId TEXT, branchName TEXT, sourceBranch TEXT, worktreePath TEXT,'
+    + ' isActive INTEGER, isHidden INTEGER, lastSelectedAt TEXT, label TEXT, pullRequestId TEXT)');
+  const ins = db.prepare('INSERT INTO builders VALUES (?,?,?,?,?,?,?,?,?,?)');
+  ins.run('p-1', 'r1', 'main', null, repo, 1, 0, null, 'Primary', null);
+  ins.run('c1', 'r1', 'feat/child', 'main', child, 1, 0, null, 'Child', null);
+  db.close();
+  try {
+    const bin = fakeHivecontrol(path.join(base, 'bin'), V252);
+    const env = { HOME: home, PATH: bin.dir + path.delimiter + process.env.PATH, ANTIHALL_DEVSWARM_APP_DB: dbFile, ANTIHALL_DEVSWARM_APP_DB_CACHE_MS: '0' };
+    caps.resetCache();
+    const descs = [
+      { id: 'c1', worktreePath: child }, { id: 'primary-af7e82fd', worktreePath: child }, // legacy child label
+      { id: 'p-1', worktreePath: repo },
+    ];
+    const deps = {
+      descriptors: () => descs,
+      repoKey: () => 'proj-abc123',
+      summary: () => ({ workspaces: { c1: { id: 'c1', archive_ready: true, gates: {}, unread: 0, broadcastUnread: 0 }, 'p-1': { id: 'p-1', archive_ready: true, gates: {}, unread: 0, broadcastUnread: 0 } } }),
+      unreadFrom: () => 0,
+      activityTs: () => NOW - 60 * MIN,
+    };
+    const plan = L.planAutoArchive({ home, env, now: NOW, deps, settings: DRY });
+    assert.strictEqual(plan.ok, true, JSON.stringify(plan));
+    const c1 = plan.candidates.find((c) => c.id === 'c1');
+    const p1 = plan.candidates.find((c) => c.id === 'p-1');
+    assert.ok(!c1.blockers.some((b) => b.gate === 'e-primary'), JSON.stringify(c1.blockers));
+    assert.strictEqual(c1.eligible, true, JSON.stringify(c1.blockers));
+    assert.ok(p1.blockers.some((b) => b.gate === 'e-primary'), 'the main checkout stays the Primary: ' + JSON.stringify(p1.blockers));
+    assert.deepStrictEqual(plan.toArchive, ['c1']);
+  } finally { try { fs.rmSync(base, { recursive: true, force: true }); } catch (_) {} }
+});
