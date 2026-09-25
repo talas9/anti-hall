@@ -5668,7 +5668,27 @@ function refreshNamesFromApp(home, env, rows, now) {
       const ws = appDb.workspaceFor(snap, { id: d.id, worktreePath: d.worktreePath || null });
       if (!ws || typeof ws.label !== 'string' || !ws.label) continue;
       out.checked++;
-      if (names.readName(home, String(d.id)) === ws.label) continue;
+      const cached = names.readName(home, String(d.id));
+      if (cached === ws.label) continue;
+      // SPAWN-TITLE RACE FIX (v0.109.0): `hivecontrol workspace create` gives a
+      // brand-new workspace label == the branch name (its own default, see
+      // devswarm-names.js header) BEFORE cmdSpawn's SEPARATE `update-title`
+      // follow-up call lands (two independent hivecontrol round-trips, by
+      // design — see cmdSpawn's "CORRECTED design" comment). This function runs
+      // off its own timer (the supervisor's periodic app-DB sync, or a manual
+      // `reconcile`) against a snapshot that may itself be up to
+      // devswarm-app-db.js's cache window stale, with NO ordering relationship
+      // to spawn's two calls — so it can sample exactly that in-between window
+      // (or a stale cache predating the retitle) and clobber a title cmdSpawn
+      // just confirmed back down to the bare branch name. That produced the
+      // observed "sometimes the branch, sometimes the brief" race: whichever
+      // writer lands last on names/<id>.json wins, with no rule deciding it.
+      // DETERMINISTIC RULE: an app label that is STILL the raw branch name
+      // never overwrites an already-cached, DIFFERENT name. A genuine owner
+      // rename in the app is never literally the branch string (nobody renames
+      // a workspace to its own branch name), so this only ever protects a
+      // spawn-set title from the race — a real rename still propagates below.
+      if (cached && ws.branchName && ws.label === ws.branchName) continue;
       if (names.writeName(home, String(d.id), ws.label, now)) out.refreshed++;
     } catch (_) { /* one bad row never stops the rest */ }
   }
@@ -17490,6 +17510,42 @@ function cmdReconcileRegistry(flags, ctx) {
 // diverged and not updatable = refuse unless `--from-local`. Setting
 // devswarm.spawnFromOrigin=false skips the whole check.
 const SPAWN_FETCH_TIMEOUT_MS = 30000;
+const SPAWN_FETCH_TTL_SEC_DEFAULT = 300;
+
+// gitCommonDirFor(cwd) -> the repo's common git dir (shared across worktrees),
+// via `rev-parse --git-common-dir` — never a guessed `.git` join, since a
+// linked worktree's own `.git` is a FILE pointing elsewhere. null on any
+// failure (never throws).
+function gitCommonDirFor(cwd) {
+  try {
+    const r = spawnSync('git', ['-C', cwd, 'rev-parse', '--git-common-dir'], { encoding: 'utf8', timeout: gitTruth.GIT_TIMEOUT_MS });
+    if (!r || r.error || r.status !== 0) return null;
+    const p = String(r.stdout || '').trim();
+    if (!p) return null;
+    return path.isAbsolute(p) ? p : path.resolve(cwd, p);
+  } catch (_) { return null; }
+}
+
+// remoteRefAgeSec(cwd, remoteRef, now) -> seconds since the remote-tracking
+// ref was last updated by a fetch, or null when unknown (never fetched, or
+// unreadable). Uses the NEWER of two on-disk signals — the ref's own reflog
+// (`logs/refs/remotes/origin/<def>`, appended on every fetch that moves it)
+// and `FETCH_HEAD`'s mtime (updated on EVERY fetch, even a no-op one that
+// left the ref unmoved) — so a repeated fetch against an already-current
+// remote still counts as "just checked", not "stale since the ref last
+// moved". Resolved against the COMMON dir so a linked worktree shares the
+// same freshness signal as the main checkout (there is only one origin).
+function remoteRefAgeSec(cwd, remoteRef, now) {
+  const common = gitCommonDirFor(cwd);
+  if (!common) return null;
+  const stamps = [];
+  try { stamps.push(fs.statSync(path.join(common, 'logs', 'refs', 'remotes', ...remoteRef.split('/'))).mtimeMs); } catch (_) {}
+  try { stamps.push(fs.statSync(path.join(common, 'FETCH_HEAD')).mtimeMs); } catch (_) {}
+  if (!stamps.length) return null;
+  const newest = Math.max(...stamps);
+  return Math.max(0, Math.floor((now - newest) / 1000));
+}
+
 function spawnSourceFreshness(rest, ctx) {
   const cwd = ctx.cwd || process.cwd();
   const env = ctx.env || process.env;
@@ -17510,22 +17566,46 @@ function spawnSourceFreshness(rest, ctx) {
   }
   if (source !== def) return { status: 'skipped', reason: 'source ' + JSON.stringify(source) + ' is not the default branch ' + def };
 
-  const f = git(['fetch', '--quiet', 'origin', def], SPAWN_FETCH_TIMEOUT_MS);
-  if (!f || f.error || f.signal || f.status !== 0) {
-    return { status: 'fetch-failed', source, warning: 'could not fetch ' + remoteRef + ' (offline?); spawning from local ' + def + ' as it is' };
+  // FETCH TTL (0.109.0, spawn speed): skip the network `git fetch` — the most
+  // expensive step of this check — when the remote-tracking ref was already
+  // updated within `devswarm.spawnFetchTtlSec` (default 300s). ttl 0 always
+  // fetches (opt-out). `fetch` on the returned object names the decision so a
+  // caller can see it without re-deriving it.
+  let ttlSec = SPAWN_FETCH_TTL_SEC_DEFAULT;
+  try { ttlSec = require('../hooks/lib/settings.js').get('devswarm', 'spawnFetchTtlSec', SPAWN_FETCH_TTL_SEC_DEFAULT, { env, home: ctx.home }); } catch (_) { ttlSec = SPAWN_FETCH_TTL_SEC_DEFAULT; }
+  if (!(Number.isFinite(ttlSec) && ttlSec >= 0)) ttlSec = SPAWN_FETCH_TTL_SEC_DEFAULT;
+  let fetchNote = 'ran';
+  if (ttlSec > 0) {
+    const ageSec = remoteRefAgeSec(cwd, remoteRef, Date.now());
+    if (ageSec !== null && ageSec < ttlSec) {
+      fetchNote = 'skipped (fresh, ' + ageSec + 's ago)';
+    }
+  }
+  if (fetchNote === 'ran') {
+    // `--recurse-submodules=on-demand` (0.109.0): without it, `git fetch` never
+    // touches submodule objects, so a repo-setup script run against the fresh
+    // <def> can find pinned submodule commits missing from the parent's
+    // `.git/modules` — exactly what a subsequent local submodule clone needs.
+    // on-demand (not `--recurse-submodules=yes`) fetches ONLY the submodules
+    // whose pinned commit actually changed in this fetch, never every submodule
+    // unconditionally.
+    const f = git(['fetch', '--quiet', '--recurse-submodules=on-demand', 'origin', def], SPAWN_FETCH_TIMEOUT_MS);
+    if (!f || f.error || f.signal || f.status !== 0) {
+      return { status: 'fetch-failed', source, fetch: fetchNote, warning: 'could not fetch ' + remoteRef + ' (offline?); spawning from local ' + def + ' as it is' };
+    }
   }
   const local = out(git(['rev-parse', '-q', '--verify', 'refs/heads/' + def + '^{commit}']));
   const remote = out(git(['rev-parse', '-q', '--verify', 'refs/remotes/' + remoteRef + '^{commit}']));
-  if (!local || !remote) return { status: 'skipped', source, warning: 'could not resolve ' + def + ' or ' + remoteRef + '; spawning without the check' };
-  if (local === remote) return { status: 'up-to-date', source, sha: local };
+  if (!local || !remote) return { status: 'skipped', source, fetch: fetchNote, warning: 'could not resolve ' + def + ' or ' + remoteRef + '; spawning without the check' };
+  if (local === remote) return { status: 'up-to-date', source, fetch: fetchNote, sha: local };
   const counts = out(git(['rev-list', '--left-right', '--count', local + '...' + remote]));
   const [ahead, behind] = String(counts || '').split(/\s+/).map((n) => parseInt(n, 10));
-  if (!Number.isFinite(ahead) || !Number.isFinite(behind)) return { status: 'skipped', source, warning: 'could not compare ' + def + ' with ' + remoteRef + '; spawning without the check' };
-  if (behind === 0) return { status: 'ahead', source, sha: local, ahead };
+  if (!Number.isFinite(ahead) || !Number.isFinite(behind)) return { status: 'skipped', source, fetch: fetchNote, warning: 'could not compare ' + def + ' with ' + remoteRef + '; spawning without the check' };
+  if (behind === 0) return { status: 'ahead', source, fetch: fetchNote, sha: local, ahead };
 
   const refuse = (why) => fromLocal
-    ? { status: 'from-local', source, sha: local, ahead, behind, warning: why + ' (--from-local given: spawning from it anyway)' }
-    : { status: 'refused', source, ahead, behind, refuse: true, error: why + '. Update local ' + def + ', or pass --from-local to spawn from it anyway.' };
+    ? { status: 'from-local', source, fetch: fetchNote, sha: local, ahead, behind, warning: why + ' (--from-local given: spawning from it anyway)' }
+    : { status: 'refused', source, fetch: fetchNote, ahead, behind, refuse: true, error: why + '. Update local ' + def + ', or pass --from-local to spawn from it anyway.' };
   const staleLine = 'local ' + def + ' is ' + behind + ' commit' + (behind === 1 ? '' : 's') + ' behind ' + remoteRef
     + '; spawning from it would give the child outdated tools';
   if (ahead > 0) return refuse(staleLine + ' (it also has ' + ahead + ' local commit' + (ahead === 1 ? '' : 's') + ' not on ' + remoteRef + ', so it cannot be fast-forwarded)');
@@ -17549,7 +17629,50 @@ function spawnSourceFreshness(rest, ctx) {
     r = git(['update-ref', '-m', 'anti-hall spawn: fast-forward to ' + remoteRef, 'refs/heads/' + def, remote, local]);
   }
   if (!r || r.error || r.signal || r.status !== 0) return refuse(staleLine + ' (fast-forward failed: ' + String((r && (r.stderr || (r.error && r.error.message))) || 'unknown').trim().split('\n')[0] + ')');
-  return { status: 'fast-forwarded', source, from: local, sha: remote, behind };
+  return { status: 'fast-forwarded', source, fetch: fetchNote, from: local, sha: remote, behind };
+}
+
+const SPAWN_CREATE_TIMEOUT_MS_DEFAULT = 180000;
+
+// parseSubmoduleWorktreeFailures(res) -> [{ path, error }]. TOLERANT,
+// TEXT-based extraction (hivecontrol's `workspace create` does NOT document a
+// per-submodule failure JSON shape — the KB has no pinned field for it, and
+// inventing one here would be exactly the kind of guessed structure this
+// file's own comments warn against). Field evidence (SkyCrew,
+// fix/devswarm-spawn-local-submodules): `create` can report overall
+// `ok:true` even when ONE of several `git worktree add` calls it runs for a
+// multi-repo/submodule workspace fails ("fatal: '<path>' already exists"),
+// because that failure is only visible in the subprocess's own stderr/stdout
+// text, never in a structured field. Scans BOTH stdout (`res.raw`) and
+// stderr (`res.stderr`) for `fatal: '<path>' already exists` lines (the
+// exact shape evidenced) and, more generally, any other `fatal:` line, so an
+// unrecognized-but-real failure is still surfaced (as `path: null`) instead
+// of silently dropped. Never throws; an unparseable/absent res -> [].
+function parseSubmoduleWorktreeFailures(res) {
+  const out = [];
+  if (!res) return out;
+  const text = [res.raw, res.stderr].filter((s) => typeof s === 'string' && s).join('\n');
+  if (!text) return out;
+  const seen = new Set();
+  const exists = /fatal:\s*'([^']+)'\s*already exists/g;
+  let m;
+  while ((m = exists.exec(text))) {
+    const key = 'exists:' + m[1];
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ path: m[1], error: 'already exists' });
+  }
+  const existsLine = /fatal:\s*'[^']+'\s*already exists/;
+  const generic = /fatal:\s*(.+)/g;
+  while ((m = generic.exec(text))) {
+    if (existsLine.test(m[0])) continue; // already captured above with its path
+    const line = m[1].trim();
+    const key = 'generic:' + line;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ path: null, error: line });
+  }
+  return out;
 }
 
 function cmdSpawn(rest, ctx) {
@@ -17557,11 +17680,16 @@ function cmdSpawn(rest, ctx) {
   if (!branch) return { ok: false, error: 'spawn requires a branch name' };
   const cwd = ctx.cwd || process.cwd();
   const run = (ctx.io && ctx.io.run) || hcRun;
+  const env = ctx.env || process.env;
+  const timings = {};
+  const spawnWallStart = Date.now();
   // `--from-local` is anti-hall's own flag (hivecontrol would reject it) — the
   // one token stripped before the otherwise untouched pass-through.
   let sourceCheck;
+  const fetchStart = Date.now();
   try { sourceCheck = spawnSourceFreshness(rest, ctx); } catch (e) { sourceCheck = { status: 'skipped', warning: 'source check failed: ' + String(e && e.message || e) }; }
-  if (sourceCheck.refuse) return { ok: false, action: 'spawn', branch, created: false, error: sourceCheck.error, sourceCheck };
+  timings.sourceCheckMs = Date.now() - fetchStart;
+  if (sourceCheck.refuse) return { ok: false, action: 'spawn', branch, created: false, error: sourceCheck.error, sourceCheck, timings: Object.assign(timings, { totalMs: Date.now() - spawnWallStart }) };
   const args = ['workspace', 'create'].concat(rest.filter((a) => a !== '--from-local'));
   // RECENCY FLOOR for the launch check below — captured BEFORE `create` so any
   // evidence produced during the create call still counts, while anything that
@@ -17569,10 +17697,33 @@ function cmdSpawn(rest, ctx) {
   // whose meshId is identical because meshIds derive from the worktree PATH)
   // does not. See checkSpawnLaunch's header.
   const spawnStartedAt = Date.now();
-  const res = run({ args, env: ctx.env, cwd });
+  // CREATE TIMEOUT (0.109.0, spawn speed): `hivecontrol workspace create` had
+  // NO timeout at all (companion/lib/devswarm-pull.js defaultRun only applies
+  // one when the caller passes it) — a wedged hivecontrol process could block
+  // this verb forever. `spawnSync`'s own `timeout` only ever kills ITS OWN
+  // child (never anything else), same guarantee every other timed call in
+  // this file already relies on.
+  let createTimeoutMs = SPAWN_CREATE_TIMEOUT_MS_DEFAULT;
+  try { createTimeoutMs = require('../hooks/lib/settings.js').get('devswarm', 'spawnCreateTimeoutMs', SPAWN_CREATE_TIMEOUT_MS_DEFAULT, { env, home: ctx.home }); } catch (_) { createTimeoutMs = SPAWN_CREATE_TIMEOUT_MS_DEFAULT; }
+  if (!(Number.isFinite(createTimeoutMs) && createTimeoutMs > 0)) createTimeoutMs = SPAWN_CREATE_TIMEOUT_MS_DEFAULT;
+  const createStart = Date.now();
+  const res = run({ args, env: ctx.env, cwd, timeout: createTimeoutMs });
+  timings.createMs = Date.now() - createStart;
   if (!res || !res.ok) {
-    return { ok: false, error: (res && res.error) || 'hivecontrol workspace create failed', branch, sourceCheck };
+    const timedOut = !!(res && res.signal && res.status == null);
+    const error = (res && res.error) || 'hivecontrol workspace create failed';
+    return {
+      ok: false,
+      error: timedOut ? error + ' (spawn create timed out after ' + createTimeoutMs + 'ms — only the create subprocess was killed, nothing else)' : error,
+      branch, sourceCheck, timings: Object.assign(timings, { totalMs: Date.now() - spawnWallStart }),
+    };
   }
+  // SUBMODULE WORKTREE FAILURES (0.109.0, field defect): `create` can return
+  // ok:true overall while one of several submodule worktree adds it ran
+  // failed — see parseSubmoduleWorktreeFailures's own header. NEVER flips
+  // `ok` (the workspace itself was created and may still be perfectly usable
+  // for the primary repo) and NEVER auto-repaired — report only.
+  const submoduleFailures = parseSubmoduleWorktreeFailures(res);
 
   // Title derivation is pure/no I/O — computed up front, but the actual
   // update-title CALL only fires inside the worktreePath-resolved branch
@@ -17663,11 +17814,46 @@ function cmdSpawn(rest, ctx) {
     } catch (_) { launch = { launched: 'unknown', evidence: null, waitedMs: 0, windowMs: spawnLaunchWaitMs(ctx.env) }; }
   }
 
+  // INVESTIGATION NOTE (field report, submodule create failure): `launched`
+  // staying 'unknown' here is NOT a parsing bug on our side — checkSpawnLaunch
+  // only ever reports evidence the CHILD's own session produced (a heartbeat,
+  // a self-register, a descriptor file), and by design never reports `false`
+  // (see checkSpawnLaunch's header: absence within a short window is not
+  // proof of failure). When a submodule worktree failed, it is plausible
+  // hivecontrol never opened an AI terminal for the workspace at all — in
+  // which case 'unknown' is the CORRECT, honest answer (nothing launched, so
+  // there is genuinely no evidence to find), not a bug to "fix" by fabricating
+  // `false`. The submodule failure is reported instead, below, so the caller
+  // has the likely explanation without this verb ever guessing at hivecontrol's
+  // own internal behavior.
+  const launchHintSubmoduleNote = (submoduleFailures.length && launch.launched !== true)
+    ? ' A submodule worktree failed to create (' + (submoduleFailures[0].path || submoduleFailures[0].error)
+      + ') — this may be why no session ever started; this was NOT auto-repaired.'
+    : '';
+
+  timings.totalMs = Date.now() - spawnWallStart;
+  try {
+    alog.logEvent('devswarm-cli', 'spawn', 'info', 'spawn timings', {
+      branch, sourceCheckStatus: sourceCheck && sourceCheck.status, fetch: sourceCheck && sourceCheck.fetch,
+      timings, submoduleFailureCount: submoduleFailures.length,
+    });
+  } catch (_) { /* fail-open: logging must never break the verb */ }
+
   return {
     ok: true, action: 'spawn', branch, created: true,
     worktreePath, meshId, registered, titled,
     // How the child's source branch was vetted against origin (0.108.5).
     sourceCheck,
+    // Present ONLY when at least one submodule worktree failed — absent, not
+    // `[]`, so "checked and clean" and "never checked" stay distinguishable.
+    // NEVER flips `ok` — the workspace itself was created and may still be
+    // usable for the primary repo; see parseSubmoduleWorktreeFailures header.
+    submoduleFailures: submoduleFailures.length ? submoduleFailures : undefined,
+    warnings: submoduleFailures.length ? [
+      submoduleFailures.length + ' of the workspace\'s submodule worktree(s) failed to create — see '
+      + 'submoduleFailures. The workspace may still be usable for the primary repo but broken for the '
+      + 'affected submodule(s); this was NOT auto-repaired.',
+    ] : undefined,
     // DISTINCT from `created`: the workspace exists, but a session running in it
     // is a separate fact with separate evidence. Never `false` — absence of a
     // signal inside a short window is not proof of failure (see header).
@@ -17685,7 +17871,12 @@ function cmdSpawn(rest, ctx) {
         + 'longer than this verb may block for. Confirm with `devswarm roster` in a minute — the child '
         + 'registers under its OWN workspace id; never heartbeat ' + String(meshId || '<meshId>')
         + ' yourself (a worktree label, not an identity). A row still showing sessionId null with a 0-byte '
-        + 'heartbeat log after several minutes never launched.',
+        + 'heartbeat log after several minutes never launched.' + launchHintSubmoduleNote,
+    // Per-phase durations (0.109.0, spawn speed): sourceCheckMs (the freshness
+    // check, including any fetch), createMs (the hivecontrol create call),
+    // totalMs (the whole verb). Also appended to the shared devswarm-cli log
+    // (`devswarm.js logs --component devswarm-cli`), best-effort.
+    timings,
     raw: res.raw,
   };
 }
@@ -18511,6 +18702,8 @@ module.exports = {
   // mesh redesign B5 / Phase 3 — THE nonce every production site uses, plus the
   // reader_cursors adapters:
   deriveReaderNonce, callerReaderKey, commitNdAck, floorCursor, importReaderCursorsAllStores, repairReaderFloorsAllStores, markAppArchivedDescriptors, retireStaleArchivedMarkers, deriveTitleFromBrief, appSessionOnWorktree, refreshNamesFromApp, syncAppState, messageGaps, appStatePath, cmdAppState, cmdSyncUi, repairChildSenderLabelsAllStores,
+  // spawn speed + submodule-failure reporting (0.109.0) — exported for direct unit testing:
+  spawnSourceFreshness, remoteRefAgeSec, gitCommonDirFor, parseSubmoduleWorktreeFailures,
   senderIdentityDetailed, childSenderId, isPrimaryCheckout,
   refreshAnchorSession,
   childLabelRefusal,

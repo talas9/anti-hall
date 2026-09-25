@@ -446,31 +446,42 @@ function formatRelative(ts, now) {
   return Math.floor(h / 24) + 'd';
 }
 
-// finishingRate(summary, id, heartbeat) -> string. Required completion gates met /
-// total, from summary.requiredGates + the workspace's gate map (e.g. "2/3"). When
-// no required gates are declared (or no summary entry yet), OR no gate has EVER
-// been set for this workspace (gates object empty/absent — only the manual
-// `devswarm.js gate` verb writes a gate row, so an untouched workspace has no
-// rows at all, not a row of falses), the gate ratio is unknown ("—"); a heartbeat
-// progress_pct, when present, is appended (or shown alone if it is the only
-// signal). Decision: gates are the authoritative finishing signal; progress_pct
-// is an advisory secondary shown only when it exists.
-function finishingRate(summary, id, heartbeat) {
+// doneStateLabel(summary, id, heartbeat) -> string. PLAIN-WORDS projection of
+// the same done-rule the supervisor's auto-archive sweep proves (gate (a)
+// "done" + gate (b) "merged" in companion/lib/devswarm-lifecycle.js's
+// planAutoArchive/doneFact/mergedFact — see that file's own header). The
+// PRIOR "met/total" gate ratio (e.g. "1/3") was misleading under that rule: a
+// child's structured done-report (`devswarm.js done`) sets ONLY the `done`
+// gate row, never `merged`/`tests_passed` itself (auto-archive proves the
+// merge separately, by git ancestry — see doneFact's own header), so a
+// workspace that is fully done-and-merged under the real rule could still
+// read "1/3" or even "—", looking barely started when it was actually about
+// to be auto-archived.
+//
+// Three states, deliberately NOT a live re-check of gate (b) (this is a
+// per-turn HOT PATH — "makes zero git calls" is this file's own standing
+// contract, see the `Live active-workspace table` KB entry): a done report is
+// `entry.gates.done === true` OR `entry.archive_ready === true` (the manual
+// gate path); "merged" is proven ONLY by `entry.mergedVerified === true` — the
+// CACHED, report-only projection of the SAME gitMergeProof `gate --set merged`
+// already ran and recorded (companion/lib/devswarm-store.js), never a fresh
+// git spawn here. An unset/false mergedVerified is honestly "not merged (yet
+// proven)", not "not merged" — see riskMarker's identical "merged
+// (unverified)" posture for the same field.
+//   'done ✓ merged'    — done reported AND the merge is proven
+//   'done, not merged' — done reported, merge not (yet) proven
+//   'working' (+ %)    — no done report yet; an optional heartbeat
+//                        progress_pct is appended when present, the only
+//                        remaining advisory signal for an in-progress row
+function doneStateLabel(summary, id, heartbeat) {
   const entry = summaryEntry(summary, id);
-  const required = summary && Array.isArray(summary.requiredGates) ? summary.requiredGates : [];
-  let gatesStr = null;
-  if (entry && required.length > 0) {
-    const gates = entry.gates && typeof entry.gates === 'object' ? entry.gates : {};
-    if (Object.keys(gates).length > 0) {
-      const met = required.filter((g) => gates[g] === true).length;
-      gatesStr = met + '/' + required.length;
-    }
+  const gates = entry && entry.gates && typeof entry.gates === 'object' ? entry.gates : {};
+  const doneReported = !!(entry && (gates.done === true || entry.archive_ready === true));
+  if (doneReported) {
+    return (entry && entry.mergedVerified === true) ? 'done ✓ merged' : 'done, not merged';
   }
   const pct = heartbeat && Number.isFinite(heartbeat.progress_pct) ? heartbeat.progress_pct : null;
-  if (gatesStr && pct !== null) return gatesStr + ' (' + pct + '%)';
-  if (gatesStr) return gatesStr;
-  if (pct !== null) return pct + '%';
-  return '—';
+  return pct !== null ? 'working (' + pct + '%)' : 'working';
 }
 
 // displayStatus(archiveReady, status, activityTs, now, dormant) -> { label, rank }.
@@ -1967,7 +1978,7 @@ function main() {
       // v0.108.0 app-DB extras (all report-only): the app's PR record as an
       // extra finish signal (never overrides the gates), the UI title, sidebar
       // rank as a tiebreak, and pinned / on-screen / brief-delivery markers.
-      let finishCell = finishingRate(summary, id, heartbeat);
+      let finishCell = doneStateLabel(summary, id, heartbeat);
       let appMarks = '';
       try {
         const sig = appDbLib ? appDbLib.finishSignal(rowWs) : null;
@@ -2508,4 +2519,6 @@ module.exports = {
   buildUrgentUnreadSegment, buildArchiveSegment, buildStaleRegistrySegment,
   // inbox grace window (SkyCrew report fix) — exported for direct unit testing:
   unreadIsGraced, resolveInboxGraceMs, DEFAULT_INBOX_GRACE_MS,
+  // finish column (task #36b) — exported for direct unit testing:
+  doneStateLabel,
 };

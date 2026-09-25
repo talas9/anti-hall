@@ -299,6 +299,9 @@ const SECTIONS = [
       { key: 'screenshotSync', type: 'boolean', default: true, pluginOption: 'devswarm_screenshot_sync', description: '`devswarm.js sync-ui`: reconcile a transcribed sidebar screenshot against the app DB.' },
       // ---- 0.108.5 ----
       { key: 'spawnFromOrigin', type: 'boolean', default: true, pluginOption: 'devswarm_spawn_from_origin', description: '`devswarm.js spawn`: fetch origin first and fast-forward the local default branch so a child never starts from stale tooling; refuses when it is behind and cannot be updated (unless --from-local). [read by: scripts/devswarm.js spawnSourceFreshness]' },
+      // ---- 0.109.0: spawn speed ----
+      { key: 'spawnFetchTtlSec', type: 'number', min: 0, default: 300, env: 'ANTIHALL_DEVSWARM_SPAWN_FETCH_TTL_SEC', pluginOption: 'devswarm_spawn_fetch_ttl_sec', advanced: true, description: '`devswarm.js spawn`: skip the origin fetch when the remote-tracking ref was already updated within this many seconds (0 = always fetch). [read by: scripts/devswarm.js spawnSourceFreshness]' },
+      { key: 'spawnCreateTimeoutMs', type: 'number', min: 1000, default: 180000, env: 'ANTIHALL_DEVSWARM_SPAWN_CREATE_TIMEOUT_MS', pluginOption: 'devswarm_spawn_create_timeout_ms', advanced: true, description: 'Timeout (ms) for the `hivecontrol workspace create` call spawn makes; on timeout only our own child process is killed. [read by: scripts/devswarm.js cmdSpawn]' },
     ],
   },
   {

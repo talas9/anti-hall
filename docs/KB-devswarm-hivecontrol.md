@@ -879,11 +879,18 @@ reminder), and `migrate`. `command-guard` carries a root-anchored `LIGHT_EXCEPTI
   gets a compact markdown table of active workspaces (not just the unread/stale
   subset): columns workspace / status (`escalated` > `stale`/`nudged` > `archive-ready`
   > `active`, attention-needing rows sorted first, ties by unread desc then id) /
-  finishing rate (required completion gates met/total from `summary.json`'s
-  `requiredGates`, with an optional heartbeat `progress_pct` appended when present;
-  **v0.103.0:** renders `—`, not `0/N`, when no gate has EVER been set for that
-  workspace — only the manual `devswarm.js gate` verb writes a gate row, so an
-  untouched workspace has no rows at all, not a row of falses) / unread count /
+  finish column (**v0.109.0**, plain-words done-rule state, replacing the prior
+  "met/total" gate ratio — that ratio was misleading under the done rule: a
+  child's structured done-report sets ONLY the `done` gate, never
+  `merged`/`tests_passed` itself, since auto-archive proves the merge
+  separately by git ancestry, so a genuinely done-and-merged workspace could
+  still read "1/3"): `done ✓ merged` when a done report (the `done` gate, or
+  `archive_ready`) AND a proven merge (`mergedVerified === true`, the SAME
+  cached `gate --set merged` proof `riskMarker`'s "merged (unverified)" reads —
+  never a fresh git spawn on this hot path) both hold; `done, not merged` when
+  a done report exists but the merge is not yet proven; else `working`, with an
+  optional heartbeat `progress_pct` appended (e.g. `working (40%)`) when
+  present / unread count /
   last-activity (relative age, from the newer of the liveness verdict's
   `lastOutboundTs` and the heartbeat's `ts`). Capped at 12 rows with a logged (never
   silent) `+N more`; empty output when there are no active workspaces; read-only,

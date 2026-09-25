@@ -120,6 +120,8 @@
     "devswarm_wake_watch": { "type": "boolean", "title": "DevSwarm · Wake watcher", "description": "devswarm-wake-watch monitor: wake an idle session the moment new mesh mail lands (the cron fallback stays).", "default": true },
     "devswarm_app_sync": { "type": "boolean", "title": "DevSwarm · App-DB sync", "description": "Supervisor app-DB sync: apply the DevSwarm app database (archive state, names, drift) every tick.", "default": true },
     "devswarm_screenshot_sync": { "type": "boolean", "title": "DevSwarm · Screenshot sync", "description": "devswarm.js sync-ui: reconcile a transcribed sidebar screenshot against the app DB.", "default": true },
-    "devswarm_spawn_from_origin": { "type": "boolean", "title": "DevSwarm · Spawn from origin", "description": "devswarm.js spawn: fetch origin and fast-forward the local default branch first, so a child never starts from stale tooling.", "default": true }
+    "devswarm_spawn_from_origin": { "type": "boolean", "title": "DevSwarm · Spawn from origin", "description": "devswarm.js spawn: fetch origin and fast-forward the local default branch first, so a child never starts from stale tooling.", "default": true },
+    "devswarm_spawn_fetch_ttl_sec": { "type": "number", "title": "DevSwarm · Spawn fetch TTL (sec)", "description": "devswarm.js spawn: skip the origin fetch when the remote-tracking ref was already updated within this many seconds (0 = always fetch).", "default": 300, "min": 0 },
+    "devswarm_spawn_create_timeout_ms": { "type": "number", "title": "DevSwarm · Spawn create timeout (ms)", "description": "Timeout for the hivecontrol workspace create call spawn makes; only our own child process is killed on timeout.", "default": 180000, "min": 1000 }
   }
 }
