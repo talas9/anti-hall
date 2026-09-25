@@ -15616,8 +15616,15 @@ function cmdRoster(flags, ctx) {
       const to = w.id != null ? aliasLib.rosterFoldTarget(home, String(w.id), present, { aliases, appBuilderId }) : null;
       const target = to ? byId.get(to) : null;
       if (!target || target === w) { kept.push(w); continue; }
+      // A canonical row with directUnread null (e.g. an archived-scan row)
+      // still receives the ghost's unread — never dropped — and its hints.
       if (Number.isFinite(w.directUnread) && w.directUnread > 0) {
-        target.directUnread = Number.isFinite(target.directUnread) ? target.directUnread + w.directUnread : target.directUnread;
+        target.directUnread = (Number.isFinite(target.directUnread) ? target.directUnread : 0) + w.directUnread;
+      }
+      if (Array.isArray(w.hints) && w.hints.length) {
+        const merged = Array.isArray(target.hints) ? target.hints.slice() : [];
+        for (const h of w.hints) if (!merged.includes(h)) merged.push(h);
+        target.hints = merged;
       }
       target.foldedAliases = (target.foldedAliases || []).concat(String(w.id));
     }

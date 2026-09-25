@@ -151,6 +151,34 @@ test('roster: a live label row folds into its child (alias) — one row, unread 
   } finally { cleanup(f); }
 });
 
+test('roster: a ghost folding into a canonical row whose directUnread is null (archived child) still carries its unread and hints; the roster unread total is unchanged by the fold', () => {
+  const f = fixture();
+  try {
+    registerPrimary(f);
+    registerChild(f);
+    const arch = cli.run(['archive', CHILD], { home: f.home, env: f.env, cwd: f.repo }).result;
+    assert.equal(arch.ok, true, JSON.stringify(arch));
+    // the ghost's worktree path is gone on disk -> it carries a 'worktree-gone' hint
+    withStore(f, (s) => s.upsertRegistry({ id: f.LABEL, worktreePath: path.join(f.base, 'gone-wt'), sessionId: 'sess-primary' }));
+    sendDirect(f, f.LABEL, 'reply under the alias to an archived child');
+    const total = (r) => r.workspaces.reduce((n, w) => n + (Number.isFinite(w.directUnread) ? w.directUnread : 0), 0);
+    const before = cli.run(['roster'], { home: f.home, env: f.env, cwd: f.repo }).result;
+    const beforeChild = before.workspaces.find((w) => w.id === CHILD);
+    const beforeLabel = before.workspaces.find((w) => w.id === f.LABEL);
+    assert.ok(beforeChild && beforeChild.directUnread === null, 'precondition: archived canonical row has null unread: ' + JSON.stringify(beforeChild));
+    assert.ok(beforeLabel && beforeLabel.directUnread >= 1, JSON.stringify(beforeLabel));
+    aliasLib.writeAlias(f.home, f.LABEL, CHILD, f.child);
+    const after = cli.run(['roster'], { home: f.home, env: f.env, cwd: f.repo }).result;
+    const c = after.workspaces.find((w) => w.id === CHILD);
+    assert.ok(!after.workspaces.some((w) => w.id === f.LABEL), 'ghost row folded');
+    assert.equal(c.directUnread, beforeLabel.directUnread, 'ghost unread carried into the null canonical row: ' + JSON.stringify(c));
+    assert.ok((beforeLabel.hints || []).length >= 1, 'precondition: ghost has hints: ' + JSON.stringify(beforeLabel));
+    for (const h of beforeLabel.hints) assert.ok(c.hints.includes(h), 'ghost hint ' + h + ' carried: ' + JSON.stringify(c.hints));
+    assert.ok(c.hints.includes('archived'), 'canonical hints kept');
+    assert.equal(total(after), total(before), 'roster unread total unchanged by the fold');
+  } finally { cleanup(f); }
+});
+
 test('roster: the app DB owning the label worktree under another builder folds the label (no alias, no redirect)', { skip: skipNoSqlite }, () => {
   const f = fixture();
   try {

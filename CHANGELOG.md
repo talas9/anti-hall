@@ -213,6 +213,11 @@ the update.
   saw the key as set and skipped it — inverting the precedence (settings.json outranks
   jev.json). `migrateJevIntegrationsSection` now runs first. Nothing is deleted; both old
   values stay where they were.
+- **The roster fold dropped a ghost row's unread when the canonical row's `directUnread`
+  was null.** Folding a `primary-<hash>` ghost into, e.g., an archived child row (whose
+  `directUnread` is null) kept the null and lost the ghost's unread directs and its hints.
+  The canonical row now receives both (unread summed from 0, hints unioned), so the
+  roster's total unread is the same before and after the fold.
 
 ## 0.108.3
 
