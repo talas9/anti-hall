@@ -258,7 +258,9 @@ test('devswarm: every advanced tuning knob is marked advanced; headline knobs ar
   const headline = ['hivecontrol', 'supervisorMode', 'requiredGates', 'inboxCmd', 'autoArchive.mode',
     // 0.108.4 per-hook on/off switches (headline, so each is a /config row)
     'parentGate', 'childGate', 'parentInbox', 'childTurn', 'childRole', 'childDrain', 'parentReplyTracker',
-    'commsGuard', 'inboxReadGuard', 'wakeWatch', 'appSync', 'screenshotSync'];
+    'commsGuard', 'inboxReadGuard', 'wakeWatch', 'appSync', 'screenshotSync',
+    // 0.108.5
+    'spawnFromOrigin'];
   const sec = SCHEMA.findSection('devswarm');
   for (const s of sec.settings) {
     if (headline.includes(s.key)) assert.ok(!s.advanced, s.key + ' should be headline, not advanced');

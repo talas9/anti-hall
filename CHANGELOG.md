@@ -6,6 +6,24 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.108.5 (unreleased)
+
+### Fixes
+
+- **`devswarm.js spawn` no longer hands a child stale tooling.** hivecontrol branches the new
+  workspace from a LOCAL branch name (`-s`, else the caller's current branch), so a Primary whose
+  local `main` had fallen 25 commits behind `origin/main` spawned a child with an old deploy script
+  that lacked a newer CI gate. When the source is the default branch (resolved from origin/HEAD),
+  spawn now runs `git fetch origin <default>` and fast-forwards the local branch to it before
+  `create`: a guarded ref update when it is not checked out, `merge --ff-only` when it is checked
+  out and clean. It never rebases, resets or forces, and touches no other branch. Offline, it warns
+  and continues. When local `<default>` is behind and cannot be fast-forwarded (diverged, or
+  checked out with local changes) spawn refuses with a one-line reason ("local main is N commits
+  behind origin/main; spawning from it would give the child outdated tools") unless `--from-local`
+  is passed; that flag is anti-hall's own and is not forwarded to hivecontrol. The result carries a
+  `sourceCheck` object.
+- New setting `devswarm.spawnFromOrigin` (default `true`, a /config row) turns the check off.
+
 ## 0.108.4
 
 ### Features

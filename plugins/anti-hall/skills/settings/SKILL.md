@@ -91,7 +91,7 @@ parent gate" and the like are one `set <section.key> false`. The switch keys:
 lifecycle log, session-end MCP reaper), `guards.*` (api, speculation, claim ledger,
 task, task-list, scan throttle; `guards.modelRouting` takes `strict|advisory|off`),
 and `devswarm.*` (parentGate, childGate, parentInbox, childTurn, childRole, childDrain,
-parentReplyTracker, commsGuard, inboxReadGuard, wakeWatch, appSync, screenshotSync).
+parentReplyTracker, commsGuard, inboxReadGuard, wakeWatch, appSync, screenshotSync, spawnFromOrigin).
 Settings are read when each hook runs, so a change applies from the next hook call.
 
 ## `show` only when asked

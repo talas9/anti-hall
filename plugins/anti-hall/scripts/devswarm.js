@@ -17474,12 +17474,95 @@ function cmdReconcileRegistry(flags, ctx) {
   };
 }
 
+// SPAWN SOURCE FRESHNESS (0.108.5, field defect). `hivecontrol workspace create`
+// branches the child from a LOCAL branch NAME: the CLI sends `sourceBranch` =
+// `-s/--source`, else (inside DevSwarm) the caller's current branch, else
+// DEVSWARM_DEFAULT_BRANCH || DEVSWARM_SOURCE_BRANCH || 'main' [verified: bundled
+// devswarm CLI, `workspace create` action]. That name is also the child's
+// recorded PARENT (merge-into-source target), so `origin/main` or a sha can
+// never be passed in its place. A Primary whose local default branch had fallen
+// 25 commits behind origin handed a child stale tooling (a deploy script missing
+// a newer CI gate). So before `create`, when the source IS the default branch
+// (origin/HEAD): fetch it, and if local is strictly behind, fast-forward it
+// (update-ref with the old value as a guard when not checked out; `merge
+// --ff-only` in its worktree when checked out and clean). Never rebase, reset or
+// force; no other branch is touched. Fetch failure = warn and continue. Behind or
+// diverged and not updatable = refuse unless `--from-local`. Setting
+// devswarm.spawnFromOrigin=false skips the whole check.
+const SPAWN_FETCH_TIMEOUT_MS = 30000;
+function spawnSourceFreshness(rest, ctx) {
+  const cwd = ctx.cwd || process.cwd();
+  const env = ctx.env || process.env;
+  const fromLocal = rest.includes('--from-local');
+  const git = (args, timeout) => spawnSync('git', ['-C', cwd].concat(args), { encoding: 'utf8', timeout: timeout || gitTruth.GIT_TIMEOUT_MS });
+  const out = (r) => (r && !r.error && r.status === 0) ? String(r.stdout || '').trim() : null;
+  let on = true;
+  try { on = require('../hooks/lib/settings.js').get('devswarm', 'spawnFromOrigin', true, { env, home: ctx.home }) !== false; } catch (_) { on = true; }
+  if (!on) return { status: 'skipped', reason: 'setting devswarm.spawnFromOrigin=false' };
+
+  const remoteRef = gitTruth.defaultBranchRef(cwd); // 'origin/<default>' | null
+  if (!remoteRef) return { status: 'skipped', warning: 'default branch unknown (origin/HEAD is not set); spawning without checking the source against origin' };
+  const def = remoteRef.slice('origin/'.length);
+  let source = extractFlagValue(rest, '-s', '--source');
+  if (!source) {
+    source = env.DEVSWARM_REPO_ID ? out(git(['symbolic-ref', '--short', '-q', 'HEAD']))
+      : (env.DEVSWARM_DEFAULT_BRANCH || env.DEVSWARM_SOURCE_BRANCH || 'main');
+  }
+  if (source !== def) return { status: 'skipped', reason: 'source ' + JSON.stringify(source) + ' is not the default branch ' + def };
+
+  const f = git(['fetch', '--quiet', 'origin', def], SPAWN_FETCH_TIMEOUT_MS);
+  if (!f || f.error || f.signal || f.status !== 0) {
+    return { status: 'fetch-failed', source, warning: 'could not fetch ' + remoteRef + ' (offline?); spawning from local ' + def + ' as it is' };
+  }
+  const local = out(git(['rev-parse', '-q', '--verify', 'refs/heads/' + def + '^{commit}']));
+  const remote = out(git(['rev-parse', '-q', '--verify', 'refs/remotes/' + remoteRef + '^{commit}']));
+  if (!local || !remote) return { status: 'skipped', source, warning: 'could not resolve ' + def + ' or ' + remoteRef + '; spawning without the check' };
+  if (local === remote) return { status: 'up-to-date', source, sha: local };
+  const counts = out(git(['rev-list', '--left-right', '--count', local + '...' + remote]));
+  const [ahead, behind] = String(counts || '').split(/\s+/).map((n) => parseInt(n, 10));
+  if (!Number.isFinite(ahead) || !Number.isFinite(behind)) return { status: 'skipped', source, warning: 'could not compare ' + def + ' with ' + remoteRef + '; spawning without the check' };
+  if (behind === 0) return { status: 'ahead', source, sha: local, ahead };
+
+  const refuse = (why) => fromLocal
+    ? { status: 'from-local', source, sha: local, ahead, behind, warning: why + ' (--from-local given: spawning from it anyway)' }
+    : { status: 'refused', source, ahead, behind, refuse: true, error: why + '. Update local ' + def + ', or pass --from-local to spawn from it anyway.' };
+  const staleLine = 'local ' + def + ' is ' + behind + ' commit' + (behind === 1 ? '' : 's') + ' behind ' + remoteRef
+    + '; spawning from it would give the child outdated tools';
+  if (ahead > 0) return refuse(staleLine + ' (it also has ' + ahead + ' local commit' + (ahead === 1 ? '' : 's') + ' not on ' + remoteRef + ', so it cannot be fast-forwarded)');
+
+  // Pure fast-forward. Where is <def> checked out (if anywhere)?
+  let checkedOutAt = null;
+  const wl = out(git(['worktree', 'list', '--porcelain']));
+  if (wl === null) return refuse(staleLine + ' (could not list worktrees to update it safely)');
+  let wt = null;
+  for (const line of wl.split('\n')) {
+    if (line.startsWith('worktree ')) wt = line.slice('worktree '.length);
+    else if (line === 'branch refs/heads/' + def) { checkedOutAt = wt; break; }
+  }
+  let r;
+  if (checkedOutAt) {
+    const st = spawnSync('git', ['-C', checkedOutAt, 'status', '--porcelain', '--untracked-files=no'], { encoding: 'utf8', timeout: gitTruth.GIT_TIMEOUT_MS });
+    const dirty = out(st);
+    if (dirty === null || dirty !== '') return refuse(staleLine + ' (' + def + ' is checked out at ' + checkedOutAt + ' with local changes, so it was not updated)');
+    r = spawnSync('git', ['-C', checkedOutAt, 'merge', '--ff-only', '--quiet', 'refs/remotes/' + remoteRef], { encoding: 'utf8', timeout: SPAWN_FETCH_TIMEOUT_MS });
+  } else {
+    r = git(['update-ref', '-m', 'anti-hall spawn: fast-forward to ' + remoteRef, 'refs/heads/' + def, remote, local]);
+  }
+  if (!r || r.error || r.signal || r.status !== 0) return refuse(staleLine + ' (fast-forward failed: ' + String((r && (r.stderr || (r.error && r.error.message))) || 'unknown').trim().split('\n')[0] + ')');
+  return { status: 'fast-forwarded', source, from: local, sha: remote, behind };
+}
+
 function cmdSpawn(rest, ctx) {
   const branch = rest && rest[0];
   if (!branch) return { ok: false, error: 'spawn requires a branch name' };
   const cwd = ctx.cwd || process.cwd();
   const run = (ctx.io && ctx.io.run) || hcRun;
-  const args = ['workspace', 'create'].concat(rest);
+  // `--from-local` is anti-hall's own flag (hivecontrol would reject it) — the
+  // one token stripped before the otherwise untouched pass-through.
+  let sourceCheck;
+  try { sourceCheck = spawnSourceFreshness(rest, ctx); } catch (e) { sourceCheck = { status: 'skipped', warning: 'source check failed: ' + String(e && e.message || e) }; }
+  if (sourceCheck.refuse) return { ok: false, action: 'spawn', branch, created: false, error: sourceCheck.error, sourceCheck };
+  const args = ['workspace', 'create'].concat(rest.filter((a) => a !== '--from-local'));
   // RECENCY FLOOR for the launch check below — captured BEFORE `create` so any
   // evidence produced during the create call still counts, while anything that
   // predates this spawn entirely (a prior occupant of a reused branch/worktree,
@@ -17488,7 +17571,7 @@ function cmdSpawn(rest, ctx) {
   const spawnStartedAt = Date.now();
   const res = run({ args, env: ctx.env, cwd });
   if (!res || !res.ok) {
-    return { ok: false, error: (res && res.error) || 'hivecontrol workspace create failed', branch };
+    return { ok: false, error: (res && res.error) || 'hivecontrol workspace create failed', branch, sourceCheck };
   }
 
   // Title derivation is pure/no I/O — computed up front, but the actual
@@ -17583,6 +17666,8 @@ function cmdSpawn(rest, ctx) {
   return {
     ok: true, action: 'spawn', branch, created: true,
     worktreePath, meshId, registered, titled,
+    // How the child's source branch was vetted against origin (0.108.5).
+    sourceCheck,
     // DISTINCT from `created`: the workspace exists, but a session running in it
     // is a separate fact with separate evidence. Never `false` — absence of a
     // signal inside a short window is not proof of failure (see header).

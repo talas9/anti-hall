@@ -972,6 +972,7 @@ Generated from `hooks/lib/settings-schema.js` (a hygiene test keeps this table a
 | `devswarm.wakeWatch` | `true` | — | devswarm-wake-watch monitor: wake an idle session the moment new mesh mail lands (the cron fallback stays). |
 | `devswarm.appSync` | `true` | `ANTIHALL_DEVSWARM_APP_SYNC` | Supervisor app-DB sync: apply the DevSwarm app database (archive state, names, drift) every tick. |
 | `devswarm.screenshotSync` | `true` | — | `devswarm.js sync-ui`: reconcile a transcribed sidebar screenshot against the app DB. |
+| `devswarm.spawnFromOrigin` | `true` | — | `devswarm.js spawn`: fetch origin first and fast-forward the local default branch so a child never starts from stale tooling; refuses when it is behind and cannot be updated (unless --from-local). |
 | `statusline.base` | — | `ANTIHALL_STATUSLINE_BASE` | Shell command run as the line-1 base in consolidated statusline mode. |
 | `statusline.noEmail` | `false` | `ANTIHALL_STATUSLINE_NO_EMAIL` | Suppress the email segment in the statusline. |
 | `codexNudge.enabled` | `true` | `ANTIHALL_CODEX_NUDGE` | Enable the Codex hand-off nudge hook. |

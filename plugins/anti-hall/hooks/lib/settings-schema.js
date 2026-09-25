@@ -290,6 +290,8 @@ const SECTIONS = [
       { key: 'wakeWatch', type: 'boolean', default: true, pluginOption: 'devswarm_wake_watch', description: 'devswarm-wake-watch monitor: wake an idle session the moment new mesh mail lands (the cron fallback stays).' },
       { key: 'appSync', type: 'boolean', default: true, env: 'ANTIHALL_DEVSWARM_APP_SYNC', pluginOption: 'devswarm_app_sync', description: 'Supervisor app-DB sync: apply the DevSwarm app database (archive state, names, drift) every tick.' },
       { key: 'screenshotSync', type: 'boolean', default: true, pluginOption: 'devswarm_screenshot_sync', description: '`devswarm.js sync-ui`: reconcile a transcribed sidebar screenshot against the app DB.' },
+      // ---- 0.108.5 ----
+      { key: 'spawnFromOrigin', type: 'boolean', default: true, pluginOption: 'devswarm_spawn_from_origin', description: '`devswarm.js spawn`: fetch origin first and fast-forward the local default branch so a child never starts from stale tooling; refuses when it is behind and cannot be updated (unless --from-local). [read by: scripts/devswarm.js spawnSourceFreshness]' },
     ],
   },
   {

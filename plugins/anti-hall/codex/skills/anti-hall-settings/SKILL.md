@@ -80,7 +80,7 @@ tracker, handover resume, defect nudge), `maintenance.*` (repair-on-reload, prog
 prune, pre-compact snapshot, task lifecycle log), `guards.*` (speculation, claim ledger,
 task, task-list; `guards.modelRouting` takes `strict|advisory|off`), and `devswarm.*`
 (parentGate, childGate, parentInbox, childTurn, childRole, childDrain,
-parentReplyTracker, wakeWatch, appSync, screenshotSync). `show` ends with the parts that
+parentReplyTracker, wakeWatch, appSync, screenshotSync, spawnFromOrigin). `show` ends with the parts that
 have no switch on purpose, and why.
 
 ## Browsing (only when the user asks to see or pick settings)
