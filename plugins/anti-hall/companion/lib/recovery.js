@@ -170,11 +170,45 @@ function acquireLock(id, home, io) {
       try { holder = JSON.parse(F.readFileSync(p, 'utf8')); } catch (_) {}
       const holderPid = holder && Number.isFinite(holder.pid) ? holder.pid : null;
       const holderTs = holder && Number.isFinite(holder.ts) ? holder.ts : null;
+      const holderToken = holder && typeof holder.token !== 'undefined' ? holder.token : null;
       const dead = holderPid !== null && !isAlive(holderPid);
       const stale = holderTs === null || (now() - holderTs) > LOCK_STALE_MS;
       if (dead || stale) {
-        try { F.unlinkSync(p); } catch (_) {}
-        continue; // retry the create+link
+        // FIX (P1, pre-existing -- reclaim race): a blind `unlinkSync(p)` here
+        // deletes WHATEVER currently sits at `p`, not the specific dead/stale
+        // holder we just read. Two callers that both read the SAME dead
+        // holder concurrently used to both decide "stale, steal it", and
+        // whichever unlinked SECOND deleted the FIRST's brand-new, live,
+        // legitimately-published lock -- both then recreated it and both
+        // "won" (verified via a direct repro: two nested acquireLock calls
+        // both returned a release fn for one id). Fix: move the file aside
+        // ATOMICALLY first (renameSync fails closed if `p` no longer exists —
+        // someone else already reclaimed or replaced it), re-read the MOVED
+        // copy, and only actually discard it if its token still matches the
+        // one we read before renaming (proof nothing else touched it in
+        // between). A token mismatch means a real, fresh lock got caught in
+        // our rename — put it back and respect it; NEVER steal it.
+        const reapPath = p + '.reap-' + process.pid + '-' + Math.random().toString(36).slice(2);
+        try {
+          F.renameSync(p, reapPath);
+        } catch (_) {
+          // `p` is already gone or already moved by another reclaimer --
+          // nothing here for US to steal; retry the create (a fresh, live
+          // holder that raced in is respected by the NEXT attempt's own
+          // EEXIST handling, same as always).
+          continue;
+        }
+        let movedHolder = null;
+        try { movedHolder = JSON.parse(F.readFileSync(reapPath, 'utf8')); } catch (_) {}
+        const movedToken = movedHolder && typeof movedHolder.token !== 'undefined' ? movedHolder.token : null;
+        if (movedToken !== holderToken) {
+          // Something else's FRESH lock got caught in our rename -- restore
+          // it exactly where it was and respect it, never delete it.
+          try { F.renameSync(reapPath, p); } catch (_) { /* best-effort restore */ }
+          return null;
+        }
+        try { F.unlinkSync(reapPath); } catch (_) { /* best-effort; already gone is fine */ }
+        continue; // retry the create+link — the stale holder is genuinely ours to replace
       }
       return null; // live, fresh holder -> respected
     } finally {

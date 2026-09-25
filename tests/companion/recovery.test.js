@@ -375,6 +375,65 @@ test('acquireLock: P3 fix — a linkSync EEXIST (a real concurrent winner) is NO
   } finally { cleanup(); }
 });
 
+// FIX (P1, pre-existing -- the stale-lock RECLAIM race; NOT introduced by the
+// write-then-link change above). Two callers that both read the SAME dead/
+// stale holder used to both decide "steal it" and both call a blind
+// `unlinkSync(p)` -- whichever ran SECOND deleted the FIRST's brand-new,
+// legitimately-published lock (not the dead one it actually read), so BOTH
+// then recreated a lock for the SAME id and BOTH returned a release fn.
+// Reproduced directly via a nested acquireLock call interposed inside the
+// OUTER call's own readFileSync (tighter than two real processes could ever
+// guarantee, landing exactly in the read -> reclaim-decision -> unlink gap).
+test('acquireLock: P1 fix — two reclaimers racing the SAME dead holder never both win; the second respects the first\'s fresh lock instead of deleting it', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const id = 'reclaim-race';
+    const p = M.lockPathFor(id, home);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, JSON.stringify({ pid: 999999, ts: Date.now(), token: 'dead' }));
+    // Interposed on readFileSync (the FIRST thing the EEXIST-handling branch
+    // does after linkSync fails) so the nested call runs with the ORIGINAL
+    // dead-holder content still on disk -- exactly the window the old code
+    // raced on.
+    let nested = 'not-run';
+    const tracedFs = Object.assign({}, fs, {
+      readFileSync(file, enc) {
+        const raw = fs.readFileSync(file, enc);
+        if (file === p && nested === 'not-run') {
+          nested = M.acquireLock(id, home, { fs, isAlive: () => false });
+        }
+        return raw;
+      },
+    });
+    const outer = M.acquireLock(id, home, { fs: tracedFs, isAlive: (pid) => pid === process.pid });
+    assert.notStrictEqual(nested, 'not-run', 'precondition: the nested reclaimer actually ran inside the read -> reclaim window');
+    const results = [outer, nested];
+    const winners = results.filter((r) => typeof r === 'function');
+    assert.strictEqual(winners.length, 1, 'exactly one reclaimer wins: ' + JSON.stringify(results.map((r) => typeof r)));
+    assert.ok(results.includes(null), 'the loser is null (respects the winner\'s fresh lock), never a second silently-granted lock');
+    // No leftover .reap-* scratch file: the loser's restore (on a token
+    // mismatch) or the winner's discard (on a token match) both clean it up.
+    const dir = path.dirname(p);
+    const leftoverReap = fs.readdirSync(dir).filter((n) => n.includes('.reap-'));
+    assert.deepStrictEqual(leftoverReap, [], 'no .reap-* scratch file left behind: ' + JSON.stringify(leftoverReap));
+    winners[0]();
+  } finally { cleanup(); }
+});
+
+test('acquireLock: P1 fix — a genuinely dead holder with NO racer is still reclaimed normally (no regression on the common case)', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const id = 'reclaim-solo';
+    const p = M.lockPathFor(id, home);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, JSON.stringify({ pid: 424242, ts: Date.now(), token: 'dead-solo' }));
+    const held = M.acquireLock(id, home, { fs, isAlive: () => false });
+    assert.strictEqual(typeof held, 'function', 'a dead holder with no concurrent racer must still be reclaimable');
+    assert.strictEqual(JSON.parse(fs.readFileSync(p, 'utf8')).token === 'dead-solo', false, 'the lock now carries OUR token, not the dead one');
+    held();
+  } finally { cleanup(); }
+});
+
 test('resume prompt PREPENDS the state-check guardrail before the backlog', () => {
   const { home, cleanup } = makeHome();
   try {
