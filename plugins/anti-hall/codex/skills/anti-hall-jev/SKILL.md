@@ -109,6 +109,22 @@ itself.
   no boolean outcome to compare; N distinct decisions (M fresh)`, and the
   distinct-decision count dedupes cache retries of the same content hash —
   KEEP/REMOVE/REVIEW gating itself is unchanged.
+  **v0.108.3 fix (tp/fp accounting):** owner-delegated `jev report label <hash>
+  tp|fp` labels on a would-change choice decision (`wouldChange`/`changed`
+  truthy, fresh, hashed) used to be read but silently dropped — a choice
+  integration's would-change rows never joined `changedHashByFresh`, so the
+  tp/fp loop (which only iterated that map) never saw them, and
+  `bucket.labeled > 0 && known === 0` short-circuited to `REVIEW (label-only,
+  no outcome signal yet)` forever regardless of how many labels it had. Fixed:
+  those hashes now join the SAME precision/labelled-sample pipeline a boolean
+  integration's changed decisions use (`humanTP`/`humanFP`/`autoTP`/`autoFP`/
+  `labeledSample`), reported additively via JSON as `labelWouldChangeUnique`.
+  `changed%`/`changedUnique` still stay 0 — a choice answer has no
+  added/relaxed/changed semantics — and the `known === 0` short-circuit into
+  label-only REVIEW now applies only when `labeledSample` is also 0. Once a
+  choice integration reaches 20 labelled decisions and 50+ calls it can reach
+  REMOVE (bad-outcome/failure-rate gates, unchanged) or KEEP (gated on its own
+  would-change rate in place of changed-decision rate, since that stays 0).
 - `jev-report.js --since <iso> --until <iso>` / `--exclude-window <iso>..<iso>`
   (repeatable) exclude rows by `ts` before anything else — use this to drop a
   known-accidental run from the numbers, e.g.

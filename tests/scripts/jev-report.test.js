@@ -958,3 +958,92 @@ test('buildReport via filterByTimeWindow: excluding the accidental run window re
   const r = report.integrations.find((x) => x.id === 'supervisorBlockerLabel');
   assert.strictEqual(r.calls, 10);
 });
+
+// ---------------------------------------------------------------------------
+// FIX (v0.108.3): a choice/label integration (typeof row.jev === 'string',
+// e.g. newRequest) forced effectiveDirection to null for EVERY row, so its
+// would-change decisions never entered changedHashByFresh. tp/fp accounting
+// (humanLabelByHash / autoTP / autoFP) iterated only changedHashByFresh, and
+// the `bucket.labeled > 0 && known === 0` short-circuit always won first --
+// so owner-delegated tp/fp labels on would-change choice decisions were read
+// but never counted, and a choice integration could NEVER reach KEEP/REMOVE.
+// Fix: a would-change (wouldChange/changed truthy), fresh, hashed choice row
+// joins a label-candidate set (labelWouldChangeHashesFresh) that feeds the
+// SAME precision/labelled-sample pipeline as changedHashByFresh, while
+// changedRate/changedUnique stay untouched (0) since added/relaxed/changed
+// semantics don't apply to a choice answer.
+// ---------------------------------------------------------------------------
+
+function choiceRow(overrides) {
+  return Object.assign({
+    ts: new Date().toISOString(), id: 'newRequest', h: 'h1', base: null, jev: 'new-request',
+    conf: 0.9, ms: 100, backend: 'jev', final: true, changed: 'changed', cached: false, mode: 'on',
+  }, overrides);
+}
+
+test('buildReport: choice integration, would-change rows + 20 labels, mostly TP -> KEEP-eligible', () => {
+  const rows = [];
+  for (let i = 0; i < 60; i++) {
+    rows.push(choiceRow({ h: 'h' + i }));
+  }
+  // 25 labelled outcomes (>= MIN_LABELED_FOR_VERDICT): 22 good, 3 bad ->
+  // goodOutcomeRate 0.88 >= KEEP_GOOD_OUTCOME_RATE (0.80).
+  for (let i = 0; i < 22; i++) rows.push({ ts: new Date().toISOString(), type: 'outcome', id: 'newRequest', h: 'h' + i, outcome: 'evidence-added' });
+  for (let i = 22; i < 25; i++) rows.push({ ts: new Date().toISOString(), type: 'outcome', id: 'newRequest', h: 'h' + i, outcome: 'user-override' });
+  const report = buildReport(rows, {});
+  const r = report.integrations.find((x) => x.id === 'newRequest');
+  assert.strictEqual(r.changedUnique, 0, 'choice rows never enter changedHashByFresh/changedRate');
+  assert.strictEqual(r.changedRate, 0);
+  assert.strictEqual(r.labelWouldChangeUnique, 60, 'all 60 would-change choice decisions joined the label-candidate set');
+  assert.strictEqual(r.autoTP, 22);
+  assert.strictEqual(r.autoFP, 3);
+  assert.ok(Math.abs(r.goodOutcomeRate - 22 / 25) < 1e-9);
+  assert.strictEqual(r.suggestion, 'KEEP', 'labelled would-change choice decisions must be able to reach KEEP');
+});
+
+test('buildReport: choice integration, would-change rows + labelled sample, mostly FP -> REMOVE', () => {
+  const rows = [];
+  for (let i = 0; i < 200; i++) {
+    rows.push(choiceRow({ h: 'h' + i }));
+  }
+  // 25 labelled outcomes: 5 good, 20 bad -> goodOutcomeRate 0.20 < 0.60.
+  for (let i = 0; i < 5; i++) rows.push({ ts: new Date().toISOString(), type: 'outcome', id: 'newRequest', h: 'h' + i, outcome: 'evidence-added' });
+  for (let i = 5; i < 25; i++) rows.push({ ts: new Date().toISOString(), type: 'outcome', id: 'newRequest', h: 'h' + i, outcome: 'user-override' });
+  const report = buildReport(rows, {});
+  const r = report.integrations.find((x) => x.id === 'newRequest');
+  assert.strictEqual(r.autoTP, 5);
+  assert.strictEqual(r.autoFP, 20);
+  assert.strictEqual(r.suggestion, 'REMOVE', 'a proven bad-outcome rate on labelled would-change choice decisions must earn REMOVE');
+});
+
+test('buildReport: choice integration, tp/fp labels on NON-would-change rows are ignored (never counted)', () => {
+  const rows = [];
+  for (let i = 0; i < 60; i++) {
+    // changed: null -> not a would-change row -- must not join the
+    // label-candidate set even though it carries an `h`.
+    rows.push(choiceRow({ h: 'h' + i, changed: null }));
+  }
+  const humanLabelByHash = new Map();
+  for (let i = 0; i < 25; i++) humanLabelByHash.set('h' + i, 'tp');
+  const report = buildReport(rows, { humanLabelByHash });
+  const r = report.integrations.find((x) => x.id === 'newRequest');
+  assert.strictEqual(r.labelWouldChangeUnique, 0, 'no row was would-change, so no hash joins the candidate set');
+  assert.strictEqual(r.humanTP, 0, 'labels on non-would-change hashes are never counted');
+  assert.strictEqual(r.humanFP, 0);
+  assert.match(r.suggestion, /label-only, no outcome signal yet/, 'stays label-only since labeledSample is still 0');
+});
+
+test('buildReport: boolean integration is unaffected by the choice-label fix (labelWouldChangeUnique stays 0)', () => {
+  const rows = [];
+  for (let i = 0; i < 100; i++) {
+    const changed = i < 30;
+    rows.push(row({ id: 'speculation', h: 'h' + i, changed: changed ? 'added' : null }));
+  }
+  for (let i = 0; i < 27; i++) rows.push({ ts: new Date().toISOString(), type: 'outcome', id: 'speculation', h: 'h' + i, outcome: 'evidence-added' });
+  for (let i = 27; i < 30; i++) rows.push({ ts: new Date().toISOString(), type: 'outcome', id: 'speculation', h: 'h' + i, outcome: 'user-override' });
+  const report = buildReport(rows, {});
+  const r = report.integrations.find((x) => x.id === 'speculation');
+  assert.strictEqual(r.labelWouldChangeUnique, 0, 'a boolean integration never populates labelWouldChangeHashesFresh');
+  assert.strictEqual(r.suggestion, 'KEEP');
+  assert.ok(Math.abs(r.goodOutcomeRate - 0.9) < 1e-9);
+});

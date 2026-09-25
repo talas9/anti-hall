@@ -719,6 +719,16 @@ function buildReport(rows, opts = {}) {
         // "there is no boolean signal to measure". Tracked separately so
         // the report can show a real distinct-decision count instead.
         labelHashesAll: new Set(), labelHashesFresh: new Set(),
+        // labelWouldChangeHashesFresh: distinct content hashes for a
+        // `choice`-style row (typeof row.jev === 'string') whose trust-rule
+        // outcome (row.changed for mode:'on', row.wouldChange otherwise) is
+        // truthy and fresh (backend !== 'cache'). These never enter
+        // changedHashByFresh (no boolean baseline -- added/relaxed/changed
+        // semantics don't apply to a choice answer), but a would-change
+        // choice decision is still a real decision an owner can label
+        // tp/fp on, so it joins the SAME precision/labelled-sample pipeline
+        // as changedHashByFresh below (see the tp/fp + known/good loops).
+        labelWouldChangeHashesFresh: new Set(),
         realCostSum: 0, realCostKnown: false,
         timeouts: 0, fallbackCount: 0, overOneSecFresh: 0,
       });
@@ -782,11 +792,18 @@ function buildReport(rows, opts = {}) {
     // (`typeof row.jev === 'string'` -- a `choice` classifier with no boolean
     // baseline) is excluded from changedRate entirely, regardless of mode.
     const isLabelOnly = typeof row.jev === 'string';
-    const effectiveDirection = isLabelOnly
-      ? null
-      : (row.mode === 'on' ? row.changed : row.wouldChange);
+    const rawDirection = row.mode === 'on' ? row.changed : row.wouldChange;
+    const effectiveDirection = isLabelOnly ? null : rawDirection;
     if (row.h && effectiveDirection && row.backend !== 'cache') {
       bucket.changedHashByFresh.set(row.h, effectiveDirection);
+    }
+    // A choice row's own would-change signal (rawDirection) doesn't feed
+    // changedHashByFresh (see above), but it still marks a real decision
+    // the owner can tp/fp-label -- collect its hash separately so the
+    // precision/labelled-sample loops below can join it the same way a
+    // boolean integration's changed decision would be.
+    if (isLabelOnly && row.h && rawDirection && row.backend !== 'cache') {
+      bucket.labelWouldChangeHashesFresh.add(row.h);
     }
     if (Number.isFinite(row.ms)) bucket.latencies.push(row.ms);
   }
@@ -806,11 +823,23 @@ function buildReport(rows, opts = {}) {
     const changedRate = freshCalls > 0 ? totalChangedUnique / freshCalls : 0;
     const agreementPct = bucket.agreeTotal > 0 ? bucket.agree / bucket.agreeTotal : null;
 
+    // Precision/outcome join set: the deduped changed-decision hashes PLUS
+    // (for a choice integration) the would-change label-candidate hashes
+    // collected above. changedRate/changedUnique above deliberately read
+    // ONLY changedHashByFresh (a choice answer has no added/relaxed/changed
+    // baseline), but tp/fp labelling and outcome join apply to a would-change
+    // choice decision exactly like a boolean one -- so this wider set feeds
+    // ONLY the loops below, never the yield metrics above.
+    // Materialized as a real array (not a live Map/Set iterator) -- it is
+    // consumed by TWO separate loops below (known/good, then tp/fp), and an
+    // iterator can only be walked once.
+    const precisionHashes = [...bucket.changedHashByFresh.keys(), ...bucket.labelWouldChangeHashesFresh];
+
     // Outcome join is by the SAME deduped unique-hash set (fresh, changed
     // decisions only) -- iterating raw per-row hashes would count a cache
     // hit's outcome once per retry instead of once per decision.
     let good = 0; let known = 0;
-    for (const h of bucket.changedHashByFresh.keys()) {
+    for (const h of precisionHashes) {
       const outcomes = outcomesByHash.get(h);
       if (!outcomes || outcomes.length === 0) continue;
       for (const o of outcomes) {
@@ -826,7 +855,7 @@ function buildReport(rows, opts = {}) {
     // as ground truth, and always reported separately from human labels.
     let humanTP = 0; let humanFP = 0; let autoTP = 0; let autoFP = 0;
     const humanLabelByHash = opts.humanLabelByHash || new Map();
-    for (const h of bucket.changedHashByFresh.keys()) {
+    for (const h of precisionHashes) {
       const human = humanLabelByHash.get(h);
       if (human === 'tp') { humanTP++; continue; }
       if (human === 'fp') { humanFP++; continue; }
@@ -866,11 +895,31 @@ function buildReport(rows, opts = {}) {
     // comment) -- a bare "0 changed" reads as "Jev never did anything here"
     // when the real story is "there is nothing boolean to compare". Same
     // `bucket.labeled > 0 && known === 0` condition the suggestion branch
-    // below already uses to detect this case.
-    const isLabelOnly = bucket.labeled > 0 && known === 0;
+    // below already uses to detect this case. `known === 0` alone used to
+    // short-circuit straight to "label-only, no outcome signal yet" even
+    // when owner-delegated tp/fp labels on would-change choice decisions
+    // (labeledSample) already gave it a real signal -- gate on labeledSample
+    // too, so a labelled choice integration falls through to the normal
+    // labelled-sample/KEEP/REMOVE checks below instead of getting stuck here.
+    const isLabelOnly = bucket.labeled > 0 && known === 0 && labeledSample === 0;
     const labelOnlyNote = isLabelOnly
       ? `label-only: no boolean outcome to compare; ${bucket.labelHashesAll.size} distinct decisions (${bucket.labelHashesFresh.size} fresh)`
       : null;
+
+    // A choice integration (bucket.labeled > 0) never populates
+    // changedHashByFresh (no added/relaxed/changed baseline -- see the
+    // effectiveDirection comment above), so changedRate stays 0 by
+    // construction and can never clear the KEEP_CHANGED_RATE floor below.
+    // labelWouldChangeRate is the same "how often did Jev's would-change
+    // signal actually fire, on fresh calls" question, computed from the
+    // would-change label-candidate hashes instead -- used ONLY to gate KEEP
+    // for a choice integration; changedRate/changedUnique above are left
+    // untouched (still 0) so the reported/displayed yield never lies about
+    // there being a boolean baseline.
+    const isChoiceIntegration = bucket.labeled > 0;
+    const labelWouldChangeRate = freshCalls > 0
+      ? bucket.labelWouldChangeHashesFresh.size / freshCalls : 0;
+    const keepYieldRate = isChoiceIntegration ? labelWouldChangeRate : changedRate;
 
     let suggestion;
     if (bucket.calls < MIN_CALLS_FOR_VERDICT) {
@@ -899,7 +948,7 @@ function buildReport(rows, opts = {}) {
       // real failure rate ever earns REMOVE.
       suggestion = 'REMOVE';
     } else if (
-      changedRate >= KEEP_CHANGED_RATE &&
+      keepYieldRate >= KEEP_CHANGED_RATE &&
       goodOutcomeRate !== null && goodOutcomeRate >= KEEP_GOOD_OUTCOME_RATE
     ) {
       // KEEP requires an ACTUAL outcome signal (goodOutcomeRate !== null) —
@@ -941,6 +990,11 @@ function buildReport(rows, opts = {}) {
       labelOnlyNote,
       labelDistinctDecisions: bucket.labelHashesAll.size,
       labelDistinctFresh: bucket.labelHashesFresh.size,
+      // Additive (item: choice tp/fp fix) -- distinct fresh would-change
+      // choice decisions that joined the precision/labelled-sample pipeline
+      // above; 0 for a boolean integration or a choice integration with no
+      // would-change rows.
+      labelWouldChangeUnique: bucket.labelWouldChangeHashesFresh.size,
       goodOutcomeRate,
       knownOutcomes: known,
       outcomeRateBySource,

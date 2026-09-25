@@ -173,7 +173,19 @@ Jev is doing:
      diff), and a `label-only integrations` note below the table (and in the
      headline) spells out the real distinct-decision count split fresh vs
      cache, e.g. `label-only: no boolean outcome to compare; 25 distinct
-     decisions (25 fresh)`.
+     decisions (25 fresh)`. This verdict only holds while `labeledSample` is
+     still 0. Once the owner runs `jev report label <hash> tp|fp` on a
+     would-change choice decision (the decision's own `wouldChange`/`changed`
+     was truthy on a fresh call — not just any labelled hash), that tp/fp
+     joins the SAME precision/labelled-sample pipeline a boolean integration
+     uses (v0.108.3 fix — these used to be read and silently dropped, so a
+     `choice` integration could never reach KEEP/REMOVE no matter how many
+     labels it got). `changed%`/`changedUnique` still stay 0 (a choice answer
+     has no added/relaxed/changed semantics), but `labelWouldChangeUnique`
+     (JSON output) tracks the would-change label-candidate count, and once
+     `labeledSample` reaches 20 the row falls through to the normal
+     REVIEW-needs-labels/REMOVE/KEEP checks — KEEP for a choice integration is
+     gated on its own would-change rate in place of changed-decision rate.
    - **REVIEW (p95 latency exceeds budget)** — the classifier is slow relative
      to its own hook's timeout budget; flag it, but this is a performance note,
      not a correctness one.

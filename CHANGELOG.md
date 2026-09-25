@@ -136,6 +136,24 @@ the update.
   distinct decisions (M fresh)`, deduped by content hash so repeated cache
   hits of the same decision count once. KEEP/REMOVE/REVIEW verdict gating is
   unchanged.
+- **`jev-report.js` never counted owner-delegated tp/fp labels on a label-only
+  integration's would-change decisions, so such an integration could NEVER
+  reach KEEP/REMOVE.** For a `choice`/string classifier (e.g. `newRequest`),
+  `effectiveDirection` was forced to `null` for every row, so its would-change
+  hashes never entered `changedHashByFresh` — the map the tp/fp/precision loop
+  and the `known === 0` label-only short-circuit both read. Labels were read
+  but silently dropped, and `bucket.labeled > 0 && known === 0` always won
+  first, permanently returning `REVIEW (label-only, no outcome signal yet)`.
+  Fixed: a would-change (`wouldChange`/`changed` truthy), fresh, hashed choice
+  row now joins a label-candidate set that feeds the same
+  `humanTP`/`humanFP`/`autoTP`/`autoFP`/`labeledSample` pipeline a boolean
+  integration's changed decisions use — reported additively via JSON as
+  `labelWouldChangeUnique`. `changed%`/`changedUnique` stay untouched (0; a
+  choice answer has no added/relaxed/changed semantics), the label-only
+  short-circuit now only fires when `labeledSample` is also 0, and KEEP for a
+  choice integration is gated on its own would-change rate in place of the
+  (always-0) changed-decision rate. KEEP/REMOVE thresholds themselves
+  (≥20 labelled, ≥50/≥200 calls, ≥60%/≥80% good-outcome) are unchanged.
 
 ### Docs / tests
 
