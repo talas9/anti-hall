@@ -78,10 +78,15 @@ itself.
   `outputVerifyGuard`, `gitGuardSelfCredit` (add-block, never relaxes),
   `parentGateQuestion` (cache-only, zero network), `tasklistTrivial`,
   `supervisorBlockerLabel` (cache-only, zero network), `codexNudgeSubstantial` —
-  all default `shadow` (settings `jev.integrations.<id>` for the 0.108 ones). In `on`,
+  all default `shadow` (settings `jevIntegrations.<id>`, e.g. `jevIntegrations.modelRouting`
+  — v0.108.4 gives every one of the 12 its own settings-schema row; a pre-existing
+  `jev.json integrations.<id>` or pre-0.108.4 `jev.integrations.<id>` value keeps
+  working and forward-migrates automatically, nothing deleted). In `on`,
   `tasklistTrivial`/`codexNudgeSubstantial` ask synchronously (1.5 s cap, fail-open)
   and a confident "trivial" verdict skips the nudge. Full per-id trust/hook/API table:
-  `docs/KB-jev-classifier.md` §10.
+  `docs/KB-jev-classifier.md` §10. Claude Code exposes each as its own `/config` row
+  ("Jev integration · <name>"); Codex has no `/config` equivalent — use
+  `settings.js show --section jevIntegrations` or the `anti-hall-settings` skill.
   **Claude/Codex parity**: `speculation`, `triage`, `claimLedger`, `mergeGateHedge`,
   `newRequest`, `gitGuardSelfCredit`, `parentGateQuestion`, `tasklistTrivial` run on
   BOTH platforms (their backing hooks are registered in this port's own

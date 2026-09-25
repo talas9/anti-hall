@@ -159,6 +159,17 @@ test('mode: sets one integration without clobbering others or unrelated fields',
   assert.strictEqual(cfg.costPerCall, 0.002);
 });
 
+test('mode: writes the NEW canonical settings.json key (jevIntegrations.<id>), not the old jev.integrations.<id> location', () => {
+  const { home } = makeHome();
+  const r = run(['mode', 'modelRouting', 'on'], { home });
+  assert.strictEqual(r.code, 0);
+  const settings = require('../../plugins/anti-hall/hooks/lib/settings.js');
+  assert.strictEqual(settings.get('jevIntegrations', 'modelRouting', undefined, { home }), 'on');
+  assert.strictEqual(settings.source('jevIntegrations', 'modelRouting', { home }), 'file');
+  const store = settings.load({ home });
+  assert.ok(!store.jev || !('integrations.modelRouting' in store.jev), 'never writes the old settings.json location');
+});
+
 test('mode: rejects an invalid mode value', () => {
   const { home } = makeHome();
   const r = run(['mode', 'speculation', 'maybe'], { home });

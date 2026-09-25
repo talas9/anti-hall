@@ -142,3 +142,89 @@ test('get: every /config-exposed key set via CLAUDE_PLUGIN_OPTION_<KEY> reports 
     home.cleanup();
   }
 });
+
+// ---------------------------------------------------------------------------
+// jevIntegrations (v0.108.4) — the dedicated per-integration section.
+// ---------------------------------------------------------------------------
+
+test('show --section jevIntegrations: renders all 12 rows as its own table, defaults intact', () => {
+  const home = makeHome();
+  try {
+    const r = run(['show', '--section', 'jevIntegrations', '--json'], home.home);
+    assert.strictEqual(r.code, 0);
+    const parsed = JSON.parse(r.stdout);
+    const ids = [
+      'speculation', 'triage', 'newRequest', 'claimLedger', 'outputVerifyGuard',
+      'gitGuardSelfCredit', 'modelRouting', 'tasklistTrivial',
+      'codexNudgeSubstantial', 'mergeGateHedge', 'parentGateQuestion',
+      'supervisorBlockerLabel',
+    ];
+    assert.strictEqual(Object.keys(parsed.jevIntegrations).length, ids.length);
+    for (const id of ids) assert.ok(id in parsed.jevIntegrations, id + ' row missing');
+    assert.strictEqual(parsed.jevIntegrations.speculation.value, 'on');
+    assert.strictEqual(parsed.jevIntegrations.triage.value, 'on');
+    assert.strictEqual(parsed.jevIntegrations.modelRouting.value, 'shadow');
+    assert.strictEqual(parsed.jevIntegrations.modelRouting.source, 'default');
+
+    const md = run(['show', '--section', 'jevIntegrations'], home.home);
+    assert.match(md.stdout, /## Jev integration/);
+    assert.match(md.stdout, /\| modelRouting \| shadow \| shadow \| default \|/);
+  } finally {
+    home.cleanup();
+  }
+});
+
+test('set jevIntegrations.<id> then get: settings.json WINS over the schema default (precedence: file > default)', () => {
+  const home = makeHome();
+  try {
+    const setR = run(['set', 'jevIntegrations.gitGuardSelfCredit', 'on'], home.home);
+    assert.strictEqual(setR.code, 0);
+    const getR = run(['get', 'jevIntegrations.gitGuardSelfCredit'], home.home);
+    assert.strictEqual(getR.stdout, 'jevIntegrations.gitGuardSelfCredit = on (source: file, default: shadow)\n');
+  } finally {
+    home.cleanup();
+  }
+});
+
+test('CLAUDE_PLUGIN_OPTION_<KEY> (/config) wins over the schema default for a jevIntegrations id, once the settings migration is stamped and no legacy value exists', () => {
+  const home = makeHome();
+  try {
+    // Precedence is env > settings.json > /config > jev.json legacy > default
+    // ONLY once the one-time settings-migration marker is stamped for this
+    // plugin version (pre-stamp, legacy intentionally outranks /config so a
+    // pre-existing jev.json value is never masked before it forward-migrates
+    // -- see settings.js settingsMigrationStamped()'s own doc comment). No
+    // jev.json here at all, so there is no legacy value to forward-migrate;
+    // /config is free to answer above the schema default.
+    const migrations = require('../../plugins/anti-hall/companion/lib/migrations.js');
+    migrations.runSettingsMigration(home.home);
+
+    const out = execFileSync(process.execPath, [CLI, 'get', 'jevIntegrations.claimLedger'], {
+      env: { ...process.env, HOME: home.home, USERPROFILE: home.home, CLAUDE_PLUGIN_OPTION_JEV_INTEGRATION_CLAIM_LEDGER: 'on' },
+      encoding: 'utf8',
+    });
+    assert.strictEqual(out, 'jevIntegrations.claimLedger = on (source: /config, default: shadow)\n');
+  } finally {
+    home.cleanup();
+  }
+});
+
+test('jev.json legacy value still wins over /config BEFORE the settings migration is stamped (masking-guard precedence)', () => {
+  const home = makeHome();
+  const fs = require('node:fs');
+  const p = require('node:path');
+  try {
+    fs.mkdirSync(p.join(home.home, '.anti-hall'), { recursive: true });
+    fs.writeFileSync(
+      p.join(home.home, '.anti-hall', 'jev.json'),
+      JSON.stringify({ enabled: true, integrations: { claimLedger: 'off' } }),
+    );
+    const out = execFileSync(process.execPath, [CLI, 'get', 'jevIntegrations.claimLedger'], {
+      env: { ...process.env, HOME: home.home, USERPROFILE: home.home, CLAUDE_PLUGIN_OPTION_JEV_INTEGRATION_CLAIM_LEDGER: 'on' },
+      encoding: 'utf8',
+    });
+    assert.strictEqual(out, 'jevIntegrations.claimLedger = off (source: legacy, default: shadow)\n');
+  } finally {
+    home.cleanup();
+  }
+});

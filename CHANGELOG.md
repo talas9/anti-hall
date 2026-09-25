@@ -6,6 +6,30 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.108.4 (unreleased)
+
+### Features
+
+- **Every Jev integration now has its own dedicated setting.** A new `jevIntegrations`
+  settings-schema section gives each of the 12 integration ids (`speculation`, `triage`,
+  `newRequest`, `claimLedger`, `outputVerifyGuard`, `gitGuardSelfCredit`, `modelRouting`,
+  `tasklistTrivial`, `codexNudgeSubstantial`, `mergeGateHedge`, `parentGateQuestion`,
+  `supervisorBlockerLabel`) its own row/setting (`jevIntegrations.<id>`), instead of only
+  5 of them living as `advanced` sub-keys of the `jev` section. Each is its own table row
+  in `/anti-hall:settings` (`settings.js show --section jevIntegrations`) and its own
+  `/config` row, titled "Jev integration · <name>". Defaults are unchanged: `speculation`
+  and `triage` default `on`, every other integration defaults `shadow`.
+- **Full back-compat, nothing deleted.** A pre-existing `~/.anti-hall/jev.json`
+  `integrations.<id>` value, and a pre-0.108.4 `~/.anti-hall/settings.json`
+  `jev["integrations.<id>"]` value, both keep working and forward-migrate automatically
+  into the new `jevIntegrations.<id>` key (`companion/lib/migrations.js`
+  `migrateJevIntegrationsSection`, idempotent, fail-open, never deletes the old key).
+  Resolution precedence is unchanged: env > settings.json > `/config` > jev.json legacy >
+  default. `jev-setup.js mode <id> on|shadow|off` now writes the new canonical
+  `jevIntegrations.<id>` settings.json key (still also writes `jev.json` for back-compat).
+- Docs: `docs/GUIDE.md`, the `jev`/`settings` skills (Claude + Codex), and the
+  system-briefing operator guide (Claude + Codex) all cover the new section/keys.
+
 ## 0.108.3
 
 ### Features

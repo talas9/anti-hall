@@ -359,6 +359,18 @@ gather `jev report` data before trusting it), `off` skips it entirely. `speculat
 and `triage` default to `on` once Jev is enabled (pre-existing behavior); every
 other integration defaults to `shadow` until promoted.
 
+**v0.108.4:** each of the 12 integrations below is also its own row/setting in the
+`jevIntegrations` settings-schema section (`jevIntegrations.<id>`, e.g.
+`jevIntegrations.modelRouting`) — its own table in `/anti-hall:settings`
+(`node "${CLAUDE_PLUGIN_ROOT}/scripts/settings.js" show --section jevIntegrations`)
+and its own row in Claude Code's native `/config` panel, titled
+"Jev integration · <name>". `jev-setup.js mode` writes the canonical
+`jevIntegrations.<id>` settings.json key (as well as `~/.anti-hall/jev.json` for
+back-compat); a pre-existing `jev.json integrations.<id>` value, or a pre-0.108.4
+settings.json `jev["integrations.<id>"]` value, keeps working and forward-migrates
+into the new key automatically (see `companion/lib/migrations.js`
+`migrateJevIntegrationsSection`) — nothing is ever deleted.
+
 ### All integrations
 
 | id | judges | trust | default mode | Claude | Codex |

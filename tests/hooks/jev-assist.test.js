@@ -94,33 +94,60 @@ function readNdjson(p) {
 // getMode / integration modes + env overrides
 // ---------------------------------------------------------------------------
 
+// NOTE: getMode() now resolves EVERY integration id through the unified
+// settings store (jevIntegrations.<id> — see settings-schema.js), which
+// reads ~/.anti-hall/settings.json and jev.json off the given `home` (falling
+// back to os.homedir() when omitted). These getMode()-only tests pass an
+// isolated, empty `home` fixture explicitly so they never read the real
+// machine's ~/.anti-hall/settings.json or jev.json.
+
 test('getMode: globally disabled -> off for any integration', () => {
   const { getMode } = freshLib();
-  assert.strictEqual(getMode('speculation', {}), 'off');
-  assert.strictEqual(getMode('speculation', { enabled: false }), 'off');
+  const h = makeHome();
+  try {
+    assert.strictEqual(getMode('speculation', {}, h.home), 'off');
+    assert.strictEqual(getMode('speculation', { enabled: false }, h.home), 'off');
+  } finally { h.cleanup(); }
 });
 
 test('getMode: legacy {"enabled":true} with no integrations map -> speculation/triage on, unknown -> shadow', () => {
   const { getMode } = freshLib();
-  const cfg = { enabled: true };
-  assert.strictEqual(getMode('speculation', cfg), 'on');
-  assert.strictEqual(getMode('triage', cfg), 'on');
-  assert.strictEqual(getMode('modelRouting', cfg), 'shadow');
-  assert.strictEqual(getMode('claimLedger', cfg), 'shadow');
+  const h = makeHome();
+  try {
+    const cfg = { enabled: true };
+    assert.strictEqual(getMode('speculation', cfg, h.home), 'on');
+    assert.strictEqual(getMode('triage', cfg, h.home), 'on');
+    assert.strictEqual(getMode('modelRouting', cfg, h.home), 'shadow');
+    assert.strictEqual(getMode('claimLedger', cfg, h.home), 'shadow');
+  } finally { h.cleanup(); }
 });
 
 test('getMode: legacy {"triage": false} still disables triage when integrations map omits it', () => {
   const { getMode } = freshLib();
-  assert.strictEqual(getMode('triage', { enabled: true, triage: false }), 'off');
-  // integrations map, when present, takes priority over the legacy key.
-  assert.strictEqual(getMode('triage', { enabled: true, triage: false, integrations: { triage: 'on' } }), 'on');
+  const h = makeHome();
+  try {
+    // No jev.json on disk at all -> the in-memory-only fileCfg is what the
+    // pre-integrations-map {"triage": false} legacy switch guards.
+    assert.strictEqual(getMode('triage', { enabled: true, triage: false }, h.home), 'off');
+    // A REAL jev.json integrations map, when present, takes priority over
+    // the legacy top-level key -- written to disk (not just the in-memory
+    // fileCfg) so settings.js's own legacy-file read (the actual precedence
+    // tier that now answers this) sees the same value production code would.
+    h.writeState('jev.json', { enabled: true, triage: false, integrations: { triage: 'on' } });
+    const cfg = JSON.parse(fs.readFileSync(path.join(h.home, '.anti-hall', 'jev.json'), 'utf8'));
+    assert.strictEqual(getMode('triage', cfg, h.home), 'on');
+  } finally { h.cleanup(); }
 });
 
 test('getMode: explicit integrations map value wins', () => {
   const { getMode } = freshLib();
-  const cfg = { enabled: true, integrations: { speculation: 'off', modelRouting: 'on' } };
-  assert.strictEqual(getMode('speculation', cfg), 'off');
-  assert.strictEqual(getMode('modelRouting', cfg), 'on');
+  const h = makeHome();
+  try {
+    h.writeState('jev.json', { enabled: true, integrations: { speculation: 'off', modelRouting: 'on' } });
+    const cfg = JSON.parse(fs.readFileSync(path.join(h.home, '.anti-hall', 'jev.json'), 'utf8'));
+    assert.strictEqual(getMode('speculation', cfg, h.home), 'off');
+    assert.strictEqual(getMode('modelRouting', cfg, h.home), 'on');
+  } finally { h.cleanup(); }
 });
 
 test('getMode: ANTIHALL_JEV=0 always wins over jev.json', () => {
@@ -935,8 +962,11 @@ test('ask()/askSync() shadow-log row: claimLedger and mergeGateHedge default to 
 
 test('getMode: codexNudgeSubstantial and tasklistTrivial default to "shadow" once enabled', () => {
   const { getMode } = freshLib();
-  assert.strictEqual(getMode('codexNudgeSubstantial', { enabled: true }), 'shadow');
-  assert.strictEqual(getMode('tasklistTrivial', { enabled: true }), 'shadow');
+  const h = makeHome();
+  try {
+    assert.strictEqual(getMode('codexNudgeSubstantial', { enabled: true }, h.home), 'shadow');
+    assert.strictEqual(getMode('tasklistTrivial', { enabled: true }, h.home), 'shadow');
+  } finally { h.cleanup(); }
 });
 
 test('askDetached(): codexNudgeSubstantial in shadow logs a relax-block row that never changes baseline', async () => {

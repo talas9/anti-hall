@@ -51,8 +51,8 @@ about ONE value is a single `get <section.key>`.
 
 2. To help the user pick without a wall of tables, Codex has no `AskUserQuestion`
    tool, so use **numbered lists** in prose:
-   - Number the sections (autoHandover, guards, jev, limitConserve, devswarm,
-     statusline, codexNudge, versionAlerts, updates, defects); ask for one.
+   - Number the sections (autoHandover, guards, jev, jevIntegrations, limitConserve,
+     devswarm, statusline, codexNudge, versionAlerts, updates, defects); ask for one.
    - Show just that section (`show --section <key>`), number its settings, ask again.
    - For a `boolean` or `enum` setting, number its allowed values (enum `values`
      from the schema; boolean is 1) true / 2) false). For a `number` or

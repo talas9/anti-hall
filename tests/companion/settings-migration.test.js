@@ -165,3 +165,110 @@ test('migrateSettingsFromLegacy: nested jev.json budget/audit keys forward-migra
     home.cleanup();
   }
 });
+
+// ---------------------------------------------------------------------------
+// jevIntegrations settings.json section migration (v0.108.4) — copies OLD
+// settings.json storage (section 'jev', dotted key 'integrations.<id>') into
+// the NEW canonical location (section 'jevIntegrations', key '<id>'). This
+// is separate from the jev.json legacy-file forward-migration above: it
+// migrates settings.json -> settings.json, one section to another.
+// ---------------------------------------------------------------------------
+
+function writeSettingsJson(home, obj) {
+  const file = settings.path({ home });
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify(obj, null, 2) + '\n', 'utf8');
+}
+
+test('migrateJevIntegrationsSection: forwards an old settings.json jev["integrations.<id>"] value into jevIntegrations.<id>, never deletes the old key', () => {
+  const home = makeHome();
+  try {
+    // Simulate a pre-0.108.4 settings.json: the OLD schema entry this used to
+    // validate against (section 'jev', key 'integrations.<id>') no longer
+    // exists post-0.108.4, so settings.set() would (correctly) reject it now
+    // -- write the raw file directly, the way an upgrading user's real
+    // pre-existing settings.json looks.
+    writeSettingsJson(home.home, { jev: { 'integrations.gitGuardSelfCredit': 'on' } });
+
+    const r = M.migrateJevIntegrationsSection(home.home);
+    assert.deepStrictEqual(r, { migrated: 1, errors: 0 });
+
+    // new canonical key now holds the value
+    assert.strictEqual(settings.get('jevIntegrations', 'gitGuardSelfCredit', undefined, { home: home.home }), 'on');
+    // old key is left in place, byte-for-byte, never deleted
+    const store = settings.load({ home: home.home });
+    assert.strictEqual(store.jev['integrations.gitGuardSelfCredit'], 'on');
+  } finally {
+    home.cleanup();
+  }
+});
+
+test('migrateJevIntegrationsSection: idempotent — running twice does not change or duplicate anything, and a value already set at the new key is NEVER overwritten', () => {
+  const home = makeHome();
+  try {
+    writeSettingsJson(home.home, { jev: { 'integrations.modelRouting': 'shadow' } });
+    // owner already explicitly promoted the NEW key to "on" before the migration ran
+    settings.set('jevIntegrations', 'modelRouting', 'on', { home: home.home });
+
+    const r1 = M.migrateJevIntegrationsSection(home.home);
+    assert.deepStrictEqual(r1, { migrated: 0, errors: 0 }, 'new key already set -> old value never overwrites it');
+    assert.strictEqual(settings.get('jevIntegrations', 'modelRouting', undefined, { home: home.home }), 'on');
+
+    const r2 = M.migrateJevIntegrationsSection(home.home);
+    assert.deepStrictEqual(r2, { migrated: 0, errors: 0 });
+  } finally {
+    home.cleanup();
+  }
+});
+
+test('migrateJevIntegrationsSection: seeded-bad-state — a malformed old-key value (wrong enum) fails to validate and is counted as an error, never throws, never partially writes', () => {
+  const home = makeHome();
+  try {
+    // Write directly (bypassing settings.set's own validation) to seed a
+    // bad state the way a hand-edited or corrupted settings.json could.
+    const file = settings.path({ home: home.home });
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify({ jev: { 'integrations.claimLedger': 'not-a-real-mode' } }));
+
+    const r = M.migrateJevIntegrationsSection(home.home);
+    assert.deepStrictEqual(r, { migrated: 0, errors: 1 });
+    assert.strictEqual(
+      settings.get('jevIntegrations', 'claimLedger', undefined, { home: home.home }),
+      'shadow',
+      'invalid old value never wrote through -> the schema default still answers',
+    );
+    // the bad old value is left exactly as seeded, not deleted or "fixed"
+    const store = settings.load({ home: home.home });
+    assert.strictEqual(store.jev['integrations.claimLedger'], 'not-a-real-mode');
+  } finally {
+    home.cleanup();
+  }
+});
+
+test('migrateJevIntegrationsSection: no old-style keys at all -> nothing migrated, no error', () => {
+  const home = makeHome();
+  try {
+    const r = M.migrateJevIntegrationsSection(home.home);
+    assert.deepStrictEqual(r, { migrated: 0, errors: 0 });
+  } finally {
+    home.cleanup();
+  }
+});
+
+test('migrateSettingsFromLegacy: also runs the jevIntegrations section forward-migration as part of its own count/errors', () => {
+  const home = makeHome();
+  try {
+    writeSettingsJson(home.home, {
+      jev: { 'integrations.tasklistTrivial': 'on', 'integrations.supervisorBlockerLabel': 'off' },
+    });
+
+    const r = M.migrateSettingsFromLegacy(home.home);
+    assert.strictEqual(r.ok, true);
+    assert.ok(r.migrated >= 2, 'includes the 2 jevIntegrations rows on top of any jev.json legacy-file rows');
+
+    assert.strictEqual(settings.get('jevIntegrations', 'tasklistTrivial', undefined, { home: home.home }), 'on');
+    assert.strictEqual(settings.get('jevIntegrations', 'supervisorBlockerLabel', undefined, { home: home.home }), 'off');
+  } finally {
+    home.cleanup();
+  }
+});

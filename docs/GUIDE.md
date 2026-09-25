@@ -840,14 +840,21 @@ Generated from `hooks/lib/settings-schema.js` (a hygiene test keeps this table a
 | `jev.budget.mode` | `unlimited` (unlimited/watch) | — | Jev spend: no limit, or warn when over budget (never auto-disables). |
 | `jev.budget.usdPerDay` | — (>0) | — | optional: daily USD spend threshold, used only when budget.mode=watch. |
 | `jev.budget.usdPerWeek` | — (>0) | — | optional: weekly USD spend threshold, used only when budget.mode=watch. |
-| `jev.integrations.gitGuardSelfCredit` adv | `shadow` (on/shadow/off) | — | Jev check for paraphrased AI self-credit in commit/PR text (add-block only; never relaxes git-guard). |
-| `jev.integrations.parentGateQuestion` adv | `shadow` (on/shadow/off) | — | Parent gate: treat an unread child message Jev already labelled a question as awaiting a reply (cache-only, no network). |
-| `jev.integrations.tasklistTrivial` adv | `shadow` (on/shadow/off) | — | tasklist-guard: when on, a confident "small bounded chore" verdict (asked synchronously, 1.5 s cap, fail-open) skips the task-tracking nudge. |
-| `jev.integrations.supervisorBlockerLabel` adv | `shadow` (on/shadow/off) | — | Supervisor report label: waiting-on-parent vs wedged, from cached triage labels (advisory, no network). |
-| `jev.integrations.codexNudgeSubstantial` adv | `shadow` (on/shadow/off) | — | codex-nudge: when on, a confident "edits are trivial" verdict (asked synchronously, 1.5 s cap, fail-open) skips the Codex-review nudge. |
 | `jev.weeklyNotice` | `true` | — | Once-a-week SessionStart scorecard notice naming one integration worth promoting or turning off (Jev enabled only). |
 | `jev.audit.snippets` adv | `false` | `ANTIHALL_JEV_AUDIT_SNIPPETS` | Store a redacted ~200-char snippet for decisions Jev changed (off by default: privacy). |
 | `jev.budget.minCreditUsd` | — (>0) | — | optional: warn (once a day, budget.mode=watch only) when the gateway credit balance drops below this USD amount. |
+| `jevIntegrations.speculation` | `on` (on/shadow/off) | — | Is this claim unsupported speculation (add-block trust). |
+| `jevIntegrations.triage` | `on` (on/shadow/off) | — | Mesh message urgency/kind labeling (advisory trust). |
+| `jevIntegrations.newRequest` | `shadow` (on/shadow/off) | — | Classify a prompt as new-request/follow-up/correction/question (advisory trust). |
+| `jevIntegrations.claimLedger` | `shadow` (on/shadow/off) | — | Is a flagged claim genuinely unsupported by evidence (relax-block trust). |
+| `jevIntegrations.outputVerifyGuard` | `shadow` (on/shadow/off) | — | Does this test-runner output actually indicate a pass (advisory trust). |
+| `jevIntegrations.gitGuardSelfCredit` | `shadow` (on/shadow/off) | — | Does this commit/PR message contain paraphrased AI self-credit (add-block trust; never relaxes git-guard). |
+| `jevIntegrations.modelRouting` | `shadow` (on/shadow/off) | — | Is this agent-spawn task actually mechanical (relax-block trust). |
+| `jevIntegrations.tasklistTrivial` | `shadow` (on/shadow/off) | — | tasklist-guard: is this session a genuinely non-trivial, multi-part effort (relax-block trust; 1.5 s cap, fail-open). |
+| `jevIntegrations.codexNudgeSubstantial` | `shadow` (on/shadow/off) | — | codex-nudge: are these file edits genuinely substantial, not just formatting (relax-block trust; 1.5 s cap, fail-open). |
+| `jevIntegrations.mergeGateHedge` | `shadow` (on/shadow/off) | — | Does this text hedge on merge-readiness (relax-block trust; askDetached fire-and-forget in shadow). |
+| `jevIntegrations.parentGateQuestion` | `shadow` (on/shadow/off) | — | Is this unread child message really a question awaiting a reply (add-block trust; cache-only, zero network). |
+| `jevIntegrations.supervisorBlockerLabel` | `shadow` (on/shadow/off) | — | Is a stale child waiting-on-parent or genuinely wedged (advisory trust; cache-only, zero network). |
 | `jev.prices` adv | — | — | computed: per-model USD price table {model: {inPerMTok, outPerMTok}} (or a "default" entry), used only when the gateway reports tokens but no cost. File-only (no env, no CLI set) — edit ~/.anti-hall/settings.json directly. |
 | `devswarm.hivecontrol` | — | `ANTIHALL_DEVSWARM_HIVECONTROL` | Explicit path to the hivecontrol CLI binary (default: PATH lookup — no single default value; empty means "look it up"). |
 | `devswarm.supervisorMode` | `auto` (auto/on/off) | `ANTIHALL_DEVSWARM_SUPERVISOR` | Force the DevSwarm supervisor context on/off, or auto-detect. |

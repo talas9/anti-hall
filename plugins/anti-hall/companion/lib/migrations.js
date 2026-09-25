@@ -425,6 +425,46 @@ function byId(id) { return MIGRATIONS.find((m) => m.id === id) || null; }
 // A settings.json value the user (or a prior run of this migration) already
 // set for a key is NEVER overwritten — only genuinely-missing keys are filled
 // in from their legacy source.
+// jevIntegrations 0.108.4 ids (see hooks/lib/settings-schema.js jevIntegrations
+// section). Kept as a literal list here because migrateJevIntegrationsSection
+// below migrates OLD settings.json storage (section 'jev', dotted key
+// 'integrations.<id>') into the NEW settings.json storage (section
+// 'jevIntegrations', key '<id>') — the old schema entries these ids used to
+// live under no longer exist, so allSettings() can't enumerate them.
+const JEV_INTEGRATION_IDS = [
+  'speculation', 'triage', 'newRequest', 'claimLedger', 'outputVerifyGuard',
+  'gitGuardSelfCredit', 'modelRouting', 'tasklistTrivial',
+  'codexNudgeSubstantial', 'mergeGateHedge', 'parentGateQuestion',
+  'supervisorBlockerLabel',
+];
+
+// migrateJevIntegrationsSection(home) -> {migrated, errors}. Idempotent,
+// fail-open, NO-DELETE of the old settings.json key (jev["integrations.<id>"]
+// is left in place forever; getMode() no longer reads it directly but a
+// downgrade or manual inspection can still see it). Only copies a value that
+// is ALREADY set at the old location and not yet set at the new one — never
+// overwrites a value the user (or a prior run) already set at the new key.
+function migrateJevIntegrationsSection(home) {
+  const settingsLib = require('../../hooks/lib/settings.js');
+  let migrated = 0;
+  let errors = 0;
+  try {
+    const store = settingsLib.load({ home });
+    const oldSection = store.jev || {};
+    for (const id of JEV_INTEGRATION_IDS) {
+      try {
+        const newAlready = settingsLib.lookup(store.jevIntegrations, id) !== undefined;
+        if (newAlready) continue;
+        const oldVal = settingsLib.lookup(oldSection, 'integrations.' + id);
+        if (oldVal === undefined) continue;
+        const r = settingsLib.set('jevIntegrations', id, oldVal, { home });
+        if (r.ok) migrated++; else errors++;
+      } catch (_) { errors++; }
+    }
+  } catch (_) { errors++; }
+  return { migrated, errors };
+}
+
 function migrateSettingsFromLegacy(home, opts) {
   const o = opts || {};
   const settingsLib = require('../../hooks/lib/settings.js');
@@ -451,6 +491,13 @@ function migrateSettingsFromLegacy(home, opts) {
       } catch (_) { errors++; }
     }
   } catch (_) { errors++; }
+  // 0.108.4: also forward pre-0.108.4 settings.json storage of the
+  // per-integration values (section 'jev', key 'integrations.<id>') into
+  // their new home (section 'jevIntegrations', key '<id>'). Same marker/
+  // idempotency contract as the legacy-file loop above.
+  const section = migrateJevIntegrationsSection(home);
+  migrated += section.migrated;
+  errors += section.errors;
   return { ok: errors === 0, migrated, errors };
 }
 
@@ -556,5 +603,5 @@ module.exports = {
   MIGRATIONS, defaultMigrations, byId, runMigrations,
   isRunComplete, incompleteReasons, recordRun, TERMINAL_LEFT_REASONS, runBudgetMs, DEFAULT_RUN_BUDGET_MS,
   markerPath, readMarkers, writeMarkers, isApplied, markApplied, pluginVersion,
-  migrateSettingsFromLegacy, runSettingsMigration,
+  migrateSettingsFromLegacy, runSettingsMigration, migrateJevIntegrationsSection,
 };

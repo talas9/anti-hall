@@ -6,8 +6,11 @@ description: Show or change any anti-hall setting. Use when the user says "anti-
 # Settings
 
 anti-hall keeps every user-facing setting in ONE place: `~/.anti-hall/settings.json`,
-organized into sections (autoHandover, guards, jev, limitConserve, devswarm,
-statusline, ...). `scripts/settings.js` is the only thing that reads or writes it.
+organized into sections (autoHandover, guards, jev, jevIntegrations, limitConserve,
+devswarm, statusline, ...). `scripts/settings.js` is the only thing that reads or
+writes it. `jevIntegrations` (v0.108.4) is a dedicated section holding all 12
+per-integration Jev trust modes as their own rows/settings — see the `jev` skill's
+"Per-integration modes" for the full table.
 
 ## Default: point the user at `/config`
 

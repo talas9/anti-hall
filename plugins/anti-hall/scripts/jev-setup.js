@@ -342,13 +342,14 @@ function cmdMode(opts) {
     cfg.integrations = Object.assign({}, cfg.integrations, { [integration]: value });
     return cfg;
   });
-  // A 0.108 integration with a settings key (jev.integrations.<id>) is also
-  // written to ~/.anti-hall/settings.json, which outranks jev.json — otherwise
-  // an earlier settings value would silently mask this change.
+  // A 0.108.4+ integration id has its own settings key (jevIntegrations.<id>,
+  // the canonical home as of 0.108.4) and is also written to
+  // ~/.anti-hall/settings.json, which outranks jev.json — otherwise an
+  // earlier settings value would silently mask this change.
   try {
     const schema = require('../hooks/lib/settings-schema.js');
-    if (schema.findSetting('jev', 'integrations.' + integration)) {
-      const r = require('../hooks/lib/settings.js').set('jev', 'integrations.' + integration, value);
+    if (schema.findSetting('jevIntegrations', integration)) {
+      const r = require('../hooks/lib/settings.js').set('jevIntegrations', integration, value);
       if (!r.ok) console.error('warning: settings.json not updated: ' + r.error);
     }
   } catch (_) { /* jev.json write above still applies */ }

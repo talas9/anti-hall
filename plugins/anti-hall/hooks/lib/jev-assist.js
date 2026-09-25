@@ -134,14 +134,29 @@ function envNameFor(id) {
 }
 
 // getMode(id, fileCfg) -> 'on' | 'shadow' | 'off'. Never throws.
-// A 0.108 integration id with a settings-schema entry (jev.integrations.<id>)
-// resolves through the unified settings store (env > settings.json > legacy
-// jev.json "integrations" map > default); older ids keep reading jev.json.
+// Every one of the 12 0.108.4 integration ids has its own settings-schema
+// entry (jevIntegrations.<id>) and resolves through the unified settings
+// store (env > settings.json > /config > legacy jev.json "integrations" map
+// > default). A future id with no schema entry falls through to undefined
+// here, and getMode() below falls back to reading fileCfg.integrations[id]
+// directly (the pre-schema behavior).
 function schemaIntegrationMode(id, home) {
   try {
     const schema = require('./settings-schema.js');
-    if (!schema.findSetting('jev', 'integrations.' + id)) return undefined;
-    return require('./settings.js').get('jev', 'integrations.' + id, undefined, { home: homeDir(home) });
+    if (!schema.findSetting('jevIntegrations', id)) return undefined;
+    return require('./settings.js').get('jevIntegrations', id, undefined, { home: homeDir(home) });
+  } catch (_) { return undefined; }
+}
+
+// schemaIntegrationSource(id, home) -> the precedence tier that answered
+// schemaIntegrationMode(id, home) ('env'|'file'|'plugin-option'|'legacy'|
+// 'default'), or undefined when the id has no schema entry. Used only for
+// the pre-integrations-map triage:false legacy check below. Never throws.
+function schemaIntegrationSource(id, home) {
+  try {
+    const schema = require('./settings-schema.js');
+    if (!schema.findSetting('jevIntegrations', id)) return undefined;
+    return require('./settings.js').source('jevIntegrations', id, { home: homeDir(home) });
   } catch (_) { return undefined; }
 }
 
@@ -159,9 +174,15 @@ function getMode(id, fileCfg, home) {
   const schemaValue = schemaIntegrationMode(id, home);
   const value = schemaValue !== undefined ? schemaValue : integrations[id];
 
-  // Legacy pre-integrations-map switch: {"triage": false} alone still
-  // disables triage when the new map says nothing about it.
-  if (id === 'triage' && value === undefined && cfg.triage === false) return 'off';
+  // Legacy PRE-integrations-map switch: a bare {"triage": false} in jev.json
+  // (no "integrations" map at all) still disables triage. This predates the
+  // integrations map and ranks below every real precedence tier: only
+  // applies when nothing more specific (env/settings.json/plugin-option/the
+  // nested "integrations.triage" legacy key) resolved a value, i.e.
+  // schemaIntegrationMode fell all the way through to its own schema default.
+  if (id === 'triage' && cfg.triage === false && schemaIntegrationSource(id, home) === 'default') {
+    return 'off';
+  }
 
   if (value === 'on' || value === 'shadow' || value === 'off') return value;
 
