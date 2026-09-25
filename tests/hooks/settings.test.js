@@ -91,6 +91,32 @@ test('get(): CLAUDE_PLUGIN_OPTION_<KEY> env var is read before the file fallback
   }
 });
 
+test('get(): an invalid enum value from CLAUDE_PLUGIN_OPTION_<KEY> or pluginConfigs.options is ignored (falls through, never crashes)', () => {
+  const home = makeHome();
+  try {
+    // enum values are user-editable free text in a public plugin's /config
+    // panel (no `options` picker constrains them — see settings-schema.test.js),
+    // so an out-of-set value must fail open to the next precedence tier
+    // instead of throwing or being accepted verbatim.
+    const envVal = settings.get('limitConserve', 'mode', undefined, {
+      home: home.home,
+      env: { CLAUDE_PLUGIN_OPTION_LIMIT_CONSERVE_MODE: 'bogus-value' },
+    });
+    assert.strictEqual(envVal, 'auto', 'invalid CLAUDE_PLUGIN_OPTION_ enum value falls through to the schema default');
+
+    const claudeSettingsPath = home.home + '/.claude-settings-fake-enum.json';
+    fs.mkdirSync(home.home + '/.claude', { recursive: true });
+    fs.writeFileSync(claudeSettingsPath, JSON.stringify({
+      pluginConfigs: { 'anti-hall': { options: { limit_conserve_mode: 'not-a-real-mode' } } },
+    }));
+    const fileVal = settings.get('limitConserve', 'mode', undefined, { home: home.home, claudeSettingsPath });
+    assert.strictEqual(fileVal, 'auto', 'invalid pluginConfigs.options enum value falls through to the schema default');
+    assert.strictEqual(settings.source('limitConserve', 'mode', { home: home.home, claudeSettingsPath }), 'default');
+  } finally {
+    home.cleanup();
+  }
+});
+
 test('set(): validates type/range/enum and rejects bad values without writing', () => {
   const home = makeHome();
   try {

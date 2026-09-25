@@ -105,7 +105,20 @@ test('every non-advanced setting has a pluginOption (exposed in /config)', () =>
   }
 });
 
-test('plugin.json userConfig entries match their schema entries (type/options/default/min/max/title)', () => {
+// REGRESSION GUARD: per the Claude Code plugin manifest docs ("If you declare
+// `options` on any field, users on Claude Code versions before v2.1.271 can't
+// load the plugin."), and since anti-hall is a public plugin that must load
+// on every supported Claude Code version, NO userConfig field may ever
+// declare `options` again. Enum settings instead ship as `type: "string"`
+// with the allowed values spelled out in the description.
+test('no plugin.json userConfig field declares "options" (Claude Code < v2.1.271 cannot load a plugin that does)', () => {
+  const uc = require('../../plugins/anti-hall/.claude-plugin/plugin.json').userConfig;
+  for (const [key, u] of Object.entries(uc)) {
+    assert.strictEqual(u.options, undefined, key + ' declares "options" — this breaks plugin load on Claude Code < v2.1.271');
+  }
+});
+
+test('plugin.json userConfig entries match their schema entries (type/default/min/max/title, enum values described)', () => {
   const uc = require('../../plugins/anti-hall/.claude-plugin/plugin.json').userConfig;
   for (const sec of SCHEMA.SECTIONS) {
     const prefix = sec.label.replace(/\s*\(.*\)$/, '') + ' · ';
@@ -118,11 +131,11 @@ test('plugin.json userConfig entries match their schema entries (type/options/de
       assert.ok(u.title.startsWith(prefix) && u.title.length > prefix.length, id + ' title must start with "' + prefix + '": ' + u.title);
       assert.ok(typeof u.description === 'string' && u.description.length > 0, id + ' description');
       assert.ok(!/\[(verified|read by)/.test(u.description), id + ' description carries a source citation');
+      assert.strictEqual(u.options, undefined, id + ' must not declare options (breaks plugin load pre-v2.1.271)');
       if (e.type === 'enum') {
-        assert.deepStrictEqual(u.options, e.values, id + ' options');
-        for (const o of u.options) assert.ok(o.length >= 1 && o.length <= 64, id + ' option label length');
-      } else {
-        assert.strictEqual(u.options, undefined, id + ' options only for enums');
+        for (const v of e.values) {
+          assert.ok(u.description.includes(v), id + ' description must list allowed value "' + v + '"');
+        }
       }
       if (e.default === null || e.default === undefined) assert.strictEqual(u.default, undefined, id + ' default');
       else assert.deepStrictEqual(u.default, e.default, id + ' default');

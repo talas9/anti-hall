@@ -193,12 +193,14 @@ Shared libraries (not hooks): `verify-first-core.js`, `coordinator-detect.js`, `
 Store: `~/.anti-hall/settings.json`. Precedence: env > settings.json > `/config`
 (plugin.json userConfig) > legacy file (e.g. `jev.json`) > default; legacy outranks `/config`
 until the one-time migration is stamped. Numbers clamp to schema bounds. Every non-advanced
-setting is a `/config` row (section-prefixed title; enums are pickers; Claude Code ≥ 2.1.271);
-a drift test keeps userConfig == the schema's non-advanced set. Codex: no `/config`, use the skill.
+setting is a `/config` row (section-prefixed title; enum fields are a string type whose
+description lists the allowed values, since `/config` requires Claude Code ≥ 2.1.269 for
+those rows — older versions still work via the skill); a drift test keeps userConfig ==
+the schema's non-advanced set. Codex: no `/config`, use the skill.
 
 | Setting | Default | Env |
 |---|---|---|
-| autoHandover.enabled / pct / maxTokens / nag / nagStepPct / nagQuietMin | true / 85 / 170000 / true / 5 / 15 | `ANTIHALL_AUTO_HANDOVER_PCT`, `ANTIHALL_AUTO_HANDOVER_MAX_TOKENS` |
+| autoHandover.enabled / pct / maxTokens / nag / nagStepPct / nagQuietMin | true / 85 / 0 / true / 5 / 15 | `ANTIHALL_AUTO_HANDOVER_PCT`, `ANTIHALL_AUTO_HANDOVER_MAX_TOKENS` |
 | guards.mergeGate / shipitGate | false / false | `ANTIHALL_MERGE_GATE`, `ANTIHALL_SHIPIT_GATE` |
 | guards.outputVerifyGuard / failureRootCauseNudge / repoSelfDrift / emitDedupe | true | `ANTIHALL_OUTPUT_VERIFY_GUARD`, … |
 | guards.stashGuard | false | `ANTIHALL_STASH_GUARD` |

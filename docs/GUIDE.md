@@ -736,11 +736,15 @@ from it (never `os.homedir()`), so a test's isolated HOME is always honored —
 wired resolver.
 
 - **`/config` (arrow keys, no model involved)** — every non-advanced setting is a row in
-  Claude Code's native `/config` panel (v2.1.269+; enum settings render as a picker,
-  v2.1.271+). There is no grouping field, so each row's title is prefixed with its section
+  Claude Code's native `/config` panel (v2.1.269+). `userConfig` never declares `options`
+  (a public plugin can't require v2.1.271+ just for its settings UI — declaring `options`
+  on any field breaks plugin loading before v2.1.271, per the Claude Code plugin manifest
+  docs), so enum settings render as a plain string field whose description lists the
+  allowed values, not a picker; older Claude Code versions still work via the skill. There
+  is no grouping field, so each row's title is prefixed with its section
   ("Auto Handover · Threshold %"). `plugin.json` `userConfig` is hand-kept and
-  `tests/hooks/settings-schema.test.js` fails if it drifts
-  from the schema's non-advanced set (key, type, options, default, min/max, title prefix).
+  `tests/hooks/settings-schema.test.js` fails if it drifts from the schema's non-advanced
+  set (key, type, default, min/max, title prefix) or if any field declares `options`.
   Advanced/tuning knobs stay off `/config`; use the CLI below.
 - **Ask for it** — say "turn off the merge gate" or "set auto-handover to 80%" and the
   `settings` skill applies it with one `set` (no table dump); "show my anti-hall settings"

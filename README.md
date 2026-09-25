@@ -50,8 +50,11 @@ only), launched as `node <hook>.js`. No `node` on the hook shell's `PATH` means 
 Code silently skips every anti-hall hook — verify with `node --version`. No npm
 install, no native deps, no other config.
 
-**Claude Code ≥ 2.1.271.** The plugin's `/config` settings rows use `userConfig` `options`
-pickers; per the Claude Code plugin docs, older versions can't load a plugin that declares them.
+**`/config` rows need Claude Code ≥ 2.1.269; older versions still work via the skill.**
+The plugin's `userConfig` never declares `options` (a public plugin can't require v2.1.271+
+just for its settings UI — per the Claude Code plugin docs, an `options` picker would break
+loading on older versions), so every version can load the plugin; enum settings just render
+as a plain string field describing the allowed values instead of a picker.
 
 ## Capabilities
 

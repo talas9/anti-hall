@@ -13,13 +13,16 @@ the update.
 - **Every non-advanced setting is now a row in Claude Code's native `/config` panel.**
   `plugin.json` `userConfig` grows from 19 to 39 entries (existing keys unchanged). Titles
   are prefixed with the section ("Guards · Stash guard") since `userConfig` has no grouping
-  field. Enum settings are `options` pickers, and numbers carry the schema's `min`/`max`. A
-  drift test (`tests/hooks/settings-schema.test.js`) fails if `userConfig` stops matching
-  the schema's non-advanced set. Each exposed key round-trips through
-  `CLAUDE_PLUGIN_OPTION_<KEY>` and `pluginConfigs` and shows Source `/config`.
-  **Requires Claude Code ≥ 2.1.271**, because older versions can't load a plugin that
-  declares `options` (per the plugin manifest reference). Codex has no `userConfig`
-  equivalent and still uses the `anti-hall-settings` skill.
+  field. Enum settings are `type: "string"` fields whose description lists the allowed
+  values (a `userConfig` `options` picker would break loading on Claude Code versions
+  before v2.1.271, per the plugin manifest reference, and anti-hall is a public plugin),
+  and numbers carry the schema's `min`/`max`. A drift test
+  (`tests/hooks/settings-schema.test.js`) fails if `userConfig` stops matching the
+  schema's non-advanced set, or if any field declares `options`. Each exposed key
+  round-trips through `CLAUDE_PLUGIN_OPTION_<KEY>` and `pluginConfigs` and shows Source
+  `/config`. `/config` rows need Claude Code ≥ 2.1.269; older versions still work via the
+  skill. Codex has no `userConfig` equivalent and still uses the `anti-hall-settings`
+  skill.
 - Three settings used to read only their env var and skipped the settings chain. They now
   go through `settings.js` (env > file > `/config` > default), so the new `/config` rows
   take effect: `guards.emitDedupe` (`hooks/lib/emit-dedupe.js`), `jev.judgeModel`
