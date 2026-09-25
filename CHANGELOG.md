@@ -6,6 +6,49 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.109.5
+
+### Fixes
+
+- **DevSwarm MAILBOX WAKE directive now names the right id.** The SessionStart
+  and Stop-gate wake directives were telling the agent to poll an unregistered
+  id (the raw session/builder id, or — in a repo whose Primary seat had never
+  been registered — an id with no history at all), so the inbox check the
+  directive told the agent to run always came back "unregistered" even though
+  wake-watch itself had armed correctly on the real, resolved Primary id.
+  Fixed by threading the resolved id through both directives and by
+  registering a Primary seat on its very first use, not only when it is
+  adopted from a previously closed one.
+- **DevSwarm wake-watch no longer needs a manual re-arm after every release.**
+  When a newer build's watcher is available, the running watcher now hands
+  the stream off to it automatically instead of printing a re-arm instruction
+  and stopping — Monitor keeps streaming through the handoff. Guarded so a
+  build can only hand off to a newer version, and only once per watch chain,
+  with a safe fallback to the old print-and-stop behavior if the handoff
+  itself fails.
+- **Edit guard now allows the harness plan file outside plan mode too.**
+  `~/.claude/plans/*.md` is exempt from the delegation block unconditionally,
+  not only while the session is in plan mode.
+- **Tasklist guard no longer blocks Stop in plan mode.** Plan mode cannot
+  write the progress file the guard was demanding, which previously caused a
+  stuck loop.
+- **Speculation guard no longer flags "must be"/"should be" used as a
+  requirement.** Obligation phrasing in requirement or acceptance-criteria
+  context (e.g. "the result must be idempotent") is exempted; real
+  speculative claims are still caught.
+- **Command guard allowlists read-only/append-only defect commands.**
+  `node scripts/defect.js report|list|show` no longer requires approval;
+  `rule` and `archive` remain gated.
+
+### Added
+
+- **New setting: `autoHandover.decisivePrompt`** (default `true`). At a
+  turn-ending Stop point, once the current session's handover exists and is
+  fresh, the agent is told to end its reply with one prominent line naming
+  the exact `/compact` (or `/clear`, or Codex `/new`) command to run next —
+  or, if the handover has gone stale since it was written, to refresh it
+  first. Turn it off to revert to the plain handover wording.
+
 ## 0.109.4
 
 ### Fixes
