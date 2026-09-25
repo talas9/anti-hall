@@ -11,11 +11,14 @@
 //     (b) merged    — devswarm-git-truth.js gitMergeProof, the SAME proof the
 //                     `gate --set merged` verb records as merged_verified: HEAD
 //                     an ancestor of the REMOTE default branch (origin/HEAD's
-//                     target; origin/<source> only when that is unresolvable;
-//                     a local branch ref never counts). When git cannot decide,
-//                     a `merged` gate the verb verified AT THE CURRENT HEAD
-//                     proves it; failing that (HEAD-bound done-report only) an
-//                     app DB pull_requests row with state=merged. A resolved
+//                     target; a local branch ref never counts). When git cannot
+//                     decide, a `merged` gate the verb verified AT THE CURRENT
+//                     HEAD proves it; failing that (HEAD-bound done-report
+//                     only) an app DB pull_requests row with state=merged —
+//                     but NOT when origin/HEAD is unresolvable: then only the
+//                     verified gate proves it, else 'default-branch-unknown'
+//                     blocks (the PR row is matched by branch name, which
+//                     says nothing about the target). A resolved
 //                     "not an ancestor" (unmerged commits, or a squash merge)
 //                     always blocks. NOT `hivecontrol workspace check-merge` —
 //                     it is side-effecting (see devswarm-capabilities.js).
@@ -231,19 +234,25 @@ function isPrimaryBuilder(b, db, o) {
 //      with new commits, or a squash merge, which has no sha-level proof);
 //   2. git undeterminable: a `merged` gate the verb verified at THIS HEAD
 //      (opts.verifiedHead === head) proves it;
-//   3. then, only with opts.allowPr (a done-report bound to the current HEAD),
+//   3. default branch unknown (no origin/HEAD): BLOCKED, 'default-branch-unknown'
+//      — fail safe, no PR fallback (it matches by branch name alone) and no
+//      origin/<sourceBranch> guess;
+//   4. then, only with opts.allowPr (a done-report bound to the current HEAD),
 //      a merged app DB PR row.
 function mergedFact(b, db, deps, opts) {
   const allowPr = !!(opts && opts.allowPr);
   let head = opts && typeof opts.head === 'string' ? opts.head : null;
   const wt = b.worktreePath;
+  let defaultUnknown = false;
   if (wt && fs.existsSync(wt)) {
-    const g = gitTruth.gitMergeProof(wt, { head, sourceBranch: b.sourceBranch ? String(b.sourceBranch) : null, git: deps.git });
+    const g = gitTruth.gitMergeProof(wt, { head, git: deps.git });
     if (g.merged === true) return { merged: true, via: g.via };
     if (g.merged === false) return { merged: false, via: 'git:not-ancestor' };
+    defaultUnknown = g.via === 'default-branch-unknown';
     head = head || g.head;
   }
   if (head && opts && opts.verifiedHead === head) return { merged: true, via: 'gate:merged_verified' };
+  if (defaultUnknown) return { merged: false, via: 'default-branch-unknown' };
   if (!allowPr) return { merged: false, via: 'unproven' };
   const pr = (db.prs || []).find((p) => (b.pullRequestId && p.id === b.pullRequestId)
     || (p.branchName === b.branchName && (!p.repositoryId || !b.repositoryId || p.repositoryId === b.repositoryId)));

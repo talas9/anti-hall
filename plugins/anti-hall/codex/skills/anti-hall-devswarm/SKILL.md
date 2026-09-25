@@ -284,9 +284,11 @@ and nobody has to archive it by hand); chat text such as "DONE" never counts and
 because (b) proves the merge and an archive can be undone; (b) its branch is merged
 into its source (`gitMergeProof`, the same check `gate --set merged` records as
 `merged_verified`: HEAD an ancestor of the REMOTE default branch, `origin/HEAD`'s target,
-or `origin/<source>` when that is unresolvable; a local branch ref never counts).
+passed to git as the full `refs/remotes/...` ref; a local branch ref never counts).
 When git can't decide, a `merged` gate verified at the current HEAD proves it, and then,
-for a done-report still tied to HEAD, a merged app PR row. A git "not an ancestor" always
+for a done-report still tied to HEAD, a merged app PR row. When `origin/HEAD` itself is
+unresolvable the default branch is unknown and only that verified gate counts; otherwise it
+blocks with `default-branch-unknown` (never `origin/<source>`, never the PR row). A git "not an ancestor" always
 blocks: a reused branch with new commits, and a squash merge (the app DB has no PR head sha,
 so a squash-merged child needs a manual archive). The `done` verb records the HEAD it
 reported at, and gate (a) ignores that report once HEAD moves on. A `done` set with a plain

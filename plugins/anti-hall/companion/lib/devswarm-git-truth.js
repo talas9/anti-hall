@@ -98,8 +98,11 @@ function defaultBranchRef(worktreePath) {
 // the verdict as the `merged_verified` gate, bound to `head`) and auto-archive
 // gate (b) (companion/lib/devswarm-lifecycle.js mergedFact). One rule, so the
 // two can never disagree again: HEAD must be an ancestor of the REMOTE default
-// branch, the origin/HEAD symbolic ref's target (e.g. origin/main). Only when
-// origin/HEAD is unresolvable does opts.sourceBranch supply 'origin/<branch>'.
+// branch, the origin/HEAD symbolic ref's target (e.g. origin/main). When
+// origin/HEAD is unresolvable the default branch is UNKNOWN: the proof returns
+// merged null with via 'default-branch-unknown' and never guesses one (not
+// 'origin/<sourceBranch>': a workspace's source branch need not be the default
+// branch, so containment in it proves nothing about the merge).
 // A LOCAL branch ref is never consulted: a stale local `main` (behind
 // origin/main) must not read as "not merged", and a local `main` carrying
 // unpushed commits must not read as "merged". git always receives the FULL
@@ -111,9 +114,10 @@ function defaultBranchRef(worktreePath) {
 //   merged false — provably NOT (unmerged commits, or a squash/rebase merge:
 //                  there is no squash detection; the caller decides what a
 //                  false means — the gate verb reports it, auto-archive blocks).
-//   merged null  — undeterminable (no ref, non-git dir, spawn failure).
-// opts: { sourceBranch?, head? (bind the proof to this sha), ref? (explicit
-// target), git? (cwd, args) -> { ok, status, out } — injectable for tests }.
+//   merged null  — undeterminable (default branch unknown, ref missing
+//                  locally, non-git dir, spawn failure).
+// opts: { head? (bind the proof to this sha), ref? (explicit target),
+// git? (cwd, args) -> { ok, status, out } — injectable for tests }.
 function defaultGitRun(cwd, args) {
   try {
     const r = runGit(cwd, args);
@@ -137,10 +141,9 @@ function gitMergeProof(worktreePath, opts) {
   if (!ref) {
     const s = git(worktreePath, ['symbolic-ref', 'refs/remotes/origin/HEAD']);
     const m = s && s.ok ? /^refs\/remotes\/(origin\/.+)$/.exec(String(s.out || '').trim()) : null;
-    if (m) ref = m[1];
-    else if (o.sourceBranch) ref = 'origin/' + String(o.sourceBranch);
+    if (!m) return res(null, 'default-branch-unknown', head);
+    ref = m[1];
   }
-  if (!ref) return res(null, 'unproven', head);
   // full ref for git; `ref` stays the short display name
   const fullRef = /^origin\//.test(ref) ? 'refs/remotes/' + ref : ref;
   const v = git(worktreePath, ['rev-parse', '--verify', '--quiet', fullRef + '^{commit}']);

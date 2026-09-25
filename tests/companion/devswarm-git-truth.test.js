@@ -201,7 +201,9 @@ test('gitMergeProof: HEAD only in a LOCAL main with unpushed commits -> NOT merg
   } finally { rm(dir); rm(remote); }
 });
 
-test('gitMergeProof: binds to opts.head; no origin/HEAD -> falls back to origin/<sourceBranch>, else null', () => {
+// 0.108.3: no origin/HEAD -> the default branch is UNKNOWN. Never guessed from
+// the workspace's source branch (it need not be the default branch).
+test('gitMergeProof: binds to opts.head; no origin/HEAD -> default-branch-unknown (never origin/<sourceBranch>)', () => {
   const remote = makeBareRemote();
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ght-proof-'));
   try {
@@ -214,13 +216,17 @@ test('gitMergeProof: binds to opts.head; no origin/HEAD -> falls back to origin/
     const c1 = git(dir, ['rev-parse', 'HEAD']).trim();
     git(dir, ['remote', 'add', 'origin', remote]);
     git(dir, ['push', '-q', '-u', 'origin', 'main']);
-    assert.strictEqual(gitTruth.gitMergeProof(dir).merged, null, 'no origin/HEAD and no sourceBranch -> unknown');
-    assert.strictEqual(gitTruth.gitMergeProof(dir, { sourceBranch: 'main' }).via, 'git:origin/main');
+    // non-vacuous: HEAD IS in origin/main, only origin/HEAD is missing
+    assert.strictEqual(git(dir, ['rev-parse', 'refs/remotes/origin/main']).trim(), c1);
+    assert.deepStrictEqual(gitTruth.gitMergeProof(dir), { merged: null, via: 'default-branch-unknown', head: c1, ref: null });
+    assert.deepStrictEqual(gitTruth.gitMergeProof(dir, { sourceBranch: 'main' }), { merged: null, via: 'default-branch-unknown', head: c1, ref: null },
+      'a sourceBranch is never used as the default branch');
+    git(dir, ['remote', 'set-head', 'origin', 'main']);
     fs.writeFileSync(path.join(dir, 'g.txt'), '2');
     git(dir, ['add', '.']);
     git(dir, ['commit', '-q', '-m', 'c2']);
-    assert.strictEqual(gitTruth.gitMergeProof(dir, { sourceBranch: 'main' }).merged, false);
-    assert.strictEqual(gitTruth.gitMergeProof(dir, { sourceBranch: 'main', head: c1 }).merged, true, 'proof is of opts.head');
+    assert.strictEqual(gitTruth.gitMergeProof(dir).merged, false);
+    assert.strictEqual(gitTruth.gitMergeProof(dir, { head: c1 }).merged, true, 'proof is of opts.head');
   } finally { rm(dir); rm(remote); }
 });
 

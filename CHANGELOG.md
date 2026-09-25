@@ -57,8 +57,8 @@ the update.
   `origin/main`); gate (b) checked the LOCAL source branch first and stopped there when it
   said "not an ancestor", so a stale local `main` (behind `origin/main`) hid every merge.
   Both now call one function, `devswarm-git-truth.js` `gitMergeProof`: HEAD must be an
-  ancestor of the remote default branch (`origin/<source>` only when `origin/HEAD` is
-  unresolvable), and a local branch ref never counts, so a local `main` with unpushed
+  ancestor of the remote default branch (`origin/HEAD`'s target), and a local branch ref
+  never counts, so a local `main` with unpushed
   commits can't prove a merge either. The verb records the HEAD it verified at in the
   `merged_verified` row (`set_by` `devswarm-merged@<sha>`, projected as
   `mergedVerifiedHead`). When git can't decide, a `merged` gate verified at the current
@@ -118,6 +118,13 @@ the update.
   Primary's own path, which hid the bug; it now uses a real child worktree plus a
   foreign-repo entry that must stay hidden. `doctor` was not affected (it compares the
   app-DB `repositoryId`).
+- **An unresolvable `origin/HEAD` fell back to guesses.** `gitMergeProof` then proved the
+  merge against `origin/<sourceBranch>` (a workspace's source branch need not be the default
+  branch), and gate (b) could then accept an app PR row matched by branch name alone. It now
+  fails safe: `gitMergeProof` returns `merged: null`, `via: 'default-branch-unknown'`, and
+  gate (b) blocks with `default-branch-unknown` unless a `merged` gate was verified at the
+  current HEAD. Run `git remote set-head origin --auto` in such a checkout to restore
+  auto-archive.
 - **The Stop-time handover pause nag could repeat the same text with no progress.**
   `hooks/auto-handover-pause-nag.js` stored `nagStepPct` and `lastNagPct` but never compared
   them. It now re-nags only when context has risen at least `nagStepPct` points since the

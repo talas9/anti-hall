@@ -431,7 +431,8 @@ anti-hall depends on it.
   structured done-report at its current HEAD and its merge is proven: HEAD contained in the
   remote default branch (`gitMergeProof`, the same check `gate --set merged` records), else,
   only when git can't decide, a `merged` gate verified at the current HEAD or the app's
-  merged PR row; a squash merge needs a manual archive; chat text never counts. A child reports done by running `devswarm.js done [--summary "..."]` once
+  merged PR row (with no resolvable `origin/HEAD`, only the verified gate:
+  `default-branch-unknown` blocks); a squash merge needs a manual archive; chat text never counts. A child reports done by running `devswarm.js done [--summary "..."]` once
   its work is merged (its SessionStart directive tells it to): that sets its `done` gate and
   sends the Primary one `[[ANTIHALL_DONE]]` message, and the roster shows it
   `done`/`archive-pending`, so nobody archives finished workspaces by hand. The Primary is

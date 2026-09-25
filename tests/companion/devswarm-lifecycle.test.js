@@ -84,6 +84,7 @@ function fixture(fake, children, opts) {
       const f = facts[cwd];
       if (!f) return { ok: false, status: 128, out: '' };
       if (args[0] === 'status') return f.porcelain === null ? { ok: false, status: 128, out: '' } : { ok: true, status: 0, out: f.porcelain };
+      if (args[0] === 'symbolic-ref') return f.noOriginHead ? { ok: false, status: 128, out: '' } : { ok: true, status: 0, out: 'refs/remotes/origin/main\n' };
       if (args[0] === 'rev-parse' && args[1] === '--verify' && f.refsMissing) return { ok: false, status: 1, out: '' };
       if (args[0] === 'rev-parse') return { ok: true, status: 0, out: (f.head || 'abc') + '\n' };
       if (args[0] === 'merge-base') return { ok: f.ancestor, status: f.ancestor ? 0 : 1, out: '' };
@@ -309,6 +310,34 @@ test('P1-B PR fallback only when ancestry is undeterminable, and only for a HEAD
   // Nor does the all-gates path.
   fx.byId.c1.done = true; fx.byId.c1.gates = { done: true, merged: true, tests_passed: true };
   assert.deepStrictEqual(blockersOf(fx), ['b-merged']);
+});
+
+// 0.108.3: origin/HEAD unresolvable -> the default branch is unknown. Fail
+// safe: no origin/<sourceBranch> guess, no PR fallback (it matches by branch
+// name alone); only a merged gate verified at the current HEAD proves it.
+test('default branch unknown (no origin/HEAD) -> blocked default-branch-unknown, unless merged verified at HEAD', { skip }, () => {
+  const fx = fixture(V252, [{ id: 'c1', done: false, gates: { done: true }, head: 'h1', doneHead: 'h1', noOriginHead: true, pr: 'merged' }]);
+  const calls = [];
+  const git0 = fx.deps.git;
+  fx.deps.git = (cwd, args) => { calls.push(args.join(' ')); return git0(cwd, args); };
+  const c = L.planAutoArchive(opts(fx, { settings: DRY })).candidates[0];
+  assert.deepStrictEqual(c.blockers.map((b) => b.gate), ['b-merged'], 'HEAD-bound done-report + merged PR row still blocked');
+  assert.strictEqual(c.facts.merged.via, 'default-branch-unknown');
+  assert.strictEqual(c.blockers[0].detail, 'default-branch-unknown');
+  assert.ok(!calls.some((a) => /origin\/main/.test(a) && !/symbolic-ref/.test(a)), 'origin/<sourceBranch> never probed: ' + calls.join(' | '));
+  // the manual (sha-less) done path: same
+  fx.byId.c1.doneHead = undefined;
+  assert.strictEqual(L.planAutoArchive(opts(fx, { settings: DRY })).candidates[0].facts.merged.via, 'default-branch-unknown');
+  fx.byId.c1.doneHead = 'h1';
+  // a merged gate verified at the current HEAD proves it
+  fx.byId.c1.gates = { done: true, merged: true, merged_verified: true };
+  fx.byId.c1.mergedVerified = true; fx.byId.c1.mergedVerifiedHead = 'h1';
+  const ok = L.planAutoArchive(opts(fx, { settings: DRY })).candidates[0];
+  assert.strictEqual(ok.eligible, true, JSON.stringify(ok.blockers));
+  assert.strictEqual(ok.facts.merged.via, 'gate:merged_verified');
+  // ...but not one verified at an older HEAD
+  fx.byId.c1.mergedVerifiedHead = 'h0';
+  assert.strictEqual(L.planAutoArchive(opts(fx, { settings: DRY })).candidates[0].facts.merged.via, 'default-branch-unknown');
 });
 
 test('P1-B manual `gate --set done` (no sha) still works for the Primary, with git-ancestry proof', { skip }, () => {
