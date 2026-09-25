@@ -76,7 +76,7 @@ function fixture(fake, children, opts) {
   const deps = {
     descriptors: () => Object.values(byId).map((f) => ({ id: f.id, worktreePath: f.wt, sessionId: 's-' + f.id })),
     repoKey: () => 'proj-abc123',
-    summary: () => ({ workspaces: Object.fromEntries(Object.values(byId).map((f) => [f.id, { id: f.id, archive_ready: f.done, unread: f.unread, broadcastUnread: 0, cursor: 0 }])) }),
+    summary: () => ({ workspaces: Object.fromEntries(Object.values(byId).map((f) => [f.id, { id: f.id, archive_ready: f.done, gates: f.gates || {}, unread: f.unread, broadcastUnread: 0, cursor: 0 }])) }),
     unreadFrom: (h, k, ids) => ids.reduce((n, id) => n + ((byId[id] && byId[id].unreadFrom) || 0), 0),
     activityTs: (d) => byId[d.id].activity,
     git: (cwd, args) => {
@@ -132,6 +132,59 @@ for (const [name, over, gate] of PRECONDITIONS) {
     assert.ok(!readCalls(fx.bin.callsFile).some((c) => c.argv[1] === 'archive' && c.argv[2] !== '--help'));
   });
 }
+
+// 0.108.3 — gate (a) accepts the child's structured done-report (the `done`
+// gate row alone) when the merge is PROVEN (gate b) and c-g pass.
+test('done-report (done gate only) + proven merge + c-g pass -> wouldArchive', { skip }, () => {
+  const fx = fixture(V252, [{ id: 'c1', done: false, gates: { done: true } }]);
+  const r = L.autoArchiveSweep(opts(fx, { settings: DRY }));
+  assert.deepStrictEqual(r.wouldArchive, ['c1']);
+  const c = L.planAutoArchive(opts(fx, { settings: DRY })).candidates[0];
+  assert.strictEqual(c.eligible, true);
+  assert.strictEqual(c.facts.doneVia, 'done-report');
+});
+
+test('done-report WITHOUT a proven merge -> blocked on b-merged', { skip }, () => {
+  const fx = fixture(V252, [{ id: 'c1', done: false, gates: { done: true }, ancestor: false }]);
+  const r = L.autoArchiveSweep(opts(fx, { settings: DRY }));
+  assert.deepStrictEqual(r.wouldArchive, []);
+  const c = L.planAutoArchive(opts(fx, { settings: DRY })).candidates[0];
+  assert.deepStrictEqual(c.blockers.map((b) => b.gate), ['b-merged']);
+});
+
+test('done-report with c-g failing still blocks (dirty worktree)', { skip }, () => {
+  const fx = fixture(V252, [{ id: 'c1', done: false, gates: { done: true }, porcelain: ' M x\n' }]);
+  assert.deepStrictEqual(L.autoArchiveSweep(opts(fx, { settings: DRY })).wouldArchive, []);
+});
+
+test('manual all-gates path still works (via gates)', { skip }, () => {
+  const fx = fixture(V252, [{ id: 'c1', done: true, gates: { done: true, merged: true, tests_passed: true } }]);
+  const c = L.planAutoArchive(opts(fx, { settings: DRY })).candidates[0];
+  assert.strictEqual(c.eligible, true);
+  assert.strictEqual(c.facts.doneVia, 'gates');
+});
+
+test('chat text "DONE" with no structured report -> blocked on a-done (real store)', { skip }, () => {
+  const store = require(path.join(ROOT, 'companion', 'lib', 'devswarm-store.js'));
+  const fx = fixture(V252, [{ id: 'c1', done: false }]);
+  const env = { HOME: fx.home };
+  const s = store.openStore({ home: fx.home, hash: 'proj-abc123', env });
+  s.upsertRegistry({ id: 'c1', worktreePath: fx.byId.c1.wt, sessionId: null, inboxPath: null, cursorPath: null, nudgeCommand: null });
+  s.appendMessage({ workspaceId: 'c1', ts: NOW - 60 * MIN, body: 'DONE: feat/c1 — all merged, archive me', sender: 'c1', mtype: 'broadcast' });
+  const summaryNoGate = store.computeSummary(s, { home: fx.home, env, now: NOW });
+  s.setGate({ workspaceId: 'c1', name: 'done', value: true, setBy: 'devswarm-cli' });
+  const summaryGate = store.computeSummary(s, { home: fx.home, env, now: NOW });
+  s.close();
+  // unread is irrelevant to gate (a); zero it so only a-done can differ.
+  for (const sum of [summaryNoGate, summaryGate]) sum.workspaces.c1.unread = 0;
+  const deps = Object.assign({}, fx.deps, { summary: () => summaryNoGate });
+  const blocked = L.planAutoArchive(Object.assign(opts(fx, { settings: DRY }), { deps })).candidates[0];
+  assert.deepStrictEqual(blocked.blockers.map((b) => b.gate), ['a-done']);
+  deps.summary = () => summaryGate;
+  const ok = L.planAutoArchive(Object.assign(opts(fx, { settings: DRY }), { deps })).candidates[0];
+  assert.strictEqual(ok.eligible, true, JSON.stringify(ok.blockers));
+  assert.strictEqual(summaryGate.workspaces.c1.archive_ready, false, 'archive_ready meaning unchanged for other consumers');
+});
 
 test('merged via PR state=merged when git ancestry says no (squash merge)', { skip }, () => {
   const fx = fixture(V252, [{ id: 'c1', ancestor: false, pr: 'merged' }]);

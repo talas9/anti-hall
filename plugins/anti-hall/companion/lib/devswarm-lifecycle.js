@@ -4,8 +4,10 @@
 //
 // FEATURE 1 — AUTO-ARCHIVE done workspaces (supervisor sweep).
 //   planAutoArchive() proves, per child builder, ALL of:
-//     (a) done      — the mesh summary's archive_ready (the existing required
-//                     gates: done,merged,tests_passed by default)
+//     (a) done      — EITHER the mesh summary's archive_ready (every required
+//                     gate: done,merged,tests_passed by default) OR the child's
+//                     structured done-report: the `done` gate row alone
+//                     (`devswarm.js gate <id> --set done`). See doneFact.
 //     (b) merged    — `git merge-base --is-ancestor HEAD <source>` in the
 //                     worktree (local ref, then origin/<source>), else the app
 //                     DB pull_requests row for the branch has state=merged.
@@ -211,6 +213,24 @@ function mergedFact(b, db, deps) {
   return { merged: false, via: pr ? 'pr:' + String(pr.state || '').toLowerCase() : 'unproven' };
 }
 
+// doneFact(summary, ids) -> { done, via } — gate (a), scoped to AUTO-ARCHIVE
+// only (archive_ready keeps its meaning for the parent gate / merge gate).
+// Passes on EITHER:
+//   'gates'       — archive_ready: every required gate set (the original path)
+//   'done-report' — the child's structured done-report: the `done` row in the
+//                   mesh store's gates table (`devswarm.js gate <id> --set
+//                   done`), projected as summary.workspaces[id].gates.done.
+// tests_passed is deliberately NOT required here: gate (b) independently
+// PROVES the merge from git ancestry / PR state, and an archive is reversible.
+// Free chat text ("DONE", a heartbeat --summary) never counts.
+function doneFact(summary, ids) {
+  const ws = (summary && summary.workspaces) || {};
+  const rows = ids.map((id) => ws[id]).filter(Boolean);
+  if (rows.some((w) => w.archive_ready === true)) return { done: true, via: 'gates' };
+  if (rows.some((w) => w.gates && w.gates.done === true)) return { done: true, via: 'done-report' };
+  return { done: false, via: null };
+}
+
 function cleanFact(wt, deps) {
   if (!wt || !fs.existsSync(wt)) return { clean: null, reason: 'worktree-missing' };
   const r = deps.git(wt, ['status', '--porcelain']);
@@ -263,9 +283,10 @@ function evaluateCandidate(c, o, deps, db, settings, now) {
   if (isPrimaryBuilder(b, c.ids)) blockers.push({ gate: 'e-primary', detail: 'Primary workspace' });
   const repoKey = deps.repoKey(b.worktreePath || c.descriptors[0].worktreePath);
   const un = unreadFact(o.home, repoKey, c.ids, deps);
-  const done = !!(un.summary && c.ids.some((id) => un.summary.workspaces[id] && un.summary.workspaces[id].archive_ready === true));
-  facts.done = done;
-  if (!done) blockers.push({ gate: 'a-done', detail: un.summary ? 'finish gates not all set' : 'no mesh summary' });
+  const done = doneFact(un.summary, c.ids);
+  facts.done = done.done;
+  facts.doneVia = done.via;
+  if (!done.done) blockers.push({ gate: 'a-done', detail: un.summary ? 'no done-report (done gate unset) and finish gates not all set' : 'no mesh summary' });
   const m = mergedFact(b, db, deps);
   facts.merged = m;
   if (!m.merged) blockers.push({ gate: 'b-merged', detail: m.via });

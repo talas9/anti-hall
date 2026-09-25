@@ -427,7 +427,10 @@ anti-hall depends on it.
 - **The app database is ground truth** (read-only, capability-gated): archived/deleted
   markers, titles, pins, PRs, session map; screenshot sync (`sync-ui`) only as a fallback.
 - **Lifecycle.** Auto-archive of proven-done workspaces (default on, DevSwarm ≥ 2.5.3,
-  always by explicit id); deleting archived ones only via owner-approved `prune-archived`.
+  always by explicit id). "Done" means every finish gate is set, or the child sent its
+  structured done-report (`devswarm.js gate <id> --set done`) and its merge is proven from
+  git ancestry or the PR; chat text never counts. Deleting archived ones only via
+  owner-approved `prune-archived`.
 - **Store hygiene.** Message retention (archive then prune old bodies), housekeeping sweeps,
   supervisor log rotation; every setting is in the `devswarm` section of `/anti-hall:settings`.
 - **Capability gate.** Every `hivecontrol` verb / app-DB column is gated by version +

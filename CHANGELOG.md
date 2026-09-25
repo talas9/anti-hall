@@ -33,6 +33,14 @@ the update.
 
 ### Fixes
 
+- **Auto-archive never archived anything (`candidates:10, wouldArchive:[]`).** Gate (a)
+  "done" required `archive_ready` (every required gate: `done,merged,tests_passed`), and
+  those rows are only written by a manual `devswarm.js gate --set`. Gate (a) now also
+  passes on the child's structured done-report: the `done` gate on its own
+  (`devswarm.js gate <id> --set done`). `tests_passed` is not required, because gate (b)
+  still has to prove the merge from git ancestry or the PR, and gates (c)-(g) are
+  unchanged. Chat text such as "DONE" never counts. Only the auto-archive decision
+  changed; `archive_ready` means the same for the parent gate and the merge gate.
 - **`recordOutcome()` (`hooks/lib/jev-assist.js`) never populated `project`
   on its `type:'outcome'` rows**, unlike every decision row `ask()`/`askSync()`/
   `askDetached()` log via `finalize()`. `triage`'s answer-latency join

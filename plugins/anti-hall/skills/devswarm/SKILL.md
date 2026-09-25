@@ -291,7 +291,10 @@ On 2.5.3, `archive`/`delete [idOrBranch]` default to the CURRENT workspace and h
 call at all without one.
 
 **Auto-archive (supervisor sweep).** The supervisor archives a child workspace only when ALL
-of these are proven: (a) the finish gates are set (`archive_ready`), (b) its branch is merged
+of these are proven: (a) it is done: either every finish gate is set (`archive_ready`), or the
+child sent its structured done-report, which is the `done` gate on its own (`devswarm.js gate <id>
+--set done`); chat text such as "DONE" never counts and `tests_passed` is not required here,
+because (b) proves the merge and an archive can be undone; (b) its branch is merged
 into its source (`git merge-base --is-ancestor`, else the app's PR row says merged),
 (c) `git status --porcelain` is empty, (d) there's no unread mail to it or from it,
 (e) it isn't the Primary, (f) the owner hasn't selected it in the app for 10 min, and
