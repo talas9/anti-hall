@@ -201,9 +201,11 @@ function defaultRealActivity(desc, home) {
   try { return require('./devswarm-idle.js').realActivity(desc, home); } catch (_) { return { known: false }; }
 }
 
-// defaultLastInboundTs -> ms of the newest DIRECT message another workspace
+// defaultLastInboundTs -> ms of the newest inbound message another workspace
 // sent to any of `ids` (0 = none), or null when the store cannot be read.
-// Broadcasts and the child's own rows never count.
+// Every row in the child's own partition counts unless it is a broadcast
+// (mtype 'broadcast'), a heartbeat, or the child's own: a row drained from the
+// native mailbox carries mtype null and IS an inbound message.
 function defaultLastInboundTs(home, repoKey, ids) {
   if (!repoKey) return null;
   const store = require('./devswarm-store.js');
@@ -214,7 +216,7 @@ function defaultLastInboundTs(home, repoKey, ids) {
     let best = 0;
     for (const id of ids) {
       for (const r of s.listMessages(id) || []) {
-        if (!r || r.mtype !== 'direct' || r.isHeartbeat || ids.includes(String(r.sender))) continue;
+        if (!r || r.mtype === 'broadcast' || r.isHeartbeat || ids.includes(String(r.sender))) continue;
         if (Number.isFinite(r.ts) && r.ts > best) best = r.ts;
       }
     }
@@ -411,7 +413,9 @@ function gatherCandidates(o, deps, db) {
     .map((c) => Object.assign(c, { ids: [...new Set([String(c.builder.id)].concat(c.descriptors.map((d) => String(d.id))))] }));
 }
 
-// idleFact -> { ts, via, openRealTurn } — gate (g)'s activity time (0.109.0).
+// idleFact -> { ts, via, openRealTurn, pendingBackground } — gate (g)'s
+// activity time (0.109.0). pendingBackground (background agent/Bash work not
+// yet reported complete, devswarm-idle.js) blocks outright, like an open turn.
 // ignorePings on (default): per descriptor, the newest REAL-work turn from the
 // classified transcript (devswarm-idle.js), which skips only the child's own
 // wake/ping/heartbeat/status turns — heartbeat files are not read, since every
@@ -433,6 +437,7 @@ function idleFact(c, o, deps, settings, repoKey, wt) {
   if (settings.ignorePings === false) return legacy();
   let act = null;
   let open = false;
+  let bg = false;
   let anyKnown = false;
   for (const d of c.descriptors) {
     let r = null;
@@ -442,6 +447,7 @@ function idleFact(c, o, deps, settings, repoKey, wt) {
       anyKnown = true;
       t = r.ts;
       if (r.openRealTurn) open = true;
+      if (r.pendingBackground) bg = true;
     } else {
       t = deps.activityTs(d, o.home); // this descriptor: the pre-0.109 rule
       if (!Number.isFinite(t)) continue;
@@ -451,14 +457,14 @@ function idleFact(c, o, deps, settings, repoKey, wt) {
   if (!anyKnown) return legacy();
   let inbound = null;
   try { inbound = deps.lastInboundTs(o.home, repoKey, c.ids); } catch (_) { inbound = null; }
-  if (!Number.isFinite(inbound)) return legacy();
+  if (!Number.isFinite(inbound)) return Object.assign(legacy(), { pendingBackground: bg }); // pending work known from a transcript still blocks
   if (inbound > act) act = inbound;
   if (wt && fs.existsSync(wt)) {
     const g = deps.git(wt, ['log', '-1', '--format=%ct', 'HEAD']);
     const sec = g && g.ok ? Number(String(g.out).trim()) : NaN;
     if (Number.isFinite(sec) && sec > 0 && sec * 1000 > act) act = sec * 1000;
   }
-  return { ts: act, via: 'real-work', openRealTurn: open };
+  return { ts: act, via: 'real-work', openRealTurn: open, pendingBackground: bg };
 }
 
 // evaluateCandidate -> { id, label, branch, eligible, blockers:[{gate, detail}], soft }
@@ -505,7 +511,9 @@ function evaluateCandidate(c, o, deps, db, settings, now) {
   const act = idle.ts;
   facts.idleMin = act === null ? null : Math.floor((now - act) / 60000);
   facts.idleVia = idle.via;
-  if (idle.openRealTurn) {
+  if (idle.pendingBackground) {
+    blockers.push({ gate: 'g-idle', detail: 'background work the child launched (agent/Bash) has not reported completion' });
+  } else if (idle.openRealTurn) {
     blockers.push({ gate: 'g-idle', detail: 'an AI turn doing real work is still open' });
   } else if (act === null || now - act < settings.idleMin * 60000) {
     blockers.push({ gate: 'g-idle', detail: act === null ? 'no activity signal' : 'active ' + facts.idleMin + 'm ago' + (idle.via === 'real-work' ? ' (real work)' : '') });

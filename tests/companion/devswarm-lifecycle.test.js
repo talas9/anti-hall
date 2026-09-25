@@ -928,14 +928,14 @@ function tr() {
 function pingTurns(t, at) {
   return t
     .cron(at, 'Mailbox wake: run `node ' + CLI + ' inbox tick c1 --child`.')
-    .tool(at + 1000, 'Bash', { command: 'node ' + CLI + ' inbox tick c1 --child 2>&1 | grep -o -E \'"(ok|unreadTotal)":[a-z0-9]+\' | tr \'\\n\' \' \'' })
+    .tool(at + 1000, 'Bash', { command: 'node ' + CLI + ' inbox tick c1 --child' })
     .say(at + 3000, 'No unread mail; still done, awaiting auto-archive.')
     .stop(at + 3500)
     .prompt(at + 60000, '<task-notification>\n<summary>Monitor event: "devswarm mailbox wake watcher"</summary>\n<event>[Monitor expired after 30m]</event>\n</task-notification>')
     .tool(at + 61000, 'Monitor', { command: 'node /x/anti-hall/companion/lib/devswarm-wake-watch.js', description: 'devswarm mailbox wake watcher' })
     .say(at + 62000, 'Watcher re-armed.')
     .prompt(at + 62500, 'Stop hook feedback:\nDEVSWARM CHILD WORKSPACE — emit a heartbeat', { isMeta: true })
-    .tool(at + 63000, 'Bash', { command: 'node "' + CLI + '" heartbeat c1 --summary "done; idle && awaiting auto-archive" 2>&1 | head -1' })
+    .tool(at + 63000, 'Bash', { command: 'node ' + CLI + ' heartbeat c1 --summary "done, idle, awaiting auto-archive"' })
     .say(at + 64000, 'Heartbeat sent.')
     .stop(at + 64500);
 }
@@ -1078,6 +1078,64 @@ test('0.109 idle: in doubt -> the pre-0.109 rule (no transcript / other session 
   c = L.planAutoArchive(opts(fx, { settings: Object.assign({}, DRY, { ignorePings: false }) })).candidates[0];
   assert.strictEqual(c.facts.idleVia, 'activity');
   assert.ok(c.blockers.some((b) => b.gate === 'g-idle'));
+});
+
+// Safety review (0.109): when in doubt a turn is REAL — a false ping archives
+// a child mid-work, an extra reset only delays.
+test('0.109 idle: a ping command with a pipe/redirect/chain is REAL work (strict allowlist)', { skip }, () => {
+  for (const cmd of [
+    'node ' + CLI + ' inbox tick c1 --child 2>&1 | python3 -c "import os; os.system(1)"',
+    'node ' + CLI + ' inbox tick c1 --child | sed -e w/x',
+    'node ' + CLI + ' inbox tick c1 --child > /repo/file',
+    'node ' + CLI + ' inbox tick <(git push)',
+  ]) {
+    const fx = fixture(V253, [{ id: 'c1', activity: NOW - 1 * MIN }]);
+    writeTranscript(fx, 'c1', realWorkThenPings(PINGS).cron(NOW - 8 * MIN, 'Mailbox wake').tool(NOW - 8 * MIN, 'Bash', { command: cmd }).say(NOW - 7 * MIN, 'x').stop(NOW - 7 * MIN));
+    const c = L.planAutoArchive(opts(fx, { settings: DRY })).candidates[0];
+    assert.strictEqual(c.facts.idleMin, 7, cmd + ' ' + JSON.stringify(c.facts));
+    assert.ok(c.blockers.some((b) => b.gate === 'g-idle'), cmd);
+  }
+});
+
+test('0.109 idle: background work still pending blocks archive even when every later turn is a ping', { skip }, () => {
+  const fx = fixture(V253, [{ id: 'c1', activity: NOW - 1 * MIN }]);
+  const t = tr()
+    .prompt(NOW - 120 * MIN, 'Fix the migration.')
+    .tool(NOW - 119 * MIN, 'Agent', { prompt: 'run the long audit', run_in_background: 'true' })
+    .say(NOW - 90 * MIN, 'Audit running in the background.')
+    .stop(NOW - 90 * MIN);
+  for (const at of PINGS) pingTurns(t, at);
+  writeTranscript(fx, 'c1', t);
+  const r = L.autoArchiveSweep(opts(fx, { settings: ON }));
+  assert.deepStrictEqual(r.archived, [], JSON.stringify(r));
+  const c = L.planAutoArchive(opts(fx, { settings: DRY })).candidates[0];
+  assert.ok(c.blockers.some((b) => b.gate === 'g-idle' && /background/.test(b.detail)), JSON.stringify(c.blockers));
+  assert.ok(!readCalls(fx.bin.callsFile).some((x) => x.argv[1] === 'archive' && x.argv[2] !== '--help'));
+});
+
+test('0.109 idle: a native-drained inbound message (mtype null) resets idle; broadcasts and own rows do not (real store)', { skip }, () => {
+  const store = require(path.join(ROOT, 'companion', 'lib', 'devswarm-store.js'));
+  const run = (rows) => {
+    const fx = fixture(V253, [{ id: 'c1', activity: NOW - 1 * MIN }]);
+    writeTranscript(fx, 'c1', realWorkThenPings(PINGS));
+    delete fx.deps.lastInboundTs; // the real reader over the real store
+    const s = store.openStore({ home: fx.home, hash: 'proj-abc123', env: { HOME: fx.home } });
+    for (const r of rows) (r.mesh ? s.appendMeshRow(Object.assign({ workspaceId: 'c1' }, r)) : s.appendMessage(Object.assign({ workspaceId: 'c1' }, r)));
+    s.close();
+    return L.planAutoArchive(opts(fx, { settings: DRY })).candidates[0];
+  };
+  // a native-drained row: plain appendMessage -> sender null, mtype null.
+  let c = run([{ ts: NOW - 5 * MIN, body: 'native follow-up from the Primary', hash: 'native:abc' }]);
+  assert.strictEqual(c.facts.idleVia, 'real-work', JSON.stringify(c.facts));
+  assert.strictEqual(c.facts.idleMin, 5, JSON.stringify(c.facts));
+  assert.ok(c.blockers.some((b) => b.gate === 'g-idle'));
+  c = run([
+    { mesh: 1, ts: NOW - 5 * MIN, body: 'fleet notice', sender: 'p-1', mtype: 'broadcast' },
+    { mesh: 1, ts: NOW - 4 * MIN, body: 'my own status', sender: 'c1' },
+    { mesh: 1, ts: NOW - 3 * MIN, body: 'hb', sender: 'p-1', mtype: 'direct', isHeartbeat: true },
+  ]);
+  assert.strictEqual(c.facts.idleMin, 90, JSON.stringify(c.facts));
+  assert.ok(!c.blockers.some((b) => b.gate === 'g-idle'), JSON.stringify(c.blockers));
 });
 
 test('0.109 idle: settings — autoArchive.ignorePings defaults on, false turns it off', () => {
