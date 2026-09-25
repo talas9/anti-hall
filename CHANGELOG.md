@@ -22,10 +22,12 @@ the update.
   handover, and offer to park the rest of the work.
 - **New settings:** `autoHandover.gateNewWork` (boolean, default `true`) and
   `autoHandover.gateBudgetPct` (1-50, default `5`), both also in `/config`.
-- **New Jev integration `postHandoverGate` (shadow only, default `shadow`).** It logs
-  whether Jev thinks a request fits in the remaining post-handover budget. It never
-  changes what the gate says. It has its own `jevIntegrations.postHandoverGate` row, like
-  the other Jev integrations.
+- **New Jev integration `postHandoverGate` (advisory, default `off`).** It logs whether
+  Jev thinks a request fits in the remaining post-handover budget; it never changes what
+  the gate says. It has its own `jevIntegrations.postHandoverGate` row, like the other Jev
+  integrations. It ships off by default: an offline benchmark (n=299) found park-recall
+  17.6% vs 28.8% for the agent's own size judgment plus the measured budget backstop, no
+  gain over the baseline.
 - **Mechanical nudge on a silent background subagent.** anti-hall already documented the
   heartbeat convention for a coordinator to notice and re-dispatch a stale subagent, but
   nothing forced it to happen and nothing wrote the heartbeat automatically. A new Stop
@@ -240,6 +242,28 @@ the update.
   checked out at `$HOME` could resolve its toplevel to the home directory itself, which
   would redirect every write into anti-hall's own global `~/.anti-hall/` store; that case
   now also falls back to the raw cwd.
+- **The DevSwarm parent gate's unread count could disagree with the roster, and a busy
+  child kept hard-blocking the Primary.** The gate excluded any child-mailbox row sent by
+  the Primary itself, but `devswarm-store.js`'s `unionUnreadFor` (the roster's and
+  `devswarm-parent-inbox.js`'s own count source of truth) never applied that exclusion, so
+  the two surfaces could disagree on the same child in the same minute; the gate now reads
+  through the same `unionUnread` primitive with no per-sender filter. Separately, a family
+  whose only reason to block was a plain real-unread backlog now downgrades to a
+  non-blocking advisory when the child is provably busy (a fresh heartbeat within the
+  existing freshness window, or a live mid-turn session) — a genuinely not-busy child
+  still hard-blocks. **New setting:** `devswarm.parentGateNeglectMinUnread` (default `0`,
+  unchanged sensitivity), also in `/config`.
+- **A child waiting on its own unanswered question no longer gets waved through as
+  "busy."** The busy-downgrade above was too wide: a child stuck on its own unresolved
+  `AskUserQuestion` (or otherwise mid-turn waiting on a human) also has a fresh heartbeat
+  and a live pid, but the Primary cannot unblock it through the mesh, so the block is
+  correct there. A new `waitingOnUserInput()` helper (reusing the existing transcript
+  classifier) now forces `busy=false` in that case, so the family falls through to its
+  normal hard block instead of the advisory, and the block reason names the wait.
+- **Jev postHandoverGate ships off, not shadow.** An offline benchmark showed no gain over
+  the agent's own size judgment plus the measured budget backstop, so the new
+  `postHandoverGate` integration (added above) defaults to `off` instead of `shadow`; see
+  the Features entry above for the measured numbers.
 
 ## 0.108.5
 
