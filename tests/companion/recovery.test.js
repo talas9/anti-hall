@@ -318,6 +318,63 @@ test('acquireLock: TOCTOU fix — a racer that hits EEXIST inside the write-then
   } finally { cleanup(); }
 });
 
+// FIX (P3, v0.108.1 follow-up -- code-review regression from the TOCTOU fix
+// above): if linkSync fails with anything other than EEXIST (EPERM/ENOTSUP/
+// EXDEV/ENOSYS -- e.g. ~/.anti-hall mounted on SMB/exFAT), the write-then-link
+// publish path used to just throw the raw error straight out of the try block
+// to the OUTER catch, which treats any non-EEXIST error as "fail-open, no
+// lock" -- meaning EVERY acquireLock call on such a filesystem returned null,
+// and withIdLock refused every DevSwarm mutation it gates, permanently, on
+// that filesystem. acquireLock now falls back to the pre-fix create-then-
+// write (openSync(p, 'wx') + writeSync) for that one attempt instead.
+test('acquireLock: P3 fix — linkSync failing with a non-EEXIST error (EPERM: e.g. SMB/exFAT) falls back to the old create-then-write path instead of refusing every acquire', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const id = 'link-unsupported';
+    const p = M.lockPathFor(id, home);
+    let linkSyncCalls = 0;
+    const noLinkFs = Object.assign({}, fs, {
+      linkSync() {
+        linkSyncCalls++;
+        const err = new Error('EPERM: operation not permitted, link');
+        err.code = 'EPERM';
+        throw err;
+      },
+    });
+    const held = M.acquireLock(id, home, { fs: noLinkFs, isAlive: () => true });
+    assert.strictEqual(linkSyncCalls, 1, 'precondition: linkSync was actually exercised and made to fail');
+    assert.strictEqual(typeof held, 'function', 'acquireLock must still succeed via the create-then-write fallback, not fail-open to null');
+    const onDisk = JSON.parse(fs.readFileSync(p, 'utf8'));
+    assert.strictEqual(onDisk.pid, process.pid, 'the fallback path still publishes a real, correct holder record');
+    // A second acquirer on the SAME (still-linkSync-broken) filesystem must
+    // see the live holder and be refused, exactly as the normal path would.
+    const blocked = M.acquireLock(id, home, { fs: noLinkFs, isAlive: () => true });
+    assert.strictEqual(blocked, null, 'the fallback-published lock is still respected by a concurrent acquirer');
+    held();
+    assert.strictEqual(fs.existsSync(p), false, 'release still works normally after a fallback-path acquire');
+  } finally { cleanup(); }
+});
+
+test('acquireLock: P3 fix — a linkSync EEXIST (a real concurrent winner) is NOT swallowed by the fallback; the normal dead/stale-holder logic still runs', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const id = 'link-unsupported-eexist';
+    const p = M.lockPathFor(id, home);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, JSON.stringify({ pid: 4321, ts: Date.now(), token: 'live-holder' }));
+    const eexistOnlyFs = Object.assign({}, fs, {
+      linkSync() {
+        const err = new Error('EEXIST: file already exists, link');
+        err.code = 'EEXIST';
+        throw err;
+      },
+    });
+    const blocked = M.acquireLock(id, home, { fs: eexistOnlyFs, isAlive: () => true });
+    assert.strictEqual(blocked, null, 'an EEXIST from linkSync must still route into the normal live-holder respect path, not the wx fallback');
+    assert.deepStrictEqual(JSON.parse(fs.readFileSync(p, 'utf8')).token, 'live-holder', 'the live holder is untouched');
+  } finally { cleanup(); }
+});
+
 test('resume prompt PREPENDS the state-check guardrail before the backlog', () => {
   const { home, cleanup } = makeHome();
   try {

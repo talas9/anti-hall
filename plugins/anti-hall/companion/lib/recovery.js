@@ -132,16 +132,31 @@ function acquireLock(id, home, io) {
   for (let attempt = 0; attempt < 2; attempt++) {
     const ts = now();
     const token = process.pid + ':' + ts + ':' + Math.random().toString(36).slice(2);
+    const payload = JSON.stringify({ pid: process.pid, ts, token });
     const tmp = p + '.tmp-' + process.pid + '-' + Math.random().toString(36).slice(2);
     try {
-      F.writeFileSync(tmp, JSON.stringify({ pid: process.pid, ts, token }));
+      F.writeFileSync(tmp, payload);
       try {
         F.linkSync(tmp, p);
       } catch (linkErr) {
-        if (!linkErr || linkErr.code !== 'EEXIST') throw linkErr; // any other error -> fail-open (no lock)
-        const eexist = new Error('lock exists');
-        eexist.code = 'EEXIST';
-        throw eexist;
+        if (linkErr && linkErr.code === 'EEXIST') {
+          const eexist = new Error('lock exists');
+          eexist.code = 'EEXIST';
+          throw eexist;
+        }
+        // FIX (P3, v0.108.1 follow-up): linkSync itself can be unsupported on
+        // the underlying filesystem (EPERM/ENOTSUP/EXDEV/ENOSYS -- observed on
+        // SMB/exFAT mounts of ~/.anti-hall) even though hardlinks work on a
+        // normal local disk. Without this fallback EVERY acquireLock call on
+        // such a filesystem would hit this branch, throw, and return null --
+        // silently refusing every DevSwarm mutation withIdLock ever gates,
+        // forever, on that filesystem. Fall back to the pre-fix create-then-
+        // write for THIS attempt only: still atomic against a concurrent
+        // EEXIST (openSync's own O_EXCL), just without write-then-publish's
+        // empty-content protection -- an accepted, narrower guarantee on an
+        // already-degraded filesystem, not a silent full outage.
+        const fd = F.openSync(p, 'wx'); // EEXIST or any other error -> falls through to the outer catch below
+        try { F.writeSync(fd, payload); } finally { F.closeSync(fd); }
       }
       return function release() {
         try {
