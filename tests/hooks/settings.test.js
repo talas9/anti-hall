@@ -336,7 +336,7 @@ test('concurrent writers: 8 processes each set a different key at once -> every 
   const home = fsx.mkdtempSync(px.join(osx.tmpdir(), 'ah-settings-race-'));
   const lib = px.join(__dirname, '..', '..', 'plugins', 'anti-hall', 'hooks', 'lib', 'settings.js');
   const writes = [
-    ['guards', 'mergeGate', 'true'], ['guards', 'shipitGate', 'true'], ['guards', 'stashGuard', 'true'],
+    ['guards', 'mergeGate', 'true'], ['guards', 'shipitGate', 'true'], ['guards', 'claimLedger', 'false'], // stashGuard is safety-locked (0.108.4)
     ['limitConserve', 'threshold', '70'], ['autoHandover', 'pct', '80'], ['autoHandover', 'nagStepPct', '7'],
     ['codexNudge', 'enabled', 'false'], ['statusline', 'noEmail', 'true'],
   ];

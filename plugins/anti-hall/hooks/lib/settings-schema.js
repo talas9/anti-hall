@@ -26,6 +26,11 @@
 //                // fallback scan of ~/.claude/settings.json's
 //                // pluginConfigs["anti-hall"].options (other processes)
 //   advanced,    // true = hidden from the default `show` table (use --all)
+//   locked,      // true = SAFETY key, human-only: settings.js set/reset refuse
+//                // it and get() ignores settings.json/legacy (env + /config
+//                // only), except a file value equal to `safeValue` (the
+//                // stronger setting), so settings.json can only tighten it
+//   safeValue,   // locked only: the file value still honoured (see above)
 //   description,
 // }
 //
@@ -62,15 +67,60 @@ const SECTIONS = [
       { key: 'outputVerifyGuard', type: 'boolean', pluginOption: 'guards_output_verify_guard', default: true, env: 'ANTIHALL_OUTPUT_VERIFY_GUARD', description: 'Output-verification guard (blocks unverified completion claims). [verified: hooks/output-verify-guard.js:198 — default on, =off disables]' },
       { key: 'failureRootCauseNudge', type: 'boolean', pluginOption: 'guards_failure_root_cause_nudge', default: true, env: 'ANTIHALL_FAILURE_ROOT_CAUSE_NUDGE', description: 'Nudge toward root-cause analysis after a failure. [verified: hooks/failure-root-cause-nudge.js:49 — default on, =off disables]' },
       { key: 'repoSelfDrift', type: 'boolean', pluginOption: 'guards_repo_self_drift', default: true, env: 'ANTIHALL_REPO_SELF_DRIFT', description: "anti-hall's own repo-drift self-check hook. [verified: hooks/repo-self-drift.js:159 — default on, =off disables]" },
-      { key: 'stashGuard', type: 'boolean', pluginOption: 'guards_stash_guard', default: false, env: 'ANTIHALL_STASH_GUARD', description: 'Arm stash-protection warnings in git-guard (also armed per-repo via .anti-hall/protected-stashes). [verified: hooks/command-guard.js:1333 — default off, =1 arms]' },
+      { key: 'stashGuard', type: 'boolean', pluginOption: 'guards_stash_guard', default: false, env: 'ANTIHALL_STASH_GUARD', locked: true, safeValue: true, description: 'SAFETY (human-only: /config or env; settings.json can only arm it). Arm the git-stash guard in command-guard: block mutating `git stash` (also armed per-repo via .anti-hall/protected-stashes). [verified: hooks/command-guard.js:1333 — default off, =1 arms]' },
       { key: 'emitDedupe', type: 'boolean', pluginOption: 'guards_emit_dedupe', default: true, env: 'ANTIHALL_EMIT_DEDUPE', description: 'Deduplicate repeated hook-emit output. [verified: hooks/lib/emit-dedupe.js:129 — default on, =0 disables]' },
-      { key: 'editGuardAllow', type: 'csv', default: '', env: 'ANTIHALL_EDIT_GUARD_ALLOW', advanced: true, description: 'Extra allowed file globs for edit-guard (comma/colon separated). [verified: hooks/edit-guard.js — no built-in default, empty means none]' },
-      { key: 'allowSubagentMailbox', type: 'boolean', default: false, env: 'ANTIHALL_ALLOW_SUBAGENT_MAILBOX', advanced: true, description: 'One-off allow for the subagent-mailbox command pattern. [verified: hooks/command-guard.js:1298 — default off, =1 allows]' },
+      { key: 'editGuardAllow', type: 'csv', default: '', env: 'ANTIHALL_EDIT_GUARD_ALLOW', pluginOption: 'guards_edit_guard_allow', locked: true, advanced: true, description: 'SAFETY (human-only: /config or env; widens edit-guard). Extra allowed file globs for edit-guard (comma/colon separated). [verified: hooks/edit-guard.js — no built-in default, empty means none]' },
+      { key: 'allowSubagentMailbox', type: 'boolean', default: false, env: 'ANTIHALL_ALLOW_SUBAGENT_MAILBOX', pluginOption: 'guards_allow_subagent_mailbox', locked: true, safeValue: false, advanced: true, description: 'SAFETY (human-only: /config or env; bypasses a data-safety guard). One-off allow for the subagent-mailbox command pattern. [verified: hooks/command-guard.js:1298 — default off, =1 allows]' },
       { key: 'reaperMatch', type: 'string', default: '', env: 'ANTIHALL_REAPER_MATCH', advanced: true, description: 'Extra process-name pattern for the MCP session-end reaper. [verified: hooks/session-end-mcp-reaper.js — no built-in default, empty means none]' },
       { key: 'reaperExclude', type: 'string', default: '', env: 'ANTIHALL_REAPER_EXCLUDE', advanced: true, description: 'Excludes matching processes from the MCP reaper. [verified: hooks/session-end-mcp-reaper.js — no built-in default, empty means none]' },
       { key: 'tasklistWorkThreshold', type: 'number', min: 1, default: 3, env: 'ANTIHALL_TASKLIST_WORK_THRESHOLD', advanced: true, description: 'Minimum work items before tasklist-guard fires. [verified: hooks/tasklist-guard.js:45 DEFAULT_WORK_THRESHOLD = 3]' },
       { key: 'progressFreshMs', type: 'number', min: 0, default: 1800000, env: 'ANTIHALL_PROGRESS_FRESH_MS', advanced: true, description: 'Freshness window (ms) for the progress file in tasklist-guard. [verified: hooks/tasklist-guard.js:46 DEFAULT_PROGRESS_FRESH_MS = 30*60*1000]' },
       { key: 'apiGuardThirdparty', type: 'boolean', default: false, env: 'ANTIHALL_API_GUARD_THIRDPARTY', advanced: true, description: 'Also verify installed 3rd-party package APIs, not just stdlib/builtins. [verified: hooks/api-guard.js:84 — default off, =1/true/yes/on enables]' },
+      // ---- 0.108.4: on/off switches for every remaining guard (default = current behaviour) ----
+      { key: 'modelRouting', type: 'enum', values: ['strict', 'advisory', 'off'], default: 'strict', env: 'ANTIHALL_MODEL_ROUTING', pluginOption: 'guards_model_routing', description: 'model-routing-guard (PreToolUse Agent/Task): strict blocks a mis-tiered spawn, advisory only warns, off disables the hook.' },
+      { key: 'apiGuard', type: 'boolean', default: true, pluginOption: 'guards_api_guard', description: 'api-guard (PreToolUse Write/Edit): block fabricated stdlib/builtin APIs in written code.' },
+      { key: 'speculationGuard', type: 'boolean', default: true, pluginOption: 'guards_speculation_guard', description: 'speculation-guard (Stop): block a turn that ends on unverified hedged claims.' },
+      { key: 'claimLedger', type: 'boolean', default: true, pluginOption: 'guards_claim_ledger', description: 'claim-ledger (Stop, never blocks): record claims in the last reply that nothing in the session backs.' },
+      { key: 'taskGuard', type: 'boolean', default: true, pluginOption: 'guards_task_guard', description: 'task-guard (Stop): block stopping while tracked tasks are still open.' },
+      { key: 'tasklistGuard', type: 'boolean', default: true, pluginOption: 'guards_tasklist_guard', description: 'tasklist-guard (Stop): require a task list / progress file for multi-step work.' },
+      { key: 'scanThrottle', type: 'boolean', default: true, env: 'ANTI_HALL_SCAN_THROTTLE', pluginOption: 'guards_scan_throttle', description: 'scan-throttle (PreToolUse Bash): run heavy repo-wide scans at background priority (nice/taskpolicy).' },
+    ],
+  },
+  {
+    key: 'safety',
+    label: 'Safety Guards',
+    description: 'HUMAN-ONLY switches for the safety-critical guards (force-push / AI self-credit / heavy-command and edit delegation / runaway spawns). Change them yourself in /config (anti-hall rows) or via env; `settings.js set/reset` refuses them and a value in ~/.anti-hall/settings.json is ignored. Off = the guard\'s core check no-ops; the per-guard skip.json escape hatch is unchanged.',
+    settings: [
+      { key: 'gitGuard', type: 'boolean', default: true, env: 'ANTIHALL_GIT_GUARD', pluginOption: 'safety_git_guard', locked: true, safeValue: true, description: 'git-guard: block force-push and AI self-credit in commits and gh pr/issue/release bodies.' },
+      { key: 'commandGuard', type: 'boolean', default: true, env: 'ANTIHALL_COMMAND_GUARD', pluginOption: 'safety_command_guard', locked: true, safeValue: true, description: 'command-guard core: make the coordinator delegate heavy commands (build/test/deploy/push). Its data-safety sub-guards (DevSwarm read/send/mailbox, armed stash guard) stay on.' },
+      { key: 'editGuard', type: 'boolean', default: true, env: 'ANTIHALL_EDIT_GUARD', pluginOption: 'safety_edit_guard', locked: true, safeValue: true, description: 'edit-guard core: make the coordinator delegate file edits outside its own plan/state/handover files.' },
+      { key: 'swarmGuard', type: 'boolean', default: true, env: 'ANTIHALL_SWARM_GUARD', pluginOption: 'safety_swarm_guard', locked: true, safeValue: true, description: 'swarm-guard: block agent spawns past the spawn-rate cap or under critical memory pressure.' },
+    ],
+  },
+  {
+    key: 'context',
+    label: 'Context Injections',
+    description: 'The verify-first protocol and the other text anti-hall injects at session start, per turn, and into subagents.',
+    settings: [
+      { key: 'verifyFirstSession', type: 'boolean', default: true, pluginOption: 'context_verify_first_session', description: 'verify-first-full (SessionStart): inject the full verify-first protocol (also re-injected after compaction).' },
+      { key: 'verifyFirstOrchestration', type: 'boolean', default: true, pluginOption: 'context_verify_first_orchestration', description: 'verify-first-orch (SessionStart): inject the orchestration discipline for the main thread.' },
+      { key: 'verifyFirstTurn', type: 'boolean', default: true, pluginOption: 'context_verify_first_turn', description: 'verify-first (UserPromptSubmit): the short per-turn verify-first nudge.' },
+      { key: 'verifyFirstSubagent', type: 'boolean', default: true, pluginOption: 'context_verify_first_subagent', description: 'verify-first-subagent (SubagentStart): inject the protocol into every subagent.' },
+      { key: 'taskTracker', type: 'boolean', default: true, pluginOption: 'context_task_tracker', description: 'task-tracker (UserPromptSubmit): the task-list discipline directive and per-turn reminder.' },
+      { key: 'handoverResume', type: 'boolean', default: true, pluginOption: 'context_handover_resume', description: 'handover-resume (SessionStart): point a fresh or compacted session at the newest handover.' },
+      { key: 'defectNudge', type: 'boolean', default: true, pluginOption: 'context_defect_nudge', description: 'defect-nudge (SessionStart): the once-a-day note about the defect channel.' },
+    ],
+  },
+  {
+    key: 'maintenance',
+    label: 'Maintenance',
+    description: 'Background housekeeping hooks: self-repair, pruning, snapshots, logs, and the session-end MCP sweep.',
+    settings: [
+      { key: 'repairOnReload', type: 'boolean', default: true, env: 'ANTIHALL_REPAIR_ON_RELOAD', pluginOption: 'maintenance_repair_on_reload', description: 'repair-on-reload (SessionStart/UserPromptSubmit): re-apply safe doctor repairs after a plugin update.' },
+      { key: 'progressPrune', type: 'boolean', default: true, pluginOption: 'maintenance_progress_prune', description: 'progress-prune (SessionStart): archive stale per-session progress files into the history ledger.' },
+      { key: 'precompactSnapshot', type: 'boolean', default: true, pluginOption: 'maintenance_precompact_snapshot', description: 'precompact-snapshot (PreCompact): write a mechanical continuation snapshot before compaction.' },
+      { key: 'taskLifecycleLog', type: 'boolean', default: true, pluginOption: 'maintenance_task_lifecycle_log', description: 'task-lifecycle-log (TaskCreated/TaskCompleted): append task events to the per-session history ledger.' },
+      { key: 'sessionEndReaper', type: 'boolean', default: true, env: 'ANTI_HALL_SESSION_END_REAPER', pluginOption: 'maintenance_session_end_reaper', description: 'session-end-mcp-reaper (SessionEnd): kill orphaned MCP-server processes this session left behind.' },
     ],
   },
   {
@@ -208,6 +258,20 @@ const SECTIONS = [
       { key: 'retention.keepPerPartition', type: 'number', min: 0, default: 200, env: 'ANTIHALL_DEVSWARM_RETENTION_KEEP_PER_PARTITION', advanced: true, description: 'Newest messages per partition that are never pruned (age or size). [verified: companion/lib/devswarm-retention.js DEFAULTS]' },
       { key: 'retention.archive', type: 'boolean', default: true, env: 'ANTIHALL_DEVSWARM_RETENTION_ARCHIVE', advanced: true, description: 'Write pruned bodies to the gzip archive first (restorable via `devswarm.js retention restore`). [verified: companion/lib/devswarm-retention.js DEFAULTS]' },
       { key: 'retention.archiveMaxMB', type: 'number', min: 0, default: 0, env: 'ANTIHALL_DEVSWARM_RETENTION_ARCHIVE_MAX_MB', advanced: true, description: 'Archive size cap (MB); 0 (default) = never evict; above a set cap the oldest archive months are dropped. doctor warns past 500 MB. [verified: companion/lib/devswarm-retention.js DEFAULTS]' },
+
+      // ---- 0.108.4: per-hook on/off switches (default = current behaviour) ----
+      { key: 'parentGate', type: 'boolean', default: true, pluginOption: 'devswarm_parent_gate', description: 'devswarm-parent-gate (Stop): make a Primary attend to a child with unread mail or a stale verdict before stopping.' },
+      { key: 'childGate', type: 'boolean', default: true, pluginOption: 'devswarm_child_gate', description: 'devswarm-child-gate (Stop): make a child workspace heartbeat/report to its parent before going idle.' },
+      { key: 'parentInbox', type: 'boolean', default: true, pluginOption: 'devswarm_parent_inbox', description: 'devswarm-parent-inbox (UserPromptSubmit): inject the workspace roster and unread child mail into a Primary.' },
+      { key: 'childTurn', type: 'boolean', default: true, pluginOption: 'devswarm_child_turn', description: 'devswarm-child-turn (UserPromptSubmit): inject a child workspace\'s pending mail each turn.' },
+      { key: 'childRole', type: 'boolean', default: true, pluginOption: 'devswarm_child_role', description: 'devswarm-child-role (SessionStart): inject the mesh-only messaging directive into Primary and child sessions.' },
+      { key: 'childDrain', type: 'boolean', default: true, pluginOption: 'devswarm_child_drain', description: 'devswarm-child-drain (PostToolUse Bash): re-surface a child\'s unread mail mid-task (throttled).' },
+      { key: 'parentReplyTracker', type: 'boolean', default: true, pluginOption: 'devswarm_parent_reply_tracker', description: 'devswarm-parent-reply-tracker (PostToolUse Bash): record the Primary\'s direct replies so the parent gate can tell read from answered.' },
+      { key: 'commsGuard', type: 'boolean', default: true, pluginOption: 'devswarm_comms_guard', description: 'devswarm-comms-guard (PreToolUse SendMessage): block SendMessage to a DevSwarm workspace (mesh messaging only).' },
+      { key: 'inboxReadGuard', type: 'boolean', default: true, pluginOption: 'devswarm_inbox_read_guard', description: 'inbox-read-guard (PreToolUse Read): block raw Read-tool reads of the DevSwarm inbox/store (use the wrapper).' },
+      { key: 'wakeWatch', type: 'boolean', default: true, pluginOption: 'devswarm_wake_watch', description: 'devswarm-wake-watch monitor: wake an idle session the moment new mesh mail lands (the cron fallback stays).' },
+      { key: 'appSync', type: 'boolean', default: true, env: 'ANTIHALL_DEVSWARM_APP_SYNC', pluginOption: 'devswarm_app_sync', description: 'Supervisor app-DB sync: apply the DevSwarm app database (archive state, names, drift) every tick.' },
+      { key: 'screenshotSync', type: 'boolean', default: true, pluginOption: 'devswarm_screenshot_sync', description: '`devswarm.js sync-ui`: reconcile a transcribed sidebar screenshot against the app DB.' },
     ],
   },
   {
@@ -238,6 +302,21 @@ const SECTIONS = [
   },
 ];
 
+// NOT_TOGGLEABLE — parts of anti-hall that deliberately have NO on/off switch,
+// with the reason. `settings.js show` prints this list so nothing is silently
+// missing from the settings surface.
+const NOT_TOGGLEABLE = [
+  { name: 'skip-guard', reason: 'the user-consent escape hatch (~/.anti-hall/skip.json) every guard reads; not a feature, it is how a human pauses one.' },
+  { name: 'coordinator-detect', reason: 'shared library that tells coordinator from subagent for command-guard / edit-guard; not a hook.' },
+  { name: 'omc-detect', reason: 'shared library that lets task-guard / tasklist-guard defer to an active OMC loop; turning it off would deadlock those guards against the loop.' },
+  { name: 'phase-tracker', reason: 'never blocks or injects; records spawns that the statusline phase bar reads. Off would only break the statusline.' },
+  { name: 'fable-availability', reason: 'records whether a Fable model exists for model routing and skills; no output of its own.' },
+  { name: 'codex-availability', reason: 'records whether the codex CLI is on PATH for routing and skills; no output of its own.' },
+  { name: 'emit-dedupe-reset', reason: 'resets the emit-dedupe state after a context loss; off would hide DevSwarm blocks the model no longer holds. Use guards.emitDedupe instead.' },
+  { name: 'agent-watchdog', reason: 'a manual helper script, not a registered hook; it only runs when you call it.' },
+  { name: 'command-guard data-safety sub-guards', reason: 'DevSwarm read/send/subagent-mailbox guards prevent inbox cursor loss; they keep their own per-guard skip.json names. The stash guard is armed by guards.stashGuard.' },
+];
+
 function findSection(key) { return SECTIONS.find((s) => s.key === key) || null; }
 function findSetting(section, key) {
   const s = findSection(section);
@@ -251,4 +330,4 @@ function allSettings() {
 }
 function pluginOptionEntries() { return allSettings().filter((s) => s.pluginOption); }
 
-module.exports = { SECTIONS, TRUE_TOKENS, FALSE_TOKENS, findSection, findSetting, allSettings, pluginOptionEntries };
+module.exports = { SECTIONS, NOT_TOGGLEABLE, TRUE_TOKENS, FALSE_TOKENS, findSection, findSetting, allSettings, pluginOptionEntries };

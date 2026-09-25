@@ -14,6 +14,10 @@
 //
 // `show --all` includes advanced (tuning/timeout) settings; by default they
 // are collapsed to a count per section. `--section` filters to one section.
+//
+// SAFETY-LOCKED keys (schema `locked: true`, e.g. safety.gitGuard): `set` and
+// `reset` refuse them with "safety guard — change it yourself in /config
+// (anti-hall rows)" — only the human changes those, natively in /config.
 
 const path = require('path');
 const schema = require('../hooks/lib/settings-schema.js');
@@ -64,7 +68,7 @@ function sectionRows(sectionDef, opts, advanced) {
     const value = settings.get(sectionDef.key, s.key, undefined, opts);
     const src = settings.source(sectionDef.key, s.key, opts);
     return [
-      s.key + (s.advanced ? ' (advanced)' : ''),
+      s.key + (s.advanced ? ' (advanced)' : '') + (s.locked ? ' (safety: /config only)' : ''),
       fmtValue(value),
       fmtValue(s.default),
       sourceLabel(src),
@@ -92,6 +96,7 @@ function cmdShow(args, opts) {
           default: s.default,
           source: settings.source(sec.key, s.key, opts),
           advanced: !!s.advanced,
+          locked: !!s.locked,
         };
       }
     }
@@ -121,6 +126,14 @@ function cmdShow(args, opts) {
         out.push('');
       }
     }
+  }
+  if (!args.section) {
+    out.push('## Not toggleable');
+    out.push('');
+    out.push('These parts have no switch on purpose:');
+    out.push('');
+    for (const n of schema.NOT_TOGGLEABLE) out.push('- `' + n.name + '`: ' + n.reason);
+    out.push('');
   }
   process.stdout.write(out.join('\n') + '\n');
 }

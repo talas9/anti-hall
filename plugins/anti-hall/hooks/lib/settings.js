@@ -17,6 +17,8 @@
 //                           to live in (e.g. ~/.anti-hall/jev.json)
 //   5. default            — the `dflt` argument, else the schema's own default
 //
+// LOCKED (safety) keys skip tiers 2 and 4 — see lockedFilter() below.
+//
 // FAIL-OPEN CONTRACT: load() never throws — a missing or corrupt
 // settings.json reads back as {}. set() validates against the schema and
 // writes atomically (tmp file + rename) so a crash mid-write can never
@@ -264,7 +266,7 @@ function lookup(obj, key) {
 }
 
 function readLegacy(entry, opts) {
-  if (!entry.legacy || !entry.legacy.file) return undefined;
+  if (!entry.legacy || !entry.legacy.file || entry.locked) return undefined;
   try {
     const p = path.join(homeDir(opts), '.anti-hall', entry.legacy.file);
     const raw = JSON.parse(fs.readFileSync(p, 'utf8'));
@@ -272,6 +274,32 @@ function readLegacy(entry, opts) {
     return coerceValue(entry, lookup(raw, entry.legacy.key));
   } catch (_) {
     return undefined;
+  }
+}
+
+// SAFETY LOCK (0.108.4). A `locked` schema entry is a safety-guard switch only
+// the human may change: through /config (Claude Code's own settings file, which
+// agents cannot edit) or an env var. So for a locked key, settings.json — a
+// plain file any agent can write — is IGNORED, except a value equal to the
+// entry's `safeValue` (the stronger setting), which may still tighten it (e.g.
+// arming guards.stashGuard). Legacy files are never read for a locked key.
+// set()/reset() refuse a locked key outright (see SAFETY_LOCK_MESSAGE).
+const SAFETY_LOCK_MESSAGE = 'safety guard — change it yourself in /config (anti-hall rows)';
+function lockedFilter(entry, value) {
+  if (value === undefined || !entry.locked) return value;
+  return (entry.safeValue !== undefined && value === entry.safeValue) ? value : undefined;
+}
+
+// enabled(section, key, opts?) -> false ONLY when an on/off switch resolves to
+// exactly `false` (or a mode switch to 'off'); anything else, including any
+// error, -> true. Hooks call this first thing and no-op when it is false, so a
+// settings bug can never silently disable a guard.
+function enabled(section, key, opts) {
+  try {
+    const v = get(section, key, undefined, opts);
+    return v !== false && v !== 'off';
+  } catch (_) {
+    return true;
   }
 }
 
@@ -289,7 +317,7 @@ function get(section, key, dflt, opts) {
 
   const store = load(opts);
   const fileVal = store ? lookup(store[section], key) : undefined;
-  const coercedFile = coerceValue(entry, fileVal);
+  const coercedFile = lockedFilter(entry, coerceValue(entry, fileVal));
   if (coercedFile !== undefined) return coercedFile;
 
   // Until the one-time forward-migration is stamped for this plugin version,
@@ -392,6 +420,7 @@ function withSettingsLock(opts, fn) {
 function set(section, key, value, opts) {
   const entry = schema.findSetting(section, key);
   if (!entry) return { ok: false, error: 'unknown setting: ' + section + '.' + key };
+  if (entry.locked) return { ok: false, locked: true, error: section + '.' + key + ' is a ' + SAFETY_LOCK_MESSAGE };
 
   const v = validate(entry, value);
   if (!v.ok) return { ok: false, error: v.error };
@@ -422,6 +451,7 @@ function set(section, key, value, opts) {
 function reset(section, key, opts) {
   const entry = schema.findSetting(section, key);
   if (!entry) return { ok: false, error: 'unknown setting: ' + section + '.' + key };
+  if (entry.locked) return { ok: false, locked: true, error: section + '.' + key + ' is a ' + SAFETY_LOCK_MESSAGE };
 
   return withSettingsLock(opts, () => {
   const backedUpCorruptTo = backupCorruptIfNeeded(opts);
@@ -457,7 +487,7 @@ function source(section, key, opts) {
   if (readEnvOverride(entry, opts) !== undefined) return 'env';
   const store = load(opts);
   const fileVal = store ? lookup(store[section], key) : undefined;
-  if (coerceValue(entry, fileVal) !== undefined) return 'file';
+  if (lockedFilter(entry, coerceValue(entry, fileVal)) !== undefined) return 'file';
 
   const legacyFirst = !!entry.legacy && !settingsMigrationStamped(opts);
   if (legacyFirst && readLegacy(entry, opts) !== undefined) return 'legacy';
@@ -466,4 +496,4 @@ function source(section, key, opts) {
   return 'default';
 }
 
-module.exports = { load, get, getWithEnv, set, reset, source, path: settingsPath, validate, lookup };
+module.exports = { load, get, getWithEnv, enabled, set, reset, source, path: settingsPath, validate, lookup, SAFETY_LOCK_MESSAGE };
