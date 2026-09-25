@@ -481,6 +481,75 @@ test('STALE-BUILD DOWNGRADE OFF: guards.stopHookVersionDowngrade=false / ANTIHAL
   } finally { h.cleanup(); }
 });
 
+// STALE-BUILD DOWNGRADE SCOPE (lane-review follow-up): the downgrade applies to
+// the plain NEGLECT nag ONLY. Every fixture below ALSO carries a plain NEGLECT
+// backlog (ws1, 2 unread) so `blocking.length > 0` holds — without the
+// unanswered/truncation/escalation exclusions these passes WOULD be silenced.
+function registerNewerInstalledVersion(home) {
+  const p = path.join(home, '.claude', 'plugins', 'installed_plugins.json');
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+  fs.writeFileSync(p, JSON.stringify({ plugins: { 'anti-hall@anti-hall': { version: '999.0.0', scope: 'user' } } }));
+}
+
+test('STALE-BUILD DOWNGRADE SCOPE (control): the same NEGLECT-only fixture + payload IS downgraded under a newer registered version', () => {
+  const h = makeHome();
+  try {
+    seedWorkspace(h.home, 'ws1', { messages: ['a', 'b', 'c'], cursor: 1 });
+    writeOwnSummary(h.home, 0, undefined, []);
+    registerNewerInstalledVersion(h.home);
+    const r = run(h.home, stopPayload('stale-scope-control-sess', true));
+    assert.strictEqual(r.status, 0);
+    assert.strictEqual(r.stdout, '', `plain NEGLECT under a stale build must be advisory; stdout=${r.stdout}`);
+  } finally { h.cleanup(); }
+});
+
+test('STALE-BUILD DOWNGRADE SCOPE: an UNANSWERED QUESTION still BLOCKS with a newer registered version (never downgraded)', () => {
+  const h = makeHome();
+  try {
+    seedWorkspace(h.home, 'ws1', { messages: ['a', 'b', 'c'], cursor: 1 });
+    writeOwnSummary(h.home, 1, undefined, [{ from: 'child-1', ts: Date.now() - 5 * 60000, seq: 1 }]);
+    registerNewerInstalledVersion(h.home);
+    const p = stopPayload('stale-scope-question-sess', true);
+    for (let i = 1; i <= 3; i++) {
+      const r = run(h.home, p);
+      assert.strictEqual(r.status, 0, `call #${i} must exit 0`);
+      assert.strictEqual(r.json && r.json.decision, 'block', `call #${i}: an unanswered question must still block under a stale build; stdout=${r.stdout}`);
+      assert.match(r.json.reason, /UNANSWERED QUESTION/);
+      assert.match(r.json.reason, /child-1/);
+    }
+  } finally { h.cleanup(); }
+});
+
+test('STALE-BUILD DOWNGRADE SCOPE: a TRUNCATED question list still BLOCKS with a newer registered version', () => {
+  const h = makeHome();
+  try {
+    seedWorkspace(h.home, 'ws1', { messages: ['a', 'b', 'c'], cursor: 1 });
+    writeOwnSummary(h.home, 0, undefined, undefined, { cap: 200, kept: 200, dropped: 7 });
+    registerNewerInstalledVersion(h.home);
+    const r = run(h.home, stopPayload('stale-scope-truncated-sess', true));
+    assert.strictEqual(r.json && r.json.decision, 'block', `truncation must still block under a stale build; stdout=${r.stdout}`);
+    assert.match(r.json.reason, /TRUNCATED/i);
+  } finally { h.cleanup(); }
+});
+
+test('STALE-BUILD DOWNGRADE SCOPE: the NEGLECT cap ESCALATION pass still BLOCKS with a newer registered version', () => {
+  const h = makeHome();
+  try {
+    seedWorkspace(h.home, 'ws1', { messages: ['a', 'b', 'c'], cursor: 1 });
+    writeOwnSummary(h.home, 0, undefined, []);
+    registerNewerInstalledVersion(h.home);
+    const env = { ANTIHALL_DEVSWARM_PARENT_GATE_CAP: '2' };
+    const p = stopPayload('stale-scope-escalation-sess', true);
+    for (let i = 1; i <= 2; i++) {
+      const r = run(h.home, p, env);
+      assert.strictEqual(r.stdout, '', `pre-cap NEGLECT pass #${i} is downgraded; stdout=${r.stdout}`);
+    }
+    const esc = run(h.home, p, env);
+    assert.strictEqual(esc.json && esc.json.decision, 'block', `the escalation pass must still block under a stale build; stdout=${esc.stdout}`);
+    assert.match(esc.json.reason, /DEVSWARM ESCALATION/);
+  } finally { h.cleanup(); }
+});
+
 test('FAIL-OPEN: empty stdin -> exit 0, no crash', () => {
   const h = makeHome();
   try {
