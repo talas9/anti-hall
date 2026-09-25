@@ -139,6 +139,17 @@ the update.
   `devswarm.stableLauncher = false`, falls straight back to the previous
   version-pinned path — byte-identical to pre-fix behavior).
 
+### Added
+
+- **`devswarm.js ready-check <sha>`.** A generic, read-only readiness verdict
+  for a child's "READY \<sha\>" claim — works against any git repo, not
+  DevSwarm-specific. Reports `ff` (is `--base`, default `origin/main`, an
+  ancestor of `sha`), the `base...sha` file diff (`files`), submodule pointer
+  bumps (`gitlinks`), deletions under `--watch-deletions` dirs
+  (`deletions_under`), files outside `--allow` globs (`outside_allowed`), and
+  a `verdict:'ok'|'review'|'block'` + `reasons[]`. Runs git read-only; no
+  `fetch` unless `--fetch` is passed.
+
 ## 0.110.0 (2026-09-26)
 
 ### Features

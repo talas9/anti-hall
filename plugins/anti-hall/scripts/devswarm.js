@@ -57,6 +57,16 @@
 //                  appends one line to cron-found-mail.jsonl (capped, `doctor
 //                  --check` reports its count) so cron's residual value past
 //                  Monitor becomes measurable instead of assumed.
+//   ready-check <sha> [--base origin/main] [--allow 'glob,glob'] [--watch-deletions 'dir,dir'] [--fetch] --json
+//                  peer utility: a generic, READ-ONLY readiness verdict for a
+//                  child's "READY <sha>" claim (any project, not DevSwarm-
+//                  specific). Reports ff (merge-base --is-ancestor base sha),
+//                  files (diff --stat count + list), gitlinks (mode 160000
+//                  entries changed), deletions_under (deleted files under
+//                  --watch-deletions' dirs, e.g. '.planning'), outside_allowed
+//                  (files matching none of --allow's globs), and a verdict
+//                  (ok|review|block) + reasons[]. Runs git read-only against
+//                  THIS cwd — no fetch unless --fetch is passed.
 //   workspaces list
 //                  derive + emit summary.json projection (unread, gates, archive_ready).
 //   gate <id> [--set CSV] [--clear CSV]
@@ -16411,6 +16421,139 @@ function cmdHealthcheck(flags, ctx) {
   };
 }
 
+// globToRegExp(glob) -> RegExp | null. Pure-Node, no dependency (repo
+// convention). Small, deliberately NOT a full micromatch: `**` matches any
+// number of path segments (including zero), `*` matches within one segment
+// (never `/`), `?` matches one non-`/` char, everything else is escaped
+// literally. Good enough for `--allow`'s use case (a short, human-typed
+// allowlist of glob patterns), not a general gitignore engine. Returns null
+// on a non-string/empty pattern rather than a regex that matches everything.
+function globToRegExp(glob) {
+  if (typeof glob !== 'string' || !glob) return null;
+  let out = '';
+  for (let i = 0; i < glob.length; i++) {
+    const c = glob[i];
+    if (c === '*') {
+      if (glob[i + 1] === '*') {
+        out += '.*';
+        i++;
+        // swallow an immediately-following '/' so 'a/**/b' matches 'a/b' too
+        if (glob[i + 1] === '/') i++;
+      } else {
+        out += '[^/]*';
+      }
+    } else if (c === '?') {
+      out += '[^/]';
+    } else {
+      out += c.replace(/[.+^${}()|[\]\\]/g, '\\$&');
+    }
+  }
+  try { return new RegExp('^' + out + '$'); } catch (_) { return null; }
+}
+
+// cmdReadyCheck(sha, flags, ctx) -> generic, READ-ONLY readiness verdict for a
+// child's "READY <sha>" claim (peer request A). Runs git read-only against
+// THIS process's cwd (no fetch unless --fetch is passed) and reports:
+//   ff                whether `base` is an ancestor of `sha` (merge-base
+//                      --is-ancestor) — true/false/null (probe failed: git
+//                      missing, timeout, sha/base unresolvable — NEVER read
+//                      as a "not ff" fact, same doctrine as devswarm-git-
+//                      truth.js's gitPushState)
+//   files             { count, list } — the diff --stat file set between
+//                      base and sha (base...sha, merge-base diff — the set of
+//                      changes sha introduces since it diverged from base)
+//   gitlinks          count of changed entries whose old OR new mode is
+//                      160000 (a submodule pointer bump) — CLAUDE.md's own
+//                      "never commit a submodule pointer bump you didn't
+//                      intend" rule, surfaced mechanically here
+//   deletions_under   count of DELETED files under any of --watch-deletions'
+//                      dirs (comma/repeatable, e.g. '.planning,.omc') — empty
+//                      list (the default) means this check is simply off, 0
+//                      deletions reported, never a false positive
+//   outside_allowed   files matching NONE of --allow's globs (comma/
+//                      repeatable) — [] when --allow is omitted (no
+//                      restriction configured, never treated as "everything
+//                      is outside")
+//   verdict           'ok' | 'review' | 'block' — block on a proven risk
+//                      (not-ff, a gitlink change, a watched-dir deletion);
+//                      review on an unproven probe (ff unknown) or an
+//                      allowlist miss; ok otherwise
+//   reasons[]         why, one entry per condition above that fired
+// Never mutates anything, never fetches unless --fetch is explicitly passed.
+function cmdReadyCheck(sha, flags, ctx) {
+  const cwd = ctx.cwd || process.cwd();
+  if (!sha || typeof sha !== 'string') return { ok: false, error: 'usage: devswarm.js ready-check <sha> [--base <ref>] [--allow glob,glob] [--watch-deletions dir,dir] [--fetch]' };
+  const base = one(flags, 'base') || 'origin/main';
+  const allowGlobs = csvList(flags, 'allow').map(globToRegExp).filter(Boolean);
+  const watchDirs = csvList(flags, 'watch-deletions').map((d) => d.replace(/\/+$/, ''));
+  const git = (args) => spawnSync('git', ['-C', cwd].concat(args), { encoding: 'utf8', timeout: gitTruth.GIT_TIMEOUT_MS });
+  const reasons = [];
+  if (hasFlag(flags, 'fetch')) {
+    try { git(['fetch', '--quiet']); } catch (_) { /* best-effort; the checks below just work off whatever refs exist */ }
+  }
+  // ff: merge-base --is-ancestor exits 0 (true) / 1 (false, git resolved both
+  // refs and definitively says base is NOT an ancestor) / other (unresolved
+  // ref, spawn error, timeout — probe failed, null).
+  let ff = null;
+  {
+    const r = git(['merge-base', '--is-ancestor', base, sha]);
+    if (r && !r.error && r.signal == null) {
+      if (r.status === 0) ff = true;
+      else if (r.status === 1) ff = false;
+    }
+  }
+  if (ff === false) reasons.push('not-ff');
+  if (ff === null) reasons.push('ff-unknown');
+  // Single `git diff --raw` call over base...sha (merge-base diff, the SAME
+  // three-dot range `ff` above reasons about) serves files/gitlinks/deletions
+  // together — one spawn, not three.
+  const files = { count: 0, list: [] };
+  let gitlinks = 0;
+  const deletedPaths = [];
+  const rawR = git(['diff', '--raw', '--no-renames', base + '...' + sha]);
+  let diffKnown = false;
+  if (rawR && !rawR.error && rawR.signal == null && rawR.status === 0) {
+    diffKnown = true;
+    for (const line of String(rawR.stdout || '').split('\n')) {
+      if (!line) continue;
+      const tab = line.indexOf('\t');
+      if (tab === -1) continue;
+      const meta = line.slice(1, tab).trim().split(/\s+/); // [oldMode, newMode, oldSha, newSha, status]
+      const filePath = line.slice(tab + 1).trim();
+      if (!filePath) continue;
+      files.count++;
+      files.list.push(filePath);
+      const oldMode = meta[0], newMode = meta[1], status = (meta[4] || '')[0];
+      if (oldMode === '160000' || newMode === '160000') gitlinks++;
+      if (status === 'D') deletedPaths.push(filePath);
+    }
+  } else {
+    reasons.push('diff-unknown');
+  }
+  if (gitlinks > 0) reasons.push('gitlinks-changed');
+  let deletionsUnder = 0;
+  if (diffKnown && watchDirs.length) {
+    for (const p of deletedPaths) {
+      if (watchDirs.some((d) => p === d || p.startsWith(d + '/'))) deletionsUnder++;
+    }
+    if (deletionsUnder > 0) reasons.push('deletions-under-watched-dirs');
+  }
+  let outsideAllowed = [];
+  if (diffKnown && allowGlobs.length) {
+    outsideAllowed = files.list.filter((p) => !allowGlobs.some((re) => re.test(p)));
+    if (outsideAllowed.length) reasons.push('files-outside-allowed');
+  }
+  const blockReasons = new Set(['not-ff', 'gitlinks-changed', 'deletions-under-watched-dirs']);
+  let verdict = 'ok';
+  if (reasons.some((r) => blockReasons.has(r))) verdict = 'block';
+  else if (reasons.length) verdict = 'review';
+  return {
+    ok: true, action: 'ready-check', sha, base, cwd,
+    ff, files, gitlinks, deletions_under: deletionsUnder, outside_allowed: outsideAllowed,
+    verdict, reasons,
+  };
+}
+
 // healthcheckHumanLine(result) — the DEFAULT (non-`--json`) render of `healthcheck`:
 // one compact line. `--json` prints the raw JSON object (main() decides which).
 // Carries the `(scope: <repoKey>)` marker (FIX C) so `orphansWithUnread=0` never
@@ -18825,6 +18968,17 @@ function runArmed(cmd, positionals, flags, ctx, argv) {
         // #71: pass/fail gate over the SAME data diagnose computes — pure read,
         // exit 0 = healthy, non-zero = degraded (for monitors/CI/daemon).
         const r = cmdHealthcheck(flags, ctx);
+        return { code: r.ok ? 0 : 2, result: r };
+      }
+      case 'ready-check': {
+        // Generic, READ-ONLY readiness verdict for a child's "READY <sha>"
+        // claim (peer request A) — see cmdReadyCheck's own header for the
+        // full field-by-field contract. `ok` reflects whether the check ITSELF
+        // ran (usage error aside, always true — same "report, never gate"
+        // posture as `diagnose`); the verdict/reasons fields are what a caller
+        // acts on, not the exit code.
+        const rSha = positionals[1];
+        const r = cmdReadyCheck(rSha, flags, ctx);
         return { code: r.ok ? 0 : 2, result: r };
       }
       case 'mesh': {
