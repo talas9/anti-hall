@@ -1574,6 +1574,29 @@ function main() {
   let ownCheckoutExtraUrgency = null;
 
   const summaryIdSet = new Set(Object.keys(summaryWorkspaces));
+  // 0.108.4 ghost row: a child's `primary-<hash>` label whose canonical row is
+  // also in this summary (alias / retired redirect / the app's builder on that
+  // worktree) is the SAME workspace — show it once, under the canonical row.
+  // Resolved in a pre-pass so the ghost's unread directs are ADDED to the
+  // canonical row's nag (whichever order the two ids iterate in), never lost.
+  const ghostFoldTo = new Map(); // ghost id -> canonical id
+  const foldedUnread = new Map(); // canonical id -> summed ghost unread
+  for (const id of summaryIdSet) {
+    if (!isSafeId(id) || id === primaryId || !/^primary-[0-9a-f]{8}$/.test(id)) continue;
+    const entry = summaryWorkspaces[id];
+    if (!entry || typeof entry !== 'object') continue;
+    let foldTo = null;
+    try {
+      const w = entry.worktreePath ? appWs(null, entry.worktreePath) : null;
+      const appBuilderId = w && w.builderType !== 'primary' ? w.id : null;
+      foldTo = require('../companion/lib/devswarm-sender-alias.js').rosterFoldTarget(home, id, summaryIdSet, { appBuilderId });
+    } catch (_) { foldTo = null; }
+    if (!foldTo) continue;
+    ghostFoldTo.set(id, foldTo);
+    const ghostUnread = Number.isFinite(entry.directUnread) ? entry.directUnread
+      : (Number.isFinite(entry.unread) ? entry.unread : 0);
+    if (ghostUnread > 0) foldedUnread.set(foldTo, (foldedUnread.get(foldTo) || 0) + ghostUnread);
+  }
   for (const id of Object.keys(summaryWorkspaces)) {
     if (!isSafeId(id)) continue;
     // #34/Reviewer P1: the Primary's OWN self-registered entry (primary-<hash>,
@@ -1587,24 +1610,14 @@ function main() {
     if (id === primaryId) continue;
     const entry = summaryWorkspaces[id];
     if (!entry || typeof entry !== 'object') continue;
-    // 0.108.4 ghost row: a child's `primary-<hash>` label whose canonical row is
-    // also in this summary (alias / retired redirect / the app's builder on that
-    // worktree) is the SAME workspace — show it once, under the canonical row.
-    if (/^primary-[0-9a-f]{8}$/.test(id)) {
-      let foldTo = null;
-      try {
-        const w = entry.worktreePath ? appWs(null, entry.worktreePath) : null;
-        const appBuilderId = w && w.builderType !== 'primary' ? w.id : null;
-        foldTo = require('../companion/lib/devswarm-sender-alias.js').rosterFoldTarget(home, id, summaryIdSet, { appBuilderId });
-      } catch (_) { foldTo = null; }
-      if (foldTo) continue;
-    }
+    // Folded ghost row: shown once, under its canonical row (pre-pass above).
+    if (ghostFoldTo.has(id)) continue;
 
     if (gitTop && entry.worktreePath && worktreeRootOf(entry.worktreePath) === gitTop
         && builderTypeFor(id) === 'primary') {
       const rowUnread = Number.isFinite(entry.directUnread) ? entry.directUnread
         : (Number.isFinite(entry.unread) ? entry.unread : 0);
-      ownCheckoutExtraUnread += rowUnread;
+      ownCheckoutExtraUnread += rowUnread + (foldedUnread.get(id) || 0);
       if (!ownCheckoutExtraUrgency) ownCheckoutExtraUrgency = entry.urgencyMax || null;
       continue; // route to the own-unread path below, never the generic child path
     }
@@ -1616,8 +1629,9 @@ function main() {
     // directUnread/total/cursor — the mesh store's tracked cursor is now
     // authoritative for direct-message unread, D24; an old-shape entry missing
     // directUnread falls back to its `unread` alias, same value, edge_cases) ---
-    const unread = Number.isFinite(entry.directUnread) ? entry.directUnread
-      : (Number.isFinite(entry.unread) ? entry.unread : 0);
+    // + any folded ghost row's unread directs (they belong to this workspace).
+    const unread = (Number.isFinite(entry.directUnread) ? entry.directUnread
+      : (Number.isFinite(entry.unread) ? entry.unread : 0)) + (foldedUnread.get(id) || 0);
     const total = Number.isFinite(entry.total) ? entry.total : 0;
     const cursor = Number.isFinite(entry.cursor) ? entry.cursor : 0;
     const urgencyMax = entry.urgencyMax || null;

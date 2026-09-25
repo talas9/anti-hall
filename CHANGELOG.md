@@ -218,6 +218,11 @@ the update.
   `directUnread` is null) kept the null and lost the ghost's unread directs and its hints.
   The canonical row now receives both (unread summed from 0, hints unioned), so the
   roster's total unread is the same before and after the fold.
+- **`devswarm-parent-inbox.js` lost a folded ghost row's unread.** A `primary-<hash>`
+  ghost folded under its canonical row was skipped outright, so its unread directs never
+  reached the canonical row's nag. The fold is now resolved in a pre-pass and the ghost's
+  unread is added to the canonical row (table, attention, own-checkout path alike),
+  whichever order the two rows appear in.
 
 ## 0.108.3
 
