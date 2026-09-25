@@ -11,7 +11,7 @@ jevIntegrations, limitConserve, devswarm, statusline, ...). `scripts/settings.js
 only thing that reads or writes it. Every hook anti-hall registers has an on/off switch
 (default = on, the old behaviour); `show` ends with the short list of parts that have no
 switch on purpose, and why. `jevIntegrations` (v0.108.4) is a dedicated section holding
-all 12 per-integration Jev trust modes as their own rows/settings — see the `jev` skill's
+all 13 per-integration Jev trust modes as their own rows/settings — see the `jev` skill's
 "Per-integration modes" for the full table.
 
 ## Default: point the user at `/config`
