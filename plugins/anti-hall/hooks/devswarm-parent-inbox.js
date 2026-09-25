@@ -71,7 +71,9 @@ const {
 } = require('../companion/lib/liveness.js');
 const livenessLib = require('../companion/lib/liveness.js');
 const versionCheck = require('../companion/lib/devswarm-version-check.js');
-const { rowState } = require('../companion/lib/row-state.js');
+// row-eligibility.js: THE one per-row projection (archive sources, held,
+// archive-ignore) — this hook reads archived/app-archived/ignored from it.
+const rowEligibilityLib = require('../companion/lib/row-eligibility.js');
 // SHARED archive-resurrection gate (defect df54edf54804, item 3) — the SAME
 // worktree-discriminated predicate companion/devswarm-migrate.js and
 // scripts/devswarm.js's healOrphanPartitions use, reused here so this view's
@@ -295,9 +297,6 @@ function uiSyncAsk(home, sessionId, appDbState, rowIds, now) {
 
 function parentInboxLogPath(home) {
   return path.join(devswarmRoot(home), 'parent-inbox.log');
-}
-function archiveIgnorePath(home, id) {
-  return path.join(devswarmRoot(home), 'archive-ignore', String(id) + '.json');
 }
 function archiveNudgePath(home, id) {
   return path.join(devswarmRoot(home), 'archive-nudges', String(id) + '.json');
@@ -653,19 +652,12 @@ function isArchiveReady(id, summary) {
   return !!(entry && entry.archive_ready === true);
 }
 
-// isArchiveIgnored(home, id) -> bool. A per-workspace ignore mark silences the
-// archive reminder for THAT workspace only (it stays tracked). Existence check.
+// autoArchiveOwnsRow(home, id, now) -> bool. The supervisor's auto-archive
+// sweep owns this row (no user nag). The per-workspace archive-ignore mark
+// (which silences the archive reminder for THAT workspace only; it stays
+// tracked) is read from row-eligibility.js's `ignored`.
 function autoArchiveOwnsRow(home, id, now) {
   try { return require('../companion/lib/devswarm-lifecycle.js').autoArchiveOwns(home, id, { now }); } catch (_) { return false; }
-}
-
-function isArchiveIgnored(home, id) {
-  try {
-    fs.statSync(archiveIgnorePath(home, id));
-    return true;
-  } catch (_) {
-    return false;
-  }
 }
 
 // archiveCooldownElapsed(home, id, now) -> bool. True when no prior nudge, or the
@@ -1392,6 +1384,9 @@ function main() {
     }
     return appArchivedCacheMemo;
   }
+  // ONE eligibility context per turn: each row is projected at most once and
+  // shares the memoized app active-set cache above.
+  const elig = rowEligibilityLib.createContext({ home, env: process.env, now, cache: appArchivedCache });
   // appSnap() / appWs() — ONE app-DB snapshot per invocation (v0.108.0).
   let appSnapMemo;
   function appSnap() {
@@ -1762,15 +1757,9 @@ function main() {
     // row sharing that archived worktree) is put away for good: nobody will
     // ever drain its mailbox, so it never nags. Previously this was only used
     // to relabel the table row below, after both pushes had already happened.
-    let archivedRow = false;
-    let appArchivedRow = false;
-    try {
-      const st = rowState({
-        home, id, worktreePath: entry.worktreePath, repoKey, env: process.env, now, cache: appArchivedCache(),
-      });
-      archivedRow = st.archived;
-      appArchivedRow = st.appArchived;
-    } catch (_) { archivedRow = false; appArchivedRow = false; }
+    const rowElig = elig.of({ id, worktreePath: entry.worktreePath, repoKey });
+    let archivedRow = rowElig.markerArchived;
+    const appArchivedRow = rowElig.appArchived;
     // (Still listed in the table below, labelled archived — just never nagged.)
     // v0.108.0: nor while the owner has this very workspace on screen in the app.
     const rowWs = appWs(id, entry.worktreePath);
@@ -1807,7 +1796,7 @@ function main() {
       // a dead+archive-ready target the next time this exact command runs
       // (see its own header) — re-suggesting it there is not redundant, it
       // is the only path left to actually finish that workspace.
-      if (archiveReady && !appArchivedRow && !ownerFocused && !isArchiveIgnored(home, id)
+      if (archiveReady && !appArchivedRow && !ownerFocused && !rowElig.ignored
           && archiveCooldownElapsed(home, id, now) && !autoArchiveOwnsRow(home, id, now)
           && !(archiveRequestQuiet && !archiveReadyQuiet)) {
         archiveList.push(id);
@@ -2386,13 +2375,10 @@ function main() {
       // directly. Fail-open: any isAppArchived error leaves the row exactly
       // as before (still shown) — this can only ever SUPPRESS on positive
       // evidence, never add a false suppression.
-      const cache = appArchivedCache();
       const visible = summary.staleRegistryPartitions.filter((row) => {
         if (!row || row.id == null) return true;
         try {
-          return !rowState({
-            home, id: row.id, worktreePath: row.worktreePath, repoKey, env: process.env, now, cache,
-          }).appArchived;
+          return !elig.of({ id: row.id, worktreePath: row.worktreePath, repoKey }).appArchived;
         } catch (_) { return true; }
       });
       if (visible.length) {
