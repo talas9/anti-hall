@@ -223,6 +223,14 @@ the update.
   reached the canonical row's nag. The fold is now resolved in a pre-pass and the ghost's
   unread is added to the canonical row (table, attention, own-checkout path alike),
   whichever order the two rows appear in.
+- **`finding-dedup.js` reported false duplicate groups, including with Jev off.** The same
+  finding id recurring across rounds was pushed into the union-find id list twice, so
+  it formed a `[X, X]` "group" with no Jev edge at all, and a cross-round pair of one id
+  was unioned with itself. Findings are now keyed by id+round (exact repeats dropped,
+  first wins), a finding is never paired with itself, an id that recurs across rounds is
+  reported as `<id>@round<N>`, and Jev off means no groups and no per-pair calls. The
+  Jev cache key now also includes each finding's round and text, so a reused id never
+  gets another finding's cached answer.
 
 ## 0.108.3
 

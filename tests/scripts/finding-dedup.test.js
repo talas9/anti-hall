@@ -115,6 +115,38 @@ test('dedupe(): end-to-end with a stubbed askFn produces the same grouped shape'
   assert.strictEqual(result.groups[0].pairs[0].confidence, 0.93);
 });
 
+test('dedupe(): the same id in two rounds with NO confirmed edge forms no group (allIds deduped, never a [X, X] group)', async () => {
+  const findings = [
+    { id: 'reviewer-1', file: 'x.js', line: 10, round: 1, text: 'leak' },
+    { id: 'reviewer-1', file: 'y.js', line: 900, round: 2, text: 'different bug, same id' },
+    { id: 'reviewer-1', file: 'y.js', line: 900, round: 2, text: 'exact repeat of the row above' },
+  ];
+  const result = await dedupe(findings, { askFn: async () => null });
+  assert.deepStrictEqual(result.groups, []);
+});
+
+test('dedupe(): findings are keyed by id+round — a confirmed cross-round pair names both rounds, and a finding is never paired with itself', async () => {
+  const seen = [];
+  const findings = [
+    { id: 'p0-1', file: 'a.js', line: 5, round: 1, text: 'race' },
+    { id: 'p0-1', file: 'a.js', line: 6, round: 2, text: 'race again' },
+    { id: 'p0-1', file: 'a.js', line: 6, round: 2, text: 'race again' }, // exact repeat -> dropped
+    { id: 'other', file: 'z.js', line: 1, round: 1, text: 'unrelated' },
+  ];
+  const result = await dedupe(findings, {
+    askFn: async (a, b) => { seen.push([a.id + '/' + a.round, b.id + '/' + b.round]); return { a: a.id, b: b.id, confidence: 0.95 }; },
+  });
+  assert.deepStrictEqual(seen, [['p0-1/1', 'p0-1/2']], 'one candidate pair, never self, never the repeat');
+  assert.strictEqual(result.groups.length, 1);
+  assert.deepStrictEqual(result.groups[0].ids.sort(), ['p0-1@round1', 'p0-1@round2']);
+  assert.deepStrictEqual(result.groups[0].pairs, [{ a: 'p0-1@round1', b: 'p0-1@round2', confidence: 0.95 }]);
+});
+
+test('buildPairs: an exact repeat (same id AND round) is never paired with itself', () => {
+  const f = { id: 'a', file: 'x.js', line: 1, round: 1, text: 't' };
+  assert.deepStrictEqual(buildPairs([f, Object.assign({}, f)]), []);
+});
+
 // ---------------------------------------------------------------------------
 // the 0.85 confidence threshold (askPair's own extra floor, via the real
 // jev-assist.ask() path — noul confidence = |noul-0.5|*2, see jev-client.js)
@@ -238,6 +270,27 @@ test('mode off (Jev disabled entirely, default jev.json): dedupe() over a real p
     const findings = [
       { id: 'a', file: 'x.js', line: 1, text: 'leak' },
       { id: 'b', file: 'x.js', line: 2, text: 'leak restated' },
+    ];
+    await withMockServer(noulHandler(1.0, hits), async (endpoint) => {
+      await withEnv({ HOME: h.home, AI_GATEWAY_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
+        const { dedupe: freshDedupe } = freshAskPair();
+        const result = await freshDedupe(findings, { home: h.home });
+        assert.deepStrictEqual(result.groups, []);
+      });
+    });
+    assert.strictEqual(hits.count, 0);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('Jev off: dedupe() over findings whose id recurs across rounds yields zero groups and zero network calls', async () => {
+  const h = makeHome();
+  try {
+    const hits = { count: 0 };
+    const findings = [
+      { id: 'reviewer-1', file: 'x.js', line: 1, round: 1, text: 'leak' },
+      { id: 'reviewer-1', file: 'x.js', line: 2, round: 2, text: 'leak restated' },
     ];
     await withMockServer(noulHandler(1.0, hits), async (endpoint) => {
       await withEnv({ HOME: h.home, AI_GATEWAY_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {

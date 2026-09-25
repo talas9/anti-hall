@@ -16,6 +16,10 @@
 //
 // OUTPUT: JSON on stdout — {groups: [{ids: [...], pairs: [{a, b, confidence}]}]}
 // (one entry per connected component of >=2 findings Jev judged duplicate).
+// A finding is keyed by id+round: the same id in two rounds is two findings.
+// An output id is the plain `id` when that id is unique in the input, else
+// `<id>@round<round>`. An exact repeat (same id AND round) is dropped (first
+// wins), and a finding is never paired with itself.
 // Human-readable lines, one per Jev-confirmed pair — "possible duplicates: A ~
 // B (conf 0.93)" — are printed to STDERR so stdout stays pure JSON.
 //
@@ -80,6 +84,26 @@ function loadFindings(opts) {
   }
 }
 
+// findingKey(f) -> the internal identity of a finding: id + round.
+function findingKey(f) {
+  return String(f.id) + '\u0000' + (f.round != null ? String(f.round) : '');
+}
+
+// uniqueFindings(findings) -> the input with exact repeats (same id+round)
+// dropped, first occurrence wins, order kept.
+function uniqueFindings(findings) {
+  const seen = new Set();
+  const out = [];
+  for (const f of findings || []) {
+    if (!f || f.id == null) continue;
+    const k = findingKey(f);
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push(f);
+  }
+  return out;
+}
+
 // buildPairs(findings) -> [[a,b], ...] candidate pairs: same file within
 // +/-40 lines, OR the same id carried across two different rounds. Every
 // finding is compared against every other exactly once (i<j), in input
@@ -90,6 +114,7 @@ function buildPairs(findings) {
     for (let j = i + 1; j < findings.length; j++) {
       const a = findings[i];
       const b = findings[j];
+      if (findingKey(a) === findingKey(b)) continue; // never pair a finding with itself
       const sameFile = typeof a.file === 'string' && a.file && a.file === b.file &&
         Number.isFinite(a.line) && Number.isFinite(b.line) &&
         Math.abs(a.line - b.line) <= SAME_FILE_LINE_WINDOW;
@@ -190,7 +215,9 @@ async function askPair(a, b, opts) {
       state,
       trust: 'advisory',
       baseline: null,
-      cacheKey: [a.id, b.id].join('\u0001'),
+      // id+round of both findings AND their text: the same ids recur across
+      // rounds and across reviews, so ids alone would serve a stale answer.
+      cacheKey: [findingKey(a), findingKey(b), state].join('\u0001'),
       home: o.home,
       project: o.project,
     });
@@ -215,20 +242,39 @@ async function askPair(a, b, opts) {
 async function dedupe(findings, opts) {
   const o = opts || {};
   const askFn = o.askFn || askPair;
-  const pairs = buildPairs(findings).slice(0, MAX_PAIRS);
+  const list = uniqueFindings(findings);
+  // Jev off (disabled, unconfigured, or findingDedup 'off') -> no groups and
+  // no per-pair calls at all. Only for the real Jev path; a test/DI askFn
+  // decides for itself.
+  if (!o.askFn) {
+    try {
+      const jevAssist = require('../hooks/lib/jev-assist.js');
+      const { mode } = jevAssist.prepare({ id: 'findingDedup', home: o.home, trust: 'advisory', baseline: null, cacheKey: 'mode', state: '' });
+      if (mode === 'off') return { groups: [] };
+    } catch (_) {
+      return { groups: [] };
+    }
+  }
+  const pairs = buildPairs(list).slice(0, MAX_PAIRS);
   // Fail-open at this level too: a caller-supplied askFn (test DI, or a future
   // caller) that throws must drop only its own edge, never the whole run —
   // askPair() already guards the real jev-assist path with its own try/catch,
   // but that guarantee should hold for ANY askFn, not just the default one.
+  // Output id per finding: the plain id when unique in the input, else
+  // id@round<N> so two rounds' findings never collapse into one id.
+  const idCount = new Map();
+  for (const f of list) idCount.set(String(f.id), (idCount.get(String(f.id)) || 0) + 1);
+  const label = (f) => (idCount.get(String(f.id)) > 1 ? String(f.id) + '@round' + (f.round != null ? String(f.round) : '-') : f.id);
   const edgeResults = await pool(pairs, CONCURRENCY, async ([a, b]) => {
     try {
-      return await askFn(a, b, o);
+      const r = await askFn(a, b, o);
+      return r ? { a: label(a), b: label(b), confidence: r.confidence } : null;
     } catch (_) {
       return null;
     }
   });
   const edges = edgeResults.filter(Boolean);
-  const allIds = findings.map((f) => f.id);
+  const allIds = list.map(label);
   const groups = groupPairs(edges, allIds);
   return { groups };
 }
@@ -256,6 +302,7 @@ async function main() {
 
 module.exports = {
   buildPairs,
+  uniqueFindings,
   groupPairs,
   makeUnionFind,
   dedupe,
