@@ -26,14 +26,24 @@
 //                // fallback scan of ~/.claude/settings.json's
 //                // pluginConfigs["anti-hall"].options (other processes)
 //   advanced,    // true = hidden from the default `show` table (use --all)
-//   locked,      // true = SAFETY key: settings.js set/reset need --confirmed
-//                // (0.108.4) — without it nothing changes and a one-line
-//                // factual warning (built from `safetyNote`) is returned
-//                // instead; normal precedence (env > file > /config > legacy
-//                // > default) applies once confirmed. The confirmation is
-//                // the protection, not a refusal.
-//   safetyNote,  // locked only: one plain sentence — "what this normally
-//                // protects" — used to build the confirmation warning
+//   locked,      // true = SAFETY key: settings.js set() needs --confirmed
+//                // (0.108.4) ONLY when the new value is the RISKY direction
+//                // (see safetyDirection) — without it nothing changes and a
+//                // one-line factual warning (built from `safetyNote`) is
+//                // returned instead; normal precedence (env > file > /config
+//                // > legacy > default) applies once confirmed. reset() never
+//                // needs confirmation — removing an override is always the
+//                // safe direction. The confirmation is the protection, not
+//                // a refusal.
+//   safetyDirection, // locked only: which new value is RISKY —
+//                // 'off' (default when omitted) = risky when set to false
+//                //   (turning a guard off); 'on' = risky when set to true
+//                //   (turning a bypass on); 'add' = risky when the new csv
+//                //   value adds a token the current value doesn't have
+//                //   (widening an allow-list).
+//   safetyNote,  // locked only: one plain sentence stating the CONSEQUENCE
+//                // of the risky change — "what stops happening" (off/on) or
+//                // what becomes possible (add) — used to build the warning
 //   description,
 // }
 //
@@ -70,10 +80,10 @@ const SECTIONS = [
       { key: 'outputVerifyGuard', type: 'boolean', pluginOption: 'guards_output_verify_guard', default: true, env: 'ANTIHALL_OUTPUT_VERIFY_GUARD', description: 'Output-verification guard (blocks unverified completion claims). [verified: hooks/output-verify-guard.js:198 — default on, =off disables]' },
       { key: 'failureRootCauseNudge', type: 'boolean', pluginOption: 'guards_failure_root_cause_nudge', default: true, env: 'ANTIHALL_FAILURE_ROOT_CAUSE_NUDGE', description: 'Nudge toward root-cause analysis after a failure. [verified: hooks/failure-root-cause-nudge.js:49 — default on, =off disables]' },
       { key: 'repoSelfDrift', type: 'boolean', pluginOption: 'guards_repo_self_drift', default: true, env: 'ANTIHALL_REPO_SELF_DRIFT', description: "anti-hall's own repo-drift self-check hook. [verified: hooks/repo-self-drift.js:159 — default on, =off disables]" },
-      { key: 'stashGuard', type: 'boolean', pluginOption: 'guards_stash_guard', default: false, env: 'ANTIHALL_STASH_GUARD', locked: true, safetyNote: 'it blocks git stash commands that could silently drop uncommitted work', description: 'SAFETY (confirm to change — see settings.js set/reset). Arm the git-stash guard in command-guard: block mutating `git stash` (also armed per-repo via .anti-hall/protected-stashes). [verified: hooks/command-guard.js:1333 — default off, =1 arms]' },
+      { key: 'stashGuard', type: 'boolean', pluginOption: 'guards_stash_guard', default: false, env: 'ANTIHALL_STASH_GUARD', locked: true, safetyDirection: 'off', safetyNote: 'git stash commands that can silently drop uncommitted work will no longer be blocked', description: 'SAFETY (confirm to change — see settings.js set/reset). Arm the git-stash guard in command-guard: block mutating `git stash` (also armed per-repo via .anti-hall/protected-stashes). [verified: hooks/command-guard.js:1333 — default off, =1 arms]' },
       { key: 'emitDedupe', type: 'boolean', pluginOption: 'guards_emit_dedupe', default: true, env: 'ANTIHALL_EMIT_DEDUPE', description: 'Deduplicate repeated hook-emit output. [verified: hooks/lib/emit-dedupe.js:129 — default on, =0 disables]' },
-      { key: 'editGuardAllow', type: 'csv', default: '', env: 'ANTIHALL_EDIT_GUARD_ALLOW', pluginOption: 'guards_edit_guard_allow', locked: true, advanced: true, safetyNote: 'it controls which extra files are allowed to bypass edit-guard’s protection', description: 'SAFETY (confirm to change — see settings.js set/reset). Extra allowed file globs for edit-guard (comma/colon separated). [verified: hooks/edit-guard.js — no built-in default, empty means none]' },
-      { key: 'allowSubagentMailbox', type: 'boolean', default: false, env: 'ANTIHALL_ALLOW_SUBAGENT_MAILBOX', pluginOption: 'guards_allow_subagent_mailbox', locked: true, advanced: true, safetyNote: 'it allows a one-off bypass of the subagent-mailbox safety check', description: 'SAFETY (confirm to change — see settings.js set/reset). One-off allow for the subagent-mailbox command pattern. [verified: hooks/command-guard.js:1298 — default off, =1 allows]' },
+      { key: 'editGuardAllow', type: 'csv', default: '', env: 'ANTIHALL_EDIT_GUARD_ALLOW', pluginOption: 'guards_edit_guard_allow', locked: true, advanced: true, safetyDirection: 'add', safetyNote: 'those files can be edited without edit-guard\'s protection', description: 'SAFETY (confirm to change — see settings.js set/reset). Extra allowed file globs for edit-guard (comma/colon separated). [verified: hooks/edit-guard.js — no built-in default, empty means none]' },
+      { key: 'allowSubagentMailbox', type: 'boolean', default: false, env: 'ANTIHALL_ALLOW_SUBAGENT_MAILBOX', pluginOption: 'guards_allow_subagent_mailbox', locked: true, advanced: true, safetyDirection: 'on', safetyNote: 'subagents can read/ack the Primary\'s mailbox, which is normally blocked', description: 'SAFETY (confirm to change — see settings.js set/reset). One-off allow for the subagent-mailbox command pattern. [verified: hooks/command-guard.js:1298 — default off, =1 allows]' },
       { key: 'reaperMatch', type: 'string', default: '', env: 'ANTIHALL_REAPER_MATCH', advanced: true, description: 'Extra process-name pattern for the MCP session-end reaper. [verified: hooks/session-end-mcp-reaper.js — no built-in default, empty means none]' },
       { key: 'reaperExclude', type: 'string', default: '', env: 'ANTIHALL_REAPER_EXCLUDE', advanced: true, description: 'Excludes matching processes from the MCP reaper. [verified: hooks/session-end-mcp-reaper.js — no built-in default, empty means none]' },
       { key: 'tasklistWorkThreshold', type: 'number', min: 1, default: 3, env: 'ANTIHALL_TASKLIST_WORK_THRESHOLD', advanced: true, description: 'Minimum work items before tasklist-guard fires. [verified: hooks/tasklist-guard.js:45 DEFAULT_WORK_THRESHOLD = 3]' },
@@ -94,10 +104,10 @@ const SECTIONS = [
     label: 'Safety Guards',
     description: 'HUMAN-ONLY switches for the safety-critical guards (force-push / AI self-credit / heavy-command and edit delegation / runaway spawns). Change them yourself in /config (anti-hall rows) or via env; `settings.js set/reset` refuses them and a value in ~/.anti-hall/settings.json is ignored. Off = the guard\'s core check no-ops; the per-guard skip.json escape hatch is unchanged.',
     settings: [
-      { key: 'gitGuard', type: 'boolean', default: true, env: 'ANTIHALL_GIT_GUARD', pluginOption: 'safety_git_guard', locked: true, safetyNote: 'it stops force-pushes and AI credit lines in commits', description: 'git-guard: block force-push and AI self-credit in commits and gh pr/issue/release bodies.' },
-      { key: 'commandGuard', type: 'boolean', default: true, env: 'ANTIHALL_COMMAND_GUARD', pluginOption: 'safety_command_guard', locked: true, safetyNote: 'it makes the coordinator delegate heavy commands (builds, tests, deploys, pushes) instead of running them directly', description: 'command-guard core: make the coordinator delegate heavy commands (build/test/deploy/push). Its data-safety sub-guards (DevSwarm read/send/mailbox, armed stash guard) stay on.' },
-      { key: 'editGuard', type: 'boolean', default: true, env: 'ANTIHALL_EDIT_GUARD', pluginOption: 'safety_edit_guard', locked: true, safetyNote: 'it stops edits to protected files like plugin config and secrets', description: 'edit-guard core: make the coordinator delegate file edits outside its own plan/state/handover files.' },
-      { key: 'swarmGuard', type: 'boolean', default: true, env: 'ANTIHALL_SWARM_GUARD', pluginOption: 'safety_swarm_guard', locked: true, safetyNote: 'it stops runaway agent spawning that can overwhelm the system', description: 'swarm-guard: block agent spawns past the spawn-rate cap or under critical memory pressure.' },
+      { key: 'gitGuard', type: 'boolean', default: true, env: 'ANTIHALL_GIT_GUARD', pluginOption: 'safety_git_guard', locked: true, safetyDirection: 'off', safetyNote: 'force-pushes and AI credit lines in commits will no longer be stopped', description: 'git-guard: block force-push and AI self-credit in commits and gh pr/issue/release bodies.' },
+      { key: 'commandGuard', type: 'boolean', default: true, env: 'ANTIHALL_COMMAND_GUARD', pluginOption: 'safety_command_guard', locked: true, safetyDirection: 'off', safetyNote: 'heavy commands (builds, tests, deploys, pushes) will run directly in the main session instead of being handed to a helper', description: 'command-guard core: make the coordinator delegate heavy commands (build/test/deploy/push). Its data-safety sub-guards (DevSwarm read/send/mailbox, armed stash guard) stay on.' },
+      { key: 'editGuard', type: 'boolean', default: true, env: 'ANTIHALL_EDIT_GUARD', pluginOption: 'safety_edit_guard', locked: true, safetyDirection: 'off', safetyNote: 'edits to protected files like plugin config and secrets will no longer be stopped', description: 'edit-guard core: make the coordinator delegate file edits outside its own plan/state/handover files.' },
+      { key: 'swarmGuard', type: 'boolean', default: true, env: 'ANTIHALL_SWARM_GUARD', pluginOption: 'safety_swarm_guard', locked: true, safetyDirection: 'off', safetyNote: 'nothing will stop runaway agent spawning that can overload the machine', description: 'swarm-guard: block agent spawns past the spawn-rate cap or under critical memory pressure.' },
     ],
   },
   {

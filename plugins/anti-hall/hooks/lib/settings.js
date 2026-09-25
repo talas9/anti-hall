@@ -279,21 +279,53 @@ function readLegacy(entry, opts) {
   }
 }
 
-// CONFIRMATION GATE (0.108.4, revised). A `locked` schema entry is a safety
-// guard switch. It reads through the SAME precedence chain as every other
-// setting (env > settings.json > /config > legacy > default) — there is no
-// special-cased ignore rule for it. What is gated is WRITING it: set()/reset()
-// need `opts.confirmed` (the CLI's `--confirmed` flag). Without it, nothing
-// changes on disk and a short, factual, human-readable warning is returned
-// instead — built from the entry's own `safetyNote` — so the caller can show
-// it to a human and ask before re-running with --confirmed. The confirmation
-// IS the protection now; there is no separate guard to satisfy.
+// CONFIRMATION GATE (0.108.4, revised again). A `locked` schema entry is a
+// safety guard switch. It reads through the SAME precedence chain as every
+// other setting (env > settings.json > /config > legacy > default) — there is
+// no special-cased ignore rule for it. What is gated is WRITING it in the
+// RISKY direction: set() needs `opts.confirmed` (the CLI's `--confirmed`
+// flag) only when the new value is the one that WEAKENS protection —
+// `entry.safetyDirection` says which:
+//   'off' — risky when the new value is `false` (turning the guard off);
+//           turning it back ON needs no confirmation. Default for a locked
+//           boolean entry when `safetyDirection` is omitted.
+//   'on'  — risky when the new value is `true` (turning a bypass ON);
+//           turning it off needs no confirmation.
+//   'add' — risky when the new csv value ADDS at least one token not already
+//           in the current effective value (widening an allow-list); a
+//           removal-only or no-op change needs no confirmation.
+// reset() always REMOVES an override (or restores the tightest value) and so
+// never needs confirmation — "removing an allowance" is the safe direction.
+// Without confirmation, set() writes nothing and returns a short, factual,
+// human-readable warning instead — built from the entry's own `safetyNote`
+// (the plain-language CONSEQUENCE of the change) — so the caller can show it
+// to a human and ask before re-running with --confirmed.
 function guardNameFor(entry) {
   return String(entry.key).replace(/([A-Z])/g, '-$1').toLowerCase();
 }
-function safetyWarning(entry) {
-  const note = entry.safetyNote || 'it is a safety guard';
-  return 'Turning off ' + guardNameFor(entry) + ' means ' + note + '. Ask the user to confirm, then re-run with --confirmed.';
+function csvTokens(v) {
+  return String(v || '').split(/[,:]/).map((s) => s.trim()).filter(Boolean);
+}
+function addedTokens(newValue, currentValue) {
+  const cur = new Set(csvTokens(currentValue));
+  return csvTokens(newValue).filter((t) => !cur.has(t));
+}
+function isRiskyChange(entry, value, currentValue) {
+  const dir = entry.safetyDirection || 'off';
+  if (dir === 'on') return value === true;
+  if (dir === 'add') return addedTokens(value, currentValue).length > 0;
+  return value === false;
+}
+function safetyWarning(entry, value, currentValue) {
+  const note = entry.safetyNote || 'this weakens a safety guard';
+  const dir = entry.safetyDirection || 'off';
+  if (dir === 'add') {
+    const added = addedTokens(value, currentValue);
+    const list = added.length ? added.join(', ') : String(value);
+    return 'Adding ' + list + ' to edit-guard\'s allow list means ' + note + '. Ask the user to confirm, then re-run with --confirmed.';
+  }
+  const verb = dir === 'on' ? 'on' : 'off';
+  return 'Turning ' + verb + ' ' + guardNameFor(entry) + ' means ' + note + '. Ask the user to confirm, then re-run with --confirmed.';
 }
 
 // enabled(section, key, opts?) -> false ONLY when an on/off switch resolves to
@@ -423,17 +455,24 @@ function withSettingsLock(opts, fn) {
 // set(section, key, value, opts?) -> {ok, error?}. Validates against the
 // schema, then does a read-modify-write of the WHOLE file (preserving every
 // other section/key untouched) with an atomic tmp+rename write. A `locked`
-// (safety) key additionally needs `opts.confirmed` — without it nothing is
-// written and the call returns {ok:false, needsConfirmation:true, warning}.
+// (safety) key additionally needs `opts.confirmed` when the new value is the
+// RISKY direction (see isRiskyChange/safetyWarning above) — without it
+// nothing is written and the call returns {ok:false, needsConfirmation:true,
+// warning}. The safe direction (re-arming a guard, narrowing an allow-list)
+// never needs confirmation.
 function set(section, key, value, opts) {
   const entry = schema.findSetting(section, key);
   if (!entry) return { ok: false, error: 'unknown setting: ' + section + '.' + key };
-  if (entry.locked && !(opts && opts.confirmed)) {
-    return { ok: false, needsConfirmation: true, warning: safetyWarning(entry) };
-  }
 
   const v = validate(entry, value);
   if (!v.ok) return { ok: false, error: v.error };
+
+  if (entry.locked) {
+    const currentValue = get(section, key, undefined, opts);
+    if (isRiskyChange(entry, v.value, currentValue) && !(opts && opts.confirmed)) {
+      return { ok: false, needsConfirmation: true, warning: safetyWarning(entry, v.value, currentValue) };
+    }
+  }
 
   return withSettingsLock(opts, () => {
   const backedUpCorruptTo = backupCorruptIfNeeded(opts);
@@ -457,14 +496,12 @@ function set(section, key, value, opts) {
 
 // reset(section, key, opts?) -> {ok, error?}. Removes the settings.json
 // override for one key (so /config or legacy/default takes over again).
-// A no-op success when the key was never overridden. A `locked` (safety) key
-// needs `opts.confirmed` the same as set() — see there.
+// A no-op success when the key was never overridden. Never needs
+// `opts.confirmed`, even for a `locked` (safety) key — removing an override
+// is always the safe direction (see isRiskyChange above).
 function reset(section, key, opts) {
   const entry = schema.findSetting(section, key);
   if (!entry) return { ok: false, error: 'unknown setting: ' + section + '.' + key };
-  if (entry.locked && !(opts && opts.confirmed)) {
-    return { ok: false, needsConfirmation: true, warning: safetyWarning(entry) };
-  }
 
   return withSettingsLock(opts, () => {
   const backedUpCorruptTo = backupCorruptIfNeeded(opts);

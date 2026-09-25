@@ -103,6 +103,34 @@ const LOCKED_KEYS = [
   'guards.stashGuard', 'guards.editGuardAllow', 'guards.allowSubagentMailbox',
 ];
 
+// Exact warning text per key (owner-specified wording, 2026-09-25 revision):
+// the template states the CONSEQUENCE of the risky change, not a generic
+// "it is a safety guard" line, and 'guards.editGuardAllow' names the actual
+// path(s) being added (here: 'foo', the value RISKY_VALUE_OF uses below).
+const EXPECTED_WARNING = {
+  'safety.gitGuard': 'Turning off git-guard means force-pushes and AI credit lines in commits will no longer be stopped. Ask the user to confirm, then re-run with --confirmed.',
+  'safety.commandGuard': 'Turning off command-guard means heavy commands (builds, tests, deploys, pushes) will run directly in the main session instead of being handed to a helper. Ask the user to confirm, then re-run with --confirmed.',
+  'safety.editGuard': 'Turning off edit-guard means edits to protected files like plugin config and secrets will no longer be stopped. Ask the user to confirm, then re-run with --confirmed.',
+  'safety.swarmGuard': 'Turning off swarm-guard means nothing will stop runaway agent spawning that can overload the machine. Ask the user to confirm, then re-run with --confirmed.',
+  'guards.stashGuard': 'Turning off stash-guard means git stash commands that can silently drop uncommitted work will no longer be blocked. Ask the user to confirm, then re-run with --confirmed.',
+  'guards.editGuardAllow': 'Adding foo to edit-guard\'s allow list means those files can be edited without edit-guard\'s protection. Ask the user to confirm, then re-run with --confirmed.',
+  'guards.allowSubagentMailbox': 'Turning on allow-subagent-mailbox means subagents can read/ack the Primary\'s mailbox, which is normally blocked. Ask the user to confirm, then re-run with --confirmed.',
+};
+// riskyValueFor/safeValueFor: the value in each direction, per entry.safetyDirection
+// ('off' risky=false/safe=true; 'on' risky=true/safe=false; 'add' risky='foo'/safe='').
+function riskyValueFor(e) {
+  const dir = e.safetyDirection || 'off';
+  if (dir === 'on') return true;
+  if (dir === 'add') return 'foo';
+  return false;
+}
+function safeValueFor(e) {
+  const dir = e.safetyDirection || 'off';
+  if (dir === 'on') return false;
+  if (dir === 'add') return '';
+  return true;
+}
+
 function split(k) { const i = k.indexOf('.'); return [k.slice(0, i), k.slice(i + 1)]; }
 function hookScripts(rel) {
   const j = JSON.parse(fs.readFileSync(path.join(PLUGIN, rel), 'utf8'));
@@ -349,75 +377,109 @@ test('SAFETY: every locked key is exactly the expected set and is a /config row'
   }
 });
 
-test('SAFETY: settings.set / settings.reset need --confirmed for every locked key; without it, nothing changes and a warning comes back', () => {
-  const home = tmpHome();
-  try {
-    for (const k of LOCKED_KEYS) {
-      const [sec, key] = split(k);
-      const e = schema.findSetting(sec, key);
-      const v = e.type === 'boolean' ? String(!e.default) : '**';
-      const s = settings.set(sec, key, v, { home });
-      assert.strictEqual(s.ok, false, k);
-      assert.strictEqual(s.needsConfirmation, true, k);
-      assert.strictEqual(s.warning, settings.safetyWarning(e), k);
-      assert.match(s.warning, /^Turning off /, k);
-      assert.match(s.warning, /Ask the user to confirm, then re-run with --confirmed\.$/, k);
-
-      const r = settings.reset(sec, key, { home });
-      assert.strictEqual(r.ok, false, k);
-      assert.strictEqual(r.needsConfirmation, true, k);
-      assert.strictEqual(r.warning, settings.safetyWarning(e), k);
-    }
-    assert.ok(!fs.existsSync(settings.path({ home })), 'an unconfirmed write must not create settings.json');
-  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+test('SAFETY: the exact warning text (owner-specified wording) for every locked key, in the risky direction only', () => {
+  for (const k of LOCKED_KEYS) {
+    const [sec, key] = split(k);
+    const e = schema.findSetting(sec, key);
+    const warning = settings.safetyWarning(e, riskyValueFor(e), e.default);
+    assert.strictEqual(warning, EXPECTED_WARNING[k], k);
+  }
 });
 
-test('SAFETY: settings.set / settings.reset DO change a locked key once opts.confirmed is true', () => {
+test('SAFETY: settings.set needs --confirmed ONLY for the risky direction; the safe direction (re-arming a guard, narrowing an allow-list, turning a bypass off) needs no confirmation', () => {
   const home = tmpHome();
   try {
     for (const k of LOCKED_KEYS) {
       const [sec, key] = split(k);
       const e = schema.findSetting(sec, key);
-      const v = e.type === 'boolean' ? !e.default : '**';
-      const s = settings.set(sec, key, v, { home, confirmed: true });
-      assert.strictEqual(s.ok, true, k + ': ' + JSON.stringify(s));
-      assert.strictEqual(settings.get(sec, key, undefined, { home, env: {} }), v, k);
+      const risky = riskyValueFor(e);
+      const safe = safeValueFor(e);
 
-      const r = settings.reset(sec, key, { home, confirmed: true });
+      // risky direction, unconfirmed: blocked, exact warning text, nothing written
+      const blocked = settings.set(sec, key, risky, { home });
+      assert.strictEqual(blocked.ok, false, k);
+      assert.strictEqual(blocked.needsConfirmation, true, k);
+      assert.strictEqual(blocked.warning, EXPECTED_WARNING[k], k);
+
+      // safe direction, unconfirmed: applies immediately, no warning
+      const safeSet = settings.set(sec, key, safe, { home });
+      assert.strictEqual(safeSet.ok, true, k + ': ' + JSON.stringify(safeSet));
+      assert.strictEqual(safeSet.needsConfirmation, undefined, k);
+      assert.strictEqual(settings.get(sec, key, undefined, { home, env: {} }), safe === '' ? '' : safe, k);
+
+      // risky direction, confirmed: applies
+      const riskySet = settings.set(sec, key, risky, { home, confirmed: true });
+      assert.strictEqual(riskySet.ok, true, k + ': ' + JSON.stringify(riskySet));
+      assert.strictEqual(settings.get(sec, key, undefined, { home, env: {} }), risky, k);
+
+      // reset never needs confirmation, regardless of current (risky) state
+      const r = settings.reset(sec, key, { home });
       assert.strictEqual(r.ok, true, k);
+      assert.strictEqual(r.needsConfirmation, undefined, k);
       assert.strictEqual(settings.source(sec, key, { home, env: {} }), 'default', k + ': reset must clear the override');
     }
   } finally { fs.rmSync(home, { recursive: true, force: true }); }
 });
 
-test('SAFETY: the CLI `set`/`reset` need --confirmed for locked keys (exit 1, warning text + --json); --confirmed applies it', () => {
+test('SAFETY: guards.editGuardAllow is risky only when ADDING a path not already present; removal-only and no-op changes need no confirmation', () => {
+  const home = tmpHome();
+  try {
+    // starting from empty: adding is risky
+    const add1 = settings.set('guards', 'editGuardAllow', 'src/**', { home });
+    assert.strictEqual(add1.ok, false);
+    assert.match(add1.warning, /^Adding src\/\*\* to edit-guard's allow list means /);
+
+    const add1Confirmed = settings.set('guards', 'editGuardAllow', 'src/**', { home, confirmed: true });
+    assert.strictEqual(add1Confirmed.ok, true);
+
+    // widening an existing list (adding a second path) is risky again
+    const add2 = settings.set('guards', 'editGuardAllow', 'src/**,dist/**', { home });
+    assert.strictEqual(add2.ok, false);
+    assert.match(add2.warning, /^Adding dist\/\*\* to edit-guard's allow list means /, 'only the NEW token is named');
+
+    // re-setting to the SAME value adds nothing -> safe, no confirmation
+    const same = settings.set('guards', 'editGuardAllow', 'src/**', { home });
+    assert.strictEqual(same.ok, true, JSON.stringify(same));
+
+    // narrowing (removing a path) is safe, no confirmation
+    settings.set('guards', 'editGuardAllow', 'src/**,dist/**', { home, confirmed: true });
+    const narrow = settings.set('guards', 'editGuardAllow', 'src/**', { home });
+    assert.strictEqual(narrow.ok, true, JSON.stringify(narrow));
+
+    // clearing entirely is safe, no confirmation
+    const clear = settings.set('guards', 'editGuardAllow', '', { home });
+    assert.strictEqual(clear.ok, true, JSON.stringify(clear));
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+test('SAFETY: the CLI `set` needs --confirmed for the risky direction (exit 1, warning text + --json); the safe direction and `reset` never do', () => {
   const home = tmpHome();
   try {
     const env = { PATH: process.env.PATH, HOME: home, USERPROFILE: home };
     for (const k of LOCKED_KEYS) {
       const [sec, key] = split(k);
       const e = schema.findSetting(sec, key);
+      const risky = String(riskyValueFor(e));
+      const safe = String(safeValueFor(e));
 
-      const noConfirm = spawnSync(process.execPath, [CLI, 'set', k, 'false'], { env, encoding: 'utf8' });
+      const noConfirm = spawnSync(process.execPath, [CLI, 'set', k, risky], { env, encoding: 'utf8' });
       assert.strictEqual(noConfirm.status, 1, k);
-      assert.strictEqual(noConfirm.stdout.trim(), settings.safetyWarning(e), k);
+      assert.strictEqual(noConfirm.stdout.trim(), EXPECTED_WARNING[k], k);
 
-      const noConfirmJson = spawnSync(process.execPath, [CLI, 'set', k, 'false', '--json'], { env, encoding: 'utf8' });
+      const noConfirmJson = spawnSync(process.execPath, [CLI, 'set', k, risky, '--json'], { env, encoding: 'utf8' });
       assert.strictEqual(noConfirmJson.status, 1, k);
-      const parsed = JSON.parse(noConfirmJson.stdout);
-      assert.deepStrictEqual(parsed, { ok: false, needsConfirmation: true, warning: settings.safetyWarning(e) }, k);
+      assert.deepStrictEqual(JSON.parse(noConfirmJson.stdout), { ok: false, needsConfirmation: true, warning: EXPECTED_WARNING[k] }, k);
 
-      const confirmed = spawnSync(process.execPath, [CLI, 'set', k, 'false', '--confirmed', '--json'], { env, encoding: 'utf8' });
+      const safeApply = spawnSync(process.execPath, [CLI, 'set', k, safe, '--json'], { env, encoding: 'utf8' });
+      assert.strictEqual(safeApply.status, 0, k + ' (safe direction, no --confirmed): ' + safeApply.stdout + safeApply.stderr);
+
+      const confirmed = spawnSync(process.execPath, [CLI, 'set', k, risky, '--confirmed', '--json'], { env, encoding: 'utf8' });
       assert.strictEqual(confirmed.status, 0, k + ': ' + confirmed.stdout + confirmed.stderr);
-      const expected = e.type === 'boolean' ? false : 'false';
+      const expected = e.type === 'boolean' ? riskyValueFor(e) : risky;
       assert.strictEqual(JSON.parse(confirmed.stdout).value, expected, k);
 
       const reset = spawnSync(process.execPath, [CLI, 'reset', k], { env, encoding: 'utf8' });
-      assert.strictEqual(reset.status, 1, k);
-      assert.strictEqual(reset.stdout.trim(), settings.safetyWarning(e), k);
-
-      const resetConfirmed = spawnSync(process.execPath, [CLI, 'reset', k, '--confirmed'], { env, encoding: 'utf8' });
-      assert.strictEqual(resetConfirmed.status, 0, k);
+      assert.strictEqual(reset.status, 0, k + ' (reset never needs --confirmed): ' + reset.stdout + reset.stderr);
     }
   } finally { fs.rmSync(home, { recursive: true, force: true }); }
 });
