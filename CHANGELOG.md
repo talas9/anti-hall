@@ -58,8 +58,8 @@ the update.
   hivecontrol's raw branch-name default could clobber an already-confirmed, different
   title, giving a "sometimes branch, sometimes brief" spawn-title race — fixed. The
   roster/per-turn "finish" column now shows the actual done-rule state in plain words
-  (`done ✓ merged` / `done, not merged` / `working`) instead of a raw gate-count
-  ratio. Spawn now skips the redundant origin fetch when the remote-tracking ref is
+  (`done ✓ merged` / `done, merge unverified` / `done, not merged` / `working`) instead
+  of a raw gate-count ratio. Spawn now skips the redundant origin fetch when the remote-tracking ref is
   already fresh, fetches submodule updates on demand only when it does fetch, and puts a
   timeout on the underlying `hivecontrol create` call, reporting per-phase timings. It
   also now detects and reports (never auto-repairs) a submodule worktree that failed to
@@ -176,18 +176,21 @@ the update.
   handover-resume could never find what precompact-snapshot had just written. All of them
   now resolve through the repo's git toplevel first (a submodule and a DevSwarm child
   worktree each keep their own state), falling back to the raw cwd outside a git repo.
-- **`mcp-reaper` can now also reap abandoned Codex `app-server-broker.mjs` helpers.**
-  These are spawned detached and unref'd on purpose, so PPID 1 is normal for a live one —
-  not evidence of death like it is for the reaper's ordinary MCP-server matcher — so a
-  helper is only selected when its `--cwd` directory no longer exists, or no live
-  claude/codex process's cwd is equal to, an ancestor of, or a descendant of it (so a
-  session at a workspace root still owns a broker whose `--cwd` is inside a submodule
-  beneath it), and only once it's older than the new minimum age. Matched by an exact
-  script-name + codex-plugin-path signature, kept fully separate from the reaper's
-  generic MCP parent-death matcher so that invariant never loosens. Opt-in, and only takes
-  effect when the companion reaper is installed and running.
-- **New settings:** `guards.reaperCodexBroker` (boolean, default `true`) and
-  `guards.reaperCodexBrokerMinAgeS` (seconds, default `1800`), both also in `/config`.
+- **`mcp-reaper` can now also detect abandoned Codex `app-server-broker.mjs` helpers —
+  report-only, never killed.** These are spawned detached and unref'd on purpose, so
+  PPID 1 is normal for a live one — not evidence of death like it is for the reaper's
+  ordinary MCP-server matcher — so a helper is only listed as abandoned once its `--cwd`
+  directory no longer exists, or no live claude/codex process's cwd is equal to, an
+  ancestor of, or a descendant of it (realpath'd, and excluding the broker's own child
+  processes; so a session at a workspace root still owns a broker whose `--cwd` is inside
+  a submodule beneath it), and only once it's older than the new minimum age. Matched by
+  an exact script-name + codex-plugin-path signature, kept fully separate from the
+  reaper's generic MCP parent-death matcher so that invariant never loosens. Detected
+  brokers are listed in the reaper log only — the reaper never terminates them. Opt-in,
+  and only takes effect when the companion reaper is installed and running.
+- **New settings:** `guards.reaperCodexBroker` (boolean, default `true`; report abandoned
+  brokers) and `guards.reaperCodexBrokerMinAgeS` (seconds, default `1800`), both also in
+  `/config`.
 - **DevSwarm's wake-watch/doctor re-arm could name a path that doesn't exist on disk.**
   The version check that picks the "newest" build took the max across the installed
   plugin list, the newest cache directory, and the marketplace clone's own
@@ -217,6 +220,26 @@ the update.
   same underlying data; the table now also prints the sample size inline. The same
   blocker-label read-back fix noted above is included here too, proven with a fixture
   repro (10 sweeps: label once, then null the other nine before the fix).
+- **The DevSwarm ingest daemon now keeps `hivecontrol`'s error output when a monitor call
+  fails or is killed.** The daemon used to run each monitor call with stderr discarded
+  (`stdio: [..., 'ignore']`), so a non-zero exit or an external signal (not the daemon's
+  own timeout kill, which already had its own stable message) carried no diagnostic text
+  at all. Stderr is now piped and kept as a bounded last-2 KB tail, folded into the
+  resolved error message on a non-zero exit or a signal with no prior spawn error; the
+  existing ok/fail classification is unchanged, only the missing diagnostic text.
+- **The progress/history guard now names the absolute path in its block message.** The
+  Stop-hook guard reads and writes the root-joined absolute `.anti-hall/progress|history`
+  path, but its block message named the bare relative path — from a repo subdirectory
+  cwd, following that message literally wrote into the subdirectory instead, a location
+  the guard never checks. The message now names the absolute path.
+- **Repo-root resolution no longer climbs to a parent repo when the session cwd was
+  deleted, and no longer resolves to the home folder when `~` is itself a git repo.** A
+  cwd that no longer exists (for example a removed nested worktree) used to climb to a
+  surviving ancestor repo and write that session's state there; it now falls back to the
+  raw, nonexistent cwd like any other unresolvable case. Separately, a dotfiles repo
+  checked out at `$HOME` could resolve its toplevel to the home directory itself, which
+  would redirect every write into anti-hall's own global `~/.anti-hall/` store; that case
+  now also falls back to the raw cwd.
 
 ## 0.108.5
 
