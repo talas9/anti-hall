@@ -50,6 +50,16 @@ the update.
   its resolved canonical alias-family directory too. Idempotent, fail-open,
   no-delete, runs from `doctor --repair` and `update` like every other
   default migration.
+- **The same cross-alias bug also hit `applyReadAckOps`'s `'nd'` op branch
+  (the NDJSON descriptor channel's own cursor, a third namespace alongside
+  the `'own'`/`'sibling'` store ops)**: it always committed against the outer
+  `ack-primary` caller's id instead of `op.partition` (already recorded at
+  read time by the NDJSON ackOps push site), so a cross-alias ack-primary
+  filed the nd ack under the wrong alias's cursor. Fixed to mirror the
+  `'own'` branch (`ndPartitionId = op.partition != null ? op.partition :
+  id`); falls back to `id` for a legacy op with no `partition` recorded.
+  `meta.callerId` keeps the real caller for audit/logging — only
+  `commitNdAck`'s partition-key argument changed.
 - **Default ceiling removed: `autoHandover.maxTokens` now defaults to `0`
   (off) — the trigger fires at 85% of the session's REAL context window, not
   a fixed 170000-token assumption.** `autoHandover.pct` (default 85%) is

@@ -1807,12 +1807,25 @@ function applyReadAckOps(s, home, id, reader, ops, o) {
         failures.push({ partitionId: op.partition, channel: 'sibling-store-cursor', error: String((e && e.message) || e) });
       }
     } else if (op.k === 'nd') {
+      // Mirror of the 'own' fix above: op.partition (not the outer `id`) is
+      // the partition this op was actually computed against AT READ TIME
+      // (the NDJSON ackOps push above sets it to `String(id)` there). The
+      // ack-primary CALLER's `id` can legitimately be a DIFFERENT alias in
+      // the same identity family — using the outer `id` here would commit
+      // the ack against the WRONG partition's nd cursor whenever they
+      // differ. Falls back to `id` only for a legacy op with no `partition`
+      // recorded. `meta.callerId` (set above from the real outer `id`) is
+      // kept as the real caller for audit/logging only — commitNdAck's
+      // `id` positional argument is the reader_cursors partition KEY
+      // (readerCursors.ackFor's `partition:`), so it must be the
+      // read-time partition, not the caller.
+      const ndPartitionId = op.partition != null ? op.partition : id;
       try {
-        commitNdAck(s, home, id, reader, op.target, op.cursorPath, op.inboxPath, {
+        commitNdAck(s, home, ndPartitionId, reader, op.target, op.cursorPath, op.inboxPath, {
           callerId: id, verb: meta.verb, cwd: meta.cwd, repoKey: meta.repoKey,
           now: ctx && ctx.now, procTable: ctx && ctx.procTable,
         });
-      } catch (e) { failures.push({ partitionId: id, channel: 'ndjson-cursor', error: String((e && e.message) || e) }); }
+      } catch (e) { failures.push({ partitionId: ndPartitionId, channel: 'ndjson-cursor', error: String((e && e.message) || e) }); }
     }
   }
   try { store.deriveSummary(s, { home, env: ctx.env, now: ctx.now }); } catch (_) { /* projection refresh is best-effort */ }

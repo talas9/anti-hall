@@ -364,3 +364,94 @@ test('migration: a child on the anchor worktree is never reconciled against the 
     assert.equal(floorOf(f, CHILD), 0, 'the child\'s copy stays unread — the Primary acking its own copy says nothing about the child');
   } finally { rm(f.home); rm(f.repo); }
 });
+
+// ---- 0.108.2: the 'nd' ack op (NDJSON descriptor channel) cross-alias fix -----
+//
+// The 'own' branch of applyReadAckOps was fixed (P1 review) to ack against
+// op.partition (the partition the read op was actually computed against),
+// not the outer ack-primary caller's `id`, because a cross-alias ack-primary
+// (caller alias B acking a read done as alias A in the same identity family)
+// can legitimately differ. The 'nd' branch — the NDJSON descriptor channel's
+// OWN cursor (a third namespace alongside the store 'own'/'sibling' ops) —
+// had the exact same bug: it always used the outer `id` even though the
+// ackOps push site (the NDJSON union block) already recorded `partition:
+// String(id)` at read time. Fixed to mirror the 'own' branch.
+
+function ndFloorOf(f, id) { return withStore(f, (s) => readerCursors.floorOf(s, id, 'nd', { home: f.home })); }
+
+// f.PID's own NDJSON descriptor: registered via register-primary --inbox
+// <home>/primary-inbox.ndjson, cursor at <devswarm>/cursors/<PID>.json
+// (primaryCursorPath). Distinct from the UUID row's own NDJSON descriptor
+// (repo/.devswarm-temp/inbox.ndjson) set up by fixture() — two genuinely
+// separate NDJSON channels in the SAME identity family (same worktree).
+function seedPidNdjson(f, n) {
+  fs.writeFileSync(f.inboxPathPid, Array.from({ length: n },
+    (_, i) => JSON.stringify({ _h: 'native:nd' + i, message: 'nd-msg-' + i, createdAt: 2000 + i })).join('\n') + '\n');
+}
+
+test('nd op cross-alias ack-primary: read via alias A, ack via alias B in the same family — A\'s nd cursor advances, B\'s nd cursor row untouched', () => {
+  const f = fixture();
+  f.inboxPathPid = path.join(f.home, 'primary-inbox.ndjson');
+  const cursorPathPid = path.join(devswarmDir(f.home), 'cursors', f.PID + '.json');
+  try {
+    assert.equal(ndFloorOf(f, f.PID), 0, 'precondition: PID nd cursor starts at 0');
+    assert.equal(ndFloorOf(f, UUID), 0, 'precondition: UUID nd cursor starts at 0');
+
+    seedPidNdjson(f, 3);
+    // Read via alias A (f.PID): this is the descriptor whose OWN NDJSON
+    // channel just got 3 rows — read-primary's union block folds it in and
+    // pushes a `{k:'nd', partition: String(f.PID), ...}` ackOp.
+    const rd = cli.run(['inbox', 'read-primary', f.PID], f.ctx()).result;
+    assert.equal(rd.ok, true, JSON.stringify(rd));
+    const ndBodies = (rd.messages || []).map((m) => m.body || m.message || '');
+    assert.ok(['nd-msg-0', 'nd-msg-1', 'nd-msg-2'].every((b) => ndBodies.includes(b)),
+      'the 3 seeded NDJSON rows were delivered by the read: ' + JSON.stringify(ndBodies));
+    assert.ok(rd.readReceiptId, 'a read receipt was issued');
+
+    // Ack via alias B (UUID) — a DIFFERENT alias in the same identity family,
+    // not the alias that did the read.
+    const ack = cli.run(['inbox', 'ack-primary', UUID, '--receipt', rd.readReceiptId], f.ctx()).result;
+    assert.equal(ack.ok, true, JSON.stringify(ack));
+    assert.equal(ack.reason, undefined, 'not refused as receipt-owner-mismatch');
+
+    // THE FIX: A's (PID's) own nd cursor is what advances, not B's (UUID's).
+    assert.equal(ndFloorOf(f, f.PID), 3, 'A\'s (PID) nd cursor advances to cover the 3 delivered rows');
+    assert.equal(ndFloorOf(f, UUID), 0, 'B\'s (UUID) nd cursor row is untouched — it has its own, separate NDJSON descriptor');
+    assert.ok(fs.existsSync(cursorPathPid), 'A\'s nd cursor row was written to its own cursor file');
+
+    // The channel really drained: a second read of A delivers nothing new.
+    const rd2 = cli.run(['inbox', 'read-primary', f.PID], f.ctx()).result;
+    assert.equal(rd2.ok, true, JSON.stringify(rd2));
+    const ndBodies2 = (rd2.messages || []).map((m) => m.body || m.message || '');
+    assert.ok(!ndBodies2.some((b) => String(b).startsWith('nd-msg-')), 'the 3 nd rows are not redelivered after the cross-alias ack');
+  } finally { rm(f.home); rm(f.repo); }
+});
+
+test('nd op legacy (no partition recorded) still falls back to the outer ack-primary id', () => {
+  const f = fixture();
+  f.inboxPathPid = path.join(f.home, 'primary-inbox.ndjson');
+  try {
+    seedPidNdjson(f, 2);
+    assert.equal(ndFloorOf(f, f.PID), 0, 'precondition');
+
+    // Hand-craft a read receipt whose 'nd' op has NO `partition` field — the
+    // shape a receipt written before this fix (or by any future producer that
+    // omits it) would have. Same-alias ack (id === f.PID), so the `id`
+    // fallback in applyReadAckOps is the CORRECT partition either way — this
+    // pins that the fallback path still works, not that it is safe cross-alias.
+    const reader = cli.callerReaderKey(f.ctx());
+    const receiptId = 'r' + Date.now().toString(36) + 'legacynd01';
+    const dir = path.join(devswarmDir(f.home), 'read-receipts', f.PID);
+    fs.mkdirSync(dir, { recursive: true });
+    const cursorPathPid = path.join(devswarmDir(f.home), 'cursors', f.PID + '.json');
+    const body = {
+      id: f.PID, reader, createdAt: Date.now(), hashes: [],
+      ops: [{ k: 'nd', target: 2, cursorPath: cursorPathPid, inboxPath: f.inboxPathPid }],
+    };
+    fs.writeFileSync(path.join(dir, receiptId + '.json'), JSON.stringify(body));
+
+    const ack = cli.run(['inbox', 'ack-primary', f.PID, '--receipt', receiptId], f.ctx()).result;
+    assert.equal(ack.ok, true, JSON.stringify(ack));
+    assert.equal(ndFloorOf(f, f.PID), 2, 'the legacy no-partition op still commits against the outer ack-primary id');
+  } finally { rm(f.home); rm(f.repo); }
+});
