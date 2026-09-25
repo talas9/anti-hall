@@ -65,10 +65,17 @@ function writeHeartbeatVersion(home, id, version) {
 // Lays out ~/.claude/plugins/{installed_plugins.json, cache/anti-hall/anti-hall/<v>/}
 // under this fixture's isolated HOME so versionCheck.newestKnownAntiHallVersion
 // resolves deterministically instead of reading the real machine's registry.
+// Also seeds cache/anti-hall/anti-hall/<v>/scripts/devswarm.js — newestCliPath
+// (devswarm-version-check.js) now verifies the exact target FILE exists on disk
+// before handing out a `node <path>` command (P0 fix: never surface a path that
+// would crash the instant it runs), so the fixture must lay down a real file for
+// the "node <path>" branch of staleAntiHallMessage to be reachable at all.
 function layoutNewestVersion(home, version) {
   const pluginsRoot = path.join(home, '.claude', 'plugins');
   fs.mkdirSync(path.join(pluginsRoot, 'marketplaces', 'anti-hall'), { recursive: true });
-  fs.mkdirSync(path.join(pluginsRoot, 'cache', 'anti-hall', 'anti-hall', version), { recursive: true });
+  const versionDir = path.join(pluginsRoot, 'cache', 'anti-hall', 'anti-hall', version);
+  fs.mkdirSync(path.join(versionDir, 'scripts'), { recursive: true });
+  fs.writeFileSync(path.join(versionDir, 'scripts', 'devswarm.js'), '#!/usr/bin/env node\n', 'utf8');
   fs.writeFileSync(path.join(pluginsRoot, 'installed_plugins.json'),
     JSON.stringify({ version: 2, plugins: { 'anti-hall@anti-hall': [{ scope: 'user', version }] } }), 'utf8');
 }

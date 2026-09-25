@@ -358,7 +358,7 @@ test('MULTI-WORKSPACE: two workspaces in ONE shared summary each render independ
     const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
     assert.strictEqual(r.status, 0);
     const c = ctx(r);
-    // wsAlpha: archive-ready + 1/1 gates, per ITS OWN entry.
+    // wsAlpha: archive-ready + its own done-state, per ITS OWN entry.
     const archive = segment(c, 'DEVSWARM ARCHIVE-READY');
     assert.ok(archive.includes('wsAlpha'), `wsAlpha must be archive-ready; ctx=${c}`);
     assert.ok(!archive.includes('wsBeta'), `wsBeta must NOT be archive-ready; ctx=${c}`);
@@ -367,12 +367,14 @@ test('MULTI-WORKSPACE: two workspaces in ONE shared summary each render independ
     // (git ground-truth report-only check, unpushed/merged verification) —
     // matched via [^|]* so this assertion stays about gates/status, not the
     // marker's exact wording (covered by its own dedicated test below, "RISK
-    // MARKERS").
-    assert.ok(/\|\s*wsAlpha[^|]*\|\s*archive-ready\s*\|\s*1\/1\s*\|/.test(tableRow(c, 'wsAlpha')), `wsAlpha row; row=${tableRow(c, 'wsAlpha')}`);
-    // wsBeta: escalated + no gate ever set (gates: {}) -> "—", per ITS OWN
-    // entry — not wsAlpha's archive-ready status leaking over, and not
-    // silently null (the bug).
-    assert.ok(/\|\s*wsBeta\s*\|\s*escalated\s*\|\s*—\s*\|/.test(tableRow(c, 'wsBeta')), `wsBeta row; row=${tableRow(c, 'wsBeta')}`);
+    // MARKERS"). Finish column is the plain-words done-state projection
+    // (doneStateLabel): gates.done===true -> "done ✓ merged" only when
+    // mergedVerified===true, else "done, merge unverified" (never fabricated).
+    assert.ok(/\|\s*wsAlpha[^|]*\|\s*archive-ready\s*\|\s*done, merge unverified\s*\|/.test(tableRow(c, 'wsAlpha')), `wsAlpha row; row=${tableRow(c, 'wsAlpha')}`);
+    // wsBeta: escalated + no done report ever (gates: {}) -> "working", per
+    // ITS OWN entry — not wsAlpha's archive-ready status leaking over, and
+    // not silently null (the bug).
+    assert.ok(/\|\s*wsBeta\s*\|\s*escalated\s*\|\s*working\s*\|/.test(tableRow(c, 'wsBeta')), `wsBeta row; row=${tableRow(c, 'wsBeta')}`);
   } finally { h.cleanup(); }
 });
 
@@ -395,14 +397,17 @@ test('TABLE: renders correct rows/columns for varied status + gates + unread, so
     const c = ctx(r);
     const t = tableSeg(c);
     assert.ok(t.includes('| workspace | status | finish | unread | last |'), `header row expected; t=${t}`);
-    // Column values
-    // required gates declared but no gate ever set for wsStale (gates: {}) -> "—".
-    assert.ok(/\|\s*wsStale\s*\|\s*stale\s*\|\s*—\s*\|\s*3\s*\|/.test(tableRow(c, 'wsStale')), `wsStale row; row=${tableRow(c, 'wsStale')}`);
+    // Column values. Finish is doneStateLabel's plain-words done-state
+    // projection, not a live gate-ratio recount.
+    // wsStale never reported done (gates: {}, no heartbeat) -> "working".
+    assert.ok(/\|\s*wsStale\s*\|\s*stale\s*\|\s*working\s*\|\s*3\s*\|/.test(tableRow(c, 'wsStale')), `wsStale row; row=${tableRow(c, 'wsStale')}`);
     // wsDone's `merged` gate is never set here -> "merged (unverified)" title
-    // suffix (see the wsAlpha comment above); matched via [^|]*.
-    assert.ok(/\|\s*wsDone[^|]*\|\s*archive-ready\s*\|\s*2\/2\s*\|\s*0\s*\|/.test(tableRow(c, 'wsDone')), `wsDone row; row=${tableRow(c, 'wsDone')}`);
-    // gates 1/2 + progress 40% shown together
-    assert.ok(/\|\s*wsQuiet\s*\|\s*active\s*\|\s*1\/2 \(40%\)\s*\|\s*0\s*\|/.test(tableRow(c, 'wsQuiet')), `wsQuiet row; row=${tableRow(c, 'wsQuiet')}`);
+    // suffix (see the wsAlpha comment above); matched via [^|]*. gates.done
+    // was never set true, but archive_ready:true also counts as a done
+    // report -> "done, merge unverified".
+    assert.ok(/\|\s*wsDone[^|]*\|\s*archive-ready\s*\|\s*done, merge unverified\s*\|\s*0\s*\|/.test(tableRow(c, 'wsDone')), `wsDone row; row=${tableRow(c, 'wsDone')}`);
+    // no done report yet + heartbeat progress 40% -> "working (40%)"
+    assert.ok(/\|\s*wsQuiet\s*\|\s*active\s*\|\s*working \(40%\)\s*\|\s*0\s*\|/.test(tableRow(c, 'wsQuiet')), `wsQuiet row; row=${tableRow(c, 'wsQuiet')}`);
     // Sort: stale (attention) before archive-ready before active.
     const body = t.split('\n');
     const iStale = body.findIndex((l) => l.startsWith('| wsStale '));
@@ -412,7 +417,7 @@ test('TABLE: renders correct rows/columns for varied status + gates + unread, so
   } finally { h.cleanup(); }
 });
 
-test('TABLE: finish column renders "—" (not "0/N") when no gate has ever been set, unchanged once a gate is set', () => {
+test('TABLE: finish column renders "working" when no done report has ever been made, and only flips once the `done` gate is actually set', () => {
   const h = makeHome();
   try {
     writeSharedSummary(h.home, {
@@ -421,15 +426,23 @@ test('TABLE: finish column renders "—" (not "0/N") when no gate has ever been 
       wsNoGatesField: { total: 0, cursor: 0, unread: 0, directUnread: 0, archive_ready: false },
       // gates present but empty — same "never touched" signal as absent.
       wsEmptyGates: { total: 0, cursor: 0, unread: 0, directUnread: 0, gates: {}, archive_ready: false },
-      // one gate set -> ratio renders as usual, not "—".
-      wsOneGateSet: { total: 0, cursor: 0, unread: 0, directUnread: 0, gates: { tests: false }, archive_ready: false },
+      // a non-`done` gate set -> still no done report; doneStateLabel only
+      // keys off the `done` gate specifically, so this stays "working" too
+      // (the prior met/total gate-ratio column would have shown "0/2" here;
+      // that ratio was retired because a report-only `done` gate write never
+      // touches the other gate rows, so partial gate coverage said nothing
+      // about actual done/merge state — see doneStateLabel's own header).
+      wsOtherGateSet: { total: 0, cursor: 0, unread: 0, directUnread: 0, gates: { tests: false }, archive_ready: false },
+      // the `done` gate itself set true -> flips to a done-state label.
+      wsDoneGateSet: { total: 0, cursor: 0, unread: 0, directUnread: 0, gates: { done: true }, archive_ready: false },
     }, { requiredGates: ['tests', 'review'] });
     const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
     assert.strictEqual(r.status, 0);
     const c = ctx(r);
-    assert.ok(/\|\s*wsNoGatesField\s*\|\s*active\s*\|\s*—\s*\|/.test(tableRow(c, 'wsNoGatesField')), `wsNoGatesField row; row=${tableRow(c, 'wsNoGatesField')}`);
-    assert.ok(/\|\s*wsEmptyGates\s*\|\s*active\s*\|\s*—\s*\|/.test(tableRow(c, 'wsEmptyGates')), `wsEmptyGates row; row=${tableRow(c, 'wsEmptyGates')}`);
-    assert.ok(/\|\s*wsOneGateSet\s*\|\s*active\s*\|\s*0\/2\s*\|/.test(tableRow(c, 'wsOneGateSet')), `wsOneGateSet row (unchanged once a gate is set); row=${tableRow(c, 'wsOneGateSet')}`);
+    assert.ok(/\|\s*wsNoGatesField\s*\|\s*active\s*\|\s*working\s*\|/.test(tableRow(c, 'wsNoGatesField')), `wsNoGatesField row; row=${tableRow(c, 'wsNoGatesField')}`);
+    assert.ok(/\|\s*wsEmptyGates\s*\|\s*active\s*\|\s*working\s*\|/.test(tableRow(c, 'wsEmptyGates')), `wsEmptyGates row; row=${tableRow(c, 'wsEmptyGates')}`);
+    assert.ok(/\|\s*wsOtherGateSet\s*\|\s*active\s*\|\s*working\s*\|/.test(tableRow(c, 'wsOtherGateSet')), `wsOtherGateSet row (a non-done gate must not flip the label); row=${tableRow(c, 'wsOtherGateSet')}`);
+    assert.ok(/\|\s*wsDoneGateSet\s*\|\s*active\s*\|\s*done, merge unverified\s*\|/.test(tableRow(c, 'wsDoneGateSet')), `wsDoneGateSet row (the actual done gate flips it); row=${tableRow(c, 'wsDoneGateSet')}`);
   } finally { h.cleanup(); }
 });
 
@@ -2155,7 +2168,7 @@ test('ORPHANS+STALE: clean summary (neither field present) -> BYTE-IDENTICAL to 
       'DEVSWARM WORKSPACES (re-sent on change, else every 10 turns):\n'
         + '| workspace | status | finish | unread | last |\n'
         + '|---|---|---|---|---|\n'
-        + '| wsA | active | — | 2 | — |',
+        + '| wsA | active | working | 2 | — |',
       // item 4b (residual of task #7): explicit instruction so the Primary's OWN
       // prose also uses titles, not bare mesh ids, when mentioning a workspace.
       'When mentioning a workspace to the human, use its TITLE from the table above '
