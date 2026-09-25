@@ -6,6 +6,13 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.109.2
+
+### Fixes
+
+- Heartbeats reuse a cached copy of DevSwarm's archived-workspace list instead of
+  opening the app database on every call.
+
 ## 0.109.1
 
 ### Fixes

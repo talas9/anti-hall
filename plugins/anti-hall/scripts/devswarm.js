@@ -7415,7 +7415,7 @@ function cmdRegister(id, flags, ctx, { requireNew } = {}) {
     let appArchivedGuard = null;
     try {
       appArchivedGuard = require('../companion/lib/devswarm-app-db.js').appArchivedVerdict({
-        home, env: ctx.env, id, worktreePath: wtForAppGuard, now: ctx.now,
+        home, env: ctx.env, id, worktreePath: wtForAppGuard, now: ctx.now, xcache: true,
       });
     } catch (_) { appArchivedGuard = null; }
     if (appArchivedGuard === true) {
@@ -8473,7 +8473,7 @@ function cmdHeartbeat(id, flags, ctx) {
       oldestUnreadAgeMs = Number.isFinite(union.oldestUnreadAgeMs) ? union.oldestUnreadAgeMs : null;
       try {
         appArchived = require('../companion/lib/devswarm-app-db.js').appArchivedVerdict({
-          home, env: ctx.env, id, worktreePath: descForPending.worktreePath || null, now,
+          home, env: ctx.env, id, worktreePath: descForPending.worktreePath || null, now, xcache: true,
         }) === true;
       } catch (_) { appArchived = false; }
     }

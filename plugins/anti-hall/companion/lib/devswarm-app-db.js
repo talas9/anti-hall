@@ -306,12 +306,107 @@ function snapshot(opts) {
   return snap;
 }
 
+// --- cross-invocation archived-verdict cache -------------------------------
+// WHY: `memo` above is per-PROCESS only. `devswarm.js heartbeat`/`register`
+// run as a fresh short-lived CLI process on every call, so the 10s memo never
+// helps them — each call opened + queried the app's live SQLite DB. This adds
+// a small on-disk cache of `builderStates()` at
+// ~/.anti-hall/devswarm/cache/app-archived.json, keyed by the app DB file's
+// stat signature (mtime+size, plus its `-wal` file's when present) with a
+// ~30s TTL. Re-queried only when that signature changes or the TTL expires.
+// Read-only against the app DB; any cache read/write error is swallowed and
+// falls back to querying directly (fail-open, same posture as the rest of
+// this module). Write is atomic (tmp + rename, mirrors devswarm-store.js).
+const CROSS_CACHE_TTL_MS = 30 * 1000;
+
+function crossCacheFile(home) {
+  return path.join(String(home), '.anti-hall', 'devswarm', 'cache', 'app-archived.json');
+}
+
+// dbFileSig(file) -> { mtimeMs, size, walMtimeMs, walSize } | null (file gone
+// / unreadable -> null, caller must skip the cross-cache for this call).
+function dbFileSig(file) {
+  try {
+    const st = fs.statSync(file);
+    const sig = { mtimeMs: st.mtimeMs, size: st.size, walMtimeMs: null, walSize: null };
+    try {
+      const w = fs.statSync(file + '-wal');
+      sig.walMtimeMs = w.mtimeMs;
+      sig.walSize = w.size;
+    } catch (_) {}
+    return sig;
+  } catch (_) { return null; }
+}
+
+function sigMatches(a, b) {
+  return !!a && !!b && a.mtimeMs === b.mtimeMs && a.size === b.size && a.walMtimeMs === b.walMtimeMs && a.walSize === b.walSize;
+}
+
+// readCrossCache(home, file, sig, now) -> Map | null. Any mismatch (wrong
+// file, changed sig, expired TTL) or read/parse error -> null, meaning "query
+// the DB directly" -- never thrown, never a stale/wrong answer.
+function readCrossCache(home, file, sig, now) {
+  try {
+    const raw = fs.readFileSync(crossCacheFile(home), 'utf8');
+    const j = JSON.parse(raw);
+    if (!j || j.file !== file || !sigMatches(j.sig, sig)) return null;
+    if (!Number.isFinite(j.at) || now - j.at < 0 || now - j.at >= CROSS_CACHE_TTL_MS) return null;
+    if (!j.states || typeof j.states !== 'object') return null;
+    const map = new Map();
+    for (const id of Object.keys(j.states)) {
+      const v = j.states[id];
+      if (!v || typeof v !== 'object') continue;
+      map.set(id, {
+        active: v.active === true,
+        archived: v.archived === true ? true : v.archived === false ? false : null,
+        worktreePath: v.worktreePath == null ? null : String(v.worktreePath),
+        builderType: v.builderType == null ? null : String(v.builderType),
+      });
+    }
+    return map;
+  } catch (_) { return null; }
+}
+
+// writeCrossCache(home, file, sig, at, map) — best-effort atomic write
+// (tmp + rename). Any failure is swallowed: the caller already has its
+// answer from the DB it just read, a failed cache write never blocks it.
+function writeCrossCache(home, file, sig, at, map) {
+  try {
+    const target = crossCacheFile(home);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    const states = {};
+    for (const [id, v] of map) states[id] = { active: v.active, archived: v.archived, worktreePath: v.worktreePath, builderType: v.builderType };
+    const payload = JSON.stringify({ file, sig, at, states });
+    const tmp = target + '.' + process.pid + '.tmp';
+    fs.writeFileSync(tmp, payload);
+    fs.renameSync(tmp, target);
+  } catch (_) {}
+}
+
 // builderStates(opts) -> Map(id -> { archived, active, worktreePath }) | null.
+// Cross-invocation cached (see above) ONLY when the caller opts in with
+// `opts.xcache: true` (AND opts.home is set AND opts.fresh is not set) --
+// this is off by default so read-only callers (`app-state`, doctor, sync-ui's
+// planning pass, the archive sweep) keep their documented "never writes"
+// contract. Callers that opt in are the short-lived, high-frequency CLI paths
+// this cache exists for: `devswarm.js register`/`ensure`/`heartbeat`'s
+// app-archive guards.
 function builderStates(opts) {
-  const snap = snapshot(opts);
+  const o = opts || {};
+  const file = appDbPath(o);
+  if (!file) return null;
+  const now = Number.isFinite(o.now) ? o.now : Date.now();
+  const useCross = !!o.xcache && !!o.home && !o.fresh;
+  const sig = useCross ? dbFileSig(file) : null;
+  if (useCross && sig) {
+    const cached = readCrossCache(o.home, file, sig, now);
+    if (cached) return cached;
+  }
+  const snap = snapshot(o);
   if (!snap) return null;
   const map = new Map();
   for (const w of snap.workspaces) map.set(w.id, { active: w.active, archived: w.archived, worktreePath: w.worktreePath, builderType: w.builderType });
+  if (useCross && sig) writeCrossCache(o.home, file, sig, now, map);
   return map;
 }
 
