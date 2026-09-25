@@ -83,6 +83,7 @@ const SWITCHES = {
   'limit-conserve-inject.js': 'limitConserve.mode',
   'speculation-judge.js': 'jev.semanticJudge',
   'jev-weekly-scorecard.js': 'jev.weeklyNotice',
+  'silent-agent-nudge.js': 'guards.silentAgentNudge',
 };
 // Non-hook features with a 0.108.4 switch (file -> key).
 const COMPANION_SWITCHES = {

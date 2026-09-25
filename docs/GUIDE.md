@@ -859,6 +859,8 @@ Generated from `hooks/lib/settings-schema.js` (a hygiene test keeps this table a
 | `guards.taskGuard` | `true` | — | task-guard (Stop): block stopping while tracked tasks are still open. |
 | `guards.tasklistGuard` | `true` | — | tasklist-guard (Stop): require a task list / progress file for multi-step work. |
 | `guards.scanThrottle` | `true` | `ANTI_HALL_SCAN_THROTTLE` | scan-throttle (PreToolUse Bash): run heavy repo-wide scans at background priority (nice/taskpolicy). |
+| `guards.silentAgentNudge` | `true` | `ANTIHALL_SILENT_AGENT_NUDGE` | silent-agent-nudge (Stop): nudge once, advisory-only, when a background Agent launch has no terminal notification and a stale/missing output_file past `silentAgentNudgeMin`. Never kills anything. |
+| `guards.silentAgentNudgeMin` adv | `20` | `ANTIHALL_SILENT_AGENT_NUDGE_MIN` | Minutes of silence before silent-agent-nudge fires. |
 | `safety.gitGuard` safety | `true` | `ANTIHALL_GIT_GUARD` | git-guard: block force-push and AI self-credit in commits and gh pr/issue/release bodies. |
 | `safety.commandGuard` safety | `true` | `ANTIHALL_COMMAND_GUARD` | command-guard core: make the coordinator delegate heavy commands (build/test/deploy/push). Its data-safety sub-guards (DevSwarm read/send/mailbox, armed stash guard) stay on. |
 | `safety.editGuard` safety | `true` | `ANTIHALL_EDIT_GUARD` | edit-guard core: make the coordinator delegate file edits outside its own plan/state/handover files. |
@@ -979,6 +981,8 @@ Generated from `hooks/lib/settings-schema.js` (a hygiene test keeps this table a
 | `devswarm.appSync` | `true` | `ANTIHALL_DEVSWARM_APP_SYNC` | Supervisor app-DB sync: apply the DevSwarm app database (archive state, names, drift) every tick. |
 | `devswarm.screenshotSync` | `true` | — | `devswarm.js sync-ui`: reconcile a transcribed sidebar screenshot against the app DB. |
 | `devswarm.spawnFromOrigin` | `true` | — | `devswarm.js spawn`: fetch origin first and fast-forward the local default branch so a child never starts from stale tooling; refuses when it is behind and cannot be updated (unless --from-local). |
+| `devswarm.spawnFetchTtlSec` adv | `300` | `ANTIHALL_DEVSWARM_SPAWN_FETCH_TTL_SEC` | `devswarm.js spawn`: skip the origin fetch when the remote-tracking ref was already updated within this many seconds (0 = always fetch). |
+| `devswarm.spawnCreateTimeoutMs` adv | `180000` | `ANTIHALL_DEVSWARM_SPAWN_CREATE_TIMEOUT_MS` | Timeout (ms) for the `hivecontrol workspace create` call spawn makes; on timeout only our own child process is killed. |
 | `statusline.base` | — | `ANTIHALL_STATUSLINE_BASE` | Shell command run as the line-1 base in consolidated statusline mode. |
 | `statusline.noEmail` | `false` | `ANTIHALL_STATUSLINE_NO_EMAIL` | Suppress the email segment in the statusline. |
 | `codexNudge.enabled` | `true` | `ANTIHALL_CODEX_NUDGE` | Enable the Codex hand-off nudge hook. |

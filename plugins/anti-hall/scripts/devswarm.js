@@ -17513,17 +17513,13 @@ const SPAWN_FETCH_TIMEOUT_MS = 30000;
 const SPAWN_FETCH_TTL_SEC_DEFAULT = 300;
 
 // gitCommonDirFor(cwd) -> the repo's common git dir (shared across worktrees),
-// via `rev-parse --git-common-dir` — never a guessed `.git` join, since a
-// linked worktree's own `.git` is a FILE pointing elsewhere. null on any
-// failure (never throws).
+// via companion/lib/devswarm-repokey.js's own gitCommonDir() (the single
+// canonical `rev-parse --git-common-dir` resolver — see
+// tests/hygiene/identity-single-resolver.test.js) — never a guessed `.git`
+// join, since a linked worktree's own `.git` is a FILE pointing elsewhere.
+// null on any failure (never throws).
 function gitCommonDirFor(cwd) {
-  try {
-    const r = spawnSync('git', ['-C', cwd, 'rev-parse', '--git-common-dir'], { encoding: 'utf8', timeout: gitTruth.GIT_TIMEOUT_MS });
-    if (!r || r.error || r.status !== 0) return null;
-    const p = String(r.stdout || '').trim();
-    if (!p) return null;
-    return path.isAbsolute(p) ? p : path.resolve(cwd, p);
-  } catch (_) { return null; }
+  return repokey.gitCommonDir(cwd);
 }
 
 // remoteRefAgeSec(cwd, remoteRef, now) -> seconds since the remote-tracking
