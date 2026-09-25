@@ -960,9 +960,12 @@ test('readBlockerLabelAskState/writeBlockerLabelAskState round-trip; unreadable 
     const state = M.readBlockerLabelAskState(home, 'child-a');
     assert.strictEqual(state.hash, 'h1');
     assert.strictEqual(state.askedAt, 12345);
-    // P2 fix (rc-v0.108.4.2 review): mode must round-trip through the read —
-    // it was written by writeBlockerLabelAskState() since cf82ef5 but never
-    // read back, so every caller's askState.mode was always undefined.
+    // P2 fix (rc-v0.108.4.2 review) + jevtel fix: mode must round-trip
+    // through the read -- it was written by writeBlockerLabelAskState()
+    // since cf82ef5 but never read back, so every caller's askState.mode
+    // was always undefined. jevBlockerLabel's dedupe-skip branch
+    // (`askState.mode === 'on' ? label : null`) silently dropped the label
+    // for every deduped sweep after the first ask in a re-ask window.
     assert.strictEqual(state.mode, 'shadow', 'mode must be read back, not left undefined');
     assert.ok(fs.existsSync(M.blockerLabelAskStatePath(home, 'child-a')));
   } finally { cleanup(); }
@@ -981,6 +984,26 @@ test('jevBlockerLabel: dedupe-suppressed call returns the label when the last lo
     // always returned null even though the promoted mode was "on".
     const second = M.jevBlockerLabel('child-a', home, { now: now + 1000 });
     assert.strictEqual(second, 'wedged', 'a dedupe-suppressed call must still return the label for a promoted "on" ask');
+  } finally { cleanup(); }
+});
+
+test('jevBlockerLabel: a deduped (skipped) sweep still reports the SAME label as the last real ask, not null -- mode must round-trip through readBlockerLabelAskState', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    writeJevConfig(home, { enabled: true, integrations: { supervisorBlockerLabel: 'on' } });
+    writeTriagePending(home, { 'primary-1\u0001child-a': { ts: 1000, kind: 'blocker', urgency: 'urgent' } });
+    const now = Date.now();
+    const first = M.jevBlockerLabel('child-a', home, { now });
+    assert.strictEqual(first, 'wedged', 'sanity: the first (real) ask returns the label');
+    // 9 more consecutive ~90s sweeps with the byte-identical pending entry --
+    // all deduped (no new log rows), but the label must still be reported
+    // every time since mode is genuinely still "on".
+    for (let i = 1; i <= 9; i++) {
+      const label = M.jevBlockerLabel('child-a', home, { now: now + i * 90 * 1000 });
+      assert.strictEqual(label, 'wedged', `deduped sweep #${i} must still report 'wedged', not null`);
+    }
+    const rows = readJevAssistLog(home).filter((r) => r.id === 'supervisorBlockerLabel');
+    assert.strictEqual(rows.length, 1, 'still exactly one logged row -- dedupe itself is unaffected by this fix');
   } finally { cleanup(); }
 });
 

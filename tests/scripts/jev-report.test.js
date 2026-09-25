@@ -147,13 +147,14 @@ test('buildReport: outcome join by hash', () => {
 
 test('buildReport: agreement% is computed from `compare`, never from `base` (base is trust-rule math, sometimes a hardcoded constant)', () => {
   const rows = [
-    row({ id: 'x', jev: true, base: false, compare: true }),
-    row({ id: 'x', jev: false, base: false, compare: true }),
-    row({ id: 'x', jev: null, base: false, backend: 'baseline-only' }),
+    row({ id: 'x', h: 'x1', jev: true, base: false, compare: true }),
+    row({ id: 'x', h: 'x2', jev: false, base: false, compare: true }),
+    row({ id: 'x', h: 'x3', jev: null, base: false, backend: 'baseline-only' }),
   ];
   const report = buildReport(rows, {});
   const r = report.integrations.find((x) => x.id === 'x');
   assert.ok(Math.abs(r.agreementPct - 0.5) < 1e-9);
+  assert.strictEqual(r.agreeTotal, 2, 'denominator is the 2 distinct decisions with a compare signal');
 });
 
 test('buildReport: rows with a boolean jev answer but no `compare` field are excluded from agreement, not folded into it', () => {
@@ -173,14 +174,35 @@ test('buildReport: rows with a boolean jev answer but no `compare` field are exc
 
 test('buildReport: a mix of compare-bearing and compare-less rows only counts the compare-bearing ones', () => {
   const rows = [
-    row({ id: 'mixed', jev: true, compare: true }),
-    row({ id: 'mixed', jev: false, compare: true }), // disagreement
-    row({ id: 'mixed', jev: true, base: false }), // no compare -> excluded
+    row({ id: 'mixed', h: 'm1', jev: true, compare: true }),
+    row({ id: 'mixed', h: 'm2', jev: false, compare: true }), // disagreement
+    row({ id: 'mixed', h: 'm3', jev: true, base: false }), // no compare -> excluded
   ];
   const report = buildReport(rows, {});
   const r = report.integrations.find((x) => x.id === 'mixed');
   assert.ok(Math.abs(r.agreementPct - 0.5) < 1e-9);
+  assert.strictEqual(r.agreeTotal, 2);
   assert.strictEqual(r.excludedNoCompare, 1);
+});
+
+test('buildReport: a cache-hit RETRY of the same decision (same hash) does not add its own extra vote to agreement -- root cause of the inconsistent agreement% across windows (99%/77.5%/37% on the real log)', () => {
+  const rows = [
+    // One real (fresh) decision that DISAGREES with compare.
+    row({ id: 'spec2', h: 'popular', jev: true, compare: false, backend: 'jev' }),
+    // The SAME decision re-asked as a cache hit 4 more times (a common
+    // recurring input) -- must NOT be treated as 4 more independent
+    // disagreements.
+    row({ id: 'spec2', h: 'popular', jev: true, compare: false, backend: 'cache' }),
+    row({ id: 'spec2', h: 'popular', jev: true, compare: false, backend: 'cache' }),
+    row({ id: 'spec2', h: 'popular', jev: true, compare: false, backend: 'cache' }),
+    row({ id: 'spec2', h: 'popular', jev: true, compare: false, backend: 'cache' }),
+    // A genuinely different decision that AGREES with compare.
+    row({ id: 'spec2', h: 'other', jev: true, compare: true, backend: 'jev' }),
+  ];
+  const report = buildReport(rows, {});
+  const r = report.integrations.find((x) => x.id === 'spec2');
+  assert.strictEqual(r.agreeTotal, 2, 'two DISTINCT decisions, not 6 raw rows');
+  assert.ok(Math.abs(r.agreementPct - 0.5) < 1e-9, `50% (1 of 2 distinct decisions agrees), not skewed by the 5x cache-hit repeat; got ${r.agreementPct}`);
 });
 
 test('buildReport: --days window excludes rows older than the cutoff', () => {
@@ -690,6 +712,38 @@ test('buildReport: per-integration p50/p95 (classifier `ms`) is computed ONLY fr
   assert.ok(spec);
   assert.ok([352, 1313].includes(spec.p50), `p50 must be a real classifier latency (352/1313), never the reply-turnaround figure; got ${spec.p50}`);
   assert.ok([352, 1313].includes(spec.p95), `p95 must be a real classifier latency (352/1313), never the reply-turnaround figure; got ${spec.p95}`);
+});
+
+test('buildReport: triage appears as its own integration (calls/backend/ms) sourced from opts.triageRows, since its real classification calls never land in jev-assist.ndjson (a separate file/schema, see hooks/lib/jev-triage.js) -- ROOT CAUSE of "triage backend undefined": it was invisible in this table entirely, not present with a bad value', () => {
+  const rows = [
+    row({ id: 'speculation', h: 'sp1' }),
+  ];
+  const triageRows = [
+    // Real appendTriageLog shape: no `type`, has `hash`+`backend`+`ms`.
+    { ts: '2026-01-01T00:00:00.000Z', hash: 'th1', urgency: null, kind: 'blocker', backend: 'jev', ms: 500 },
+    { ts: '2026-01-01T00:00:01.000Z', hash: 'th2', urgency: 'normal', kind: 'fyi', backend: 'jev', ms: 700 },
+    // A malformed/legacy entry with no backend at all must default to
+    // 'baseline-only', never surface as undefined.
+    { ts: '2026-01-01T00:00:02.000Z', hash: 'th3', urgency: null, kind: 'status-report', ms: 300 },
+    // recordAnswered's reply-turnaround row (no `hash`) must NOT be counted
+    // as a triage decision/call.
+    { ts: '2026-01-01T00:00:03.000Z', type: 'answered', urgency: 'urgent', latencyMs: 960000 },
+  ];
+
+  const withoutTriage = buildReport(rows, {});
+  assert.strictEqual(withoutTriage.integrations.find((r) => r.id === 'triage'), undefined,
+    'sanity: with no triageRows opt, triage is absent (pre-fix behavior)');
+
+  const report = buildReport(rows, { triageRows });
+  const triage = report.integrations.find((r) => r.id === 'triage');
+  assert.ok(triage, 'triage must appear as its own integration once real classification rows are supplied');
+  assert.strictEqual(triage.calls, 3, 'only the 3 real classification rows count, not the answered/reply-turnaround row');
+  assert.ok([500, 700, 300].includes(triage.p50));
+  // th1+th2 report backend:'jev' -> 2/3 calls answered by Jev; th3 has no
+  // backend field in the raw fixture at all, and must default to
+  // 'baseline-only' (never left undefined) rather than being silently
+  // dropped from the jevAnswered count.
+  assert.strictEqual(Math.round(triage.jevAnsweredPct * triage.calls), 2);
 });
 
 // ---------------------------------------------------------------------------

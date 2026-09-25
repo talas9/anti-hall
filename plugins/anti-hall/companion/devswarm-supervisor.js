@@ -340,7 +340,18 @@ function readBlockerLabelAskState(home, childId) {
       // site's `askState.mode` was always `undefined` — the dedupe-skip
       // branch below (`askState.mode === 'on' ? label : null`) could never
       // return the label for a suppressed re-ask, silently dropping an "on"
-      // mode's label for the rest of the re-ask interval.
+      // mode's label for the rest of the re-ask interval. `mode` MUST
+      // round-trip: writeBlockerLabelAskState always persists it (the mode
+      // captured at the last real ask), and jevBlockerLabel's own
+      // dedupe-skip branch reads it back to decide whether a deduped
+      // (unlogged) sweep should still report the label. Dropping it here
+      // made every deduped sweep after the FIRST ask in a re-ask window
+      // silently report null -- the wedged/waiting-on-parent annotation
+      // flickered off for the rest of the ~6h window instead of staying
+      // attached, even though mode was genuinely still "on" the whole time
+      // (proven via a fixture repro: 10 sweeps at a 90s cadence produced
+      // label:'wedged' once, then label:null for the remaining 9, despite
+      // mode never actually changing).
       mode: typeof (parsed && parsed.mode) === 'string' ? parsed.mode : '',
     };
   } catch (_) {

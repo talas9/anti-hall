@@ -165,7 +165,8 @@ Jev is doing:
      label <hash> tp|fp` on a few more decisions (see "labeling" below) to seed
      the sample, or wait for more `recordOutcome` signal to accrue.
    - **REVIEW (label-only, no outcome signal yet)** — a `choice`/string-label
-     classifier (no boolean baseline, e.g. `newRequest`, `supervisorBlockerLabel`)
+     classifier (no boolean baseline, e.g. `newRequest`, `supervisorBlockerLabel`,
+     `triage`)
      never uses changed-decision rate at all; explain it needs human labels
      before any KEEP/REMOVE verdict is even possible. Its `changed%` column
      shows `n/a (N distinct)` instead of `0.0%` (v0.108.3 fix — a bare 0 read
@@ -296,16 +297,36 @@ entirely with `"weeklyNotice": false` in `~/.anti-hall/jev.json` (default
 ### Two DIFFERENT "latency" numbers — do not conflate them
 
 The per-integration table's `p50ms`/`p95ms` columns are the **Jev classifier
-call's own latency** (from `jev-assist.ndjson` decision rows' `ms` field — how
-long the actual `POST /v1/systemone` request took). The separate
-**"triage answer-time"** section underneath the table is a completely
-different thing: **agent reply turnaround** — how long it took a Primary/child
-to reply to a message jev-triage.js labelled, from `jev-triage.ndjson`'s
-`{type:"answered", latencyMs}` rows (`hooks/lib/jev-triage.js`'s
-`recordAnswered`). A real classifier call is typically hundreds of
-milliseconds; a reply-turnaround figure is typically minutes. If a p95 in
-seconds/minutes shows up anywhere next to something claiming to be "Jev
-latency", that is the wrong number attached to the wrong label — call it out.
+call's own latency** — how long the actual `POST /v1/systemone` request took.
+For every integration except `triage` this comes from `jev-assist.ndjson`
+decision rows' `ms` field; the `triage` row is sourced from
+`jev-triage.ndjson`'s own classification rows' `ms` field instead (its real
+decisions never land in `jev-assist.ndjson` — a separate file/schema, see
+`hooks/lib/jev-triage.js` — so `buildReport` merges them in as their own
+`triage` integration, `backend` always one of `jev`/`cache`/`baseline-only`,
+never left `undefined`). Either way it is still **classifier latency**, NOT
+reply turnaround. The separate **"triage answer-time"** section underneath the
+table is a completely different thing: **agent reply turnaround** — how long
+it took a Primary/child to reply to a message jev-triage.js labelled, from
+`jev-triage.ndjson`'s `{type:"answered", latencyMs}` rows (`hooks/lib/jev-
+triage.js`'s `recordAnswered` — these rows are excluded from the `triage`
+integration row above by construction, they have no `hash` field). A real
+classifier call is typically hundreds of milliseconds; a reply-turnaround
+figure is typically minutes. If a p95 in seconds/minutes shows up anywhere
+next to something claiming to be "Jev latency", that is the wrong number
+attached to the wrong label — call it out.
+
+### `agree%` denominator — distinct decisions, never raw rows
+
+The `agree% (n=distinct)` column counts **distinct content-hash decisions**
+with both a boolean `jev` answer and a caller-supplied `compare` signal, fresh
+calls only (`backend !== 'cache'`) — the SAME dedupe discipline the
+`changed%` column already applies. A cache-hit retry of the same decision no
+longer adds its own extra vote: it used to (root cause of wildly inconsistent
+agreement numbers across different windows/reports — a single popular,
+disagreeing decision re-asked as a cache hit several times inflated its own
+weight in the denominator each time). The printed `n=` is the real
+denominator; read it alongside the percentage, not the percentage alone.
 
 ## "jev report"
 
@@ -417,7 +438,11 @@ triage kind + ts) per workspace — a per-workspace state file under
 `~/.anti-hall/devswarm/blocker-label-ask/` skips the repeat ask/log while the
 input is unchanged, re-asking only when it changes or after
 `devswarm.supervisorBlockerLabelReaskSec` (default 6h) elapses (v0.108.5 fix
-— one static input used to produce 382 `jev-assist.ndjson` rows in 24h). `mergeGateHedge` uses `askDetached` (fire-and-forget): promoting it to `on` only
+— one static input used to produce 382 `jev-assist.ndjson` rows in 24h; a
+follow-up fix made the persisted ask-state's `mode` actually round-trip
+through `readBlockerLabelAskState` — it was written but never read back, so
+every deduped/skipped sweep after the first ask in a re-ask window silently
+reported no label instead of the still-valid one). `mergeGateHedge` uses `askDetached` (fire-and-forget): promoting it to `on` only
 changes what gets LOGGED for now. `tasklistTrivial`/`codexNudgeSubstantial` log
 fire-and-forget in shadow, but in `on` they ask synchronously (1.5 s cap,
 fail-open to the nudge) and a confident "trivial" verdict skips the nudge.

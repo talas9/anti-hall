@@ -82,7 +82,11 @@ itself.
   workspace, via a per-workspace state file under
   `~/.anti-hall/devswarm/blocker-label-ask/`, re-asking only on a change or
   after `devswarm.supervisorBlockerLabelReaskSec` [default 6h] elapses; one
-  static input used to produce 382 `jev-assist.ndjson` rows in 24h),
+  static input used to produce 382 `jev-assist.ndjson` rows in 24h; a follow-up
+  fix made the persisted ask-state's `mode` actually round-trip through
+  `readBlockerLabelAskState` — it was written but never read back, so every
+  deduped [skipped] sweep after the first ask in a re-ask window silently
+  reported `null` instead of the still-valid label),
   `codexNudgeSubstantial` —
   all default `shadow`; `findingDedup` (advisory: do two deadly-loop TRIO findings
   describe the same underlying issue, called from the standalone
@@ -164,11 +168,25 @@ itself.
   changes any mode itself. Opt out with `jev.json` `"weeklyNotice": false`
   (default `true`); silent whenever Jev is not `enabled` at all.
 - **Two different "latency" numbers** — never conflate them. The table's
-  `p50ms`/`p95ms` are the Jev classifier CALL's own latency (`jev-assist.ndjson`
-  decision rows' `ms` field, typically hundreds of ms). The separate "triage
-  answer-time" section is agent REPLY TURNAROUND (`jev-triage.ndjson`'s
-  `{type:"answered", latencyMs}` rows from `recordAnswered` — typically minutes)
-  — a completely different quantity from a different log.
+  `p50ms`/`p95ms` are the Jev classifier CALL's own latency: for every
+  integration except `triage` from `jev-assist.ndjson` decision rows' `ms`
+  field (typically hundreds of ms); `triage`'s own real classification calls
+  never land in `jev-assist.ndjson` (separate file/schema), so `buildReport`
+  merges its `jev-triage.ndjson` decision rows in as their own `triage`
+  integration row instead — same kind of number (classifier latency), just a
+  different source file, with `backend` always one of `jev`/`cache`/
+  `baseline-only`, never left `undefined` (root cause of "triage backend
+  undefined": `triage` was previously ABSENT from this table entirely, not
+  present with a bad value). The separate "triage answer-time" section is
+  agent REPLY TURNAROUND (`jev-triage.ndjson`'s `{type:"answered", latencyMs}`
+  rows from `recordAnswered` — typically minutes) — a completely different
+  quantity, excluded from the `triage` integration row above by construction
+  (no `hash` field).
+- **`agree% (n=distinct)`** — the denominator is DISTINCT content-hash
+  decisions with both a boolean `jev` answer and a `compare` signal, fresh
+  calls only (`backend !== 'cache'`), same dedupe discipline as `changed%`. A
+  cache-hit retry of the same decision no longer adds its own extra vote (root
+  cause of wildly inconsistent agreement numbers across windows/reports).
 - `--by project|session` splits the report into one table per distinct
   project/session value instead of one combined table; `--project <name>`
   filters to one project first. `project` is a cwd basename (agnostic, no

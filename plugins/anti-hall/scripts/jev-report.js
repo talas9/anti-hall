@@ -712,7 +712,38 @@ function buildReport(rows, opts = {}) {
   const outcomesByHash = new Map(); // hash -> [outcome, ...]
   const outcomesBySource = new Map(); // id -> { <source>: {good, known} }
 
-  for (const row of rows) {
+  // triage decisions (jev-triage.ndjson, a SEPARATE file/schema — see
+  // hooks/lib/jev-triage.js) never go through jev-assist.js's ask()/
+  // askSync(), so they never land in jev-assist.ndjson: `triage` was
+  // entirely invisible in this per-integration table even though it makes
+  // real Jev calls exactly like every other integration (verified against
+  // the real log: 372 jev-triage.ndjson rows with backend:'jev', zero
+  // 'triage' decision rows in jev-assist.ndjson — only its unrelated
+  // recordAnswered() outcome rows, which never carry backend by the
+  // documented two-shape contract above and must stay that way).
+  //
+  // Normalize each REAL classification row (has `hash`, never `type` — see
+  // appendTriageLog) into the same shape the loop below expects, so
+  // `triage` gets counted/shown like any other integration. Explicitly
+  // excludes recordAnswered's `{type:'answered', latencyMs}` reply-
+  // turnaround rows (no `hash`) — those stay confined to
+  // buildTriageAnswerReport and must never leak into this classifier-ms/
+  // backend comparison (see the "no mixing" tests below).
+  const triageDecisionRows = (Array.isArray(opts.triageRows) ? opts.triageRows : [])
+    .filter((r) => r && typeof r.hash === 'string' && r.type !== 'answered')
+    .map((r) => ({
+      id: 'triage',
+      h: r.hash,
+      ts: r.ts,
+      // backend is ALWAYS one of the three known values here — never left
+      // undefined — even if a malformed worker/cache entry omitted it.
+      backend: (r.backend === 'jev' || r.backend === 'cache') ? r.backend : 'baseline-only',
+      ms: r.ms,
+      jev: (typeof r.kind === 'string' && r.kind) ? r.kind : null,
+      mode: 'on',
+    }));
+
+  for (const row of rows.concat(triageDecisionRows)) {
     if (!row || typeof row !== 'object') continue;
     const ts = row.ts ? Date.parse(row.ts) : NaN;
     if (cutoff !== null && Number.isFinite(ts) && ts < cutoff) continue;
@@ -738,7 +769,7 @@ function buildReport(rows, opts = {}) {
     if (!row.id) continue;
     if (!byId.has(row.id)) {
       byId.set(row.id, {
-        id: row.id, calls: 0, jevAnswered: 0, cacheHits: 0, agree: 0, agreeTotal: 0,
+        id: row.id, calls: 0, jevAnswered: 0, cacheHits: 0,
         excludedNoCompare: 0,
         // changedHashByFresh: hash -> direction, populated ONLY from
         // non-cached rows. A decision (content hash) is counted ONCE
@@ -766,6 +797,17 @@ function buildReport(rows, opts = {}) {
         // tp/fp on, so it joins the SAME precision/labelled-sample pipeline
         // as changedHashByFresh below (see the tp/fp + known/good loops).
         labelWouldChangeHashesFresh: new Set(),
+        // agreeHashesFresh: hash -> bool(jev===compare), FRESH calls only
+        // (backend !== 'cache'), one entry per distinct content hash -- the
+        // SAME dedupe/exclude-cache discipline changedHashByFresh already
+        // applies a few lines below. A repeated cache-hit retry of the SAME
+        // decision used to add its OWN +1 to agreeTotal/agree every single
+        // time (root cause of wildly inconsistent agreement% across windows:
+        // verified against the real log, one popular disagreeing decision
+        // re-asked as a cache hit 5 times inflated its own weight 5x in the
+        // denominator). A distinct decision must count once, no matter how
+        // many times a cache retry re-logs it.
+        agreeHashesFresh: new Map(),
         realCostSum: 0, realCostKnown: false,
         timeouts: 0, fallbackCount: 0, overOneSecFresh: 0,
       });
@@ -794,10 +836,14 @@ function buildReport(rows, opts = {}) {
     // (an independent heuristic verdict), never from `base` (trust-rule
     // math, sometimes a hardcoded constant -- see the module comment above).
     // A boolean `jev` answer with no `compare` field is excluded from the
-    // metric, not silently folded into it.
+    // metric, not silently folded into it. Deduped by content hash and
+    // FRESH-ONLY (backend !== 'cache') -- same discipline as
+    // changedHashByFresh below: a cache-hit retry of an already-counted
+    // decision must not add its own extra vote to the agreement rate.
     if (typeof row.jev === 'boolean' && typeof row.compare === 'boolean') {
-      bucket.agreeTotal++;
-      if (row.jev === row.compare) bucket.agree++;
+      if (row.h && row.backend !== 'cache') {
+        bucket.agreeHashesFresh.set(row.h, row.jev === row.compare);
+      }
     } else if (typeof row.jev === 'boolean' && (row.backend === 'jev' || row.backend === 'cache')) {
       bucket.excludedNoCompare++;
     }
@@ -858,7 +904,14 @@ function buildReport(rows, opts = {}) {
     // Yield is computed on FRESH calls only -- a cache hit never represents
     // a new Jev decision, so it must not dilute the rate.
     const changedRate = freshCalls > 0 ? totalChangedUnique / freshCalls : 0;
-    const agreementPct = bucket.agreeTotal > 0 ? bucket.agree / bucket.agreeTotal : null;
+    // agreeTotal is the DENOMINATOR jev-report actually shows/prints: the
+    // count of DISTINCT fresh decisions (by content hash) that carried both
+    // a boolean `jev` answer and a `compare` signal -- never raw row count
+    // (a cache-hit retry of the same decision no longer adds its own vote;
+    // see agreeHashesFresh's own comment above for why that mattered).
+    const agreeTotal = bucket.agreeHashesFresh.size;
+    const agree = [...bucket.agreeHashesFresh.values()].filter(Boolean).length;
+    const agreementPct = agreeTotal > 0 ? agree / agreeTotal : null;
 
     // Precision/outcome join set: the deduped changed-decision hashes PLUS
     // (for a choice integration) the would-change label-candidate hashes
@@ -1016,6 +1069,12 @@ function buildReport(rows, opts = {}) {
       jevAnsweredPct: bucket.calls > 0 ? bucket.jevAnswered / bucket.calls : 0,
       cacheHits: bucket.cacheHits,
       agreementPct,
+      // agreeTotal: the denominator behind agreementPct above -- DISTINCT
+      // fresh decisions with a compare signal, never a raw row count. Always
+      // exposed (even when agreementPct is null, i.e. agreeTotal === 0) so a
+      // reader/caller can tell "no comparable decisions this window" apart
+      // from "comparable decisions exist but happen to be 0% agreement".
+      agreeTotal,
       excludedNoCompare: bucket.excludedNoCompare,
       topLabel,
       labelPct,
@@ -1140,12 +1199,18 @@ function printTable(report) {
     console.log('No jev-assist.ndjson activity found for this window.');
     return;
   }
-  const header = ['integration', 'calls (fresh/cached)', 'jev%', 'agree%', 'label%', 'added', 'relaxed', 'changed%', 'good-outcome%', 'outcome(jev/regex)', 'p50ms', 'p95ms', 'cost', 'suggestion'];
+  // "agree% (n=X)" -- X is agreeTotal, the DISTINCT fresh decisions with a
+  // compare signal this pct is computed over (never a raw row count; a
+  // cache-hit retry of the same decision no longer adds an extra vote --
+  // see agreeHashesFresh's comment in buildReport). Stating the denominator
+  // inline is what lets a reader tell "56% of 45 real decisions" apart from
+  // "56% of 3" without cross-referencing --json.
+  const header = ['integration', 'calls (fresh/cached)', 'jev%', 'agree% (n=distinct)', 'label%', 'added', 'relaxed', 'changed%', 'good-outcome%', 'outcome(jev/regex)', 'p50ms', 'p95ms', 'cost', 'suggestion'];
   const rows = report.integrations.map((r) => [
     r.id, `${r.calls} (${r.freshCalls}/${r.cachedCalls})`, pct(r.jevAnsweredPct),
     r.agreementPct == null
       ? (r.excludedNoCompare > 0 ? 'n/a (no comparison signal)' : 'n/a')
-      : pct(r.agreementPct),
+      : `${pct(r.agreementPct)} (n=${r.agreeTotal})`,
     r.topLabel != null ? `${pct(r.labelPct)} (${r.topLabel})` : 'n/a',
     String(r.changed.added), String(r.changed.relaxed),
     r.isLabelOnly ? `n/a (${r.labelDistinctDecisions} distinct)` : pct(r.changedRate),
