@@ -571,6 +571,12 @@ const ARCHIVE_REQUEST_MARKER = '[[ANTIHALL_ARCHIVE_REQUEST]]';
 // verb sets (auto-archive gate (a)); this marker only lets a reader tell the
 // report apart from ordinary chatter.
 const DONE_REPORT_MARKER = '[[ANTIHALL_DONE]]';
+// DONE_GATE_SETBY_PREFIX (0.108.3, P1-B) — the `done` verb records the worktree
+// HEAD it reported done at in the gate row's set_by metadata
+// ('devswarm-done@<sha>'); the gates table stores booleans only. deriveSummary
+// projects it as workspaces[id].doneHead, and auto-archive gate (a) honours the
+// done-report only while that sha is still the worktree's HEAD.
+const DONE_GATE_SETBY_PREFIX = 'devswarm-done@';
 
 // ensureMessagesMeshColumns(db) — additive migration for a `messages` table that
 // pre-dates the v0.57 mesh columns (an on-disk store created by <=0.56). A brand
@@ -1304,6 +1310,14 @@ function openSqlite(home, workspaceId, opts) {
       for (const row of rows) out[row.gate_name] = row.value === 1 || row.value === 1n;
       return out;
     },
+    // currentGateSetBy(id) -> { [gate]: set_by|null } of each gate's LATEST row
+    // (the row currentGates' value comes from).
+    currentGateSetBy(id) {
+      const rows = db.prepare('SELECT gate_name, set_by FROM gates WHERE workspace_id = ? ORDER BY id ASC;').all(String(id));
+      const out = {};
+      for (const row of rows) out[row.gate_name] = row.set_by == null ? null : String(row.set_by);
+      return out;
+    },
     close() { try { db.close(); } catch (_) {} },
     // getReadError() -> null, always. fl-wave4 fix (item 2): the sqlite
     // backend has no deferred/lazy-open failure mode to report — a genuinely
@@ -2018,6 +2032,14 @@ function openJournal(home, workspaceId, fsi, lockOpts, opts) {
       const out = {};
       for (const row of readAll(files.gates)) {
         if (String(row.workspaceId) === wid && row.name != null) out[row.name] = !!row.value;
+      }
+      return out;
+    },
+    currentGateSetBy(id) {
+      const wid = String(id);
+      const out = {};
+      for (const row of readAll(files.gates)) {
+        if (String(row.workspaceId) === wid && row.name != null) out[row.name] = row.setBy == null ? null : String(row.setBy);
       }
       return out;
     },
@@ -2892,6 +2914,14 @@ function computeSummary(store, opts) {
     if (Object.prototype.hasOwnProperty.call(gates, 'merged_verified')) {
       workspaces[d.id].mergedVerified = gates.merged_verified;
     }
+    // doneHead (P1-B): the HEAD sha the child's `done` verb recorded with the
+    // CURRENT done row. Absent for a done set any other way (no sha) or cleared.
+    if (gates.done === true && typeof store.currentGateSetBy === 'function') {
+      const by = (store.currentGateSetBy(d.id) || {}).done;
+      if (typeof by === 'string' && by.startsWith(DONE_GATE_SETBY_PREFIX) && by.length > DONE_GATE_SETBY_PREFIX.length) {
+        workspaces[d.id].doneHead = by.slice(DONE_GATE_SETBY_PREFIX.length);
+      }
+    }
     // Emitted ONLY when the backstop actually bit, so an untruncated workspace stays
     // byte-identical for existing readers (same convention as orphans/recent's
     // occurrences). `dropped` is how many DISTINCT SENDERS' questions are missing.
@@ -3304,7 +3334,7 @@ module.exports = {
   // v0.58 (archive-request store write, deriveSummary archive_requested):
   ARCHIVE_REQUEST_MARKER,
   // 0.108.3 (child `done` verb's structured done message):
-  DONE_REPORT_MARKER,
+  DONE_REPORT_MARKER, DONE_GATE_SETBY_PREFIX,
   // GC — age-based summaries/ pruning, never touching an in-use repoKey:
   gcStaleSummaries, GC_STALE_SUMMARIES_DAYS_DEFAULT,
 };

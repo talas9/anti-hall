@@ -38,9 +38,19 @@ the update.
   those rows are only written by a manual `devswarm.js gate --set`. Gate (a) now also
   passes on the child's structured done-report: the `done` gate on its own
   (`devswarm.js gate <id> --set done`). `tests_passed` is not required, because gate (b)
-  still has to prove the merge from git ancestry or the PR, and gates (c)-(g) are
-  unchanged. Chat text such as "DONE" never counts. Only the auto-archive decision
-  changed; `archive_ready` means the same for the parent gate and the merge gate.
+  still has to prove the merge, and gates (c)-(g) are unchanged. Chat text such as "DONE"
+  never counts. Only the auto-archive decision changed; `archive_ready` means the same for
+  the parent gate and the merge gate.
+- **A stale `done` gate could auto-archive unmerged commits.** The gate was never cleared,
+  so a child that reused its branch after a squash-merged PR kept `done`, the PR fallback
+  matched the old merged PR, and new commits were eligible. The `done` verb now records
+  the worktree HEAD with the gate (`set_by` `devswarm-done@<sha>`, projected as
+  `doneHead`), and gate (a) honours it only while that sha is still HEAD. Gate (b)'s
+  app PR row no longer overrides a git "not an ancestor" result. It is used only when
+  ancestry can't be determined (source branch or both refs missing locally), and only for a
+  done-report tied to HEAD. A `done` set any other way (`gate --set done`, no sha) still
+  works for the Primary, but needs the git-ancestry proof. A squash-merged child therefore
+  isn't auto-archived while its source branch is available locally; archive it by hand.
 - **Nothing made a child set the `done` gate, so auto-archive still never fired.** New
   child verb `devswarm.js done [<id>] [--summary "..."]`: it sets the `done` gate on the
   caller's own workspace id (never `merged`/`tests_passed`) and sends the Primary one

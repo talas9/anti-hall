@@ -76,14 +76,15 @@ function fixture(fake, children, opts) {
   const deps = {
     descriptors: () => Object.values(byId).map((f) => ({ id: f.id, worktreePath: f.wt, sessionId: 's-' + f.id })),
     repoKey: () => 'proj-abc123',
-    summary: () => ({ workspaces: Object.fromEntries(Object.values(byId).map((f) => [f.id, { id: f.id, archive_ready: f.done, gates: f.gates || {}, unread: f.unread, broadcastUnread: 0, cursor: 0 }])) }),
+    summary: () => ({ workspaces: Object.fromEntries(Object.values(byId).map((f) => [f.id, { id: f.id, archive_ready: f.done, gates: f.gates || {}, doneHead: f.doneHead, unread: f.unread, broadcastUnread: 0, cursor: 0 }])) }),
     unreadFrom: (h, k, ids) => ids.reduce((n, id) => n + ((byId[id] && byId[id].unreadFrom) || 0), 0),
     activityTs: (d) => byId[d.id].activity,
     git: (cwd, args) => {
       const f = facts[cwd];
       if (!f) return { ok: false, status: 128, out: '' };
       if (args[0] === 'status') return f.porcelain === null ? { ok: false, status: 128, out: '' } : { ok: true, status: 0, out: f.porcelain };
-      if (args[0] === 'rev-parse') return { ok: true, status: 0, out: 'abc\n' };
+      if (args[0] === 'rev-parse' && args[1] === '--verify' && f.refsMissing) return { ok: false, status: 1, out: '' };
+      if (args[0] === 'rev-parse') return { ok: true, status: 0, out: (f.head || 'abc') + '\n' };
       if (args[0] === 'merge-base') return { ok: f.ancestor, status: f.ancestor ? 0 : 1, out: '' };
       return { ok: false, status: 1, out: '' };
     },
@@ -136,7 +137,7 @@ for (const [name, over, gate] of PRECONDITIONS) {
 // 0.108.3 — gate (a) accepts the child's structured done-report (the `done`
 // gate row alone) when the merge is PROVEN (gate b) and c-g pass.
 test('done-report (done gate only) + proven merge + c-g pass -> wouldArchive', { skip }, () => {
-  const fx = fixture(V252, [{ id: 'c1', done: false, gates: { done: true } }]);
+  const fx = fixture(V252, [{ id: 'c1', done: false, gates: { done: true }, doneHead: 'abc' }]);
   const r = L.autoArchiveSweep(opts(fx, { settings: DRY }));
   assert.deepStrictEqual(r.wouldArchive, ['c1']);
   const c = L.planAutoArchive(opts(fx, { settings: DRY })).candidates[0];
@@ -145,7 +146,7 @@ test('done-report (done gate only) + proven merge + c-g pass -> wouldArchive', {
 });
 
 test('done-report WITHOUT a proven merge -> blocked on b-merged', { skip }, () => {
-  const fx = fixture(V252, [{ id: 'c1', done: false, gates: { done: true }, ancestor: false }]);
+  const fx = fixture(V252, [{ id: 'c1', done: false, gates: { done: true }, doneHead: 'abc', ancestor: false }]);
   const r = L.autoArchiveSweep(opts(fx, { settings: DRY }));
   assert.deepStrictEqual(r.wouldArchive, []);
   const c = L.planAutoArchive(opts(fx, { settings: DRY })).candidates[0];
@@ -186,11 +187,58 @@ test('chat text "DONE" with no structured report -> blocked on a-done (real stor
   assert.strictEqual(summaryGate.workspaces.c1.archive_ready, false, 'archive_ready meaning unchanged for other consumers');
 });
 
-test('merged via PR state=merged when git ancestry says no (squash merge)', { skip }, () => {
-  const fx = fixture(V252, [{ id: 'c1', ancestor: false, pr: 'merged' }]);
-  const plan = L.planAutoArchive(opts(fx, { settings: DRY }));
-  assert.deepStrictEqual(plan.toArchive, ['c1']);
-  assert.strictEqual(plan.candidates[0].facts.merged.via, 'pr');
+// P1-B — the done gate is tied to the HEAD it was reported at, and the app's PR
+// record never overrides a resolved git "not an ancestor".
+const blockersOf = (fx) => L.planAutoArchive(opts(fx, { settings: DRY })).candidates[0].blockers.map((b) => b.gate);
+
+test('P1-B squash-merged PR + branch reused with new commits (done at the old HEAD) -> blocked', { skip }, () => {
+  const fx = fixture(V252, [{ id: 'c1', done: false, gates: { done: true }, doneHead: 'old-sha', head: 'new-sha', ancestor: false, pr: 'merged' }]);
+  assert.deepStrictEqual(L.autoArchiveSweep(opts(fx, { settings: DRY })).wouldArchive, []);
+  assert.deepStrictEqual(blockersOf(fx), ['a-done', 'b-merged']);
+  const c = L.planAutoArchive(opts(fx, { settings: DRY })).candidates[0];
+  assert.strictEqual(c.facts.doneVia, 'stale-head');
+  assert.match(c.blockers[0].detail, /done reported at old-sha but HEAD is now new-sha/);
+  // The child re-reports done at the new HEAD: still blocked, the old merged
+  // PR does not prove the new commits.
+  fx.byId.c1.doneHead = 'new-sha';
+  assert.deepStrictEqual(blockersOf(fx), ['b-merged']);
+  assert.strictEqual(L.planAutoArchive(opts(fx, { settings: DRY })).candidates[0].facts.merged.via, 'git:not-ancestor');
+});
+
+test('P1-B done at the old HEAD, new HEAD, merge proven by git -> still blocked on a-done', { skip }, () => {
+  const fx = fixture(V252, [{ id: 'c1', done: false, gates: { done: true }, doneHead: 'old-sha', head: 'new-sha' }]);
+  assert.deepStrictEqual(blockersOf(fx), ['a-done']);
+  fx.byId.c1.doneHead = 'new-sha'; // re-reported at the current HEAD
+  assert.strictEqual(L.planAutoArchive(opts(fx, { settings: DRY })).candidates[0].eligible, true);
+});
+
+test('P1-B PR fallback never overrides a non-ancestor, even for a HEAD-bound done-report', { skip }, () => {
+  const fx = fixture(V252, [{ id: 'c1', done: false, gates: { done: true }, doneHead: 'abc', ancestor: false, pr: 'merged' }]);
+  assert.deepStrictEqual(L.planAutoArchive(opts(fx, { settings: DRY })).toArchive, []);
+  assert.deepStrictEqual(blockersOf(fx), ['b-merged']);
+});
+
+test('P1-B PR fallback only when ancestry is undeterminable, and only for a HEAD-bound done-report', { skip }, () => {
+  const fx = fixture(V252, [{ id: 'c1', done: false, gates: { done: true }, doneHead: 'abc', refsMissing: true, pr: 'merged' }]);
+  const c = L.planAutoArchive(opts(fx, { settings: DRY })).candidates[0];
+  assert.strictEqual(c.eligible, true, JSON.stringify(c.blockers));
+  assert.strictEqual(c.facts.merged.via, 'pr');
+  // A sha-less (manual) done gets no PR fallback: git proof only.
+  fx.byId.c1.doneHead = undefined;
+  assert.deepStrictEqual(blockersOf(fx), ['b-merged']);
+  // Nor does the all-gates path.
+  fx.byId.c1.done = true; fx.byId.c1.gates = { done: true, merged: true, tests_passed: true };
+  assert.deepStrictEqual(blockersOf(fx), ['b-merged']);
+});
+
+test('P1-B manual `gate --set done` (no sha) still works for the Primary, with git-ancestry proof', { skip }, () => {
+  const fx = fixture(V252, [{ id: 'c1', done: false, gates: { done: true }, pr: 'merged' }]);
+  const c = L.planAutoArchive(opts(fx, { settings: DRY })).candidates[0];
+  assert.strictEqual(c.eligible, true, JSON.stringify(c.blockers));
+  assert.strictEqual(c.facts.doneVia, 'done-gate');
+  assert.match(c.facts.merged.via, /^git:/);
+  fx.byId.c1.ancestor = false; // the merged PR row is present, git says no
+  assert.deepStrictEqual(blockersOf(fx), ['b-merged']);
 });
 
 test('dry-run writes NOTHING and spawns no archive (even with 2.5.3 available)', { skip }, () => {

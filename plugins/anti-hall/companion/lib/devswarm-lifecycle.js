@@ -209,40 +209,77 @@ function isPrimaryBuilder(b, db, o) {
   } catch (_) { return true; }
 }
 
-function mergedFact(b, db, deps) {
+// mergedFact(b, db, deps, { allowPr }) -> { merged, via } — gate (b).
+// Git ancestry is the proof: HEAD an ancestor of the source branch (local or
+// origin/). A resolved "not an ancestor" is FINAL — the app's PR record never
+// overrides it (P1-B: a branch reused after a squash-merged PR still matches
+// the old merged PR while its new commits are unmerged). The PR fallback runs
+// only when ancestry cannot be determined (worktree, source branch or both refs
+// missing locally, or git failing) AND opts.allowPr — which evaluateCandidate
+// sets only for a done-report bound to the current HEAD.
+function mergedFact(b, db, deps, opts) {
+  const allowPr = !!(opts && opts.allowPr);
   const wt = b.worktreePath;
   const src = b.sourceBranch ? String(b.sourceBranch) : null;
+  let notAncestor = false;
   if (wt && src && fs.existsSync(wt)) {
     for (const ref of [src, 'origin/' + src]) {
       const v = deps.git(wt, ['rev-parse', '--verify', '--quiet', ref + '^{commit}']);
       if (!v.ok) continue;
       const r = deps.git(wt, ['merge-base', '--is-ancestor', 'HEAD', ref]);
       if (r.status === 0) return { merged: true, via: 'git:' + ref };
-      if (r.status === 1) break; // resolved: not an ancestor — try the PR fallback
+      if (r.status === 1) notAncestor = true; // resolved; origin/ may still contain it (stale local base)
     }
   }
+  if (notAncestor) return { merged: false, via: 'git:not-ancestor' };
+  if (!allowPr) return { merged: false, via: 'unproven' };
   const pr = (db.prs || []).find((p) => (b.pullRequestId && p.id === b.pullRequestId)
     || (p.branchName === b.branchName && (!p.repositoryId || !b.repositoryId || p.repositoryId === b.repositoryId)));
   if (pr && String(pr.state || '').toLowerCase() === 'merged') return { merged: true, via: 'pr' };
   return { merged: false, via: pr ? 'pr:' + String(pr.state || '').toLowerCase() : 'unproven' };
 }
 
-// doneFact(summary, ids) -> { done, via } — gate (a), scoped to AUTO-ARCHIVE
-// only (archive_ready keeps its meaning for the parent gate / merge gate).
-// Passes on EITHER:
-//   'gates'       — archive_ready: every required gate set (the original path)
-//   'done-report' — the child's structured done-report: the `done` row in the
-//                   mesh store's gates table (set by the child's `devswarm.js
-//                   done` verb), projected as summary.workspaces[id].gates.done.
-// tests_passed is deliberately NOT required here: gate (b) independently
-// PROVES the merge from git ancestry / PR state, and an archive is reversible.
-// Free chat text ("DONE", a heartbeat --summary) never counts.
-function doneFact(summary, ids) {
+// doneFact(summary, ids, head) -> { done, via, boundToHead } — gate (a), scoped
+// to AUTO-ARCHIVE only (archive_ready keeps its meaning for the parent gate /
+// merge gate). A done row the child's `devswarm.js done` verb wrote carries the
+// HEAD it reported at (summary doneHead, P1-B). Passes on:
+//   'done-report' — that doneHead equals the worktree's CURRENT HEAD
+//                   (boundToHead: gate (b) may use the PR fallback when git
+//                   ancestry is undeterminable);
+//   'gates'       — archive_ready with a sha-less done (a manual gate --set);
+//   'done-gate'   — a sha-less done row alone (the Primary's manual
+//                   `gate <id> --set done`).
+// The sha-less paths are not bound to a HEAD, so gate (b) accepts only the
+// git-ancestry proof for them. A done-report at an OLD HEAD ('stale-head')
+// never passes: the child committed after reporting done (e.g. reused its
+// branch after a squash-merged PR). tests_passed is not required: gate (b)
+// proves the merge and an archive is reversible. Chat text never counts.
+function doneFact(summary, ids, head) {
   const ws = (summary && summary.workspaces) || {};
   const rows = ids.map((id) => ws[id]).filter(Boolean);
-  if (rows.some((w) => w.archive_ready === true)) return { done: true, via: 'gates' };
-  if (rows.some((w) => w.gates && w.gates.done === true)) return { done: true, via: 'done-report' };
+  let manual = null;
+  let stale = null;
+  for (const w of rows) {
+    const doneRow = !!(w.gates && w.gates.done === true);
+    if (!doneRow && w.archive_ready !== true) continue;
+    if (doneRow && typeof w.doneHead === 'string' && w.doneHead) {
+      if (head && w.doneHead === head) return { done: true, via: 'done-report', boundToHead: true };
+      if (!stale) stale = w.doneHead;
+      continue;
+    }
+    if (!manual) manual = { done: true, via: w.archive_ready === true ? 'gates' : 'done-gate', boundToHead: false };
+  }
+  if (manual) return manual;
+  if (stale) return { done: false, via: 'stale-head', doneHead: stale };
   return { done: false, via: null };
+}
+
+// worktreeHead(wt, deps) -> sha | null
+function worktreeHead(wt, deps) {
+  if (!wt || !fs.existsSync(wt)) return null;
+  const r = deps.git(wt, ['rev-parse', 'HEAD']);
+  const sha = r && r.ok ? String(r.out || '').trim() : '';
+  return sha || null;
 }
 
 function cleanFact(wt, deps) {
@@ -297,11 +334,16 @@ function evaluateCandidate(c, o, deps, db, settings, now) {
   if (isPrimaryBuilder(b, db, o)) blockers.push({ gate: 'e-primary', detail: 'Primary workspace' });
   const repoKey = deps.repoKey(b.worktreePath || c.descriptors[0].worktreePath);
   const un = unreadFact(o.home, repoKey, c.ids, deps);
-  const done = doneFact(un.summary, c.ids);
+  const head = worktreeHead(b.worktreePath, deps);
+  const done = doneFact(un.summary, c.ids, head);
   facts.done = done.done;
   facts.doneVia = done.via;
-  if (!done.done) blockers.push({ gate: 'a-done', detail: un.summary ? 'no done-report (done gate unset) and finish gates not all set' : 'no mesh summary' });
-  const m = mergedFact(b, db, deps);
+  if (!done.done) {
+    blockers.push({ gate: 'a-done', detail: !un.summary ? 'no mesh summary'
+      : done.via === 'stale-head' ? 'done reported at ' + String(done.doneHead).slice(0, 12) + ' but HEAD is now ' + (head ? head.slice(0, 12) : 'unresolvable') + ' — run done again'
+      : 'no done-report (done gate unset) and finish gates not all set' });
+  }
+  const m = mergedFact(b, db, deps, { allowPr: done.done && done.boundToHead === true });
   facts.merged = m;
   if (!m.merged) blockers.push({ gate: 'b-merged', detail: m.via });
   const cl = cleanFact(b.worktreePath, deps);

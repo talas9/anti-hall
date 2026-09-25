@@ -282,7 +282,11 @@ once its work is merged, which sets the `done` gate on its own id and sends the 
 `[[ANTIHALL_DONE]]` message (idempotent; the roster then shows the child `done`/`archive-pending`,
 and nobody has to archive it by hand); chat text such as "DONE" never counts and `tests_passed` is not required here,
 because (b) proves the merge and an archive can be undone; (b) its branch is merged
-into its source (`git merge-base --is-ancestor`, else the app's PR row says merged),
+into its source (`git merge-base --is-ancestor` against the source branch or `origin/`; a
+"not an ancestor" result is final. The app's PR row counts only when ancestry can't be
+determined, and only for a done-report still tied to HEAD. The `done` verb records the HEAD
+it reported at, and gate (a) ignores that report once HEAD moves on. A `done` set with a
+plain `gate --set done` needs the git proof),
 (c) `git status --porcelain` is empty, (d) there's no unread mail to it or from it,
 (e) it isn't the Primary (the app DB's `builderType` decides; a `primary-<hash>` descriptor id never does), (f) the owner hasn't selected it in the app for 10 min, and
 (g) it has been idle >= `idleMin`. A fact that can't be read counts as not proven.

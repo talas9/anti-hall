@@ -428,8 +428,8 @@ anti-hall depends on it.
   markers, titles, pins, PRs, session map; screenshot sync (`sync-ui`) only as a fallback.
 - **Lifecycle.** Auto-archive of proven-done workspaces (default on, DevSwarm ≥ 2.5.3,
   always by explicit id). "Done" means every finish gate is set, or the child sent its
-  structured done-report and its merge is proven from git ancestry or the PR; chat text
-  never counts. A child reports done by running `devswarm.js done [--summary "..."]` once
+  structured done-report at its current HEAD and its merge is proven from git ancestry
+  (the app's PR row only when ancestry can't be determined); chat text never counts. A child reports done by running `devswarm.js done [--summary "..."]` once
   its work is merged (its SessionStart directive tells it to): that sets its `done` gate and
   sends the Primary one `[[ANTIHALL_DONE]]` message, and the roster shows it
   `done`/`archive-pending`, so nobody archives finished workspaces by hand. The Primary is

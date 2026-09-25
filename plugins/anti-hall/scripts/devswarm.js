@@ -13441,7 +13441,9 @@ function cmdArchiveRequest(id, flags, ctx) {
 // merged/finished. It (1) sets the `done` gate on the caller's OWN workspace id
 // (the cmdGate path; never merged/tests_passed — auto-archive gate (b) proves
 // the merge independently), then (2) sends ONE `[[ANTIHALL_DONE]]` direct
-// message to the Primary. Idempotent: the message hash is keyed on id + the
+// message to the Primary. The gate row records the worktree HEAD
+// (set_by 'devswarm-done@<sha>', P1-B): auto-archive honours the report only
+// while that sha is still HEAD, so new commits after it need a new `done`. Idempotent: the message hash is keyed on id + the
 // worktree HEAD, so a re-run on the same commit inserts nothing. Fail-open on
 // the message leg: the gate row is the authority auto-archive reads.
 function cmdDone(idArg, flags, ctx) {
@@ -13462,7 +13464,14 @@ function cmdDone(idArg, flags, ctx) {
   if (!isSafeId(id)) return { ok: false, action: 'done', reason: 'no-identity', error: 'could not resolve this workspace\'s id' };
   const labelRefusal = childLabelRefusal(id, flags, ctx);
   if (labelRefusal) return Object.assign({ action: 'done' }, labelRefusal);
-  const g = cmdGate(id, { set: ['done'], by: ['devswarm-done'] }, ctx);
+  let head = null;
+  try {
+    const r = spawnSync('git', ['-C', callerIc.worktreeRoot || cwd, 'rev-parse', 'HEAD'], { encoding: 'utf8', timeout: 10000 });
+    if (r.status === 0) head = String(r.stdout || '').trim() || null;
+  } catch (_) { head = null; }
+  // No resolvable HEAD -> a sha-less done: auto-archive then treats it like a
+  // manual `gate --set done` (git-ancestry proof only, never the PR fallback).
+  const g = cmdGate(id, { set: ['done'], by: [head ? store.DONE_GATE_SETBY_PREFIX + head : 'devswarm-done'] }, ctx);
   if (!g.ok) {
     return Object.assign({}, g, { ok: false, action: 'done', id, gateSet: false,
       error: g.error || ('workspace ' + JSON.stringify(id) + ' is not registered in this project\'s mesh — nothing surfaces its done gate') });
@@ -13471,11 +13480,6 @@ function cmdDone(idArg, flags, ctx) {
   const message = store.DONE_REPORT_MARKER + ' ' + id + ' reports done'
     + (summaryText ? ': ' + String(summaryText) : '')
     + ' — auto-archive retires it once the merge is proven and it is clean, read and idle.';
-  let head = null;
-  try {
-    const r = spawnSync('git', ['-C', callerIc.worktreeRoot || cwd, 'rev-parse', 'HEAD'], { encoding: 'utf8', timeout: 10000 });
-    if (r.status === 0) head = String(r.stdout || '').trim() || null;
-  } catch (_) { head = null; }
   const out = { ok: true, action: 'done', id, gateSet: true, gates: g.gates, messaged: false, head };
   try {
     // THE identity resolver: the Primary's mesh id is the main worktree's.

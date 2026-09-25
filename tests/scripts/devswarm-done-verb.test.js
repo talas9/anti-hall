@@ -153,3 +153,71 @@ test('auto-archive plan: blocked on a-done before `done`, wouldArchive after (pr
     assert.deepStrictEqual(L.autoArchiveSweep({ home: f.home, env, now, deps, settings: { mode: 'dry-run', idleMin: 30, maxPerSweep: 3 } }).wouldArchive, [CHILD]);
   } finally { cleanup(f); }
 });
+
+// P1-B — the done gate is tied to the HEAD it was reported at. Real git: the
+// child's work is squash-merged (main gets an equivalent commit, never the
+// child's own), the app shows the PR merged, and the child then REUSES its
+// branch with new, unmerged commits. Nothing may auto-archive it.
+test('P1-B done records HEAD; squash-merged PR + reused branch with new commits is never auto-archived', { skip }, () => {
+  const f = fixture();
+  try {
+    const git = (cwd, ...a) => {
+      const r = cp.spawnSync('git', ['-C', cwd, '-c', 'user.email=a@b.c', '-c', 'user.name=T'].concat(a), { encoding: 'utf8' });
+      assert.equal(r.status, 0, a.join(' ') + ': ' + r.stderr);
+      return String(r.stdout || '').trim();
+    };
+    fs.writeFileSync(path.join(f.child, 'feat.txt'), 'v1\n');
+    git(f.child, 'add', 'feat.txt'); git(f.child, 'commit', '-q', '-m', 'feat v1');
+    // Squash-merge: main gets the same content as a NEW commit.
+    fs.writeFileSync(path.join(f.repo, 'feat.txt'), 'v1\n');
+    git(f.repo, 'add', 'feat.txt'); git(f.repo, 'commit', '-q', '-m', 'feat (squashed)');
+    const dbFile = path.join(f.base, 'devswarm.db');
+    const db = new sqlite.DatabaseSync(dbFile);
+    db.exec('CREATE TABLE builders (id TEXT PRIMARY KEY, repositoryId TEXT, branchName TEXT, sourceBranch TEXT, worktreePath TEXT,'
+      + ' builderType TEXT, isActive INTEGER, isHidden INTEGER, lastSelectedAt TEXT, label TEXT, pullRequestId TEXT)');
+    db.exec('CREATE TABLE pull_requests (id TEXT PRIMARY KEY, repositoryId TEXT, branchName TEXT, state TEXT, targetBranch TEXT)');
+    const ins = db.prepare('INSERT INTO builders VALUES (?,?,?,?,?,?,?,?,?,?,?)');
+    ins.run('p-1', 'r1', 'main', null, f.repo, 'primary', 1, 0, null, 'Primary', null);
+    ins.run(CHILD, 'r1', 'fix-child', 'main', f.child, 'standard', 1, 0, null, 'Fix child', 'pr-1');
+    db.prepare('INSERT INTO pull_requests VALUES (?,?,?,?,?)').run('pr-1', 'r1', 'fix-child', 'merged', 'main');
+    db.close();
+    const bin = fakeHivecontrol(path.join(f.base, 'bin'), V252);
+    const env = { HOME: f.home, PATH: bin.dir + path.delimiter + process.env.PATH, ANTIHALL_DEVSWARM_APP_DB: dbFile, ANTIHALL_DEVSWARM_APP_DB_CACHE_MS: '0' };
+    caps.resetCache();
+    const now = Date.now();
+    const deps = { descriptors: () => [{ id: CHILD, worktreePath: f.child, sessionId: 'sess-child' }], activityTs: () => now - 60 * 60000, unreadFrom: () => 0 };
+    const cand = () => L.planAutoArchive({ home: f.home, env, now, deps, settings: { mode: 'dry-run', idleMin: 30, maxPerSweep: 3 } })
+      .candidates.find((c) => c.id === CHILD);
+
+    const head1 = git(f.child, 'rev-parse', 'HEAD');
+    const r = cli.run(['done'], { home: f.home, env: childEnv(f), cwd: f.child });
+    assert.equal(r.code, 0, JSON.stringify(r.result));
+    const sum = withStore(f, (s) => storeLib.computeSummary(s, { home: f.home }).workspaces[CHILD]);
+    assert.equal(sum.gates.done, true);
+    assert.equal(sum.doneHead, head1, 'done records the HEAD it reported at');
+    // Squash merge: git says not-an-ancestor, and the merged PR never overrides it.
+    let c = cand();
+    assert.deepStrictEqual(c.blockers.map((b) => b.gate), ['b-merged'], JSON.stringify(c.blockers));
+    assert.equal(c.facts.merged.via, 'git:not-ancestor');
+
+    // Branch reused: new unmerged commits after the done-report.
+    fs.writeFileSync(path.join(f.child, 'feat.txt'), 'v2 unmerged\n');
+    git(f.child, 'commit', '-q', '-am', 'feat v2');
+    c = cand();
+    assert.deepStrictEqual(c.blockers.map((b) => b.gate), ['a-done', 'b-merged'], JSON.stringify(c.blockers));
+    assert.equal(c.facts.doneVia, 'stale-head');
+    // Re-reporting done at the new HEAD still cannot archive unmerged commits.
+    assert.equal(cli.run(['done'], { home: f.home, env: childEnv(f), cwd: f.child }).code, 0);
+    c = cand();
+    assert.deepStrictEqual(c.blockers.map((b) => b.gate), ['b-merged'], JSON.stringify(c.blockers));
+    assert.deepStrictEqual(L.autoArchiveSweep({ home: f.home, env, now, deps, settings: { mode: 'dry-run', idleMin: 30, maxPerSweep: 3 } }).wouldArchive, []);
+
+    // A plain `gate --set done` (no sha) clears doneHead: manual path, git proof only.
+    assert.equal(cli.run(['gate', CHILD, '--set', 'done'], { home: f.home, env: f.env, cwd: f.child }).result.ok, true);
+    const sum2 = withStore(f, (s) => storeLib.computeSummary(s, { home: f.home }).workspaces[CHILD]);
+    assert.equal(sum2.doneHead, undefined);
+    c = cand();
+    assert.equal(c.facts.doneVia, 'done-gate');
+    assert.deepStrictEqual(c.blockers.map((b) => b.gate), ['b-merged']);
+  } finally { cleanup(f); }
+});
