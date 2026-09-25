@@ -23,6 +23,7 @@
 
 const path = require('path');
 const os = require('os');
+const fs = require('fs');
 
 function updateLib() {
   return require(path.join(__dirname, '..', '..', 'skills', 'update', 'scripts', 'update.js'));
@@ -80,7 +81,19 @@ function isVersionStale(recordedVersion, newestVersion) {
  * `['companion', 'lib', 'devswarm-wake-watch.js']` for the watcher itself.
  * `newestVersion` may be passed in (already resolved by the caller) to avoid
  * a redundant newestKnownAntiHallVersion() call; resolved fresh otherwise.
- * Null (never a guessed/partial path) when the version cannot be resolved.
+ * Null (never a guessed/partial path) when the version cannot be resolved OR
+ * when the resulting path does not actually exist on disk.
+ *
+ * Root cause this guards against (field repro 2026-09-25, same class as
+ * devswarm-wake-watch.js's own checkStaleVersion): `newest` is the MAX of
+ * three independent sources (installed_plugins.json, the newest CACHE dir,
+ * and the marketplace clone's plugin.json). The marketplace clone can
+ * fast-forward via a plain `git pull` well before anything mirrors that
+ * version into the plugin cache — `newest` can legitimately name a version
+ * with NO cache dir on disk yet. A caller that blindly builds and surfaces
+ * `<cacheRoot>/<newest>/...` then hands out a `node <path>` command that
+ * crashes the instant it runs. Verify the exact target FILE exists before
+ * returning it, never just the version directory.
  */
 function newestCliPath(opts) {
   const o = opts || {};
@@ -90,7 +103,13 @@ function newestCliPath(opts) {
     const paths = upd.resolvePaths(o.env || process.env, home);
     const newest = o.newestVersion || newestKnownAntiHallVersion(o);
     if (!upd.isSemver(newest)) return null;
-    return path.join(paths.cacheRoot, newest, ...(o.segments || []));
+    const target = path.join(paths.cacheRoot, newest, ...(o.segments || []));
+    try {
+      if (!fs.statSync(target).isFile()) return null;
+    } catch (_) {
+      return null; // the version dir (or the file inside it) does not exist yet
+    }
+    return target;
   } catch (_) {
     return null;
   }

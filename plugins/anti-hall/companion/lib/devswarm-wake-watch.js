@@ -252,7 +252,7 @@ function readInstalledPluginVersion() {
   } catch (_) { return null; }
 }
 
-// checkStaleVersion(ownVersion, env) -> { newestVersion, scriptPath } | null.
+// checkStaleVersion(ownVersion, env) -> { newestVersion, scriptPath: string|null } | null.
 // P0 field root cause (item 4c): a child auto-resumed BEFORE the harness
 // re-registered a newer anti-hall build keeps this watcher (and everything
 // else in its process) running the OLD build's code indefinitely — nothing
@@ -284,7 +284,20 @@ function checkStaleVersion(ownVersion, env) {
     }
     if (!newest || upd.compareVersions(ownVersion, newest) >= 0) return null;
     const scriptPath = path.join(paths.cacheRoot, newest, 'companion', 'lib', 'devswarm-wake-watch.js');
-    return { newestVersion: newest, scriptPath };
+    // Root-cause fix (field repro 2026-09-25): `newest` above is the MAX of
+    // three independent sources — installed_plugins.json, the newest CACHE
+    // dir, and the marketplace clone's plugin.json. The marketplace clone can
+    // fast-forward (a plain `git pull`) well before anything mirrors that
+    // version into the plugin cache, so `newest` can legitimately name a
+    // version with NO cache dir on disk at all. Building `scriptPath` from
+    // `newest` unconditionally then hands the caller a `node <path>` command
+    // that crashes with exit 1 the moment it runs (exactly what happened
+    // live: marketplace at 0.108.5, cache still only holding 0.108.4).
+    // A directive must only ever name a path that EXISTS — verify the exact
+    // file, not just the version directory, before returning it.
+    let scriptExists = false;
+    try { scriptExists = fs.statSync(scriptPath).isFile(); } catch (_) { scriptExists = false; }
+    return { newestVersion: newest, scriptPath: scriptExists ? scriptPath : null };
   } catch (_) {
     return null; // fail-open: a resolution failure must never falsely exit a healthy watcher
   }
@@ -302,6 +315,23 @@ function formatStaleVersionLine(role, id, ownVersion, newestVersion, scriptPath)
     + 'Re-arm with `node ' + scriptPath + '` (Monitor tool, persistent: true if supported — '
     + 'otherwise max timeout_ms + re-arm on the tool\'s final/expired event) to pick it up. '
     + 'Exiting now — never running on as a silent stale watcher.';
+}
+
+// formatUpdateAvailableLine(role, id, ownVersion, newestVersion) -> the ONE
+// line emitted when checkStaleVersion sees a newer version NAME but has no
+// existing path to re-arm against (the version is only known via
+// installed_plugins.json/marketplace — its cache dir has not been mirrored
+// yet). Unlike formatStaleVersionLine, this NEVER tells the caller to exit:
+// there is nothing to re-arm against yet, and leaving a workspace with no
+// watcher at all over an update that has not finished syncing would be
+// strictly worse than staying on the current (still-working) build. Edge-
+// triggered by the caller (once per newestVersion) so it does not spam every
+// poll tick the way the stale-build check itself runs.
+function formatUpdateAvailableLine(role, id, ownVersion, newestVersion) {
+  return '[wake-watch] update available: anti-hall ' + newestVersion + ' is registered, but no cache directory for it '
+    + 'exists on disk yet (this watcher for ' + (role || 'unknown') + ' ' + (id || 'unknown')
+    + ' stays on ' + (ownVersion || 'unknown') + '). Not exiting — nothing to re-arm against yet; '
+    + 'this will be re-checked on the next update sync.';
 }
 
 // resolveOwnSessionId() -> string | undefined. Best-effort identifier for the
@@ -1150,6 +1180,11 @@ function main() {
   let savedTotal2 = st.lastTotal2;
   let savedBroadcast = st.lastBroadcastUnread;
 
+  // Edge-trigger dedup for the "update available, no cache dir yet" notice —
+  // checkStaleVersion() runs every poll tick, but this notice must fire at
+  // most once per distinct newestVersion, not every ~2s forever.
+  let notifiedUpdateVersion = null;
+
   let cleaned = false;
   // fl-wave3 fix (item 7): `skipSave` — set true ONLY by the lock-lost exit
   // path below. `st` at that point is THIS process's own (now-stale) view of
@@ -1215,12 +1250,26 @@ function main() {
     // fresh again — this never leaves stale watcher-lock state behind either
     // (cleanup() releases the lock normally, freeing a fresh arm to succeed).
     const staleVersion = checkStaleVersion(ownVersion, env);
-    if (staleVersion) {
+    if (staleVersion && staleVersion.scriptPath) {
+      // A newer build is registered AND its cache dir/file genuinely exist on
+      // disk — safe to point the caller at a re-arm command that will work.
       try {
         emitLine(formatStaleVersionLine(watchedRole, id, ownVersion, staleVersion.newestVersion, staleVersion.scriptPath));
       } catch (_) {}
       cleanup();
       return;
+    } else if (staleVersion && staleVersion.newestVersion) {
+      // A newer version NAME is known (installed_plugins.json / marketplace),
+      // but nothing exists on disk yet to re-arm against (root cause of the
+      // field crash: exiting here and naming a nonexistent cache path would
+      // leave this workspace with NO watcher at all). Say so once per
+      // distinct version, and keep running on the current build.
+      if (staleVersion.newestVersion !== notifiedUpdateVersion) {
+        notifiedUpdateVersion = staleVersion.newestVersion;
+        try {
+          emitLine(formatUpdateAvailableLine(watchedRole, id, ownVersion, staleVersion.newestVersion));
+        } catch (_) {}
+      }
     }
 
     let snapshot;
@@ -1265,6 +1314,7 @@ module.exports = {
   formatErrorLine,
   formatRefusalLine,
   formatLockLostLine,
+  formatUpdateAvailableLine,
   REFUSAL_REASONS,
   ERROR_TOLERANCE,
   ERROR_BACKOFF_MS,

@@ -38,10 +38,20 @@ function writeHeartbeatVersion(home, id, version) {
 // resolvePaths(env, homedir) takes `home` directly as its homedir param, so
 // laying this out under the SAME fixture `home` D.runChecks receives is
 // sufficient isolation — no ANTIHALL_MARKETPLACE_DIR override needed.
-function layoutNewestVersion(home, version) {
+function layoutNewestVersion(home, version, opts) {
   const pluginsRoot = path.join(home, '.claude', 'plugins');
   fs.mkdirSync(path.join(pluginsRoot, 'marketplaces', 'anti-hall'), { recursive: true });
-  fs.mkdirSync(path.join(pluginsRoot, 'cache', 'anti-hall', 'anti-hall', version), { recursive: true });
+  const versionDir = path.join(pluginsRoot, 'cache', 'anti-hall', 'anti-hall', version);
+  fs.mkdirSync(versionDir, { recursive: true });
+  // Real cache mirrors the WHOLE plugin tree atomically (dir exists -> the
+  // file inside it exists too). Write the scripts/devswarm.js stub unless a
+  // caller explicitly wants to simulate the version-known-but-not-yet-
+  // mirrored case (skipCliFile: true) — see the dedicated test below.
+  if (!(opts && opts.skipCliFile)) {
+    const scriptsDir = path.join(versionDir, 'scripts');
+    fs.mkdirSync(scriptsDir, { recursive: true });
+    fs.writeFileSync(path.join(scriptsDir, 'devswarm.js'), '// stub for tests\n', 'utf8');
+  }
   fs.writeFileSync(path.join(pluginsRoot, 'installed_plugins.json'),
     JSON.stringify({ version: 2, plugins: { 'anti-hall@anti-hall': [{ scope: 'user', version }] } }), 'utf8');
 }
@@ -92,6 +102,25 @@ test('a workspace with no heartbeat version at all (legacy, pre-item-4a) -> no f
 
     const r = D.runChecks({ home, env: {} });
     assert.ok(!r.results.some((x) => /stale anti-hall/.test(x.message)), JSON.stringify(r.results));
+  } finally { cleanup(); }
+});
+
+test('newest version is known (installed_plugins.json) but its cache dir/CLI file does not exist yet -> WARN still fires, but with NO fabricated path (root-cause regression, field repro 2026-09-25)', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    layoutNewestVersion(home, '0.107.1', { skipCliFile: true });
+    makeDescriptorWorkspace(home, 'e');
+    writeVerdict('e', { status: 'stale', lastOutboundTs: 1 }, home);
+    writeHeartbeatVersion(home, 'e', '0.105.3');
+
+    const r = D.runChecks({ home, env: {} });
+    const line = r.results.find((x) => /workspace e: stale anti-hall/.test(x.message));
+    assert.ok(line, 'the WARN must still fire (the newer version IS known): ' + JSON.stringify(r.results));
+    assert.strictEqual(line.status, D.WARN);
+    // Must NEVER name a `node <path>` command pointing at a cache dir/file
+    // that does not exist on disk (the live crash this test guards against).
+    assert.doesNotMatch(line.message, /node .*0\.107\.1.*devswarm\.js/);
+    assert.match(line.message, /stale anti-hall 0\.105\.3: restart this session \(or drain with `the newest anti-hall CLI`\)/);
   } finally { cleanup(); }
 });
 
