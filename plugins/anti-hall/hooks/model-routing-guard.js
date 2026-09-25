@@ -105,6 +105,36 @@ const COMPLEX = [
   'root cause', 'workflow analysis', 'logic', 'mockup', 'security',
 ];
 
+// Row-4 ONLY (planning-shaped-on-haiku advisory) uses a STRICTER intent regex,
+// not the broad COMPLEX list above. Field data (2026-09-25, ~316 real haiku
+// spawns sampled from this project's own transcripts) showed COMPLEX's bare
+// single words ('review', 'audit', 'design', 'plan', 'root cause', 'regression',
+// 'logic') false-positiving at a 24% rate on mechanical work — matching inside
+// backtick-quoted config keys/CLI flags (`jev.audit.snippets`), inside ledger
+// content being copied verbatim ("## Release v0.95.0 ... design decision..."),
+// and against generic status/report/check words that were never actually in
+// COMPLEX but rode along with it. PLANNING_INTENT_RE requires an actual planning
+// VERB PHRASE (design/plan + article, deep/code/security review, brainstorm,
+// architecture, root-cause/regression ANALYSIS, security audit, etc.), matched
+// only against the corpus with backtick-quoted spans stripped (mechanical CLI
+// syntax and config keys live there). READONLY_SUPPRESS_RE additionally
+// suppresses Row 4 when the corpus explicitly marks itself read-only/mechanical/
+// verbatim/fixed-command — a genuine planning ask does not talk like that.
+// COMPLEX itself is UNCHANGED and still backs the Rows 1-3 veto (being generous
+// there only prevents a block, which is the safe direction).
+const PLANNING_INTENT_RE =
+  /\b(architect(?:ure)?|brainstorm|design\s+(?:a|the|an)\b|plan\s+(?:a|the|an|out)\b|deep\s+review|code\s+review|design\s+review|security\s+review|review\s+the\s+(?:code|design|architecture|plan)|critique|debate|merge\s+order|workflow\s+analysis|root[- ]cause\s+analysis|regression\s+analysis|security\s+audit)\b/i;
+
+const READONLY_SUPPRESS_RE =
+  /\b(verbatim|read[- ]?only|mechanical|append\s*only|run\s+exactly|do\s+nothing\s+else|nothing\s+else|no\s+other\s+file\s+edits|no\s+repo\s+edits|no\s+source\s+edits)\b/i;
+
+// Strip fenced/inline code spans before Row-4 intent matching — mechanical CLI
+// syntax and dotted config keys (e.g. `jev.audit.snippets`) live inside them and
+// must not count as planning-intent language.
+function stripCodeSpans(s) {
+  return s.replace(/```[\s\S]*?```/g, ' ').replace(/`[^`]*`/g, ' ');
+}
+
 // Normalize for token matching: NFKC (fold homoglyph/compatibility forms) +
 // casefold (lowercase). Then split into word tokens on non-letter/digit runs so
 // matching is word-boundary-anchored (no substring false hits like "list" in
@@ -396,11 +426,18 @@ function main() {
     );
   }
 
-  // Row 4: complex ∧ explicit haiku => advisory (planning-shaped task on haiku).
-  if (complex > 0 && model === 'haiku') {
+  // Row 4: genuine planning-intent phrase ∧ explicit haiku => advisory
+  // (planning-shaped task on haiku). Uses PLANNING_INTENT_RE (stricter than
+  // COMPLEX — see its comment above), matched with code spans stripped, and
+  // suppressed when the corpus marks itself read-only/mechanical/verbatim/
+  // fixed-command (READONLY_SUPPRESS_RE).
+  if (model === 'haiku' &&
+      !READONLY_SUPPRESS_RE.test(corpus) &&
+      PLANNING_INTENT_RE.test(stripCodeSpans(corpus))) {
     advise(
-      'MODEL-ROUTING (advisory): this looks planning-shaped (review/plan/audit/' +
-      'design) but runs on haiku — consider opus or fable for deeper reasoning.'
+      'MODEL-ROUTING (advisory): this looks planning-shaped (architecture/design/' +
+      'plan/brainstorm/deep review) but runs on haiku — consider opus or fable for ' +
+      'deeper reasoning.'
     );
   }
 

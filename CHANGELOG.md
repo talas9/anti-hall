@@ -73,6 +73,27 @@ the update.
   only the one literal it used to check. The wake watcher's refusal vocabulary gains
   `disabled-by-settings`.
 
+### Fixes
+
+- **`model-routing-guard`'s planning-shaped-on-haiku advisory false-positived on
+  mechanical work.** Row 4 matched the broad `COMPLEX` word list (bare `review`,
+  `audit`, `design`, `plan`, `root cause`, `regression`, `logic`, `security`)
+  anywhere in the spawn's description/prompt, including inside backtick-quoted
+  config keys/CLI flags (`` `jev.audit.snippets` ``) and inside ledger content
+  being copied verbatim. A 316-spawn field sample from this project's own
+  transcripts measured a 24% false-positive rate on haiku spawns that were
+  correctly mechanical (status checks, report reads, ledger appends, defect
+  filing, CI watching). Row 4 now uses a stricter `PLANNING_INTENT_RE` (an
+  actual planning verb phrase: `design a/the`, `plan a/the`, `architecture`,
+  `brainstorm`, `deep/code/security review`, `root cause analysis`, `security
+  audit`, etc.), matched with backtick-quoted spans stripped, and suppressed
+  when the corpus marks itself read-only/mechanical/verbatim/fixed-command
+  (`READONLY_SUPPRESS_RE`). Measured false-positive rate on the sampled corpus:
+  24.1% → 0%; recall on genuine planning-shaped fixtures (design/plan/review/
+  audit/root-cause tasks) unchanged at 100%. Rows 1-3's `COMPLEX`-anywhere veto
+  is untouched — it stays broad because being generous there only prevents a
+  block, the safe direction.
+
 ## 0.108.3
 
 ### Features

@@ -47,6 +47,15 @@ function assertSilentAllow(r) {
   assert.ok(r.json === null, `allow must be silent (no JSON); json: ${JSON.stringify(r.json)}`);
 }
 
+// Row 4 specifically did NOT fire (a different row, e.g. Row 6's Explore nudge,
+// may still legitimately advise — this only asserts the planning-shaped advisory
+// is absent).
+function assertNoPlanningAdvisory(r) {
+  assert.strictEqual(r.status, 0, `expected exit 0; stdout: ${r.stdout}`);
+  const ctx = r.json && r.json.hookSpecificOutput && r.json.hookSpecificOutput.additionalContext;
+  assert.ok(!ctx || !/planning-shaped/.test(ctx), `Row 4 planning-shaped advisory must not fire; json: ${JSON.stringify(r.json)}`);
+}
+
 // ---------------------------------------------------------------- Row 1 BLOCK
 
 test('ROW 1: mechanical-only + explicit fable + generic agent -> BLOCK', () => {
@@ -267,6 +276,104 @@ test('ROW 4: complex signal + haiku -> advisory', () => {
       subagent_type: 'general-purpose',
       description: 'plan and review the architecture',
       prompt: 'audit the design and validate the security model',
+    }), { home: h.home });
+    assertAdvisory(r, /planning-shaped/);
+  } finally { h.cleanup(); }
+});
+
+// Regression fixtures (2026-09-25, field FP sweep): Row 4 previously fired on
+// bare COMPLEX words landing inside backtick-quoted config keys/CLI flags, or
+// against generic report/status/check-shaped mechanical work that was never
+// planning-shaped. These are paraphrased from real haiku spawns that wrongly
+// got the advisory before PLANNING_INTENT_RE + READONLY_SUPPRESS_RE.
+test('ROW 4 FP-FIX: "audit" inside a backtick-quoted config key -> no advisory', () => {
+  const h = makeHome();
+  try {
+    const r = testHook(HOOK, payload({
+      model: 'haiku',
+      subagent_type: 'general-purpose',
+      description: 'Enable jev.audit.snippets via settings CLI',
+      prompt: 'Owner-authorized single config change. Use the settings CLI to set `jev.audit.snippets` to true.',
+    }), { home: h.home });
+    assertNoPlanningAdvisory(r);
+  } finally { h.cleanup(); }
+});
+
+test('ROW 4 FP-FIX: read-only report/status task with "review" word -> no advisory', () => {
+  const h = makeHome();
+  try {
+    const r = testHook(HOOK, payload({
+      model: 'haiku',
+      subagent_type: 'general-purpose',
+      description: 'Read Jev report (hourly watch)',
+      prompt: 'Run exactly this read-only command and nothing else: `node scripts/jev-report.js`. ' +
+        'Return the headline lines and any REVIEW or REMOVE verdicts.',
+    }), { home: h.home });
+    assertNoPlanningAdvisory(r);
+  } finally { h.cleanup(); }
+});
+
+test('ROW 4 FP-FIX: mechanical ledger append quoting past "design"/"plan" decisions -> no advisory', () => {
+  const h = makeHome();
+  try {
+    const r = testHook(HOOK, payload({
+      model: 'haiku',
+      subagent_type: 'general-purpose',
+      description: 'Ledger + progress for v0.95.0',
+      prompt: 'Two edits with the Edit tool only (no git; touch nothing else). Append to the ledger: ' +
+        '## Release v0.95.0 — plan change accepted, design decision recorded.',
+    }), { home: h.home });
+    assertSilentAllow(r);
+  } finally { h.cleanup(); }
+});
+
+test('ROW 4 GENUINE: "design the architecture" on haiku -> still advisory', () => {
+  const h = makeHome();
+  try {
+    const r = testHook(HOOK, payload({
+      model: 'haiku',
+      subagent_type: 'general-purpose',
+      description: 'Design the new auth flow',
+      prompt: 'Design the architecture for a new multi-tenant auth flow, weighing 3 approaches and their tradeoffs.',
+    }), { home: h.home });
+    assertAdvisory(r, /planning-shaped/);
+  } finally { h.cleanup(); }
+});
+
+test('ROW 4 GENUINE: deep code review on haiku -> still advisory', () => {
+  const h = makeHome();
+  try {
+    const r = testHook(HOOK, payload({
+      model: 'haiku',
+      subagent_type: 'general-purpose',
+      description: 'Deep code review of parser',
+      prompt: 'Do a deep code review of the new parser module and flag design smells.',
+    }), { home: h.home });
+    assertAdvisory(r, /planning-shaped/);
+  } finally { h.cleanup(); }
+});
+
+test('ROW 4 GENUINE: security audit on haiku -> still advisory', () => {
+  const h = makeHome();
+  try {
+    const r = testHook(HOOK, payload({
+      model: 'haiku',
+      subagent_type: 'general-purpose',
+      description: 'Security audit of auth',
+      prompt: 'Perform a security audit of the authentication flow for injection and privilege-escalation risks.',
+    }), { home: h.home });
+    assertAdvisory(r, /planning-shaped/);
+  } finally { h.cleanup(); }
+});
+
+test('ROW 4 GENUINE: root cause analysis on haiku -> still advisory', () => {
+  const h = makeHome();
+  try {
+    const r = testHook(HOOK, payload({
+      model: 'haiku',
+      subagent_type: 'general-purpose',
+      description: 'Root cause analysis of flaky test',
+      prompt: 'Do a root cause analysis of the flaky CI test, considering timing and shared state.',
     }), { home: h.home });
     assertAdvisory(r, /planning-shaped/);
   } finally { h.cleanup(); }
