@@ -247,3 +247,15 @@ test('settings lock: a writer that judged a dead holder never deletes a live wri
     assert.strictEqual(settings.set('guards', 'mergeGate', 'true', { home }).ok, true);
   } finally { rm(home); }
 });
+
+test('repair-on-reload lock: two hooks reclaiming the SAME dead holder never both spawn; a fresh torn lock is respected', (t) => {
+  const ror = require(path.join(ROOT, 'hooks', 'repair-on-reload.js'));
+  const home = tmpHome();
+  try {
+    const p = ror.lockPath(home);
+    const won = () => (ror.acquireLock(home) ? { acquired: true } : null);
+    globalReclaimRace(t, p, { pid: 2147483646, startedAt: Date.now() }, won);
+    fs.unlinkSync(p);
+    tornFresh(p, won);
+  } finally { rm(home); }
+});

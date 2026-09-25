@@ -37,9 +37,11 @@
 //     "pending" each time is already O(1) and avoids a second source of truth
 //     that could itself drift stale.)
 //   - Something pending -> try to acquire a tiny lock file
-//     (~/.anti-hall/repair-on-reload.lock, atomic 'wx' create). Lock held by a
-//     LIVE pid -> skip (another repair already in flight, this session or
-//     another). Lock held by a DEAD pid (or unreadable/corrupt) -> stolen.
+//     (~/.anti-hall/repair-on-reload.lock, companion/lib/lock.js). Lock held by
+//     a LIVE pid -> skip (another repair already in flight, this session or
+//     another). Lock held by a DEAD pid -> stolen; an unreadable/corrupt one
+//     once it is REPAIR_LOCK_UNKNOWN_STALE_MS old (a fresh one may be a live
+//     holder mid-write).
 //   - Lock acquired -> spawn `node hooks/doctor.js --repair --migrations-only
 //     --quiet` DETACHED
 //     (stdio redirected to a fresh ~/.anti-hall/logs/repair-on-reload-<ts>.log
@@ -201,39 +203,27 @@ function pruneLogs(home) {
   } catch (_) {}
 }
 
-// acquireLock(home) -> true (acquired) | false (held by a live process).
-// Atomic create ('wx'); a pre-existing lock is reclaimed when its pid is dead
-// or the file is unreadable/corrupt (best-effort — never throws outward).
+// acquireLock(home) -> true (acquired) | false (held by a live process, or the
+// lock could not be taken — fail-open, skip this turn). Via the shared lock
+// primitive: a DEAD (or liveness-unknown) holder pid is reclaimed at once, a
+// live one never; an unreadable/corrupt record only once its mtime is older
+// than REPAIR_LOCK_UNKNOWN_STALE_MS. The reclaim is atomic (rename-aside +
+// verify), so two hooks that judged the same dead holder never both spawn.
+// The lock is intentionally NOT released: spawnDetachedRepair re-points it at
+// the detached child's pid, which holds it until it exits.
+const REPAIR_LOCK_UNKNOWN_STALE_MS = 60 * 1000;
+let heldLock = null;
 function acquireLock(home) {
-  const p = lockPath(home);
   try {
-    fs.mkdirSync(path.dirname(p), { recursive: true });
-    fs.writeFileSync(p, JSON.stringify({ pid: process.pid, startedAt: Date.now() }), { flag: 'wx' });
-    return true;
-  } catch (e) {
-    if (!e || e.code !== 'EEXIST') return false; // unexpected fs error -> fail-open, skip this turn
-  }
-  // Lock file already exists — reclaim only if its pid is provably dead.
-  let existing = null;
-  try { existing = JSON.parse(fs.readFileSync(p, 'utf8')); } catch (_) { existing = null; }
-  const pid = existing && Number.isInteger(existing.pid) ? existing.pid : null;
-  let alive = null;
-  if (pid) {
-    try { alive = require('../companion/lib/liveness.js').pidIsAlive(pid); } catch (_) { alive = null; }
-  }
-  if (alive === true) return false; // genuinely in flight elsewhere -> skip
-  // Dead pid / no pid / corrupt file / unknown verdict from a THIS-process
-  // liveness read: reclaim (steal) the lock rather than let a crashed run
-  // wedge repairs forever. Atomic rename avoids a torn read by a concurrent
-  // stealer.
-  try {
-    const tmp = p + '.' + process.pid + '.tmp';
-    fs.writeFileSync(tmp, JSON.stringify({ pid: process.pid, startedAt: Date.now() }));
-    fs.renameSync(tmp, p);
-    return true;
-  } catch (_) {
-    return false; // couldn't steal -> fail-open, skip this turn (retried next turn)
-  }
+    heldLock = require('../companion/lib/lock.js').acquire(lockPath(home), {
+      isAlive(pid) {
+        try { return require('../companion/lib/liveness.js').pidIsAlive(pid) === true; } catch (_) { return false; }
+      },
+      stealDead: true,
+      staleMs: REPAIR_LOCK_UNKNOWN_STALE_MS,
+    });
+  } catch (_) { heldLock = null; }
+  return !!heldLock;
 }
 
 function spawnDetachedRepair(home, runningVersion) {
@@ -266,13 +256,8 @@ function spawnDetachedRepair(home, runningVersion) {
     // repair is still genuinely running. Best-effort; a failure here just means
     // the next hook invocation might see a live-looking placeholder pid for a
     // moment, which is still fail-SAFE (skip, not double-spawn).
-    if (Number.isInteger(child.pid)) {
-      try {
-        const p = lockPath(home);
-        const tmp = p + '.' + process.pid + '.repoint.tmp';
-        fs.writeFileSync(tmp, JSON.stringify({ pid: child.pid, startedAt: Date.now() }));
-        fs.renameSync(tmp, p);
-      } catch (_) {}
+    if (Number.isInteger(child.pid) && heldLock) {
+      try { heldLock.refresh({ pid: child.pid }); } catch (_) {}
     }
     return Number.isInteger(child.pid); // no pid = the spawn itself failed
   } catch (_) {
@@ -321,10 +306,14 @@ function main() {
   pruneLogs(home);
 }
 
-try {
-  main();
-} catch (_) {
-  // Fail-open: plugin.json unreadable, migrations.js missing, unexpected
-  // throw, etc. — never slow or block the session/turn.
+if (require.main === module) {
+  try {
+    main();
+  } catch (_) {
+    // Fail-open: plugin.json unreadable, migrations.js missing, unexpected
+    // throw, etc. — never slow or block the session/turn.
+  }
+  process.exit(0);
 }
-process.exit(0);
+
+module.exports = { acquireLock, lockPath };
