@@ -137,6 +137,17 @@ the update.
   fail/pass patterns now require a non-zero count; plain marker patterns (`FAIL`, `PASS`,
   `--- FAIL:`) are unaffected. Covers pytest, jest, cargo, go test, and mocha summary lines.
 
+- **`devswarm-parent-inbox.js` re-instructed re-sending an already-pending archive-request.**
+  A child the Primary had already sent `archive-request` to kept triggering the CHILD NOT
+  DRAINING nag and the cooldown'd ARCHIVE-READY reminder every turn, even hours later, even
+  while the child's session was still live — the child was simply waiting on its own user,
+  not neglected (field report: SkyCrew, 399105fe/e75cade3). Both are now suppressed while
+  `computeSummary`'s `archive_request_only_unread` is true, resuming automatically once the
+  request is answered/drained or the child resumes other work, or after a new
+  `devswarm.archiveRequestRenagHours` settings key (default 24h) elapses. The dead-session
+  ARCHIVE-READY reminder stays exempt (`archive-request` auto-archives a dead target on its
+  next run, so it is never redundant there); a genuinely `stuck`/escalated status is unaffected.
+
 ### Features
 
 - **`devswarm.heldPartitions` (owner-held mesh partitions).** A new csv settings key

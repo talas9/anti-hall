@@ -1042,6 +1042,34 @@ function broadcastMaxAgeMs(env) {
   return Number.isFinite(n) && n >= 0 ? n : DEFAULT_BROADCAST_MAX_AGE_MS;
 }
 
+// DEFAULT_ARCHIVE_REQUEST_RENAG_MS / resolveArchiveRequestRenagMs(env) —
+// SkyCrew field report (399105fe, e75cade3): with an archive-request already
+// pending (computeSummary's archive_request_only_unread — the ENTIRE current
+// unread backlog for that workspace is the Primary's own not-yet-drained
+// archive-request send), both the CHILD NOT DRAINING nag and the ARCHIVE-
+// READY re-nudge kept re-instructing the Primary to poke/re-send the SAME
+// request it had already sent — the child was simply waiting on its own
+// user, not neglected. Both are suppressed while archiveRequestPending is
+// true (see the two call sites below), UNTIL this interval elapses since the
+// oldest still-unread row (== the archive-request send itself, since it is
+// the only unread row) — at which point either counts as genuinely stale and
+// resumes nagging. 24h default: long enough that a pending human decision on
+// the child's end is not treated as neglect, short enough that a truly
+// abandoned request does not go unnoticed forever. Same env-var-is-hours
+// convention as the schema's own *_SEC/*_MIN vars scaled to this window's
+// natural unit.
+const DEFAULT_ARCHIVE_REQUEST_RENAG_MS = 24 * 60 * 60 * 1000; // 24h
+function resolveArchiveRequestRenagMs(env) {
+  try {
+    const v = require('./lib/settings.js').getWithEnv(
+      'devswarm', 'archiveRequestRenagHours', DEFAULT_ARCHIVE_REQUEST_RENAG_MS / 3600000, env || process.env
+    );
+    if (Number.isFinite(v) && v > 0) return v * 3600000;
+  } catch (_) { /* fall through */ }
+  const n = Number(env && env.ANTIHALL_DEVSWARM_ARCHIVE_REQUEST_RENAG_HOURS);
+  return Number.isFinite(n) && n > 0 ? n * 3600000 : DEFAULT_ARCHIVE_REQUEST_RENAG_MS;
+}
+
 // DEFAULT_INBOX_GRACE_MS / resolveInboxGraceMs(env) — SkyCrew report fix: a
 // direct send to a LIVE child lane was flagged "need attention" as little as
 // 4s after sending, before the child's own Stop-hook loop could realistically
@@ -1655,6 +1683,29 @@ function main() {
       } catch (_) { liveSession = false; }
       archiveReadyQuiet = !liveSession;
     }
+    // ARCHIVE-REQUEST-PENDING (fix: CHILD NOT DRAINING / ARCHIVE-READY nag
+    // re-instructing the Primary to poke/re-send an archive-request it
+    // already sent — SkyCrew field report 399105fe/e75cade3): unlike
+    // archiveReadyQuiet above (dead session ONLY), this fires whenever the
+    // workspace's ENTIRE currently-unread backlog is the Primary's own
+    // archive-request send (archive_request_only_unread), regardless of
+    // whether the child's session is still live — a live child that simply
+    // has not yet drained/acted on the request is not a coordination
+    // failure either; "poke it" would just resend the identical message.
+    // Resumes automatically the moment either condition breaks: the child
+    // reads the row (unread drops to 0 -> archive_request_only_unread's
+    // `unreadRows.length > 0` guard goes false) or the child resumes other
+    // work (a non-archive-request unread row arrives -> the `.every` guard
+    // goes false) — "resolved" and "resumed work" respectively, no separate
+    // bookkeeping needed. Also re-nags on its own after
+    // ARCHIVE_REQUEST_RENAG_MS regardless (archiveRequestStale below) so a
+    // genuinely abandoned request does not go silent forever.
+    const archiveRequestPending = entry.archive_request_only_unread === true;
+    const archiveRequestAgeMs = (archiveRequestPending && Number.isFinite(entry.oldestDirectUnreadTs))
+      ? (now - entry.oldestDirectUnreadTs) : null;
+    const archiveRequestStale = archiveRequestAgeMs !== null
+      && archiveRequestAgeMs >= resolveArchiveRequestRenagMs(process.env);
+    const archiveRequestQuiet = archiveRequestPending && !archiveRequestStale;
     // IGNORE LIST (~/.anti-hall/devswarm/ignore.json {"ids":[...]}, see
     // companion/lib/devswarm-ignore.js): a user-listed id is suppressed from
     // this same urgent/attention nag — still tracked/shown in the roster
@@ -1691,7 +1742,13 @@ function main() {
     // v0.108.0: nor while the owner has this very workspace on screen in the app.
     const rowWs = appWs(id, entry.worktreePath);
     const ownerFocused = !!(focusedId && rowWs && rowWs.id === focusedId);
-    if ((unreadForNag || stuck || notDraining) && !archiveReadyQuiet && !nagIgnored && !appArchivedRow && !ownerFocused) {
+    // archiveRequestQuiet only ever suppresses the unread/notDraining
+    // triggers — a genuinely `stuck` (escalated/wedged) status is a
+    // DIFFERENT liveness signal (verdictStatus, independent of this
+    // workspace's unread contents) and must still nag regardless of a
+    // pending archive-request.
+    if (((unreadForNag && !archiveRequestQuiet) || stuck || (notDraining && !archiveRequestQuiet))
+        && !archiveReadyQuiet && !nagIgnored && !appArchivedRow && !ownerFocused) {
       // wsName/oldestUnreadTs (item 5/6): human title + age for the reworded
       // "CHILD NOT DRAINING" segment below — read-only, zero extra store
       // reads (oldestDirectUnreadTs is already a zero-extra-read projection
@@ -1708,8 +1765,18 @@ function main() {
       // v0.108.0: with auto-archive mode "on" (and the archive verb available)
       // the supervisor archives this workspace itself — no user nag for the
       // rows its last sweep owns (companion/lib/devswarm-lifecycle.js).
+      // archiveRequestQuiet (see its own comment above) suppresses this nudge
+      // ONLY for the still-live-session case (`!archiveReadyQuiet`) — re-
+      // pushing it there would just re-instruct the Primary to send the SAME
+      // request again every ARCHIVE_NUDGE_COOLDOWN_MS while a live child is
+      // simply waiting on its own user. The dead-session (archiveReadyQuiet)
+      // case is DELIBERATELY EXEMPT: cmdArchiveRequest itself auto-archives
+      // a dead+archive-ready target the next time this exact command runs
+      // (see its own header) — re-suggesting it there is not redundant, it
+      // is the only path left to actually finish that workspace.
       if (archiveReady && !appArchivedRow && !ownerFocused && !isArchiveIgnored(home, id)
-          && archiveCooldownElapsed(home, id, now) && !autoArchiveOwnsRow(home, id, now)) {
+          && archiveCooldownElapsed(home, id, now) && !autoArchiveOwnsRow(home, id, now)
+          && !(archiveRequestQuiet && !archiveReadyQuiet)) {
         archiveList.push(id);
       }
     } catch (_) {}

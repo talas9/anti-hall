@@ -696,6 +696,21 @@ reminder), and `migrate`. `command-guard` carries a root-anchored `LIGHT_EXCEPTI
 > left to ever drain it, so it can never clear on its own; it still gets the existing
 > cooldown'd archive-ready nudge and still shows in the table.
 
+> **v0.108.4 — ARCHIVE-REQUEST-PENDING (SkyCrew field report 399105fe/e75cade3).** The
+> `archive_request_only_unread`-based quiet above was DEAD-SESSION ONLY: a still-live child
+> that simply had not yet acted on an already-sent `archive-request` kept getting the LOUD
+> CHILD NOT DRAINING nag AND the cooldown'd ARCHIVE-READY reminder re-instructing the
+> Primary to send the same request again — the child was waiting on its own user, not
+> neglected. Both are now suppressed whenever `archive_request_only_unread` is true,
+> regardless of session liveness, EXCEPT: (1) a genuinely `stuck`/escalated status is a
+> separate liveness signal and still nags, (2) the ARCHIVE-READY reminder stays EXEMPT for
+> the dead-session case specifically — `archive-request <id>` auto-archives a dead+archive-
+> ready target the next time the Primary runs it, so re-suggesting it there is not
+> redundant. Suppression clears the instant the request is answered (unread drains to 0) or
+> the child resumes other work (a non-archive-request row arrives), and unconditionally
+> after `devswarm.archiveRequestRenagHours` (env `ANTIHALL_DEVSWARM_ARCHIVE_REQUEST_RENAG_HOURS`,
+> default 24h) so a genuinely abandoned request is not silenced forever.
+
 **v0.54.1 follow-up (shipped).** Four refinements on top of the Phase-1 substrate above:
 - **Ingest daemon auto-install (`companion/install-devswarm-ingest.js`).** Until this
   release nothing auto-started `devswarm-ingest.js` — it existed in code but required a

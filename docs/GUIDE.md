@@ -928,6 +928,7 @@ Generated from `hooks/lib/settings-schema.js` (a hygiene test keeps this table a
 | `devswarm.postSpawnGraceSec` adv | `120` [0..1800] | `ANTIHALL_DEVSWARM_POST_SPAWN_GRACE_SEC` | Grace period (sec) right after spawning a child workspace, clamped [0,1800]. |
 | `devswarm.reapedRetentionDays` adv | `30` (>0) | `ANTIHALL_DEVSWARM_REAPED_RETENTION_DAYS` | Retention window (days) for reaped-workspace logs. |
 | `devswarm.receiptWindowMs` adv | `300000` [0..] | `ANTIHALL_DEVSWARM_RECEIPT_WINDOW_MS` | Window (ms) for parent-reply receipt tracking. |
+| `devswarm.archiveRequestRenagHours` adv | `24` [1..] | `ANTIHALL_DEVSWARM_ARCHIVE_REQUEST_RENAG_HOURS` | Hours a pending archive-request suppresses the CHILD NOT DRAINING nag and the ARCHIVE-READY re-nudge for that child before re-nagging anyway. |
 | `devswarm.reconcileSweep` adv | `auto` (auto/off) | `ANTIHALL_DEVSWARM_RECONCILE_SWEEP` | Enable/disable the periodic reconcile sweep in the supervisor. |
 | `devswarm.reconcileSweepSec` adv | `900` [300..] | `ANTIHALL_DEVSWARM_RECONCILE_SWEEP_SEC` | Interval (sec) for the reconcile sweep, floor 300s. |
 | `devswarm.rowStaleMs` adv | `86400000` [0..] | `ANTIHALL_DEVSWARM_ROW_STALE_MS` | Staleness threshold (ms) for workspace row selection. |

@@ -121,7 +121,16 @@ test('ARCHIVE-READY-QUIET REGRESSION GUARD: a REAL (non-self-sent) unread alongs
   } finally { h.cleanup(); }
 });
 
-test('ARCHIVE-READY-QUIET REGRESSION GUARD: a LIVE session (still running) still nags even with archive_request_only_unread', () => {
+// SUPERSEDED by ARCHIVE-REQUEST-PENDING (SkyCrew field report 399105fe/
+// e75cade3): a LIVE session whose ENTIRE unread backlog is the Primary's own
+// pending archive-request is no longer treated as "someone may yet drain it"
+// — the CHILD NOT DRAINING / URGENT INBOX nag was re-instructing the Primary
+// to poke/re-send the SAME archive-request it had already sent, every turn,
+// while the child was simply waiting on its own user to decide. See
+// devswarm-parent-inbox-archive-request-pending.test.js for the full suite
+// covering this suppression (pending/quiet, resumed-on-other-unread,
+// resumed-on-drained, and the 24h archiveRequestRenagHours re-nag).
+test('ARCHIVE-REQUEST-PENDING: a LIVE session whose only unread is a pending archive-request no longer nags urgently', () => {
   const h = makeHome();
   try {
     writeLiveSession(h.home, 'still-running-session');
@@ -134,8 +143,8 @@ test('ARCHIVE-READY-QUIET REGRESSION GUARD: a LIVE session (still running) still
     });
     const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
     const c = ctx(r);
-    assert.ok(segment(c, 'DEVSWARM URGENT INBOX').includes('wsLive'),
-      `a workspace whose session IS still running must still nag (someone may yet drain it); ctx=${c}`);
+    assert.ok(!segment(c, 'DEVSWARM URGENT INBOX').includes('wsLive'),
+      `a pending archive-request must suppress the re-instruct-to-poke nag even while the session is live; ctx=${c}`);
   } finally { h.cleanup(); }
 });
 
