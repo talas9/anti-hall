@@ -299,7 +299,8 @@ function checkStaleVersion(ownVersion, env) {
 function formatStaleVersionLine(role, id, ownVersion, newestVersion, scriptPath) {
   return '[wake-watch] STALE BUILD: this watcher for ' + (role || 'unknown') + ' ' + (id || 'unknown')
     + ' is running anti-hall ' + (ownVersion || 'unknown') + ', but ' + newestVersion + ' is registered/cached. '
-    + 'Re-arm with `node ' + scriptPath + '` (Monitor tool, persistent: true) to pick it up. '
+    + 'Re-arm with `node ' + scriptPath + '` (Monitor tool, persistent: true if supported — '
+    + 'otherwise max timeout_ms + re-arm on the tool\'s final/expired event) to pick it up. '
     + 'Exiting now — never running on as a silent stale watcher.';
 }
 

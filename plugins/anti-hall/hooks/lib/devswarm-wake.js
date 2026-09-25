@@ -327,8 +327,10 @@ function monitorArmLine(watcher) {
     'check whether a mailbox-wake Monitor is already armed so you never arm a second one ' +
     '(double-arming causes duplicate wakes; the watcher script also self-guards with a lock, ' +
     'but do not rely on that alone). If none is armed, call `Monitor` with command `node ' +
-    watcher + '`, `persistent: true`, and a description like "devswarm mailbox wake watcher" — ' +
-    'every line it prints on stdout becomes a transcript event, waking this session even while ' +
+    watcher + '` and a description like "devswarm mailbox wake watcher": use ' +
+    '`persistent: true` if your Monitor tool supports it, else max `timeout_ms` + re-arm on ' +
+    'its final/expired event — never two watchers at once. ' +
+    'Every line it prints on stdout becomes a transcript event, waking this session even while ' +
     'fully idle, with far lower latency than the cron tick above. A first line starting ' +
     '`[wake-watch] REFUSED TO ARM` means you do NOT have this coverage — do not assume ' +
     'you do; the cron job above is still your only wake path.';

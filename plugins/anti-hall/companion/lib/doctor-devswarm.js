@@ -210,8 +210,11 @@ function wakeMonitorSelfTest(watcherMod) {
 // acquires, steals, or deletes the lock; it only reads the file that is
 // already there, if any.
 function wakeMonitorLiveCheck(watcherMod, watcherPath, home, env, cwd) {
-  const armCmd = 'call the `Monitor` tool with command `node ' + watcherPath + '`, `persistent: true`'
-    + ' (or run that command yourself in a background terminal)';
+  const armCmd = 'call the `Monitor` tool with command `node ' + watcherPath + '`, arming it with '
+    + '`persistent: true` if your Monitor tool supports that field — otherwise set `timeout_ms` '
+    + 'to its maximum and re-arm when the tool emits its final/expired event (never run two '
+    + 'watchers; the watcher\'s own lock also guards this, and the cron job stays the fallback '
+    + 'either way) (or run that command yourself in a background terminal)';
   let identity = null;
   try { identity = watcherMod.resolveIdentity(env, cwd, {}); } catch (_) { identity = null; }
   if (!identity) {

@@ -6,6 +6,51 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.108.2 (2026-09-25)
+
+### Fixes
+
+- **DevSwarm mailbox-wake Monitor instruction assumed `persistent: true` is
+  always accepted.** Some Claude Code builds' `Monitor` tool schema is
+  `{command, description, timeout_ms, ws}` with `additionalProperties:false`,
+  so passing an unsupported `persistent` field fails validation outright. The
+  wake-arm instruction (`hooks/lib/devswarm-wake.js`'s `monitorArmLine`,
+  `skills/update/scripts/update.js` and `companion/lib/doctor-devswarm.js`'s
+  `armCmd`, and the stale-build re-arm line in
+  `companion/lib/devswarm-wake-watch.js`) now tells the agent to arm with
+  `persistent: true` only if its Monitor tool supports that field, otherwise
+  set `timeout_ms` to its maximum and re-arm on the tool's final/expired
+  event — never running two watchers at once (the watcher's own lock still
+  guards that), with the cron mailbox job staying the fallback either way.
+  `docs/KB-claude-monitor-tool.md`'s two illustrative Monitor examples carry
+  the same caveat. No Codex-side mirror exists for this instruction (the
+  Codex port has no Monitor tool), so dual-platform parity is unaffected.
+- **Read receipts (`inbox read-primary` / `ack-primary`) were keyed by the
+  literal caller id, so a Primary registered under two aliases on the SAME
+  worktree — a DevSwarm-native builder-id UUID row and anti-hall's own minted
+  `primary-<hash>` row, the exact pair `resolveMeshPartitionIds` already
+  widens reads across — could read via one alias and never ack via the
+  other.** `writeReadReceipt`/`readReadReceipt` (`scripts/devswarm.js`) now
+  file the receipt under a new `canonicalReceiptId` — the SAME
+  identity/alias-family resolution `meshPartitionIds` already uses (the
+  lowest sorted id in the resolved mesh group), so any alias in the family
+  can look it up. Backward compatible: a lookup always falls back to the
+  literal-id directory too, so a receipt written before this fix (or when
+  family resolution is unavailable) is still found. `ackCommand` is
+  unaffected — it still names the id the read was addressed to. Also fixed a
+  related latent bug this surfaced: `applyReadAckOps`'s `'own'` op branch
+  committed the ack against the outer `ack-primary` caller's id instead of
+  `op.partition` (the partition the op was actually computed against at read
+  time) — harmless when read and ack use the same id, but silently acked the
+  WRONG partition's cursor for a cross-alias ack. Now uses `op.partition`,
+  matching the `'sibling'` branch's existing pattern. A new forward-migration,
+  `fold-read-receipts` (`companion/lib/migrations.js`, applying
+  `foldReadReceiptsAllStores`), repairs receipts written BEFORE this fix
+  existed — it copies (never moves/deletes) each literal-id-only receipt into
+  its resolved canonical alias-family directory too. Idempotent, fail-open,
+  no-delete, runs from `doctor --repair` and `update` like every other
+  default migration.
+
 ## 0.108.1 (2026-09-25)
 
 ### Fixes

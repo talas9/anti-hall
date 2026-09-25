@@ -360,6 +360,26 @@ const MIGRATIONS = [
     },
   },
   {
+    // v0.108.2: read receipts (inbox read-primary/ack-primary) written
+    // BEFORE canonicalReceiptId existed were filed only under the literal
+    // caller id. Copies (never moves/deletes) each such receipt into its
+    // resolved identity/alias-family canonical directory too, so any alias
+    // in the family finds it without depending on readReadReceipt's
+    // read-time fallback scan alone.
+    id: 'fold-read-receipts',
+    key: 'foldReadReceipts',
+    fn: 'foldReadReceiptsAllStores',
+    detect(dw, home, ctx) {
+      const r = dw.foldReadReceiptsAllStores(home, Object.assign({}, ctx, { dryRun: true })) || {};
+      return {
+        pending: (r.pending || 0) > 0,
+        raw: r,
+        detail: (r.pending || 0) + ' alias-keyed read receipt(s) to fold across ' + (r.ids || 0) + ' id(s), ' + (r.stores || 0) + ' store(s)'
+          + (r.errors ? ' (' + r.errors + ' error(s), fail-open)' : ''),
+      };
+    },
+  },
+  {
     // DELETION-CLASS: removes registry rows (forwarding first where it can).
     // Opt-in ONLY via `doctor --repair-resurrected [--apply]`; update reports it
     // (dry-run) once per version. Never run by runMigrations().

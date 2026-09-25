@@ -1690,16 +1690,27 @@ const READ_RECEIPT_KEEP_MS = 7 * 24 * 60 * 60 * 1000;
 
 function readReceiptDir(home, id) { return path.join(devswarmRoot(home), 'read-receipts', String(id)); }
 
-// writeReadReceipt(home, id, { reader, ops, hashes, now }) -> { ok, receiptId } | { ok:false, error }.
+// writeReadReceipt(home, id, { reader, ops, hashes, now, dirId }) -> { ok, receiptId } | { ok:false, error }.
 // Atomic (tmp + rename). Also prunes this id's receipts older than
 // READ_RECEIPT_KEEP_MS (tokens only — pruning a receipt never touches a
 // message or a cursor; an unacked message simply stays unread).
+// `dirId` (optional): the identity/alias-family CANONICAL id to file this
+// receipt under (see canonicalReceiptId below) — a Primary registered under
+// two aliases on the SAME worktree (a DevSwarm-native builder-id UUID row
+// and anti-hall's own minted primary-<hash> row, the exact pair
+// resolveMeshPartitionIds already widens reads across) files the receipt
+// once, under the family's canonical id, so `ack-primary` can find it
+// through EITHER alias. The `id` field recorded INSIDE the receipt stays the
+// literal id the read was addressed to — only the on-disk directory changes.
+// Falls back to `id` itself when `dirId` is absent/unsafe (byte-identical to
+// pre-fix behavior for a non-aliased id).
 function writeReadReceipt(home, id, o) {
   try {
     if (!isSafeId(String(id))) return { ok: false, error: 'unsafe id' };
     const now = Number.isFinite(o.now) ? o.now : Date.now();
     const receiptId = 'r' + now.toString(36) + crypto.randomBytes(6).toString('hex');
-    const dir = readReceiptDir(home, id);
+    const dirId = (o.dirId != null && isSafeId(String(o.dirId))) ? String(o.dirId) : String(id);
+    const dir = readReceiptDir(home, dirId);
     fs.mkdirSync(dir, { recursive: true });
     const file = path.join(dir, receiptId + '.json');
     const tmp = file + '.tmp';
@@ -1721,12 +1732,26 @@ function writeReadReceipt(home, id, o) {
   }
 }
 
-function readReadReceipt(home, id, receiptId) {
+// readReadReceipt(home, id, receiptId, { dirId }) -> { rec, dirId } | null.
+// `dirId`, when supplied (the SAME identity/alias-family canonical id
+// writeReadReceipt's caller resolved), is tried FIRST; the literal `id`
+// directory is ALWAYS tried too (backward compatibility — a receipt written
+// before this fix, or when family resolution failed at write time, only
+// ever exists under the literal id). Returns the directory the receipt
+// actually came from so a caller doing a follow-up write (stamping
+// `ackedAt`) targets the SAME file rather than re-deriving it.
+function readReadReceipt(home, id, receiptId, opts) {
   if (!isSafeId(String(id)) || !/^r[a-z0-9]+$/.test(String(receiptId))) return null;
-  try {
-    const r = JSON.parse(fs.readFileSync(path.join(readReceiptDir(home, id), receiptId + '.json'), 'utf8'));
-    return (r && typeof r === 'object' && Array.isArray(r.ops)) ? r : null;
-  } catch (_) { return null; }
+  const literalId = String(id);
+  const canonicalId = (opts && opts.dirId != null && isSafeId(String(opts.dirId))) ? String(opts.dirId) : null;
+  const dirsToTry = (canonicalId && canonicalId !== literalId) ? [canonicalId, literalId] : [literalId];
+  for (const d of dirsToTry) {
+    try {
+      const r = JSON.parse(fs.readFileSync(path.join(readReceiptDir(home, d), receiptId + '.json'), 'utf8'));
+      if (r && typeof r === 'object' && Array.isArray(r.ops)) return { rec: r, dirId: d };
+    } catch (_) { /* try the next candidate dir */ }
+  }
+  return null;
 }
 
 // applyReadAckOps(s, home, id, reader, ops, { ctx, repoKey, verb, revalidate })
@@ -1743,10 +1768,19 @@ function applyReadAckOps(s, home, id, reader, ops, o) {
   for (const op of ops || []) {
     if (!op || typeof op !== 'object') continue;
     if (op.k === 'own') {
-      const committed = commitInstanceAck(s, home, id, reader, op.target, Object.assign({}, meta, { delivered: op.delivered, gate: 'owner' }));
+      // op.partition (not the outer `id`) is the partition this op was
+      // actually computed against AT READ TIME (cmdInboxMessagesInner sets
+      // it to `String(id)` there — see the 'own' ackOps push above). The
+      // ack-primary CALLER's `id` can legitimately be a DIFFERENT alias in
+      // the same identity family (see canonicalReceiptId / the read-receipt
+      // dirId plumbing) — using the outer `id` here would commit the ack
+      // against the WRONG partition's cursor whenever they differ. Falls
+      // back to `id` only for a legacy op with no `partition` recorded.
+      const ownPartitionId = op.partition != null ? op.partition : id;
+      const committed = commitInstanceAck(s, home, ownPartitionId, reader, op.target, Object.assign({}, meta, { delivered: op.delivered, gate: 'owner' }));
       // A failed own-partition write is REPORTED (R1 Reviewer item 7): redelivery
       // holds (nothing moved), but ok:true must not hide the half-ack.
-      if (committed.error) failures.push({ partitionId: id, channel: 'store-cursor', error: committed.error });
+      if (committed.error) failures.push({ partitionId: ownPartitionId, channel: 'store-cursor', error: committed.error });
       acked = Number.isFinite(committed.instance) ? committed.instance : Math.max(committed.floor || 0, op.target);
     } else if (op.k === 'sibling') {
       const notAckable = o.revalidate
@@ -1796,20 +1830,51 @@ function cmdInboxAckPrimary(id, flags, ctx) {
   const base = { action: 'ack-primary', id };
   const refuse = (reason, error) => Object.assign({ ok: false, reason, error }, base);
   if (!rid || typeof rid !== 'string') return refuse('missing-receipt', '--receipt <readReceiptId> (from `inbox read-primary`) is required');
-  const rec = readReadReceipt(home, id, rid);
-  if (!rec) return refuse('unknown-receipt', 'no read receipt ' + JSON.stringify(rid) + ' for ' + JSON.stringify(id) + ' — re-run `inbox read-primary ' + id + '`');
-  if (String(rec.id) !== String(id)) return refuse('receipt-owner-mismatch', 'receipt belongs to ' + JSON.stringify(rec.id));
+  // Store is opened EARLY (moved up from below `readReadReceipt`) so the
+  // identity/alias-family resolution below (canonicalReceiptId) has a store
+  // handle to enumerate the registry with — the SAME resolution
+  // resolveMeshPartitionIds/meshPartitionIds already applies to reads, so a
+  // receipt written for one alias (e.g. a DevSwarm-native builder-id UUID
+  // row) can be found and acked through another alias registered on the
+  // SAME worktree (e.g. anti-hall's own primary-<hash> row).
+  const opened = resolveWorkspaceStoreForRead(id, ctx, home, { skipExistenceGuard: true });
+  if (!opened.ok) return Object.assign({}, base, { ok: false, reason: opened.reason || 'store-unavailable', error: opened.error || 'store could not be opened' });
+  const s = opened.store;
+  let dirId = String(id);
+  try {
+    const desc = readDescriptorFile(home, id);
+    const wtPath = desc && desc.worktreePath;
+    if (wtPath) dirId = canonicalReceiptId(s, id, wtPath);
+  } catch (_) { dirId = String(id); }
+  const found = readReadReceipt(home, id, rid, { dirId });
+  if (!found) { try { s.close(); } catch (_) {} return refuse('unknown-receipt', 'no read receipt ' + JSON.stringify(rid) + ' for ' + JSON.stringify(id) + ' — re-run `inbox read-primary ' + id + '`'); }
+  const rec = found.rec;
+  if (String(rec.id) !== String(id)) {
+    // Not the exact literal id the receipt was issued to — still ackable
+    // when both ids are the SAME identity family (crossLinkedIdentity via
+    // resolveMeshPartitionIds, same worktree). Anything outside that family
+    // stays refused exactly as before.
+    let sameFamily = false;
+    try {
+      const recDesc = readDescriptorFile(home, rec.id);
+      const recWtPath = recDesc && recDesc.worktreePath;
+      if (recWtPath) {
+        const recResolved = resolveMeshPartitionIds(s, rec.id, recWtPath);
+        sameFamily = recResolved.meshUnionActive && recResolved.meshPartitionIds.indexOf(String(id)) !== -1;
+      }
+    } catch (_) { sameFamily = false; }
+    if (!sameFamily) { try { s.close(); } catch (_) {} return refuse('receipt-owner-mismatch', 'receipt belongs to ' + JSON.stringify(rec.id)); }
+  }
   const reader = callerReaderKey(ctx);
   if ((rec.reader || null) !== (reader || null)) {
+    try { s.close(); } catch (_) {}
     return refuse('receipt-owner-mismatch', 'receipt was issued to a different reader — a receipt acks only for the reader that read it; re-run `inbox read-primary ' + id + '` and then its `ackCommand`');
   }
   const now = Number.isFinite(ctx.now) ? ctx.now : Date.now();
   if (!Number.isFinite(rec.createdAt) || now - rec.createdAt > READ_RECEIPT_TTL_MS) {
+    try { s.close(); } catch (_) {}
     return refuse('receipt-expired', 'receipt is older than ' + Math.round(READ_RECEIPT_TTL_MS / 3600000) + 'h — re-run `inbox read-primary ' + id + '` and then its `ackCommand` (nothing was acked; the mail is still unread)');
   }
-  const opened = resolveWorkspaceStoreForRead(id, ctx, home, { skipExistenceGuard: true });
-  if (!opened.ok) return Object.assign({}, base, { ok: false, reason: opened.reason || 'store-unavailable', error: opened.error || 'store could not be opened' });
-  const s = opened.store;
   let applied;
   let marker = null;
   try {
@@ -1836,7 +1901,9 @@ function cmdInboxAckPrimary(id, flags, ctx) {
   const alreadyAcked = rec.ackedAt != null;
   if (!applied.failures.length && !alreadyAcked) {
     try {
-      const file = path.join(readReceiptDir(home, id), rid + '.json');
+      // Written back to the SAME dir the receipt was actually found in
+      // (found.dirId) — canonical-family dir, or the literal-id fallback.
+      const file = path.join(readReceiptDir(home, found.dirId), rid + '.json');
       fs.writeFileSync(file + '.tmp', JSON.stringify(Object.assign({}, rec, { ackedAt: now })));
       fs.renameSync(file + '.tmp', file);
     } catch (_) { /* the cursors moved; the ackedAt stamp is informational */ }
@@ -9328,6 +9395,9 @@ function cmdInboxMessagesInner(id, flags, ctx, opts) {
   // instead of the shadowed `let meshPartitionIds` declared INSIDE that try
   // block for the sibling-merge loop's own use.
   let meshPartitionIds = [String(id)];
+  // Same reasoning, same hoist: read again below (deferAck's read-receipt
+  // dirId resolution) after the try/finally that closes `s`.
+  let meshUnionActive = false;
   // 8d0a66cfc563 cap bookkeeping — declared outside the try{} block below (it
   // is read again while building `out`, after the try/finally has closed `s`).
   let withheldBySource = null;
@@ -9518,7 +9588,7 @@ function cmdInboxMessagesInner(id, flags, ctx, opts) {
     // sees the resolved value instead of a shadowed copy that falls out of
     // scope when this block ends.
     meshPartitionIds = [String(id)];
-    let meshUnionActive = false;
+    meshUnionActive = false;
     {
       const selfRow = (s.listRegistry() || []).find((r) => r && String(r.id) === String(id));
       const wtPath = (selfRow && selfRow.worktreePath) || (desc && desc.worktreePath) || null;
@@ -10330,9 +10400,19 @@ function cmdInboxMessagesInner(id, flags, ctx, opts) {
   // Phase 5 ack split: nothing was acked. Persist the exact ack as a read
   // receipt and hand the caller ONE command to run after consuming the mail.
   if (deferAck) {
+    // Identity/alias-family canonical dir (see canonicalReceiptId): reuses
+    // the mesh resolution already computed above for this same read
+    // (meshPartitionIds/meshUnionActive) rather than re-resolving it, so a
+    // receipt written for `id` can also be found + acked through any OTHER
+    // alias in the same family (e.g. a DevSwarm-native builder-id UUID row
+    // vs anti-hall's own minted primary-<hash> row on the same worktree).
+    const receiptDirId = (meshUnionActive && Array.isArray(meshPartitionIds) && meshPartitionIds.length > 1)
+      ? meshPartitionIds.slice().sort()[0]
+      : String(id);
     const rec = writeReadReceipt(home, id, {
       reader: callerReader, ops: deferredAckOps || [], now: ctx.now,
       hashes: messages.map((m) => (m && m.hash != null ? String(m.hash) : null)),
+      dirId: receiptDirId,
     });
     out.acked = false;
     if (rec.ok) {
@@ -13746,6 +13826,102 @@ function resolveMeshPartitionIds(storeHandle, id, worktreePath) {
     meshGroupError = String((e && e.message) || e);
   }
   return { meshPartitionIds, meshUnionActive, meshGroupUnresolved, meshGroupError };
+}
+
+// canonicalReceiptId(storeHandle, id, worktreePath) -> string. THE identity/
+// alias-family resolution read receipts (writeReadReceipt/readReadReceipt,
+// far above) use to pick a directory that any alias in the family can find —
+// reuses resolveMeshPartitionIds verbatim (the SAME grouping `meshPartitionIds`
+// already applies to reads/sends/diagnose) rather than a second, drifting
+// definition. Deterministic: the lowest sorted id in the resolved family
+// wins, independent of which alias asked (both aliases resolve the SAME
+// worktree -> the SAME candidate set -> the SAME sorted-first winner).
+// Falls back to the bare `id` whenever the family can't be resolved
+// (single-row group, no worktree, resolution error) — byte-identical to
+// pre-fix behavior for a non-aliased id.
+function canonicalReceiptId(storeHandle, id, worktreePath) {
+  try {
+    const resolved = resolveMeshPartitionIds(storeHandle, id, worktreePath);
+    if (resolved.meshUnionActive && Array.isArray(resolved.meshPartitionIds) && resolved.meshPartitionIds.length > 1) {
+      return resolved.meshPartitionIds.slice().sort()[0];
+    }
+  } catch (_) { /* fail open to the literal id below */ }
+  return String(id);
+}
+
+// foldReadReceiptsAllStores(home, ctx) -> { ok, dryRun, stores, ids, pending,
+//   folded, errors, results[] }. Repair for read receipts written BEFORE
+// canonicalReceiptId existed (writeReadReceipt used to file every receipt
+// under the literal caller id): for every registry row of every store, if
+// that id's read-receipt directory holds files AND canonicalReceiptId(s, id,
+// worktreePath) resolves to a DIFFERENT id, COPY (never move/delete) each
+// receipt file not already present under the canonical id's directory.
+// readReadReceipt already tries both the canonical and the literal dir at
+// lookup time, so this repair is a convenience (a single canonical copy any
+// future alias can find without also re-deriving `dirId` at read time — e.g.
+// `inbox count`/`diagnose` surfaces that only ever look at the literal id
+// dir) rather than a correctness requirement. Idempotent (re-run copies
+// nothing once every file already exists at the canonical dir) and NO-DELETE
+// — the literal-id directory and its files are left in place forever, exactly
+// like every other migration in this file. dryRun (or
+// ANTIHALL_INGEST_DRY_RUN=1) counts only. Fail-open: a per-id or per-store
+// error is counted, never thrown.
+function foldReadReceiptsAllStores(home, ctx) {
+  const c = ctx || {};
+  const env = c.env || process.env;
+  const dryRun = !!c.dryRun || String((env && env.ANTIHALL_INGEST_DRY_RUN) || '') === '1';
+  const out = { ok: true, dryRun, stores: 0, ids: 0, pending: 0, folded: 0, errors: 0, results: [] };
+  let hashes = [];
+  try { hashes = store.listStoreHashes(home) || []; } catch (_) { hashes = []; }
+  for (const repoKey of hashes) {
+    let s = null;
+    try {
+      s = store.openStore({ home, hash: repoKey, backend: c.backend, env, readOnly: dryRun });
+      if (!s) continue;
+      out.stores++;
+      const registry = s.listRegistry() || [];
+      for (const row of registry) {
+        if (!row || !row.worktreePath || !isSafeId(String(row.id))) continue;
+        const id = String(row.id);
+        let literalDir;
+        try { literalDir = readReceiptDir(home, id); } catch (_) { continue; }
+        let literalFiles = [];
+        try { literalFiles = fs.readdirSync(literalDir).filter((f) => /^r[a-z0-9]+\.json$/.test(f)); } catch (_) { continue; }
+        if (!literalFiles.length) continue;
+        out.ids++;
+        let canonicalId;
+        try { canonicalId = canonicalReceiptId(s, id, row.worktreePath); } catch (_) { canonicalId = id; }
+        if (canonicalId === id) continue;
+        const canonicalDir = readReceiptDir(home, canonicalId);
+        let missing = [];
+        try {
+          const already = new Set(fs.existsSync(canonicalDir) ? fs.readdirSync(canonicalDir) : []);
+          missing = literalFiles.filter((f) => !already.has(f));
+        } catch (_) { out.errors++; continue; }
+        if (!missing.length) continue;
+        out.pending += missing.length;
+        if (dryRun) { out.results.push({ id, canonicalId, wouldFold: missing.length }); continue; }
+        let folded = 0;
+        for (const f of missing) {
+          try {
+            fs.mkdirSync(canonicalDir, { recursive: true });
+            const src = path.join(literalDir, f);
+            const dst = path.join(canonicalDir, f);
+            const tmp = dst + '.tmp';
+            fs.writeFileSync(tmp, fs.readFileSync(src));
+            fs.renameSync(tmp, dst);
+            folded++;
+          } catch (_) { out.errors++; }
+        }
+        out.folded += folded;
+        out.results.push({ id, canonicalId, folded, attempted: missing.length });
+      }
+    } catch (e) {
+      out.errors++;
+      out.results.push({ repoKey, error: String((e && e.message) || e) });
+    } finally { if (s) { try { s.close(); } catch (_) {} } }
+  }
+  return out;
 }
 
 // staleTwinSuccessor(storeHandle, row, home) -> { row, reason } | null. #6
@@ -17740,6 +17916,8 @@ module.exports = {
   seatRefusal, adoptPrimarySeat, cmdPrimary,
   reconcileDualPartitionAcksAllStores, declaredSelfId,
   mergeSplitBackendStoresAllStores,
+  // v0.108.2 read-receipt alias-family canonicalization repair:
+  canonicalReceiptId, foldReadReceiptsAllStores,
   // instanceNonce CONSUMERS (defect d3d571495bf6, items a/b/c — exported for
   // direct unit testing, same pattern as deriveInstanceNonce above):
   shortInstanceNonce, computeInstanceNonceCounts,

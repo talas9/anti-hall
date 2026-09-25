@@ -549,12 +549,18 @@ echo '{"systemMessage": "Re-arm the Primary mailbox monitor: check if it is alre
 ```
 
 ```javascript
-// Agent-side, on the next turn, acting on the injected instruction:
+// Agent-side, on the next turn, acting on the injected instruction. Some Monitor
+// schemas reject an unsupported `persistent` field outright (additionalProperties:
+// false) — check what your tool accepts before choosing between these two arms:
 Monitor({
   command: 'node path/to/companion/lib/devswarm-wake-watch.js',
   description: 'Primary workspace mailbox watcher',
-  persistent: true
+  persistent: true // only if your Monitor tool's schema supports this field
 })
+// Otherwise: set timeout_ms to its maximum and re-arm as soon as the tool emits
+// its final/expired event (e.g. "[Monitor timed out — re-arm if needed.]").
+// Never run two watchers at once — the watcher script's own lock also guards
+// this — and the cron mailbox job stays the fallback either way.
 ```
 
 **Double-arming warning.** If Monitor *does* turn out to survive compaction in some case
@@ -786,6 +792,9 @@ echo '{"systemMessage": "Session (re)started or compacted. Re-arm the Primary ma
 // 1. Dedup check first — avoid double-arming (see warning below).
 const lockPath = `.anti-hall/monitor-lock-${primaryId}`;
 if (!fs.existsSync(lockPath)) {
+  // persistent: true only if your Monitor tool's schema supports it; otherwise
+  // set timeout_ms to its maximum and re-arm on the tool's final/expired event.
+  // Never run two watchers at once (the watcher's own lock also guards this).
   Monitor({
     command: 'node path/to/companion/lib/devswarm-wake-watch.js',
     description: 'Primary workspace mailbox watcher',

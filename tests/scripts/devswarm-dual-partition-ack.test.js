@@ -150,6 +150,74 @@ test('read-primary on the session\'s OWN uuid partition is not refused as owners
   } finally { rm(f.home); rm(f.repo); }
 });
 
+test('a receipt issued for one alias is ackable through ANY alias in the same identity family (read-receipt canonicalization)', () => {
+  const f = fixture();
+  try {
+    // Mail landed directly in the primary-<hash> row's OWN store — exercises
+    // the 'own' ack op (not a 'sibling' op), the exact branch that used to
+    // ack against the outer ack-primary caller's id instead of the op's own
+    // partition.
+    send(f, f.PID, 'own-partition mail');
+    const rd = cli.run(['inbox', 'read-primary', f.PID], f.ctx());
+    assert.equal(rd.result.ok, true, JSON.stringify(rd.result));
+    assert.deepEqual(bodies(rd), ['own-partition mail']);
+    // ackCommand is unchanged — it still names the id the READ was addressed
+    // to, never the canonical family id.
+    assert.match(rd.result.ackCommand, new RegExp(' inbox ack-primary ' + f.PID + ' --receipt r[a-z0-9]+$'));
+    // Ack through the OTHER alias in the family (UUID), not the one that read.
+    const ack = cli.run(['inbox', 'ack-primary', UUID, '--receipt', rd.result.readReceiptId], f.ctx());
+    assert.equal(ack.result.ok, true, JSON.stringify(ack.result));
+    assert.equal(ack.result.reason, undefined, 'not refused as receipt-owner-mismatch');
+    assert.deepEqual(bodies(cli.run(['inbox', 'peek-primary', f.PID], f.ctx())), [], 'the actual owning partition (primary-<hash>) is the one that got acked');
+    // Idempotent: re-acking through the ORIGINAL alias also reports alreadyAcked.
+    const again = cli.run(['inbox', 'ack-primary', f.PID, '--receipt', rd.result.readReceiptId], f.ctx());
+    assert.equal(again.result.ok, true, JSON.stringify(again.result));
+    assert.equal(again.result.alreadyAcked, true);
+  } finally { rm(f.home); rm(f.repo); }
+});
+
+test('foldReadReceiptsAllStores repairs receipts written under a literal id BEFORE canonicalReceiptId existed (idempotent, no-delete)', () => {
+  const f = fixture();
+  try {
+    // Simulate a pre-fix receipt: written directly to disk under the literal
+    // f.PID directory (byte-identical to what writeReadReceipt produced before
+    // it learned to accept `dirId`), never through the CLI, so the repair is
+    // exercised independently of the write-time fix above.
+    const receiptId = 'r' + Date.now().toString(36) + 'deadbeef01';
+    const literalDir = path.join(devswarmDir(f.home), 'read-receipts', f.PID);
+    fs.mkdirSync(literalDir, { recursive: true });
+    const receiptBody = { id: f.PID, reader: 'someone', ops: [], hashes: [], createdAt: Date.now() };
+    fs.writeFileSync(path.join(literalDir, receiptId + '.json'), JSON.stringify(receiptBody));
+
+    // dryRun first: reports pending, writes nothing.
+    const dry = cli.foldReadReceiptsAllStores(f.home, { dryRun: true });
+    assert.equal(dry.ok, true, JSON.stringify(dry));
+    assert.ok(dry.pending > 0, 'dry-run finds the alias-keyed receipt: ' + JSON.stringify(dry));
+    assert.equal(dry.folded, 0, 'dry-run must not write');
+
+    // Apply via the SAME migrations machinery update.js/doctor use.
+    const rows = migrations.runMigrations({ home: f.home, cwd: f.repo, env: f.env, version: '0.108.2-test', devswarm: cli });
+    const row = rows.find((r) => r.id === 'fold-read-receipts');
+    assert.ok(row, 'fold-read-receipts migration ran: ' + JSON.stringify(rows));
+    assert.equal(row.status, 'fixed', JSON.stringify(row));
+
+    // The original literal-id file is NEVER removed (no-delete).
+    assert.ok(fs.existsSync(path.join(literalDir, receiptId + '.json')), 'literal-id receipt file is left in place');
+
+    // A canonical-family copy now exists somewhere findable by readReadReceipt
+    // through EITHER alias — prove it by resolving via ack-primary through the
+    // OTHER alias in the family for a FRESH receipt (write path), and by
+    // re-running the repair (idempotent: nothing left to fold).
+    const again = cli.foldReadReceiptsAllStores(f.home, { dryRun: true });
+    assert.equal(again.pending, 0, 're-running the dry-run finds nothing left to fold (idempotent): ' + JSON.stringify(again));
+
+    // Re-running the migration a second time is a no-op skip (marker + nothing pending).
+    const rows2 = migrations.runMigrations({ home: f.home, cwd: f.repo, env: f.env, version: '0.108.2-test', devswarm: cli });
+    const row2 = rows2.find((r) => r.id === 'fold-read-receipts');
+    assert.equal(row2.status, 'skipped', JSON.stringify(row2));
+  } finally { rm(f.home); rm(f.repo); }
+});
+
 test('the declared id grants nothing off its own worktree, and a foreign live sibling stays protected', () => {
   const f = fixture();
   const other = makeRepo();
