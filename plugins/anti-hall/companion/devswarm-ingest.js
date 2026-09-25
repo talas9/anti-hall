@@ -29,7 +29,7 @@ const os = require('os');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const { spawnSync } = require('child_process');
+const { spawnSync, spawn } = require('child_process');
 
 const store = require('./lib/devswarm-store.js');
 const { devswarmRoot } = require('./lib/liveness.js');
@@ -960,6 +960,18 @@ const PERMANENT_ROLLUP_INTERVAL_MS = 15 * 60 * 1000;
 // (ingest-health.js, doctor-repair.js) judges "is this daemon alive" by — see
 // backoffWithHeartbeat in runIngestLoop.
 const BACKOFF_HEARTBEAT_SLICE_MS = 60 * 1000;
+// While a monitor call is IN FLIGHT (async driver), both liveness signals are
+// refreshed this often — well under the 3-minute HEARTBEAT_STALE_MS.
+const RUN_HEARTBEAT_INTERVAL_MS = 30 * 1000;
+// After the hard timeout SIGTERMs the monitor child, it gets this long to exit
+// before SIGKILL; after SIGKILL the attempt resolves (as a failure) at most this
+// long later even if the OS never reports the exit. A monitor attempt is
+// therefore bounded by hardTimeoutMs + 2 * MONITOR_KILL_GRACE_MS, always.
+const MONITOR_KILL_GRACE_MS = 5 * 1000;
+// TRANSIENT failures (timeouts, crashed child) back off EXPONENTIALLY from the
+// base (2s -> 4s -> 8s ...), capped here — a hivecontrol that keeps timing out
+// under machine load is not hammered every 2s.
+const TRANSIENT_BACKOFF_CAP_MS = 5 * 60 * 1000;
 
 // monitorFailureCode(res) -> 'ENOENT' | 'EACCES' | 'ENOTDIR' | null. Prefers the
 // structured `code` defaultMonitorRun now propagates; falls back to matching the
@@ -970,6 +982,13 @@ function monitorFailureCode(res) {
   if (typeof direct === 'string' && PERMANENT_SPAWN_ERROR_CODES.indexOf(direct) !== -1) return direct;
   const m = String((res && res.error) || '').match(/\b(ENOENT|EACCES|ENOTDIR)\b/);
   return m ? m[1] : null;
+}
+
+function transientBackoffMs(consecutive, baseMs) {
+  const n = Math.max(1, Number.isFinite(consecutive) ? consecutive : 1);
+  const base = Number.isFinite(baseMs) ? baseMs : DEFAULT_RESTART_BACKOFF_MS;
+  const raw = base * Math.pow(2, Math.min(n - 1, 30));
+  return Math.min(Number.isFinite(raw) ? Math.round(raw) : TRANSIENT_BACKOFF_CAP_MS, TRANSIENT_BACKOFF_CAP_MS);
 }
 
 function permanentBackoffMs(consecutive, baseMs) {
@@ -1007,16 +1026,17 @@ function createMonitorBreaker(opts) {
       const message = String((res && res.error) || 'monitor run failed (no error detail)');
       const signature = (code || '') + '\0' + (permanent ? '' : message);
       if (!permanent) {
-        // TRANSIENT — pre-existing behavior preserved verbatim: one log line per
-        // occurrence, flat backoff. A transient failure also RESETS any permanent
-        // run (a different fault entirely).
+        // TRANSIENT — one log line per occurrence, EXPONENTIAL backoff capped at
+        // TRANSIENT_BACKOFF_CAP_MS (was flat: a hivecontrol timing out under load
+        // was retried every 2s forever). A transient failure also RESETS any
+        // permanent run (a different fault entirely).
         state.consecutive = state.signature === signature ? state.consecutive + 1 : 1;
         state.signature = signature;
         state.permanent = false;
         state.stepIdx = -1;
         state.firstAt = state.consecutive === 1 ? now : state.firstAt;
         log({ kind: 'monitor-run-failed', level: 'error', message, ctx: Object.assign({ transient: true }, o.ctx) });
-        return { permanent: false, code: null, backoffMs: baseBackoffMs, consecutive: state.consecutive, logged: true };
+        return { permanent: false, code: null, backoffMs: transientBackoffMs(state.consecutive, baseBackoffMs), consecutive: state.consecutive, logged: true };
       }
       const sameRun = state.permanent && state.signature === signature;
       state.consecutive = sameRun ? state.consecutive + 1 : 1;
@@ -1117,6 +1137,82 @@ function defaultMonitorRun(opts) {
   }
 }
 
+// Children of in-flight async monitor calls — killed by main()'s signal/exit
+// handlers so a daemon exit never orphans a hivecontrol process.
+const inflightMonitorChildren = new Set();
+
+// defaultMonitorRunAsync(opts) -> Promise<{ ok, raw, error, code, exitCode, signal }>.
+// The daemon hot-path runner: a NON-BLOCKING child_process.spawn of ONE
+// `hivecontrol workspace monitor` call. Contract identical to defaultMonitorRun
+// (a non-zero exit with no spawn error stays ok:true, exactly as spawnSync
+// reported it; stdout written before a kill is PRESERVED — the monitor read is
+// destructive). Bounded by an explicit timeout: at hardTimeoutMs the child gets
+// SIGTERM, MONITOR_KILL_GRACE_MS later SIGKILL, and the promise resolves at
+// most one further grace period after that even if no exit is ever observed.
+// Never rejects.
+function defaultMonitorRunAsync(opts) {
+  const o = opts || {};
+  const bin = o.hivecontrol || 'hivecontrol';
+  const args = ['workspace', 'monitor'];
+  if (Number.isFinite(o.intervalSec)) { args.push('-i', String(o.intervalSec)); }
+  if (Number.isFinite(o.timeoutSec)) { args.push('-t', String(o.timeoutSec)); }
+  const graceMs = Number.isFinite(o.killGraceMs) ? o.killGraceMs : MONITOR_KILL_GRACE_MS;
+  return new Promise((resolve) => {
+    let out = '';
+    // ONE stable message per timeout, whichever signal ended the child: the
+    // breaker keys consecutive-failure runs on the message, so a varying text
+    // would reset the count (and the backoff) every attempt.
+    const timeoutError = 'monitor ' + bin + ' ETIMEDOUT after ' + o.hardTimeoutMs + 'ms';
+    let settled = false;
+    let timedOut = false;
+    const timers = [];
+    let child;
+    function finish(res) {
+      if (settled) return;
+      settled = true;
+      for (const t of timers) clearTimeout(t);
+      if (child) inflightMonitorChildren.delete(child);
+      resolve(Object.assign({ raw: out }, res));
+    }
+    try {
+      child = spawn(bin, args, { stdio: ['ignore', 'pipe', 'ignore'] });
+    } catch (e) {
+      finish({ ok: false, error: String(e && e.message || e), code: (e && e.code) ? String(e.code) : null });
+      return;
+    }
+    inflightMonitorChildren.add(child);
+    if (child.stdout) {
+      child.stdout.setEncoding('utf8');
+      child.stdout.on('data', (d) => { out += d; });
+    }
+    child.on('error', (e) => {
+      finish({ ok: false, error: 'spawn ' + bin + ' ' + (e && e.code ? e.code : String(e && e.message || e)), code: (e && e.code) ? String(e.code) : null });
+    });
+    // 'close' = exited AND stdout drained (every byte captured). A grandchild
+    // holding the pipe can delay 'close' — the post-kill fallback below
+    // resolves on 'exit' + grace instead of waiting forever.
+    child.on('close', (exitCode, signal) => {
+      if (timedOut) {
+        finish({ ok: false, error: timeoutError, code: 'ETIMEDOUT', exitCode, signal });
+      } else {
+        finish({ ok: true, error: null, code: null, exitCode, signal });
+      }
+    });
+    if (Number.isFinite(o.hardTimeoutMs) && o.hardTimeoutMs > 0) {
+      timers.push(setTimeout(() => {
+        timedOut = true;
+        try { child.kill('SIGTERM'); } catch (_) {}
+        timers.push(setTimeout(() => {
+          try { child.kill('SIGKILL'); } catch (_) {}
+          timers.push(setTimeout(() => {
+            finish({ ok: false, error: timeoutError, code: 'ETIMEDOUT', abandoned: true });
+          }, graceMs));
+        }, graceMs));
+      }, o.hardTimeoutMs));
+    }
+  });
+}
+
 // resolveMonitorTimeoutSec(explicit, env) -> number. Explicit opts.timeoutSec always wins
 // (tests/tuning can still force a specific or unbounded* value). Otherwise the
 // ANTIHALL_DEVSWARM_MONITOR_TIMEOUT_SEC env var configures the bounded cadence.
@@ -1193,7 +1289,7 @@ function appendLog(home, line, fsi) {
 //   monitor once -> ingest -> deriveSummary -> (on child exit/crash) backoff and
 //   re-spawn. Bounded by opts.maxIterations for tests; unbounded (Infinity) as a
 //   real daemon. opts.run is the injectable monitor runner; opts.sleep the clock.
-function runIngestLoop(opts) {
+function* ingestLoopGen(opts) {
   const o = opts || {};
   const home = o.home || os.homedir();
   // Resolve the worktree this daemon runs FROM (launchd/systemd bake it as the unit's
@@ -1225,8 +1321,6 @@ function runIngestLoop(opts) {
   // consumer below falls back to its EXISTING pre-mesh behavior.
   const repoKey = worktree ? safeRepoKey(worktree) : null;
   const hbHash = repoKey || (worktree ? safeWorktreeHash(worktree) : workspaceId);
-  const run = o.run || defaultMonitorRun;
-  const sleep = o.sleep || sleepSync;
   const maxIterations = Number.isFinite(o.maxIterations) ? o.maxIterations : Infinity;
   const backoffMs = Number.isFinite(o.restartBackoffMs) ? o.restartBackoffMs : DEFAULT_RESTART_BACKOFF_MS;
   const intervalSec = Number.isFinite(o.intervalSec) ? o.intervalSec : DEFAULT_MONITOR_INTERVAL_SEC;
@@ -1266,7 +1360,10 @@ function runIngestLoop(opts) {
   // ALONE — previously the heartbeat was written unconditionally BEFORE the monitor
   // call and therefore reported a permanently-failing daemon as perfectly RUNNING.
   const monitorState = {
-    lastMonitorOkMs: null, consecutiveMonitorFailures: 0,
+    // lastMonitorOkMs is ALWAYS null at process start (never carried over from
+    // a previous incarnation's heartbeat): health reads "no ok since start"
+    // against startedAtMs — 'starting up' inside the window, FAILING past it.
+    lastMonitorOkMs: null, lastMonitorAttemptMs: null, consecutiveMonitorFailures: 0,
     lastMonitorErrorCode: null, lastMonitorError: null,
     hivecontrolBin: hivecontrol.bin, hivecontrolSource: hivecontrol.source,
     daemonPath: (o.env && typeof o.env.PATH === 'string') ? o.env.PATH : null,
@@ -1286,28 +1383,14 @@ function runIngestLoop(opts) {
     appendLog(home, 'ingest daemon refused to start: ' + reason, logFs);
     return { ok: false, started: false, reason };
   }
-  // NO SIGTERM/SIGINT LISTENER (fixed — was the root cause of duplicate daemons
-  // piling up under launchd, observed live as 12 stuck daemons that only
-  // SIGKILL could remove). Registering a JS listener for a signal DISABLES
-  // Node's own default disposition (terminate) for that signal — the process
-  // then depends ENTIRELY on the listener actually running to die. But a JS
-  // signal handler can only run from the event loop, and this daemon spends
-  // its entire risky window blocked inside a fully synchronous call
-  // (`spawnSync` below, or `sleepSync`'s `Atomics.wait`) — the event loop
-  // never turns, so a registered handler is undeliverable for as long as that
-  // block lasts, which in this loop is effectively always. Leaving the
-  // listener registered therefore made SIGTERM (launchd stop/restart) and
-  // SIGINT permanently ineffective, not merely delayed.
-  //
-  // Leaving signals UNregistered restores Node's default disposition, which
-  // the kernel/runtime enforces without needing the event loop to run any JS
-  // — SIGTERM/SIGINT now actually terminate the process. This forgoes a
-  // graceful `release()` on signal, but that is safe: a lock left behind by a
-  // killed daemon is reclaimed IMMEDIATELY by the next starter via the
-  // dead-holder-immediate-reclaim path in acquireIngestLock (P1-B — see its
-  // STEAL RULE comment above; `knownDead` at ~line 571 reclaims a lock whose
-  // recorded pid is confirmed not alive, with no staleness wait), so no
-  // starter is ever blocked by a lock this process leaves behind.
+  // SIGNALS: this generator registers no listener. The sync driver blocks (so a
+  // listener would be undeliverable — the historic duplicate-daemon bug); the
+  // DAEMON runs the async driver, and main()'s installExitLogging registers
+  // SIGTERM/SIGINT/SIGHUP handlers that log the reason and exit promptly (the
+  // event loop turns while a monitor call is in flight). A lock left behind by
+  // a killed daemon is reclaimed immediately by the next starter via the
+  // dead-holder path in acquireIngestLock (P1-B), so no graceful release()
+  // is needed on signal.
 
   // ORPHANED-LOCK SWEEP (v0.65). We hold our own lock now, so every OTHER ingest
   // lock in the directory belongs to someone else — sweep the ones whose recorded
@@ -1502,14 +1585,23 @@ function runIngestLoop(opts) {
       }
     }
 
-    function backoffWithHeartbeat(totalMs) {
+    // writeBeat() — the per-worktree DAEMON liveness heartbeat (carries the
+    // monitor-outcome fields). inflightBeat() also refreshes the lock ts; the
+    // async driver fires it on a timer WHILE a monitor call is in flight, so a
+    // slow/hung hivecontrol can never age either liveness signal out.
+    function writeBeat() {
+      writeIngestHeartbeat(home, hbHash, Object.assign({ workspaceId, workingDir: worktree, now: o.now }, monitorState), (o.io && o.io.storeFs));
+    }
+    function inflightBeat() { checkHeartbeat(); writeBeat(); }
+
+    function* backoffWithHeartbeat(totalMs) {
       let remaining = Math.max(0, Number.isFinite(totalMs) ? totalMs : 0);
       do {
         checkHeartbeat();
         if (lockLost) break;
-        writeIngestHeartbeat(home, hbHash, Object.assign({ workspaceId, workingDir: worktree, now: o.now }, monitorState), (o.io && o.io.storeFs));
+        writeBeat();
         const slice = Math.min(remaining, BACKOFF_HEARTBEAT_SLICE_MS);
-        sleep(slice);
+        yield { op: 'sleep', ms: slice };
         remaining -= slice;
       } while (remaining > 0);
     }
@@ -1573,12 +1665,16 @@ function runIngestLoop(opts) {
 
     for (let i = 0; i < maxIterations; i++) {
       if (o.shouldStop && o.shouldStop()) break;
+      if (lockLost) {
+        appendLog(home, 'ingest daemon stopping: lock was reclaimed by another consumer (lost heartbeat)', logFs);
+        break;
+      }
       // WAL admission control: never issue a new destructive read while an
       // earlier captured batch is not durably ingested.
       if (walReplayNeeded) {
         if (!replayWal()) {
           stats.errors++;
-          if (i + 1 < maxIterations) sleep(backoffMs);
+          if (i + 1 < maxIterations) yield* backoffWithHeartbeat(backoffMs);
           continue;
         }
         walReplayNeeded = false;
@@ -1596,7 +1692,7 @@ function runIngestLoop(opts) {
               + ' — destructive monitor read refused until it is writable', logFs);
           }
           walReplayNeeded = true;
-          if (i + 1 < maxIterations) sleep(backoffMs);
+          if (i + 1 < maxIterations) yield* backoffWithHeartbeat(backoffMs);
           continue;
         }
         walBlockedLogged = false;
@@ -1611,7 +1707,7 @@ function runIngestLoop(opts) {
       // Per-worktree DAEMON liveness heartbeat, written EVERY sweep regardless of
       // whether anything was ingested — a live-but-quiet daemon must still read as
       // alive. Fail-open: a heartbeat-write error must never crash the loop.
-      writeIngestHeartbeat(home, hbHash, Object.assign({ workspaceId, workingDir: worktree, now: o.now }, monitorState), (o.io && o.io.storeFs));
+      writeBeat();
       // PACING (P0 fix): `run` is expected to long-poll for ~intervalSec on its
       // own (hivecontrol's -i/-t flags), but in production hivecontrol can and
       // does return in well under a second — with nothing here to slow it back
@@ -1623,10 +1719,18 @@ function runIngestLoop(opts) {
       // use as a fixed business-logic timestamp and would make elapsed always 0)
       // so pacing reflects actual wall-clock spend regardless of test overrides.
       const iterationStart = Date.now();
-      const res = run({
-        hivecontrol: hivecontrol.bin, intervalSec,
-        timeoutSec, hardTimeoutMs,
-      });
+      // The monitor call is a YIELDED effect: the async driver (the real
+      // daemon, runIngestLoopAsync) awaits a non-blocking child_process.spawn
+      // while a timer keeps both liveness signals fresh (`beat`); the sync
+      // driver (runIngestLoop — injected-runner tests) calls `run` directly.
+      const res = yield {
+        op: 'run',
+        args: { hivecontrol: hivecontrol.bin, intervalSec, timeoutSec, hardTimeoutMs },
+        beat: inflightBeat,
+      };
+      // Stamped on EVERY completed attempt (success or failure) so the heartbeat
+      // shows the daemon is still TRYING even while no poll succeeds.
+      monitorState.lastMonitorAttemptMs = Number.isFinite(o.now) ? o.now : Date.now();
       stats.iterations++;
       // P1-A fix: a FAILED attempt (timeout/crash) can still carry drained stdout —
       // `hivecontrol workspace monitor` is DESTRUCTIVE (it pops messages off the
@@ -1682,7 +1786,7 @@ function runIngestLoop(opts) {
                   : 'NOT in the WAL (WAL write failed) — may be lost\n'));
             } catch (_) {}
             alog.logError('ingest', 'ingest-payload-retryable', e, { workspaceId, code: e.code });
-            if (i + 1 < maxIterations) sleep(backoffMs);
+            if (i + 1 < maxIterations) yield* backoffWithHeartbeat(backoffMs);
             continue;
           }
           throw e;
@@ -1759,7 +1863,7 @@ function runIngestLoop(opts) {
         monitorState.lastMonitorError = String(res.error || 'monitor run failed (no error detail)').slice(0, 300);
         stats.monitorFailures = verdict.consecutive;
         stats.monitorPermanent = !!verdict.permanent;
-        if (i + 1 < maxIterations) backoffWithHeartbeat(verdict.backoffMs); // crash -> backoff then re-spawn
+        if (i + 1 < maxIterations) yield* backoffWithHeartbeat(verdict.backoffMs); // crash -> backoff then re-spawn
         continue;
       }
       // A SUCCESSFUL monitor call clears the breaker and stamps lastMonitorOkMs,
@@ -1794,7 +1898,7 @@ function runIngestLoop(opts) {
         const cappedIntervalMs = Number.isFinite(rawIntervalMs)
           ? Math.min(rawIntervalMs, MAX_PACE_MS) : MAX_PACE_MS;
         const pace = Math.max(0, cappedIntervalMs - elapsed);
-        if (pace > 0) backoffWithHeartbeat(pace);
+        if (pace > 0) yield* backoffWithHeartbeat(pace);
       }
     }
   } catch (e) {
@@ -1816,6 +1920,62 @@ function runIngestLoop(opts) {
     try { release(); } catch (e) { alog.logError('lock', 'release-failed', e, { workspaceId }); }
   }
   return { ok: true, started: true, workspaceId, stats };
+}
+
+// runIngestLoop(opts) -> summary — SYNC driver for ingestLoopGen. Used by the
+// in-process tests (injected synchronous `run`/`sleep`). Not the daemon's hot
+// path: main() runs runIngestLoopAsync so no monitor call ever blocks the event
+// loop (spawnSync's `timeout` only SIGTERMs the child and then keeps blocking
+// until it actually exits — a slow-to-die hivecontrol under load froze the
+// whole daemon, heartbeat included, for minutes).
+function runIngestLoop(opts) {
+  const o = opts || {};
+  const run = o.run || defaultMonitorRun;
+  const sleep = o.sleep || sleepSync;
+  const gen = ingestLoopGen(o);
+  let step = gen.next();
+  while (!step.done) {
+    const eff = step.value;
+    if (eff && eff.op === 'run') {
+      let res;
+      try { res = run(eff.args); } catch (e) { step = gen.throw(e); continue; }
+      step = gen.next(res);
+    } else {
+      sleep(eff ? eff.ms : 0);
+      step = gen.next();
+    }
+  }
+  return step.value;
+}
+
+// runIngestLoopAsync(opts) -> Promise<summary> — the DAEMON driver. The monitor
+// call is a non-blocking child_process.spawn (defaultMonitorRunAsync: explicit
+// timeout, SIGTERM then SIGKILL of the child); sleeps are timers. While a call
+// is in flight a timer fires the loop's `beat` (lock ts + liveness heartbeat)
+// every RUN_HEARTBEAT_INTERVAL_MS, so a slow hivecontrol never ages the daemon
+// out as dead. Injected `run`/`sleep` (sync or async) are awaited.
+async function runIngestLoopAsync(opts) {
+  const o = opts || {};
+  const run = o.run || defaultMonitorRunAsync;
+  const sleep = o.sleep || function (ms) { return new Promise((r) => setTimeout(r, Math.max(0, Number.isFinite(ms) ? ms : 0))); };
+  const beatEveryMs = Number.isFinite(o.runHeartbeatIntervalMs) ? o.runHeartbeatIntervalMs : RUN_HEARTBEAT_INTERVAL_MS;
+  const gen = ingestLoopGen(o);
+  let step = gen.next();
+  while (!step.done) {
+    const eff = step.value;
+    if (eff && eff.op === 'run') {
+      const timer = typeof eff.beat === 'function'
+        ? setInterval(() => { try { eff.beat(); } catch (_) {} }, beatEveryMs) : null;
+      let res;
+      let err = null;
+      try { res = await run(eff.args); } catch (e) { err = e; } finally { if (timer) clearInterval(timer); }
+      step = err ? gen.throw(err) : gen.next(res);
+    } else {
+      await sleep(eff ? eff.ms : 0);
+      step = gen.next();
+    }
+  }
+  return step.value;
 }
 
 function sleepSync(ms) {
@@ -2160,6 +2320,9 @@ function writeIngestHeartbeat(home, hash, meta, fsi) {
       // file alone (no jsonl parsing). ABSENT on a pre-v0.66 daemon's heartbeat:
       // every consumer MUST treat missing as UNKNOWN, never as failure.
       lastMonitorOkMs: Number.isFinite(m.lastMonitorOkMs) ? m.lastMonitorOkMs : null,
+      // 0.108.5: when the most recent monitor attempt COMPLETED (ok or not) —
+      // proves the loop is still trying while no poll succeeds.
+      lastMonitorAttemptMs: Number.isFinite(m.lastMonitorAttemptMs) ? m.lastMonitorAttemptMs : null,
       consecutiveMonitorFailures: Number.isFinite(m.consecutiveMonitorFailures) ? m.consecutiveMonitorFailures : 0,
       lastMonitorErrorCode: m.lastMonitorErrorCode != null ? String(m.lastMonitorErrorCode) : null,
       lastMonitorError: m.lastMonitorError != null ? String(m.lastMonitorError).slice(0, 300) : null,
@@ -2182,29 +2345,70 @@ function writeIngestHeartbeat(home, hash, meta, fsi) {
   } catch (_) { /* fail-open: liveness heartbeat is best-effort */ }
 }
 
-function main() {
+function killInflightMonitorChildren() {
+  for (const c of inflightMonitorChildren) { try { c.kill('SIGKILL'); } catch (_) {} }
+}
+
+// installExitLogging(home, logFs, proc) — every daemon exit leaves a reason in
+// the ingest log. Before this, a signal death (launchd stop/restart, another
+// starter's wedge-steal) or a crash exited with NOTHING logged, so a unit that
+// restarted repeatedly could not be diagnosed. Handles SIGTERM/SIGINT/SIGHUP
+// (log, kill any in-flight monitor child, exit 128+n — the loop is async, so
+// the handler actually runs), uncaughtException/unhandledRejection (log the
+// stack, exit 1), and a final 'exit' line with the code. SIGKILL cannot be
+// caught — its absence of any exit line IS the signature of a SIGKILL.
+// `proc` is injectable for tests. Returns the logExit(reason, err) function.
+function installExitLogging(home, logFs, proc) {
+  const P = proc || process;
+  let reasonLogged = false;
+  function logExit(reason, err) {
+    reasonLogged = true;
+    appendLog(home, 'ingest daemon exiting (pid ' + P.pid + '): ' + reason
+      + (err ? ': ' + (err && err.message ? err.message : String(err)) + (err && err.stack ? '\n' + err.stack : '') : ''), logFs);
+  }
+  const SIGNUM = { SIGHUP: 1, SIGINT: 2, SIGTERM: 15 };
+  for (const sig of Object.keys(SIGNUM)) {
+    P.on(sig, () => {
+      logExit('received ' + sig);
+      killInflightMonitorChildren();
+      P.exit(128 + SIGNUM[sig]);
+    });
+  }
+  P.on('uncaughtException', (e) => { logExit('uncaught exception', e); killInflightMonitorChildren(); P.exit(1); });
+  P.on('unhandledRejection', (e) => { logExit('unhandled promise rejection', e); killInflightMonitorChildren(); P.exit(1); });
+  P.on('exit', (code) => {
+    if (!reasonLogged) appendLog(home, 'ingest daemon exiting (pid ' + P.pid + '): exit code ' + code + ' (no reason recorded)', logFs);
+  });
+  return logExit;
+}
+
+async function main() {
   // A real invocation runs unbounded until killed (launchd/systemd re-execs it on
   // exit). workspaceId is the ingesting workspace's own id (DEVSWARM_BUILDER_ID),
-  // defaulting to 'primary' outside a workspace.
+  // defaulting to 'primary' outside a workspace. The loop is ASYNC (non-blocking
+  // monitor spawn), so the signal handlers installed here are deliverable.
+  const home = os.homedir();
+  const logExit = installExitLogging(home);
   let summary;
   try {
-    summary = runIngestLoop({ env: process.env });
-  } catch (_e) {
-    // runIngestLoop already appended a timestamped ERROR+stack line to the log
-    // (fail-open, BEFORE this rethrow) — this catch only turns it into a clean,
-    // controlled non-zero exit instead of falling through to Node's default
-    // uncaught-exception dump (which launchd/systemd/cron may or may not capture
-    // depending on platform).
+    summary = await runIngestLoopAsync({ env: process.env });
+  } catch (e) {
+    // runIngestLoop already appended a timestamped ERROR+stack line; this adds
+    // the exit reason and turns it into a clean, controlled non-zero exit.
+    logExit('fatal error in the ingest loop', e);
+    killInflightMonitorChildren();
     process.exit(1);
     return;
   }
   if (!summary.started) {
     // The lock-refusal case already appended its own log line inside
     // runIngestLoop (see the `!release` branch above) before returning here.
+    logExit('did not start (' + summary.reason + ')');
     fs.writeSync(2, JSON.stringify(summary) + '\n');
     process.exit(1);
     return;
   }
+  logExit('loop ended (lock lost or stop requested)');
   process.exit(0);
 }
 
@@ -2212,6 +2416,9 @@ module.exports = {
   ingestLockPath, ingestHeartbeatPath, acquireIngestLock,
   messageHash, stableJson, normalizeMonitorPayload,
   ingestPayload, defaultMonitorRun, runIngestLoop,
+  // 0.108.5 — non-blocking daemon hot path + exit-reason logging:
+  defaultMonitorRunAsync, runIngestLoopAsync, installExitLogging, transientBackoffMs,
+  TRANSIENT_BACKOFF_CAP_MS, MONITOR_KILL_GRACE_MS, RUN_HEARTBEAT_INTERVAL_MS,
   // v0.66 — B1 destructive-read loss detection + quarantine:
   rawIsSubstantive, quarantineDir, quarantineLossyMonitorBatch,
   quarantineCapacityReached, QUARANTINE_MAX_FILES, QUARANTINE_MAX_BODY_BYTES,

@@ -1524,14 +1524,12 @@ test('REGRESSION: runIngestLoop FAILURE path still backs off exactly as before (
       run, sleep: (ms) => sleepCalls.push(ms), restartBackoffMs: 250, intervalSec: 0.1,
     });
     assert.equal(summary.stats.errors, 3);
-    // The failure path backs off using restartBackoffMs (250ms here), NOT the
-    // success-path pacing formula — every recorded sleep must equal exactly
-    // 250 (sliced once since it is under BACKOFF_HEARTBEAT_SLICE_MS), proving
-    // the pacing addition did not leak into or alter the failure/backoff path.
+    // The failure path backs off from restartBackoffMs (250ms here), NOT the
+    // success-path pacing formula. Since 0.108.5 a TRANSIENT failure backs off
+    // EXPONENTIALLY (250 -> 500), each under BACKOFF_HEARTBEAT_SLICE_MS so
+    // sliced once — proving pacing did not leak into the failure/backoff path.
     assert.equal(sleepCalls.length, 2, 'backs off after each failure except the final iteration (2 of 3)');
-    for (const ms of sleepCalls) {
-      assert.equal(ms, 250, 'failure-path backoff is unchanged by the success-path pacing fix');
-    }
+    assert.deepEqual(sleepCalls, [250, 500], 'failure-path backoff is restartBackoffMs-based and doubles per consecutive transient failure');
   } finally { rm(home); }
 });
 

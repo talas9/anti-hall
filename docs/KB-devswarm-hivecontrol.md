@@ -4307,10 +4307,11 @@ never deleted.
 
 **Known limitation — residual window, pending a native peek/ack API (DevSwarm
 vendor ask).** hivecontrol dequeues inside its own process before any byte reaches
-anti-hall, and `spawnSync` holds stdout in memory until the child exits. A crash in
-that span loses the batch, and nothing on our side can close it. The window is kept
-as small as possible: the RAW bytes are written and fsynced to the WAL the moment
-`spawnSync` returns. That happens before the exit-status check (a killed read can
+anti-hall, and the reader holds the child's stdout in memory until the call returns
+(the ingest daemon uses a non-blocking `spawn` with a SIGTERM-then-SIGKILL timeout
+since 0.108.5; CLI readers use `spawnSync`). A crash in that span loses the batch,
+and nothing on our side can close it. The window is kept as small as possible: the
+RAW bytes are written and fsynced to the WAL the moment the monitor call returns. That happens before the exit-status check (a killed read can
 still carry popped stdout) and before any parse or validation.
 
 **Second known limitation — a disk that fails between the preflight and the

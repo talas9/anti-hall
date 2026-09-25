@@ -57,7 +57,7 @@ test('daemonHealth: fresh heartbeat + live-pid lock (same incarnation, matching 
     writeHeartbeat(home, 'proj-abc', now - 5000, 4242);
     writeLock(home, 'proj-abc', 4242);
     const r = health.daemonHealth(home, 'proj-abc', { now, platform: 'linux', io: { isAlive: () => true } });
-    assert.deepStrictEqual(r, { status: 'healthy', fresh: true, liveLock: true, monitorFault: null });
+    assert.deepStrictEqual(r, { status: 'healthy', fresh: true, liveLock: true, monitorFault: null, startingUp: false });
   } finally { rm(home); }
 });
 
@@ -126,7 +126,7 @@ test('daemonHealth: malformed heartbeat/lock JSON -> both signals fail closed, n
     fs.writeFileSync(p2, '{also not json');
     assert.doesNotThrow(() => {
       const r = health.daemonHealth(home, 'proj-abc', { now: Date.now(), platform: 'linux' });
-      assert.deepStrictEqual(r, { status: 'stale', fresh: false, liveLock: false, monitorFault: null });
+      assert.deepStrictEqual(r, { status: 'stale', fresh: false, liveLock: false, monitorFault: null, startingUp: false });
     });
   } finally { rm(home); }
 });
@@ -135,7 +135,7 @@ test('daemonHealth: repoKey null -> stale, no throw (nothing to check)', () => {
   const home = tmpHome();
   try {
     const r = health.daemonHealth(home, null, { now: Date.now(), platform: 'linux' });
-    assert.deepStrictEqual(r, { status: 'stale', fresh: false, liveLock: false, monitorFault: null });
+    assert.deepStrictEqual(r, { status: 'stale', fresh: false, liveLock: false, monitorFault: null, startingUp: false });
   } finally { rm(home); }
 });
 
@@ -146,7 +146,7 @@ test('daemonHealth: win32 -> unsupported (D28), regardless of heartbeat/lock sta
     writeHeartbeat(home, 'proj-abc', now - 5000);
     writeLock(home, 'proj-abc', 4242);
     const r = health.daemonHealth(home, 'proj-abc', { now, platform: 'win32', io: { isAlive: () => true } });
-    assert.deepStrictEqual(r, { status: 'unsupported', fresh: false, liveLock: false, monitorFault: null });
+    assert.deepStrictEqual(r, { status: 'unsupported', fresh: false, liveLock: false, monitorFault: null, startingUp: false });
   } finally { rm(home); }
 });
 
@@ -196,7 +196,7 @@ test('daemonHealth v0.66: alive + monitor healthy (consecutiveMonitorFailures:0)
     });
     writeLock(home, 'proj-mon-ok', 4242);
     const r = health.daemonHealth(home, 'proj-mon-ok', { now, platform: 'linux', io: { isAlive: () => true } });
-    assert.deepStrictEqual(r, { status: 'healthy', fresh: true, liveLock: true, monitorFault: null });
+    assert.deepStrictEqual(r, { status: 'healthy', fresh: true, liveLock: true, monitorFault: null, startingUp: false });
   } finally { rm(home); }
 });
 
@@ -209,7 +209,7 @@ test('daemonHealth v0.66 BACK-COMPAT: a LEGACY heartbeat (pre-v0.66 daemon, no m
     writeHeartbeatFull(home, 'proj-legacy', { ts: now - 5000, pid: 4242, workspaceId: 'ws', workingDir: '/tmp/x' });
     writeLock(home, 'proj-legacy', 4242);
     const r = health.daemonHealth(home, 'proj-legacy', { now, platform: 'linux', io: { isAlive: () => true } });
-    assert.deepStrictEqual(r, { status: 'healthy', fresh: true, liveLock: true, monitorFault: null });
+    assert.deepStrictEqual(r, { status: 'healthy', fresh: true, liveLock: true, monitorFault: null, startingUp: false });
   } finally { rm(home); }
 });
 
@@ -225,7 +225,7 @@ test('daemonHealth v0.66: monitor failures below threshold (a blip, not a fault)
     });
     writeLock(home, 'proj-blip', 4242);
     const r = health.daemonHealth(home, 'proj-blip', { now, platform: 'linux', io: { isAlive: () => true } });
-    assert.deepStrictEqual(r, { status: 'healthy', fresh: true, liveLock: true, monitorFault: null });
+    assert.deepStrictEqual(r, { status: 'healthy', fresh: true, liveLock: true, monitorFault: null, startingUp: false });
   } finally { rm(home); }
 });
 
@@ -241,7 +241,7 @@ test('daemonHealth v0.66: monitor NOT baseHealthy (dead lock holder) -> stays "s
     });
     writeLock(home, 'proj-dead', 4242); // present, but holder reported dead below
     const r = health.daemonHealth(home, 'proj-dead', { now, platform: 'linux', io: { isAlive: () => false } });
-    assert.deepStrictEqual(r, { status: 'stale', fresh: true, liveLock: false, monitorFault: null });
+    assert.deepStrictEqual(r, { status: 'stale', fresh: true, liveLock: false, monitorFault: null, startingUp: false });
   } finally { rm(home); }
 });
 
@@ -257,7 +257,7 @@ test('daemonHealth v0.66: win32 -> unchanged no-op regardless of monitor-fault f
     });
     writeLock(home, 'proj-win', 4242);
     const r = health.daemonHealth(home, 'proj-win', { now, platform: 'win32', io: { isAlive: () => true } });
-    assert.deepStrictEqual(r, { status: 'unsupported', fresh: false, liveLock: false, monitorFault: null });
+    assert.deepStrictEqual(r, { status: 'unsupported', fresh: false, liveLock: false, monitorFault: null, startingUp: false });
   } finally { rm(home); }
 });
 

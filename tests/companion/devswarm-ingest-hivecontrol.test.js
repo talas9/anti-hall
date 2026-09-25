@@ -154,14 +154,20 @@ test('circuit breaker: 200 identical ENOENT failures emit a BOUNDED, rolled-up s
   assert.ok(backoffs[199] > backoffs[0], 'the backoff escalated away from the flat 2s retry');
 });
 
-test('circuit breaker: TRANSIENT failures keep the pre-existing per-occurrence log + flat backoff', () => {
+test('circuit breaker: TRANSIENT failures keep the per-occurrence log and back off EXPONENTIALLY, capped', () => {
   const lines = [];
   const breaker = ingest.createMonitorBreaker({ baseBackoffMs: 10, log: (e) => lines.push(e) });
   for (let i = 0; i < 5; i++) {
     const v = breaker.onFailure({ ok: false, code: 'ETIMEDOUT', error: 'monitor timed out' }, 1000 + i);
     assert.equal(v.permanent, false);
-    assert.equal(v.backoffMs, 10, 'transient backoff stays flat (unchanged behavior)');
+    assert.equal(v.backoffMs, 10 * Math.pow(2, i), 'transient backoff doubles per consecutive failure (0.108.5)');
   }
+  // Capped: a long run of timeouts never sleeps past TRANSIENT_BACKOFF_CAP_MS.
+  const capped = ingest.createMonitorBreaker({ baseBackoffMs: 2000, log: () => {} });
+  let last = null;
+  for (let i = 0; i < 40; i++) last = capped.onFailure({ ok: false, code: 'ETIMEDOUT', error: 'monitor timed out' }, 1000 + i);
+  assert.equal(last.backoffMs, ingest.TRANSIENT_BACKOFF_CAP_MS);
+  assert.equal(ingest.TRANSIENT_BACKOFF_CAP_MS, 5 * 60 * 1000);
   assert.equal(lines.length, 5, 'every transient failure is still logged individually');
   assert.equal(lines[0].kind, 'monitor-run-failed');
 });

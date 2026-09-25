@@ -938,6 +938,7 @@ Generated from `hooks/lib/settings-schema.js` (a hygiene test keeps this table a
 | `devswarm.intervalSec` adv | `90` [60..120] | `ANTIHALL_DEVSWARM_INTERVAL` | Sweep interval (sec) used at supervisor install time, clamped [60,120]. |
 | `devswarm.migrateMarkRead` adv | `false` | `ANTIHALL_DEVSWARM_MIGRATE_MARK_READ` | Mark migrated messages as read during state migration. |
 | `devswarm.monitorTimeoutSec` adv | `30` [0..] | `ANTIHALL_DEVSWARM_MONITOR_TIMEOUT_SEC` | Bounded cadence (sec) for monitor timeout in devswarm-ingest. |
+| `devswarm.monitorNoOkFailMin` adv | `10` (>0) | `ANTIHALL_DEVSWARM_MONITOR_NO_OK_FAIL_MIN` | Minutes without a successful ingest monitor poll before health reads FAILING (a fresh daemon reads "starting up" inside it). |
 | `devswarm.nudgeCooldownSec` adv | `120` [0..] | `ANTIHALL_DEVSWARM_NUDGE_COOLDOWN_SEC` | Cooldown (sec) between supervisor nudges. |
 | `devswarm.nudgeMaxAttempts` adv | `2` [1..20] | `ANTIHALL_DEVSWARM_NUDGE_MAX_ATTEMPTS` | Max nudge attempts before escalation. |
 | `devswarm.nudgeWindowSec` adv | `180` [1..] | `ANTIHALL_DEVSWARM_NUDGE_WINDOW_SEC` | Window (sec) for counting nudge attempts. |

@@ -80,7 +80,11 @@ gated the same way):
    `lastMonitorOkMs` / `lastMonitorErrorCode` — see `devswarm-ingest.js`'s
    `writeIngestHeartbeat`), and repair mode reports this as its own **FAILURE**
    (not "installed and healthy") once 3+ consecutive failures are recorded, or
-   the last success is >10min stale while still failing — reinstalling bakes
+   no monitor poll has succeeded for longer than `devswarm.monitorNoOkFailMin`
+   (default 10 min) — since the last success, or since the daemon started
+   (`startedAtMs`) when it has never succeeded; inside that window a fresh
+   daemon reports **starting up**, not failing. The heartbeat also carries
+   `lastMonitorAttemptMs` and `lastMonitorError` — reinstalling bakes
    the resolved absolute binary + `PATH` into the regenerated unit, which is
    the actual remedy. A heartbeat missing these fields (an older daemon build
    that has not been relaunched yet) is UNKNOWN, never a fault. The SAME

@@ -66,7 +66,9 @@ RUNNING (fresh heartbeat, live-pid lock) while every `hivecontrol workspace moni
 still FAILS (a permanent config fault, e.g. ENOENT/EACCES/ENOTDIR); the heartbeat carries
 the monitor outcome (`consecutiveMonitorFailures`/`lastMonitorOkMs`/`lastMonitorErrorCode`),
 and doctor reports this as its own FAILURE (not "healthy") once 3+ consecutive failures are
-recorded or the last success is >10min stale while still failing — a heartbeat missing
+recorded or no monitor poll has succeeded for longer than `devswarm.monitorNoOkFailMin`
+(default 10 min; since the daemon's start when it never succeeded — inside that window a
+fresh daemon reports "starting up", not failing) — a heartbeat missing
 these fields (older daemon build) is UNKNOWN, never a fault. The same shared predicate
 (`hooks/lib/doctor-repair.js`'s exported `monitorFaultFor()`) also drives the in-session
 hot-path banner on the Claude side (`companion/lib/ingest-health.js`'s `daemonHealth()`

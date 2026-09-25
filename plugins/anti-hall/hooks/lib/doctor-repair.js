@@ -126,11 +126,35 @@ function projectDaemonHealthy(home, repoKey, now, io) {
 // POSITIVE, above-threshold failure count — or a positively stale last-success
 // alongside a recorded failure — is ever reported.
 const MONITOR_FAILURE_FAIL_THRESHOLD = 3;      // consecutive failures before this is a FAULT, not a blip
-const MONITOR_OK_STALE_MS = 10 * 60 * 1000;    // a recorded last-success older than this, while failing, is also a fault
+const MONITOR_NO_OK_FAIL_MIN_DEFAULT = 10;     // devswarm.monitorNoOkFailMin default
+const MONITOR_OK_STALE_MS = MONITOR_NO_OK_FAIL_MIN_DEFAULT * 60 * 1000; // default window (ms)
+
+// monitorNoOkWindowMs(home, env) -> ms. "No successful monitor poll for this
+// long" is FAILING (0.108.5). Settings key devswarm.monitorNoOkFailMin
+// (minutes, default 10), read from THIS home's settings. Never throws.
+function monitorNoOkWindowMs(home, env) {
+  try {
+    const min = require('./settings.js').get('devswarm', 'monitorNoOkFailMin', MONITOR_NO_OK_FAIL_MIN_DEFAULT, { home, env: env || process.env });
+    if (Number.isFinite(min) && min > 0) return min * 60 * 1000;
+  } catch (_) {}
+  return MONITOR_OK_STALE_MS;
+}
 
 // monitorFaultFor(home, repoKey, now, io) -> null | {consecutive, code, bin, daemonPath, lastOkMs, reason}
 // Pure fs, never throws, null on ANY doubt (missing file, unparsable JSON,
 // missing fields, below threshold).
+//
+// 0.108.5 — "NO SUCCESS" IS A FAULT, not just "consecutive failures": a daemon
+// whose monitor call is slow/hung records consecutiveMonitorFailures:0 while
+// no poll ever succeeds (live 2026-09-25: lastMonitorOkMs null for 15+ min with
+// 0 failures, read as healthy). FAILING when, past the window (settings
+// devswarm.monitorNoOkFailMin, default 10 min):
+//   - noOkSinceStart: lastMonitorOkMs null and startedAtMs older than the window;
+//   - okStale: the last success is older than the window (a healthy daemon
+//     succeeds every monitor -t cycle, ~30s — any failure count).
+// Inside the window with no success yet the daemon is STARTING UP (see
+// monitorStartingUp), never a fault. A heartbeat without startedAtMs (older
+// daemon) cannot prove "since start" -> that trigger stays UNKNOWN.
 function monitorFaultFor(home, repoKey, now, io) {
   if (!repoKey) return null;
   const F = (io && io.fs) || fs;
@@ -144,8 +168,11 @@ function monitorFaultFor(home, repoKey, now, io) {
   if (!Number.isFinite(beat.consecutiveMonitorFailures)) return null;
   const consecutive = beat.consecutiveMonitorFailures;
   const lastOkMs = Number.isFinite(beat.lastMonitorOkMs) ? beat.lastMonitorOkMs : null;
-  const okStale = consecutive > 0 && lastOkMs !== null && (now - lastOkMs) > MONITOR_OK_STALE_MS;
-  if (consecutive < MONITOR_FAILURE_FAIL_THRESHOLD && !okStale) return null;
+  const startedAtMs = Number.isFinite(beat.startedAtMs) ? beat.startedAtMs : null;
+  const windowMs = monitorNoOkWindowMs(home, io && io.env);
+  const okStale = lastOkMs !== null && (now - lastOkMs) > windowMs;
+  const noOkSinceStart = lastOkMs === null && startedAtMs !== null && (now - startedAtMs) > windowMs;
+  if (consecutive < MONITOR_FAILURE_FAIL_THRESHOLD && !okStale && !noOkSinceStart) return null;
   return {
     consecutive,
     code: typeof beat.lastMonitorErrorCode === 'string' ? beat.lastMonitorErrorCode : null,
@@ -155,7 +182,27 @@ function monitorFaultFor(home, repoKey, now, io) {
     daemonPath: typeof beat.daemonPath === 'string' ? beat.daemonPath : null,
     lastOkMs,
     okStale,
+    noOkSinceStart,
+    startedAtMs,
+    heartbeatTs: Number.isFinite(beat.ts) ? beat.ts : null,
+    lastAttemptMs: Number.isFinite(beat.lastMonitorAttemptMs) ? beat.lastMonitorAttemptMs : null,
   };
+}
+
+// monitorStartingUp(home, repoKey, now, io) -> bool. True while a daemon that
+// has NOT completed a successful monitor poll yet is still inside the
+// devswarm.monitorNoOkFailMin window since its start — reported as "starting
+// up", never as failing or healthy-and-draining. Never throws.
+function monitorStartingUp(home, repoKey, now, io) {
+  if (!repoKey) return false;
+  const F = (io && io.fs) || fs;
+  const daemon = ingestDaemonMod();
+  if (typeof daemon.ingestHeartbeatPath !== 'function') return false;
+  let beat = null;
+  try { beat = JSON.parse(F.readFileSync(daemon.ingestHeartbeatPath(home, repoKey), 'utf8')); } catch (_) { return false; }
+  if (!beat || typeof beat !== 'object' || !Number.isFinite(beat.startedAtMs)) return false;
+  if (Number.isFinite(beat.lastMonitorOkMs)) return false;
+  return (now - beat.startedAtMs) <= monitorNoOkWindowMs(home, io && io.env);
 }
 
 // monitorFaultReason(fault) -> the operator-facing FAILURE line. Names the
@@ -165,7 +212,8 @@ function monitorFaultReason(fault, workingDir) {
   const f = fault || {};
   return 'ingest daemon is RUNNING but its `hivecontrol workspace monitor` calls are FAILING ('
     + f.consecutive + ' consecutive' + (f.code ? ', ' + f.code : '')
-    + (f.lastOkMs === null ? ', no successful poll since start' : (f.okStale ? ', last success ' + Math.round((Date.now() - f.lastOkMs) / 60000) + 'm ago' : ''))
+    + (f.lastOkMs === null ? ', no successful poll since start' + (Number.isFinite(f.startedAtMs) ? ' ' + Math.round((Date.now() - f.startedAtMs) / 60000) + 'm ago' : '') : (f.okStale ? ', last success ' + Math.round((Date.now() - f.lastOkMs) / 60000) + 'm ago' : ''))
+    + (f.error ? '; last error: ' + f.error : '')
     + ') — it is alive but ingesting NOTHING'
     + '. binary=' + (f.bin || 'hivecontrol') + (f.binSource ? ' (' + f.binSource + ')' : '')
     + (f.daemonPath ? '; daemon PATH=' + f.daemonPath : '')
@@ -1569,6 +1617,7 @@ function runRepairs(opts) {
       // installer bakes the resolved binary + PATH into the regenerated unit.
       let alive = true;
       let monitorFault = null;
+      let startingUp = false;
       let repoKeyForHealth = null; // hoisted: reused below for the stale-running codeVersion check
       if (cls === 'ok') {
         repoKeyForHealth = read.repoKey;
@@ -1586,6 +1635,7 @@ function runRepairs(opts) {
               : null;
             alive = !!(result && (result.status === 'healthy' || result.status === 'failed'));
             monitorFault = (result && result.status === 'failed') ? result.monitorFault : null;
+            startingUp = !!(result && result.startingUp);
           } catch (_) { alive = false; monitorFault = null; }
         } else {
           alive = false;
@@ -1615,7 +1665,9 @@ function runRepairs(opts) {
               + (staleRunning.heartbeatVersion || 'missing') + ', now ' + staleRunning.installedVersion);
           }
         } else {
-          push('ingest', 'install-ingest', 'skipped', 'ingest daemon installed and healthy (WorkingDirectory ' + read.workingDir + ')');
+          push('ingest', 'install-ingest', 'skipped', startingUp
+            ? 'ingest daemon installed and STARTING UP — no monitor poll has succeeded yet (within the devswarm.monitorNoOkFailMin window; WorkingDirectory ' + read.workingDir + ')'
+            : 'ingest daemon installed and healthy (WorkingDirectory ' + read.workingDir + ')');
         }
       } else {
         const deadDaemon = cls === 'ok' && !alive; // install-shape fine, liveness check failed
@@ -3097,8 +3149,8 @@ module.exports = {
   // D12d — superseded archived-marker detection (report-only, inert once isArchivedWorkspace discriminates it):
   checkSupersededArchivedMarkers,
   // v0.66 — "alive but ingesting nothing" (monitor-outcome) detection:
-  monitorFaultFor, monitorFaultReason,
-  MONITOR_FAILURE_FAIL_THRESHOLD, MONITOR_OK_STALE_MS,
+  monitorFaultFor, monitorFaultReason, monitorStartingUp, monitorNoOkWindowMs,
+  MONITOR_FAILURE_FAIL_THRESHOLD, MONITOR_OK_STALE_MS, MONITOR_NO_OK_FAIL_MIN_DEFAULT,
   // stale-running (pacing-fix delivery gap) detection:
   staleRunningCheck, compareSemverLite,
   // R11 Auditor Q5 — sweep drain markers left under OTHER ids that the gate's

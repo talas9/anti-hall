@@ -899,7 +899,7 @@ function main() {
         // mutually-exclusive enum value (never both at once, see its own
         // comment), but the 'failed' check is still checked FIRST so precedence
         // is explicit and only ONE banner ever renders in this slot.
-        if (health.status === 'failed') staleBanner = ingestHealthMod.buildMonitorFaultBanner(health.monitorFault);
+        if (health.status === 'failed') staleBanner = ingestHealthMod.buildMonitorFaultBanner(health.monitorFault, now);
         else if (health.status === 'stale') staleBanner = ingestHealthMod.buildStaleBanner(beatTs, now);
       }
 

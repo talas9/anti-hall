@@ -40,6 +40,29 @@ restore.
 
 ### Fixes
 
+- **The DevSwarm ingest daemon no longer freezes, dies silently, or reads healthy while a
+  slow `hivecontrol` drains nothing.** Under heavy machine load the monitor call timed out
+  (`spawnSync … ETIMEDOUT`), but `spawnSync`'s `timeout` only sends SIGTERM and then keeps
+  blocking until the child actually exits. A `hivecontrol` that was slow to die froze the
+  whole daemon, heartbeat included, for minutes. The daemon (`companion/devswarm-ingest.js`)
+  now runs each monitor call with a non-blocking `child_process.spawn`: SIGTERM at the hard
+  timeout, SIGKILL after a grace period, and a hard upper bound after that. While a call is
+  in flight, a timer keeps the lock and liveness heartbeat fresh. The heartbeat is also written
+  on the backoff paths that skipped it before (a blocked delivery WAL, a retryable store
+  error), and it carries a new `lastMonitorAttemptMs`. Transient failures back off
+  exponentially (2s, 4s, 8s …) up to a 5-minute cap instead of retrying every 2s. Every exit
+  now leaves a reason in `~/.anti-hall/devswarm-ingest.log`: SIGTERM/SIGINT/SIGHUP are logged
+  (and the in-flight `hivecontrol` child is killed), as are uncaught exceptions and unhandled
+  rejections (with the stack) and the final exit code. An exit with no line at all is now the
+  signature of a SIGKILL. Health (`monitorFaultFor` / `daemonHealth`): when no monitor poll has
+  succeeded since the daemon started, or since the last success, for longer than the new
+  `devswarm.monitorNoOkFailMin` window (default 10 minutes), health reads FAILING even when no
+  failures have been counted. That was the field case: `lastMonitorOkMs` stayed null with 0
+  failures for 15+ minutes and read as healthy. Inside that window a freshly started daemon
+  reports "starting up" (`startingUp: true`, status still healthy, so no repair restarts it).
+  The failing banner now says which condition tripped, the heartbeat age, and the last error
+  in plain words.
+
 - **Every jev-assist call site now threads `sessionId`/`turnRef` into the logged row.**
   Live speculation decisions (the `speculation` add-block integration, the only one that
   can actually add a block while "on") were logging `sessionId: null` for every row,

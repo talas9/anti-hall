@@ -131,6 +131,8 @@ function doctorRepairMod() {
 
 // daemonHealth(home, repoKey, opts) -> { status, fresh, liveLock, monitorFault }
 //   status: 'healthy'     — fresh heartbeat AND a live-pid lock holder, monitor OK
+//                           (`startingUp:true` when no poll has succeeded yet but
+//                           the daemon is still inside the no-ok window, 0.108.5)
 //           'failed'      — (v0.66) same liveness signals as 'healthy', but the
 //                           daemon's `hivecontrol workspace monitor` spawn is
 //                           FAILING past doctor-repair.js's monitorFaultFor()
@@ -149,7 +151,7 @@ function doctorRepairMod() {
 function daemonHealth(home, repoKey, opts) {
   const o = opts || {};
   const platform = o.platform || process.platform;
-  if (platform === 'win32') return { status: 'unsupported', fresh: false, liveLock: false, monitorFault: null };
+  if (platform === 'win32') return { status: 'unsupported', fresh: false, liveLock: false, monitorFault: null, startingUp: false };
 
   const now = Number.isFinite(o.now) ? o.now : Date.now();
   const F = (o.io && o.io.fs) || fs;
@@ -204,17 +206,24 @@ function daemonHealth(home, repoKey, opts) {
   // heartbeat missing the v0.66 fields), so this try/catch is belt-and-
   // suspenders against a missing/broken doctor-repair.js module.
   let monitorFault = null;
+  let startingUp = false;
   if (baseHealthy && repoKey) {
     try {
       const dr = doctorRepairMod();
       if (typeof dr.monitorFaultFor === 'function') {
         monitorFault = dr.monitorFaultFor(home, repoKey, now, o.io) || null;
       }
-    } catch (_) { monitorFault = null; }
+      // 0.108.5: alive, no successful monitor poll yet, still inside the
+      // devswarm.monitorNoOkFailMin window since start -> 'healthy' status
+      // (never trigger a restart) flagged startingUp for the report/banner.
+      if (!monitorFault && typeof dr.monitorStartingUp === 'function') {
+        startingUp = !!dr.monitorStartingUp(home, repoKey, now, o.io);
+      }
+    } catch (_) { monitorFault = null; startingUp = false; }
   }
 
   const status = monitorFault ? 'failed' : (baseHealthy ? 'healthy' : 'stale');
-  return { status, fresh, liveLock, monitorFault };
+  return { status, fresh, liveLock, monitorFault, startingUp };
 }
 
 // buildMonitorFaultBanner(fault) -> a short, ONE-LINE, actionable banner for
@@ -226,12 +235,20 @@ function daemonHealth(home, repoKey, opts) {
 // `fault` is the object returned by doctor-repair.js's monitorFaultFor()
 // (daemonHealth()'s own `.monitorFault` field) — never throws on a null/
 // malformed fault, matching buildStaleBanner's own fail-open contract.
-function buildMonitorFaultBanner(fault) {
+// 0.108.5: says in plain words WHICH condition tripped (no successful poll
+// since the daemon started / last success N ago / N failures in a row), the
+// heartbeat age, and the last error text.
+function buildMonitorFaultBanner(fault, nowMs) {
   const f = fault || {};
+  const now = Number.isFinite(nowMs) ? nowMs : Date.now();
   const consecutive = Number.isFinite(f.consecutive) ? f.consecutive : '?';
+  let what;
+  if (f.noOkSinceStart) what = 'no monitor poll has succeeded since the daemon started ' + formatRelative(f.startedAtMs, now) + ' ago';
+  else if (f.okStale) what = 'the last successful monitor poll was ' + formatRelative(f.lastOkMs, now) + ' ago';
+  else what = '`hivecontrol workspace monitor` has failed ' + consecutive + 'x in a row';
   return (
-    '⚠ DEVSWARM INGEST FAILING: daemon is alive but `hivecontrol workspace monitor` has failed '
-    + consecutive + 'x in a row' + (f.code ? ' (' + f.code + ')' : '')
+    '⚠ DEVSWARM INGEST FAILING: the daemon is alive (heartbeat ' + formatRelative(f.heartbeatTs, now) + ' ago) but '
+    + what + (f.code ? ' (' + f.code + ')' : '') + (f.error ? '; last error: ' + String(f.error).slice(0, 160) : '')
     + ' — ingesting NOTHING. Run /anti-hall:doctor to repair the ingest daemon.'
   );
 }
