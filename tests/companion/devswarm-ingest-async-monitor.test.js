@@ -148,9 +148,11 @@ test('defaultMonitorRunAsync: stderr tail is BOUNDED to the last ~2KB, not accum
   try {
     // Write ~6KB of stderr (well past the 2KB tail bound) followed by a
     // distinctive marker at the very end, then exit non-zero.
+    // One bulk write (not a 6000-iteration shell loop, which under CI load could
+    // outlive the timeout and get killed before the marker is written).
     const bin = fakeHivecontrol(dir,
-      'i=0\nwhile [ $i -lt 6000 ]; do printf "x" >&2; i=$((i+1)); done\n>&2 printf "END-MARKER"\nexit 1');
-    const res = await ingest.defaultMonitorRunAsync({ hivecontrol: bin, hardTimeoutMs: 5000 });
+      'head -c 6000 /dev/zero | tr "\\000" x >&2\n>&2 printf "END-MARKER"\nexit 1');
+    const res = await ingest.defaultMonitorRunAsync({ hivecontrol: bin, hardTimeoutMs: 30000 });
     assert.equal(res.ok, true);
     assert.match(res.error, /END-MARKER/, 'the TAIL (most recent bytes) is kept');
     // The captured segment inside the error message is bounded near the 2KB
