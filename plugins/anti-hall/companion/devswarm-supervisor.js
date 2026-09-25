@@ -309,7 +309,61 @@ function isUrgentMesh(urgency) {
   return !!(urgency && (URGENT_TIERS.has(urgency.urgencyMax) || URGENT_TIERS.has(urgency.broadcastUrgencyMax)));
 }
 
-// jevBlockerLabel(childId, home) -> 'waiting-on-parent' | 'wedged' | null.
+// supervisorBlockerLabel re-ask dedupe: one input (childId + hit.kind/ts)
+// stays THE SAME across many consecutive sweeps (the sweep interval is
+// ~90s; a child can sit "waiting-on-parent"/"wedged" for hours), so without
+// this, jevBlockerLabel below re-asked and re-logged the byte-identical
+// decision every single tick — one input produced 382 cache rows in 24h,
+// none of which carried any new information. A per-workspace state file
+// under <devswarmRoot>/blocker-label-ask/<childId>.json remembers the hash
+// of the last input actually asked/logged for that workspace; a sweep whose
+// input hash is unchanged skips the ask (and the log line) entirely UNLESS
+// the configured re-ask interval has elapsed (settings key
+// devswarm.supervisorBlockerLabelReaskSec, default 6h), which forces a
+// periodic re-log even for a long-static input so `jev report` still sees
+// this integration as alive. Fail-open throughout: any read/write error
+// degrades to "ask anyway" (today's pre-dedupe behavior), never to silence.
+const BLOCKER_LABEL_ASK_DIR = 'blocker-label-ask';
+const DEFAULT_BLOCKER_LABEL_REASK_MS = 6 * 60 * 60 * 1000; // 6h
+
+function blockerLabelAskStatePath(home, childId) {
+  return path.join(devswarmRoot(home), BLOCKER_LABEL_ASK_DIR, String(childId) + '.json');
+}
+function readBlockerLabelAskState(home, childId) {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(blockerLabelAskStatePath(home, childId), 'utf8'));
+    return {
+      hash: typeof (parsed && parsed.hash) === 'string' ? parsed.hash : '',
+      askedAt: Number.isFinite(parsed && parsed.askedAt) ? parsed.askedAt : 0,
+    };
+  } catch (_) {
+    return { hash: '', askedAt: 0 };
+  }
+}
+function writeBlockerLabelAskState(home, childId, state) {
+  try {
+    const p = blockerLabelAskStatePath(home, childId);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    const tmp = p + '.tmp-' + process.pid;
+    fs.writeFileSync(tmp, JSON.stringify(state));
+    fs.renameSync(tmp, p); // atomic — a crash mid-write can never leave a torn state file
+  } catch (_) { /* fail-open: dedupe is best-effort only, never load-bearing for correctness */ }
+}
+// resolveBlockerLabelReaskMs(env) -> ms, via settings.js (env > settings.json
+// > default), same getWithEnv idiom every other companion cooldown in this
+// file uses (resolveReconcileCooldownMs above).
+function resolveBlockerLabelReaskMs(env) {
+  const e = env || process.env;
+  try {
+    const sec = require('./../hooks/lib/settings.js')
+      .getWithEnv('devswarm', 'supervisorBlockerLabelReaskSec', DEFAULT_BLOCKER_LABEL_REASK_MS / 1000, e);
+    return (Number.isFinite(sec) && sec > 0 ? sec : DEFAULT_BLOCKER_LABEL_REASK_MS / 1000) * 1000;
+  } catch (_) {
+    return DEFAULT_BLOCKER_LABEL_REASK_MS;
+  }
+}
+
+// jevBlockerLabel(childId, home, opts) -> 'waiting-on-parent' | 'wedged' | null.
 //
 // JEV ADVISORY (supervisorBlockerLabel, default mode "shadow" — see
 // hooks/lib/jev-assist.js). Liveness here (computeLiveness above) is
@@ -330,7 +384,7 @@ function isUrgentMesh(urgency) {
 //
 // Fail-open: any missing lib, unreadable cache, or jev-assist error -> null
 // (no label, no crash, no effect on the report's existing shape).
-function jevBlockerLabel(childId, home) {
+function jevBlockerLabel(childId, home, opts) {
   try {
     const jevTriage = require('../hooks/lib/jev-triage.js');
     const jevAssist = require('../hooks/lib/jev-assist.js');
@@ -343,16 +397,38 @@ function jevBlockerLabel(childId, home) {
     if (!hit || (hit.kind !== 'blocker' && hit.kind !== 'question-needs-answer')) return null;
     const label = hit.kind === 'blocker' ? 'wedged' : 'waiting-on-parent';
 
+    const o = opts || {};
+    const now = Number.isFinite(o.now) ? o.now : Date.now();
+    const env = o.env || process.env;
+    const inputHash = String(childId) + '\u0001' + String(hit.kind) + '\u0001' + String(hit.ts);
+
+    // Dedupe: same input as last time AND within the re-ask interval -> skip
+    // the ask+log entirely, but still return the SAME label the last logged
+    // ask decided (a shadow row's suppression must not also blank an
+    // already-promoted "on" report field).
+    const askState = readBlockerLabelAskState(home, childId);
+    const reaskMs = resolveBlockerLabelReaskMs(env);
+    if (askState.hash === inputHash && (now - askState.askedAt) < reaskMs) {
+      return askState.mode === 'on' ? label : null;
+    }
+
     const p = jevAssist.prepare({
       id: 'supervisorBlockerLabel', home, trust: 'advisory', baseline: null,
       cacheKey: String(childId) + '\u0001' + String(hit.ts), state: label,
     });
-    if (p.skip) return null; // mode "off" — no log line, no label (byte-identical to pre-Jev)
+    if (p.skip) {
+      // mode "off" — no log line, no label (byte-identical to pre-Jev), but
+      // still record the ask so an off->on flip mid-interval isn't blocked
+      // by a stale off-mode state entry outliving the interval.
+      writeBlockerLabelAskState(home, childId, { hash: inputHash, askedAt: now, mode: 'off' });
+      return null;
+    }
     jevAssist.finalize({
       id: 'supervisorBlockerLabel', home: p.h, hash: p.hash, mode: p.mode,
       trust: 'advisory', baseline: null, judge: () => true, threshold: p.threshold,
       r: { ok: true, answer: label, confidence: 1, ms: 0 }, cachedFlag: true, state: label,
     });
+    writeBlockerLabelAskState(home, childId, { hash: inputHash, askedAt: now, mode: p.mode });
     // Shadow logs the decision above (for `jev report`) but NEVER changes the
     // report — the label is only ever attached once promoted to mode "on".
     return p.mode === 'on' ? label : null;
@@ -597,7 +673,7 @@ function sweepOnce(opts) {
           }
         }
       }
-      const blockerLabel = jevBlockerLabel(d.id, home);
+      const blockerLabel = jevBlockerLabel(d.id, home, { now: o.now, env });
       results.push(blockerLabel ? { id: d.id, verdict, poke, blocker: blockerLabel } : { id: d.id, verdict, poke });
     } catch (e) {
       results.push({ id: d && d.id, error: String(e && e.message) });
@@ -1572,6 +1648,9 @@ module.exports = {
   // disk-growth fix — supervisor's own log rotation:
   rotateSupervisorLogIfNeeded, supervisorLogPath, resolveSupervisorLogRotateBytes,
   SUPERVISOR_LOG_ROTATE_BYTES_DEFAULT,
+  // supervisorBlockerLabel re-ask dedupe (382-rows-in-24h fix):
+  jevBlockerLabel, blockerLabelAskStatePath, readBlockerLabelAskState, writeBlockerLabelAskState,
+  resolveBlockerLabelReaskMs, DEFAULT_BLOCKER_LABEL_REASK_MS,
 };
 
 if (require.main === module) main();

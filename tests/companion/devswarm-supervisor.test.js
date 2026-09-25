@@ -849,3 +849,124 @@ test('jevBlockerLabel / sweepOnce: mode "on" with a malformed pending-cache file
     assert.strictEqual(Object.prototype.hasOwnProperty.call(res[0], 'blocker'), false);
   } finally { cleanup(); }
 });
+
+// ---------------------------------------------------------------------------
+// supervisorBlockerLabel re-ask dedupe: one unchanged input must not log a
+// fresh jev-assist.ndjson row on every ~90s sweep (382 rows/24h bug).
+// ---------------------------------------------------------------------------
+
+function readJevAssistLog(home) {
+  try {
+    return fs.readFileSync(path.join(home, '.anti-hall', 'logs', 'jev-assist.ndjson'), 'utf8')
+      .trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
+  } catch (_) {
+    return [];
+  }
+}
+
+test('jevBlockerLabel: same input across consecutive calls logs exactly ONE row, not one per call', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    writeJevConfig(home, { enabled: true, integrations: { supervisorBlockerLabel: 'shadow' } });
+    writeTriagePending(home, { 'primary-1\u0001child-a': { ts: 1000, kind: 'blocker', urgency: 'urgent' } });
+    const now = Date.now();
+    // Simulate 5 consecutive ~90s sweeps with the byte-identical pending entry.
+    for (let i = 0; i < 5; i++) {
+      M.jevBlockerLabel('child-a', home, { now: now + i * 90 * 1000 });
+    }
+    const rows = readJevAssistLog(home).filter((r) => r.id === 'supervisorBlockerLabel');
+    assert.strictEqual(rows.length, 1, 'an unchanged input must be logged exactly once, not once per sweep');
+  } finally { cleanup(); }
+});
+
+test('jevBlockerLabel: a CHANGED input (new hit.ts) re-asks and logs again', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    writeJevConfig(home, { enabled: true, integrations: { supervisorBlockerLabel: 'shadow' } });
+    const now = Date.now();
+    writeTriagePending(home, { 'primary-1\u0001child-a': { ts: 1000, kind: 'blocker', urgency: 'urgent' } });
+    M.jevBlockerLabel('child-a', home, { now });
+    // A fresh triage entry (new ts) for the same child -> genuinely new information.
+    writeTriagePending(home, { 'primary-1\u0001child-a': { ts: 2000, kind: 'blocker', urgency: 'urgent' } });
+    M.jevBlockerLabel('child-a', home, { now: now + 1000 });
+    const rows = readJevAssistLog(home).filter((r) => r.id === 'supervisorBlockerLabel');
+    assert.strictEqual(rows.length, 2, 'a changed input must still be asked/logged');
+  } finally { cleanup(); }
+});
+
+test('jevBlockerLabel: same input but the re-ask interval elapsed -> logs again', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    writeJevConfig(home, { enabled: true, integrations: { supervisorBlockerLabel: 'shadow' } });
+    writeTriagePending(home, { 'primary-1\u0001child-a': { ts: 1000, kind: 'blocker', urgency: 'urgent' } });
+    const now = Date.now();
+    M.jevBlockerLabel('child-a', home, { now });
+    // Just under the default 6h interval -> still suppressed.
+    M.jevBlockerLabel('child-a', home, { now: now + (6 * 60 * 60 * 1000 - 1000) });
+    let rows = readJevAssistLog(home).filter((r) => r.id === 'supervisorBlockerLabel');
+    assert.strictEqual(rows.length, 1, 'still within the interval -> suppressed');
+    // Interval elapsed -> a periodic re-ask fires even though the input never changed.
+    M.jevBlockerLabel('child-a', home, { now: now + (6 * 60 * 60 * 1000 + 1000) });
+    rows = readJevAssistLog(home).filter((r) => r.id === 'supervisorBlockerLabel');
+    assert.strictEqual(rows.length, 2, 'the interval elapsing must force a fresh ask/log');
+  } finally { cleanup(); }
+});
+
+test('jevBlockerLabel: re-ask interval is configurable via settings devswarm.supervisorBlockerLabelReaskSec', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    writeJevConfig(home, { enabled: true, integrations: { supervisorBlockerLabel: 'shadow' } });
+    fs.mkdirSync(path.join(home, '.anti-hall'), { recursive: true });
+    fs.writeFileSync(
+      path.join(home, '.anti-hall', 'settings.json'),
+      JSON.stringify({ devswarm: { supervisorBlockerLabelReaskSec: 60 } })
+    );
+    writeTriagePending(home, { 'primary-1\u0001child-a': { ts: 1000, kind: 'blocker', urgency: 'urgent' } });
+    const now = Date.now();
+    const env = { HOME: home };
+    M.jevBlockerLabel('child-a', home, { now, env });
+    // Past the CONFIGURED 60s interval (but well under the 6h default).
+    M.jevBlockerLabel('child-a', home, { now: now + 61 * 1000, env });
+    const rows = readJevAssistLog(home).filter((r) => r.id === 'supervisorBlockerLabel');
+    assert.strictEqual(rows.length, 2, 'a shorter configured interval must re-ask sooner than the 6h default');
+  } finally { cleanup(); }
+});
+
+test('sweepOnce: 3 consecutive sweeps over an unchanged blocker cache log exactly ONE supervisorBlockerLabel row', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    writeJevConfig(home, { enabled: true, integrations: { supervisorBlockerLabel: 'shadow' } });
+    writeDescriptor(home, { id: 'child-a', worktreePath: '/wt/a' });
+    writeTriagePending(home, { 'primary-1\u0001child-a': { ts: 1000, kind: 'blocker', urgency: 'urgent' } });
+    const deps = {
+      computeLiveness: () => ({ status: 'alive', lastOutboundTs: 1, staleSince: null, nudgeAttempts: 0 }),
+      writeVerdict: () => {},
+      pokeOrEscalate: () => ({ action: 'nudged' }),
+    };
+    const now = Date.now();
+    M.sweepOnce({ home, now, deps });
+    M.sweepOnce({ home, now: now + 90 * 1000, deps });
+    M.sweepOnce({ home, now: now + 180 * 1000, deps });
+    const rows = readJevAssistLog(home).filter((r) => r.id === 'supervisorBlockerLabel');
+    assert.strictEqual(rows.length, 1, 'three sweeps of the same unchanged input must produce ONE log row');
+  } finally { cleanup(); }
+});
+
+test('readBlockerLabelAskState/writeBlockerLabelAskState round-trip; unreadable state fails open to hash:""/askedAt:0', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    assert.deepStrictEqual(M.readBlockerLabelAskState(home, 'child-a'), { hash: '', askedAt: 0 });
+    M.writeBlockerLabelAskState(home, 'child-a', { hash: 'h1', askedAt: 12345, mode: 'shadow' });
+    const state = M.readBlockerLabelAskState(home, 'child-a');
+    assert.strictEqual(state.hash, 'h1');
+    assert.strictEqual(state.askedAt, 12345);
+    assert.ok(fs.existsSync(M.blockerLabelAskStatePath(home, 'child-a')));
+  } finally { cleanup(); }
+});
+
+test('resolveBlockerLabelReaskMs: no settings -> the 6h default', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    assert.strictEqual(M.resolveBlockerLabelReaskMs({ HOME: home }), M.DEFAULT_BLOCKER_LABEL_REASK_MS);
+  } finally { cleanup(); }
+});

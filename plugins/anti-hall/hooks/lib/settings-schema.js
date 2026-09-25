@@ -261,6 +261,7 @@ const SECTIONS = [
       { key: 'supervisorLogRotateBytes', type: 'number', exclusiveMin: 0, default: 10485760, env: 'ANTIHALL_DEVSWARM_SUPERVISOR_LOG_ROTATE_BYTES', advanced: true, description: 'Size at which the supervisor rotates its own log. [verified: companion/devswarm-supervisor.js SUPERVISOR_LOG_ROTATE_BYTES_DEFAULT = 10*1024*1024]' },
       { key: 'inboxGraceSec', type: 'number', min: 0, default: 120, env: 'ANTIHALL_DEVSWARM_INBOX_GRACE_SEC', advanced: true, description: 'Grace window (sec) before a child\'s fresh unread is flagged, unless it heartbeats first; 0 = no grace. [verified: hooks/devswarm-parent-inbox.js DEFAULT_INBOX_GRACE_MS = 120*1000]' },
       { key: 'supervisorSweepBudgetMs', type: 'number', min: 0, default: 20000, env: 'ANTIHALL_SUPERVISOR_SWEEP_BUDGET_MS', advanced: true, description: 'Time budget (ms) for one supervisor sweep pass. [verified: companion/devswarm-supervisor.js:1029 DEFAULT_SUPERVISOR_SWEEP_BUDGET_MS = 20000]' },
+      { key: 'supervisorBlockerLabelReaskSec', type: 'number', min: 60, default: 21600, env: 'ANTIHALL_DEVSWARM_SUPERVISOR_BLOCKER_LABEL_REASK_SEC', advanced: true, description: 'Seconds a supervisorBlockerLabel ask/log is suppressed while its input (childId+kind+ts) is unchanged, before a periodic re-ask fires anyway. [verified: companion/devswarm-supervisor.js DEFAULT_BLOCKER_LABEL_REASK_MS = 6*60*60*1000 -> 21600s]' },
 
       // ---- Workspace lifecycle (auto-archive) ----
       // Read by companion/lib/devswarm-lifecycle.js readSettings (nested
