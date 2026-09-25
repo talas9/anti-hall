@@ -340,7 +340,7 @@ Codex `anti-hall-<name>`: activate, context-conserve, deadly-loop, debt, defects
 - `hooks/doctor.js [--repair]`; `skills/update/scripts/update.js [--check]`; `companion/devswarm-recover.js <id>` (the only kill path).
 
 **Settings** (`~/.anti-hall/settings.json`; env > file > /config > legacy > default; key=default; advanced keys after `|`, defaults via `settings.js show --all`):
-- autoHandover: enabled=true, pct=85, maxTokens=0, nag=true, nagStepPct=5, nagQuietMin=15, gateNewWork=true, gateBudgetPct=5
+- autoHandover: enabled=true, pct=85, maxTokens=0, nag=true, nagStepPct=5, nagQuietMin=15, gateNewWork=true, gateBudgetPct=5, decisivePrompt=true
 - guards: mergeGate=false, shipitGate=false, outputVerifyGuard=true, failureRootCauseNudge=true, repoSelfDrift=true, stashGuard=false, emitDedupe=true, modelRouting=strict, apiGuard=true, speculationGuard=true, claimLedger=true, taskGuard=true, tasklistGuard=true, scanThrottle=true, silentAgentNudge=true | editGuardAllow, allowSubagentMailbox, reaperMatch, reaperExclude, reaperCodexBroker, reaperCodexBrokerMinAgeS, tasklistWorkThreshold, progressFreshMs, apiGuardThirdparty, silentAgentNudgeMin
 - safety: gitGuard=true, commandGuard=true, editGuard=true, swarmGuard=true
 - context: verifyFirstSession=true, verifyFirstOrchestration=true, verifyFirstTurn=true, verifyFirstSubagent=true, taskTracker=true, handoverResume=true, defectNudge=true

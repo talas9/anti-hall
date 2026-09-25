@@ -127,6 +127,20 @@ DevSwarm workspace pass straight through. A measured backstop sends ONE reminder
 per handover once usage grows more than `gateBudgetPct` points past where the
 handover was saved: refresh the handover and offer to park the rest.
 
+**Decisive compact/clear prompt (v0.109.5, `decisivePrompt`, on by default).** At a
+turn-ending Stop point (the fire-once or the natural-pause nag in
+`hooks/auto-handover-pause-nag.js`), once this session's `HANDOVER*.md` exists and
+is fresh (no counted file-changing action happened after it was written — the same
+staleness logic `tasklist-guard.js` uses), the directive tells the agent to END its
+reply with one prominent, glyph-led line naming the exact command: `🟢 **GOOD POINT
+TO /compact NOW**: handover saved at <path>. /compact keeps working on the same
+task; /clear if the next task is different.` — or, when the handover's own "Open
+items"/"Next action" read as done, `🟢 **GOOD POINT TO /clear NOW**` instead. If the
+handover has gone STALE since it was written, the line becomes `⚠️ **Refresh the
+handover first**, then /compact` and never claims a "good point". Codex sessions get
+`/new` in place of `/clear`. Off reverts to the plain (non-decisive) fire/pause-nag
+wording.
+
 | Key | Default | Meaning |
 |---|---|---|
 | `autoHandover.enabled` | `true` | the whole trigger |
@@ -137,6 +151,7 @@ handover was saved: refresh the handover and offer to park the rest.
 | `autoHandover.nagQuietMin` | `15` | minutes between pause reminders |
 | `autoHandover.gateNewWork` | `true` | post-handover new-work gate (size-first, park-or-proceed offer) |
 | `autoHandover.gateBudgetPct` | `5` | post-handover budget in context-window points, 1-50; also the one-shot backstop distance |
+| `autoHandover.decisivePrompt` | `true` | end-of-reply decisive `/compact`\|`/clear`\|`/new` line (or "refresh first" when stale) at a turn-ending Stop point |
 
 "Turn off auto-handover" = `set autoHandover.enabled false`; "set auto-handover to
 80%" = `set autoHandover.pct 80`. The older one-purpose CLI still works as an alias

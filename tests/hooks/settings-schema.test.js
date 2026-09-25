@@ -160,10 +160,10 @@ test('findSection/findSetting/allSettings are consistent with SECTIONS', () => {
   assert.strictEqual(SCHEMA.findSetting('autoHandover', 'does-not-exist'), null);
 });
 
-test('autoHandover section carries exactly the contracted keys (enabled/pct/maxTokens/nag/nagStepPct/nagQuietMin/gateNewWork/gateBudgetPct)', () => {
+test('autoHandover section carries exactly the contracted keys (enabled/pct/maxTokens/nag/nagStepPct/nagQuietMin/gateNewWork/gateBudgetPct/decisivePrompt)', () => {
   const sec = SCHEMA.findSection('autoHandover');
   assert.deepStrictEqual(sec.settings.map((s) => s.key).sort(),
-    ['enabled', 'gateBudgetPct', 'gateNewWork', 'maxTokens', 'nag', 'nagQuietMin', 'nagStepPct', 'pct'].sort());
+    ['enabled', 'gateBudgetPct', 'gateNewWork', 'maxTokens', 'nag', 'nagQuietMin', 'nagStepPct', 'pct', 'decisivePrompt'].sort());
   const mt = SCHEMA.findSetting('autoHandover', 'maxTokens');
   assert.deepStrictEqual([mt.type, mt.min, mt.default, mt.env], ['number', 0, 0, 'ANTIHALL_AUTO_HANDOVER_MAX_TOKENS']);
   assert.strictEqual(SCHEMA.findSetting('autoHandover', 'enabled').default, true);

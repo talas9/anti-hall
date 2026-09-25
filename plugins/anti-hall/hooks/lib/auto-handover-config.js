@@ -57,6 +57,13 @@ const DEFAULT_GATE_BUDGET_PCT = 5;
 // maxTokens <n>`. See docs/KB-handover-research.md for the underlying
 // research this feature was built from.
 const DEFAULT_MAX_TOKENS = 0;
+// Decisive Stop/pause-nag prompt (v0.109.5): once this session's handover
+// file exists and is fresh, the Stop-time directive
+// (hooks/auto-handover-pause-nag.js) tells the agent to END its reply with
+// one prominent line naming the exact /compact (or /clear, or Codex /new)
+// command to run. ON by default -- the whole point of this feature is that
+// the compact/clear signal should be hard to miss.
+const DEFAULT_DECISIVE_PROMPT = true;
 
 // readConfig(home) -> the RAW settings.json section (NOT the resolved
 // values) — {} when nothing has ever been written. Used by the CLI's `get`
@@ -81,6 +88,7 @@ function writeConfig(home, mutator) {
     maxTokens: settings.get(SECTION, 'maxTokens', DEFAULT_MAX_TOKENS, { home }),
     gateNewWork: settings.get(SECTION, 'gateNewWork', DEFAULT_GATE_NEW_WORK, { home }),
     gateBudgetPct: settings.get(SECTION, 'gateBudgetPct', DEFAULT_GATE_BUDGET_PCT, { home }),
+    decisivePrompt: settings.get(SECTION, 'decisivePrompt', DEFAULT_DECISIVE_PROMPT, { home }),
   };
   const next = mutator(Object.assign({}, current)) || current;
   for (const key of Object.keys(next)) {
@@ -134,7 +142,7 @@ function resolveEffective(opts) {
   if (envRaw !== undefined && envRaw !== null && String(envRaw).trim() !== '') {
     const envN = parseInt(envRaw, 10);
     if (envN === 0) {
-      return { enabled: false, pct: 0, maxTokens: 0, nag: false, nagStepPct: DEFAULT_NAG_STEP_PCT, nagQuietMin: DEFAULT_NAG_QUIET_MIN, gateNewWork: false, gateBudgetPct: DEFAULT_GATE_BUDGET_PCT, source: 'env' };
+      return { enabled: false, pct: 0, maxTokens: 0, nag: false, nagStepPct: DEFAULT_NAG_STEP_PCT, nagQuietMin: DEFAULT_NAG_QUIET_MIN, gateNewWork: false, gateBudgetPct: DEFAULT_GATE_BUDGET_PCT, decisivePrompt: false, source: 'env' };
     }
     // A valid 1-99 env value flows through settings.get() below normally
     // (the schema's own `pct` entry declares this same env var), so no
@@ -149,12 +157,13 @@ function resolveEffective(opts) {
   const gateBudgetPct = settings.get(SECTION, 'gateBudgetPct', DEFAULT_GATE_BUDGET_PCT, { home, env });
 
   if (!enabled) {
-    return { enabled: false, pct: 0, maxTokens: 0, nag: false, nagStepPct, nagQuietMin, gateNewWork: false, gateBudgetPct, source: 'file' };
+    return { enabled: false, pct: 0, maxTokens: 0, nag: false, nagStepPct, nagQuietMin, gateNewWork: false, gateBudgetPct, decisivePrompt: false, source: 'file' };
   }
 
   const pct = settings.get(SECTION, 'pct', DEFAULT_PCT, { home, env });
   const maxTokens = Math.floor(settings.get(SECTION, 'maxTokens', DEFAULT_MAX_TOKENS, { home, env }));
   const gateNewWork = settings.get(SECTION, 'gateNewWork', DEFAULT_GATE_NEW_WORK, { home, env });
+  const decisivePrompt = settings.get(SECTION, 'decisivePrompt', DEFAULT_DECISIVE_PROMPT, { home, env });
 
   let source = 'default';
   if (envRaw !== undefined && envRaw !== null && String(envRaw).trim() !== '' && isValidPct(parseInt(envRaw, 10))) {
@@ -164,7 +173,7 @@ function resolveEffective(opts) {
     if (Object.prototype.hasOwnProperty.call(raw, 'pct')) source = 'file';
   }
 
-  return { enabled: true, pct, maxTokens, nag, nagStepPct, nagQuietMin, gateNewWork, gateBudgetPct, source };
+  return { enabled: true, pct, maxTokens, nag, nagStepPct, nagQuietMin, gateNewWork, gateBudgetPct, decisivePrompt, source };
 }
 
 module.exports = {
@@ -180,6 +189,7 @@ module.exports = {
   DEFAULT_NAG,
   DEFAULT_NAG_STEP_PCT,
   DEFAULT_NAG_QUIET_MIN,
+  DEFAULT_DECISIVE_PROMPT,
   DEFAULT_GATE_NEW_WORK,
   DEFAULT_GATE_BUDGET_PCT,
   SECTION,

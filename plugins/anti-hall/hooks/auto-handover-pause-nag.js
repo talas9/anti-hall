@@ -59,7 +59,9 @@ const { getContextPct } = require('./lib/context-pct.js');
 const { resolveEffective, overThreshold } = require('./lib/auto-handover-config.js');
 const { sessionTag, readLatch, writeLatch } = require('./lib/auto-handover-state.js');
 const { readTail } = require('./lib/transcript-tail.js');
-const { buildFireDirective, buildPauseNag } = require('./lib/auto-handover-text.js');
+const { buildFireDirective, buildPauseNag, buildDecisiveSuffix } = require('./lib/auto-handover-text.js');
+const { sessionHandover } = require('./lib/auto-handover-gate.js');
+const freshness = require('./lib/handover-freshness.js');
 
 const SPAWN_LOG = path.join(os.homedir(), '.anti-hall', 'agent-spawns.log');
 const SPAWN_ACTIVITY_MS = 2 * 60 * 1000; // matches statusline/phase-bar.js's ACTIVITY_MS
@@ -164,6 +166,38 @@ function hasOpenTasks(lines) {
   return false;
 }
 
+// relativeHandoverPath(payload, filePath) -> filePath relative to payload.cwd
+// when possible (matches the '.anti-hall/handovers/...' style the fire
+// directive already shows via expectedHandoverPath), else the raw filePath.
+function relativeHandoverPath(payload, filePath) {
+  const cwd = payload && typeof payload.cwd === 'string' && payload.cwd ? payload.cwd : null;
+  if (!cwd || !filePath) return filePath;
+  try {
+    const rel = path.relative(cwd, filePath);
+    return rel && !rel.startsWith('..') ? rel : filePath;
+  } catch (_) {
+    return filePath;
+  }
+}
+
+// decisiveSuffixFor(payload, settings, lines) — the DECISIVE PROMPT
+// (autoHandover.decisivePrompt, default on): '' when off or when this
+// session has no handover file yet (nothing to be decisive ABOUT — the
+// fire directive's own "write it, then urge /compact" wording already
+// covers that case). Otherwise the good-point / stale-refresh line built
+// from hooks/lib/handover-freshness.js's mirror of tasklist-guard.js's own
+// staleness rail (see that file's header for why it mirrors rather than
+// imports).
+function decisiveSuffixFor(payload, settings, lines) {
+  if (!settings.decisivePrompt) return '';
+  let h = null;
+  try { h = sessionHandover(payload); } catch (_) { h = null; }
+  if (!h) return '';
+  const fresh = freshness.isFresh(lines, h.mtimeMs);
+  const taskComplete = fresh !== false ? freshness.isTaskCompleteFromFile(h.filePath) : false;
+  return buildDecisiveSuffix(payload, relativeHandoverPath(payload, h.filePath), fresh, taskComplete);
+}
+
 function main() {
   let payload = null;
   try { payload = JSON.parse(fs.readFileSync(0, 'utf8')); } catch (_) { payload = null; }
@@ -184,6 +218,7 @@ function main() {
 
     const latch = readLatch(home, tag);
     const transcriptPath = typeof payload.transcript_path === 'string' ? payload.transcript_path : null;
+    const lines = transcriptPath ? readTail(transcriptPath) : null; // ONE shared read
 
     if (latch.fired !== true) {
       // STOP-SIDE FIRE (once per arm): a long autonomous turn can cross the
@@ -193,7 +228,7 @@ function main() {
       // quiet. Never for a pct crossing against an unknown (guessed) window
       // — the UserPromptSubmit hook's soft advisory covers that; an absolute
       // maxTokens crossing is a real count and does fire.
-      const result = getContextPct(transcriptPath, env, { home, sessionId: payload.session_id });
+      const result = getContextPct(transcriptPath, env, { home, sessionId: payload.session_id, lines: lines || undefined });
       const over = overThreshold(result, settings);
       if (over === 'pct' || over === 'tokens') {
         const now = Date.now();
@@ -201,7 +236,10 @@ function main() {
           fired: true, firedAt: now, firedPct: result.pct, firedVia: 'stop-' + over,
           lastNagPct: result.pct, lastNagAt: now, softFired: latch.softFired === true,
         });
-        emit(buildFireDirective(result, over, payload, settings.maxTokens));
+        // A handover from an EARLIER arm/session can already exist here (rare,
+        // e.g. a manually-written one) -- decisiveSuffixFor() only speaks up
+        // when sessionHandover() actually finds one for THIS session.
+        emit(buildFireDirective(result, over, payload, settings.maxTokens) + decisiveSuffixFor(payload, settings, lines));
         return;
       }
       emit();
@@ -210,7 +248,6 @@ function main() {
 
     if (!settings.nag) { emit(); return; }
 
-    const lines = transcriptPath ? readTail(transcriptPath) : null; // ONE shared read
     const result = getContextPct(transcriptPath, env, { home, sessionId: payload.session_id, lines: lines || undefined });
     if (!result || !Number.isFinite(result.pct)) { emit(); return; }
 
@@ -242,7 +279,7 @@ function main() {
     writeLatch(home, tag, Object.assign({}, latch, {
       lastNagAt: now, lastPauseNagPct: shownPct, lastNagPct: risen ? result.pct : latch.lastNagPct,
     }));
-    emit(buildPauseNag(result.pct, payload));
+    emit(buildPauseNag(result.pct, payload) + decisiveSuffixFor(payload, settings, lines));
   } catch (_) {
     emit(); // fail-open
   }

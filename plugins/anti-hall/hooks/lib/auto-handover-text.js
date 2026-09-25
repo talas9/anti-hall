@@ -162,6 +162,34 @@ function buildSoftAdvisory(pct) {
   );
 }
 
+// buildDecisiveSuffix(payload, handoverPath, freshness, taskComplete) —
+// appended to the Stop-time directive (hooks/auto-handover-pause-nag.js)
+// once autoHandover.decisivePrompt is on AND this session's handover file
+// exists. Tells the agent to END its reply with one glyph-led, bolded,
+// unmissable line naming the exact command:
+//   fresh + in-progress task -> 🟢 GOOD POINT TO /compact NOW
+//   fresh + handover reads as done -> 🟢 GOOD POINT TO /clear (or /new) NOW
+//   stale (work continued since the handover was written) -> ⚠️ refresh first
+// freshness: true | null (fresh/unprovable -> the good-point line) | false
+// (stale -> the refresh line). taskComplete only matters when fresh.
+function buildDecisiveSuffix(payload, handoverPath, freshness, taskComplete) {
+  const platform = detectPlatform(payload);
+  const clearCmd = platform === 'codex' ? '/new' : '/clear';
+  if (freshness === false) {
+    return '\n\nEnd your reply to the user with exactly this line, verbatim: ' +
+      '⚠️ **Refresh the handover first**, then /compact.';
+  }
+  const path = handoverPath || '<the HANDOVER*.md path you saved>';
+  if (taskComplete) {
+    return '\n\nEnd your reply to the user with exactly this line, verbatim: ' +
+      '🟢 **GOOD POINT TO ' + clearCmd + ' NOW**: handover saved at ' + path + '. ' +
+      'Task looks complete — ' + clearCmd + ' starts fresh; /compact if you want to keep going in this session.';
+  }
+  return '\n\nEnd your reply to the user with exactly this line, verbatim: ' +
+    '🟢 **GOOD POINT TO /compact NOW**: handover saved at ' + path + '. ' +
+    '/compact keeps working on the same task; ' + clearCmd + ' if the next task is different.';
+}
+
 function buildPauseNag(pct, payload) {
   const w = WORDS[detectPlatform(payload)];
   return (
@@ -221,4 +249,5 @@ module.exports = {
   buildMilestoneNag,
   buildSoftAdvisory,
   buildPauseNag,
+  buildDecisiveSuffix,
 };
