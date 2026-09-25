@@ -129,7 +129,10 @@ test('FAIL-OPEN: malformed JSON stdin -> exit 0, no crash', () => {
 // so a RELATIVE `scripts/devswarm.js` in emitted text only resolves when cwd
 // happens to be the plugin root — everywhere else it is MODULE_NOT_FOUND. Every
 // `node <cli>` instruction this hook emits must now carry an ABSOLUTE path that
-// actually exists on disk, regardless of the spawning process's own cwd.
+// actually exists on disk, regardless of the spawning process's own cwd. Since
+// the stable-launcher fix, that absolute path is ~/.anti-hall/bin/devswarm.js
+// (version-independent — see hooks/lib/stable-launcher.js), not the raw
+// version-pinned scripts/devswarm.js this hook's own __dirname resolves to.
 test('P1 FIX: every emitted `node <cli>` instruction carries an ABSOLUTE, existing devswarm.js path', () => {
   const h = makeHome();
   try {
@@ -148,7 +151,7 @@ test('P1 FIX: every emitted `node <cli>` instruction carries an ABSOLUTE, existi
         const cliPath = m[1];
         assert.ok(path.isAbsolute(cliPath), `emitted CLI path must be absolute, not relative: ${cliPath}`);
         assert.ok(fs.existsSync(cliPath), `emitted CLI path must exist on disk: ${cliPath}`);
-        assert.ok(cliPath.endsWith(path.join('scripts', 'devswarm.js')), `must resolve to scripts/devswarm.js: ${cliPath}`);
+        assert.ok(cliPath.endsWith(path.join('.anti-hall', 'bin', 'devswarm.js')), `must resolve to the stable ~/.anti-hall/bin/devswarm.js launcher: ${cliPath}`);
       }
     }
   } finally {
@@ -292,11 +295,13 @@ test('WAKE: Claude Primary -> CronCreate directive using the read-primary drain 
   });
 }
 
-// CONSUMER-LEVEL (Monitor low-latency wake): this hook computes its own absolute
-// WATCHER path (companion/lib/devswarm-wake-watch.js, resolved from __dirname the
-// same way CLI already is) and passes it to wakeDirective() — the Claude branch
-// must then arm `Monitor` with that exact path, alongside the CronCreate text
-// (never instead of it — cron is unconditional, see lib/devswarm-wake.js header).
+// CONSUMER-LEVEL (Monitor low-latency wake): this hook installs/refreshes the
+// STABLE launcher (hooks/lib/stable-launcher.js — ~/.anti-hall/bin/wake-watch.js,
+// version-independent, see that module's header for why this replaced a raw
+// __dirname-derived companion/lib/devswarm-wake-watch.js path) and passes it to
+// wakeDirective() — the Claude branch must then arm `Monitor` with that exact
+// path, alongside the CronCreate text (never instead of it — cron is
+// unconditional, see lib/devswarm-wake.js header).
 test('MONITOR: Claude child/Primary SessionStart directive arms Monitor with an ABSOLUTE watcher path, ALONGSIDE the cron directive', () => {
   const h = makeHome();
   try {
@@ -304,10 +309,10 @@ test('MONITOR: Claude child/Primary SessionStart directive arms Monitor with an 
       const c = ctx(testHook(HOOK, sessionPayload(), { home: h.home, expectJson: true, env }));
       assert.ok(/`Monitor`/.test(c), `must arm Monitor; ctx=${c}`);
       assert.ok(/`CronCreate`/.test(c), `cron must still be present alongside Monitor; ctx=${c}`);
-      const m = c.match(/node ([^`]*?devswarm-wake-watch\.js)/);
+      const m = c.match(/node ([^`]*?wake-watch\.js)/);
       assert.ok(m, `must emit the watcher script path; ctx=${c}`);
       assert.ok(path.isAbsolute(m[1]), `watcher path must be absolute: ${m[1]}`);
-      assert.ok(m[1].endsWith(path.join('companion', 'lib', 'devswarm-wake-watch.js')), `must resolve to companion/lib/devswarm-wake-watch.js: ${m[1]}`);
+      assert.ok(m[1].endsWith(path.join('.anti-hall', 'bin', 'wake-watch.js')), `must resolve to the stable ~/.anti-hall/bin/wake-watch.js launcher: ${m[1]}`);
     }
   } finally {
     h.cleanup();
@@ -544,4 +549,66 @@ test('SWITCH devswarm.childRole=false: no SessionStart override injection', () =
     assert.strictEqual(r.status, 0);
     assert.strictEqual(r.stdout.trim(), '');
   } finally { h.cleanup(); }
+});
+
+// STABLE LAUNCHER (peer report, SkyCrew Primary, 2026-09-26): the CLI/WATCHER
+// paths embedded in the OVERRIDE_CORE directive and wakeDirective's CronCreate
+// prompt must be the version-independent launcher under ~/.anti-hall/bin/, not
+// this hook's own version-pinned __dirname path — so the text stays runnable
+// after the next anti-hall update.
+test('STABLE LAUNCHER: directive text embeds ~/.anti-hall/bin/devswarm.js and wake-watch.js, both written and executable', () => {
+  const h = makeHome();
+  try {
+    const child = ctx(testHook(HOOK, sessionPayload(), {
+      home: h.home, expectJson: true, env: CLAUDE_CHILD,
+    }));
+    const cliPath = path.join(h.home, '.anti-hall', 'bin', 'devswarm.js');
+    const watcherPath = path.join(h.home, '.anti-hall', 'bin', 'wake-watch.js');
+    assert.ok(child.includes(cliPath), `directive text must embed the stable CLI launcher path; ctx=${child}`);
+    assert.ok(child.includes(watcherPath), `directive text must embed the stable watcher launcher path; ctx=${child}`);
+    assert.ok(fs.existsSync(cliPath), 'stable CLI launcher must actually be written to disk');
+    assert.ok(fs.existsSync(watcherPath), 'stable watcher launcher must actually be written to disk');
+    const cliMode = fs.statSync(cliPath).mode & 0o777;
+    assert.strictEqual(cliMode & 0o100, 0o100, 'launcher must be owner-executable');
+    // The generated launcher must not itself embed a live path from the
+    // CURRENT test run's OWN hooks dir as anything other than the FALLBACK —
+    // it must be able to resolve a DIFFERENT (registered) install at runtime.
+    const src = fs.readFileSync(cliPath, 'utf8');
+    assert.match(src, /AUTO-GENERATED by anti-hall/);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('STABLE LAUNCHER: idempotent across two SessionStart runs in the same home (no needless rewrite)', () => {
+  const h = makeHome();
+  try {
+    testHook(HOOK, sessionPayload(), { home: h.home, expectJson: true, env: CLAUDE_CHILD });
+    const cliPath = path.join(h.home, '.anti-hall', 'bin', 'devswarm.js');
+    const firstMtime = fs.statSync(cliPath).mtimeMs;
+    testHook(HOOK, sessionPayload(), { home: h.home, expectJson: true, env: CLAUDE_CHILD });
+    const secondMtime = fs.statSync(cliPath).mtimeMs;
+    assert.strictEqual(secondMtime, firstMtime, 'a second run against the same real install must not rewrite the launcher');
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('SWITCH devswarm.stableLauncher=false: directive text reverts to the raw __dirname CLI path', () => {
+  const { switchOff } = require('../helpers/settings-switch.js');
+  const h = makeHome();
+  try {
+    switchOff(h.home, 'devswarm', 'stableLauncher');
+    const child = ctx(testHook(HOOK, sessionPayload(), {
+      home: h.home, expectJson: true, env: { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main' },
+    }));
+    const stableCliPath = path.join(h.home, '.anti-hall', 'bin', 'devswarm.js');
+    assert.ok(!child.includes(stableCliPath), `switched off must NOT embed the stable launcher path; ctx=${child}`);
+    assert.ok(!fs.existsSync(stableCliPath), 'switched off must not even write the launcher file');
+    const m = child.match(/`node ([^`]*?devswarm\.js) heartbeat/);
+    assert.ok(m, `must still embed a runnable CLI path; ctx=${child}`);
+    assert.ok(path.isAbsolute(m[1]) && fs.existsSync(m[1]), `fallback CLI path must be absolute and exist: ${m[1]}`);
+  } finally {
+    h.cleanup();
+  }
 });

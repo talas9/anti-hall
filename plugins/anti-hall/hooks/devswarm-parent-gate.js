@@ -178,17 +178,38 @@ const { ownReaderDelta } = require('../companion/lib/devswarm-own-reader.js');
 // Primary's OWN unread, resolved below via readOwnUnread).
 const installIngest = require('../companion/install-devswarm-ingest.js');
 
-// CLI — the ABSOLUTE path to anti-hall's DevSwarm CLI wrapper (see
+// RAW_CLI — the ABSOLUTE path to anti-hall's DevSwarm CLI wrapper (see
 // devswarm-child-gate.js's identical const for the P1 rationale: cwd is the
 // project worktree, never the plugin root, so a relative path is unrunnable).
-const CLI = path.join(__dirname, '..', 'scripts', 'devswarm.js');
+// Version-pinned (plugin-cache path); only the FALLBACK for the stable
+// launcher below — see lib/stable-launcher.js header.
+const RAW_CLI = path.join(__dirname, '..', 'scripts', 'devswarm.js');
 
-// WATCHER — the ABSOLUTE path to the Monitor watch script (self-resolving: no
-// required args). Same __dirname-based resolution rationale as CLI above.
-// Passed to wakeReassert() below so the Claude branch can arm `Monitor` IN
-// ADDITION to CronCreate (never instead — see lib/devswarm-wake.js's
-// NON-NEGOTIABLE header comment).
-const WATCHER = path.join(__dirname, '..', 'companion', 'lib', 'devswarm-wake-watch.js');
+// RAW_WATCHER — the ABSOLUTE path to the Monitor watch script (self-resolving:
+// no required args). Same __dirname-based resolution rationale as RAW_CLI
+// above. Only the FALLBACK for the stable launcher below.
+const RAW_WATCHER = path.join(__dirname, '..', 'companion', 'lib', 'devswarm-wake-watch.js');
+
+// CLI/WATCHER — the paths actually embedded in wakeReassert()'s directive
+// text (Monitor re-arm + `inbox tick` pointer). devswarm.stableLauncher
+// (default on) points these at ~/.anti-hall/bin/'s version-independent
+// launchers instead of the version-pinned RAW_* paths, so the printed
+// pointer survives an anti-hall update. Fail-open to RAW_CLI/RAW_WATCHER on
+// any install failure or when the setting is off.
+let CLI = RAW_CLI;
+let WATCHER = RAW_WATCHER;
+try {
+  if (require('./lib/settings.js').enabled('devswarm', 'stableLauncher') !== false) {
+    const stable = require('./lib/stable-launcher.js').installLaunchers({
+      cliFallback: RAW_CLI,
+      watcherFallback: RAW_WATCHER,
+    });
+    CLI = stable.cli;
+    WATCHER = stable.watcher;
+  }
+} catch (_) {
+  // fail-open: keep RAW_CLI/RAW_WATCHER
+}
 
 const GUARD_NAME = 'devswarm-parent-gate';
 const DEFAULT_CAP = 3; // forced-acks per distinct blocking SET

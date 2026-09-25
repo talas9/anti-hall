@@ -93,19 +93,39 @@ const devswarmUnread = require('../companion/lib/devswarm-unread.js');
 // Shared Stop policy (Phase 5, #14) — stop_hook_active + stable-kind caps.
 const stopPolicy = require('./lib/stop-policy.js');
 
-// CLI — the ABSOLUTE path to anti-hall's DevSwarm CLI wrapper, resolved ONCE
-// from this hook's own on-disk location (never a relative "scripts/devswarm.js"
-// string — a DevSwarm child's cwd is its PROJECT WORKTREE, not the plugin
-// root, so a relative path in the emitted Stop-block reason is unrunnable
-// there; P1 fix).
-const CLI = path.join(__dirname, '..', 'scripts', 'devswarm.js');
+// RAW_CLI — the ABSOLUTE path to anti-hall's DevSwarm CLI wrapper, resolved
+// ONCE from this hook's own on-disk location (never a relative
+// "scripts/devswarm.js" string — a DevSwarm child's cwd is its PROJECT
+// WORKTREE, not the plugin root, so a relative path in the emitted Stop-block
+// reason is unrunnable there; P1 fix). Version-pinned; only the FALLBACK for
+// the stable launcher below — see lib/stable-launcher.js header.
+const RAW_CLI = path.join(__dirname, '..', 'scripts', 'devswarm.js');
 
-// WATCHER — the ABSOLUTE path to the Monitor watch script (self-resolving: no
-// required args). Same __dirname-based resolution rationale as CLI above.
-// Passed to wakeReassert() below so the Claude branch can arm `Monitor` IN
-// ADDITION to CronCreate (never instead — see lib/devswarm-wake.js's
-// NON-NEGOTIABLE header comment).
-const WATCHER = path.join(__dirname, '..', 'companion', 'lib', 'devswarm-wake-watch.js');
+// RAW_WATCHER — the ABSOLUTE path to the Monitor watch script (self-resolving:
+// no required args). Same __dirname-based resolution rationale as RAW_CLI
+// above. Only the FALLBACK for the stable launcher below.
+const RAW_WATCHER = path.join(__dirname, '..', 'companion', 'lib', 'devswarm-wake-watch.js');
+
+// CLI/WATCHER — the paths actually embedded in wakeReassert()'s directive
+// text. devswarm.stableLauncher (default on) points these at
+// ~/.anti-hall/bin/'s version-independent launchers instead of the
+// version-pinned RAW_* paths, so the printed pointer survives an anti-hall
+// update. Fail-open to RAW_CLI/RAW_WATCHER on any install failure or when
+// the setting is off.
+let CLI = RAW_CLI;
+let WATCHER = RAW_WATCHER;
+try {
+  if (require('./lib/settings.js').enabled('devswarm', 'stableLauncher') !== false) {
+    const stable = require('./lib/stable-launcher.js').installLaunchers({
+      cliFallback: RAW_CLI,
+      watcherFallback: RAW_WATCHER,
+    });
+    CLI = stable.cli;
+    WATCHER = stable.watcher;
+  }
+} catch (_) {
+  // fail-open: keep RAW_CLI/RAW_WATCHER
+}
 
 // wakeReassertLine(env, isChild) -> the Stop-gate wake re-verify text, or '' when
 // the agent is not Claude (no CronCreate tool) OR the wake lib cannot be loaded.

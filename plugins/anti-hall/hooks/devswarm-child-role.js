@@ -33,19 +33,46 @@ const path = require('path');
 const { isDevswarmActive } = require('./lib/devswarm-detect.js');
 const { isChildWorkspace } = require('./lib/devswarm-role.js');
 
-// CLI — the ABSOLUTE path to anti-hall's DevSwarm CLI wrapper, resolved ONCE
-// from this hook's own on-disk location (never a relative "scripts/devswarm.js"
-// string — see P1 fix below: a DevSwarm child's cwd is its PROJECT WORKTREE,
-// not the plugin root, so a relative path in emitted text is unrunnable there).
-const CLI = path.join(__dirname, '..', 'scripts', 'devswarm.js');
+// RAW_CLI — the ABSOLUTE path to anti-hall's DevSwarm CLI wrapper, resolved
+// ONCE from this hook's own on-disk location (never a relative
+// "scripts/devswarm.js" string — see P1 fix below: a DevSwarm child's cwd is
+// its PROJECT WORKTREE, not the plugin root, so a relative path in emitted
+// text is unrunnable there). This is the version-pinned plugin-cache path —
+// correct right now, but stale-across-updates once baked into a cron/Monitor/
+// handover (peer report, SkyCrew Primary, 2026-09-26); it is only the
+// FALLBACK for the stable launcher below.
+const RAW_CLI = path.join(__dirname, '..', 'scripts', 'devswarm.js');
 
-// WATCHER — the ABSOLUTE path to the Monitor watch script (self-resolving: it
-// takes no required args, deriving role/id from env + on-disk descriptors at
-// run time). Same __dirname-based resolution rationale as CLI above — this
-// hook's cwd is never the plugin root. Passed to wakeDirective() below so the
-// Claude branch can arm `Monitor` IN ADDITION to CronCreate (never instead —
-// see lib/devswarm-wake.js's NON-NEGOTIABLE header comment).
-const WATCHER = path.join(__dirname, '..', 'companion', 'lib', 'devswarm-wake-watch.js');
+// RAW_WATCHER — the ABSOLUTE path to the Monitor watch script (self-resolving:
+// it takes no required args, deriving role/id from env + on-disk descriptors
+// at run time). Same __dirname-based resolution rationale as RAW_CLI above —
+// this hook's cwd is never the plugin root. Also only the FALLBACK for the
+// stable launcher below.
+const RAW_WATCHER = path.join(__dirname, '..', 'companion', 'lib', 'devswarm-wake-watch.js');
+
+// CLI/WATCHER — the paths actually embedded in injected directive text.
+// devswarm.stableLauncher (default on) installs/refreshes two tiny,
+// version-independent launcher scripts under ~/.anti-hall/bin/ that resolve
+// the CURRENTLY REGISTERED anti-hall install at RUN TIME (see
+// lib/stable-launcher.js header) and point CLI/WATCHER at those instead of
+// the version-pinned RAW_* paths — so a cron/Monitor/handover created today
+// keeps working after the NEXT anti-hall update. Fail-open: any install
+// failure, or the setting turned off, falls straight back to RAW_CLI/
+// RAW_WATCHER (byte-identical to pre-fix behavior).
+let CLI = RAW_CLI;
+let WATCHER = RAW_WATCHER;
+try {
+  if (require('./lib/settings.js').enabled('devswarm', 'stableLauncher') !== false) {
+    const stable = require('./lib/stable-launcher.js').installLaunchers({
+      cliFallback: RAW_CLI,
+      watcherFallback: RAW_WATCHER,
+    });
+    CLI = stable.cli;
+    WATCHER = stable.watcher;
+  }
+} catch (_) {
+  // fail-open: keep RAW_CLI/RAW_WATCHER
+}
 
 // OVERRIDE_CORE — the full COMMUNICATION OVERRIDE directive (PLAN.md "OVERRIDE +
 // WAKE-TIER0"), identical for both roles. Deliberately avoids the literal
@@ -173,7 +200,14 @@ function primarySeatResult(payload) {
     if (!sid) return { notices: [], id: null };
     const home = require('os').homedir();
     const env = Object.assign({}, process.env, { CLAUDE_CODE_SESSION_ID: sid });
-    const res = require(CLI).adoptPrimarySeat({ home, env, cwd });
+    // RAW_CLI, never CLI: this is an in-process `require()` of the real
+    // devswarm.js MODULE (for its adoptPrimarySeat export) — the generated
+    // stable launcher is a standalone SCRIPT, not a module, and requiring it
+    // would execute its own main()/spawnSync immediately with this hook's
+    // own (empty) argv. CLI is only ever a TEXT literal embedded in directive
+    // strings; every actual require()/spawn of the CLI module stays on
+    // RAW_CLI.
+    const res = require(RAW_CLI).adoptPrimarySeat({ home, env, cwd });
     const v = res && res.verdict;
     if (!v || v.state === 'n/a') return { notices: [], id: null };
     if (v.state === 'conflict') {

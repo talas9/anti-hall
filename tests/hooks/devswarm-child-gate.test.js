@@ -1066,7 +1066,10 @@ test('HOOK-TEXT SWEEP: emitted child-gate block reason never contains the blocke
 // P1 fix: a DevSwarm child's cwd is its PROJECT WORKTREE, not the plugin root,
 // so a RELATIVE `scripts/devswarm.js` in the emitted Stop-block reason is
 // unrunnable there. Every `node <cli>` instruction in the reason must carry an
-// ABSOLUTE path that actually exists on disk.
+// ABSOLUTE path that actually exists on disk. Since the stable-launcher fix,
+// that absolute path is ~/.anti-hall/bin/devswarm.js (version-independent —
+// see hooks/lib/stable-launcher.js), not the raw version-pinned
+// scripts/devswarm.js this hook's own __dirname resolves to.
 
 function assertAbsoluteExistingCliPaths(reason, { min } = {}) {
   const matches = [...reason.matchAll(/`node ([^`]*?devswarm\.js)\b/g)];
@@ -1075,7 +1078,7 @@ function assertAbsoluteExistingCliPaths(reason, { min } = {}) {
     const cliPath = m[1];
     assert.ok(path.isAbsolute(cliPath), `emitted CLI path must be absolute, not relative: ${cliPath}`);
     assert.ok(fs.existsSync(cliPath), `emitted CLI path must exist on disk: ${cliPath}`);
-    assert.ok(cliPath.endsWith(path.join('scripts', 'devswarm.js')), `must resolve to scripts/devswarm.js: ${cliPath}`);
+    assert.ok(cliPath.endsWith(path.join('.anti-hall', 'bin', 'devswarm.js')), `must resolve to the stable ~/.anti-hall/bin/devswarm.js launcher: ${cliPath}`);
   }
 }
 

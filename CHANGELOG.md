@@ -92,6 +92,28 @@ the update.
   this change — no fix was needed there. `devswarm-parent-gate.js`'s own
   stable-kind cap (`hooks/lib/stop-policy.js`) also already resets only on an
   observed-clear condition, not on content churn.
+- **DevSwarm directive text (mailbox wake cron, Monitor re-arm, comms
+  override, drain nudge) now names a version-independent launcher instead of
+  a version-pinned plugin-cache path.** Every printed `node <path>` command
+  was baked from the CURRENTLY RUNNING hook's own `__dirname` — a path like
+  `~/.claude/plugins/cache/anti-hall/anti-hall/0.109.1/scripts/devswarm.js`.
+  That path was correct the instant it was printed, but crons, Monitors, and
+  handovers keep the literal text around across releases, so after the next
+  update the printed command pointed at an old (sometimes deleted) version
+  directory and showed a stale version number in the text itself — forcing a
+  manual recreate of every cron/Monitor and a handover edit on every release
+  (peer report: SkyCrew Primary). Fixed by installing two tiny, self-
+  contained launchers under `~/.anti-hall/bin/` (`devswarm.js`,
+  `wake-watch.js`) that resolve the CURRENTLY REGISTERED anti-hall install
+  (`installed_plugins.json` -> the marketplace clone -> the path baked in at
+  generation time) EVERY TIME THEY RUN and delegate to it with full
+  argv/exit-code passthrough; `devswarm-child-role.js`, `devswarm-parent-
+  gate.js`, `devswarm-child-gate.js`, and `devswarm-child-drain.js` now embed
+  those stable paths in their directive text instead of the raw version-
+  pinned one. Idempotent (only rewrites the launcher when its content
+  actually changes) and fail-open throughout (an install failure, or
+  `devswarm.stableLauncher = false`, falls straight back to the previous
+  version-pinned path — byte-identical to pre-fix behavior).
 
 ## 0.110.0 (2026-09-26)
 

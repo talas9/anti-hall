@@ -55,7 +55,27 @@ const { isChildWorkspace } = require('./lib/devswarm-role.js');
 const { devswarmRoot, isSafeId } = require('../companion/lib/liveness.js');
 const devswarmUnread = require('../companion/lib/devswarm-unread.js');
 
-const CLI = path.join(__dirname, '..', 'scripts', 'devswarm.js');
+// RAW_CLI — version-pinned plugin-cache path; only the FALLBACK for the
+// stable launcher below — see lib/stable-launcher.js header.
+const RAW_CLI = path.join(__dirname, '..', 'scripts', 'devswarm.js');
+
+// CLI — the path actually embedded in the drain-nudge text below.
+// devswarm.stableLauncher (default on) points it at ~/.anti-hall/bin/'s
+// version-independent launcher instead of RAW_CLI, so the printed command
+// survives an anti-hall update. Fail-open to RAW_CLI on any install failure
+// or when the setting is off.
+let CLI = RAW_CLI;
+try {
+  if (require('./lib/settings.js').enabled('devswarm', 'stableLauncher') !== false) {
+    // installLauncher (not installLaunchers) — this hook only ever embeds
+    // CLI, never WATCHER; calling the plural form with no watcherFallback
+    // would also (re)write the wake-watch launcher with a null fallback,
+    // racing the correct fallback the other three DevSwarm hooks install.
+    CLI = require('./lib/stable-launcher.js').installLauncher('devswarm', RAW_CLI) || RAW_CLI;
+  }
+} catch (_) {
+  // fail-open: keep RAW_CLI
+}
 
 // THROTTLE_MS — re-injection cadence when the unread count has NOT changed.
 // 10 minutes: long enough that a busy child mid-task isn't nagged on every
