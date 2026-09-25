@@ -168,6 +168,16 @@ the update.
   real-cost summary (total + per-integration) scoped to that project/session; the gateway
   credit balance is still read exactly as before.
 
+- **Auto-archive gate (h)'s no-re-archive record depended solely on a general-purpose log
+  file.** `~/.anti-hall/logs/devswarm-auto-archive.ndjson` is a LOG other log-rotation/
+  pruning paths in this codebase could legitimately remove, which would silently re-open
+  the hole gate (h) exists to close (an owner-unarchived workspace getting auto-re-archived
+  once the focus/idle windows pass again). Moved to a durable, never-rotated/pruned state
+  file (`~/.anti-hall/devswarm/auto-archived.json`, `{id: [{doneHead, at}]}`, append-only).
+  An idempotent forward-migration seeds it from existing ndjson records (wired into both
+  `doctor --repair` and `update.js`'s post-pull pass); the ndjson log itself is still
+  written on every archive and still read as a fallback for any pre-migration record.
+
 ### Features
 
 - **`devswarm.heldPartitions` (owner-held mesh partitions).** A new csv settings key

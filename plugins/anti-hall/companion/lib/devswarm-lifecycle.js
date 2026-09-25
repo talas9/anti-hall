@@ -435,13 +435,79 @@ function evaluateCandidate(c, o, deps, db, settings, now) {
   };
 }
 
+// ---- DURABLE gate-(h) state (0.108.4) --------------------------------------
+// Gate (h) originally depended SOLELY on <home>/.anti-hall/logs/devswarm-
+// auto-archive.ndjson to remember "this id was already auto-archived at this
+// HEAD" — a general-purpose LOG file that log rotation/pruning elsewhere in
+// this codebase could legitimately remove, which would silently re-open the
+// exact re-archive-after-owner-unarchive hole gate (h) exists to close. This
+// state now lives in its OWN durable, purpose-built file that nothing else
+// ever rotates/prunes/rewrites:
+//   <home>/.anti-hall/devswarm/auto-archived.json
+//   shape: { "<id>": [ { doneHead, at }, ... ], ... }
+// APPEND-ONLY by construction: autoArchivedStateAppend only ever ADDS an
+// entry (idempotent — a duplicate {id,doneHead} is never re-added), never
+// removes one. autoArchivedAt below checks this file FIRST, falling back to
+// the ndjson log ONLY for pre-0.108.4 records the migration below has not
+// (yet) backfilled — so a caller who never runs the migration keeps working
+// exactly as before, and the durable file is authoritative once populated.
+function autoArchivedStatePath(home) { return path.join(devswarmDir(home), 'auto-archived.json'); }
+
+// readAutoArchivedState(home) -> { "<id>": [{doneHead, at}, ...] }. Fail-open
+// to {} on any missing/unreadable/malformed file — this state only ever
+// NARROWS what gate (h) can prove (the ndjson-log fallback below still
+// applies), so a read failure must never wrongly ALLOW or BLOCK an archive
+// on its own; it simply falls through to the existing log-based check.
+function readAutoArchivedState(home) {
+  try {
+    const raw = fs.readFileSync(autoArchivedStatePath(home), 'utf8');
+    const parsed = JSON.parse(raw);
+    return (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) ? parsed : {};
+  } catch (_) { return {}; }
+}
+
+// autoArchivedStateAppend(home, id, doneHead, at) — best-effort, idempotent,
+// APPEND-ONLY durable record of one successful auto-archive. Read-modify-
+// write under an atomic tmp+rename (same idiom as markArchiveNudged
+// elsewhere in this file) — a lost race just means the next sweep's write
+// retries; nothing is ever corrupted by two writers racing since the merge
+// is a plain array push, deduped by (doneHead) before writing. Never
+// throws — a failure here must never break the archive it is recording.
+function autoArchivedStateAppend(home, id, doneHead, at) {
+  try {
+    const p = autoArchivedStatePath(home);
+    const state = readAutoArchivedState(home);
+    const key = String(id);
+    const list = Array.isArray(state[key]) ? state[key] : [];
+    if (!list.some((e) => e && e.doneHead === doneHead)) {
+      list.push({ doneHead: doneHead || null, at });
+      state[key] = list;
+      fs.mkdirSync(path.dirname(p), { recursive: true });
+      const tmp = p + '.tmp-' + process.pid + '-' + Date.now();
+      fs.writeFileSync(tmp, JSON.stringify(state));
+      fs.renameSync(tmp, p);
+    }
+  } catch (_) { /* best-effort — the ndjson log below remains the fallback source of truth */ }
+}
+
 // autoArchivedAt(home, ids, head) -> { id, doneHead, ts } | null — the
-// successful auto-archive of one of `ids` recorded at `head` in the
+// successful auto-archive of one of `ids` recorded at `head`. Checks the
+// DURABLE state file first (never rotated/pruned), falling back to the
 // auto-archive log (<home>/.anti-hall/logs/devswarm-auto-archive.ndjson:
-// append-only, never deleted or rewritten; no retire/restore/rotation path
-// touches it). Records before 0.108.3 carry no doneHead and never match.
+// append-only, never deleted or rewritten by THIS module; the durable state
+// file exists precisely because something ELSE in the codebase legitimately
+// could) for any record the migration has not backfilled yet. Records
+// before 0.108.3 carry no doneHead and never match either source.
 function autoArchivedAt(home, ids, head) {
   if (!head) return null;
+  const state = readAutoArchivedState(home);
+  for (const id of ids) {
+    const list = state[String(id)];
+    if (!Array.isArray(list)) continue;
+    for (const e of list) {
+      if (e && e.doneHead === head) return { id: String(id), doneHead: e.doneHead, ts: e.at != null ? new Date(e.at).toISOString() : null };
+    }
+  }
   let lines = [];
   try { lines = fs.readFileSync(path.join(logsDir(home), 'devswarm-auto-archive.ndjson'), 'utf8').split('\n'); } catch (_) { return null; }
   for (const l of lines) {
@@ -454,6 +520,47 @@ function autoArchivedAt(home, ids, head) {
     } catch (_) {}
   }
   return null;
+}
+
+// migrateAutoArchivedState(home, {dryRun}) -> { scanned, migrated, pending,
+// errors }. Idempotent forward-migration: scans the ndjson log for every
+// successful `auto-archive` record and seeds the durable state file with any
+// (id, doneHead) pair it does not already carry (autoArchivedStateAppend's
+// own dedupe makes a re-run of this migration a true no-op — `migrated`
+// counts only entries genuinely ADDED this pass). dryRun:true reports the
+// pending count without writing anything. Fail-open: a missing/unreadable
+// log yields an all-zero report, never a throw.
+function migrateAutoArchivedState(home, opts) {
+  const o = opts || {};
+  const report = { scanned: 0, migrated: 0, pending: 0, errors: 0 };
+  let lines = [];
+  try { lines = fs.readFileSync(path.join(logsDir(home), 'devswarm-auto-archive.ndjson'), 'utf8').split('\n'); }
+  catch (_) { return report; }
+  const existing = readAutoArchivedState(home);
+  for (const l of lines) {
+    if (!l) continue;
+    let r;
+    try { r = JSON.parse(l); } catch (_) { report.errors++; continue; }
+    if (!(r && r.action === 'auto-archive' && r.ok === true && r.id)) continue;
+    report.scanned++;
+    const key = String(r.id);
+    const list = Array.isArray(existing[key]) ? existing[key] : [];
+    const already = list.some((e) => e && e.doneHead === r.doneHead);
+    if (already) continue;
+    report.pending++;
+    if (!o.dryRun) {
+      const at = r.at != null ? r.at : (r.ts ? Date.parse(r.ts) : Date.now());
+      autoArchivedStateAppend(home, r.id, r.doneHead || null, Number.isFinite(at) ? at : Date.now());
+      // Keep `existing` in sync within this loop so two records for the SAME
+      // id in one migration pass both land (autoArchivedStateAppend re-reads
+      // the file each call, so this is a correctness no-op, purely avoiding
+      // a redundant re-count of the same pair later in the same log).
+      list.push({ doneHead: r.doneHead || null, at });
+      existing[key] = list;
+      report.migrated++;
+    }
+  }
+  return report;
 }
 
 // planAutoArchive(opts) -> { ok, mode, settings, capability, candidates, toArchive, dormant? }
@@ -554,6 +661,9 @@ function autoArchiveSweep(opts) {
     const rec = { ts: new Date(now).toISOString(), at: now, action: 'auto-archive', id, doneHead: cand.facts.head || null, branch: cand.branch, label: cand.label, argv, ok: !!(res && res.ok), error: res && !res.ok ? String(res.error || '') : null };
     appendNdjson(path.join(logsDir(o.home), 'devswarm-auto-archive.ndjson'), rec);
     if (!res || !res.ok) { summary.failed.push({ id, reason: rec.error }); continue; }
+    // DURABLE gate-(h) record (0.108.4) — see the "DURABLE gate-(h) state"
+    // header above. Written alongside (never instead of) the ndjson log.
+    autoArchivedStateAppend(o.home, id, cand.facts.head || null, now);
     summary.archived.push(id);
     const name = cand.label || cand.branch || id;
     const text = 'auto-archived "' + name + '" (' + id + ') — done, merged (' + cand.facts.merged.via + '), clean, no unread, idle '
@@ -772,4 +882,7 @@ module.exports = {
   readSettings, planAutoArchive, autoArchiveSweep, autoArchiveOwns,
   planPrune, executePrune, assertInteractiveCaller, archivedSince, verbArgv,
   notifyPrimary: defaultNotifyPrimary,
+  // 0.108.4 durable gate-(h) state (auto-archived.json) + its migration.
+  autoArchivedStatePath, readAutoArchivedState, autoArchivedStateAppend,
+  autoArchivedAt, migrateAutoArchivedState,
 };

@@ -516,6 +516,88 @@ test('gate (h): an owner-unarchived workspace is never re-archived at the same H
   assert.deepStrictEqual(L.autoArchiveSweep(opts(fx, Object.assign({ settings: ON }, later))).archived, []);
 });
 
+// ---------------------------------------------------------------------------
+// 0.108.4: gate (h)'s DURABLE state file (auto-archived.json) — the ndjson
+// log ALONE used to be the sole source of truth, which a log rotation/prune
+// elsewhere in this codebase could legitimately remove. This section proves
+// the durable file is now authoritative on its own, and its migration seeds
+// it from legacy (durable-file-absent, log-only) state idempotently.
+// ---------------------------------------------------------------------------
+
+test('DURABLE STATE: readAutoArchivedState/autoArchivedStateAppend round-trip, idempotent on a duplicate (id, doneHead)', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ah-lc-durable-'));
+  assert.deepStrictEqual(L.readAutoArchivedState(home), {}, 'no file yet -> {}');
+  L.autoArchivedStateAppend(home, 'ws-1', 'h1', 1000);
+  L.autoArchivedStateAppend(home, 'ws-1', 'h2', 2000);
+  L.autoArchivedStateAppend(home, 'ws-1', 'h1', 9999); // duplicate (id, doneHead) -> no-op
+  L.autoArchivedStateAppend(home, 'ws-2', 'h3', 3000);
+  const state = L.readAutoArchivedState(home);
+  assert.deepStrictEqual(state['ws-1'], [{ doneHead: 'h1', at: 1000 }, { doneHead: 'h2', at: 2000 }]);
+  assert.deepStrictEqual(state['ws-2'], [{ doneHead: 'h3', at: 3000 }]);
+  const raw = fs.readFileSync(L.autoArchivedStatePath(home), 'utf8');
+  assert.doesNotThrow(() => JSON.parse(raw));
+});
+
+test('DURABLE STATE: autoArchivedAt is provably authoritative WITHOUT the ndjson log (proves the state file alone enforces gate (h))', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ah-lc-durable-nolog-'));
+  L.autoArchivedStateAppend(home, 'ws-1', 'deadbeef', 5000);
+  // No devswarm-auto-archive.ndjson written at all -- the log is entirely absent.
+  const hit = L.autoArchivedAt(home, ['ws-1', 'ws-other'], 'deadbeef');
+  assert.deepStrictEqual(hit, { id: 'ws-1', doneHead: 'deadbeef', ts: new Date(5000).toISOString() });
+  assert.strictEqual(L.autoArchivedAt(home, ['ws-1'], 'not-this-head'), null);
+  assert.strictEqual(L.autoArchivedAt(home, ['ws-other'], 'deadbeef'), null, 'must not match a different id');
+});
+
+test('DURABLE STATE: autoArchivedAt FALLS BACK to the ndjson log for a pre-migration id the durable file has never seen', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ah-lc-durable-fallback-'));
+  const logsDir = path.join(home, '.anti-hall', 'logs');
+  fs.mkdirSync(logsDir, { recursive: true });
+  const rec = { ts: '2026-01-01T00:00:00.000Z', at: 1735689600000, action: 'auto-archive', id: 'legacy-ws', doneHead: 'cafebabe', ok: true };
+  fs.writeFileSync(path.join(logsDir, 'devswarm-auto-archive.ndjson'), JSON.stringify(rec) + '\n');
+  // No durable file at all -- pure pre-0.108.4 shape.
+  const hit = L.autoArchivedAt(home, ['legacy-ws'], 'cafebabe');
+  assert.deepStrictEqual(hit, { id: 'legacy-ws', doneHead: 'cafebabe', ts: rec.ts });
+});
+
+test('MIGRATION: migrateAutoArchivedState seeds the durable file from a legacy log-only state (seeded-bad-state test)', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ah-lc-migrate-'));
+  const logsDir = path.join(home, '.anti-hall', 'logs');
+  fs.mkdirSync(logsDir, { recursive: true });
+  const lines = [
+    { ts: '2026-01-01T00:00:00.000Z', at: 1000, action: 'auto-archive', id: 'ws-a', doneHead: 'h1', ok: true },
+    { ts: '2026-01-01T00:01:00.000Z', at: 2000, action: 'auto-archive', id: 'ws-a', doneHead: 'h2', ok: true }, // same id, different HEAD
+    { ts: '2026-01-01T00:02:00.000Z', at: 3000, action: 'auto-archive', id: 'ws-b', doneHead: null, ok: false, error: 'boom' }, // FAILED archive -> must NOT migrate
+    'not-json-garbage', // malformed line -> counted as an error, never throws
+    { ts: '2026-01-01T00:03:00.000Z', at: 4000, action: 'archive', id: 'ws-c', doneHead: 'h3', ok: true }, // wrong action -> must NOT migrate
+  ];
+  fs.writeFileSync(path.join(logsDir, 'devswarm-auto-archive.ndjson'), lines.map((l) => (typeof l === 'string' ? l : JSON.stringify(l))).join('\n') + '\n');
+
+  // dry-run: reports pending, writes nothing.
+  const dry = L.migrateAutoArchivedState(home, { dryRun: true });
+  assert.strictEqual(dry.pending, 2, 'exactly the 2 real successful auto-archive records: ' + JSON.stringify(dry));
+  assert.strictEqual(dry.migrated, 0, 'dry-run never writes');
+  assert.strictEqual(dry.errors, 1, 'the one malformed line is counted, not thrown');
+  assert.deepStrictEqual(L.readAutoArchivedState(home), {}, 'dry-run touches nothing');
+
+  // apply: seeds the durable file.
+  const applied = L.migrateAutoArchivedState(home, { dryRun: false });
+  assert.strictEqual(applied.migrated, 2);
+  const state = L.readAutoArchivedState(home);
+  assert.deepStrictEqual(state['ws-a'], [{ doneHead: 'h1', at: 1000 }, { doneHead: 'h2', at: 2000 }]);
+  assert.strictEqual(state['ws-b'], undefined, 'a FAILED archive record must never be migrated');
+  assert.strictEqual(state['ws-c'], undefined, 'a non-auto-archive action must never be migrated');
+
+  // idempotent re-run: nothing left pending, nothing re-written.
+  const again = L.migrateAutoArchivedState(home, { dryRun: false });
+  assert.strictEqual(again.pending, 0);
+  assert.strictEqual(again.migrated, 0);
+  assert.deepStrictEqual(L.readAutoArchivedState(home)['ws-a'], [{ doneHead: 'h1', at: 1000 }, { doneHead: 'h2', at: 2000 }],
+    'a re-run must not duplicate entries');
+
+  // The migrated state now actually enforces gate (h) for a pre-existing id.
+  assert.deepStrictEqual(L.autoArchivedAt(home, ['ws-a'], 'h1'), { id: 'ws-a', doneHead: 'h1', ts: new Date(1000).toISOString() });
+});
+
 test('mode off: nothing planned, nothing spawned', { skip }, () => {
   const fx = fixture(V253, [{ id: 'c1' }]);
   const r = L.autoArchiveSweep(opts(fx, { settings: { mode: 'off', idleMin: 30, maxPerSweep: 3 } }));

@@ -450,4 +450,37 @@ function migrateGateIntents({ dryRun, home } = {}) {
   }
 }
 
-module.exports = { migrateLegacyState, migrateGsdPlanning, migrateDevswarmStore, migrateReplyState, migrateGateIntents };
+/**
+ * migrateAutoArchivedState({ dryRun, home }) — forward-migration seeding the
+ * durable gate-(h) state file (<home>/.anti-hall/devswarm/auto-archived.json)
+ * from any successful `auto-archive` records already in
+ * devswarm-auto-archive.ndjson that predate it. Delegates ENTIRELY to
+ * companion/lib/devswarm-lifecycle.js's own migrateAutoArchivedState (one
+ * code path for BOTH the doctor-repair migrationFix and update.js's post-
+ * update pass, and for the dry-run detect + the apply). Idempotent (a
+ * (id, doneHead) pair already in the durable file is never re-added),
+ * fail-open (a missing/unreadable log yields an all-zero report), NO-DELETE
+ * (the ndjson log itself is never touched — this only ever ADDS to the
+ * durable file). Not a correctness prerequisite: autoArchivedAt() already
+ * falls back to reading the ndjson log directly for anything this migration
+ * has not (yet) backfilled, so gate (h) keeps working even if this migration
+ * never runs.
+ *
+ * Returns { scanned, migrated, pending, errors }.
+ */
+function migrateAutoArchivedState({ dryRun, home } = {}) {
+  const empty = { scanned: 0, migrated: 0, pending: 0, errors: 0 };
+  try {
+    const mod = require('../companion/lib/devswarm-lifecycle.js');
+    if (!mod || typeof mod.migrateAutoArchivedState !== 'function') return empty;
+    const h = home || require('os').homedir();
+    return mod.migrateAutoArchivedState(h, { dryRun: !!dryRun }) || empty;
+  } catch (_) {
+    return empty;
+  }
+}
+
+module.exports = {
+  migrateLegacyState, migrateGsdPlanning, migrateDevswarmStore, migrateReplyState, migrateGateIntents,
+  migrateAutoArchivedState,
+};

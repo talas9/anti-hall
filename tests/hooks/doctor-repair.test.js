@@ -373,6 +373,41 @@ test('doctor --repair: migrate-gate-intents FIXES a pre-feature gate-state file,
   } finally { rm(home); rm(cwd); }
 });
 
+// 0.108.4: migrate-auto-archived-state seeds the durable gate-(h) state file
+// (~/.anti-hall/devswarm/auto-archived.json) from pre-existing
+// devswarm-auto-archive.ndjson records — same NEVER-FAILED-on-re-run posture
+// as migrate-gate-intents above (a PURE additive per-file write).
+test('doctor --repair: migrate-auto-archived-state seeds the durable file from the ndjson log, then a re-run is a clean no-op', () => {
+  const home = mkTmp('auto-archived-home');
+  const cwd = mkTmp('auto-archived-cwd');
+  try {
+    seedUserSettings(home, { command: 'custom-noop' });
+    const logsDir = path.join(home, '.anti-hall', 'logs');
+    fs.mkdirSync(logsDir, { recursive: true });
+    const rec = { ts: '2026-01-01T00:00:00.000Z', at: 1735689600000, action: 'auto-archive', id: 'ws-1', doneHead: 'deadbeef', branch: 'feat/x', label: 'X', argv: ['workspace', 'archive', 'ws-1'], ok: true, error: null };
+    fs.writeFileSync(path.join(logsDir, 'devswarm-auto-archive.ndjson'), JSON.stringify(rec) + '\n');
+    const env = { HOME: home, USERPROFILE: home };
+
+    const r1 = runDoctor({ cwd, args: ['--repair'], env });
+    assert.strictEqual(r1.code, 0, 'first run must exit 0:\n' + r1.out);
+    assert.match(r1.out, /FIXED \[migrate-auto-archived-state\] migrated: 1 auto-archive record/, 'first run migrates the record:\n' + r1.out);
+    assert.doesNotMatch(r1.out, /FAILED \[migrate-auto-archived-state\]/);
+
+    const statePath = path.join(home, '.anti-hall', 'devswarm', 'auto-archived.json');
+    const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+    assert.deepEqual(state['ws-1'], [{ doneHead: 'deadbeef', at: 1735689600000 }]);
+
+    const r2 = runDoctor({ cwd, args: ['--repair'], env });
+    assert.strictEqual(r2.code, 0, 'second run must still exit 0:\n' + r2.out);
+    assert.match(r2.out, /skipped \[migrate-auto-archived-state\] nothing to migrate/, 'second run is a clean idempotent no-op:\n' + r2.out);
+    assert.doesNotMatch(r2.out, /FAILED \[migrate-auto-archived-state\]/);
+
+    // The ndjson log itself is untouched (NO-DELETE).
+    const logAfter = fs.readFileSync(path.join(logsDir, 'devswarm-auto-archive.ndjson'), 'utf8');
+    assert.match(logAfter, /"id":"ws-1"/);
+  } finally { rm(home); rm(cwd); }
+});
+
 // v0.108.1 P3: doctor --repair sweeps stale acquireLock scratch files
 // (`*.lock.tmp-*` / `*.lock.reap-*`, companion/lib/recovery.js) older than
 // LOCK_SCRATCH_STALE_MS. In-process (fast, no subprocess spawn) — mirrors the

@@ -1204,6 +1204,18 @@ function runRepairs(opts) {
     return { pending: !!(r && r.pending > 0), detail: (r && r.pending || 0) + ' gate-state file(s)' };
   }, () => require(MIGRATE_STATE).migrateGateIntents({ home }));
 
+  // 0.108.4: seed the durable auto-archive gate-(h) state file
+  // (<home>/.anti-hall/devswarm/auto-archived.json) from any pre-existing
+  // devswarm-auto-archive.ndjson records. A PURE per-user-file additive
+  // read+write (no daemon/scheduler side effect) -> AUTO-SAFE, same posture
+  // as migrate-gate-intents above. Idempotent, fail-open, NO-DELETE (the
+  // ndjson log is never touched). Reuses migrate-state.js's
+  // migrateAutoArchivedState for BOTH the dry-run detect and the apply.
+  migrationFix('migrate-auto-archived-state', 'migrate-auto-archived-state', () => {
+    const r = require(MIGRATE_STATE).migrateAutoArchivedState({ dryRun: true, home });
+    return { pending: !!(r && r.pending > 0), detail: (r && r.pending || 0) + ' auto-archive record(s)' };
+  }, () => require(MIGRATE_STATE).migrateAutoArchivedState({ home }));
+
   // v0.108.1 P3: acquireLock's write-then-link publish (and its P1 stale-
   // reclaim fix) both leave a short-lived scratch file next to a lock on the
   // happy path -- `<id>.lock.tmp-<pid>-<rand>` and `<id>.lock.reap-<pid>-

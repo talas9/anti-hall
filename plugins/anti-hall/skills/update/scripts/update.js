@@ -2208,6 +2208,56 @@ function gateIntentsMigratePostUpdate(opts) {
 }
 
 /**
+ * autoArchivedStateMigratePostUpdate({ paths, env, cwd, home }) →
+ *   { attempted, scanned, migrated, pending, errors, detail }
+ *
+ * 0.108.4: seeds the durable auto-archive gate-(h) state file
+ * (~/.anti-hall/devswarm/auto-archived.json) from any pre-existing
+ * devswarm-auto-archive.ndjson records — same shape as
+ * gateIntentsMigratePostUpdate just above (pure per-user-file additive
+ * write via migrate-state.js's migrateAutoArchivedState, which delegates to
+ * companion/lib/devswarm-lifecycle.js). Same DevSwarm-session-only gate +
+ * fully fail-open posture; NEVER throws, never affects the update's own
+ * success. Idempotent (a (id, doneHead) pair already in the durable file is
+ * never re-added), NO-DELETE (the ndjson log itself is never touched). Not
+ * a correctness prerequisite: autoArchivedAt() already falls back to the
+ * ndjson log for anything this migration has not (yet) backfilled.
+ */
+function autoArchivedStateMigratePostUpdate(opts) {
+  const o = opts || {};
+  const env = o.env || process.env;
+  const home = o.home || os.homedir();
+  const paths = o.paths;
+  try {
+    const detectPath = path.join(paths.pluginSrcDir, 'hooks', 'lib', 'devswarm-detect.js');
+    const migratePath = path.join(paths.pluginSrcDir, 'scripts', 'migrate-state.js');
+    if (!fs.existsSync(detectPath) || !fs.existsSync(migratePath)) {
+      return { attempted: false, detail: 'auto-archived-state migrate skipped: expected plugin files not found under ' + paths.pluginSrcDir };
+    }
+    const { isDevswarmActive } = require(detectPath);
+    if (typeof isDevswarmActive !== 'function' || !isDevswarmActive(env)) {
+      return { attempted: false, detail: 'not a DevSwarm session — auto-archived-state migrate skipped (gate closed)' };
+    }
+    const migrate = o.migrate || require(migratePath);
+    if (typeof migrate.migrateAutoArchivedState !== 'function') {
+      return { attempted: false, detail: 'auto-archived-state migrate skipped: this build has no migrateAutoArchivedState' };
+    }
+    const r = migrate.migrateAutoArchivedState({ home }) || {};
+    return {
+      attempted: true,
+      scanned: r.scanned || 0,
+      migrated: r.migrated || 0,
+      pending: r.pending || 0,
+      errors: r.errors || 0,
+      detail: 'auto-archived-state migrate: scanned ' + (r.scanned || 0) + ', migrated ' + (r.migrated || 0)
+        + (r.errors ? ' (' + r.errors + ' error(s), fail-open)' : ''),
+    };
+  } catch (e) {
+    return { attempted: false, detail: 'auto-archived-state migrate raised: ' + (e && e.message ? e.message : String(e)) };
+  }
+}
+
+/**
  * settingsMigratePostUpdate({ home, version }) → { attempted, status, detail }
  *
  * v0.108.0: forward-migrate legacy per-feature config (jev.json, ...) into the
@@ -3222,6 +3272,10 @@ function runUpdate(opts) {
   // state file to carry intents/intentAcks. Same gate + fail-open posture;
   // never affects the update's own success.
   const gateIntentsMigrate = runPostPullStage('gate-intents-migrate', () => gateIntentsMigratePostUpdate({ paths, env: opts.env, cwd: opts.cwd, home: opts.home }));
+  // 0.108.4: seed the durable auto-archive gate-(h) state file from any
+  // pre-existing devswarm-auto-archive.ndjson records. Same gate + fail-open
+  // posture; never affects the update's own success.
+  const autoArchivedStateMigrate = runPostPullStage('auto-archived-state-migrate', () => autoArchivedStateMigratePostUpdate({ paths, env: opts.env, cwd: opts.cwd, home: opts.home }));
   // v0.108.0: forward-migrate legacy per-feature config into settings.json.
   // Not DevSwarm-gated — every install has jev.json potential. Same gate +
   // fail-open posture; never affects the update's own success.
@@ -3273,6 +3327,7 @@ function runUpdate(opts) {
         dualPartitionAcks,
         replyStateMigrate,
         gateIntentsMigrate,
+        autoArchivedStateMigrate,
         settingsMigrate,
         healRegistryRows,
         wakeMonitor,
@@ -3328,6 +3383,7 @@ function runUpdate(opts) {
       dualPartitionAcks,
       replyStateMigrate,
       gateIntentsMigrate,
+      autoArchivedStateMigrate,
       settingsMigrate,
       healRegistryRows,
       wakeMonitor,
@@ -3540,6 +3596,9 @@ function renderHuman(status, changelog) {
   if (status.gateIntentsMigrate && status.gateIntentsMigrate.attempted) {
     lines.push('  gate-intents-migrate: ' + status.gateIntentsMigrate.detail);
   }
+  if (status.autoArchivedStateMigrate && status.autoArchivedStateMigrate.attempted) {
+    lines.push('  auto-archived-state-migrate: ' + status.autoArchivedStateMigrate.detail);
+  }
   if (status.settingsMigrate && status.settingsMigrate.attempted) {
     lines.push('  settings-migrate: ' + status.settingsMigrate.detail);
   }
@@ -3627,6 +3686,7 @@ module.exports = {
   healRegistryPostUpdate,
   wakeMonitorPostUpdate,
   codexGraphifyHooksMigratePostUpdate,
+  autoArchivedStateMigratePostUpdate,
   readLegacyHeartbeat,
   rollbackToLegacyUnits,
   runCheck,
