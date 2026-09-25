@@ -184,15 +184,31 @@ function findOrphans(procList, extraRe, excludeRe) {
   return orphans;
 }
 
-// --- Codex app-server-broker class (ADDITIVE, kept OUT of matchesMcp/MCP_TOKEN_RE) ---
+// --- Codex app-server-broker class: REPORT-ONLY, never killed ---
 // app-server-broker.mjs (the openai-codex Claude Code plugin's scripts/app-server-broker.mjs)
 // is NOT an MCP-protocol server — it is that plugin's own JSON-RPC broker in front of
 // Codex's "app-server" backend, unix-socket based. It is deliberately excluded from
 // matchesMcp() above, which is intentionally "generic, AGNOSTIC ... match the protocol,
-// not any user's servers" (see file header). This class exists SEPARATELY because the
-// FAILURE MODE is identical to what this whole tool targets: a per-session helper whose
-// open cwd can pin a (possibly archived) DevSwarm worktree submodule open and blocks
-// cleanup once its owning session is gone.
+// not any user's servers" (see file header).
+//
+// *** THIS CLASS IS DETECT-AND-REPORT ONLY. IT IS NEVER KILLED. *** A 2026-09-25 safety
+// review found this class's detection could not be made safe enough to act on
+// automatically:
+//   P1: `--cwd` paths containing spaces were truncated at the first space by an earlier
+//       \S+ parse, misreading an in-use broker's real cwd as gone.
+//   P1: comparing the broker's raw `--cwd` argument against an owner process's cwd
+//       without canonicalizing both sides misses e.g. `--cwd /tmp/proj` vs an owning
+//       process's OS-reported (symlink-resolved) `/private/tmp/proj` — the same directory,
+//       read as two different ones, so a live broker's owner would go undetected.
+//   P2: the broker's own `codex app-server` CHILD process also matches the owner
+//       signature and typically shares the broker's cwd, so "is there a live owner"
+//       almost always says yes even for a genuinely abandoned broker — the class could
+//       barely ever fire even when accurate, defeating its own purpose.
+// The fixes below (segment-boundary path capture, realpath on both sides, excluding the
+// broker's own descendants from the owner-candidate list) make DETECTION meaningfully more
+// accurate, but per the review's decision this class stays detect-and-report-only for
+// 0.109.0 regardless of confidence — see findAbandonedCodexBrokers's return shape below;
+// main() never feeds its output into the SIGTERM/SIGKILL passes.
 //
 // *** PPID IS NOT EVIDENCE FOR THIS CLASS ***. Read from the plugin's own source
 // (~/.claude/plugins/cache/openai-codex/codex/*/scripts/lib/broker-lifecycle.mjs:59-70):
@@ -200,29 +216,27 @@ function findOrphans(procList, extraRe, excludeRe) {
 // it OUTLIVES the spawning tool call and is reused across a session (`ensureBrokerSession`
 // re-adopts it via a broker.json state file + `waitForBrokerEndpoint`, only respawning if
 // the socket is dead). That means PPID 1 is the NORMAL, EXPECTED state for a live, in-use
-// broker — not proof of death. (session-lifecycle-hook.mjs's SessionEnd handler shuts the
-// broker down cleanly by pid/endpoint on a clean exit; a crash skips that, same as
-// hooks/session-end-mcp-reaper.js's own documented MCP-leak precedent.) broker.json also
-// carries no owning-session-id or owning-pid field to check for liveness — only the
-// broker's OWN pid/endpoint/sessionDir — so "that session/pid is dead" cannot be proven
-// from the state file, and the reaper falls back to the two proofs below instead.
+// broker — not proof of death. broker.json also carries no owning-session-id or owning-pid
+// field to check for liveness — only the broker's OWN pid/endpoint/sessionDir — so "that
+// session/pid is dead" cannot be proven from the state file, and detection instead relies
+// on the two proofs below.
 //
-// A broker is reaped ONLY IF its script/path signature matches (below) AND it is OLD
-// ENOUGH (guards.reaperCodexBrokerMinAgeS, default 1800s / 30min — deliberately much
-// higher than the generic MCP class since PPID gives zero signal here) AND AT LEAST ONE
-// of these two INDEPENDENT proofs that its owner is gone holds:
+// A broker is REPORTED (never reaped) only if its script/path signature matches (below)
+// AND it is OLD ENOUGH (guards.reaperCodexBrokerMinAgeS, default 1800s / 30min) AND AT
+// LEAST ONE of these two INDEPENDENT proofs that its owner is gone holds:
 //   (a) its --cwd directory no longer exists (the worktree was removed/archived); or
-//   (b) no live `claude`/`codex` process has a cwd equal to, an ANCESTOR of, or a
-//       DESCENDANT of that --cwd (checked via /proc/<pid>/cwd on Linux, `lsof -a -d cwd
-//       -p <pid> -Fn` on macOS/BSD — mirrors companion/lib/target-session.js's own
-//       defaultRunners().cwdOf). The ancestor direction matters: a Claude session
-//       commonly runs at a workspace ROOT while a broker it owns runs `--cwd` inside a
-//       git submodule under that root (the real field case) — a descendant-only check
-//       would have reaped that live broker. See hasLiveOwnerAtCwd for the segment-
-//       boundary-safe comparison (`/a/bc` is never mistaken for a relative of `/a/b`).
-// Anything unresolvable (cwd can't be parsed from the cmdline, the owner-process cwd
-// lookup itself fails) -> SKIP, never reaped. This is a proof-of-abandonment gate, not a
-// parent-liveness gate — matchesMcp's own invariant is completely untouched.
+//   (b) no live `claude`/`codex` process (EXCLUDING the broker's own descendants — see P2
+//       above) has a REALPATH'd cwd equal to, an ANCESTOR of, or a DESCENDANT of the
+//       REALPATH'd --cwd (checked via /proc/<pid>/cwd on Linux, `lsof -a -d cwd -p <pid>
+//       -Fn` on macOS/BSD — mirrors companion/lib/target-session.js's own
+//       defaultRunners().cwdOf). The ancestor direction matters: a Claude session commonly
+//       runs at a workspace ROOT while a broker it owns runs `--cwd` inside a git
+//       submodule under that root (the real field case) — a descendant-only check would
+//       have misread that live broker as abandoned. See hasLiveOwnerAtCwd for the
+//       segment-boundary-safe comparison (`/a/bc` is never mistaken for a relative of
+//       `/a/b`).
+// Anything unresolvable (cwd can't be parsed from the cmdline, realpath fails on either
+// side, the owner-process cwd lookup itself fails) -> SKIP, never reported as abandoned.
 //
 // Exact script-name match (not a substring anywhere in a log path/grep arg), AND the cmd
 // must carry a literal `/codex/` path segment before it (the plugin's own install path,
@@ -241,13 +255,22 @@ function matchesCodexBroker(cmd) {
 }
 
 // extractBrokerCwd(cmd) -> the broker's own `--cwd <path>` argument, or null if it can't
-// be parsed (spawnBrokerProcess in broker-lifecycle.mjs passes it as a single argv token,
-// never shell-quoted, so a path containing whitespace is a documented unresolvable case).
-const CODEX_BROKER_CWD_RE = /(?:^|\s)--cwd\s+(\S+)/;
+// be parsed. spawnBrokerProcess in broker-lifecycle.mjs passes --cwd as a single argv
+// token, never shell-quoted, so in `ps` output a path containing a literal space is
+// indistinguishable from a flag boundary by a naive \S+ capture (P1 fix: that used to
+// truncate `/Users/x/My Proj` to `/Users/x/My`, misreading a live broker's cwd as gone).
+// Capture is NON-GREEDY up to the next ` --<flag>` token or end of string instead, so an
+// embedded space is kept as part of the path. Residual ambiguity (a path that itself
+// contains the literal substring ` --` followed by a letter) is a known, accepted
+// limitation of unquoted argv parsing — such a capture would stop early, but no match at
+// all (or an empty capture) is always treated as unresolvable and skipped.
+const CODEX_BROKER_CWD_RE = /(?:^|\s)--cwd\s+(.+?)(?=\s--[a-zA-Z]|\s*$)/;
 function extractBrokerCwd(cmd) {
   if (!cmd) return null;
   const m = String(cmd).match(CODEX_BROKER_CWD_RE);
-  return m ? m[1] : null;
+  if (!m) return null;
+  const cwd = m[1].trim();
+  return cwd || null; // empty capture -> ambiguous, skip
 }
 
 // A live "owner" process: the `claude` or `codex` CLI itself, matched the same
@@ -260,7 +283,7 @@ const OWNER_PROC_RE = /(^|[\s/\\])(claude|codex)(\s|$)/i;
 
 // Default 30 minutes — deliberately much more conservative than the generic MCP class'
 // DEFAULT floor (0): PPID carries no signal for this class (see block comment above), so
-// age is one of the few remaining safety margins against a fresh false "no owner found".
+// age is one of the few remaining safety margins against a false "no owner found" report.
 const DEFAULT_CODEX_BROKER_MIN_AGE_S = 1800;
 
 // isPathAncestorOrSame(ancestor, other) -> bool. Segment-boundary-safe: `/a/b` is an
@@ -271,23 +294,63 @@ function isPathAncestorOrSame(ancestor, other) {
   return other.startsWith(ancestor.endsWith(path.sep) ? ancestor : ancestor + path.sep);
 }
 
-// hasLiveOwnerAtCwd(brokerCwd, procs, cwdOfFn) -> bool. True if ANY live claude/codex
-// process's cwd is EQUAL TO, an ANCESTOR of, or a DESCENDANT of the broker's --cwd — a
-// Claude session commonly runs at a workspace root while the broker it owns runs `--cwd`
-// inside a git submodule several levels under that root (the real field case: broker
-// `--cwd .../fix-roster-image-only-message/skyflutter`, owning session cwd
-// `.../fix-roster-image-only-message`, an ANCESTOR, not the same dir or a descendant — a
-// descendant-only check would have reaped that live broker after the age floor). Segment
-// boundaries matter both directions: an owner at `/a/bc` never counts for a broker at
-// `/a/b` (see isPathAncestorOrSame). An owner cwd of `/` or `$HOME` then blocks every
-// reap of every broker under it — accepted as the safe-side failure mode. Also true (fail-
-// soft) if a candidate owner process exists but its cwd could not be resolved — an
-// unresolved candidate is treated as "might still own this broker", never as proof of
-// absence.
-function hasLiveOwnerAtCwd(brokerCwd, procs, cwdOfFn) {
-  const target = path.resolve(brokerCwd);
+// descendantsOf(procs, rootPid) -> Set<pid> of every process transitively parented by
+// rootPid (rootPid itself NOT included). Mirrors companion/lib/target-session.js's own
+// descendantsOf — used to exclude the broker's OWN `codex app-server` child from its
+// owner-candidate list (P2 fix): that child inherits the broker's cwd and matches
+// OWNER_PROC_RE too, so without this exclusion a broker would always appear "owned" by
+// its own child and this class could almost never report a genuinely abandoned broker.
+function descendantsOf(procs, rootPid) {
+  const childrenByPpid = new Map();
+  for (const p of procs || []) {
+    if (!childrenByPpid.has(p.ppid)) childrenByPpid.set(p.ppid, []);
+    childrenByPpid.get(p.ppid).push(p.pid);
+  }
+  const out = new Set();
+  const stack = (childrenByPpid.get(rootPid) || []).slice();
+  while (stack.length) {
+    const pid = stack.pop();
+    if (out.has(pid)) continue;
+    out.add(pid);
+    for (const c of childrenByPpid.get(pid) || []) stack.push(c);
+  }
+  return out;
+}
+
+// hasLiveOwnerAtCwd(brokerCwd, procs, cwdOfFn, opts?) -> bool. True if ANY live
+// claude/codex process (other than one in opts.excludePids — see descendantsOf above)
+// has a cwd that REALPATHs to something EQUAL TO, an ANCESTOR of, or a DESCENDANT of the
+// broker's --cwd, realpath'd the same way (P1 fix: comparing raw strings misses e.g.
+// `--cwd /tmp/proj` vs an owner's OS-reported `/private/tmp/proj`, the identical directory
+// under two spellings). If the broker's OWN cwd can't be realpath'd (opts.realpathSync
+// throws — should be rare since the caller only gets here after confirming the path
+// exists) the whole check is unresolvable and this returns true (fail-soft: never treat an
+// unresolvable broker as ownerless). A Claude session commonly runs at a workspace root
+// while the broker it owns runs `--cwd` inside a git submodule several levels under that
+// root (the real field case: broker `--cwd .../fix-roster-image-only-message/skyflutter`,
+// owning session cwd `.../fix-roster-image-only-message`, an ANCESTOR, not the same dir or
+// a descendant — a descendant-only check would misread that live broker as abandoned).
+// Segment boundaries matter both directions: an owner at `/a/bc` never counts for a broker
+// at `/a/b` (see isPathAncestorOrSame). An owner cwd of `/` or `$HOME` then blocks every
+// report for every broker under it — accepted as the safe-side failure mode. Also true
+// (fail-soft) if a candidate owner process exists but its cwd (or that cwd's realpath)
+// could not be resolved — an unresolved candidate is treated as "might still own this
+// broker", never as proof of absence.
+function hasLiveOwnerAtCwd(brokerCwd, procs, cwdOfFn, opts) {
+  const o = opts || {};
+  const realpathSync = typeof o.realpathSync === 'function' ? o.realpathSync : fs.realpathSync;
+  const excludePids = o.excludePids instanceof Set ? o.excludePids : new Set();
+
+  let target;
+  try {
+    target = realpathSync(brokerCwd);
+  } catch (_e) {
+    return true; // can't canonicalize the broker's own cwd -> unresolvable, fail-soft
+  }
+
   let unresolvedCandidate = false;
   for (const p of procs) {
+    if (excludePids.has(p.pid)) continue; // the broker itself / its own descendants
     if (!OWNER_PROC_RE.test(p.cmd)) continue;
     let cwd;
     try {
@@ -299,18 +362,26 @@ function hasLiveOwnerAtCwd(brokerCwd, procs, cwdOfFn) {
       unresolvedCandidate = true;
       continue;
     }
-    const resolved = path.resolve(cwd);
+    let resolved;
+    try {
+      resolved = realpathSync(cwd);
+    } catch (_e) {
+      unresolvedCandidate = true; // can't canonicalize this candidate -> fail-soft
+      continue;
+    }
     if (isPathAncestorOrSame(resolved, target) || isPathAncestorOrSame(target, resolved)) return true;
   }
   return unresolvedCandidate; // can't rule ownership out -> fail-soft "has an owner"
 }
 
-// findCodexBrokerOrphans(procList, opts) -> orphans of the codex-broker class only.
-// opts: { enabled, excludeRe, minAgeS, getAgesForPids(pids) -> Map<pid, ageSeconds>,
-//         cwdOf(pid) -> string|null, existsSync(path) -> bool }.
-// A candidate is reaped only if its age is known and >= minAgeS, AND EITHER its --cwd is
-// gone OR no live claude/codex process owns that cwd. Any unresolvable step -> skip.
-function findCodexBrokerOrphans(procList, opts) {
+// findAbandonedCodexBrokers(procList, opts) -> [{pid, ppid, cmd, cwd, age, reason}], a
+// REPORT-ONLY list — main() never feeds this into the SIGTERM/SIGKILL passes. opts:
+// { enabled, excludeRe, minAgeS, getAgesForPids(pids) -> Map<pid, ageSeconds>,
+//   cwdOf(pid) -> string|null, existsSync(path) -> bool, realpathSync(path) -> string }.
+// A candidate is listed only if its age is known and >= minAgeS, AND EITHER its --cwd is
+// gone (reason: 'cwd-gone') OR no live claude/codex process (excluding its own
+// descendants) owns that cwd (reason: 'no-live-owner'). Any unresolvable step -> skip.
+function findAbandonedCodexBrokers(procList, opts) {
   const o = opts || {};
   if (!o.enabled) return [];
   const list = Array.isArray(procList) ? procList : [];
@@ -326,27 +397,28 @@ function findCodexBrokerOrphans(procList, opts) {
   }
   if (!candidates.length) return [];
 
-  // Age floor first (cheap) — an unknown or too-young age skips before any cwd/lsof work.
-  const minAgeS = Number.isFinite(o.minAgeS) ? o.minAgeS : DEFAULT_CODEX_BROKER_MIN_AGE_S;
-  let oldEnough = candidates;
-  if (minAgeS > 0) {
-    if (typeof o.getAgesForPids !== 'function') return []; // can't verify age -> skip all
-    let ages;
+  // Age lookup, best-effort (also used in the report line, not only for gating).
+  let ages = new Map();
+  if (typeof o.getAgesForPids === 'function') {
     try {
-      ages = o.getAgesForPids(candidates.map((c) => c.p.pid));
+      ages = o.getAgesForPids(candidates.map((c) => c.p.pid)) || new Map();
     } catch (_e) {
-      return []; // age lookup failed -> skip all, fail-soft
+      ages = new Map();
     }
-    if (!(ages instanceof Map)) return [];
-    oldEnough = candidates.filter((c) => {
-      const age = ages.get(c.p.pid);
-      return typeof age === 'number' && age >= minAgeS;
-    });
   }
+  const minAgeS = Number.isFinite(o.minAgeS) ? o.minAgeS : DEFAULT_CODEX_BROKER_MIN_AGE_S;
+  const oldEnough =
+    minAgeS > 0
+      ? candidates.filter((c) => {
+          const age = ages.get(c.p.pid);
+          return typeof age === 'number' && age >= minAgeS;
+        })
+      : candidates;
   if (!oldEnough.length) return [];
 
-  const orphans = [];
+  const abandoned = [];
   for (const c of oldEnough) {
+    const age = ages.get(c.p.pid);
     let cwdGone = false;
     try {
       cwdGone = !existsSync(c.brokerCwd);
@@ -354,20 +426,26 @@ function findCodexBrokerOrphans(procList, opts) {
       cwdGone = false; // fail-soft: an existsSync error never proves the cwd is gone
     }
     if (cwdGone) {
-      orphans.push(c.p);
+      abandoned.push({ pid: c.p.pid, ppid: c.p.ppid, cmd: c.p.cmd, cwd: c.brokerCwd, age, reason: 'cwd-gone' });
       continue;
     }
 
     if (typeof o.cwdOf !== 'function') continue; // can't check owner presence -> skip
+    const excludePids = new Set([c.p.pid, ...descendantsOf(list, c.p.pid)]);
     let hasOwner;
     try {
-      hasOwner = hasLiveOwnerAtCwd(c.brokerCwd, list, o.cwdOf);
+      hasOwner = hasLiveOwnerAtCwd(c.brokerCwd, list, o.cwdOf, {
+        realpathSync: o.realpathSync,
+        excludePids,
+      });
     } catch (_e) {
       hasOwner = true; // fail-soft: assume an owner is present -> skip
     }
-    if (!hasOwner) orphans.push(c.p);
+    if (!hasOwner) {
+      abandoned.push({ pid: c.p.pid, ppid: c.p.ppid, cmd: c.p.cmd, cwd: c.brokerCwd, age, reason: 'no-live-owner' });
+    }
   }
-  return orphans;
+  return abandoned;
 }
 
 // defaultCwdOf(pid) -> the live cwd of a pid, or null if it can't be determined. Mirrors
@@ -391,6 +469,14 @@ function defaultCwdOf(pid) {
   return line ? line.slice(1) : null;
 }
 
+// formatAbandonedBrokerLogLine(b) -> the exact REPORT-ONLY log line main() writes for one
+// findAbandonedCodexBrokers() candidate. Pure and exported so the report's exact format is
+// unit-testable without spawning the real `node mcp-reaper.js` process.
+function formatAbandonedBrokerLogLine(b) {
+  const ageStr = typeof b.age === 'number' ? `${b.age}s` : 'unknown';
+  return `abandoned codex broker (report-only): pid=${b.pid} age=${ageStr} cwd=${b.cwd} reason=${b.reason}`;
+}
+
 module.exports = {
   parsePs,
   isReaperParent,
@@ -402,8 +488,10 @@ module.exports = {
   matchesCodexBroker,
   extractBrokerCwd,
   isPathAncestorOrSame,
+  descendantsOf,
   hasLiveOwnerAtCwd,
-  findCodexBrokerOrphans,
+  findAbandonedCodexBrokers,
+  formatAbandonedBrokerLogLine,
   defaultCwdOf,
   DEFAULT_CODEX_BROKER_MIN_AGE_S,
 };
@@ -496,23 +584,37 @@ function main() {
       getAgesForPids = null; // unavailable -> codex-broker class fails-soft to "skip all"
     }
 
-    function scanOrphans() {
-      const procs = enumerate();
-      const mcpOrphans = findOrphans(procs, extraRe, excludeRe);
-      const codexBrokerOrphans = findCodexBrokerOrphans(procs, {
+    // scanKillableOrphans() -> the generic MCP class ONLY. This is the ONLY list that
+    // ever feeds the SIGTERM/SIGKILL passes below.
+    function scanKillableOrphans() {
+      return findOrphans(enumerate(), extraRe, excludeRe);
+    }
+
+    // scanAbandonedCodexBrokers(procs) -> the codex-broker class, REPORT-ONLY (see the
+    // big comment above findAbandonedCodexBrokers). Its output is logged but is NEVER
+    // passed to process.kill anywhere in this file.
+    function scanAbandonedCodexBrokers(procs) {
+      return findAbandonedCodexBrokers(procs, {
         enabled: !!reaperCodexBroker,
         excludeRe,
         minAgeS: reaperCodexBrokerMinAgeS,
         getAgesForPids,
         cwdOf: defaultCwdOf,
       });
-      return mcpOrphans.concat(codexBrokerOrphans);
     }
 
-    const orphans = scanOrphans();
+    const firstScanProcs = enumerate();
+    const orphans = findOrphans(firstScanProcs, extraRe, excludeRe);
+    const abandonedBrokers = scanAbandonedCodexBrokers(firstScanProcs);
+
+    // Report-only output happens on EVERY run (dry-run or real, whether or not there are
+    // any killable orphans) — this class is detected-and-listed, never killed.
+    for (const b of abandonedBrokers) {
+      logLine(logFile, formatAbandonedBrokerLogLine(b));
+    }
 
     if (orphans.length === 0) {
-      logLine(logFile, 'scan: no orphans');
+      if (abandonedBrokers.length === 0) logLine(logFile, 'scan: no orphans');
       process.exit(0);
       return;
     }
@@ -525,7 +627,7 @@ function main() {
       return;
     }
 
-    // SIGTERM pass
+    // SIGTERM pass — killable (generic MCP) orphans ONLY.
     for (const o of orphans) {
       try {
         process.kill(o.pid, 'SIGTERM');
@@ -541,7 +643,8 @@ function main() {
     // SIGKILL survivors. Re-enumerate and RE-APPLY THE FULL INVARIANT on fresh data,
     // then kill only PIDs that are STILL orphans — defends against the (unlikely) case
     // of an orphan PID being recycled into a live process during the grace window.
-    const stillOrphanPids = new Set(scanOrphans().map((p) => p.pid));
+    // Codex brokers are never part of this set (report-only, see above).
+    const stillOrphanPids = new Set(scanKillableOrphans().map((p) => p.pid));
     for (const o of orphans) {
       if (!stillOrphanPids.has(o.pid)) continue;
       try {
