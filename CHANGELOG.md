@@ -6,6 +6,11 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.109.3
+
+### Fixed
+- **Silent-agent nudge no longer blocks every Stop for a finished agent.** A background agent whose completion notice arrived as an `attachment` or `queue-operation` transcript entry was treated as still running and reported as "silent", and the Stop hook then blocked on every attempt. The nudge now reads all three completion shapes (reusing the idle gate's parser), treats an agent whose result was later delivered as finished, and hard-caps nudges at one per agent per session.
+
 ## 0.109.2
 
 ### Fixes
