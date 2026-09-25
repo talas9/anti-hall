@@ -141,3 +141,36 @@ test('log rotate lock: reclaim race (stale + dead holder) + torn read', (t) => {
   assert.strictEqual(fs.readFileSync(p, 'utf8'), '');
   fs.unlinkSync(p);
 });
+
+test('store journal messages.lock: a writer that judged a stale dead holder never deletes a fresh lock published meanwhile', () => {
+  const store = require(path.join(ROOT, 'companion', 'lib', 'devswarm-store.js'));
+  const lockLib = require(path.join(ROOT, 'companion', 'lib', 'lock.js'));
+  const home = tmpHome();
+  try {
+    const dir = store.journalDir(home);
+    const p = path.join(dir, 'messages.lock');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(p, JSON.stringify({ pid: 2147483646, ts: 1000, token: 'dead' }));
+    // The competing writer reclaims the dead lock first and is MID-critical-
+    // section (holds it, not yet released) when our writer acts on its read.
+    let other = 'not-run';
+    const spy = Object.create(fs);
+    spy.readFileSync = (file, enc) => {
+      const raw = fs.readFileSync(file, enc);
+      if (file === p && other === 'not-run') {
+        other = null;
+        other = lockLib.acquire(p, { publish: 'excl', staleMs: 10000, liveStaleMs: 300000 });
+      }
+      return raw;
+    };
+    const s = store.openStore({ home, backend: 'journal', fsi: spy, lock: { maxTries: 3, appendRetries: 1 } });
+    try {
+      assert.throws(() => s.appendMessage({ workspaceId: 'w', body: 'x', hash: 'h1' }), (e) => e.code === 'ELOCKUNAVAIL',
+        'the writer must wait on the live holder, never append concurrently with it');
+      assert.ok(other && other.token, 'precondition: the competing writer holds the lock');
+      assert.strictEqual(JSON.parse(fs.readFileSync(p, 'utf8')).token, other.token, 'the live holder\'s lock survived');
+      other.release();
+      assert.deepStrictEqual(s.appendMessage({ workspaceId: 'w', body: 'x', hash: 'h1' }), { inserted: true });
+    } finally { s.close(); }
+  } finally { rm(home); }
+});

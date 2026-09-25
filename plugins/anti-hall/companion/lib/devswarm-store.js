@@ -39,6 +39,7 @@ const os = require('os');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const lockLib = require('./lock.js');
 const { devswarmRoot, isSafeId } = require('./liveness.js');
 
 // resolveHomeGuarded(o) -> the home dir to use for store I/O. Mirrors
@@ -1494,77 +1495,45 @@ function openJournal(home, workspaceId, fsi, lockOpts, opts) {
     try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Math.max(0, ms | 0)); } catch (_) {}
   }
   function lockErr(code, msg) { const e = new Error(msg); e.code = code; return e; }
-  // acquireOnce() -> 'held' | 'stole' | 'busy'; throws on a genuine fs error.
-  // A lock is stolen ONLY when on-disk evidence shows the holder is gone: a
-  // parseable-but-old ts, OR (for a torn/empty/unparseable file) an old MTIME. A
-  // live holder is briefly a 0-byte file between openSync('wx') and writeSync — a
-  // concurrent reader that catches it empty MUST NOT steal it (that lets two
-  // processes both run the critical section -> a duplicate hash row). The empty
-  // window is microseconds, so a fresh mtime = live holder -> back off, never steal.
-  // TOKENIZED: each acquire writes a unique token; release unlinks only while the
-  // file still carries it (a successor's lock is never removed). PID-AWARE: past
-  // staleMs a holder is stolen from only when its pid is provably dead (ESRCH) or
-  // past MESSAGES_LOCK_LIVE_STALE_MS; a lock with no parseable pid keeps the
-  // mtime + staleMs rule.
-  function acquireOnce(lockPath, token) {
-    const messagesLock = lockPath || messagesLockPath;
-    try {
-      const fd = F.openSync(messagesLock, 'wx');
-      try { F.writeSync(fd, JSON.stringify({ pid: process.pid, ts: Date.now(), token })); } finally { F.closeSync(fd); }
-      return 'held';
-    } catch (e) {
-      if (!e || e.code !== 'EEXIST') throw e; // unexpected fs error -> caller fails closed
-      let ts = null;
-      let pid = null;
-      try { const rec = JSON.parse(F.readFileSync(messagesLock, 'utf8')); ts = rec.ts; pid = rec.pid; } catch (_) {}
-      if (!Number.isFinite(ts)) {
-        // torn/empty/unparseable content — fall back to the file's mtime for
-        // liveness; a live holder mid-write has a FRESH mtime.
-        try { ts = F.statSync(messagesLock).mtimeMs; } catch (_) { ts = null; }
-      }
-      const age = ts === null ? Infinity : Date.now() - ts;
-      let stale = age > MESSAGES_LOCK_STALE_MS;
-      if (stale && Number.isInteger(pid) && pid > 0 && age <= MESSAGES_LOCK_LIVE_STALE_MS) {
-        try { process.kill(pid, 0); stale = false; } // alive (or EPERM below) -> live holder
-        catch (ke) { stale = !!(ke && ke.code === 'ESRCH'); }
-      }
-      if (stale) {
-        try { F.unlinkSync(messagesLock); } catch (_) {} // steal a genuinely stale lock
-        return 'stole';
-      }
-      return 'busy'; // live holder
-    }
-  }
-  function releaseLock(lockPath, token) {
-    try {
-      const rec = JSON.parse(F.readFileSync(lockPath, 'utf8'));
-      if (rec && rec.token === token) F.unlinkSync(lockPath);
-    } catch (_) { /* gone or unreadable: not ours to remove */ }
-  }
+  // withMessagesLock(fn, lockPath) — companion/lib/lock.js with this lock's
+  // contract: publish:'excl' (plain O_EXCL create — a genuine fs error opening
+  // it fails CLOSED as ELOCKFS), mtime torn-read guard (a live holder is
+  // briefly a 0-byte file between openSync('wx') and writeSync; a fresh mtime
+  // = live holder -> back off), TOKENIZED release, and PID-AWARE steal: past
+  // staleMs a holder is stolen only when its pid is provably dead or past
+  // MESSAGES_LOCK_LIVE_STALE_MS; a lock with no parseable pid keeps the
+  // mtime + staleMs rule. A stolen lock is reclaimed by rename-aside + token
+  // check, so two writers that judged the same stale holder never both win.
+  // Busy -> jittered 2-5ms backoff (desyncs writers), MESSAGES_LOCK_MAX_TRIES
+  // attempts, then ELOCKUNAVAIL (never runs fn unlocked).
   function withMessagesLock(fn, lockPath) {
     const messagesLock = lockPath || messagesLockPath;
-    try { F.mkdirSync(dir, { recursive: true }); } catch (_) {}
-    let held = false;
-    const token = process.pid + '-' + Date.now() + '-' + crypto.randomBytes(6).toString('hex');
-    for (let i = 0; i < MESSAGES_LOCK_MAX_TRIES && !held; i++) {
-      let st;
-      try { st = acquireOnce(messagesLock, token); }
-      catch (e) {
-        // Genuine, unexpected fs error opening the lock (e.g. EPERM). Fail CLOSED —
-        // NEVER run the critical section unlocked.
-        throw lockErr('ELOCKFS', 'devswarm messages lock: fs error (' + (e && e.code || 'unknown') + ')');
-      }
-      if (st === 'held') { held = true; break; }
-      if (st === 'busy') lockSleep(2 + Math.floor(Math.random() * 4)); // jittered backoff desyncs writers
-      // 'stole' -> retry immediately (we just cleared a stale lock)
+    let h;
+    try {
+      h = lockLib.acquire(messagesLock, {
+        fs: F,
+        publish: 'excl',
+        throwOnError: true,
+        staleMs: MESSAGES_LOCK_STALE_MS,
+        liveStaleMs: MESSAGES_LOCK_LIVE_STALE_MS,
+        maxTries: MESSAGES_LOCK_MAX_TRIES,
+        waitMs: Infinity,
+        stepMs: 2,
+        jitterMs: 4,
+        sleep: lockSleep,
+      });
+    } catch (e) {
+      // Genuine, unexpected fs error opening the lock (e.g. EPERM). Fail CLOSED —
+      // NEVER run the critical section unlocked.
+      throw lockErr('ELOCKFS', 'devswarm messages lock: fs error (' + (e && e.code || 'unknown') + ')');
     }
-    if (!held) {
+    if (!h) {
       // Contention budget exhausted. Do NOT append unlocked (duplicates the dedupe
       // hash). Signal a retryable failure; the caller re-attempts (idempotent).
       throw lockErr('ELOCKUNAVAIL', 'devswarm messages lock unavailable after ' + MESSAGES_LOCK_MAX_TRIES + ' tries');
     }
     try { return fn(); }
-    finally { releaseLock(messagesLock, token); }
+    finally { h.release(); }
   }
   // withRetriedMessagesLock(criticalFn) — bounded retry on ELOCKUNAVAIL (contention
   // exhaustion), shared by appendMessage AND appendMeshRow. The critical section
