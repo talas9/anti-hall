@@ -69,6 +69,23 @@ the update.
   an explicit "INCONCLUSIVE (timeout/killed) — not a verdict" message instead
   of silently misclassifying. A genuine exit-0-where-base-blocked regression
   is unaffected — it returns a real status on the first attempt.
+- **Canonical `resolveHome()` guard added for shared home-fallback helpers.**
+  `os.homedir()` is called directly at ~300+ sites across the plugin; a test
+  that forgets to pass an explicit home/env can silently fall through to the
+  REAL developer machine home instead of an isolated fixture (the recurring
+  "tests never touch the real home" defect class). Added
+  `companion/lib/test-home-guard.js#resolveHome(explicitHome, env)` — the
+  same `explicitHome || os.homedir()` fallback in production, but it refuses
+  (throws) under `node --test` (or explicit `ANTIHALL_TEST=1`) when that
+  fallback would resolve to the real user home, with an
+  `ANTIHALL_ALLOW_REAL_HOME_TEST=1` escape hatch for a test that deliberately
+  needs it. Migrated `hooks/lib/settings.js` (`homeDir`/`homeFromEnv`) and
+  `hooks/lib/jev-assist.js` (`homeDir`) — the two shared helpers most other
+  hooks/companion code routes settings/jev config reads through — to use it.
+  Added `tests/hygiene/homedir-call-site-ratchet.test.js`, which counts
+  remaining direct `os.homedir()` call sites and fails if the count grows,
+  so new code can't reintroduce the gap while the rest of the call sites are
+  migrated incrementally.
 
 ## 0.109.5
 

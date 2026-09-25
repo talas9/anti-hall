@@ -93,6 +93,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { execFileSync, spawn } = require('child_process');
 const { jevDecide, loadJevConfig } = require('./jev-client.js');
+const testHomeGuard = require('../../companion/lib/test-home-guard.js');
 
 const CACHE_MAX_ENTRIES = 500;
 const LOG_MAX_BYTES = 1024 * 1024; // 1MB, one rotated backup kept (.1)
@@ -106,7 +107,7 @@ const DEFAULT_SYNC_TIMEOUT_MS = 1500;
 const LEGACY_ON_DEFAULT = new Set(['speculation', 'triage']);
 
 function homeDir(home) {
-  return (typeof home === 'string' && home) ? home : os.homedir();
+  return testHomeGuard.resolveHome(typeof home === 'string' && home ? home : null);
 }
 function jevConfigPath(home) {
   return path.join(homeDir(home), '.anti-hall', 'jev.json');

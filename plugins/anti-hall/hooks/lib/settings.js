@@ -34,9 +34,10 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const schema = require('./settings-schema.js');
+const testHomeGuard = require('../../companion/lib/test-home-guard.js');
 
 function homeDir(opts) {
-  return (opts && opts.home) || os.homedir();
+  return testHomeGuard.resolveHome(opts && opts.home, opts && opts.env);
 }
 
 // homeFromEnv(env) -> the home dir an explicit env object implies (HOME, or
@@ -45,9 +46,11 @@ function homeDir(opts) {
 // every devswarm/env-parameter consumer routes through getWithEnv() below
 // instead of re-deriving it, so a test that passes a fake env with an
 // isolated HOME can never accidentally fall through to the real machine home.
+// The os.homedir() fallback itself is the CANONICAL resolveHome() (test-home-guard.js),
+// which refuses under `node --test` when that fallback would be the real home.
 function homeFromEnv(env) {
   const e = env || process.env;
-  return (e && (e.HOME || e.USERPROFILE)) || os.homedir();
+  return testHomeGuard.resolveHome(e && (e.HOME || e.USERPROFILE), e);
 }
 
 // getWithEnv(section, key, dflt, env) -> get(), but for callers that receive

@@ -15,7 +15,9 @@ const path = require('path');
 
 function realHomeUnderTest(home, env) {
   const e = env || process.env;
-  if (!(process.env.NODE_TEST_CONTEXT || e.NODE_TEST_CONTEXT) || !home) return false;
+  const underTest = process.env.NODE_TEST_CONTEXT || e.NODE_TEST_CONTEXT
+    || process.env.ANTIHALL_TEST || e.ANTIHALL_TEST;
+  if (!underTest || !home) return false;
   let real = null;
   try { real = os.userInfo().homedir; } catch (_) { real = null; }
   if (!real) return false;
@@ -25,6 +27,29 @@ function realHomeUnderTest(home, env) {
 function refusalMessage(label, home) {
   return label + ' refused under node --test: home ' + JSON.stringify(String(home))
     + ' is the REAL user home — isolate HOME (and USERPROFILE) or pass an explicit fixture home';
+}
+
+// resolveHome(explicitHome, env) -> the CANONICAL `explicitHome || os.homedir()`
+// fallback every shared helper (settings.js, jev-assist.js, ...) used to
+// hand-roll on its own. Behaves byte-identically to that bare fallback in
+// production; the ONLY difference is under `node --test` (NODE_TEST_CONTEXT)
+// or an explicit `ANTIHALL_TEST=1`: if the result would be the REAL passwd
+// home (os.userInfo().homedir — immune to a HOME env override, so an
+// isolated fixture home never trips this), it throws instead of silently
+// reading/writing the developer's real ~/.anti-hall. Escape hatch:
+// ANTIHALL_ALLOW_REAL_HOME_TEST=1 (set by a test that deliberately needs the
+// real home, e.g. to prove THIS guard works — see
+// tests/hygiene/settings-home-injection.test.js's poisoned-os.homedir()
+// pattern for the alternative that avoids needing the opt-out at all).
+function resolveHome(explicitHome, env) {
+  if (explicitHome) return explicitHome;
+  const home = os.homedir();
+  const e = env || process.env;
+  if (process.env.ANTIHALL_ALLOW_REAL_HOME_TEST || e.ANTIHALL_ALLOW_REAL_HOME_TEST) return home;
+  if (realHomeUnderTest(home, e)) {
+    throw new Error(refusalMessage('resolveHome', home));
+  }
+  return home;
 }
 
 // ---------------------------------------------------------------------------
@@ -105,6 +130,6 @@ function userConfigWriteRefused(target, env) {
 }
 
 module.exports = {
-  realHomeUnderTest, refusalMessage,
+  realHomeUnderTest, refusalMessage, resolveHome,
   TEST_MARKERS, underTest, installerChildEnv, SERVICE_CMDS, refuseServiceCmd, runServiceCmd, pathUnderTmp, userConfigWriteRefused,
 };
