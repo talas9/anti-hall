@@ -207,6 +207,12 @@ the update.
   closed builder, or an unreadable app DB means no spawn at all (not even the capability
   probe). `cmdArchive` takes `{appArchive:false}` for a local-only archive, and the hook
   passes it, so no hook ever spawns hivecontrol or spends its timeout budget on it.
+- **A settings.json `jev.integrations.<id>` value lost to a conflicting jev.json value
+  during migration.** `migrateSettingsFromLegacy` ran the jev.json legacy loop first, which
+  claimed the empty `jevIntegrations.<id>` key, so the later settings.json forward-migration
+  saw the key as set and skipped it — inverting the precedence (settings.json outranks
+  jev.json). `migrateJevIntegrationsSection` now runs first. Nothing is deleted; both old
+  values stay where they were.
 
 ## 0.108.3
 

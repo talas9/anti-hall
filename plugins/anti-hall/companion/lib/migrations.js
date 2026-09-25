@@ -471,6 +471,16 @@ function migrateSettingsFromLegacy(home, opts) {
   const schemaLib = require('../../hooks/lib/settings-schema.js');
   let migrated = 0;
   let errors = 0;
+  // 0.108.4: FIRST forward pre-0.108.4 settings.json storage of the
+  // per-integration values (section 'jev', key 'integrations.<id>') into
+  // their new home (section 'jevIntegrations', key '<id>'). It must run
+  // BEFORE the legacy-file loop below: settings.json outranks jev.json in the
+  // precedence chain, so a settings.json `jev.integrations.X` must win over a
+  // conflicting jev.json `integrations.X` — run second, the legacy loop would
+  // claim the empty new key first and the settings.json value would be lost.
+  const section = migrateJevIntegrationsSection(home);
+  migrated += section.migrated;
+  errors += section.errors;
   try {
     const store = settingsLib.load({ home });
     for (const entry of schemaLib.allSettings()) {
@@ -491,13 +501,6 @@ function migrateSettingsFromLegacy(home, opts) {
       } catch (_) { errors++; }
     }
   } catch (_) { errors++; }
-  // 0.108.4: also forward pre-0.108.4 settings.json storage of the
-  // per-integration values (section 'jev', key 'integrations.<id>') into
-  // their new home (section 'jevIntegrations', key '<id>'). Same marker/
-  // idempotency contract as the legacy-file loop above.
-  const section = migrateJevIntegrationsSection(home);
-  migrated += section.migrated;
-  errors += section.errors;
   return { ok: errors === 0, migrated, errors };
 }
 

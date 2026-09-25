@@ -272,3 +272,20 @@ test('migrateSettingsFromLegacy: also runs the jevIntegrations section forward-m
     home.cleanup();
   }
 });
+
+test('migrateSettingsFromLegacy: a settings.json jev["integrations.<id>"] value WINS over a conflicting jev.json integrations.<id> (settings.json outranks the legacy file)', () => {
+  const home = makeHome();
+  try {
+    writeSettingsJson(home.home, { jev: { 'integrations.modelRouting': 'on' } });
+    fs.writeFileSync(jevPath(home.home), JSON.stringify({ integrations: { modelRouting: 'off' } }));
+
+    const r = M.migrateSettingsFromLegacy(home.home);
+    assert.strictEqual(r.ok, true, JSON.stringify(r));
+    assert.strictEqual(settings.get('jevIntegrations', 'modelRouting', undefined, { home: home.home, env: {} }), 'on');
+    // nothing deleted: both old values stay exactly as they were
+    assert.strictEqual(settings.load({ home: home.home }).jev['integrations.modelRouting'], 'on');
+    assert.strictEqual(JSON.parse(fs.readFileSync(jevPath(home.home), 'utf8')).integrations.modelRouting, 'off');
+  } finally {
+    home.cleanup();
+  }
+});
