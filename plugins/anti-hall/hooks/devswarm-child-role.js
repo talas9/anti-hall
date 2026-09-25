@@ -77,8 +77,7 @@ const CHILD_IDLE_LINE =
 // workspace once the merge is proven and it is clean, read and idle — no user
 // archive step.
 const CHILD_DONE_LINE =
-  ' WHEN YOUR WORK IS MERGED/FINISHED: run `node ' + CLI + ' done --summary "<what shipped>"` ' +
-  'once — it reports done to the parent; the workspace is then auto-archived (never ask your user to archive it).';
+  ' WHEN MERGED run `node ' + CLI + ' done --summary "..."` once; auto-archived after.';
 
 // CHILD_QUESTION_LINE / PARENT_QUESTION_LINE — the blocking-question escalation
 // protocol, condensed from skills/devswarm/SKILL.md "Blocking questions — CHILD
