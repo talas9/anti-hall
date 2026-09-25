@@ -64,12 +64,18 @@ const fs = require('fs');
 // print the pass/fail totals).
 const SCAN_CAP = 200000; // chars
 
+// Count-bearing patterns (e.g. "0 failed", "0 passed", "0 errors") must NOT
+// match on a zero count — a clean `cargo test` summary line ("test result:
+// ok. 5 passed; 0 failed") would otherwise be flagged as a mixed pass/fail
+// result purely because the literal digit "0" preceded "failed". These use a
+// captured \d+ group so firstMatch() (below) can reject zero-count hits;
+// plain marker patterns (no count) are unaffected.
 const FAIL_PATTERNS = [
   /\bFAIL\b/, // jest/vitest per-file marker ("FAIL src/foo.test.js")
   /--- FAIL:/, // go test per-test marker
   /^FAIL\t/m, // go test package-level summary
-  /\b\d+\s+failing\b/i, // mocha-style summary
-  /\b\d+\s+failed\b/i, // jest/vitest/pytest summary ("2 failed")
+  /\b(\d+)\s+failing\b/i, // mocha-style summary
+  /\b(\d+)\s+failed\b/i, // jest/vitest/pytest/cargo/go summary ("2 failed")
   /error TS\d+:/, // tsc compiler error
   /ERROR in /, // webpack/build error
   /\bBuild failed\b/i,
@@ -81,8 +87,8 @@ const PASS_PATTERNS = [
   /\bPASS\b/, // jest/vitest per-file marker
   /--- PASS:/, // go test per-test marker
   /^ok\s+\S+/m, // go test package pass ("ok  \tpkg\t0.002s")
-  /\b\d+\s+passing\b/i, // mocha-style summary
-  /\b\d+\s+passed\b/i, // jest/vitest/pytest summary ("8 passed")
+  /\b(\d+)\s+passing\b/i, // mocha-style summary
+  /\b(\d+)\s+passed\b/i, // jest/vitest/pytest/cargo summary ("8 passed")
   /\bCompiled successfully\b/i,
   /\bFound 0 errors\b/i, // tsc clean run
   /\bAll tests passed\b/i,
@@ -146,8 +152,23 @@ function isTestRunnerCommand(cmd) {
   return false;
 }
 
+// Returns the first match text for the first pattern that has a genuine hit.
+// A pattern with a captured \d+ count group (e.g. /\b(\d+)\s+failed\b/i) only
+// counts as a hit when that count is non-zero — otherwise "0 failed"/"0
+// passed"/"0 errors" would falsely trip the mixed-result check. Scans ALL
+// occurrences of a count pattern (via a global-flagged clone) so a later
+// non-zero occurrence still counts even if an earlier "0 X" occurs first.
 function firstMatch(patterns, text) {
   for (const re of patterns) {
+    if (re.source.includes('(\\d+)')) {
+      const g = new RegExp(re.source, re.flags.includes('g') ? re.flags : re.flags + 'g');
+      let m;
+      while ((m = g.exec(text))) {
+        if (parseInt(m[1], 10) !== 0) return m[0];
+        if (g.lastIndex === m.index) g.lastIndex++; // avoid infinite loop on zero-width
+      }
+      continue;
+    }
     const m = text.match(re);
     if (m) return m[0];
   }

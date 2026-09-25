@@ -129,6 +129,14 @@ the update.
   `archived-retired/` rather than deleting it. Messages sent to the alias are
   forwarded, and they stay readable under the alias.
 
+### Fixes
+
+- **`output-verify-guard.js` false positive on zero-count summaries.** A clean `cargo test`
+  summary line ("test result: ok. 5 passed; 0 failed") was flagged as a mixed pass/fail
+  result because the dual-signal regex matched the literal "0 failed" text. Count-bearing
+  fail/pass patterns now require a non-zero count; plain marker patterns (`FAIL`, `PASS`,
+  `--- FAIL:`) are unaffected. Covers pytest, jest, cargo, go test, and mocha summary lines.
+
 ## 0.108.3
 
 ### Features

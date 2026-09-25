@@ -185,6 +185,102 @@ test('FAIL-OPEN: malformed JSON -> exit 0', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Zero-count terms ("0 failed"/"0 passed"/"0 errors") must never count as a
+// hit on their own — only a genuinely non-zero count is a real signal.
+// ---------------------------------------------------------------------------
+
+test('ZERO-COUNT: clean cargo test summary ("5 passed; 0 failed") -> no annotation', () => {
+  const h = makeHome();
+  try {
+    const payload = postToolUsePayload(
+      { stdout: 'running 5 tests\ntest result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\n', exit_code: 0 },
+      { command: 'cargo test' }
+    );
+    const r = testHook(HOOK, payload, { home: h.home });
+    assert.strictEqual(r.status, 0);
+    assert.strictEqual(ctx(r), '', '"0 failed" alongside "5 passed" must not be treated as a real failure signal');
+  } finally { h.cleanup(); }
+});
+
+test('ZERO-COUNT: clean pytest summary ("8 passed, 0 failed") -> no annotation', () => {
+  const h = makeHome();
+  try {
+    const payload = postToolUsePayload(
+      { stdout: '8 passed, 0 failed in 0.42s\n', exit_code: 0 },
+      { command: 'pytest -q' }
+    );
+    const r = testHook(HOOK, payload, { home: h.home });
+    assert.strictEqual(r.status, 0);
+    assert.strictEqual(ctx(r), '');
+  } finally { h.cleanup(); }
+});
+
+test('ZERO-COUNT: clean jest summary ("Tests: 0 failed, 10 passed") -> no annotation', () => {
+  const h = makeHome();
+  try {
+    const payload = postToolUsePayload(
+      { stdout: 'Tests: 0 failed, 10 passed, 10 total\n', exit_code: 0 },
+      { command: 'jest' }
+    );
+    const r = testHook(HOOK, payload, { home: h.home });
+    assert.strictEqual(r.status, 0);
+    assert.strictEqual(ctx(r), '');
+  } finally { h.cleanup(); }
+});
+
+test('ZERO-COUNT: clean go test summary ("0 failed" phrasing) still passes on ok marker only -> no annotation', () => {
+  const h = makeHome();
+  try {
+    const payload = postToolUsePayload(
+      { stdout: 'ok  \tpkg\t0.002s\n0 failed, 0 skipped\n', exit_code: 0 },
+      { command: 'go test ./...' }
+    );
+    const r = testHook(HOOK, payload, { home: h.home });
+    assert.strictEqual(r.status, 0);
+    assert.strictEqual(ctx(r), '', 'no PASS-count pattern and only zero-count fail terms must not annotate');
+  } finally { h.cleanup(); }
+});
+
+test('ZERO-COUNT: clean mocha summary ("10 passing", "0 failing") -> no annotation', () => {
+  const h = makeHome();
+  try {
+    const payload = postToolUsePayload(
+      { stdout: '10 passing (12ms)\n0 failing\n', exit_code: 0 },
+      { command: 'npm test' }
+    );
+    const r = testHook(HOOK, payload, { home: h.home });
+    assert.strictEqual(r.status, 0);
+    assert.strictEqual(ctx(r), '', 'mocha-style "0 failing" must not be a real failure signal');
+  } finally { h.cleanup(); }
+});
+
+test('ZERO-COUNT does not mask a REAL mixed result (cargo: "3 passed; 2 failed")', () => {
+  const h = makeHome();
+  try {
+    const payload = postToolUsePayload(
+      { stdout: 'test result: FAILED. 3 passed; 2 failed; 0 ignored\n', exit_code: 101 },
+      { command: 'cargo test' }
+    );
+    const r = testHook(HOOK, payload, { home: h.home, expectJson: true });
+    assert.strictEqual(r.status, 0);
+    assert.ok(ctx(r).includes('output-verify-guard'), 'a genuine non-zero fail count must still annotate even with a "0 ignored" nearby');
+  } finally { h.cleanup(); }
+});
+
+test('ZERO-COUNT does not mask a REAL mixed result (mocha: "8 passing", "2 failing")', () => {
+  const h = makeHome();
+  try {
+    const payload = postToolUsePayload(
+      { stdout: '8 passing (10ms)\n2 failing\n', exit_code: 1 },
+      { command: 'npm test' }
+    );
+    const r = testHook(HOOK, payload, { home: h.home, expectJson: true });
+    assert.strictEqual(r.status, 0);
+    assert.ok(ctx(r).length > 0, 'a real mocha mixed result must still annotate');
+  } finally { h.cleanup(); }
+});
+
+// ---------------------------------------------------------------------------
 // Off-switch + skip hatch.
 // ---------------------------------------------------------------------------
 
