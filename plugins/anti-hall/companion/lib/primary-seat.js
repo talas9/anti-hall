@@ -43,7 +43,8 @@ function primaryCheckout(o) {
   if (!ctx.worktreeRoot) return null;
   let b = null;
   try { b = require('./devswarm-app-db.js').builderForWorktree({ home: o.home, env: o.env, worktreePath: ctx.worktreeRoot }); } catch (_) { b = null; }
-  const isPrimary = b && b.builderType ? b.builderType === 'primary' : realOr(ctx.mainWorktree) === ctx.worktreeRoot;
+  const bt = b && b.builderType ? String(b.builderType).trim() : ''; // whitespace-only = unknown -> main-checkout rule
+  const isPrimary = bt ? bt === 'primary' : realOr(ctx.mainWorktree) === ctx.worktreeRoot;
   if (!isPrimary) return null;
   return { worktree: ctx.worktreeRoot, id: identity.meshIdForRealPath(ctx.worktreeRoot), builderId: b ? b.id : null };
 }

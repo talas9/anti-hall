@@ -56,7 +56,7 @@ function fixture(fake, children, opts) {
   const db = new sqlite.DatabaseSync(dbFile);
   db.exec('CREATE TABLE builders (id TEXT PRIMARY KEY, repositoryId TEXT, branchName TEXT, sourceBranch TEXT, worktreePath TEXT,'
     + ' builderType TEXT, isActive INTEGER, isHidden INTEGER, lastSelectedAt TEXT, label TEXT, pullRequestId TEXT)');
-  db.exec('CREATE TABLE pull_requests (id TEXT PRIMARY KEY, repositoryId TEXT, branchName TEXT, state TEXT, targetBranch TEXT)');
+  db.exec('CREATE TABLE pull_requests (id TEXT PRIMARY KEY, repositoryId TEXT, branchName TEXT, state TEXT, targetBranch TEXT, headRefOid TEXT)');
   const ins = db.prepare('INSERT INTO builders VALUES (?,?,?,?,?,?,?,?,?,?,?)');
   const primaryWt = path.join(base, 'primary'); fs.mkdirSync(primaryWt);
   ins.run('p-1', 'r1', 'main', null, primaryWt, 'primary', 1, 0, null, 'Primary', null);
@@ -65,7 +65,7 @@ function fixture(fake, children, opts) {
     const wt = path.join(base, 'wt-' + c.id); fs.mkdirSync(wt);
     ins.run(c.id, 'r1', 'feat/' + c.id, 'main', wt, c.builderType || 'standard', c.archived ? 0 : 1, c.archived ? 1 : 0,
       c.lastSelectedAt === undefined ? null : c.lastSelectedAt, 'Task ' + c.id, null);
-    if (c.pr) db.prepare('INSERT INTO pull_requests VALUES (?,?,?,?,?)').run('pr-' + c.id, 'r1', 'feat/' + c.id, c.pr, 'main');
+    if (c.pr) db.prepare('INSERT INTO pull_requests VALUES (?,?,?,?,?,?)').run('pr-' + c.id, 'r1', 'feat/' + c.id, c.pr, 'main', c.prHead || null);
     facts[wt] = Object.assign({ id: c.id, ancestor: true, porcelain: '', done: true, unread: 0, unreadFrom: 0, activity: NOW - 60 * MIN }, c);
   }
   db.close();
@@ -192,7 +192,7 @@ test('chat text "DONE" with no structured report -> blocked on a-done (real stor
 const blockersOf = (fx) => L.planAutoArchive(opts(fx, { settings: DRY })).candidates[0].blockers.map((b) => b.gate);
 
 test('P1-B squash-merged PR + branch reused with new commits (done at the old HEAD) -> blocked', { skip }, () => {
-  const fx = fixture(V252, [{ id: 'c1', done: false, gates: { done: true }, doneHead: 'old-sha', head: 'new-sha', ancestor: false, pr: 'merged' }]);
+  const fx = fixture(V252, [{ id: 'c1', done: false, gates: { done: true }, doneHead: 'old-sha', head: 'new-sha', ancestor: false, pr: 'merged', prHead: 'old-sha' }]);
   assert.deepStrictEqual(L.autoArchiveSweep(opts(fx, { settings: DRY })).wouldArchive, []);
   assert.deepStrictEqual(blockersOf(fx), ['a-done', 'b-merged']);
   const c = L.planAutoArchive(opts(fx, { settings: DRY })).candidates[0];
@@ -212,10 +212,39 @@ test('P1-B done at the old HEAD, new HEAD, merge proven by git -> still blocked 
   assert.strictEqual(L.planAutoArchive(opts(fx, { settings: DRY })).candidates[0].eligible, true);
 });
 
-test('P1-B PR fallback never overrides a non-ancestor, even for a HEAD-bound done-report', { skip }, () => {
+test('P1-B non-ancestor + merged PR with head sha unknown -> blocked, even for a HEAD-bound done-report', { skip }, () => {
   const fx = fixture(V252, [{ id: 'c1', done: false, gates: { done: true }, doneHead: 'abc', ancestor: false, pr: 'merged' }]);
   assert.deepStrictEqual(L.planAutoArchive(opts(fx, { settings: DRY })).toArchive, []);
   assert.deepStrictEqual(blockersOf(fx), ['b-merged']);
+  assert.strictEqual(L.planAutoArchive(opts(fx, { settings: DRY })).candidates[0].facts.merged.via, 'git:not-ancestor; pr head unknown');
+});
+
+// Squash merge: git ancestry always says "not an ancestor". The merged PR
+// proves the merge only when its head sha IS the worktree's current HEAD.
+test('squash-merged PR whose head sha == HEAD (done-report at HEAD) -> proven, eligible', { skip }, () => {
+  const fx = fixture(V252, [{ id: 'c1', done: false, gates: { done: true }, head: 'sq-sha', doneHead: 'sq-sha', ancestor: false, pr: 'merged', prHead: 'sq-sha' }]);
+  const c = L.planAutoArchive(opts(fx, { settings: DRY })).candidates[0];
+  assert.strictEqual(c.eligible, true, JSON.stringify(c.blockers));
+  assert.strictEqual(c.facts.merged.via, 'pr:head');
+  // Not merged (closed) with a matching head: blocked.
+  const fx2 = fixture(V252, [{ id: 'c1', done: false, gates: { done: true }, head: 'sq-sha', doneHead: 'sq-sha', ancestor: false, pr: 'closed', prHead: 'sq-sha' }]);
+  assert.deepStrictEqual(blockersOf(fx2), ['b-merged']);
+  // A sha-less (manual) done never gets the PR fallback.
+  fx.byId.c1.doneHead = undefined;
+  assert.deepStrictEqual(blockersOf(fx), ['b-merged']);
+});
+
+test('squash-merged PR + a new commit on top (HEAD != PR head, re-reported done) -> blocked', { skip }, () => {
+  const fx = fixture(V252, [{ id: 'c1', done: false, gates: { done: true }, head: 'new-sha', doneHead: 'new-sha', ancestor: false, pr: 'merged', prHead: 'sq-sha' }]);
+  assert.deepStrictEqual(blockersOf(fx), ['b-merged']);
+  assert.strictEqual(L.planAutoArchive(opts(fx, { settings: DRY })).candidates[0].facts.merged.via, 'git:not-ancestor');
+});
+
+test('ancestry path unchanged: HEAD an ancestor -> proven by git, PR head irrelevant', { skip }, () => {
+  const fx = fixture(V252, [{ id: 'c1', done: false, gates: { done: true }, head: 'h1', doneHead: 'h1', pr: 'merged', prHead: 'other' }]);
+  const c = L.planAutoArchive(opts(fx, { settings: DRY })).candidates[0];
+  assert.strictEqual(c.eligible, true, JSON.stringify(c.blockers));
+  assert.match(c.facts.merged.via, /^git:/);
 });
 
 test('P1-B PR fallback only when ancestry is undeterminable, and only for a HEAD-bound done-report', { skip }, () => {
@@ -521,7 +550,7 @@ test('no builderType column: the Primary seat (main checkout) decides, never the
 // P2 — the builderType column exists but the row's value is NULL or empty:
 // fall through to the Primary seat's main-checkout rule (fail safe), never
 // "not primary".
-for (const [label, bt] of [['NULL', null], ['empty', '']]) {
+for (const [label, bt] of [['NULL', null], ['empty', ''], ['whitespace-only', '  \t ']]) {
   test('builderType column present but ' + label + ' for the row: the main-checkout rule decides', { skip }, () => {
     const cp = require('node:child_process');
     const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ah-lifecycle-btnull-')));
@@ -558,6 +587,13 @@ for (const [label, bt] of [['NULL', null], ['empty', '']]) {
       assert.ok(p1.blockers.some((b) => b.gate === 'e-primary'), 'the main checkout stays the Primary: ' + JSON.stringify(p1.blockers));
       assert.ok(!c1.blockers.some((b) => b.gate === 'e-primary'), JSON.stringify(c1.blockers));
       assert.deepStrictEqual(plan.toArchive, ['c1']);
+      // primary-seat.js applies the same rule (whitespace-only = unknown).
+      const seat = require(path.join(ROOT, 'companion', 'lib', 'primary-seat.js'));
+      const appDb = require(path.join(ROOT, 'companion', 'lib', 'devswarm-app-db.js'));
+      const row = appDb.builderForWorktree({ home, env, worktreePath: repo });
+      assert.strictEqual(row && row.id, 'p-1', 'the app DB row is read (non-vacuous): ' + JSON.stringify(row));
+      assert.ok(seat.primaryCheckout({ home, env, cwd: repo }), 'main checkout is the Primary seat');
+      assert.strictEqual(seat.primaryCheckout({ home, env, cwd: child }), null);
     } finally { try { fs.rmSync(base, { recursive: true, force: true }); } catch (_) {} }
   });
 }

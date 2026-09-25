@@ -45,12 +45,15 @@ the update.
   so a child that reused its branch after a squash-merged PR kept `done`, the PR fallback
   matched the old merged PR, and new commits were eligible. The `done` verb now records
   the worktree HEAD with the gate (`set_by` `devswarm-done@<sha>`, projected as
-  `doneHead`), and gate (a) honours it only while that sha is still HEAD. Gate (b)'s
-  app PR row no longer overrides a git "not an ancestor" result. It is used only when
-  ancestry can't be determined (source branch or both refs missing locally), and only for a
-  done-report tied to HEAD. A `done` set any other way (`gate --set done`, no sha) still
-  works for the Primary, but needs the git-ancestry proof. A squash-merged child therefore
-  isn't auto-archived while its source branch is available locally; archive it by hand.
+  `doneHead`), and gate (b)'s app PR row counts only for a done-report tied to HEAD. When
+  ancestry can't be determined (source branch or both refs missing locally), a merged PR
+  row suffices. When git says "not an ancestor" (every squash merge does), the PR must be
+  merged AND its head sha (`pull_requests.headRefOid`) must equal the worktree's HEAD
+  exactly, so a reused branch with new commits stays blocked. A PR row without a head sha
+  stays blocked. The DevSwarm app DB's `pull_requests` table has no documented head-sha
+  column today, so until it does a squash-merged child still needs a manual archive. A
+  `done` set any other way (`gate --set done`, no sha) still works for the Primary, but
+  needs the git-ancestry proof.
 - **Nothing made a child set the `done` gate, so auto-archive still never fired.** New
   child verb `devswarm.js done [<id>] [--summary "..."]`: it sets the `done` gate on the
   caller's own workspace id (never `merged`/`tests_passed`) and sends the Primary one
@@ -63,8 +66,9 @@ the update.
 - **Auto-archive treated a child as the Primary.** Gate (e) counted any `primary-<hash>`
   descriptor id sharing a builder's worktree as the Primary, and a legacy child descriptor
   carries exactly that label, so a standard child was never archived. The app DB's
-  `builderType` is now the authority; without that column, or when the row's value is NULL or
-  empty, the Primary seat's main-checkout rule decides; a `primary-` id prefix never does. An unreadable app DB still archives
+  `builderType` is now the authority; without that column, or when the row's value is NULL,
+  empty or whitespace-only (gate (e) and `primary-seat.js` both trim it), the Primary seat's
+  main-checkout rule decides; a `primary-` id prefix never does. An unreadable app DB still archives
   nothing.
 - **A stale anti-hall archived marker overrode the DevSwarm app.** A workspace open in the
   app (`isActive=1`, `isHidden=0`) but still holding `archived/<id>.json` kept counting as

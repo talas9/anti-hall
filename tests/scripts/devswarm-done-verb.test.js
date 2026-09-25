@@ -156,9 +156,10 @@ test('auto-archive plan: blocked on a-done before `done`, wouldArchive after (pr
 
 // P1-B — the done gate is tied to the HEAD it was reported at. Real git: the
 // child's work is squash-merged (main gets an equivalent commit, never the
-// child's own), the app shows the PR merged, and the child then REUSES its
-// branch with new, unmerged commits. Nothing may auto-archive it.
-test('P1-B done records HEAD; squash-merged PR + reused branch with new commits is never auto-archived', { skip }, () => {
+// child's own) and the app shows the PR merged with head == the child's HEAD:
+// proven. The child then REUSES its branch with new, unmerged commits (HEAD !=
+// the PR head). Nothing may auto-archive it.
+test('P1-B done records HEAD; squash-merged PR proven by head sha; reused branch with new commits is never auto-archived', { skip }, () => {
   const f = fixture();
   try {
     const git = (cwd, ...a) => {
@@ -168,6 +169,7 @@ test('P1-B done records HEAD; squash-merged PR + reused branch with new commits 
     };
     fs.writeFileSync(path.join(f.child, 'feat.txt'), 'v1\n');
     git(f.child, 'add', 'feat.txt'); git(f.child, 'commit', '-q', '-m', 'feat v1');
+    const head1 = git(f.child, 'rev-parse', 'HEAD');
     // Squash-merge: main gets the same content as a NEW commit.
     fs.writeFileSync(path.join(f.repo, 'feat.txt'), 'v1\n');
     git(f.repo, 'add', 'feat.txt'); git(f.repo, 'commit', '-q', '-m', 'feat (squashed)');
@@ -175,11 +177,11 @@ test('P1-B done records HEAD; squash-merged PR + reused branch with new commits 
     const db = new sqlite.DatabaseSync(dbFile);
     db.exec('CREATE TABLE builders (id TEXT PRIMARY KEY, repositoryId TEXT, branchName TEXT, sourceBranch TEXT, worktreePath TEXT,'
       + ' builderType TEXT, isActive INTEGER, isHidden INTEGER, lastSelectedAt TEXT, label TEXT, pullRequestId TEXT)');
-    db.exec('CREATE TABLE pull_requests (id TEXT PRIMARY KEY, repositoryId TEXT, branchName TEXT, state TEXT, targetBranch TEXT)');
+    db.exec('CREATE TABLE pull_requests (id TEXT PRIMARY KEY, repositoryId TEXT, branchName TEXT, state TEXT, targetBranch TEXT, headRefOid TEXT)');
     const ins = db.prepare('INSERT INTO builders VALUES (?,?,?,?,?,?,?,?,?,?,?)');
     ins.run('p-1', 'r1', 'main', null, f.repo, 'primary', 1, 0, null, 'Primary', null);
     ins.run(CHILD, 'r1', 'fix-child', 'main', f.child, 'standard', 1, 0, null, 'Fix child', 'pr-1');
-    db.prepare('INSERT INTO pull_requests VALUES (?,?,?,?,?)').run('pr-1', 'r1', 'fix-child', 'merged', 'main');
+    db.prepare('INSERT INTO pull_requests VALUES (?,?,?,?,?,?)').run('pr-1', 'r1', 'fix-child', 'merged', 'main', head1);
     db.close();
     const bin = fakeHivecontrol(path.join(f.base, 'bin'), V252);
     const env = { HOME: f.home, PATH: bin.dir + path.delimiter + process.env.PATH, ANTIHALL_DEVSWARM_APP_DB: dbFile, ANTIHALL_DEVSWARM_APP_DB_CACHE_MS: '0' };
@@ -189,16 +191,15 @@ test('P1-B done records HEAD; squash-merged PR + reused branch with new commits 
     const cand = () => L.planAutoArchive({ home: f.home, env, now, deps, settings: { mode: 'dry-run', idleMin: 30, maxPerSweep: 3 } })
       .candidates.find((c) => c.id === CHILD);
 
-    const head1 = git(f.child, 'rev-parse', 'HEAD');
     const r = cli.run(['done'], { home: f.home, env: childEnv(f), cwd: f.child });
     assert.equal(r.code, 0, JSON.stringify(r.result));
     const sum = withStore(f, (s) => storeLib.computeSummary(s, { home: f.home }).workspaces[CHILD]);
     assert.equal(sum.gates.done, true);
     assert.equal(sum.doneHead, head1, 'done records the HEAD it reported at');
-    // Squash merge: git says not-an-ancestor, and the merged PR never overrides it.
+    // Squash merge: git says not-an-ancestor; the merged PR's head sha IS HEAD -> proven.
     let c = cand();
-    assert.deepStrictEqual(c.blockers.map((b) => b.gate), ['b-merged'], JSON.stringify(c.blockers));
-    assert.equal(c.facts.merged.via, 'git:not-ancestor');
+    assert.deepStrictEqual(c.blockers.map((b) => b.gate), [], JSON.stringify(c.blockers));
+    assert.equal(c.facts.merged.via, 'pr:head');
 
     // Branch reused: new unmerged commits after the done-report.
     fs.writeFileSync(path.join(f.child, 'feat.txt'), 'v2 unmerged\n');
@@ -210,6 +211,7 @@ test('P1-B done records HEAD; squash-merged PR + reused branch with new commits 
     assert.equal(cli.run(['done'], { home: f.home, env: childEnv(f), cwd: f.child }).code, 0);
     c = cand();
     assert.deepStrictEqual(c.blockers.map((b) => b.gate), ['b-merged'], JSON.stringify(c.blockers));
+    assert.equal(c.facts.merged.via, 'git:not-ancestor', 'HEAD != the PR head');
     assert.deepStrictEqual(L.autoArchiveSweep({ home: f.home, env, now, deps, settings: { mode: 'dry-run', idleMin: 30, maxPerSweep: 3 } }).wouldArchive, []);
 
     // A plain `gate --set done` (no sha) clears doneHead: manual path, git proof only.
