@@ -6,6 +6,23 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## Unreleased
+
+### Fixes
+
+- **`shell-scan-differential.test.js` no longer misreads a timed-out/killed
+  guard spawn as ALLOW.** `spawnGuard` compared `spawnSync`'s `res.status`
+  directly against `2` (BLOCK); under load, a child killed by the 10s timeout
+  or a signal returns `status: null`, which the bare comparison counted as
+  ALLOW, producing false "SAFETY REGRESSION base=BLOCK new=ALLOW" failures.
+  `spawnGuard` now retries a null status up to 2 more times with a longer
+  (30s) timeout, and classification is a small pure function
+  (`classifyGuardResult`) that returns `'INCONCLUSIVE'` — never `'ALLOW'` or
+  `'BLOCK'` — for a still-null result after retries; the test then fails with
+  an explicit "INCONCLUSIVE (timeout/killed) — not a verdict" message instead
+  of silently misclassifying. A genuine exit-0-where-base-blocked regression
+  is unaffected — it returns a real status on the first attempt.
+
 ## 0.109.5
 
 ### Fixes

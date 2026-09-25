@@ -80,21 +80,51 @@ function isolatedHome() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'antihall-shell-scan-home-'));
 }
 
-// spawnGuard(hooksDir, hookFile, payload, env) -> exit status (2 = block, 0 = allow)
-function spawnGuard(hooksDir, hookFile, payload, extraEnv) {
+// classifyGuardResult(res) -> 'BLOCK' | 'ALLOW' | 'INCONCLUSIVE'
+//
+// spawnSync gives `status: null` when the child was killed by a timeout or a
+// signal (res.signal / res.error), NOT when it exited cleanly with code 0.
+// A bare `status === 2` comparison silently reclassified a timed-out/killed
+// child as ALLOW (status !== 2), which produced false "SAFETY REGRESSION
+// base=BLOCK new=ALLOW" failures under load. null must never be treated as
+// either verdict — it is a run that produced no evidence at all.
+function classifyGuardResult(res) {
+  if (res.status === 2) return 'BLOCK';
+  if (res.status === null) return 'INCONCLUSIVE';
+  return 'ALLOW';
+}
+
+function spawnOnce(hooksDir, hookFile, payload, extraEnv, timeoutMs) {
   const home = isolatedHome();
   try {
     const env = { PATH: process.env.PATH, HOME: home, ...(extraEnv || {}) };
-    const res = spawnSync(process.execPath, [path.join(hooksDir, hookFile)], {
+    return spawnSync(process.execPath, [path.join(hooksDir, hookFile)], {
       input: JSON.stringify(payload),
       encoding: 'utf8',
       env,
-      timeout: 10000,
+      timeout: timeoutMs,
     });
-    return res.status;
   } finally {
     try { fs.rmSync(home, { recursive: true, force: true }); } catch (_) { /* best-effort */ }
   }
+}
+
+// spawnGuard(hooksDir, hookFile, payload, env) -> 'BLOCK' | 'ALLOW' | 'INCONCLUSIVE'
+//
+// Retries a null status (timeout/signal-killed, res.signal/res.error) up to
+// 2 more times with a longer timeout before giving up. A genuine exit 0 on
+// `new` where `base` returned 2 is a real status value on the first try and
+// is returned immediately — this retry only ever fires for a run that gave
+// no verdict at all, and never masks a real regression.
+function spawnGuard(hooksDir, hookFile, payload, extraEnv) {
+  const timeouts = [10000, 30000, 30000];
+  let last = null;
+  for (const timeoutMs of timeouts) {
+    const res = spawnOnce(hooksDir, hookFile, payload, extraEnv, timeoutMs);
+    last = res;
+    if (res.status !== null) return classifyGuardResult(res);
+  }
+  return classifyGuardResult(last);
 }
 
 function cgPayload(command) {
@@ -252,10 +282,16 @@ test(`shell-scan differential corpus (base=${BASE_REV})`, (t) => {
 
   let blockedOnBaseButAllowedOnNew = 0;
   for (const c of cgCases) {
-    const baseStatus = spawnGuard(baseDir, c.guard, c.payload, c.env);
-    const newStatus = spawnGuard(NEW_HOOKS_DIR, c.guard, c.payload, c.env);
-    const baseBlocked = baseStatus === 2;
-    const newBlocked = newStatus === 2;
+    const baseClass = spawnGuard(baseDir, c.guard, c.payload, c.env);
+    const newClass = spawnGuard(NEW_HOOKS_DIR, c.guard, c.payload, c.env);
+    if (baseClass === 'INCONCLUSIVE' || newClass === 'INCONCLUSIVE') {
+      assert.fail(
+        `INCONCLUSIVE (timeout/killed) — not a verdict: ${c.guard} for ${JSON.stringify(c.cmd)} ` +
+        `(base=${baseClass}, new=${newClass})`
+      );
+    }
+    const baseBlocked = baseClass === 'BLOCK';
+    const newBlocked = newClass === 'BLOCK';
     if (baseBlocked && !newBlocked) {
       blockedOnBaseButAllowedOnNew++;
       assert.fail(`SAFETY REGRESSION: ${c.guard} base=BLOCK new=ALLOW for: ${JSON.stringify(c.cmd)}`);
@@ -280,4 +316,24 @@ test(`shell-scan differential corpus (base=${BASE_REV})`, (t) => {
     process.stderr.write('\nALLOW(base) -> BLOCK(new) flips (' + summary.flips.length + '):\n');
     for (const f of summary.flips) process.stderr.write(`  [${f.guard}] ${JSON.stringify(f.cmd)}\n`);
   }
+});
+
+// -----------------------------------------------------------------------
+// Unit test: a timed-out/signal-killed spawnSync result must classify as
+// INCONCLUSIVE, never ALLOW. This is the exact shape a real timeout/signal
+// kill produces (status: null, signal set instead) — proves the false
+// "SAFETY REGRESSION base=BLOCK new=ALLOW" root cause stays fixed.
+// -----------------------------------------------------------------------
+test('classifyGuardResult: null status (timeout/signal-killed) is INCONCLUSIVE, never ALLOW', () => {
+  const timedOut = { status: null, signal: 'SIGTERM', error: undefined };
+  assert.strictEqual(classifyGuardResult(timedOut), 'INCONCLUSIVE');
+  assert.notStrictEqual(classifyGuardResult(timedOut), 'ALLOW');
+
+  const killedNoSignal = { status: null, signal: null, error: new Error('spawnSync timeout') };
+  assert.strictEqual(classifyGuardResult(killedNoSignal), 'INCONCLUSIVE');
+  assert.notStrictEqual(classifyGuardResult(killedNoSignal), 'ALLOW');
+
+  // genuine verdicts must still classify correctly
+  assert.strictEqual(classifyGuardResult({ status: 2, signal: null }), 'BLOCK');
+  assert.strictEqual(classifyGuardResult({ status: 0, signal: null }), 'ALLOW');
 });
