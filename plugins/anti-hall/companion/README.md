@@ -17,18 +17,35 @@ is prevented by construction.
 
 ## Codex app-server-broker class
 
-Additionally reaps orphaned `app-server-broker.mjs` helper processes from the
+Additionally reaps abandoned `app-server-broker.mjs` helper processes from the
 openai-codex Claude Code plugin — a JSON-RPC broker, not an MCP-protocol server,
-so it is matched separately from the generic MCP signature above and never
-loosens it. Same failure mode: no `PR_SET_PDEATHSIG` on macOS means a dead
-session's broker reparents to init and its held `--cwd` can pin a (possibly
-archived) DevSwarm worktree submodule open. Selected only if it is (a) an exact
-`app-server-broker.mjs` script match under a literal `/codex/` path segment,
-(b) parented to init/launchd/dead-session (same invariant as above), and (c)
-older than `guards.reaperCodexBrokerMinAgeS` (default 60s; an unresolvable age
-is always skipped, never reaped). Toggle: `guards.reaperCodexBroker` (default
-on, since this script only runs at all once the reaper is opted in via
-`install-reaper.js`) / env `ANTIHALL_REAPER_CODEX_BROKER=0` to disable.
+so it is matched and gated *separately* from the generic MCP signature above
+and never loosens it.
+
+**PPID is NOT evidence for this class.** Per the plugin's own source
+(`scripts/lib/broker-lifecycle.mjs`), the broker is spawned `detached: true` +
+`child.unref()` **on purpose**, so it outlives its spawning tool call and gets
+reused across a session (`ensureBrokerSession` re-adopts a live one via a
+`broker.json` state file before ever spawning a new one). PPID 1 is the
+**normal, expected state for a live, in-use broker** — treating it as an orphan
+signal (the generic MCP invariant) would kill brokers active sessions are using.
+`broker.json` also carries no owning-session-id/pid to check for liveness, only
+the broker's own pid/endpoint — so this class instead proves abandonment two
+other ways, held to a much longer age floor since PPID gives no signal here:
+
+A broker is reaped only if its script/path signature matches, it is older than
+`guards.reaperCodexBrokerMinAgeS` (default **1800s / 30min**), **and** at least
+one of:
+- (a) its `--cwd` directory no longer exists (the worktree was
+  removed/archived); or
+- (b) no live `claude`/`codex` process has a cwd at or under that `--cwd`
+  (checked via `/proc/<pid>/cwd` on Linux, `lsof -a -d cwd -p <pid>` on
+  macOS/BSD).
+
+Anything unresolvable (the `--cwd` can't be parsed, an owner-process cwd
+lookup fails) is **skipped, never reaped**. Toggle: `guards.reaperCodexBroker`
+(default on, since this script only runs at all once the reaper is opted in
+via `install-reaper.js`) / env `ANTIHALL_REAPER_CODEX_BROKER=0` to disable.
 
 ## Limitations
 

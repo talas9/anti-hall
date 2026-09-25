@@ -190,12 +190,34 @@ function findOrphans(procList, extraRe, excludeRe) {
 // Codex's "app-server" backend, unix-socket based. It is deliberately excluded from
 // matchesMcp() above, which is intentionally "generic, AGNOSTIC ... match the protocol,
 // not any user's servers" (see file header). This class exists SEPARATELY because the
-// FAILURE MODE is identical to what this whole tool targets: a per-session helper with no
-// PR_SET_PDEATHSIG on macOS, reparented to init when its Claude/Codex session dies, whose
-// open cwd then pins a (possibly archived) DevSwarm worktree submodule open and blocks
-// cleanup — exactly the reaper's own documented purpose (file header: "leaked when their
-// spawner (a Claude / codex / npm / node session) exited"). Matched narrowly and kept in
-// its own function so widening THIS class can never loosen the generic MCP matcher above.
+// FAILURE MODE is identical to what this whole tool targets: a per-session helper whose
+// open cwd can pin a (possibly archived) DevSwarm worktree submodule open and blocks
+// cleanup once its owning session is gone.
+//
+// *** PPID IS NOT EVIDENCE FOR THIS CLASS ***. Read from the plugin's own source
+// (~/.claude/plugins/cache/openai-codex/codex/*/scripts/lib/broker-lifecycle.mjs:59-70):
+// the broker is spawned with `detached: true` + `child.unref()` ON PURPOSE, precisely so
+// it OUTLIVES the spawning tool call and is reused across a session (`ensureBrokerSession`
+// re-adopts it via a broker.json state file + `waitForBrokerEndpoint`, only respawning if
+// the socket is dead). That means PPID 1 is the NORMAL, EXPECTED state for a live, in-use
+// broker — not proof of death. (session-lifecycle-hook.mjs's SessionEnd handler shuts the
+// broker down cleanly by pid/endpoint on a clean exit; a crash skips that, same as
+// hooks/session-end-mcp-reaper.js's own documented MCP-leak precedent.) broker.json also
+// carries no owning-session-id or owning-pid field to check for liveness — only the
+// broker's OWN pid/endpoint/sessionDir — so "that session/pid is dead" cannot be proven
+// from the state file, and the reaper falls back to the two proofs below instead.
+//
+// A broker is reaped ONLY IF its script/path signature matches (below) AND it is OLD
+// ENOUGH (guards.reaperCodexBrokerMinAgeS, default 1800s / 30min — deliberately much
+// higher than the generic MCP class since PPID gives zero signal here) AND AT LEAST ONE
+// of these two INDEPENDENT proofs that its owner is gone holds:
+//   (a) its --cwd directory no longer exists (the worktree was removed/archived); or
+//   (b) no live `claude`/`codex` process has a cwd at-or-under that --cwd (checked via
+//       /proc/<pid>/cwd on Linux, `lsof -a -d cwd -p <pid> -Fn` on macOS/BSD — mirrors
+//       companion/lib/target-session.js's own defaultRunners().cwdOf).
+// Anything unresolvable (cwd can't be parsed from the cmdline, the owner-process cwd
+// lookup itself fails) -> SKIP, never reaped. This is a proof-of-abandonment gate, not a
+// parent-liveness gate — matchesMcp's own invariant is completely untouched.
 //
 // Exact script-name match (not a substring anywhere in a log path/grep arg), AND the cmd
 // must carry a literal `/codex/` path segment before it (the plugin's own install path,
@@ -213,53 +235,138 @@ function matchesCodexBroker(cmd) {
   return CODEX_BROKER_PATH_RE.test(cmd);
 }
 
-// Same default as hooks/session-end-mcp-reaper.js's own DEFAULT_MIN_AGE_S — reused as
-// precedent for "how old before an orphan helper is safe to reap", not re-derived.
-const DEFAULT_CODEX_BROKER_MIN_AGE_S = 60;
+// extractBrokerCwd(cmd) -> the broker's own `--cwd <path>` argument, or null if it can't
+// be parsed (spawnBrokerProcess in broker-lifecycle.mjs passes it as a single argv token,
+// never shell-quoted, so a path containing whitespace is a documented unresolvable case).
+const CODEX_BROKER_CWD_RE = /(?:^|\s)--cwd\s+(\S+)/;
+function extractBrokerCwd(cmd) {
+  if (!cmd) return null;
+  const m = String(cmd).match(CODEX_BROKER_CWD_RE);
+  return m ? m[1] : null;
+}
+
+// A live "owner" process: the `claude` or `codex` CLI itself, matched the same
+// boundary-anchored way companion/lib/target-session.js's own CLAUDE_RE does (a real
+// binary invocation, e.g. `/opt/homebrew/bin/claude ...` — NOT a path that merely
+// contains "claude"/"codex" as a substring, e.g. `.../.claude/plugins/.../codex/1.0.6/...`
+// does not match: the char immediately before "claude" there is `.`, and the char right
+// after "codex" there is `/`, so neither boundary condition is satisfied).
+const OWNER_PROC_RE = /(^|[\s/\\])(claude|codex)(\s|$)/i;
+
+// Default 30 minutes — deliberately much more conservative than the generic MCP class'
+// DEFAULT floor (0): PPID carries no signal for this class (see block comment above), so
+// age is one of the few remaining safety margins against a fresh false "no owner found".
+const DEFAULT_CODEX_BROKER_MIN_AGE_S = 1800;
+
+// hasLiveOwnerAtCwd(brokerCwd, procs, cwdOfFn) -> bool. True if ANY live claude/codex
+// process's cwd is the broker's --cwd or a descendant of it, OR if a candidate owner
+// process exists but its cwd could not be resolved (fail-soft: an unresolved candidate is
+// treated as "might still own this broker", never as proof of absence).
+function hasLiveOwnerAtCwd(brokerCwd, procs, cwdOfFn) {
+  const target = path.resolve(brokerCwd);
+  let unresolvedCandidate = false;
+  for (const p of procs) {
+    if (!OWNER_PROC_RE.test(p.cmd)) continue;
+    let cwd;
+    try {
+      cwd = cwdOfFn(p.pid);
+    } catch (_e) {
+      cwd = null;
+    }
+    if (cwd == null) {
+      unresolvedCandidate = true;
+      continue;
+    }
+    const resolved = path.resolve(cwd);
+    if (resolved === target || resolved.startsWith(target + path.sep)) return true;
+  }
+  return unresolvedCandidate; // can't rule ownership out -> fail-soft "has an owner"
+}
 
 // findCodexBrokerOrphans(procList, opts) -> orphans of the codex-broker class only.
-// opts: { enabled, excludeRe, minAgeS, getAgesForPids(pids) -> Map<pid, ageSeconds> }.
-// Applies the SAME parent invariant as findOrphans (ppid===1, or a reparented-to-reaper
-// parent that IS present in the snapshot; an absent non-pid-1 parent is UNSURE -> skip),
-// PLUS an age floor: a pid with an UNKNOWN age (getAgesForPids didn't resolve it) is
-// treated as "not old enough" and skipped — fail-soft toward never reaping.
+// opts: { enabled, excludeRe, minAgeS, getAgesForPids(pids) -> Map<pid, ageSeconds>,
+//         cwdOf(pid) -> string|null, existsSync(path) -> bool }.
+// A candidate is reaped only if its age is known and >= minAgeS, AND EITHER its --cwd is
+// gone OR no live claude/codex process owns that cwd. Any unresolvable step -> skip.
 function findCodexBrokerOrphans(procList, opts) {
   const o = opts || {};
   if (!o.enabled) return [];
   const list = Array.isArray(procList) ? procList : [];
-  const byPid = new Map();
-  for (const p of list) byPid.set(p.pid, p);
+  const existsSync = typeof o.existsSync === 'function' ? o.existsSync : fs.existsSync;
 
   const candidates = [];
   for (const p of list) {
     if (!matchesCodexBroker(p.cmd)) continue;
     if (o.excludeRe && o.excludeRe.test(p.cmd)) continue; // user opt-out
-    if (Number(p.ppid) === 1) {
-      candidates.push(p);
+    const brokerCwd = extractBrokerCwd(p.cmd);
+    if (!brokerCwd) continue; // can't parse --cwd -> unresolvable, skip
+    candidates.push({ p, brokerCwd });
+  }
+  if (!candidates.length) return [];
+
+  // Age floor first (cheap) — an unknown or too-young age skips before any cwd/lsof work.
+  const minAgeS = Number.isFinite(o.minAgeS) ? o.minAgeS : DEFAULT_CODEX_BROKER_MIN_AGE_S;
+  let oldEnough = candidates;
+  if (minAgeS > 0) {
+    if (typeof o.getAgesForPids !== 'function') return []; // can't verify age -> skip all
+    let ages;
+    try {
+      ages = o.getAgesForPids(candidates.map((c) => c.p.pid));
+    } catch (_e) {
+      return []; // age lookup failed -> skip all, fail-soft
+    }
+    if (!(ages instanceof Map)) return [];
+    oldEnough = candidates.filter((c) => {
+      const age = ages.get(c.p.pid);
+      return typeof age === 'number' && age >= minAgeS;
+    });
+  }
+  if (!oldEnough.length) return [];
+
+  const orphans = [];
+  for (const c of oldEnough) {
+    let cwdGone = false;
+    try {
+      cwdGone = !existsSync(c.brokerCwd);
+    } catch (_e) {
+      cwdGone = false; // fail-soft: an existsSync error never proves the cwd is gone
+    }
+    if (cwdGone) {
+      orphans.push(c.p);
       continue;
     }
-    const parent = byPid.get(p.ppid);
-    if (!parent) continue; // unsure -> skip
-    if (isReaperParent(p.ppid, parent.cmd)) candidates.push(p);
+
+    if (typeof o.cwdOf !== 'function') continue; // can't check owner presence -> skip
+    let hasOwner;
+    try {
+      hasOwner = hasLiveOwnerAtCwd(c.brokerCwd, list, o.cwdOf);
+    } catch (_e) {
+      hasOwner = true; // fail-soft: assume an owner is present -> skip
+    }
+    if (!hasOwner) orphans.push(c.p);
   }
-  if (!candidates.length) return candidates;
+  return orphans;
+}
 
-  const minAgeS = Number.isFinite(o.minAgeS) ? o.minAgeS : DEFAULT_CODEX_BROKER_MIN_AGE_S;
-  if (minAgeS <= 0) return candidates; // no age floor configured
-  if (typeof o.getAgesForPids !== 'function') return []; // can't verify age -> skip all
-
-  let ages;
-  try {
-    ages = o.getAgesForPids(candidates.map((c) => c.pid));
-  } catch (_e) {
-    return []; // age lookup failed -> skip all, fail-soft
+// defaultCwdOf(pid) -> the live cwd of a pid, or null if it can't be determined. Mirrors
+// companion/lib/target-session.js's own defaultRunners().cwdOf (Linux /proc, macOS lsof).
+function defaultCwdOf(pid) {
+  if (process.platform === 'linux') {
+    try {
+      return fs.readlinkSync('/proc/' + pid + '/cwd');
+    } catch (_e) {
+      return null;
+    }
   }
-  if (!(ages instanceof Map)) return [];
-
-  return candidates.filter((c) => {
-    const age = ages.get(c.pid);
-    return typeof age === 'number' && age >= minAgeS;
+  const r = spawnSync('lsof', ['-p', String(pid), '-a', '-d', 'cwd', '-Fn'], {
+    encoding: 'utf8',
+    timeout: 4000,
   });
+  if (r.error || r.status !== 0 || r.signal) return null;
+  const line = String(r.stdout || '')
+    .split('\n')
+    .find((l) => l.startsWith('n'));
+  return line ? line.slice(1) : null;
 }
 
 module.exports = {
@@ -271,7 +378,10 @@ module.exports = {
   MCP_RE,
   REAPER_CMD_RE,
   matchesCodexBroker,
+  extractBrokerCwd,
+  hasLiveOwnerAtCwd,
   findCodexBrokerOrphans,
+  defaultCwdOf,
   DEFAULT_CODEX_BROKER_MIN_AGE_S,
 };
 
@@ -371,6 +481,7 @@ function main() {
         excludeRe,
         minAgeS: reaperCodexBrokerMinAgeS,
         getAgesForPids,
+        cwdOf: defaultCwdOf,
       });
       return mcpOrphans.concat(codexBrokerOrphans);
     }
