@@ -123,6 +123,65 @@ test('defaultMonitorRunAsync: success, non-zero exit (spawnSync parity: still ok
   } finally { rm(dir); }
 });
 
+// P2 fix: stdio used to be ['ignore','pipe','ignore'] — stderr was silently
+// discarded, so a non-zero exit (or an external signal) carried no diagnostic
+// text at all. stderr is now captured into a bounded (last 2KB) tail and
+// folded into the resolved `error` field — WITHOUT changing the ok:true
+// spawnSync-parity contract for a plain non-zero exit (still not itself a
+// failure — only the field case exit 3 in the fixture above, and the new
+// stderr-carrying case below).
+test('defaultMonitorRunAsync: stderr from a non-zero exit is captured and surfaced in `error` (ok stays true — spawnSync parity unchanged)', { skip: !POSIX }, async () => {
+  const dir = tmpHome();
+  try {
+    const bin = fakeHivecontrol(dir, 'echo "[]"\n>&2 echo "hivecontrol: workspace lock busy, retry later"\nexit 1');
+    const res = await ingest.defaultMonitorRunAsync({ hivecontrol: bin, hardTimeoutMs: 5000 });
+    assert.equal(res.ok, true, 'a plain non-zero exit (no spawn error) still stays ok:true — unchanged contract');
+    assert.equal(res.exitCode, 1);
+    assert.equal(res.raw.trim(), '[]', 'stdout (the destructive queue read) is unaffected by stderr capture');
+    assert.match(res.error, /hivecontrol: workspace lock busy, retry later/, 'the stderr text is surfaced in the resolved error, not silently dropped');
+    assert.match(res.error, /exited 1/, 'the error also names the exit code');
+  } finally { rm(dir); }
+});
+
+test('defaultMonitorRunAsync: stderr tail is BOUNDED to the last ~2KB, not accumulated without limit', { skip: !POSIX }, async () => {
+  const dir = tmpHome();
+  try {
+    // Write ~6KB of stderr (well past the 2KB tail bound) followed by a
+    // distinctive marker at the very end, then exit non-zero.
+    const bin = fakeHivecontrol(dir,
+      'i=0\nwhile [ $i -lt 6000 ]; do printf "x" >&2; i=$((i+1)); done\n>&2 printf "END-MARKER"\nexit 1');
+    const res = await ingest.defaultMonitorRunAsync({ hivecontrol: bin, hardTimeoutMs: 5000 });
+    assert.equal(res.ok, true);
+    assert.match(res.error, /END-MARKER/, 'the TAIL (most recent bytes) is kept');
+    // The captured segment inside the error message is bounded near the 2KB
+    // cap, not the full ~6KB written — proves truncation actually happened.
+    const stderrSegment = res.error.split('stderr: ')[1] || '';
+    assert.ok(stderrSegment.length <= 2100, 'stderr tail stays bounded near the 2KB cap, got ' + stderrSegment.length + ' bytes');
+  } finally { rm(dir); }
+});
+
+test('defaultMonitorRunAsync: an external SIGKILL (not our own timeout) surfaces the signal + any stderr, still ok:true', { skip: !POSIX }, async () => {
+  const dir = tmpHome();
+  try {
+    // The fake binary writes ITS OWN pid to a file before sleeping, so the
+    // test can kill it directly (process.kill on the real child pid) — an
+    // external kill, never routed through this module's own hardTimeoutMs
+    // ladder (60s >> the ~300ms this test waits before killing).
+    const pidFile = path.join(dir, 'child.pid');
+    const bin = fakeHivecontrol(dir, 'echo $$ > ' + pidFile + '\n>&2 echo "about to be killed externally"\nsleep 30');
+    const p = ingest.defaultMonitorRunAsync({ hivecontrol: bin, hardTimeoutMs: 60000 });
+    assert.ok(await waitFor(() => fs.existsSync(pidFile) && fs.readFileSync(pidFile, 'utf8').trim() !== '', 5000),
+      'fake binary wrote its pid in time');
+    const childPid = Number(fs.readFileSync(pidFile, 'utf8').trim());
+    assert.ok(Number.isFinite(childPid) && childPid > 0);
+    process.kill(childPid, 'SIGKILL');
+    const res = await p;
+    assert.equal(res.ok, true, 'an external signal death (no spawn error) stays ok:true — spawnSync parity');
+    assert.equal(res.signal, 'SIGKILL');
+    assert.match(res.error, /killed by signal SIGKILL/);
+  } finally { rm(dir); }
+});
+
 // ---------------------------------------------------------------------------
 // runIngestLoopAsync — the daemon loop
 // ---------------------------------------------------------------------------

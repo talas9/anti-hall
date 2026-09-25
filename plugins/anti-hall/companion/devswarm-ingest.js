@@ -1141,6 +1141,14 @@ function defaultMonitorRun(opts) {
 // handlers so a daemon exit never orphans a hivecontrol process.
 const inflightMonitorChildren = new Set();
 
+// MONITOR_STDERR_TAIL_BYTES — bounded stderr capture for defaultMonitorRunAsync
+// (P2 fix): stderr used to be `stdio: [..., 'ignore']` — silently discarded, so
+// a non-zero exit or an external signal carried NO diagnostic text at all. Only
+// the last N bytes are kept (a truncating append, not an unbounded buffer) —
+// enough for a real error message/stack tail without letting a chatty/looping
+// hivecontrol child grow this daemon's own memory.
+const MONITOR_STDERR_TAIL_BYTES = 2048;
+
 // defaultMonitorRunAsync(opts) -> Promise<{ ok, raw, error, code, exitCode, signal }>.
 // The daemon hot-path runner: a NON-BLOCKING child_process.spawn of ONE
 // `hivecontrol workspace monitor` call. Contract identical to defaultMonitorRun
@@ -1159,6 +1167,7 @@ function defaultMonitorRunAsync(opts) {
   const graceMs = Number.isFinite(o.killGraceMs) ? o.killGraceMs : MONITOR_KILL_GRACE_MS;
   return new Promise((resolve) => {
     let out = '';
+    let errTail = ''; // bounded — see MONITOR_STDERR_TAIL_BYTES
     // ONE stable message per timeout, whichever signal ended the child: the
     // breaker keys consecutive-failure runs on the message, so a varying text
     // would reset the count (and the backoff) every attempt.
@@ -1175,7 +1184,7 @@ function defaultMonitorRunAsync(opts) {
       resolve(Object.assign({ raw: out }, res));
     }
     try {
-      child = spawn(bin, args, { stdio: ['ignore', 'pipe', 'ignore'] });
+      child = spawn(bin, args, { stdio: ['ignore', 'pipe', 'pipe'] });
     } catch (e) {
       finish({ ok: false, error: String(e && e.message || e), code: (e && e.code) ? String(e.code) : null });
       return;
@@ -1185,15 +1194,40 @@ function defaultMonitorRunAsync(opts) {
       child.stdout.setEncoding('utf8');
       child.stdout.on('data', (d) => { out += d; });
     }
+    // Bounded tail-keep (not an unbounded accumulate-then-slice): appending
+    // then slicing to the last MONITOR_STDERR_TAIL_BYTES on EVERY chunk keeps
+    // memory bounded even against a hivecontrol child that writes stderr
+    // continuously — this is diagnostic text only (never ingested, unlike
+    // stdout, which is the destructive native-queue read).
+    if (child.stderr) {
+      child.stderr.setEncoding('utf8');
+      child.stderr.on('data', (d) => {
+        errTail = (errTail + d).slice(-MONITOR_STDERR_TAIL_BYTES);
+      });
+    }
     child.on('error', (e) => {
       finish({ ok: false, error: 'spawn ' + bin + ' ' + (e && e.code ? e.code : String(e && e.message || e)), code: (e && e.code) ? String(e.code) : null });
     });
-    // 'close' = exited AND stdout drained (every byte captured). A grandchild
-    // holding the pipe can delay 'close' — the post-kill fallback below
-    // resolves on 'exit' + grace instead of waiting forever.
+    // 'close' = exited AND stdout/stderr drained (every byte captured). A
+    // grandchild holding a pipe can delay 'close' — the post-kill fallback
+    // below resolves on 'exit' + grace instead of waiting forever.
     child.on('close', (exitCode, signal) => {
       if (timedOut) {
         finish({ ok: false, error: timeoutError, code: 'ETIMEDOUT', exitCode, signal });
+      } else if (exitCode !== 0 || signal) {
+        // No spawn-level 'error' fired (that branch already settled and
+        // returned above) — a plain non-zero exit or an external signal stays
+        // ok:true, matching defaultMonitorRun's own spawnSync-parity contract
+        // (a non-zero exit alone is not treated as a monitor failure). What
+        // was silently lost before this fix is WHY: stderr is now captured
+        // and its tail surfaced in `error` so it is never just discarded.
+        const tail = errTail.trim();
+        finish({
+          ok: true,
+          error: 'monitor ' + bin + (signal ? ' killed by signal ' + signal : ' exited ' + exitCode)
+            + (tail ? ' — stderr: ' + tail : ' (no stderr output)'),
+          code: null, exitCode, signal,
+        });
       } else {
         finish({ ok: true, error: null, code: null, exitCode, signal });
       }
