@@ -102,6 +102,7 @@ and getting a yes); re-arming a guard never does. /config, env and a `settings.j
 | Stop | claim-ledger.js | Tier 2.5, ledger-only (never blocks): records confident claims with no supporting evidence in the turn. | ✓ | guards.claimLedger |
 | Stop | speculation-judge.js | Tier 3, opt-in: LLM judge for confident unverified assertions. | ✓ | `ANTIHALL_SEMANTIC_JUDGE=1` |
 | Stop | codex-nudge.js | Once per session: suggests an independent Codex review of substantial code. | — | `ANTIHALL_CODEX_NUDGE=off` |
+| Stop | silent-agent-nudge.js | Scans the transcript for a background Agent launch with no terminal notification and a stale/missing `output_file` (plus the `~/.anti-hall/agents` heartbeat as an extra signal); nudges once per stale snapshot past the threshold (default 20 min); never kills anything. | ✓ | guards.silentAgentNudge; guards.silentAgentNudgeMin (`ANTIHALL_SILENT_AGENT_NUDGE=off`) |
 | Stop | auto-handover-pause-nag.js | Delivers the handover directive once at a Stop if a long turn never reached a new prompt; afterwards, at a quiet pause, reminds at most once per 15 min. | ✓ | autoHandover.nag |
 | Stop | devswarm-parent-gate.js | DevSwarm Primary: blocks ending the turn with child unread/stale/escalated or own unread (capped). | ✓ | devswarm.parentGate |
 | Stop | devswarm-child-gate.js | DevSwarm child: must heartbeat/self-report before idling (capped). | ✓ | devswarm.childGate |

@@ -305,6 +305,24 @@ Delete it on clean exit. Do not write to os.tmpdir() — use the home-dir path
 (`~/.anti-hall/agents/`) so it is consistent across hook runners, the
 statusline, and the orchestrator.
 
+### Mechanical reminder (silent-agent-nudge.js)
+
+Polling is the orchestrator's own responsibility (below) — nothing forces it.
+As a backstop, `hooks/silent-agent-nudge.js` (Stop, on by default) watches for
+this mechanically, using a signal the harness ALWAYS produces rather than
+relying on the opt-in heartbeat file: it scans a bounded tail of the main
+transcript for a background Agent launch (`"Async agent launched
+successfully"`, carrying `agentId:`/`output_file:`) with no later terminal
+`<task-notification>` (`completed`/`failed`/`stopped`), and treats it as
+silent once its `output_file`'s mtime (or launch time, if the file never
+appeared — that counts as dead too) is older than `guards.silentAgentNudgeMin`
+(default 20 min). The `~/.anti-hall/agents/*.json` heartbeat convention above
+is checked too, as an additional signal for agents that self-report it. At
+most once per stale snapshot, it nudges with the agent's description/id and
+how long it has been silent. It NEVER TaskStops or kills anything itself —
+advisory text only, pointing back at the polling pattern below. Off-switch:
+`ANTIHALL_SILENT_AGENT_NUDGE=off`.
+
 ### Detecting stuck agents (agent-watchdog.js)
 
 The orchestrator polls `hooks/agent-watchdog.js` on a scheduled interval

@@ -99,6 +99,8 @@ const SECTIONS = [
       { key: 'taskGuard', type: 'boolean', default: true, pluginOption: 'guards_task_guard', description: 'task-guard (Stop): block stopping while tracked tasks are still open.' },
       { key: 'tasklistGuard', type: 'boolean', default: true, pluginOption: 'guards_tasklist_guard', description: 'tasklist-guard (Stop): require a task list / progress file for multi-step work.' },
       { key: 'scanThrottle', type: 'boolean', default: true, env: 'ANTI_HALL_SCAN_THROTTLE', pluginOption: 'guards_scan_throttle', description: 'scan-throttle (PreToolUse Bash): run heavy repo-wide scans at background priority (nice/taskpolicy).' },
+      { key: 'silentAgentNudge', type: 'boolean', default: true, env: 'ANTIHALL_SILENT_AGENT_NUDGE', pluginOption: 'guards_silent_agent_nudge', description: 'silent-agent-nudge (Stop): nudge once, advisory-only, when a background Agent launch in the transcript has no terminal notification and a stale/missing output_file (plus the ~/.anti-hall/agents/<id>.json heartbeat as an extra signal), past silentAgentNudgeMin. Never kills anything. [verified: hooks/silent-agent-nudge.js — default on, =off disables]' },
+      { key: 'silentAgentNudgeMin', type: 'number', min: 1, default: 20, env: 'ANTIHALL_SILENT_AGENT_NUDGE_MIN', pluginOption: 'guards_silent_agent_nudge_min', advanced: true, description: 'Minutes of silence (no terminal task-notification + stale/missing output_file, or a stale heartbeat) before silent-agent-nudge fires. [verified: hooks/silent-agent-nudge.js DEFAULT_MIN = 20, mirrors agent-watchdog.js]' },
     ],
   },
   {

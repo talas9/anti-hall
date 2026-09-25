@@ -49,11 +49,12 @@ debates reference the living docs for evidence; the *current* state and the
 ## 1. Current plugin ground truth
 
 > [UPDATE 2026-09-24, v0.108.0] Re-verified against the working tree on **2026-09-24**:
-> `plugin.json` version is `0.108.0`. Hooks: **61** `.js` files under
-> `plugins/anti-hall/hooks/` (incl. shared library modules; 50 scripts registered in
-> `hooks.json`, 34 of them also in `codex/hooks/hooks.json`). New hooks this release:
+> `plugin.json` version is `0.108.0`. Hooks: **62** `.js` files under
+> `plugins/anti-hall/hooks/` (incl. shared library modules; 51 scripts registered in
+> `hooks.json`, 35 of them also in `codex/hooks/hooks.json`). New hooks this release:
 > `auto-handover.js` (UserPromptSubmit), `auto-handover-pause-nag.js` (Stop),
-> `repair-on-reload.js` (SessionStart + UserPromptSubmit). Claude skills: **18** directories under
+> `repair-on-reload.js` (SessionStart + UserPromptSubmit); unreleased on top of that
+> (post-0.108.5): `silent-agent-nudge.js` (Stop). Claude skills: **18** directories under
 > `plugins/anti-hall/skills/` (+ `MODEL-POLICY.md`, not itself a skill; new: `settings`); Codex
 > skills: **21** directories under `plugins/anti-hall/codex/skills/` (new: `anti-hall-settings`).
 > `PostToolUse` wired: 3 Bash-matcher handlers (`output-verify-guard.js`,

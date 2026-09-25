@@ -110,6 +110,7 @@ const ANTI_HALL_HOOKS = {
     group(null, ['devswarm-parent-gate.js'], 30),
     group(null, ['devswarm-child-gate.js'], 30),
     group(null, ['auto-handover-pause-nag.js'], 30),
+    group(null, ['silent-agent-nudge.js'], 30),
   ],
   PreCompact: [
     group(null, ['precompact-snapshot.js'], 10),

@@ -169,6 +169,11 @@
         "hooks": [
           { "type": "command", "command": "node \"${PLUGIN_ROOT}/hooks/auto-handover-pause-nag.js\"", "timeout": 30 }
         ]
+      },
+      {
+        "hooks": [
+          { "type": "command", "command": "node \"${PLUGIN_ROOT}/hooks/silent-agent-nudge.js\"", "timeout": 30 }
+        ]
       }
     ],
     "PreCompact": [
