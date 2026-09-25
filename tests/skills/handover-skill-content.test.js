@@ -33,4 +33,26 @@ for (const [port, file] of Object.entries(SKILLS)) {
     assert.match(body, /\*\*receiver read-back\*\*/);
     assert.match(body, /- \[ \] read-back to the user: goal, next action, active session rules/);
   });
+
+  test(`${port} handover skill: Trigger line required in the contract AND the skeleton`, () => {
+    assert.match(body, /^1a\. \*\*Trigger\*\*/m);
+    assert.match(body, /auto-threshold.*user-request.*restart-pending.*task-boundary/s);
+    assert.match(body, /^Trigger: <auto-threshold\|user-request\|restart-pending\|task-boundary> · context: <pct%\|unknown>$/m);
+    // Source pointer: the statusline or the auto-handover latch file.
+    assert.match(body, /~\/\.anti-hall\/auto-handover\/<tag>\.json/);
+    assert.match(body, /firedPct/);
+  });
+
+  test(`${port} handover skill: terminal declaration is trigger-aware, never an unconditional "safe" claim`, () => {
+    assert.match(body, /\*\*Terminal declaration is trigger-aware\.\*\*/);
+    // Decisive line only for auto-threshold / explicit compact-clear request.
+    assert.match(body, /HANDOVER COMPLETE — GOOD POINT/);
+    // Proactive, non-decisive line for restart-pending / task-boundary below threshold.
+    assert.match(body, /📝 \*\*Handover saved\*\* \(proactive,\s+context <pct>%\): no need to (?:compact|reset) now/);
+    // The old unconditional unbolded "safe" declaration syntax
+    // (`✅ **X** ...` immediately after "Once met, the final message is:")
+    // must be gone — the field-incident note may still quote the retired
+    // wording for context, so check the OLD declaration shape, not the words.
+    assert.doesNotMatch(body, /Once met, the final message is: `✅/);
+  });
 }

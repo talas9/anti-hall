@@ -103,6 +103,20 @@ Fixed section order, every time (SBAR-derived, docs/KB-session-handover.md's
 consolidated schema):
 
 1. **Situation** — 2-3 lines: what this session was doing.
+1a. **Trigger** — one line, right under Situation: why this handover is being
+   written, one of `auto-threshold` / `user-request` / `restart-pending` /
+   `task-boundary`, plus the current context % if known. Source the % from the
+   statusline (if shown), or from `~/.anti-hall/auto-handover/<tag>.json`
+   (`hooks/lib/auto-handover-state.js`'s per-session latch — `firedPct` is the
+   % it crossed the threshold at; `<tag>` is the session id, sanitized, or
+   `sha1(transcript_path).slice(0,16)`, same scheme as "Session id" below).
+   Use `auto-threshold` ONLY when that file's `fired` is `true` for this
+   session, or the auto-handover directive text said so — not just because
+   context "feels high". `user-request` = the user asked for a handover, or to
+   /compact/clear. `restart-pending` = a restart/new-session was mentioned but
+   the threshold hasn't fired. `task-boundary` = proactive, natural stopping
+   point, nothing above forced it. This line drives the Terminal declaration
+   below — get it right.
 2. **Goal + definition of done** — one sentence each.
 2a. **Session rules (verbatim)** — every instruction the USER issued for this
    job (scope limits, "don't X until Y", ordering/serial-only rules, approval
@@ -157,6 +171,8 @@ single worst format per the KB's own tool survey).
 
 ## Situation
 <2-3 lines>
+
+Trigger: <auto-threshold|user-request|restart-pending|task-boundary> · context: <pct%|unknown>
 
 ## Next action
 <one imperative, executable step>
@@ -326,15 +342,34 @@ finish/park the current micro-task, enumerate every running background item
 stop it, or record it in `HANDOVER.md`'s Open items as STILL RUNNING with its
 id and re-attach instructions. While unmet, say WAIT, not done: `⏳ **NOT SAFE
 to compact yet** — waiting on: <named items>. I'll tell you the moment it's
-safe.` Once met, the final message is: `✅ **HANDOVER COMPLETE — SAFE TO
-COMPACT OR CLEAR NOW**` + `<saved paths list>` + `<numbered instructions:
-/compact or /clear; the resume hook guides the fresh session automatically>`.
+safe.`
 
-**Terminal declaration.** The ✅ SAFE line is the LAST act of the turn — work
-after it makes the handover STALE; refresh it (same seq, or seq+1) and
-re-declare before claiming safe again. `tasklist-guard.js` backs this up
-mechanically: file-changing work after the newest `HANDOVER*.md`'s mtime gets
-a capped "handover is STALE" advisory on its Stop output.
+**Terminal declaration is trigger-aware.** Once the quiesce gate is met, the
+final message depends on the `Trigger:` line you recorded above:
+
+- `auto-threshold`, OR the user explicitly asked to /compact or /clear:
+  `🟢 **HANDOVER COMPLETE — GOOD POINT TO /compact NOW**` (swap in `/clear`
+  instead of `/compact` when the task itself is done) + `<saved paths list>` +
+  `<numbered instructions: /compact or /clear; the resume hook guides the
+  fresh session automatically>`.
+- Any other trigger (`restart-pending`, `task-boundary`) while context is
+  still below the auto-handover threshold: `📝 **Handover saved** (proactive,
+  context <pct>%): no need to compact now; continue working, or /compact /
+  restart when you choose.` + `<saved paths list>`.
+- Never say "safe to compact" (the 🟢 line) unless compaction/clearing was
+  actually requested or the threshold fired — that line reads as a stop-now
+  signal, and a proactive save below threshold is not one (field incident: a
+  session below the 85% auto threshold invoked this skill because a restart
+  was mentioned, and the old unconditional "✅ HANDOVER COMPLETE — SAFE TO
+  COMPACT OR CLEAR NOW" wording was read as a premature signal to stop).
+
+The declared line is the LAST act of the turn either way; work after it makes
+the handover STALE — refresh it (same seq, or seq+1) and re-declare before
+claiming safe/saved again. `tasklist-guard.js` backs this up mechanically:
+file-changing work after the newest `HANDOVER*.md`'s mtime gets a capped
+"handover is STALE" advisory on its Stop output (staleness detection is by
+mtime + section content, not by matching either declaration string, so it
+works the same for both).
 
 ## Next-session usage
 
