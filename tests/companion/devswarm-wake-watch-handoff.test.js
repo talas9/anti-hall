@@ -237,3 +237,97 @@ test('main(): own version already the newest known -> no handoff, no STALE BUILD
     assert.strictEqual(res.exited, false, 'must still be running its own build, unaffected');
   } finally { rm(home); }
 });
+
+// ---------------------------------------------------------------------------
+// 0.109.5 review P1: after a handoff the parent (a) never persists its stale
+// seen-state, (b) exits 128+signo when the child dies by a signal (without
+// re-raising into its own handlers), and (c) forwards SIGTERM/SIGINT to the
+// child so the child is never orphaned holding the lock.
+// ---------------------------------------------------------------------------
+
+const { seenPath, handoffExitCode } = require(MODULE_PATH);
+
+function handoffEnv(home, id, extra) {
+  return Object.assign({
+    PATH: process.env.PATH,
+    HOME: home,
+    USERPROFILE: home,
+    DEVSWARM_REPO_ID: 'r1',
+    DEVSWARM_SOURCE_BRANCH: 'main',
+    DEVSWARM_BUILDER_ID: id,
+    ANTIHALL_DEVSWARM_WAKE_WATCH_POLL_MS: '250',
+  }, extra || {});
+}
+
+// runToExit — spawn, collect stdout, resolve on exit with {code, signal}.
+function runToExit(args, spawnOpts, hardCapMs, onStdout) {
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, args, spawnOpts);
+    let stdout = '';
+    let done = false;
+    child.stdout.setEncoding('utf8');
+    child.stdout.on('data', (c) => { stdout += c; if (onStdout) onStdout(stdout, child); });
+    const timer = setTimeout(() => { if (!done) { done = true; try { child.kill('SIGKILL'); } catch (_) {} resolve({ code: null, signal: 'TIMEOUT', stdout }); } }, hardCapMs || 8000);
+    child.on('exit', (code, signal) => { if (done) return; done = true; clearTimeout(timer); resolve({ code, signal, stdout }); });
+  });
+}
+
+function isAlive(pid) {
+  try { process.kill(pid, 0); return true; } catch (_) { return false; }
+}
+
+test('handoffExitCode: plain code passes through; signal -> 128+signo', () => {
+  assert.strictEqual(handoffExitCode(3, null), 3);
+  assert.strictEqual(handoffExitCode(null, null), 0);
+  assert.strictEqual(handoffExitCode(null, 'SIGTERM'), 128 + os.constants.signals.SIGTERM);
+  assert.strictEqual(handoffExitCode(null, 'SIGINT'), 128 + os.constants.signals.SIGINT);
+});
+
+test('handoff: the parent NEVER writes its stale seen-state at exit (skipSave)', async () => {
+  const home = tmpHome();
+  try {
+    const id = 'handoff-skipsave-1';
+    const seen = seenPath(home, id);
+    layoutPlugins(home, {
+      cacheVersions: ['9.999.0'], marketplaceVersion: '9.999.0',
+      cacheContent: 'const fs=require("fs");const p=process.env.STUB_SEEN_PATH;fs.mkdirSync(require("path").dirname(p),{recursive:true});fs.writeFileSync(p,"CHILD-OWNED");process.exit(0);\n',
+    });
+    const res = await runToExit([MODULE_PATH], { env: handoffEnv(home, id, { STUB_SEEN_PATH: seen }) }, 8000);
+    assert.strictEqual(res.code, 0, 'parent exits with the child code; got ' + JSON.stringify(res));
+    assert.strictEqual(fs.readFileSync(seen, 'utf8'), 'CHILD-OWNED', 'the parent must not overwrite the child-owned seen-state');
+  } finally { rm(home); }
+});
+
+test('handoff: child killed by a signal -> parent exits 128+signo (not re-raised into its own handlers)', async () => {
+  const home = tmpHome();
+  try {
+    layoutPlugins(home, {
+      cacheVersions: ['9.999.0'], marketplaceVersion: '9.999.0',
+      cacheContent: 'setTimeout(() => process.kill(process.pid, "SIGTERM"), 50); setInterval(() => {}, 1000);\n',
+    });
+    const res = await runToExit([MODULE_PATH], { env: handoffEnv(home, 'handoff-sig-1') }, 8000);
+    assert.strictEqual(res.signal, null, 'parent must exit normally, not by a re-raised signal; got ' + JSON.stringify(res));
+    assert.strictEqual(res.code, 128 + os.constants.signals.SIGTERM);
+  } finally { rm(home); }
+});
+
+for (const sig of ['SIGTERM', 'SIGINT']) {
+  test(`handoff: parent receiving ${sig} forwards it to the child (child never orphaned)`, async () => {
+    const home = tmpHome();
+    try {
+      const pidFile = path.join(home, 'child.pid');
+      layoutPlugins(home, {
+        cacheVersions: ['9.999.0'], marketplaceVersion: '9.999.0',
+        cacheContent: 'require("fs").writeFileSync(process.env.STUB_PID_FILE, String(process.pid)); process.stdout.write("[stub-child] alive\\n"); setInterval(() => {}, 1000);\n',
+      });
+      let sent = false;
+      const res = await runToExit([MODULE_PATH], { env: handoffEnv(home, 'handoff-fwd-' + sig, { STUB_PID_FILE: pidFile }) }, 8000, (out, parent) => {
+        if (!sent && /\[stub-child\] alive/.test(out)) { sent = true; parent.kill(sig); }
+      });
+      assert.ok(sent, 'child must have started; got ' + JSON.stringify(res));
+      const childPid = Number(fs.readFileSync(pidFile, 'utf8'));
+      assert.strictEqual(isAlive(childPid), false, 'child must not be orphaned after the parent got ' + sig);
+      assert.strictEqual(res.code, 128 + os.constants.signals[sig], 'parent exits 128+signo; got ' + JSON.stringify(res));
+    } finally { rm(home); }
+  });
+}

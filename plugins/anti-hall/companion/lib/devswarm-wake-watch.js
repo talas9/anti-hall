@@ -431,14 +431,26 @@ function attemptHandoff(opts) {
     settled = true;
     try { emitLine(formatHandoffLine(o.newestVersion)); } catch (_) {}
   });
-  child.on('exit', (code, signal) => {
-    if (signal) {
-      try { process.kill(process.pid, signal); } catch (_) { process.exitCode = 1; }
-    } else {
-      process.exitCode = code == null ? 0 : code;
-    }
+  // Propagate the child's outcome as THIS process's exit, shell-style
+  // (128+signo for a signal death). Never re-raise the signal on ourselves:
+  // our own SIGTERM/SIGINT handlers would intercept it (they forward to the
+  // now-dead child) and the parent would exit 0, hiding the child's fate.
+  const exitFn = typeof o.exitFn === 'function' ? o.exitFn : (c) => process.exit(c);
+  child.once('exit', (code, signal) => {
+    exitFn(handoffExitCode(code, signal));
   });
   return child;
+}
+
+// handoffExitCode(code, signal) -> the exit code the parent uses to mirror
+// the handed-off child: the child's own code, or 128+signo when it died by a
+// signal (1 for an unknown signal name).
+function handoffExitCode(code, signal) {
+  if (signal) {
+    const signo = os.constants && os.constants.signals ? os.constants.signals[signal] : undefined;
+    return Number.isFinite(signo) ? 128 + signo : 1;
+  }
+  return code == null ? 0 : code;
 }
 
 // resolveOwnSessionId() -> string | undefined. Best-effort identifier for the
@@ -1314,10 +1326,10 @@ function main() {
   }
   // handoffChild — set (non-null) once attemptHandoff() below has actually
   // spawned a successor. While set, this process forwards SIGTERM/SIGINT to
-  // the child instead of exiting directly, so the child gets the same
-  // opportunity to clean up that this process would have; the child's own
-  // 'exit' listener (see attemptHandoff) then forwards the outcome back onto
-  // THIS process.
+  // the child instead of exiting directly, so the child (which holds the
+  // watcher lock) is never orphaned and gets to clean up; the child's own
+  // 'exit' listener (see attemptHandoff) then exits THIS process with the
+  // child's code (128+signo on a signal death).
   let handoffChild = null;
   process.on('exit', cleanup);
   process.on('SIGTERM', () => {
@@ -1382,11 +1394,12 @@ function main() {
         handoffChild = child;
         // The child now owns stdout/the watcher lock/this process's
         // lifecycle (its 'exit' listener drives this process's own exit).
-        // Skip the normal cleanup: `release()` was already called by
-        // attemptHandoff (idempotent no-op if called again at real exit via
-        // process.on('exit', cleanup)) and this process's `st` is about to
-        // go stale relative to the child's own — never persist it over the
-        // child's fresher state.
+        // Run cleanup NOW with skipSave: it marks this process cleaned, so
+        // the process.on('exit', cleanup) hook becomes a no-op and this
+        // process's `st` — stale relative to the child's own — is never
+        // persisted over the child's fresher seen-state. release() inside is
+        // token-guarded, so it can never unlink the child's lock.
+        cleanup({ skipSave: true });
         return;
       }
       // Loop/version guard tripped, or the spawn itself failed synchronously
@@ -1485,6 +1498,7 @@ module.exports = {
   formatHandoffLine,
   canHandoff,
   attemptHandoff,
+  handoffExitCode,
 };
 
 if (require.main === module) main();

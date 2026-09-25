@@ -26,6 +26,10 @@ the update.
   build can only hand off to a newer version, and only once per watch chain,
   with a safe fallback to the old print-and-stop behavior if the handoff
   itself fails.
+- **Wake-watch handoff hardening.** After handing off, the old watcher no
+  longer overwrites the new one's seen-state on exit, exits with the new
+  watcher's own code (128+signal when it was killed), and forwards SIGTERM /
+  SIGINT to it so the new watcher is never left orphaned holding the lock.
 - **Edit guard now allows the harness plan file outside plan mode too.**
   `~/.claude/plans/*.md` is exempt from the delegation block unconditionally,
   not only while the session is in plan mode.
