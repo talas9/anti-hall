@@ -58,12 +58,20 @@ the update.
   nothing.
 - **A stale anti-hall archived marker overrode the DevSwarm app.** A workspace open in the
   app (`isActive=1`, `isHidden=0`) but still holding `archived/<id>.json` kept counting as
-  archived and triggered a screenshot ask. The supervisor's app-DB sync now retires such a
-  marker (same id and worktree, older than 10 min): it is moved to
-  `archived-retired/<id>.<ms>.json` with a `retired` record (when, by whom, why) and never
-  deleted. The new migration `retire-stale-archived-markers` (`doctor --repair`) retires
-  existing ones. The screenshot ask now fires only when the app DB is unreadable. Nothing
-  is unarchived in the app itself.
+  archived and triggered a screenshot ask. The supervisor's app-DB sync now trusts the app
+  for a marker anti-hall wrote from app evidence (`archivedBy` `devswarm-app`,
+  `devswarm-app-deleted` or `devswarm-ui-sync`; same id and worktree, older than 10 min):
+  it first restores the workspace to active with the same logic `unarchive` uses (puts the
+  descriptor back in `workspaces/` if it is missing, revives the registry row), and only
+  then moves the marker to `archived-retired/<id>.<ms>.json` with a `retired` record
+  (when, by whom, why, `restored`). It is never deleted. If a restore step fails, the
+  marker stays in `archived/`, so the workspace is never left in neither directory. A
+  marker from anti-hall's own `archive` verb is never restored automatically, at any age:
+  an open app row there only means the owner hasn't archived it in the app yet. It stays
+  archived, is reported as `openButMarkedArchived`, and `unarchive` undoes it. The new
+  migration `retire-stale-archived-markers` (`doctor --repair`) applies the same rules
+  to existing markers. The screenshot ask now fires only when the app DB is unreadable.
+  Nothing is unarchived in the app itself.
 - **The Stop-time handover pause nag could repeat the same text with no progress.**
   `hooks/auto-handover-pause-nag.js` stored `nagStepPct` and `lastNagPct` but never compared
   them. It now re-nags only when context has risen at least `nagStepPct` points since the

@@ -341,10 +341,12 @@ const MIGRATIONS = [
     },
   },
   {
-    // v0.108.3: an archived/<id>.json marker whose workspace the readable app
-    // DB shows OPEN (isActive=1, isHidden=0) is stale. Retires it — renamed into
-    // archived-retired/<id>.<ms>.json with a `retired` {at, by, reason} record,
-    // never deleted — so it stops driving "archived". Idempotent; no app DB =
+    // v0.108.3: an app-sourced archived/<id>.json marker whose workspace the
+    // readable app DB shows OPEN (isActive=1, isHidden=0) is stale. The
+    // workspace is restored to active first (the same restore `unarchive` runs),
+    // then the marker is renamed into archived-retired/<id>.<ms>.json with a
+    // `retired` record, never deleted. A failed restore keeps the marker; an
+    // own-`archive`-verb marker is never auto-restored. Idempotent; no app DB =
     // nothing to do. The supervisor's app-DB sync does the same every tick.
     id: 'retire-stale-archived-markers',
     key: 'retireStaleArchivedMarkers',

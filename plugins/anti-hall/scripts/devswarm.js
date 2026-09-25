@@ -5802,8 +5802,10 @@ function syncAppState(home, ctx) {
       const wtKey = w.worktreePath ? (canonicalWorktreeRealPath(w.worktreePath) || w.worktreePath) : null;
       if (w.builderType !== 'primary' && !known.has(w.id) && !(wtKey && knownWt.has(wtKey))) unknownToAntiHall.push({ id: w.id, label: w.label });
       // Open in the app, but anti-hall still holds an archived marker for it
-      // (dry run, inside the retire grace, or a retire that failed). The app is
-      // never touched; retireStaleArchivedMarkers above retires the marker.
+      // (dry run, inside the retire grace, a restore/retire that failed, or a
+      // local `archive` the owner has not yet done in the app — never
+      // auto-restored). The app is never touched; retireStaleArchivedMarkers
+      // above retires (and restores) the marker when it qualifies.
       // repositoryId AND the canonicalized worktreePath (wtKey, already computed
       // above) are stamped so readers can scope conflicts to the current repo
       // (P1 fix, same scoping as doctor-devswarm.js). worktreePath is the
@@ -6034,29 +6036,48 @@ function markAppArchivedDescriptors(home, ctx) {
 }
 
 // retireStaleArchivedMarkers(home, ctx) -> { ok, dryRun, appDb, scanned,
-//   pending, retired, left[], errors, results }. v0.108.3 (owner decision
-// "retire marker, trust app"): an archived/<id>.json marker whose workspace the
-// READABLE app DB shows OPEN (isActive=1 AND isHidden=0, same builder id, same
-// worktree when both are known) is stale — the app is the ground truth. The
-// marker is RETIRED, never deleted: renamed out of archived/ into
+//   pending, retired, left[], localHeld[], errors, results }. v0.108.3 (owner
+// decision "retire marker, trust app"): an archived/<id>.json marker whose
+// workspace the READABLE app DB shows OPEN (isActive=1 AND isHidden=0, same
+// builder id, same worktree when both are known) is stale — the app is the
+// ground truth. Trusting the app means the workspace becomes ACTIVE again:
+// restoreArchivedDescriptor (the same restore cmdUnarchive runs) puts the
+// descriptor back in workspaces/ when it is missing and revives the registry
+// row, and ONLY THEN is the marker retired — renamed out of archived/ into
 // archived-retired/<id>.<ms>.json and re-written there (tmp+rename, so a
 // hardlinked active descriptor is never touched) with a `retired` record
-// { at, by, reason }. Nothing that reads archived/ sees it any more (roster,
-// reconcile, ui-sync, parent gate/inbox), and the app itself is never touched.
-// A marker younger than RETIRE_MARKER_GRACE_MS is left alone so a just-run
-// local `archive` is not undone before the owner archives it in the app.
-// Under the per-id lock; idempotent (a retired marker is gone from archived/);
-// fail-open (no/unreadable app DB -> nothing to do, errors are counted).
-// ctx.snap reuses a caller's fresh snapshot; ctx.dryRun or
-// ANTIHALL_INGEST_DRY_RUN=1 -> report only.
+// { at, by, reason, restored }. Never deleted. A restore that fails leaves the
+// marker in archived/ (reported in `left`): the marker is then still the one
+// copy of the descriptor, so the workspace is never orphaned in neither dir.
+// Which markers qualify (P1-A):
+//   - Only markers anti-hall wrote FROM app evidence (archivedBy in
+//     APP_SOURCED_MARKERS). The app then showed the workspace archived/absent;
+//     open now means the owner reopened it there, so the app is new evidence.
+//   - A marker from anti-hall's OWN `archive` verb (no archivedBy: cmdArchive,
+//     reap-stale, the archive sweep) is NEVER auto-restored, at any age. That
+//     verb archives locally and tells the owner to archive in the app; until
+//     they do, "open in the app" is the EXPECTED pending state, not evidence the
+//     owner changed their mind — the app DB keeps no history that could tell
+//     "not archived yet" from "reopened", so any timer (10 min or 10 days)
+//     would guess, and a wrong guess silently undoes an explicit owner archive
+//     (and fights the sweep). Keeping it archived is reversible (`unarchive`)
+//     and loses nothing; it is reported in `localHeld` and app-state's
+//     openButMarkedArchived.
+//   - An app-sourced marker younger than RETIRE_MARKER_GRACE_MS (by its
+//     archivedAt) is left alone, so one transient app-DB read cannot flap it.
+// Under the per-id lock; idempotent (a retired marker is gone from archived/,
+// and a restore of an already-active workspace is a no-op); fail-open (no /
+// unreadable app DB -> nothing to do, errors are counted). ctx.snap reuses a
+// caller's fresh snapshot; ctx.dryRun or ANTIHALL_INGEST_DRY_RUN=1 -> report only.
 const RETIRE_MARKER_GRACE_MS = 10 * 60 * 1000;
+const APP_SOURCED_MARKERS = new Set(['devswarm-app', 'devswarm-app-deleted', 'devswarm-ui-sync']);
 function retiredMarkersDir(home) { return path.join(devswarmRoot(home), 'archived-retired'); }
 function retireStaleArchivedMarkers(home, ctx) {
   const c = ctx || {};
   const env = c.env || process.env;
   const now = Number.isFinite(c.now) ? c.now : Date.now();
   const dryRun = !!c.dryRun || String((env && env.ANTIHALL_INGEST_DRY_RUN) || '') === '1';
-  const out = { ok: true, dryRun, appDb: false, scanned: 0, pending: 0, retired: 0, left: [], errors: 0, results: [] };
+  const out = { ok: true, dryRun, appDb: false, scanned: 0, pending: 0, retired: 0, left: [], localHeld: [], errors: 0, results: [] };
   let snap = c.snap || null;
   try { if (!snap) snap = require('../companion/lib/devswarm-app-db.js').snapshot({ home, env, now, fresh: true }); } catch (_) { snap = null; }
   if (!snap || !Array.isArray(snap.workspaces)) return out; // unreadable: no evidence, retire nothing
@@ -6083,12 +6104,17 @@ function retireStaleArchivedMarkers(home, ctx) {
       const mw = wtKey(marker.worktreePath);
       const aw = wtKey(w.worktreePath);
       if (mw && aw && mw !== aw) continue; // a reused id on another worktree: not this workspace's marker
+      if (!APP_SOURCED_MARKERS.has(marker.archivedBy)) { out.localHeld.push(id); continue; }
       const markedAt = Number.isFinite(marker.archivedAt) ? marker.archivedAt : fs.lstatSync(markerPath).ctimeMs;
       if (now - markedAt < RETIRE_MARKER_GRACE_MS) continue;
       out.pending++;
       if (dryRun) { out.results.push({ id, action: 'would-retire' }); continue; }
       const r = withIdLock(id, home, () => {
         if (!fs.existsSync(markerPath)) return { ok: false, reason: 'marker-gone' };
+        // Restore FIRST (same logic as cmdUnarchive); the marker moves only
+        // after the workspace is verifiably active again.
+        const restored = restoreArchivedDescriptor(home, id, { home, env, backend: c.backend }, { keepMarker: true });
+        if (!restored.ok) return { ok: false, reason: 'restore-failed: ' + restored.error };
         const dir = retiredMarkersDir(home);
         fs.mkdirSync(dir, { recursive: true });
         const st = fs.lstatSync(dir);
@@ -6100,7 +6126,7 @@ function retireStaleArchivedMarkers(home, ctx) {
         let prior = {};
         try { prior = JSON.parse(body); } catch (_) { prior = { raw: body }; }
         const rec = Object.assign({}, prior, {
-          retired: { at: now, by: 'devswarm-app-sync', reason: 'open in the DevSwarm app (isActive=1, isHidden=0)', builderId: String(w.id) },
+          retired: { at: now, by: 'devswarm-app-sync', reason: 'open in the DevSwarm app (isActive=1, isHidden=0); workspace restored to active', builderId: String(w.id), restored: true },
         });
         const tmp = dest + '.' + process.pid + '.tmp';
         fs.writeFileSync(tmp, JSON.stringify(rec));
@@ -12972,76 +12998,94 @@ function resolveArchiveId(raw, ctx) {
   };
 }
 
-// cmdUnarchive(id, ctx) — reverse of cmdArchive: link the descriptor back into
-// workspaces/, remove the archived recovery anchor, then re-upsert the store
-// registry (append-only:
-// a fresh upsertRegistry after a prior removeRegistry simply wins as the
-// newest op for this id, reviving the tombstoned row — same latest-op-wins
-// mechanics cmdArchive itself relies on). Non-destructive, id-safe (the
-// dispatcher gates `id` through isSafeId before this is ever called, same as
-// `archive`). For undoing a wrong `archive`.
-function cmdUnarchive(id, ctx) {
-  const home = ctx.home;
-  // P1-4: unarchive mutates the same descriptor+registry pair as register/archive
-  // — run it under the SAME per-id lock so the three can never interleave.
-  return withIdLock(id, home, () => {
+// restoreArchivedDescriptor(home, id, ctx, opts) -> { ok, error?, restoredLink? }
+// THE restore step, shared by cmdUnarchive and retireStaleArchivedMarkers (the
+// supervisor's "trust the app" path), so the two can never drift. The caller
+// holds withIdLock(id) (the lock is not re-entrant). Steps, all-or-nothing:
+//   1. put the descriptor back in workspaces/: hardlink archived/<id>.json there
+//      (linkSync fails closed on EEXIST instead of renameSync's silent
+//      overwrite) when it is missing;
+//   2. persist the physical ownerKey (and drop marker-only archivedBy /
+//      archivedAt fields) with an atomic tmp+rename — a new inode, so the
+//      archived bytes are never rewritten;
+//   3. revive the registry row: a fresh upsertRegistry after a prior
+//      removeRegistry wins as the newest op (latest-op-wins, the same mechanics
+//      cmdArchive relies on).
+// opts.requireOwnerKey (cmdUnarchive): the descriptor's physical ownerKey must
+//   equal it (the caller's project) or nothing happens.
+// opts.keepMarker (retire): archived/<id>.json is left in place — the caller
+//   moves it to archived-retired/ only after this returns ok. An existing
+//   workspaces/<id>.json (a separate inode: an app-sourced marker is a copy) is
+//   the live truth and is kept. A registry row that is already live is left
+//   as is. Success = the row is verifiably live; on failure a link this call
+//   created is dropped, so the marker is the only state and nothing is orphaned.
+// Default (cmdUnarchive): archived/<id>.json is unlinked once the workspaces/
+// link is verified (same inode) — a move, never a delete of the bytes.
+const ARCHIVE_MARKER_ONLY_FIELDS = ['archivedBy', 'archivedAt'];
+function restoreArchivedDescriptor(home, id, ctx, opts) {
+  const o = opts || {};
+  const fail = (error) => ({ ok: false, error });
   const archiveDirState = checkedArchivedDir(home);
-  if (!archiveDirState.ok) {
-    return { ok: false, action: 'unarchive', id, error: 'unsafe archived directory: ' + archiveDirState.error };
-  }
+  if (!archiveDirState.ok) return fail('unsafe archived directory: ' + archiveDirState.error);
   const archivedPath = path.join(archiveDirState.path, id + '.json');
   const activePath = descriptorPath(home, id);
   const archivedState = readDescriptorPathState(archivedPath);
-  if (archivedState.error) {
-    return { ok: false, action: 'unarchive', id, error: 'failed to read archived descriptor: ' + archivedState.error };
-  }
-  const activeState = archivedState.exists ? null : readDescriptorPathState(activePath);
-  if (activeState && activeState.error) {
-    return { ok: false, action: 'unarchive', id, error: 'failed to read restored descriptor: ' + activeState.error };
-  }
+  if (archivedState.error) return fail('failed to read archived descriptor: ' + archivedState.error);
+  const activeState = (archivedState.exists && !o.keepMarker) ? null : readDescriptorPathState(activePath);
+  if (activeState && activeState.error) return fail('failed to read restored descriptor: ' + activeState.error);
   if (!archivedState.exists && (!activeState || !activeState.exists)) {
-    return { ok: false, action: 'unarchive', id, error: 'no archived descriptor for workspace ' + JSON.stringify(id) };
+    return fail('no archived descriptor for workspace ' + JSON.stringify(id));
   }
-  const desc = archivedState.exists ? archivedState.descriptor : activeState.descriptor;
+  if (o.keepMarker && !archivedState.exists) return fail('no archived marker for workspace ' + JSON.stringify(id));
+  const activeLive = !!(activeState && activeState.exists);
+  const desc = (o.keepMarker && activeLive) ? activeState.descriptor
+    : (archivedState.exists ? archivedState.descriptor : activeState.descriptor);
   if (!isSafeId(desc.id) || String(desc.id) !== String(id) || !desc.worktreePath) {
-    return { ok: false, action: 'unarchive', id, error: 'archived descriptor identity does not match workspace ' + JSON.stringify(id) };
+    return fail('archived descriptor identity does not match workspace ' + JSON.stringify(id));
   }
-  const currentOwnerKey = storeOwnerKeyFor(id, ctx);
   const ownerKey = descriptorPhysicalOwnerKey(desc);
-  if (!ownerKey || ownerKey !== currentOwnerKey) {
-    return { ok: false, action: 'unarchive', id, error: 'archived descriptor does not belong to the current project' };
+  if (!ownerKey || (o.requireOwnerKey !== undefined && ownerKey !== o.requireOwnerKey)) {
+    return fail(o.requireOwnerKey !== undefined ? 'archived descriptor does not belong to the current project'
+      : 'archived descriptor has no ownerKey and no derivable repo key');
   }
-  if (archivedState.exists) {
+  let createdLink = false;
+  const dropCreatedLink = () => { if (createdLink) { try { fs.unlinkSync(activePath); } catch (_) {} } };
+  if (archivedState.exists && !(o.keepMarker && activeLive)) {
     try {
       fs.mkdirSync(workspacesDir(home), { recursive: true });
-      try { fs.linkSync(archivedPath, activePath); }
+      try { fs.linkSync(archivedPath, activePath); createdLink = true; }
       catch (e) {
         if (!e || e.code !== 'EEXIST') throw e;
       }
       const archivedStat = fs.lstatSync(archivedPath);
       const activeStat = fs.lstatSync(activePath);
       if (archivedStat.dev !== activeStat.dev || archivedStat.ino !== activeStat.ino) {
-        return { ok: false, action: 'unarchive', id, error: 'active descriptor already exists and is not the archived recovery anchor' };
+        return fail('active descriptor already exists and is not the archived recovery anchor');
       }
-      try { fs.unlinkSync(archivedPath); }
-      catch (e) {
-        try { fs.unlinkSync(activePath); } catch (_) {}
-        return { ok: false, action: 'unarchive', id, error: 'failed to move descriptor out of archived/: ' + String(e && e.message || e) };
+      if (!o.keepMarker) {
+        try { fs.unlinkSync(archivedPath); }
+        catch (e) {
+          try { fs.unlinkSync(activePath); } catch (_) {}
+          return fail('failed to move descriptor out of archived/: ' + String(e && e.message || e));
+        }
       }
     } catch (e) {
-      return {
-        ok: false, action: 'unarchive', id,
-        error: 'failed to prepare descriptor restore: ' + String(e && e.message || e),
-      };
+      dropCreatedLink();
+      return fail('failed to prepare descriptor restore: ' + String(e && e.message || e));
     }
   }
-  if (desc.ownerKey !== ownerKey) {
+  const markerOnly = ARCHIVE_MARKER_ONLY_FIELDS.filter((k) => Object.prototype.hasOwnProperty.call(desc, k));
+  if (desc.ownerKey !== ownerKey || (markerOnly.length && !(o.keepMarker && activeLive))) {
     desc.ownerKey = ownerKey;
+    for (const k of markerOnly) delete desc[k];
     try { writeDescriptorAtomic(home, id, desc); }
     catch (e) {
-      return { ok: false, action: 'unarchive', id, error: 'failed to persist descriptor store ownership: ' + String(e && e.message || e) };
+      dropCreatedLink();
+      return fail('failed to persist descriptor store ownership: ' + String(e && e.message || e));
     }
   }
+  if (o.keepMarker && registryRowPresent(home, id, ownerKey, ctx)) return { ok: true, restoredLink: createdLink };
+  let reviveError = null;
   try {
     const s = store.openStore({ home, workspaceId: desc.id, hash: ownerKey, backend: ctx.backend, env: ctx.env });
     try {
@@ -13049,10 +13093,32 @@ function cmdUnarchive(id, ctx) {
       store.deriveSummary(s, { home, env: ctx.env });
     } finally { s.close(); }
   }
-  catch (e) {
-    return { ok: false, action: 'unarchive', id, error: 'failed to revive registry: ' + String(e && e.message || e) };
+  catch (e) { reviveError = e; }
+  if (!o.keepMarker) {
+    if (reviveError) return fail('failed to revive registry: ' + String(reviveError && reviveError.message || reviveError));
+    return { ok: true, restoredLink: createdLink };
   }
-  return { ok: true, action: 'unarchive', id, descriptorRestored: true };
+  // keepMarker: the proof is a live row (a summary write that failed after the
+  // upsert landed is re-derived on the next write).
+  if (!registryRowPresent(home, id, ownerKey, ctx)) {
+    dropCreatedLink();
+    return fail('failed to revive registry: ' + (reviveError ? String(reviveError.message || reviveError) : 'row not live after upsert'));
+  }
+  return { ok: true, restoredLink: createdLink };
+}
+
+// cmdUnarchive(id, ctx) — reverse of cmdArchive via restoreArchivedDescriptor:
+// move the descriptor back into workspaces/ and revive the tombstoned registry
+// row. Non-destructive, id-safe (the dispatcher gates `id` through isSafeId
+// before this is ever called, same as `archive`). For undoing a wrong `archive`.
+function cmdUnarchive(id, ctx) {
+  const home = ctx.home;
+  // P1-4: unarchive mutates the same descriptor+registry pair as register/archive
+  // — run it under the SAME per-id lock so the three can never interleave.
+  return withIdLock(id, home, () => {
+    const r = restoreArchivedDescriptor(home, id, ctx, { requireOwnerKey: storeOwnerKeyFor(id, ctx) });
+    if (!r.ok) return { ok: false, action: 'unarchive', id, error: r.error };
+    return { ok: true, action: 'unarchive', id, descriptorRestored: true };
   });
 }
 
