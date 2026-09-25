@@ -107,6 +107,56 @@ const BLOCK = [
   // P2 fp: the doctor.js exemption must exclude --reclaim-ingest-lock too
   // (forces a stale-lock takeover — a mutating action, not diagnostics).
   'node plugins/anti-hall/hooks/doctor.js --reclaim-ingest-lock',
+  // rc-v0.108.4.3 adversarial review — confirmed bypasses:
+  // (1) P1: a sqlite3 `-readonly` invocation with a heredoc BODY still runs
+  // arbitrary dot-commands (`.shell rm -rf /`) — the body is inert DATA to
+  // splitSegments, so it never reaches SQLITE_DANGEROUS_RE; the only fix is
+  // to deny ANY stdin input on the invoking segment outright.
+  "sqlite3 -readonly db.sqlite <<'EOF'\n.shell rm -rf /\nEOF",
+  // Herestring / input-file redirect / piped stdin must all deny the same way.
+  'sqlite3 -readonly db.sqlite <<< ".shell rm -rf /"',
+  'sqlite3 -readonly db.sqlite < payload.sql',
+  "echo '.shell rm -rf /' | sqlite3 -readonly db.sqlite",
+  // (2) P1: git GLOBAL options between `git` and the subcommand hid the real
+  // subcommand from every prior check (naive `\bgit\s+push\b` substring
+  // match, and isSafeGitFetch's fixed-position `tokens[gitIdx+1]` read).
+  'git -c core.hooksPath=/tmp/x push --force origin main',
+  'git -C dir fetch +main:main',
+  // (3) P2: bracket member access (`obj['method']`) hides the method name
+  // from the name-based NODE_EVAL_UNSAFE_RE deny-list.
+  "node -e \"require('fs')['writeFileSync']('x','y')\"",
+  // Additional node -e bypass shapes the new checks must also catch.
+  'node -e "require(\'child_process\').execSync(\'rm -rf /\')"',
+  'node -e "import(\'fs\').then(m=>m.writeFileSync(\'x\',\'y\'))"',
+  'node -e "eval(\'1+1\')"',
+  'node -e "new Function(\'return 1\')()"',
+  'node -e "require(\'fs/promises\').writeFile(\'x\',\'y\')"',
+  'node -e "process.binding(\'fs\').writeFile(\'x\')"',
+  'node -e "require(\'fs\').cpSync(\'a\',\'b\')"',
+  // (4) P2: gh mutating subcommands were never classified heavy at all.
+  'gh pr merge 123',
+  'gh pr merge 12',
+  'gh pr close 123',
+  'gh pr edit 123 --title x',
+  'gh pr create --title x --body y',
+  'gh pr review 123 --approve',
+  'gh issue create --title x',
+  'gh issue close 5',
+  'gh issue delete 5',
+  'gh issue edit 5 --title x',
+  'gh release create v1.0.0',
+  'gh release delete v1.0.0',
+  'gh release edit v1.0.0 --title x',
+  'gh release upload v1.0.0 f.tar.gz',
+  'gh repo delete owner/repo',
+  'gh repo edit owner/repo --description x',
+  'gh secret set FOO --body bar',
+  'gh secret delete FOO',
+  'gh workflow run build.yml',
+  'gh api repos/o/r/issues -X POST -f title=x',
+  'gh api repos/o/r/issues --method DELETE',
+  'gh api repos/o/r/issues -f title=x',
+  'gh api graphql -F query=x',
 ];
 
 const ALLOW = [
@@ -203,6 +253,20 @@ const ALLOW = [
   'node plugins/anti-hall/hooks/doctor.js',
   'node plugins/anti-hall/scripts/jev-report.js --weekly',
   'node plugins/anti-hall/scripts/jev-report.js --days 7 --json',
+  // rc-v0.108.4.3 adversarial review fixes must not over-block legitimate
+  // read-only usage of the same tools.
+  'git -C dir fetch origin main',
+  'git -c core.hooksPath=/tmp/x status',
+  'node -e "console.log(1)"',
+  'node -e "require(\'fs\').readFileSync(\'x\')"',
+  'node -e "require(\'fs\').existsSync(\'x\')"',
+  'gh run watch 123',
+  'gh run view 123',
+  'gh pr view 1',
+  'gh pr diff 1',
+  'gh pr checks 1',
+  'gh api repos/o/r/issues',
+  'gh workflow list',
 ];
 
 for (const cmd of BLOCK) {

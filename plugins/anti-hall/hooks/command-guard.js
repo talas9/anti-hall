@@ -1093,14 +1093,80 @@ function blankPatternArgument(text, verb) {
 // simply left for the pre-existing checks.
 const NODE_EVAL_UNSAFE_RE =
   /\b(?:writeFile(?:Sync)?|appendFile(?:Sync)?|unlink(?:Sync)?|rm(?:Sync)?|rmdir(?:Sync)?|mkdir(?:Sync)?|rename(?:Sync)?|truncate(?:Sync)?|chmod(?:Sync)?|chown(?:Sync)?|symlink(?:Sync)?|copyFile(?:Sync)?|spawn(?:Sync)?|exec(?:Sync)?|execFile(?:Sync)?|fork)\s*\(|child_process/;
+
+// P2 fix (`node -e "require('fs')['writeFileSync']('x','y')"`): bracket
+// member access (`obj['methodName']`) calls the SAME method as
+// `obj.methodName(`, but hides the method NAME from NODE_EVAL_UNSAFE_RE's
+// name-based `\bwriteFile(?:Sync)?\s*\(` matching (the char right after the
+// name is `]`/`'`, never `(`) — a live-verified bypass of the deny-list
+// above. Rather than try to enumerate every bracket-hiding shape, deny ANY
+// bracket member access outright: `[` followed (optionally through
+// whitespace) by a quote is never legitimate in a one-line eval payload
+// safe enough to run inline, so "when in doubt, deny".
+const NODE_EVAL_BRACKET_ACCESS_RE = /\[\s*['"]/;
+
+// Small, closed allowlist of `fs` READ methods a safe `-e` payload may call.
+// Everything else fs-namespaced is denied outright — this is a DEFAULT-DENY
+// allowlist for the fs module specifically (not another deny-list item),
+// so an fs method absent from BOTH the original NODE_EVAL_UNSAFE_RE deny-
+// list and this allowlist (e.g. `fs.cpSync`, `fs.linkSync`,
+// `fs.utimesSync`, `fs.createWriteStream`, `fs.watch`, `fs.opendirSync`)
+// still denies, per "when in doubt, deny".
+const NODE_FS_READ_ALLOWLIST = new Set([
+  'readFileSync', 'readdirSync', 'statSync', 'existsSync', 'lstatSync',
+]);
+// Matches an ACTUAL fs API invocation — `fs.<method>(` or
+// `require('fs').<method>(` — never an unrelated `.method(` call elsewhere
+// in the payload that merely happens to follow some other object.
+const NODE_FS_METHOD_CALL_RE =
+  /(?:\brequire\(\s*['"]fs['"]\s*\)|\bfs)\s*\.\s*([A-Za-z_$][\w$]*)\s*\(/g;
+
+function isSafeNodeEvalPayload(payload) {
+  if (!payload) return false;
+  if (NODE_EVAL_UNSAFE_RE.test(payload)) return false;
+  if (NODE_EVAL_BRACKET_ACCESS_RE.test(payload)) return false;
+  if (/\bchild_process\b/.test(payload)) return false;
+  if (/\bfs\/promises\b/.test(payload)) return false;
+  if (/\bprocess\s*\.\s*binding\s*\(/.test(payload)) return false;
+  if (/\beval\s*\(/.test(payload)) return false;
+  if (/\bFunction\s*\(/.test(payload)) return false;
+  if (/\bimport\s*\(/.test(payload)) return false;
+  NODE_FS_METHOD_CALL_RE.lastIndex = 0;
+  let m;
+  while ((m = NODE_FS_METHOD_CALL_RE.exec(payload))) {
+    if (!NODE_FS_READ_ALLOWLIST.has(m[1])) return false;
+  }
+  return true;
+}
+
 function isSafeNodeEval(segment) {
   if (effectiveVerb(segment) !== 'node') return false;
   const tokens = tokenizeQuoted(segment);
   for (let i = 0; i < tokens.length; i++) {
     if (tokens[i] === '-e' || tokens[i] === '--eval') {
       const payload = i + 1 < tokens.length ? tokens[i + 1] : '';
-      return !!payload && !NODE_EVAL_UNSAFE_RE.test(payload);
+      return isSafeNodeEvalPayload(payload);
     }
+  }
+  return false;
+}
+
+// isNodeDashEInvocation(segment) -> true iff this segment is a `node -e`/
+// `node --eval` invocation (regardless of payload safety). Root-cause fix:
+// `node` is NOT in HEAVY_VERBS and `node -e "..."` never matches the
+// `\bnode\s+\S+\.(?:js|mjs|cjs)\b` HEAVY_PATTERN (there is no script FILE
+// argument), so isSafeNodeEval()/isSafeNodeEvalPayload() above were
+// previously dead code as far as isHeavySegment's BLOCK decision goes —
+// an unsafe `-e` payload never got flagged heavy in the first place,
+// regardless of what isSafeNodeEval returned. isHeavySegment now calls this
+// after the isSafeNodeEval(segment) exemption check, so: safe payload ->
+// exempted (returns false further up); unsafe/unknown payload -> this
+// returns true -> BLOCKED.
+function isNodeDashEInvocation(segment) {
+  if (effectiveVerb(segment) !== 'node') return false;
+  const tokens = tokenizeQuoted(segment);
+  for (let i = 0; i < tokens.length; i++) {
+    if (tokens[i] === '-e' || tokens[i] === '--eval') return true;
   }
   return false;
 }
@@ -1119,19 +1185,89 @@ function isSafeNodeEval(segment) {
 // existed, so this is fail-safe (never wrongly widens the block, only
 // narrows the ALLOW).
 const GIT_FETCH_DANGEROUS_FLAGS = new Set(['--prune', '-p', '--prune-tags', '--force', '-f']);
+
+// git GLOBAL options (git's own top-level flags, recognized BEFORE the
+// subcommand — never a subcommand's own flag) that gitSubcommandIndex must
+// skip to find the real subcommand token. P1 fix: `git -c
+// core.hooksPath=/tmp/x push --force origin main` and `git -C dir fetch
+// +main:main` both slipped past every git check (the HEAVY_PATTERNS git
+// regex, isSafeGitFetch) unflagged, because each one assumed the subcommand
+// sits IMMEDIATELY after `git` with nothing in between — a global option
+// broke that assumption and the whole invocation was never even classified
+// as a git push/fetch at all.
+const GIT_GLOBAL_VALUE_OPTS = new Set([
+  '-c', '-C', '--namespace', '--super-prefix', '--exec-path',
+  '--config-env', '--git-dir', '--work-tree',
+]);
+const GIT_GLOBAL_FLAG_OPTS = new Set([
+  '--no-pager', '-p', '-P', '--paginate', '--bare',
+  '--no-replace-objects', '--literal-pathspecs', '--no-optional-locks',
+]);
+
+// gitSubcommandIndex(tokens, gitIdx) -> index of the REAL git subcommand
+// token (push/fetch/status/...), skipping any global options between `git`
+// and the subcommand. Returns -1 if none is found. A value-taking global
+// option (`-c`, `-C`, ...) consumes one extra token UNLESS its value is
+// attached via `=` (`--git-dir=/x`). An unrecognized `-`-prefixed token
+// before the subcommand is conservatively skipped by exactly one token too
+// — git's own grammar never allows a subcommand-specific flag to appear
+// before the subcommand name, so any leading `-` token here IS necessarily
+// a global option, known or not.
+function gitSubcommandIndex(tokens, gitIdx) {
+  let idx = gitIdx + 1;
+  while (idx < tokens.length) {
+    const t = tokens[idx];
+    if (!t.startsWith('-')) return idx;
+    const eq = t.indexOf('=');
+    const base = eq === -1 ? t : t.slice(0, eq);
+    if (GIT_GLOBAL_VALUE_OPTS.has(base)) { idx += (eq === -1) ? 2 : 1; continue; }
+    if (GIT_GLOBAL_FLAG_OPTS.has(t)) { idx++; continue; }
+    idx++; // unknown global flag: skip just this one token (fail-safe)
+  }
+  return -1;
+}
+
 function isSafeGitFetch(segment) {
   if (effectiveVerb(segment) !== 'git') return false;
   const tokens = tokenizeQuoted(segment);
   const gitIdx = tokens.findIndex((t) => basename(t).toLowerCase() === 'git');
   if (gitIdx === -1) return false;
-  if ((tokens[gitIdx + 1] || '').toLowerCase() !== 'fetch') return false;
-  for (let i = gitIdx + 2; i < tokens.length; i++) {
+  const subIdx = gitSubcommandIndex(tokens, gitIdx);
+  if (subIdx === -1 || (tokens[subIdx] || '').toLowerCase() !== 'fetch') return false;
+  for (let i = subIdx + 1; i < tokens.length; i++) {
     const t = tokens[i];
     if (GIT_FETCH_DANGEROUS_FLAGS.has(t)) return false;
     if (t.startsWith('+')) return false;
     if (t.includes(':')) return false;
   }
   return true;
+}
+
+// isHeavyGitSegment(segment) -> true iff this segment's git invocation has a
+// REAL subcommand (found via gitSubcommandIndex, so a global option in
+// between `git` and the subcommand cannot hide it) of push/pull/clone
+// (always heavy) or fetch without isSafeGitFetch's safety. This is the fix
+// for the P1 bypass above: the plain-substring git HEAVY_PATTERN
+// (`\bgit\s+(?:push|pull|fetch|clone)\b`) only matches when the subcommand
+// is textually ADJACENT to `git`, so it never even sees a global-option-
+// prefixed invocation — this check runs the same tokenized, option-aware
+// parse used by isSafeGitFetch, so the two can never disagree about where
+// the subcommand actually is. Gated on effectiveVerb(segment) === 'git'
+// first (same discipline as isSafeGitFetch/isSafeSqliteReadonly/
+// isSafeNodeEval below) so `git` appearing only as quoted DATA in an
+// unrelated command (`echo "git push origin"`) is never misread as a real
+// git invocation.
+function isHeavyGitSegment(segment) {
+  if (effectiveVerb(segment) !== 'git') return false;
+  const tokens = tokenizeQuoted(segment);
+  const gitIdx = tokens.findIndex((t) => basename(t).toLowerCase() === 'git');
+  if (gitIdx === -1) return false;
+  const subIdx = gitSubcommandIndex(tokens, gitIdx);
+  if (subIdx === -1) return false;
+  const sub = tokens[subIdx].toLowerCase();
+  if (sub === 'push' || sub === 'pull' || sub === 'clone') return true;
+  if (sub === 'fetch') return !isSafeGitFetch(segment);
+  return false;
 }
 
 // isSafeSqliteReadonly(segment) -> true iff this is a `sqlite3` invocation
@@ -1145,8 +1281,49 @@ function isSafeGitFetch(segment) {
 // verify -readonly was an actual flag token (vs. e.g. part of a quoted SQL
 // string) nor that no dangerous dot-command followed.
 const SQLITE_DANGEROUS_RE = /(^|[\s;])\.(shell|system|output|once|import|save)\b|\bATTACH\b/i;
-function isSafeSqliteReadonly(segment) {
+
+// isPipedIntoSegment(wholeCommand, segment) -> true iff `segment` (an exact,
+// contiguous substring of wholeCommand — guaranteed by how splitSegments
+// builds it: characters are copied straight from the source, never
+// reordered) is immediately preceded, modulo whitespace, by a single `|`
+// (not `||`) in the original command text. splitSegments CONSUMES the `|`
+// operator itself when it flushes a segment (see its `if (c === '|')`
+// branch), so the piped-into segment's own text never contains any trace of
+// the pipe — this is the only way to recover that fact.
+function isPipedIntoSegment(wholeCommand, segment) {
+  if (typeof wholeCommand !== 'string' || typeof segment !== 'string') return false;
+  const idx = wholeCommand.indexOf(segment);
+  if (idx <= 0) return false;
+  let i = idx - 1;
+  while (i >= 0 && /\s/.test(wholeCommand[i])) i--;
+  return i >= 0 && wholeCommand[i] === '|' && wholeCommand[i - 1] !== '|';
+}
+
+// isSafeSqliteReadonly(segment, wholeCommand) -> true iff this is a
+// `sqlite3` invocation with `-readonly` present as its OWN argv token before
+// the db path, the SQL/args after the db path contain none of sqlite3's
+// dangerous dot-commands (see SQLITE_DANGEROUS_RE below), AND the
+// invocation has NO stdin input at all (P1 fix below).
+//
+// P1 fix (`sqlite3 -readonly db.sqlite <<'EOF'` + a `.shell rm -rf /`
+// heredoc BODY): the heredoc body is intentionally treated as inert DATA by
+// splitSegments — it is never re-parsed as SQL/args, by design (see the
+// heredoc-handling comment above splitSegments), so SQLITE_DANGEROUS_RE
+// below can NEVER see a dangerous dot-command hidden in a heredoc body, a
+// herestring, an input-file redirect, or piped stdin. The only sound fix is
+// to deny the WHOLE exemption whenever this invocation has any stdin input
+// at all: a heredoc (`<<`), herestring (`<<<`), input-file redirect (`<`),
+// or being the receiving end of a shell pipe (`... | sqlite3 ...`) — the SQL
+// text sqlite3 will actually execute is then not fully visible to this
+// static check, so it is never eligible for the read-only exemption, full
+// stop. The `<`/`<<`/`<<<` check runs against the QUOTE-NEUTRALIZED segment
+// (neutralizeQuotedContents) so a literal `<` inside quoted SQL DATA
+// (`"select 1 < 2"`) does not itself trigger this — only a real, unquoted
+// shell redirect/heredoc/herestring token does.
+function isSafeSqliteReadonly(segment, wholeCommand) {
   if (effectiveVerb(segment) !== 'sqlite3') return false;
+  if (/</.test(neutralizeQuotedContents(segment))) return false;
+  if (isPipedIntoSegment(wholeCommand, segment)) return false;
   const tokens = tokenizeQuoted(segment);
   const verbIdx = tokens.findIndex((t) => basename(t).toLowerCase() === 'sqlite3');
   if (verbIdx === -1) return false;
@@ -1222,22 +1399,77 @@ function isReadOnlyCloudInspect(segment) {
   return true;
 }
 
+// P2 fix: `gh` mutating subcommands were never classified heavy at all — `gh`
+// is not a HEAVY_VERB and no HEAVY_PATTERN mentions it, so isReadOnlyCloudInspect
+// (an EXEMPTION check, only ever relevant once something is already flagged
+// heavy) never mattered: `gh pr merge`, `gh issue delete`, `gh release
+// upload`, etc. all sailed through unflagged. GH_MUTATING_SUBCOMMANDS +
+// isHeavyGhSegment below are the actual DETECTOR this needed; read-only verbs
+// (view/list/status/diff/checks) and `gh run watch|view` are simply absent
+// from every set here, so they fall through to "not heavy" by construction —
+// no separate allowlist regex needed.
+const GH_MUTATING_SUBCOMMANDS = {
+  pr: new Set(['merge', 'close', 'edit', 'create', 'review']),
+  issue: new Set(['create', 'close', 'delete', 'edit']),
+  release: new Set(['create', 'delete', 'edit', 'upload']),
+  repo: new Set(['delete', 'edit']),
+  secret: new Set(['set', 'delete']),
+};
+const GH_API_MUTATING_METHODS = new Set(['POST', 'PATCH', 'PUT', 'DELETE']);
+
+// isHeavyGhSegment(segment) -> true iff this is a `gh` invocation of a
+// mutating subcommand: pr merge/close/edit/create/review, issue
+// create/close/delete/edit, release create/delete/edit/upload, repo
+// delete/edit, secret set/delete, `gh workflow run`, or `gh api` used with
+// -X/--method POST|PATCH|PUT|DELETE or any -f/-F/--field/--raw-field data
+// argument (all of which mutate via the REST/GraphQL API regardless of
+// method). Gated on effectiveVerb(segment) === 'gh' first, same discipline
+// as isHeavyGitSegment, so `gh` appearing only as quoted DATA is never
+// misread as a real invocation.
+function isHeavyGhSegment(segment) {
+  if (effectiveVerb(segment) !== 'gh') return false;
+  const tokens = tokenizeQuoted(segment);
+  const ghIdx = tokens.findIndex((t) => basename(t).toLowerCase() === 'gh');
+  if (ghIdx === -1) return false;
+  const group = (tokens[ghIdx + 1] || '').toLowerCase();
+  const sub = (tokens[ghIdx + 2] || '').toLowerCase();
+  if (group === 'workflow' && sub === 'run') return true;
+  if (GH_MUTATING_SUBCOMMANDS[group] && GH_MUTATING_SUBCOMMANDS[group].has(sub)) return true;
+  if (group === 'api') {
+    for (let i = ghIdx + 2; i < tokens.length; i++) {
+      const t = tokens[i];
+      if (t === '-f' || t === '-F' || t === '--field' || t === '--raw-field') return true;
+      if (t === '-X' || t === '--method') {
+        if (GH_API_MUTATING_METHODS.has((tokens[i + 1] || '').toUpperCase())) return true;
+      }
+    }
+  }
+  return false;
+}
+
 // Per-segment checks that need tokenized/positional logic (not a plain regex
 // substring match) — evaluated alongside LIGHT_EXCEPTIONS in isHeavySegment.
 const LIGHT_EXCEPTION_FNS = [isSafeGitFetch, isSafeSqliteReadonly, isReadOnlyCloudInspect];
 
 // Evaluate one segment: heavy if (its effective verb is a HEAVY_VERB) OR (it
-// matches a HEAVY_PATTERN), AND it is NOT itself a LIGHT_EXCEPTION. Light
+// matches a HEAVY_PATTERN) OR (it is a heavy git/gh invocation per the
+// tokenized checks above), AND it is NOT itself a LIGHT_EXCEPTION. Light
 // exceptions are checked PER SEGMENT so `git status && npm run build` blocks on
 // the build segment instead of being exempted by the whole-string status match.
-function isHeavySegment(segment) {
+// `command` is the FULL original command string this segment came from —
+// needed only by isSafeSqliteReadonly's pipe-into-stdin check; every other
+// LIGHT_EXCEPTION_FNS entry ignores the extra argument.
+function isHeavySegment(segment, command) {
   for (const re of LIGHT_EXCEPTIONS) {
     if (re.test(segment)) return false;
   }
   for (const fn of LIGHT_EXCEPTION_FNS) {
-    if (fn(segment)) return false;
+    if (fn(segment, command)) return false;
   }
   if (isSafeNodeEval(segment)) return false;
+  if (isNodeDashEInvocation(segment)) return true;
+  if (isHeavyGitSegment(segment)) return true;
+  if (isHeavyGhSegment(segment)) return true;
   const verb = effectiveVerb(segment);
   if (verb && HEAVY_VERBS.has(verb)) return true;
   // For PATTERN matching only, neutralize quoted string contents so a benign
@@ -1357,7 +1589,7 @@ function isHeavyCommand(command, depth) {
   if (typeof command !== 'string' || !command.trim()) return false;
   const d = typeof depth === 'number' ? depth : 0;
   for (const seg of splitSegments(command)) {
-    if (isHeavySegment(seg)) return true;
+    if (isHeavySegment(seg, command)) return true;
     if (d < 3) {
       // (b) shell -c payload: unwrap and evaluate as command(s).
       const payload = extractShellCPayload(seg);
@@ -1386,7 +1618,7 @@ function classifyHeavy(command, depth) {
   if (typeof command !== 'string' || !command.trim()) return null;
   const d = typeof depth === 'number' ? depth : 0;
   for (const seg of splitSegments(command)) {
-    if (isHeavySegment(seg)) {
+    if (isHeavySegment(seg, command)) {
       const verb = effectiveVerb(seg);
       if (verb && HEAVY_VERBS.has(verb)) return { kind: 'verb', label: verb };
       return { kind: 'category', label: 'heavy-pattern' };
