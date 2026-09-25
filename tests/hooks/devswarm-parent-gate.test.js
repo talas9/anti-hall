@@ -1459,6 +1459,9 @@ test('BUG 2 PART 1: a child WAITING on its own unanswered AskUserQuestion (fresh
     assert.strictEqual(r.json && r.json.decision, 'block', `a child waiting on its own AskUserQuestion must still hard-block; stdout=${r.stdout}`);
     assert.match(r.json.reason, /2 unread/);
     assert.match(r.json.reason, /ws-ask: waiting on a human answer in its own session/, `must name the wait; reason=${r.json.reason}`);
+    // peer B (0.111): the question preview rides the row-eligibility projection
+    // (computeLiveness.waitingQuestion) into the same line.
+    assert.match(r.json.reason, /ws-ask: waiting on a human answer in its own session — "Which env\?"/, `must preview the pending question; reason=${r.json.reason}`);
   } finally { h.cleanup(); }
 });
 

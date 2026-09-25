@@ -52,7 +52,7 @@ test('plain active row: nothing fires, reason eligible, liveness null unless ask
     assert.deepStrictEqual(e, {
       id: 'w1', archived: false, archivedBy: [], markerArchived: false, appArchived: false,
       status: 'active', present: true, held: false, ignored: false,
-      live: null, busy: null, waitingOnUser: null, reason: 'eligible',
+      live: null, busy: null, waitingOnUser: null, waitingQuestion: null, reason: 'eligible',
     });
   } finally { rm(home); }
 });

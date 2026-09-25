@@ -46,6 +46,30 @@ the update.
   (`-s/--source`, `-a/--agent`, `-p/--prompt`, `-r/--remote`, `-t/--title`)
   plus anti-hall's own `--from-local`, with an example and pointers to
   `send`/`roster`/`inbox` for following up with a spawned child.
+- **`devswarm.js ready-check <sha>`.** A generic, read-only readiness verdict
+  for a child's "READY \<sha\>" claim — works against any git repo, not
+  DevSwarm-specific. Reports `ff` (is `--base`, default `origin/main`, an
+  ancestor of `sha`), the `base...sha` file diff (`files`), submodule pointer
+  bumps (`gitlinks`), deletions under `--watch-deletions` dirs
+  (`deletions_under`), files outside `--allow` globs (`outside_allowed`), and
+  a `verdict:'ok'|'review'|'block'` + `reasons[]`. Runs git read-only; no
+  `fetch` unless `--fetch` is passed.
+- **`devswarm.js inbox tick` reports `watcherArmed`.** Whether a live Monitor
+  wake-watch currently covers this workspace (fresh lock, pid alive) — the
+  Claude-branch CronCreate prompt body now checks this field and tells the
+  agent to re-arm `Monitor` when it reads `false` (the harness caps a Monitor
+  at 30 minutes; this cron's own 30-minute fallback cadence is exactly when
+  it would have lapsed).
+- **`devswarm.js roster`/the parent gate now name what a child is waiting
+  on.** A row (or block reason) whose transcript is paused on an unresolved
+  `AskUserQuestion`/`ExitPlanMode` now carries a truncated (~120 char)
+  preview of the actual question/plan text, not just "waiting on a human" —
+  reusing the SAME `childBusyState` detector both surfaces already relied on.
+- **`doctor` reports live processes leaked into archived/gone DevSwarm
+  workspaces.** A bounded (≤2s), report-only scan cross-references every live
+  process's cwd against archived (anti-hall's own marker, or the DevSwarm app
+  DB's) or gone (worktree removed) workspace paths and prints pid, command
+  name, cwd, and a suggested manual `kill` — never kills anything itself.
 
 ### Fixes
 
@@ -138,33 +162,6 @@ the update.
   actually changes) and fail-open throughout (an install failure, or
   `devswarm.stableLauncher = false`, falls straight back to the previous
   version-pinned path — byte-identical to pre-fix behavior).
-
-### Added
-
-- **`devswarm.js ready-check <sha>`.** A generic, read-only readiness verdict
-  for a child's "READY \<sha\>" claim — works against any git repo, not
-  DevSwarm-specific. Reports `ff` (is `--base`, default `origin/main`, an
-  ancestor of `sha`), the `base...sha` file diff (`files`), submodule pointer
-  bumps (`gitlinks`), deletions under `--watch-deletions` dirs
-  (`deletions_under`), files outside `--allow` globs (`outside_allowed`), and
-  a `verdict:'ok'|'review'|'block'` + `reasons[]`. Runs git read-only; no
-  `fetch` unless `--fetch` is passed.
-- **`devswarm.js inbox tick` reports `watcherArmed`.** Whether a live Monitor
-  wake-watch currently covers this workspace (fresh lock, pid alive) — the
-  Claude-branch CronCreate prompt body now checks this field and tells the
-  agent to re-arm `Monitor` when it reads `false` (the harness caps a Monitor
-  at 30 minutes; this cron's own 30-minute fallback cadence is exactly when
-  it would have lapsed).
-- **`devswarm.js roster`/the parent gate now name what a child is waiting
-  on.** A row (or block reason) whose transcript is paused on an unresolved
-  `AskUserQuestion`/`ExitPlanMode` now carries a truncated (~120 char)
-  preview of the actual question/plan text, not just "waiting on a human" —
-  reusing the SAME `childBusyState` detector both surfaces already relied on.
-- **`doctor` reports live processes leaked into archived/gone DevSwarm
-  workspaces.** A bounded (≤2s), report-only scan cross-references every live
-  process's cwd against archived (anti-hall's own marker, or the DevSwarm app
-  DB's) or gone (worktree removed) workspace paths and prints pid, command
-  name, cwd, and a suggested manual `kill` — never kills anything itself.
 
 ## 0.110.0 (2026-09-26)
 

@@ -988,7 +988,7 @@ function scanProcessCwds(opts) {
 // applicable" convention rather than a noisy PASS line every run.
 function orphanedWorkspaceProcessCheck(opts) {
   const o = opts || {};
-  const home = o.home || os.homedir();
+  const home = require('./test-home-guard.js').resolveHome(o.home, o.env);
   const env = o.env || process.env;
   const now = Number.isFinite(o.now) ? o.now : Date.now();
   const F = o.fsi || fs;
