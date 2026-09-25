@@ -2203,6 +2203,23 @@ function main() {
   // here — see the "R11 Auditor A2 fix" comment at that earlier call site for
   // why the ordering moved.
 
+  // STALE-BUILD DOWNGRADE (peer complaint #2, scoped to the plain NEGLECT nag
+  // ONLY): installed_plugins.json already registered a newer anti-hall
+  // version than this running hook process — the fix, if any, may already be
+  // on disk waiting on a restart. Deliberately NOT applied when unanswered
+  // questions, truncation, or an escalation are in play — those bypass the
+  // cap unconditionally BY DESIGN (see the bypassCap/questionCeilingApplies
+  // comments above: a hidden question must never be silenced by anything,
+  // including a stale-build guess) — only the ordinary backlog-nag path may
+  // be downgraded. State above is already persisted normally either way.
+  if (blocking.length > 0 && !unanswered.length && !truncated && !escalateTimes && !qEscalateTimes) {
+    try {
+      if (require('./lib/stop-version-gate.js').isStale(path.join(__dirname, '..'), { env: process.env, home: os.homedir() })) {
+        return;
+      }
+    } catch (_) { /* fail-open: block normally on any error */ }
+  }
+
   try { fs.writeSync(1, JSON.stringify({ decision: 'block', reason }) + '\n'); } catch (_) {}
 }
 

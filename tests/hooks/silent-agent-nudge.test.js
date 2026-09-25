@@ -523,3 +523,66 @@ test('FAIL-OPEN: transcript_path points at a missing file -> exit 0, no crash', 
     assert.ok(!isBlock(r));
   } finally { h.cleanup(); }
 });
+
+// ---------------------------------------------------------------------------
+// SIGNATURE-ACK (peer complaint #1) — once the agent acks the exact stale-
+// agent-id-set signature for this session (stopPayload's session_id is
+// always 't'), the same signature stays advisory (no block) for the rest of
+// the session; a DIFFERENT stale set (new agent id) still nudges normally.
+// ---------------------------------------------------------------------------
+test('SIGNATURE-ACK: acking the exact stale-agent signature silences it; a different set still nudges', () => {
+  const h = makeHome();
+  try {
+    const stopAck = require('../../plugins/anti-hall/hooks/lib/stop-ack.js');
+    const agentId = 'ccce100000000001';
+    const out = writeOutputFile(h, 'worker-ack.output', THRESHOLD_MS + 60000);
+    const tp = h.writeTranscript([
+      agentToolUseLine('toolu_ack', 'Ack scenario', isoMinutesAgo(90)),
+      agentLaunchResultLine(agentId, out, 'toolu_ack', isoMinutesAgo(90)),
+    ]);
+    const payload = stopPayload(tp);
+
+    const before = testHook(HOOK, payload, { home: h.home });
+    assert.ok(isBlock(before), 'first Stop must block on the genuinely stale agent: ' + JSON.stringify(before.json));
+    assert.match(before.json.reason, /ack it for the rest of this session/, 'reason must carry the ack hint');
+
+    const sig = stopAck.signatureFor(agentId);
+    assert.ok(stopAck.recordAck(h.home, payload.session_id, 'silent-agent-nudge', sig), 'ack write must succeed');
+
+    // Re-touch the output file so the snapshot dedup key changes too — the
+    // ack must silence it independent of the snapshot/hard-cap dedup already
+    // in place, proving THIS is the ack mechanism at work, not those.
+    const t = new Date(Date.now() - (THRESHOLD_MS + 2 * 60 * 60 * 1000));
+    fs.utimesSync(out, t, t);
+    const after = testHook(HOOK, payload, { home: h.home });
+    assert.ok(!isBlock(after), 'an acked signature must stay advisory (no block) for the rest of the session: ' + JSON.stringify(after.json));
+
+    // A DIFFERENT stale agent (new signature) must still nudge normally.
+    const otherId = 'ddde100000000002';
+    const out2 = writeOutputFile(h, 'worker-ack-other.output', THRESHOLD_MS + 60000);
+    const tp2 = h.writeTranscript([
+      agentToolUseLine('toolu_ack2', 'Different agent', isoMinutesAgo(90)),
+      agentLaunchResultLine(otherId, out2, 'toolu_ack2', isoMinutesAgo(90)),
+    ]);
+    const other = testHook(HOOK, stopPayload(tp2), { home: h.home });
+    assert.ok(isBlock(other), 'a different stale-agent signature must still nudge: ' + JSON.stringify(other.json));
+  } finally { h.cleanup(); }
+});
+
+test('SETTING OFF: guards.stopAck=false ignores an existing ack and blocks again', () => {
+  const h = makeHome();
+  try {
+    const stopAck = require('../../plugins/anti-hall/hooks/lib/stop-ack.js');
+    const agentId = 'eeee100000000003';
+    const out = writeOutputFile(h, 'worker-ack-off.output', THRESHOLD_MS + 60000);
+    const tp = h.writeTranscript([
+      agentToolUseLine('toolu_ackoff', 'Ack off scenario', isoMinutesAgo(90)),
+      agentLaunchResultLine(agentId, out, 'toolu_ackoff', isoMinutesAgo(90)),
+    ]);
+    const payload = stopPayload(tp);
+    const sig = stopAck.signatureFor(agentId);
+    assert.ok(stopAck.recordAck(h.home, payload.session_id, 'silent-agent-nudge', sig));
+    const r = testHook(HOOK, payload, { home: h.home, env: { ANTIHALL_STOP_ACK: 'off' } });
+    assert.ok(isBlock(r), 'ANTIHALL_STOP_ACK=off must ignore the existing ack: ' + JSON.stringify(r.json));
+  } finally { h.cleanup(); }
+});

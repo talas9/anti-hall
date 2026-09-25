@@ -385,6 +385,26 @@ function main() {
     process.exit(0); // hard cap — never loop on churn
   }
 
+  // STALE-BUILD DOWNGRADE (peer complaint #2): installed_plugins.json already
+  // registered a newer anti-hall version than this running hook process — the
+  // fix, if any, may already be on disk waiting on a restart. Downgrade this
+  // block to advisory (skip it) until then.
+  try {
+    if (require('./lib/stop-version-gate.js').isStale(path.join(__dirname, '..'), { env: process.env, home: os.homedir() })) {
+      process.exit(0);
+    }
+  } catch (_) { /* fail-open: block normally on any error */ }
+
+  // SIGNATURE-ACK (peer complaint #1): once the user has explicitly confirmed
+  // this exact signal is a false positive and the agent has acked it (see
+  // stop-ack.js), stay silent for it for the rest of the session — a changed
+  // `hash` (real signal change) is a new signature and blocks normally.
+  const stopAck = require('./lib/stop-ack.js');
+  const ackSignature = stopAck.signatureFor(hash);
+  if (sessionId && stopAck.isAcked(os.homedir(), sessionId, 'tasklist-guard', ackSignature)) {
+    process.exit(0);
+  }
+
   // Pick the MOST-SPECIFIC sub-cause for the lead sentence.
   let lead;
   if (!sawTaskActivity) {
@@ -577,6 +597,11 @@ function main() {
       stateDir, prefix: 'tasklist-guard-state', keepFile: stateFile,
     });
   } catch (_) {
+  }
+
+  if (sessionId) {
+    try { finalReason = sanitizeReason(finalReason + ' ' + stopAck.ackHint('tasklist-guard', ackSignature, os.homedir(), sessionId)); }
+    catch (_) { /* best-effort — the block still fires without the hint */ }
   }
 
   // fs.writeSync(1): stdout.write races the async pipe flush with exit() on

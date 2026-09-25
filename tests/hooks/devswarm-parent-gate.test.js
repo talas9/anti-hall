@@ -457,6 +457,30 @@ test('STOP POLICY: stop_hook_active === true -> allow immediately, no state chan
   } finally { h.cleanup(); }
 });
 
+test('STALE-BUILD DOWNGRADE (peer complaint #2): installed_plugins.json AHEAD of the running version downgrades the plain NEGLECT block to advisory', () => {
+  const h = makeHome();
+  try {
+    seedWorkspace(h.home, 'ws1', { messages: ['a', 'b', 'c'], cursor: 1 }); // 2 unread, plain NEGLECT — no unanswered question, no truncation
+    const installedJsonPath = path.join(h.home, '.claude', 'plugins', 'installed_plugins.json');
+    fs.mkdirSync(path.dirname(installedJsonPath), { recursive: true });
+    fs.writeFileSync(installedJsonPath, JSON.stringify({ plugins: { 'anti-hall@anti-hall': { version: '999.0.0', scope: 'user' } } }));
+    const r = run(h.home);
+    assert.strictEqual(r.stdout, '', `a stale-build NEGLECT block must be downgraded to advisory (no output); stdout=${r.stdout}`);
+  } finally { h.cleanup(); }
+});
+
+test('STALE-BUILD DOWNGRADE OFF: guards.stopHookVersionDowngrade=false / ANTIHALL_STOP_HOOK_VERSION_DOWNGRADE=off still blocks despite a newer installed_plugins.json', () => {
+  const h = makeHome();
+  try {
+    seedWorkspace(h.home, 'ws1', { messages: ['a', 'b', 'c'], cursor: 1 });
+    const installedJsonPath = path.join(h.home, '.claude', 'plugins', 'installed_plugins.json');
+    fs.mkdirSync(path.dirname(installedJsonPath), { recursive: true });
+    fs.writeFileSync(installedJsonPath, JSON.stringify({ plugins: { 'anti-hall@anti-hall': { version: '999.0.0', scope: 'user' } } }));
+    const r = run(h.home, undefined, { ANTIHALL_STOP_HOOK_VERSION_DOWNGRADE: 'off' });
+    assert.strictEqual(r.json && r.json.decision, 'block', `the off switch must restore normal blocking; stdout=${r.stdout}`);
+  } finally { h.cleanup(); }
+});
+
 test('FAIL-OPEN: empty stdin -> exit 0, no crash', () => {
   const h = makeHome();
   try {

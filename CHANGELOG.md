@@ -50,6 +50,48 @@ the update.
   message wording was not found verified anywhere in this repo or machine at
   authoring time, so detection matches conservatively on quota/rate-limit
   exhaustion vocabulary rather than one fixed string.
+- **Nudge-class Stop hooks now take a per-signature session ack, instead of
+  re-blocking on the same confirmed-false condition.** `silent-agent-nudge.js`
+  and `tasklist-guard.js` had no user-triggered ack at all (only automatic
+  same-snapshot dedup); `devswarm-parent-gate.js` already had one (its own
+  `intents`/`intentAcks` state, driven by `devswarm.js gate-intent --reason`)
+  but it is deeply coupled to that gate's own escalation shape, so it was left
+  untouched rather than force-generalized. New shared `hooks/lib/stop-ack.js`
+  gives the two gap hooks a documented skip-file entry
+  (`~/.anti-hall/stop-ack/<session>.json`, keyed `"<hook>:<signature>"`) the
+  agent writes once the user has explicitly confirmed a condition is a false
+  positive — that exact signature then stays advisory (never blocks again)
+  for the rest of the session; a genuinely changed condition is a new
+  signature and blocks normally. New setting `guards.stopAck` (default on).
+- **A stale, already-fixed nudge no longer keeps blocking after `claude plugin
+  update` has re-registered a newer build.** `installed_plugins.json`
+  (harness-owned) can be re-registered at a newer version while the CURRENT
+  session's hooks keep executing the OLD build until a full restart —
+  `/reload-plugins` does not pick this up (doctor.js's own harness-
+  registration check; `claude plugin update --help` documents "restart
+  required to apply"). New shared `hooks/lib/stop-version-gate.js` (reusing
+  `skills/update/scripts/update.js`'s own version-resolution exports, never
+  reimplementing `installed_plugins.json` parsing) lets `silent-agent-
+  nudge.js`, `tasklist-guard.js`, and `devswarm-parent-gate.js`'s plain
+  NEGLECT nag detect this and downgrade their block to advisory until
+  restart. Deliberately NOT applied to `devswarm-parent-gate.js`'s
+  unanswered-question / truncation / escalation paths, which bypass the cap
+  unconditionally by design, nor to any safety guard (command-guard/edit-
+  guard/git-guard stay out of scope). Prospective only: a hook build that
+  predates this file has no way to run the check. New setting
+  `guards.stopHookVersionDowngrade` (default on).
+- **Investigated (peer complaint #3, batching/re-fire):** how Claude Code
+  combines several Stop hooks that each return `decision:block` in one turn
+  (one continuation vs. several) is **not documented in this repo's own
+  `docs/KB-claude-code-hooks.md`, and no existing test in this repo answers
+  it either** — recorded as unverified rather than guessed at. What WAS
+  verified: `silent-agent-nudge.js` already had a per-exact-snapshot dedup
+  plus a hard once-per-agent-per-session cap; `tasklist-guard.js` already
+  short-circuits on `hash === lastHash` before blocking again. Both already
+  satisfied "no re-block for an identical snapshot within a session" before
+  this change — no fix was needed there. `devswarm-parent-gate.js`'s own
+  stable-kind cap (`hooks/lib/stop-policy.js`) also already resets only on an
+  observed-clear condition, not on content churn.
 
 ## 0.110.0 (2026-09-26)
 

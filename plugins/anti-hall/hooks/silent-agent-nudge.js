@@ -467,6 +467,16 @@ function main() {
   }
   persist();
 
+  // STALE-BUILD DOWNGRADE (peer complaint #2): a newer anti-hall version was
+  // already re-registered (installed_plugins.json) than this running hook
+  // process — the fix, if any, may already be on disk waiting on a restart.
+  // Skip the block; state above is already persisted normally.
+  try {
+    if (require('./lib/stop-version-gate.js').isStale(path.join(__dirname, '..'), { env: process.env, home })) {
+      process.exit(0);
+    }
+  } catch (_) { /* fail-open: block normally on any error */ }
+
   const MAX_NAMED = 3;
   const shown = shownCandidates.slice(0, MAX_NAMED).map((c) => {
     const mins = Math.floor(c.age / 60000);
@@ -474,13 +484,26 @@ function main() {
   }).join('; ');
   const more = shownCandidates.length > MAX_NAMED ? ', +' + (shownCandidates.length - MAX_NAMED) + ' more' : '';
 
+  // SIGNATURE-ACK (peer complaint #1): a stable signature over the exact set
+  // of currently-stale agent ids. Once the user has explicitly confirmed
+  // this exact set is fine and the agent has acked it (see stop-ack.js), this
+  // hook stays silent for it for the rest of the session — a DIFFERENT set
+  // of stale agents is a new signature and nudges normally.
+  const stopAck = require('./lib/stop-ack.js');
+  const ackSubject = shownCandidates.map((c) => c.id).sort().join(',');
+  const signature = stopAck.signatureFor(ackSubject);
+  if (sessionId && stopAck.isAcked(home, sessionId, 'silent-agent-nudge', signature)) {
+    process.exit(0);
+  }
+
   const reason =
     'anti-hall silent-agent-nudge: ' + shownCandidates.length +
     ' of your own background subagent(s) have gone silent past the ' + minMinutes +
     'm threshold: ' + shown + more + '. This is advisory only — nothing was ' +
     'auto-killed. Check on ' + (shownCandidates.length === 1 ? 'it' : 'them') + ' (TaskOutput) or ' +
     're-dispatch with tighter scope if it is dead (TaskStop first, per orchestration rule I) ' +
-    '— do not assume, verify. Set ANTIHALL_SILENT_AGENT_NUDGE=off to silence.';
+    '— do not assume, verify. Set ANTIHALL_SILENT_AGENT_NUDGE=off to silence. ' +
+    (sessionId ? stopAck.ackHint('silent-agent-nudge', signature, home, sessionId) : '');
 
   process.stdout.write(JSON.stringify({ decision: 'block', reason }) + '\n');
   process.exit(0);

@@ -1319,3 +1319,52 @@ test('NORMAL MODE regression: identical signal with permission_mode absent/"defa
     } finally { h.cleanup(); }
   }
 });
+
+// ---------------------------------------------------------------------------
+// SIGNATURE-ACK (peer complaint #1) — once the agent acks the exact hash
+// signature for this session, the SAME condition stays advisory (no block)
+// even when re-derived fresh (state file removed, so the pre-existing
+// hash===lastHash dedup cannot be the reason it stopped blocking).
+// ---------------------------------------------------------------------------
+test('SIGNATURE-ACK: acking the exact hash signature silences it even when re-derived fresh', () => {
+  const h = makeHome();
+  try {
+    const stopAck = require('../../plugins/anti-hall/hooks/lib/stop-ack.js');
+    const tp = h.writeTranscript(edits(4));
+    const p = stopPayload(tp, h.home);
+
+    const r1 = testHook(HOOK, p, { home: h.home });
+    assert.ok(isBlock(r1), `1st should block; stdout: ${r1.stdout}`);
+    assert.match(r1.json.reason, /ack it for the rest of this session/, 'reason must carry the ack hint');
+
+    const stateFile = path.join(h.home, '.anti-hall', 'tasklist-guard-state-t.json');
+    const hash = JSON.parse(fs.readFileSync(stateFile, 'utf8')).hash;
+    const sig = stopAck.signatureFor(hash);
+    assert.ok(stopAck.recordAck(h.home, p.session_id, 'tasklist-guard', sig), 'ack write must succeed');
+
+    // Remove the loop-safety state so hash===lastHash cannot be why the next
+    // call stops blocking — the SAME transcript recomputes the SAME hash
+    // fresh, and only the ack should be suppressing it now.
+    fs.rmSync(stateFile, { force: true });
+    const r2 = testHook(HOOK, p, { home: h.home });
+    assert.ok(!isBlock(r2), `an acked signature must stay advisory even re-derived fresh: ${r2.stdout}`);
+  } finally { h.cleanup(); }
+});
+
+test('SETTING OFF: guards.stopAck=false ignores an existing ack and blocks again', () => {
+  const h = makeHome();
+  try {
+    const stopAck = require('../../plugins/anti-hall/hooks/lib/stop-ack.js');
+    const tp = h.writeTranscript(edits(4));
+    const p = stopPayload(tp, h.home);
+    const r1 = testHook(HOOK, p, { home: h.home });
+    assert.ok(isBlock(r1));
+    const stateFile = path.join(h.home, '.anti-hall', 'tasklist-guard-state-t.json');
+    const hash = JSON.parse(fs.readFileSync(stateFile, 'utf8')).hash;
+    const sig = stopAck.signatureFor(hash);
+    assert.ok(stopAck.recordAck(h.home, p.session_id, 'tasklist-guard', sig));
+    fs.rmSync(stateFile, { force: true });
+    const r2 = testHook(HOOK, p, { home: h.home, env: { ANTIHALL_STOP_ACK: 'off' } });
+    assert.ok(isBlock(r2), `ANTIHALL_STOP_ACK=off must ignore the existing ack: ${r2.stdout}`);
+  } finally { h.cleanup(); }
+});
