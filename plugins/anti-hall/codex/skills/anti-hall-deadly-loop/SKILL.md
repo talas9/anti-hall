@@ -5,6 +5,19 @@ description: Codex-native equivalent of anti-hall deadly-loop. Use to harden ris
 
 # anti-hall deadly-loop for Codex
 
+## Resolve the plugin root
+
+Codex does not expand `${PLUGIN_ROOT}` inside a skill's own instructions — resolve
+it from the path Codex shows you for this SKILL.md (see
+`docs/KB-codex-platform-hooks-plugins.md`):
+
+```bash
+ANTI_HALL_ROOT="$(cd "$(dirname "$SKILL_FILE")/../../.." && pwd)"
+test -f "$ANTI_HALL_ROOT/.codex-plugin/plugin.json" || { echo "anti-hall plugin root not found relative to $SKILL_FILE — aborting" >&2; exit 1; }
+```
+
+## Overview
+
 This is the Codex-native protocol. Do not run the Claude `deadly-loop.workflow.js`; Codex does not expose that Workflow runtime.
 
 Use for:
