@@ -959,14 +959,25 @@ function childLabelRefusal(id, flags, ctx) {
     if (row && row.worktreePath) wt = canonicalWorktreeRealPath(String(row.worktreePath));
     else if (wtFlag && canonicalMeshId(String(wtFlag)) === String(id)) wt = canonicalWorktreeRealPath(String(wtFlag));
     else if (callerIdentity(env, cwd) === String(id)) wt = resolveCallerWorktree(cwd);
-    if (!wt) return null;
+    // 0.108.4: a label already folded away (retired/<id>.json names its
+    // canonical id) is never re-minted, even with no row/worktree left to check.
+    const redirect = home ? readRetiredRedirect(home, id) : null;
+    const retiredTo = redirect && redirect !== String(id) ? redirect : null;
+    if (!wt) {
+      if (!retiredTo) return null;
+      return {
+        ok: false, reason: 'child-label-id', id: String(id), resolvedTo: retiredTo, worktree: null,
+        error: JSON.stringify(String(id)) + ' is a retired worktree label (folded into ' + JSON.stringify(retiredTo)
+          + '), not an identity. Nothing was written.',
+      };
+    }
     const ic = identityContext(wt);
     if (isPrimaryCheckout(ic.worktreeRoot, ic.mainWorktree, home, env)) return null;
     const kids = Array.from(new Set(registry.filter((r) => r && r.id != null && !/^primary-/.test(String(r.id))
       && r.worktreePath && canonicalWorktreeRealPath(String(r.worktreePath)) === wt).map((r) => String(r.id))));
     let app = null;
     try { app = require('../companion/lib/devswarm-app-db.js').builderForWorktree({ home, env, worktreePath: wt }); } catch (_) { app = null; }
-    const childId = app && kids.includes(String(app.id)) ? String(app.id) : (kids.length === 1 ? kids[0] : null);
+    const childId = (app && kids.includes(String(app.id)) ? String(app.id) : (kids.length === 1 ? kids[0] : null)) || retiredTo;
     if (!childId) {
       // No registered child id: the label is still the only identity that
       // worktree has (legacy/non-DevSwarm children) — allowed, EXCEPT from the
@@ -4110,7 +4121,7 @@ function foldGroupIntoSurvivor(s, home, survivorId, candidates, opts) {
             beating = hasFreshHeartbeat(d.id, home, { now: opts && opts.now });
           } catch (_) { beating = false; } // unreadable heartbeat is NOT positive proof of a live reader
           isMeshAnchor = readerEvidence || beating;
-          if (childLabel) isMeshAnchor = isSessionAliveRow(d, home); // one identity: only a running session protects
+          if (childLabel) isMeshAnchor = isSessionAliveRow(d, home) && !liveSessionElsewhere(d, home); // one identity: only a running session ON this worktree protects
         } else {
           let live = false;
           try {
@@ -4123,7 +4134,7 @@ function foldGroupIntoSurvivor(s, home, survivorId, candidates, opts) {
           // One identity: only a positively RUNNING session protects a child
           // label. A heartbeat file is not proof — anyone can write one (field
           // repro: the Primary heartbeated a child's label from its own cwd).
-          if (childLabel) isMeshAnchor = isSessionAliveRow(d, home);
+          if (childLabel) isMeshAnchor = isSessionAliveRow(d, home) && !liveSessionElsewhere(d, home);
         }
       }
     } catch (_) { isMeshAnchor = false; }
@@ -6240,6 +6251,33 @@ function reconcileDualPartitionAcksAllStores(home, ctx) {
   return out;
 }
 
+// liveSessionElsewhere(row, home) -> true ONLY when every harness session
+// record for row.sessionId that names a cwd places that session on a DIFFERENT
+// worktree than the row's own (0.108.4). A child label stamped with a foreign
+// session (field: the Primary's, via a reconcile drain) is live but not ON
+// that worktree, so it must not protect the label from the fold. No record /
+// no cwd / unresolvable -> false (the running session keeps protecting it).
+function liveSessionElsewhere(row, home) {
+  try {
+    const sid = row && row.sessionId != null ? String(row.sessionId) : '';
+    const own = row && row.worktreePath ? canonicalWorktreeRealPath(String(row.worktreePath)) : null;
+    if (!sid || !own) return false;
+    const dir = sessionsDirFor(home);
+    let seen = 0;
+    for (const n of fs.readdirSync(dir)) {
+      if (!/\.json$/.test(n)) continue;
+      let rec = null;
+      try { rec = JSON.parse(fs.readFileSync(path.join(dir, n), 'utf8')); } catch (_) { continue; }
+      if (!rec || String(rec.sessionId) !== sid) continue;
+      if (typeof rec.cwd !== 'string' || !rec.cwd) return false;
+      const wt = identityContext(rec.cwd, CALLER_CWD).worktreeRoot || null;
+      if (!wt || wt === own) return false;
+      seen++;
+    }
+    return seen > 0;
+  } catch (_) { return false; }
+}
+
 // repairChildSenderLabelsAllStores(home, ctx) -> { ok, dryRun, stores, labels,
 //   pending, aliased, retired, forwarded, left[], errors, results[] }.
 // v0.108.0 forward-migration 'repair-child-sender-labels'. Before the fix a
@@ -6324,6 +6362,17 @@ function repairChildSenderLabelsAllStores(home, ctx) {
                 fs.writeFileSync(path.join(archivedDir(home), id + '.json'), body, { flag: 'wx' });
               }
             } catch (e) { if (!e || e.code !== 'EEXIST') { out.errors++; out.results.push({ repoKey, id, error: 'archived marker: ' + String((e && e.message) || e) }); } }
+            // 0.108.4: a descriptor left in workspaces/ is what re-adopted the
+            // folded label (a later drain promoted it back to live). Move it
+            // out (rename into the archived-retired/ graveyard, never delete)
+            // once the archived marker is in place.
+            if (fs.existsSync(path.join(archivedDir(home), id + '.json'))) {
+              try {
+                const gdir = retiredMarkersDir(home);
+                fs.mkdirSync(gdir, { recursive: true });
+                fs.renameSync(descriptorPath(home, id), path.join(gdir, id + '.' + Date.now() + '.json'));
+              } catch (e) { if (!e || e.code !== 'ENOENT') { out.errors++; out.results.push({ repoKey, id, error: 'descriptor move: ' + String((e && e.message) || e) }); } }
+            }
           }
         }
         else {
@@ -8216,6 +8265,10 @@ function callerOwnsRow(home, id, ctx) {
 // id may only ever be stamped onto the caller's OWN row.
 function maybePromoteUnclaimed(home, id, flags, ctx) {
   try {
+    // A reconcile sweep drain (defaultSpawnReconcile) is not the row's session.
+    if (ctx && ctx.env && String(ctx.env.ANTIHALL_RECONCILE_SWEEP || '') === '1') {
+      return { promoted: false, from: null, to: null, reason: 'reconcile-sweep' };
+    }
     const sid = realSessionIdFrom(flags, ctx, id);
     if (!sid) return { promoted: false, from: null, to: null };
     if (!callerOwnsRow(home, id, ctx)) return { promoted: false, from: null, to: null, reason: 'not-own-row' };
@@ -8622,6 +8675,17 @@ function cmdHeartbeat(id, flags, ctx) {
 function cmdInboxPull(id, flags, ctx) {
   const home = ctx.home;
   const root = devswarmRoot(home);
+  // 0.108.4: auto-ensure was the one registration path childLabelRefusal never
+  // gated, so a pull of a child's `primary-<hash>` label (reconcile sweeps every
+  // registry row) re-created its tombstoned descriptor. Pull under the child's
+  // canonical id instead; with no canonical id to name, write nothing.
+  const labelRefusal = childLabelRefusal(id, flags, ctx);
+  let aliasOf = null;
+  if (labelRefusal) {
+    if (!labelRefusal.resolvedTo || !isSafeId(labelRefusal.resolvedTo)) return Object.assign({ action: 'pull' }, labelRefusal);
+    aliasOf = String(id);
+    id = String(labelRefusal.resolvedTo);
+  }
   // A6 fix: when NEITHER an explicit --session NOR DEVSWARM_BUILDER_ID names a
   // real session, do NOT mint the sessionId from `id` itself (that made a
   // bare, un-claimed auto-ensured/reconcile-spawned registry seed read as
@@ -8685,6 +8749,7 @@ function cmdInboxPull(id, flags, ctx) {
   // ADDITIVE, present only when it actually happened (so an unchanged pull's
   // output stays byte-identical for existing parsers).
   if (promotedPull && promotedPull.promoted) out.sessionPromoted = promotedPull.to;
+  if (aliasOf) out.redirectedFrom = aliasOf;
   // R23 P2: promoteUnclaimedSession's registryWriteError was previously
   // dropped here — a failed registry write (descriptor promoted, registry
   // still stuck on the `unclaimed:` marker) was invisible to every caller of
@@ -15416,6 +15481,36 @@ function cmdRoster(flags, ctx) {
       workspaces.forEach((w) => { delete w.__i; });
     }
   } catch (_) { /* fail-open: the roster without app-DB enrichment */ }
+  // 0.108.4 ghost row: a child's `primary-<hash>` label (aliased, retired, or on
+  // a worktree the app gives to another builder) folds into its canonical row
+  // — one row per workspace. Its direct unread is carried over, never dropped.
+  try {
+    const aliasLib = require('../companion/lib/devswarm-sender-alias.js');
+    const aliases = aliasLib.readAliases(home);
+    let appDb = null; let snap = null;
+    try { appDb = require('../companion/lib/devswarm-app-db.js'); snap = appDb.snapshot({ home, env: ctx.env, now }); } catch (_) { snap = null; }
+    const present = new Set(workspaces.map((w) => (w.id != null ? String(w.id) : null)).filter(Boolean));
+    const byId = new Map(workspaces.map((w) => [String(w.id), w]));
+    const kept = [];
+    for (const w of workspaces) {
+      let appBuilderId = null;
+      if (snap && w.worktreePath) {
+        try {
+          const ws = appDb.workspaceFor(snap, { worktreePath: w.worktreePath });
+          if (ws && ws.builderType !== 'primary') appBuilderId = ws.id;
+        } catch (_) { appBuilderId = null; }
+      }
+      const to = w.id != null ? aliasLib.rosterFoldTarget(home, String(w.id), present, { aliases, appBuilderId }) : null;
+      const target = to ? byId.get(to) : null;
+      if (!target || target === w) { kept.push(w); continue; }
+      if (Number.isFinite(w.directUnread) && w.directUnread > 0) {
+        target.directUnread = Number.isFinite(target.directUnread) ? target.directUnread + w.directUnread : target.directUnread;
+      }
+      target.foldedAliases = (target.foldedAliases || []).concat(String(w.id));
+    }
+    workspaces.length = 0;
+    for (const w of kept) workspaces.push(w);
+  } catch (_) { /* fail-open: the unfolded roster */ }
   return {
     ok: true, action: 'roster', repoKey,
     known: !storeUnavailable, storeUnavailable, storeUnavailableReason, storeUnavailableScope,
@@ -16062,6 +16157,19 @@ function defaultSpawnReconcile(d, ctx) {
   }
   const env = Object.assign({}, ctx.env || process.env, { HOME: ctx.home, USERPROFILE: ctx.home });
   if (ctx.backend) env.ANTIHALL_DEVSWARM_STORE_BACKEND = ctx.backend;
+  // 0.108.4 ghost-row ROOT CAUSE: this drain runs with cwd = the TARGET's
+  // worktree, so inside it callerIdentity() IS the target's meshId and
+  // callerOwnsRow() passes — but the env was the INVOKER's (update.js /
+  // doctor-repair run inside a Primary session carry its
+  // CLAUDE_CODE_SESSION_ID and DEVSWARM_BUILDER_ID). maybePromoteUnclaimed then
+  // stamped the Primary's live session onto a child's `primary-<hash>` label
+  // (field: `unclaimed-session-promoted` primary-af7e82fd -> the SkyCrew
+  // Primary's session, from a reconcile subprocess run by `update`). A sweep
+  // drain speaks for no session: strip both identity vars and mark the process
+  // so cmdInboxPull never promotes.
+  delete env.CLAUDE_CODE_SESSION_ID;
+  delete env.DEVSWARM_BUILDER_ID;
+  env.ANTIHALL_RECONCILE_SWEEP = '1';
   try {
     return spawnSync(process.execPath, [__filename, 'inbox', 'pull', d.id], {
       cwd: d.worktreePath, env, encoding: 'utf8', timeout: 30000,

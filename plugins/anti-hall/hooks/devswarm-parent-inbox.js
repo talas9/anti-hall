@@ -1545,6 +1545,7 @@ function main() {
   let ownCheckoutExtraUnread = 0;
   let ownCheckoutExtraUrgency = null;
 
+  const summaryIdSet = new Set(Object.keys(summaryWorkspaces));
   for (const id of Object.keys(summaryWorkspaces)) {
     if (!isSafeId(id)) continue;
     // #34/Reviewer P1: the Primary's OWN self-registered entry (primary-<hash>,
@@ -1558,6 +1559,18 @@ function main() {
     if (id === primaryId) continue;
     const entry = summaryWorkspaces[id];
     if (!entry || typeof entry !== 'object') continue;
+    // 0.108.4 ghost row: a child's `primary-<hash>` label whose canonical row is
+    // also in this summary (alias / retired redirect / the app's builder on that
+    // worktree) is the SAME workspace — show it once, under the canonical row.
+    if (/^primary-[0-9a-f]{8}$/.test(id)) {
+      let foldTo = null;
+      try {
+        const w = entry.worktreePath ? appWs(null, entry.worktreePath) : null;
+        const appBuilderId = w && w.builderType !== 'primary' ? w.id : null;
+        foldTo = require('../companion/lib/devswarm-sender-alias.js').rosterFoldTarget(home, id, summaryIdSet, { appBuilderId });
+      } catch (_) { foldTo = null; }
+      if (foldTo) continue;
+    }
 
     if (gitTop && entry.worktreePath && worktreeRootOf(entry.worktreePath) === gitTop
         && builderTypeFor(id) === 'primary') {

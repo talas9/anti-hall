@@ -72,4 +72,35 @@ function writeAlias(home, label, to, worktree) {
   } catch (_) { return false; }
 }
 
-module.exports = { aliasPath, readAliases, resolveAlias, writeAlias };
+// retiredTo(home, id) -> the id a fold tombstone (retired/<id>.json, written by
+// devswarm.js writeRetiredRedirect) redirects `id` to, or null.
+function retiredTo(home, id) {
+  try {
+    if (!isSafe(String(id))) return null;
+    const j = JSON.parse(fs.readFileSync(path.join(home || os.homedir(), '.anti-hall', 'devswarm', 'retired', String(id) + '.json'), 'utf8'));
+    const to = j && j.retiredTo != null ? String(j.retiredTo) : '';
+    return to && to !== String(id) ? to : null;
+  } catch (_) { return null; }
+}
+
+// rosterFoldTarget(home, id, presentIds, opts) -> the canonical id a roster row
+// folds into, or null (0.108.4 ghost row). Only a worktree label
+// (`primary-<8 hex>`) ever folds, and only into an id that is itself shown
+// (presentIds), so nothing disappears without its canonical row. Sources, in
+// order: the sender alias (child label -> child id), the retired redirect, and
+// opts.appBuilderId (the DevSwarm app's non-primary builder on that worktree).
+function rosterFoldTarget(home, id, presentIds, opts) {
+  try {
+    if (!/^primary-[0-9a-f]{8}$/.test(String(id))) return null;
+    const has = (x) => x != null && String(x) !== String(id) && presentIds && presentIds.has(String(x));
+    const a = ((opts && opts.aliases) || readAliases(home))[String(id)];
+    if (a && has(a.to)) return String(a.to);
+    const r = retiredTo(home, id);
+    if (has(r)) return r;
+    const b = opts && opts.appBuilderId;
+    if (has(b)) return String(b);
+    return null;
+  } catch (_) { return null; }
+}
+
+module.exports = { aliasPath, readAliases, resolveAlias, writeAlias, retiredTo, rosterFoldTarget };

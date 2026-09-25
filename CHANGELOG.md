@@ -108,6 +108,27 @@ the update.
   `getMode` regression guard that points `HOME` at a poisoned settings.json and
   proves `getMode(id, cfg, home)` never reads it.
 
+### Fixes
+
+- **A child's `primary-<hash>` label no longer comes back as a live "ghost" roster row
+  under the Primary's session.** Root cause: `reconcile` (run by `update` or doctor-repair
+  inside a Primary session) spawns `inbox pull <id>` for each row with cwd set to that
+  row's worktree, but it passed the Primary's own environment through. Inside that
+  subprocess the cwd made the child's label look like the caller's own row, so
+  auto-ensure re-created the label's tombstoned descriptor and promoted it to the
+  Primary's `CLAUDE_CODE_SESSION_ID`. The sweep subprocess now drops
+  `CLAUDE_CODE_SESSION_ID`/`DEVSWARM_BUILDER_ID` and never promotes a session. Additional
+  safeguards: `inbox pull` of a child label (or of a label whose `retired/` redirect
+  names another id) now pulls under the canonical id and writes nothing under the
+  label. `heartbeat`/`register`/`ensure` refuse a retired label even when no row is left
+  to check. `roster` and the per-turn table fold a label row into its canonical row
+  (via the sender alias, the retired redirect, or the DevSwarm app's builder for that
+  worktree) and carry its unread count over. `repair-child-sender-labels` now folds a
+  label whose live session is running on a different worktree instead of leaving it
+  pending forever, and it moves the label's leftover descriptor into
+  `archived-retired/` rather than deleting it. Messages sent to the alias are
+  forwarded, and they stay readable under the alias.
+
 ## 0.108.3
 
 ### Features
