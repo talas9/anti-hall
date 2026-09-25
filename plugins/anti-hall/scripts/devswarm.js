@@ -2401,7 +2401,7 @@ const VALUE_REQUIRED_FLAGS = new Set(['message', 'message-file']);
 // a mid-argv `--help` (e.g. `inbox read --help ws1`) would swallow the
 // FOLLOWING positional as its own value via the generic heuristic below,
 // same failure class BOOLEAN_ONLY_FLAGS already exists to close.
-const BOOLEAN_ONLY_FLAGS = new Set(['force', 'peek', 'answers', 'help']);
+const BOOLEAN_ONLY_FLAGS = new Set(['force', 'peek', 'answers', 'help', 'ack-after-print']);
 // parseArgs(argv) -> { positionals: string[], flags: { name: string[] } }.
 // Supports `--name value`, `--name=value`, repeatable (`--set a --set b`), and
 // bare boolean flags (`--json`). Values are collected as arrays so a caller can
@@ -11238,6 +11238,23 @@ function cmdInbox(sub, id, flags, ctx) {
       }
     }
     if (r && r.ok && resolvedFromArg) r.resolvedFrom = resolvedFromArg;
+    // --ack-after-print (peer request C): opt-in immediate ack right after a
+    // `read-primary` — otherwise the default stays the two-step
+    // read-then-`ack-primary --receipt` flow (nothing here changes when the
+    // flag is absent). Runs the SAME `ackCommand` this read just returned,
+    // against the id the receipt was actually filed under (r.id, which may
+    // differ from the caller's literal `id` after a resolve/redirect above),
+    // so the ack applies to exactly what was printed — never a bare boolean
+    // no-op the way `--ack-as-owner` on `messages` warns about elsewhere.
+    if (sub === 'read-primary' && r && r.ok && r.readReceiptId && hasFlag(flags, 'ack-after-print')) {
+      const ackFlags = { receipt: [r.readReceiptId] };
+      if (hasFlag(flags, 'ack-as-owner')) ackFlags['ack-as-owner'] = [true];
+      try {
+        r.autoAck = cmdInboxAckPrimary(r.id, ackFlags, ctx);
+      } catch (e) {
+        r.autoAck = { ok: false, error: 'ack-after-print threw: ' + String((e && e.message) || e) };
+      }
+    }
     return r;
   }
   const desc = readDescriptorFile(home, id);
@@ -18392,7 +18409,10 @@ const VERB_HELP = {
   register: { synopsis: 'register a new workspace descriptor', mutates: 'writes the descriptor file + store registry + summary' },
   ensure: { synopsis: 'like register, but requires the workspace to be new', mutates: 'writes the descriptor file + store registry + summary' },
   heartbeat: { synopsis: 'record a liveness heartbeat for a workspace', mutates: 'writes a heartbeat file; may emit a mesh broadcast' },
-  inbox: { synopsis: 'inbox subcommands: count | read | ack | pull | messages | read-primary | ack-primary | peek-primary | drain-primary-legacy (drain = read-primary, consume, then the returned ack-primary --receipt command)', mutates: '`pull`/`ack`/`ack-primary`/`drain-primary-legacy` mutate cursors; `read-primary` writes only a read receipt; the rest are read-only' },
+  inbox: { synopsis: 'inbox subcommands: count | read | ack | pull | messages | read-primary | ack-primary | peek-primary | drain-primary-legacy (drain = read-primary, consume, then the returned ack-primary --receipt command). '
+    + '`read-primary <id> --format text` prints one `from/seq/body` line per message instead of the raw JSON (still two-step by default: nothing is acked). '
+    + '`read-primary <id> --ack-after-print` is opt-in: acks immediately after printing (equivalent to running the returned `ackCommand` right away) — omit it and the two-step read-then-`ack-primary --receipt` default is unchanged.',
+    mutates: '`pull`/`ack`/`ack-primary`/`drain-primary-legacy` mutate cursors; `read-primary` writes only a read receipt (or also acks, with --ack-after-print); the rest are read-only' },
   workspaces: { synopsis: 'list registered workspaces', mutates: 'read-only' },
   gate: { synopsis: 'set/clear merge gates on a workspace (--set/--clear)', mutates: 'writes gate state to the store' },
   done: { synopsis: 'child: report this workspace done (sets the `done` gate on your own id + one [[ANTIHALL_DONE]] message to the Primary; idempotent) [--summary TEXT]', mutates: 'writes the done gate + one mesh-direct message to the Primary' },
@@ -18988,6 +19008,19 @@ function emitKnownWarning(argv, result) {
   return line;
 }
 
+// inboxReadPrimaryTextLines(result) -> the `inbox read-primary --format text`
+// rendering (peer request C): one `from/seq/body` block per message, plain
+// text — a failed/empty read still renders something legible rather than a
+// blank line.
+function inboxReadPrimaryTextLines(result) {
+  if (!result || !result.ok) {
+    return 'ok:false ' + String((result && result.error) || (result && result.reason) || 'inbox read-primary failed');
+  }
+  const messages = Array.isArray(result.messages) ? result.messages : [];
+  if (!messages.length) return '(no messages)';
+  return messages.map((m) => 'from: ' + (m && m.sender != null ? m.sender : '') + '\nseq: ' + (m && m.storeSeq)
+    + '\n' + (m && m.body != null ? String(m.body) : '') + '\n').join('\n');
+}
 function main() {
   const argv = process.argv.slice(2);
   const { code, result } = run(argv);
@@ -19003,10 +19036,17 @@ function main() {
   // request can arrive as `help`, `-h`, or `<verb> --help` — the verb name in
   // argv[0] varies, but buildHelpResult() always stamps action:'help'.
   const isHelpResult = result && result.action === 'help';
-  const wantHuman = (argv[0] === 'healthcheck' || argv[0] === 'diagnose' || argv[0] === 'app-state' || isHelpResult) && !argv.includes('--json');
+  // inbox read-primary --format text (peer request C): an opt-in ALTERNATE
+  // rendering of an otherwise-JSON verb, same `--json` override precedence
+  // as healthcheck/diagnose (an explicit --json always wins).
+  const isInboxReadPrimaryText = argv[0] === 'inbox' && argv[1] === 'read-primary'
+    && (argv.includes('--format=text') || (argv.includes('--format') && argv[argv.indexOf('--format') + 1] === 'text'));
+  const wantHuman = (argv[0] === 'healthcheck' || argv[0] === 'diagnose' || argv[0] === 'app-state' || isHelpResult
+    || isInboxReadPrimaryText) && !argv.includes('--json');
   const out = wantHuman
     ? (argv[0] === 'healthcheck' ? healthcheckHumanLine(result) : (argv[0] === 'diagnose' ? diagnoseHumanLine(result)
-      : (argv[0] === 'app-state' ? (result.text || JSON.stringify(result)) : result.usage)))
+      : (argv[0] === 'app-state' ? (result.text || JSON.stringify(result))
+        : (isInboxReadPrimaryText ? inboxReadPrimaryTextLines(result) : result.usage))))
     : JSON.stringify(result);
   // fs.writeSync(1, ...) per repo rule (macOS node 18/20 exit-vs-async-flush race).
   fs.writeSync(1, out + '\n');
@@ -19018,9 +19058,9 @@ module.exports = {
   runningAntiHallVersion,
   appendIntoPartition, isIdLockHeld, withIdLockHeld,
   run, parseArgs, one, many, csvList,
-  // peer request B (SkyCrew + tf3 Primaries, 2026-09-26) — exported for
+  // peer request B/C (SkyCrew + tf3 Primaries, 2026-09-26) — exported for
   // direct unit testing:
-  cmdRelay,
+  cmdRelay, inboxReadPrimaryTextLines,
   emitKnownWarning, resolveReadArgToId,
   buildDescriptorFromFlags, readDescriptorFile, descriptorPath,
   retireWorktreeDuplicates, isLiveSessionId, archiveLeftReason,

@@ -125,6 +125,10 @@ the update.
   than guessing. Verifies the relayed byte length against the source and
   refuses (`ok:false`) on a mismatch or an empty source body — never a silent
   partial relay.
+- **`devswarm.js inbox read-primary --format text`.** Prints one
+  `from/seq/body` block per message instead of the raw JSON. The default
+  two-step read-then-`ack-primary --receipt` flow is unchanged; the new,
+  opt-in `--ack-after-print` flag acks immediately after printing instead.
 - **`spawn` help text now documents the real hivecontrol args.**
   `devswarm.js help spawn` names every `hivecontrol workspace create` flag
   (`-s/--source`, `-a/--agent`, `-p/--prompt`, `-r/--remote`, `-t/--title`)
