@@ -67,3 +67,15 @@ test('supervisor sweep lock: reclaim race + torn read', () => {
     tornFresh(p, (F) => sup.acquireSweepLock(home, { fs: F, isAlive: () => true }));
   } finally { rm(home); }
 });
+
+test('migrate lock: reclaim race (stale + dead holder) + torn read', () => {
+  const mig = require(path.join(ROOT, 'companion', 'devswarm-migrate.js'));
+  const home = tmpHome();
+  try {
+    const p = mig.migrateLockPath(home);
+    const w = reclaimRace(p, { pid: 999999, ts: 1000, token: 'dead' },
+      (F) => mig.acquireMigrateLock(home, { fs: F, isAlive: (pid) => pid === process.pid }));
+    w();
+    tornFresh(p, (F) => mig.acquireMigrateLock(home, { fs: F, isAlive: () => false }));
+  } finally { rm(home); }
+});

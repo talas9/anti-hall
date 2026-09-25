@@ -106,48 +106,20 @@ function isAliveDefault(pid) {
   try { process.kill(pid, 0); return true; } catch (e) { return !!(e && e.code === 'EPERM'); }
 }
 
-// acquireMigrateLock(home, io) -> release() | null. Same dead-holder/stale-steal
-// discipline as the supervisor sweep lock. null => a live, fresh migration holds
-// the lock; caller must abort rather than double-migrate.
+// acquireMigrateLock(home, io) -> release() | null. Via companion/lib/lock.js.
+// Steal ONLY a stale lock (older than MIGRATE_LOCK_STALE_MS) whose holder is
+// NOT alive (dead or unknown pid): a live migration is never stolen however old
+// its timestamp looks, so two migrations can never race the same store. null
+// => a live migration holds it (or the lock could not be created); the caller
+// aborts rather than double-migrate.
 function acquireMigrateLock(home, io) {
-  const F = (io && io.fs) || fs;
-  const isAlive = (io && io.isAlive) || isAliveDefault;
-  const now = (io && io.now) || Date.now;
-  const p = migrateLockPath(home);
-  try { F.mkdirSync(path.dirname(p), { recursive: true }); } catch (_) {}
-  for (let attempt = 0; attempt < 2; attempt++) {
-    const ts = now();
-    const token = process.pid + ':' + ts + ':' + Math.random().toString(36).slice(2);
-    try {
-      const fd = F.openSync(p, 'wx');
-      try { F.writeSync(fd, JSON.stringify({ pid: process.pid, ts, token })); } finally { F.closeSync(fd); }
-      return function release() {
-        try { const cur = JSON.parse(F.readFileSync(p, 'utf8')); if (cur && cur.token === token) F.unlinkSync(p); } catch (_) {}
-      };
-    } catch (e) {
-      if (!e || e.code !== 'EEXIST') return null; // any other error -> no lock (caller aborts)
-      let holder = null;
-      try { holder = JSON.parse(F.readFileSync(p, 'utf8')); } catch (_) {}
-      const holderPid = holder && Number.isFinite(holder.pid) ? holder.pid : null;
-      let holderTs = holder && Number.isFinite(holder.ts) ? holder.ts : null;
-      if (holderTs === null) {
-        // TORN-READ GUARD: a live holder is briefly a 0-byte file between openSync('wx')
-        // and writeSync. A concurrent reader that catches it empty/unparseable must NOT
-        // treat it as absent — fall back to the file's MTIME for liveness. A FRESH mtime =
-        // live migration mid-write -> back off (never steal); only an OLD mtime (or a stat
-        // failure) reads as a dead holder we may reclaim. Mirrors devswarm-store acquireOnce.
-        try { holderTs = F.statSync(p).mtimeMs; } catch (_) { holderTs = null; }
-      }
-      const alive = holderPid !== null && isAlive(holderPid); // a KNOWN-live holder
-      const stale = holderTs === null || (now() - holderTs) > MIGRATE_LOCK_STALE_MS;
-      // Steal ONLY a stale lock whose holder is NOT alive (dead or unknown pid):
-      // a live migration is never stolen however old its timestamp looks, so two
-      // migrations can never race the same store.
-      if (stale && !alive) { try { F.unlinkSync(p); } catch (_) {} continue; }
-      return null; // live migration in progress -> refuse
-    }
-  }
-  return null;
+  const h = require('./lib/lock.js').acquire(migrateLockPath(home), {
+    fs: io && io.fs,
+    isAlive: (io && io.isAlive) || isAliveDefault,
+    now: io && io.now,
+    staleMs: MIGRATE_LOCK_STALE_MS,
+  });
+  return h ? function release() { h.release(); } : null;
 }
 
 // legacyLineHash(id, index, line) — stable dedupe hash for one physical inbox
