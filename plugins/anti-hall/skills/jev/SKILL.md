@@ -228,28 +228,44 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/jev-report.js" --by session
 absolute path or repo URL (kept agnostic, same convention as everywhere else in
 this codebase); `sessionId` is the Claude session id when the calling hook had
 one to thread through (not every integration is session-scoped — e.g.
-`devswarm-supervisor.js`'s background sweep never has one). A row from BEFORE
-this feature existed, or from an integration that genuinely has no session,
-groups under `unknown` — not an error, not dropped. `recordOutcome()`'s
-`type:'outcome'` rows (e.g. `triage`'s answer-latency join, `speculation`'s
-evidence-added/user-override outcomes) now carry `project` the same way
-(v0.108.3 fix — they used to have none at all); an outcome row logged before
-that fix still groups under `unknown` and cannot be repaired retroactively
-(no source cwd to recover it from).
+`devswarm-supervisor.js`'s background sweep never has one). Every integration
+that DOES have a session (`speculation`, `claimLedger`, `newRequest`,
+`mergeGateHedge`, `outputVerifyGuard`, `modelRouting`, `codexNudgeSubstantial`,
+`tasklistTrivial`) now threads `sessionId` through on every call (v0.108.5 fix
+— live `speculation` add-block rows used to log `sessionId: null` on every
+row, making them unjoinable back to the transcript that produced them), plus
+an optional `turnRef` (the transcript's last-line ISO timestamp, or a
+line-count fallback) pointing at which turn the decision was about. A row
+from BEFORE this feature existed, or from an integration that genuinely has
+no session, groups under `unknown` — not an error, not dropped.
+`recordOutcome()`'s `type:'outcome'` rows (e.g. `triage`'s answer-latency
+join, `speculation`'s evidence-added/user-override outcomes) now carry
+`project` the same way (v0.108.3 fix — they used to have none at all); an
+outcome row logged before that fix still groups under `unknown` and cannot be
+repaired retroactively (no source cwd to recover it from).
 
-### Excluding a known-accidental run (v0.108.1)
+### Excluding a known-accidental run (v0.108.1) / reproducible windows (v0.108.5)
 
 `--since <iso>` / `--until <iso>` bound the report to rows with `ts` inside that
 window; `--exclude-window <iso>..<iso>` (repeatable) drops rows inside one
 closed interval instead. All three apply BEFORE `--project`/`--by`/`--weekly`,
-to both `jev-assist.ndjson` and `jev-triage.ndjson`. Use this when the user
-wants a bad/accidental run out of the numbers without editing the log file
-directly:
+to both `jev-assist.ndjson` and `jev-triage.ndjson` (both live files AND their
+one rotated `.1` backup — a window spanning a rotation still sees every row).
+Use this when the user wants a bad/accidental run out of the numbers without
+editing the log file directly:
 
 ```
 node "${CLAUDE_PLUGIN_ROOT}/scripts/jev-report.js" \
   --exclude-window 2026-09-24T19:56:00Z..2026-09-24T22:23:00Z
 ```
+
+Every report (default and `--by project|session`) now prints a `window: …`
+line — the effective `since`/`until`/`exclude-window` bounds plus rows counted
+vs excluded — right before the table, and the same data as a `window` object
+in `--json` output. This is what makes two runs actually comparable: paste
+both `window:` lines alongside the two agreement/changed-rate numbers so the
+reader can confirm both analyses covered the same rows, not just "the same
+flags happened to be typed."
 
 ### Weekly scorecard (automatic + on-demand)
 
@@ -394,7 +410,13 @@ into the new key automatically (see `companion/lib/migrations.js`
 `parentGateQuestion`/`supervisorBlockerLabel` never make a network call at all —
 both reuse an ALREADY-cached `hooks/lib/jev-triage.js` label populated by a
 different surface that classified the same message earlier, so promoting either
-to `on` is a config change only, no extra cost. `mergeGateHedge` uses `askDetached` (fire-and-forget): promoting it to `on` only
+to `on` is a config change only, no extra cost. `supervisorBlockerLabel`'s
+sweep runs every ~90s but only asks/logs once per DISTINCT input (childId +
+triage kind + ts) per workspace — a per-workspace state file under
+`~/.anti-hall/devswarm/blocker-label-ask/` skips the repeat ask/log while the
+input is unchanged, re-asking only when it changes or after
+`devswarm.supervisorBlockerLabelReaskSec` (default 6h) elapses (v0.108.5 fix
+— one static input used to produce 382 `jev-assist.ndjson` rows in 24h). `mergeGateHedge` uses `askDetached` (fire-and-forget): promoting it to `on` only
 changes what gets LOGGED for now. `tasklistTrivial`/`codexNudgeSubstantial` log
 fire-and-forget in shadow, but in `on` they ask synchronously (1.5 s cap,
 fail-open to the nudge) and a confident "trivial" verdict skips the nudge.

@@ -77,7 +77,13 @@ itself.
   `modelRouting`, `claimLedger`, `mergeGateHedge`, `newRequest`,
   `outputVerifyGuard`, `gitGuardSelfCredit` (add-block, never relaxes),
   `parentGateQuestion` (cache-only, zero network), `tasklistTrivial`,
-  `supervisorBlockerLabel` (cache-only, zero network), `codexNudgeSubstantial` —
+  `supervisorBlockerLabel` (cache-only, zero network; **v0.108.5 fix:** its
+  ~90s sweep now asks/logs once per DISTINCT input — childId+kind+ts — per
+  workspace, via a per-workspace state file under
+  `~/.anti-hall/devswarm/blocker-label-ask/`, re-asking only on a change or
+  after `devswarm.supervisorBlockerLabelReaskSec` [default 6h] elapses; one
+  static input used to produce 382 `jev-assist.ndjson` rows in 24h),
+  `codexNudgeSubstantial` —
   all default `shadow`; `findingDedup` (advisory: do two deadly-loop TRIO findings
   describe the same underlying issue, called from the standalone
   `scripts/finding-dedup.js` CLI, not a hook) defaults `on` — 65/65 correct at
@@ -136,9 +142,14 @@ itself.
   REMOVE (bad-outcome/failure-rate gates, unchanged) or KEEP (gated on its own
   would-change rate in place of changed-decision rate, since that stays 0).
 - `jev-report.js --since <iso> --until <iso>` / `--exclude-window <iso>..<iso>`
-  (repeatable) exclude rows by `ts` before anything else — use this to drop a
-  known-accidental run from the numbers, e.g.
-  `--exclude-window 2026-09-24T19:56:00Z..2026-09-24T22:23:00Z`.
+  (repeatable) exclude rows by `ts` before anything else, from both the live
+  `jev-assist.ndjson`/`jev-triage.ndjson` AND their one rotated `.1` backup —
+  use this to drop a known-accidental run from the numbers, e.g.
+  `--exclude-window 2026-09-24T19:56:00Z..2026-09-24T22:23:00Z`. **v0.108.5:**
+  every report now prints a `window: <since> .. <until> exclude: <…> rows: N in
+  window / M total (K excluded)` line (also a `window` object in `--json`
+  output) — the only way to confirm two runs actually covered the same rows
+  before comparing their agreement/changed-rate numbers.
 - `jev-report.js --weekly [--json]` — compact ALWAYS-7-day summary, one line
   per integration (`[mode]`, suggestion, short reason, calls). A SessionStart
   hook (`hooks/jev-weekly-scorecard.js`, shared with the Claude port) checks
@@ -159,8 +170,16 @@ itself.
   project/session value instead of one combined table; `--project <name>`
   filters to one project first. `project` is a cwd basename (agnostic, no
   absolute paths); `sessionId` is present only when the calling hook had one to
-  thread through. A row missing either (including every row logged before this
-  feature existed) groups under `unknown`. **v0.108.3 fix:** `recordOutcome()`'s
+  thread through. **v0.108.5 fix:** every session-scoped integration
+  (`speculation`, `claimLedger`, `newRequest`, `mergeGateHedge`,
+  `outputVerifyGuard`, `modelRouting`, `codexNudgeSubstantial`,
+  `tasklistTrivial`) now actually threads `sessionId` on every call — live
+  `speculation` add-block rows (the only ones that can add a block while "on")
+  used to log `sessionId: null` on every row, unjoinable to the transcript
+  that produced them. Rows also now carry an optional `turnRef` (the
+  transcript's last-line ISO timestamp, or a line-count fallback) pointing at
+  which turn the decision was about. A row missing either (including every row
+  logged before this feature existed) groups under `unknown`. **v0.108.3 fix:** `recordOutcome()`'s
   `type:'outcome'` rows (`triage`'s answer-latency join, `speculation`'s
   evidence-added/user-override outcomes) now carry `project` too, via the same
   cwd-basename fallback as decision rows — they used to have none at all. A

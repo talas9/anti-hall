@@ -952,6 +952,7 @@ Generated from `hooks/lib/settings-schema.js` (a hygiene test keeps this table a
 | `devswarm.supervisorLogRotateBytes` adv | `10485760` (>0) | `ANTIHALL_DEVSWARM_SUPERVISOR_LOG_ROTATE_BYTES` | Size at which the supervisor rotates its own log. |
 | `devswarm.inboxGraceSec` adv | `120` [0..] | `ANTIHALL_DEVSWARM_INBOX_GRACE_SEC` | Grace window (sec) before a child's fresh unread is flagged, unless it heartbeats first; 0 = no grace. |
 | `devswarm.supervisorSweepBudgetMs` adv | `20000` [0..] | `ANTIHALL_SUPERVISOR_SWEEP_BUDGET_MS` | Time budget (ms) for one supervisor sweep pass. |
+| `devswarm.supervisorBlockerLabelReaskSec` adv | `21600` [60..] | `ANTIHALL_DEVSWARM_SUPERVISOR_BLOCKER_LABEL_REASK_SEC` | Seconds a supervisorBlockerLabel ask/log is suppressed while its input (childId+kind+ts) is unchanged, before a periodic re-ask fires anyway. |
 | `devswarm.autoArchive.mode` | `on` (on/dry-run/off) | `ANTIHALL_DEVSWARM_AUTO_ARCHIVE_MODE` | Auto-archive finished workspaces (needs DevSwarm ≥ 2.5.3). |
 | `devswarm.autoArchive.idleMin` adv | `30` [5..] | `ANTIHALL_DEVSWARM_AUTO_ARCHIVE_IDLE_MIN` | Minutes idle before a finished workspace is eligible for auto-archive. |
 | `devswarm.autoArchive.maxPerSweep` adv | `3` [1..20] | `ANTIHALL_DEVSWARM_AUTO_ARCHIVE_MAX_PER_SWEEP` | Max workspaces auto-archived in one sweep. |

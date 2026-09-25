@@ -10,7 +10,7 @@ const { makeHome } = require('../helpers/fixtures.js');
 
 const {
   buildReport, buildHeadline, labelsLogPath, readLabels, latestHumanLabelByHash, cmdLabel,
-  auditLogPath, readAuditSnippet, cmdPruneAudit,
+  auditLogPath, readAuditSnippet, cmdPruneAudit, describeWindow, printWindow, parseIsoMs,
 } = require('../../plugins/anti-hall/scripts/jev-report.js');
 
 // writeAuditRow(home, {ts, id, h, snippet}) — test helper, writes directly to
@@ -1012,6 +1012,62 @@ test('buildReport via filterByTimeWindow: excluding the accidental run window re
   const report = buildReport(filtered, {});
   const r = report.integrations.find((x) => x.id === 'supervisorBlockerLabel');
   assert.strictEqual(r.calls, 10);
+});
+
+// ---------------------------------------------------------------------------
+// item 3 (reproducibility): describeWindow()/printWindow() surface the
+// EFFECTIVE --since/--until/--exclude-window and the rows counted/excluded,
+// so two analyses run against the same window can actually be compared.
+// ---------------------------------------------------------------------------
+
+test('describeWindow: since/until given -> ISO strings + row counts/excluded reported', () => {
+  const opts = { since: parseIsoMs('2026-09-01T00:00:00Z'), until: parseIsoMs('2026-09-30T00:00:00Z'), excludeWindows: [] };
+  const w = describeWindow(opts, 100, 42);
+  assert.strictEqual(w.since, '2026-09-01T00:00:00.000Z');
+  assert.strictEqual(w.until, '2026-09-30T00:00:00.000Z');
+  assert.deepStrictEqual(w.excludeWindows, []);
+  assert.strictEqual(w.rowsTotal, 100);
+  assert.strictEqual(w.rowsInWindow, 42);
+  assert.strictEqual(w.rowsExcluded, 58);
+});
+
+test('describeWindow: nothing given -> since/until null (the full log), zero excluded', () => {
+  const opts = { since: null, until: null, excludeWindows: [] };
+  const w = describeWindow(opts, 30, 30);
+  assert.strictEqual(w.since, null);
+  assert.strictEqual(w.until, null);
+  assert.strictEqual(w.rowsExcluded, 0);
+});
+
+test('describeWindow: --exclude-window intervals are reported as ISO pairs', () => {
+  const opts = {
+    since: null, until: null,
+    excludeWindows: [[Date.parse('2026-09-24T19:56:00Z'), Date.parse('2026-09-24T22:23:00Z')]],
+  };
+  const w = describeWindow(opts, 60, 10);
+  assert.deepStrictEqual(w.excludeWindows, [['2026-09-24T19:56:00.000Z', '2026-09-24T22:23:00.000Z']]);
+  assert.strictEqual(w.rowsExcluded, 50);
+});
+
+test('printWindow: prints the window bounds and the counted/excluded rows on one line', () => {
+  const w = describeWindow(
+    { since: parseIsoMs('2026-09-01T00:00:00Z'), until: parseIsoMs('2026-09-30T00:00:00Z'), excludeWindows: [] },
+    100, 42
+  );
+  const lines = captureLogs(() => printWindow(w));
+  assert.strictEqual(lines.length, 1);
+  assert.match(lines[0], /^window:/);
+  assert.match(lines[0], /2026-09-01T00:00:00\.000Z/);
+  assert.match(lines[0], /2026-09-30T00:00:00\.000Z/);
+  assert.match(lines[0], /42 in window \/ 100 total/);
+  assert.match(lines[0], /58 excluded/);
+});
+
+test('printWindow: no --since/--until -> reports "(log start)"/"(log end)", not a null/undefined string', () => {
+  const w = describeWindow({ since: null, until: null, excludeWindows: [] }, 5, 5);
+  const lines = captureLogs(() => printWindow(w));
+  assert.match(lines[0], /\(log start\) \.\. \(log end\)/);
+  assert.doesNotMatch(lines[0], /null|undefined/);
 });
 
 // ---------------------------------------------------------------------------

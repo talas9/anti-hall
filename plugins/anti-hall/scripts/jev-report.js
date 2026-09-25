@@ -598,6 +598,43 @@ function filterByTimeWindow(rows, opts) {
   });
 }
 
+// describeWindow(opts, rawCount, filteredCount) -> {since, until,
+// excludeWindows, rowsTotal, rowsInWindow, rowsExcluded}. Reproducibility
+// (jev-report item 3): two analyses run against the SAME --since/--until
+// only produce comparable agreement/changed-rate numbers if both runs can
+// SEE they used the same window and the same row counts -- printing this
+// alongside the report is the only way to confirm that after the fact
+// (e.g. when comparing a "before" and "after" run pasted into two different
+// places). since/until report null when not passed (the full log was read);
+// excludeWindows always reports as ISO pairs, [] when none were given.
+function describeWindow(opts, rawCount, filteredCount) {
+  return {
+    since: opts.since !== null ? new Date(opts.since).toISOString() : null,
+    until: opts.until !== null ? new Date(opts.until).toISOString() : null,
+    excludeWindows: (opts.excludeWindows || []).map(([s, e]) => [new Date(s).toISOString(), new Date(e).toISOString()]),
+    rowsTotal: rawCount,
+    rowsInWindow: filteredCount,
+    rowsExcluded: rawCount - filteredCount,
+  };
+}
+
+// printWindow(windowInfo) -> one line, text-mode only (JSON output carries
+// the same object verbatim under `window`). Always printed (even with no
+// --since/--until given) so a reader never has to guess whether the report
+// covers the whole log.
+function printWindow(windowInfo) {
+  const since = windowInfo.since || '(log start)';
+  const until = windowInfo.until || '(log end)';
+  const excl = windowInfo.excludeWindows.length
+    ? windowInfo.excludeWindows.map(([s, e]) => `${s}..${e}`).join(', ')
+    : '(none)';
+  console.log(
+    `window: ${since} .. ${until}  exclude: ${excl}  ` +
+    `rows: ${windowInfo.rowsInWindow} in window / ${windowInfo.rowsTotal} total ` +
+    `(${windowInfo.rowsExcluded} excluded)`
+  );
+}
+
 // groupKeyOf(row, by) -> the row's project/session key, or 'unknown' when
 // absent — EVERY row missing the field (not just ones logged before this
 // feature existed) falls into 'unknown', so a caller that never threads a
@@ -1258,8 +1295,13 @@ async function main() {
   // --since/--until/--exclude-window: applied BEFORE --project/--by/--weekly
   // and before anything else -- see the module doc comment. Excludes a known-
   // accidental run from the report without touching jev-assist.ndjson itself.
+  // windowInfo (item 3, reproducibility) captures the row counts BEFORE and
+  // AFTER this filter runs, so the window + what it counted/excluded can be
+  // printed alongside the report -- see describeWindow()'s own header.
+  const rowsBeforeWindow = rows.length;
   rows = filterByTimeWindow(rows, opts);
   triageRows = filterByTimeWindow(triageRows, opts);
+  const windowInfo = describeWindow(opts, rowsBeforeWindow, rows.length);
 
   // --project <name>: filter to rows tagged with that project key BEFORE
   // anything else (report, cost windows, budget) -- 'unknown' matches rows
@@ -1293,8 +1335,9 @@ async function main() {
       });
     }
     if (opts.json) {
-      process.stdout.write(JSON.stringify({ by: opts.by, groups: byGroup }, null, 2) + '\n');
+      process.stdout.write(JSON.stringify({ by: opts.by, window: windowInfo, groups: byGroup }, null, 2) + '\n');
     } else {
+      printWindow(windowInfo);
       for (const [key, groupRows] of groups) {
         console.log(`\n=== ${opts.by}: ${key} (${groupRows.length} row(s)) ===`);
         printTable(byGroup[key]);
@@ -1331,8 +1374,9 @@ async function main() {
   }
 
   if (opts.json) {
-    process.stdout.write(JSON.stringify(Object.assign({}, report, { costWindows, budget, budgetStatus, credit, lowCredit }), null, 2) + '\n');
+    process.stdout.write(JSON.stringify(Object.assign({}, report, { window: windowInfo, costWindows, budget, budgetStatus, credit, lowCredit }), null, 2) + '\n');
   } else {
+    printWindow(windowInfo);
     printTable(report);
     printHeadlines(report);
     printCostWindows(costWindows);
@@ -1348,6 +1392,7 @@ module.exports = {
   auditLogPath, readAuditSnippet, cmdPruneAudit, maybeWarnLowCredit, budgetStatePath,
   parseArgs, groupKeyOf, groupRowsBy, buildWeeklyScorecard, weeklyReason, readJevJson,
   parseIsoMs, filterByTimeWindow, MIN_LABELED_FOR_VERDICT, printRealCostSummary,
+  describeWindow, printWindow,
 };
 
 if (require.main === module) {

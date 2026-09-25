@@ -6,6 +6,38 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.108.5 (unreleased)
+
+### Fixes
+
+- **Every jev-assist call site now threads `sessionId`/`turnRef` into the logged row.**
+  Live speculation decisions (the `speculation` add-block integration, the only one that
+  can actually add a block while "on") were logging `sessionId: null` for every row,
+  making them unjoinable to the transcript that produced them. `hooks/lib/jev-assist.js`
+  now threads `sessionId` through every `ask()`/`askSync()`/`askDetached()`/`consultRelax()`
+  call, and adds an optional `turnRef` (the transcript's last-line ISO timestamp, or a
+  line-count fallback via the new `turnRefFromTranscript()`) so a decision row can be
+  pinned to which turn it was about. Every integration call site (`speculation-guard`,
+  `claim-ledger`, `task-tracker`, `merge-gate`, `output-verify-guard`, `model-routing-guard`,
+  `codex-nudge`, `tasklist-guard`) now passes both fields where a session/transcript is
+  available; `devswarm-supervisor.js`'s background sweep intentionally stays session-less.
+- **`supervisorBlockerLabel` no longer re-asks/re-logs an unchanged input every sweep.**
+  The DevSwarm supervisor's ~90s liveness sweep re-asked (and re-logged) the exact same
+  blocker-label decision on every tick as long as the child's jev-triage pending entry
+  stayed unchanged — one real input produced 382 `jev-assist.ndjson` rows in 24h. A new
+  per-workspace state file under `~/.anti-hall/devswarm/blocker-label-ask/` now hashes the
+  input (childId + kind + ts) and skips the ask/log entirely when it matches the last one
+  asked, re-asking only when the input changes or the configurable re-ask interval
+  (`devswarm.supervisorBlockerLabelReaskSec`, default 6h) elapses.
+- **`jev report` now prints its effective time window and row counts.** `--since`/`--until`/
+  `--exclude-window` already filtered every metric (including the agreement metric) and
+  already read the rotated `.1` log alongside the live one — but the report never showed
+  WHICH window it actually used or how many rows were counted vs excluded, so two runs
+  against "the same window" could not be verified as comparable. `jev report` (and
+  `jev report --by project|session`) now print a `window: <since> .. <until> exclude: <…>
+  rows: N in window / M total (K excluded)` line (also included as `window` in `--json`
+  output), via the new `describeWindow()`/`printWindow()`.
+
 ## 0.108.4
 
 ### Features
