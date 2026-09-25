@@ -50,7 +50,7 @@ const appDbLib = require('./devswarm-app-db.js');
 
 // rowState(opts) -> { status, archived, appArchived, present }
 // opts: { home, id, worktreePath, sessionId, repoKey, registryRow, env, now,
-//         cache, fsi, log }
+//         cache, fsi, log, xcache }
 //   registryRow: the caller's registry row, `null` when the caller KNOWS there
 //     is none, or omitted when the caller is classifying a row it already holds.
 //   repoKey: the row's own project key; without it appArchived is false.
@@ -74,7 +74,10 @@ function rowState(opts) {
   // over the supervisor's active-set cache decide.
   let appDb = null;
   try {
-    appDb = appDbLib.appArchivedVerdict({ home: o.home, env: o.env, id, worktreePath: o.worktreePath || null, now: o.now });
+    // xcache: opt-in only (the 0.109.2 cross-invocation cache WRITES a small
+    // file under ~/.anti-hall); the per-turn Stop gate opts in, read-only
+    // surfaces (roster, diagnose) keep their never-writes contract.
+    appDb = appDbLib.appArchivedVerdict({ home: o.home, env: o.env, id, worktreePath: o.worktreePath || null, now: o.now, xcache: o.xcache === true });
   } catch (_) { appDb = null; }
   if (appDb === true || appDb === false) appArchived = appDb;
   else if (o.repoKey) {

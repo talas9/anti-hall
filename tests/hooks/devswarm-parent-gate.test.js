@@ -1344,6 +1344,7 @@ test('BUG 2 PART 1: a child WAITING on its own unanswered AskUserQuestion (fresh
     const wt = path.join(h.home, 'wt', 'ws-ask');
     seedWorkspace(h.home, 'ws-ask', { messages: ['a', 'b'], cursor: 0, worktreePath: wt, sessionId: 'sess-ask' });
     writeHeartbeat(h.home, 'ws-ask', Date.now()); // fresh proof-of-life — the OLD (55361e8) signal alone would wrongly call this busy
+    writeLiveSession(h.home, 'sess-ask'); // 0.109.4: only a RUNNING session can be waiting
     const t0 = Date.now() - 5 * 60000;
     writeSessionTranscript(h.home, wt, 'sess-ask', [
       { type: 'user', timestamp: iso(t0), message: { role: 'user', content: 'Which environment should this ship to?' } },
@@ -1446,7 +1447,8 @@ test('F2: busy but the oldest unread is 90m old -> BLOCKS with "busy but hasn\'t
 test('F3: an unresolved ExitPlanMode (fresh transcript) is WAITING -> blocks, naming the wait', () => {
   const h = makeHome();
   try {
-    seedBusyCandidate(h.home, 'ws-plan', { lines: openToolLines(Date.now() - 60000, 'toolu_plan', 'ExitPlanMode', { plan: 'x' }), transcriptAgeMin: 0 });
+    const s = seedBusyCandidate(h.home, 'ws-plan', { lines: openToolLines(Date.now() - 60000, 'toolu_plan', 'ExitPlanMode', { plan: 'x' }), transcriptAgeMin: 0 });
+    writeLiveSession(h.home, s.sid); // 0.109.4: only a RUNNING session can be waiting
     const r = run(h.home);
     assert.strictEqual(r.json && r.json.decision, 'block', `stdout=${r.stdout} stderr=${r.stderr}`);
     assert.match(r.json.reason, /ws-plan: waiting on a human answer in its own session/);
@@ -1456,7 +1458,8 @@ test('F3: an unresolved ExitPlanMode (fresh transcript) is WAITING -> blocks, na
 test('F3: an unresolved Bash tool_use with a STALE transcript (permission prompt / hung tool) -> blocks', () => {
   const h = makeHome();
   try {
-    seedBusyCandidate(h.home, 'ws-perm', { lines: openToolLines(Date.now() - 20 * 60000, 'toolu_perm', 'Bash', { command: 'rm -rf build' }), transcriptAgeMin: 15 });
+    const s = seedBusyCandidate(h.home, 'ws-perm', { lines: openToolLines(Date.now() - 20 * 60000, 'toolu_perm', 'Bash', { command: 'rm -rf build' }), transcriptAgeMin: 15 });
+    writeLiveSession(h.home, s.sid); // 0.109.4: only a RUNNING session can be waiting
     const r = run(h.home);
     assert.strictEqual(r.json && r.json.decision, 'block', `stdout=${r.stdout} stderr=${r.stderr}`);
     assert.match(r.json.reason, /ws-perm: waiting on a human answer in its own session/);
@@ -1482,7 +1485,8 @@ test('F5: a twin family where one member is busy and the other is WAITING -> wai
     const sharedWt = path.join(h.home, 'shared-busy-wt');
     fs.mkdirSync(sharedWt, { recursive: true });
     seedBusyCandidate(h.home, 'twin-busy', { worktreePath: sharedWt, lines: openToolLines(Date.now() - 60000, 'toolu_tb', 'Bash', { command: 'npm test' }), transcriptAgeMin: 0 });
-    seedBusyCandidate(h.home, 'twin-wait', { worktreePath: sharedWt, lines: openToolLines(Date.now() - 60000, 'toolu_tw', 'AskUserQuestion', { questions: [{ question: 'Which env?' }] }), transcriptAgeMin: 0 });
+    const tw = seedBusyCandidate(h.home, 'twin-wait', { worktreePath: sharedWt, lines: openToolLines(Date.now() - 60000, 'toolu_tw', 'AskUserQuestion', { questions: [{ question: 'Which env?' }] }), transcriptAgeMin: 0 });
+    writeLiveSession(h.home, tw.sid); // 0.109.4: only a RUNNING session can be waiting
     const r = run(h.home, stopPayload('sess-busytwin', false, bogusCwd));
     assert.strictEqual(r.json && r.json.decision, 'block', `a waiting twin must not be hidden by a busy twin; stdout=${r.stdout} stderr=${r.stderr}`);
     assert.match(r.json.reason, /1 workspace\(s\)/, 'the two descriptors must still collapse to one family');

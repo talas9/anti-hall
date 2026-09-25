@@ -1468,6 +1468,11 @@ function main() {
       busy = !!(bs && bs.busy);
       waitingOnUser = !!(bs && bs.waiting);
     } catch (_) { busy = false; waitingOnUser = false; }
+    // 0.109.4 (field: 5 archived rows reported "waiting on a human answer" in
+    // sessions that no longer existed): a transcript's unanswered prompt is
+    // only a WAIT while its session is still running. A dead or unknown
+    // session is never waiting — it falls back to the ordinary unread path.
+    if (waitingOnUser && !idleAlive) waitingOnUser = false;
     if (waitingOnUser) busy = false;
     // Final oldest-unread age: the older of the NDJSON rows' own timestamps
     // and the store-side union's age. Unknown (see unreadAgeUnknown) -> null.
@@ -1502,21 +1507,27 @@ function main() {
     //                  which never writes archived/<id>.json. Read from the
     //                  supervisor's cache ONLY (never a hivecontrol spawn on this
     //                  every-turn Stop path) and believed only while FRESH.
-    // Liveness axis ONLY, same scoping as every suppressor above:
-    // realUnread/unreadUnknown are untouched, so an archived row with REAL
-    // unread still gates.
+    // Here it clears the liveness axis only; the family loop below (0.109.4,
+    // "ARCHIVED NEVER BLOCKS") then drops an archived/held member of a CHILD
+    // family from every blocking axis, unread included.
     let archived = false;
     let appArchived = false;
     try {
       const st = rowState({
         home, id: d.id, worktreePath: d.worktreePath, sessionId: d.sessionId || null,
-        repoKey: dKey, env: process.env, now: appArchiveNow, cache: appArchivedCache(),
+        repoKey: dKey, env: process.env, now: appArchiveNow, cache: appArchivedCache(), xcache: true,
       });
       archived = st.archived;
       appArchived = st.appArchived;
     } catch (_) { archived = false; appArchived = false; }
     if (archived) staleOrEscalated = false;
     if (appArchived) staleOrEscalated = false;
+    // archiveIgnored (0.109.4): the owner's per-row archive-ignore marker
+    // (`devswarm.js archive-ignore <id>` -> archive-ignore/<id>.json), used for
+    // deliberately held specimen/twin rows. Existence check, same as
+    // devswarm-parent-inbox.js's isArchiveIgnored.
+    let archiveIgnored = false;
+    try { fs.statSync(path.join(devswarmRoot(home), 'archive-ignore', String(d.id) + '.json')); archiveIgnored = true; } catch (_) { archiveIgnored = false; }
 
     // Pushed UNCONDITIONALLY (not gated on unreadUnknown/realUnread/
     // staleOrEscalated here) — the gate is applied ONCE per FAMILY after the
@@ -1550,6 +1561,7 @@ function main() {
       // "not alerting because the DevSwarm app itself says this workspace is
       // archived (per a FRESH supervisor-written cache)".
       appArchived,
+      archiveIgnored,
       status: staleOrEscalated ? status : '',
       verdictPending,
       urgencyMax: null,
@@ -1667,6 +1679,10 @@ function main() {
   // (forced-ack count / escalation) — only a pass where no child has unread
   // at all clears it.
   let busyAdvisoryHeld = false;
+  // archivedUnreadFamilies (0.109.4): child families whose every member is
+  // archived/app-archived/held and still has real unread — reported as ONE
+  // aggregated advisory line, never a block.
+  let archivedUnreadFamilies = 0;
 
   const blocking = [];
   for (const fam of families) {
@@ -1703,22 +1719,22 @@ function main() {
     // "peek-primary"/cd-in workflow is unrunnable and the block previously
     // looked unclearable.
     let worktreeGone = false;
-    // NOTE — a proposed fix here (excluding archived / app-archived /
-    // confirmed-dead-worktree members from `unionUnread`) was ATTEMPTED and
-    // REVERTED: it broke 45 pre-existing tests across this suite that assert
-    // the OPPOSITE, by design — e.g. devswarm-parent-gate-app-archived.test.js
-    // "LIVENESS AXIS ONLY: app-archived + REAL unread STILL blocks", and
-    // devswarm-parent-gate.test.js's "MUST NOT BREAK: worktree GONE +
-    // STORE-side unread -> STILL blocks on the unionUnread axis (nothing is
-    // hidden)" / "...ownerKey-ONLY descriptor STILL blocks". Those tests
-    // encode a DELIBERATE prior decision (defects 45cf1659f54f, 0ace80dff415):
-    // archived/app-archived/dead-worktree suppress ONLY the liveness
-    // (stale/escalated) axis, NEVER the unread axis — "archiving does not
-    // answer mail", and a gone-worktree row's mail is still real and
-    // drainable via `inbox ack <id> --ack-as-owner`. Summing a non-live
-    // member's unread is therefore NOT a bug by this codebase's own tested
-    // contract.
-    //
+    // ARCHIVED NEVER BLOCKS (0.109.4 — reverses the earlier "liveness axis
+    // only" rule for archived rows). Field: 9 app-archived workspaces blocked
+    // a Primary's Stop every turn on mail nobody will ever read there. In a
+    // CHILD family, a member that is archived (anti-hall's own marker), app-
+    // archived (the DevSwarm app DB via rowState/appArchivedVerdict) or held
+    // (archive-ignore marker) contributes NOTHING to this family's unread,
+    // unknown, stale, busy or waiting axes — so it can never block, never
+    // count toward NEGLECT and never drive escalation. Its real unread is only
+    // tallied into ONE aggregated stderr advisory after the loop. Dead-worktree
+    // (not archived) rows are unchanged: their mail still blocks. The
+    // Primary's OWN family is never filtered.
+    const famSurvivorId = (fam && fam.survivor && fam.survivor.id != null)
+      ? String(fam.survivor.id) : (members[0] && members[0].id != null ? String(members[0].id) : null);
+    const famIsChild = !(own.id && famSurvivorId != null && famSurvivorId === String(own.id));
+    let archivedMemberUnread = 0;
+    let liveMembers = 0;
     // RE-SCOPED FIX (attribution, not exclusion): the actual defect a
     // blocked Primary hits is that it cannot tell a MULTI-MEMBER family's
     // total apart from its own contribution — it reads its own id, drains
@@ -1743,6 +1759,11 @@ function main() {
     let familyWaitingOnUser = false;
     let familyAgeUnknown = false;
     for (const m of members) {
+      if (famIsChild && m && (m.archived || m.appArchived || m.archiveIgnored)) {
+        if (Number.isFinite(m.realUnread) && m.realUnread > 0) archivedMemberUnread += m.realUnread;
+        continue;
+      }
+      liveMembers += 1;
       if (m.unreadAgeUnknown) familyAgeUnknown = true;
       if (m.busy) familyBusy = true;
       if (m.waitingOnUser) familyWaitingOnUser = true;
@@ -1775,6 +1796,10 @@ function main() {
       if (m.verdictPending) verdictPending = true;
       if (m.urgencyMax != null) urgencyMax = m.urgencyMax;
       if (!m.foreignProject) foreignProject = false;
+    }
+    if (famIsChild && liveMembers === 0) {
+      if (archivedMemberUnread > 0) archivedUnreadFamilies += 1;
+      continue; // every member archived/held: never blocks
     }
     // A1 CORROBORATION (owner's governing constraint: fix the misclassification,
     // never the alarm — a status-only `stale`/`escalated` must never drive a hard
@@ -1874,6 +1899,10 @@ function main() {
     if (contributors.some((c) => !own.id || c.id !== String(own.id))) entry.notOwnCountOnly = true;
     if (Array.isArray(fam.mergedTwinIds) && fam.mergedTwinIds.length) entry.mergedTwinIds = fam.mergedTwinIds;
     blocking.push(entry);
+  }
+
+  if (archivedUnreadFamilies > 0) {
+    try { fs.writeSync(2, 'anti-hall: ' + archivedUnreadFamilies + ' archived workspace(s) still have unread mail (ignored)\n'); } catch (_) {}
   }
 
   const stateFile = stateFileFor(payload.session_id, home);

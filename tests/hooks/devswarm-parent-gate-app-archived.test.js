@@ -8,15 +8,15 @@
 //
 // FIX: the supervisor's reconcile sweep caches the app's OWN archived list
 // (`hivecontrol workspace list all`) per repoKey; this hook reads that cache
-// (never a spawn of its own) and suppresses ONLY the liveness axis, and ONLY
-// while the cache is FRESH. A STALE cache is ignored entirely — it can never
+// (never a spawn of its own) and, ONLY while the cache is FRESH, suppresses the
+// liveness axis (and, since 0.109.4, a child family's unread axis too). A STALE cache is ignored entirely — it can never
 // silently mute a live workspace.
 //
 // MUTATION LIST (proven RED against this file):
 //   M1: drop the appArchived consult -> kills "a row ABSENT ... no longer blocks".
 //   M2: drop the freshness bound -> kills "a STALE cache changes NOTHING".
-//   M3: let appArchived also zero realUnread
-//       -> kills "app-archived + REAL unread STILL blocks".
+//   M3: let appArchived also zero the Primary's OWN family's realUnread
+//       -> kills "OWN FAMILY: app-archived row ... STILL blocks".
 //   M4: drop the repos-root conjunct -> kills "a row outside `.devswarm/repos/`".
 //   M5: drop the grace conjunct -> kills "a row registered AFTER the snapshot".
 
@@ -186,7 +186,11 @@ test('a fresh cache under ANOTHER project\'s repoKey does not suppress', () => {
   } finally { a.cleanup(); h.cleanup(); }
 });
 
-test('LIVENESS AXIS ONLY: app-archived + REAL unread STILL blocks', () => {
+// 0.109.4: an archived CHILD family never blocks (see
+// devswarm-parent-gate-archived-unread.test.js). This row lives on the
+// Primary's OWN worktree, so it collapses into the Primary's own family, which
+// is never filtered: its real unread still blocks, attributed to "(you)".
+test('OWN FAMILY: app-archived row on the Primary\'s own worktree + REAL unread STILL blocks', () => {
   const h = makeHome();
   const a = makeAppWorktree();
   try {

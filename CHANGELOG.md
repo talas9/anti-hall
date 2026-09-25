@@ -6,6 +6,24 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.109.4
+
+### Fixes
+
+- **DevSwarm Stop gate: archived workspaces no longer block the Primary.** A
+  workspace archived in the DevSwarm app, archived by anti-hall, or marked with
+  `archive-ignore` no longer stops the Primary's turn, even if it still has unread
+  mail. Its mail is also no longer counted toward the NEGLECT warning or escalation.
+  At most one summary line is shown instead: "N archived workspace(s) still have
+  unread mail (ignored)". This check also reuses the cached copy of the DevSwarm
+  app's archived list.
+- **"Waiting on a human answer" now requires a running session.** A workspace is
+  only reported as waiting on a human answer if its session is still running and
+  its transcript shows the unanswered question. The gate used to report this for
+  sessions that had already ended.
+- Active workspaces are unchanged. Unread mail with no transcript still blocks the
+  Primary, as in 0.109.0.
+
 ## 0.109.3
 
 ### Fixed
