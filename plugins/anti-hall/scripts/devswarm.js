@@ -2401,7 +2401,7 @@ const VALUE_REQUIRED_FLAGS = new Set(['message', 'message-file']);
 // a mid-argv `--help` (e.g. `inbox read --help ws1`) would swallow the
 // FOLLOWING positional as its own value via the generic heuristic below,
 // same failure class BOOLEAN_ONLY_FLAGS already exists to close.
-const BOOLEAN_ONLY_FLAGS = new Set(['force', 'peek', 'answers', 'help', 'ack-after-print']);
+const BOOLEAN_ONLY_FLAGS = new Set(['force', 'peek', 'answers', 'help', 'ack-after-print', 'quiet', 'cc-primary']);
 // parseArgs(argv) -> { positionals: string[], flags: { name: string[] } }.
 // Supports `--name value`, `--name=value`, repeatable (`--set a --set b`), and
 // bare boolean flags (`--json`). Values are collected as arrays so a caller can
@@ -18428,7 +18428,7 @@ const VERB_HELP = {
   migrate: { synopsis: 'run the store forward-migration', mutates: 'MUTATES the store — this is a real migration run, not a dry check' },
   logs: { synopsis: 'query the shared devswarm JSONL log', mutates: 'read-only' },
   'migrate-owner-keys': { synopsis: 'forward-migrate descriptor owner keys', mutates: 'MUTATES descriptor files on disk' },
-  send: { synopsis: 'send a mesh message (--to/--broadcast)', mutates: 'MUTATES the store — appends a mesh message and may wake recipients' },
+  send: { synopsis: 'send a mesh message: --to <id>|--to-primary|--broadcast --message TEXT|--message-file <path>|--message-stdin [--urgency low|normal|high|urgent] [--question] [--answers] [--quiet] [--cc-primary]. `--quiet` prints one line ("sent seq N -> X, B bytes, ok") instead of the full JSON, and still prints "ok:false ..." + a non-zero exit on failure. `--cc-primary` (direct --to sends only) ALSO copies the Primary with the identical message body, best-effort — reported under the result\'s `ccPrimary`, never flips the primary send\'s own ok/exit code.', mutates: 'MUTATES the store — appends a mesh message (and, with --cc-primary, a second one to the Primary) and may wake recipients' },
   relay: { synopsis: 'relay <seq|receipt> --to <id> [--note-file <path>] — forward a message THIS caller already received (its own inbox) to <id> verbatim, prefixed with a provenance header ("relayed from X, seq N, M bytes"). <seq> is the row\'s own `seq` (from `inbox messages`/`read-primary`); <receipt> is a read-primary readReceiptId and resolves only when it covers exactly one message. Verifies the relayed byte length against the source and refuses (ok:false) on a mismatch or an empty source body — never a silent partial relay. Example: `relay 42 --to sibling-workspace-id`.', mutates: 'MUTATES the store — appends one mesh message (via `send`, under this file\'s own Primary-seat gate)' },
   roster: { synopsis: 'show the mesh roster (--ack clears your own broadcast-unread)', mutates: 'read-only, unless --ack is passed (clears broadcastUnread)' },
   'wake-directive': { synopsis: 'reprint the SessionStart mailbox wake directive', mutates: 'read-only' },
@@ -18738,9 +18738,43 @@ function runArmed(cmd, positionals, flags, ctx, argv) {
         return { code: r && r.ok ? 0 : 2, result: r };
       }
       case 'send': {
+        // --cc-primary (peer request F) needs the SAME resolved message body
+        // for both the sibling send and the Primary cc. --message/--message-
+        // file are safe to re-read from `flags` a second time, but a REAL
+        // --message-stdin reads fd 0, which a real pipe can only ever supply
+        // once — pre-resolve it here into `ctx.io.stdin` (cmdSend already
+        // prefers a string there over re-reading fd 0) so both sends below
+        // consume the identical, already-captured body, never fd 0 twice.
+        let sendCtx = ctx;
+        if (hasFlag(flags, 'cc-primary') && hasFlag(flags, 'message-stdin') && !(ctx.io && typeof ctx.io.stdin === 'string')) {
+          let stdinBody;
+          try { stdinBody = fs.readFileSync(0, 'utf8'); }
+          catch (e) { stdinBody = undefined; }
+          if (stdinBody !== undefined) sendCtx = Object.assign({}, ctx, { io: Object.assign({}, ctx.io, { stdin: stdinBody }) });
+        }
         // Send-time self-heal (Phase 7): runs before every mesh send.
-        const r = withSelfHeal(() => cmdSend(flags, ctx), ctx);
-        logVerbOutcome('send', one(flags, 'to'), r, ctx);
+        const r = withSelfHeal(() => cmdSend(flags, sendCtx), sendCtx);
+        logVerbOutcome('send', one(flags, 'to'), r, sendCtx);
+        // --cc-primary (peer request F): deliver to the sibling addressed by
+        // --to, AND copy the Primary, so two lanes can coordinate while the
+        // Primary still sees it. Best-effort/additive: fires ONLY on a
+        // successful direct --to send (never --broadcast/--to-primary, and
+        // never when the first send itself failed) and can NEVER flip the
+        // primary send's own `ok`/exit code — its own outcome is reported
+        // under `ccPrimary` on the result, exactly like `retiredDuplicates`
+        // etc. do elsewhere in this file.
+        if (r && r.ok && hasFlag(flags, 'cc-primary') && r.type === 'direct' && one(flags, 'to') !== undefined) {
+          const ccFlags = Object.assign({}, flags, { to: undefined, broadcast: undefined, 'to-primary': [true] });
+          delete ccFlags.to;
+          delete ccFlags.broadcast;
+          try {
+            const cc = withSelfHeal(() => cmdSend(ccFlags, sendCtx), sendCtx);
+            r.ccPrimary = cc;
+            logVerbOutcome('send-cc-primary', 'primary', cc, sendCtx);
+          } catch (e) {
+            r.ccPrimary = { ok: false, error: 'cc-primary send threw: ' + String((e && e.message) || e) };
+          }
+        }
         return { code: r.ok ? 0 : 2, result: r };
       }
       case 'relay': {
@@ -19021,6 +19055,19 @@ function inboxReadPrimaryTextLines(result) {
   return messages.map((m) => 'from: ' + (m && m.sender != null ? m.sender : '') + '\nseq: ' + (m && m.storeSeq)
     + '\n' + (m && m.body != null ? String(m.body) : '') + '\n').join('\n');
 }
+// sendQuietLine(result) -> the one-line `send --quiet` rendering (peer
+// request D): "sent seq N -> X, B bytes, ok" on success; a LOUD "ok:false
+// ..." line (never silently swallowed) on failure — the caller still sees
+// exactly why, and main()'s exit code stays non-zero exactly as the JSON
+// path already does (r.ok ? 0 : 2), so a script checking `$?` alone still
+// catches the failure even under --quiet.
+function sendQuietLine(result) {
+  if (result && result.ok) {
+    const to = result.type === 'broadcast' ? '(broadcast)' : (result.to != null ? String(result.to) : '(unknown)');
+    return 'sent seq ' + result.seq + ' -> ' + to + ', ' + result.bytes + ' bytes, ok';
+  }
+  return 'ok:false ' + String((result && result.error) || (result && result.reason) || 'send failed');
+}
 function main() {
   const argv = process.argv.slice(2);
   const { code, result } = run(argv);
@@ -19036,17 +19083,19 @@ function main() {
   // request can arrive as `help`, `-h`, or `<verb> --help` — the verb name in
   // argv[0] varies, but buildHelpResult() always stamps action:'help'.
   const isHelpResult = result && result.action === 'help';
-  // inbox read-primary --format text (peer request C): an opt-in ALTERNATE
-  // rendering of an otherwise-JSON verb, same `--json` override precedence
-  // as healthcheck/diagnose (an explicit --json always wins).
+  // inbox read-primary --format text (peer request C) and send --quiet (peer
+  // request D): both are opt-in ALTERNATE renderings of an otherwise-JSON
+  // verb, same `--json` override precedence as healthcheck/diagnose (an
+  // explicit --json always wins, so a caller can force the raw object back).
   const isInboxReadPrimaryText = argv[0] === 'inbox' && argv[1] === 'read-primary'
     && (argv.includes('--format=text') || (argv.includes('--format') && argv[argv.indexOf('--format') + 1] === 'text'));
+  const isSendQuiet = argv[0] === 'send' && argv.includes('--quiet');
   const wantHuman = (argv[0] === 'healthcheck' || argv[0] === 'diagnose' || argv[0] === 'app-state' || isHelpResult
-    || isInboxReadPrimaryText) && !argv.includes('--json');
+    || isInboxReadPrimaryText || isSendQuiet) && !argv.includes('--json');
   const out = wantHuman
     ? (argv[0] === 'healthcheck' ? healthcheckHumanLine(result) : (argv[0] === 'diagnose' ? diagnoseHumanLine(result)
       : (argv[0] === 'app-state' ? (result.text || JSON.stringify(result))
-        : (isInboxReadPrimaryText ? inboxReadPrimaryTextLines(result) : result.usage))))
+        : (isInboxReadPrimaryText ? inboxReadPrimaryTextLines(result) : (isSendQuiet ? sendQuietLine(result) : result.usage)))))
     : JSON.stringify(result);
   // fs.writeSync(1, ...) per repo rule (macOS node 18/20 exit-vs-async-flush race).
   fs.writeSync(1, out + '\n');
@@ -19058,9 +19107,9 @@ module.exports = {
   runningAntiHallVersion,
   appendIntoPartition, isIdLockHeld, withIdLockHeld,
   run, parseArgs, one, many, csvList,
-  // peer request B/C (SkyCrew + tf3 Primaries, 2026-09-26) — exported for
+  // peer request B/C/D/F (SkyCrew + tf3 Primaries, 2026-09-26) — exported for
   // direct unit testing:
-  cmdRelay, inboxReadPrimaryTextLines,
+  cmdRelay, inboxReadPrimaryTextLines, sendQuietLine,
   emitKnownWarning, resolveReadArgToId,
   buildDescriptorFromFlags, readDescriptorFile, descriptorPath,
   retireWorktreeDuplicates, isLiveSessionId, archiveLeftReason,
