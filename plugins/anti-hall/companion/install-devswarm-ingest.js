@@ -866,6 +866,21 @@ function defaultSchedRunViaPlan(spec) {
 // logs "[dry-run] would remove ..." instead of unlinking under --dry-run).
 function defaultSchedRm(p) { planRm(p); }
 
+// defaultUnitFileExists(p) — plain fs.existsSync, fail-open to false (a read
+// error is treated the same as "not present": nothing to unload). Read-only,
+// so — unlike planRun/planRm — it is NEVER gated on DRYRUN; checking whether a
+// file exists mutates nothing.
+function defaultUnitFileExists(p) {
+  try { return fs.existsSync(p); } catch (_) { return false; }
+}
+
+// defaultReadTextFile(p) — plain fs.readFileSync('utf8'), fail-open to null
+// (missing/unreadable file). Read-only, never DRYRUN-gated, same rationale as
+// defaultUnitFileExists.
+function defaultReadTextFile(p) {
+  try { return fs.readFileSync(p, 'utf8'); } catch (_) { return null; }
+}
+
 // defaultIsAlivePid(pid) — the same kill(pid,0)-based liveness probe already
 // used elsewhere in this file (unitLiveness's 'hash' branch above); duplicated
 // here (not exported/shared) so this module has no new internal coupling.
@@ -932,10 +947,31 @@ function stopLegacyUnitEntry(entry, opts) {
   const platform = o.platform || process.platform;
   const run = (o.io && o.io.schedRun) || defaultSchedRunViaPlan;
   const rm = (o.io && o.io.schedFs) || defaultSchedRm;
+  // BACKWARD-COMPATIBLE DEFAULT: any caller that already injects its own
+  // opts.io (every existing test, plus doctor-repair.js's orphan sweep) but
+  // does NOT opt into this check via io.schedFsExists gets `exists: true` —
+  // i.e. the OLD "always unload" behavior, unchanged. Only a REAL, io-less
+  // production call (main() -> reapLegacyUnitsForRepo, no `io` passed at all)
+  // gets the real fs.existsSync default — the actual fix — so no test needs
+  // updating just to keep passing, and the skip path is exercised only by a
+  // test that deliberately injects io.schedFsExists.
+  const exists = (o.io && o.io.schedFsExists) || (o.io ? (() => true) : defaultUnitFileExists);
   const marker = entry.marker || (entry.unit ? `# ${entry.unit}` : null);
   if (platform === 'darwin') {
     const plist = macPlistPath(entry.label);
-    run({ cmd: 'launchctl', args: ['unload', plist] }); // ignore err — best-effort
+    // Only spawn `launchctl unload` when there is actually something to
+    // unload: the plist file is present on disk, OR the label is currently
+    // loaded in launchd (pre-fetched ONCE per reap pass into
+    // opts.loadedLabels by reapLegacyUnitsForRepo — never re-probed per
+    // entry). Live evidence (SkyCrew workspace-spawn installer run): ~33
+    // already-reaped legacy per-worktree labels, each spawning `launchctl
+    // unload` anyway and printing "(not present)" for both the plist and the
+    // lock — this installer runs on EVERY workspace spawn, so that overhead
+    // was paid every single time with a guaranteed no-op outcome.
+    const loaded = !!(o.loadedLabels && o.loadedLabels.has(entry.label));
+    if (exists(plist) || loaded) {
+      run({ cmd: 'launchctl', args: ['unload', plist] }); // ignore err — best-effort
+    }
     rm(plist);
   } else if (platform === 'linux') {
     // Attempt BOTH mechanisms — each is a harmless no-op when not applicable
@@ -982,9 +1018,23 @@ function reapLegacyUnitsForRepo(mainWorktree, opts) {
   const o = opts || {};
   const plan = reapPlanForRepo(mainWorktree, o);
   const stopped = [];
+  // Pre-fetch the loaded-label set ONCE per reap pass (a single `launchctl
+  // list` probe — listLoadedIngestLabels/defaultListLoadedLaunchd, the SAME
+  // no-label-arg bulk form the v0.98 orphan sweep already uses) instead of
+  // letting each entry decide "is anything even loaded" off its own unload
+  // spawn. Only fetched on darwin (the platform with a per-unit spawn cost)
+  // and only when there is at least one entry to reap. A failure here
+  // fails open to null — stopLegacyUnitEntry then falls back to its
+  // plist-existence check alone, never blocking the reap.
+  let loadedLabels = null;
+  if ((o.platform || process.platform) === 'darwin' && plan.length > 0) {
+    try {
+      loadedLabels = new Set(listLoadedIngestLabels(o).map((l) => l && l.label).filter(Boolean));
+    } catch (_) { loadedLabels = null; }
+  }
   for (const entry of plan) {
     try {
-      stopLegacyUnitEntry(entry, o);
+      stopLegacyUnitEntry(entry, Object.assign({}, o, { loadedLabels }));
       stopped.push(entry);
     } catch (_) { /* fail-open: one bad worktree must never block reaping the rest */ }
   }
@@ -1114,8 +1164,30 @@ function macInstallProject(mainWorktree, repoKey, opts) {
   const o = opts || {};
   const label = labelForProject(repoKey);
   const plist = macPlistPath(label);
+  const desired = buildPlist({ label, workdir: mainWorktree });
   const pidBefore = readLaunchdPid(label, o);
-  planWrite(plist, buildPlist({ label, workdir: mainWorktree }));
+  // ALREADY-INSTALLED, UNCHANGED short-circuit: skip the write+unload+load
+  // entirely when the plist already on disk is byte-identical to what this
+  // call would write AND the label is currently loaded (a live pid). Live
+  // evidence (SkyCrew workspace-spawn installer run): this installer runs on
+  // EVERY workspace spawn and, before this fix, unconditionally rewrote +
+  // unloaded + reloaded an already-healthy daemon each time — restarting a
+  // perfectly fine process for no reason, discarding its accumulated monitor
+  // backoff/history, and paying the waitForLaunchdUnitGone poll every time.
+  // The real-fs default is skipped under DRYRUN (NODE_TEST_CONTEXT/--dry-run/
+  // TMP_HOME_GUARD) so a test that omits o.io.readUnitFile never touches the
+  // real HOME's ~/Library/LaunchAgents at all — it simply gets `existing:
+  // null`, which is the SAME "nothing to compare, go install" outcome as a
+  // fresh machine. A test that wants to exercise the skip path injects
+  // o.io.readUnitFile explicitly (a pure in-memory mock).
+  const readExisting = (o.io && o.io.readUnitFile) || (DRYRUN ? () => null : defaultReadTextFile);
+  let existing = null;
+  try { existing = readExisting(plist); } catch (_) { existing = null; }
+  if (existing !== null && existing === desired && pidBefore !== null) {
+    say(`ingest LaunchAgent ${label} already installed, unchanged (project ${repoKey}, worktree ${mainWorktree}, pid ${pidBefore}). Logs: ${LOG}`);
+    return;
+  }
+  planWrite(plist, desired);
   planRun('launchctl', ['unload', plist]); // ignore err
   waitForLaunchdUnitGone(pidBefore, o);
   planRun('launchctl', ['load', plist]);

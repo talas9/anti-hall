@@ -895,6 +895,102 @@ test('doctor --fix: alive + monitor SUCCEEDING -> still reported healthy (no fal
 });
 
 // ---------------------------------------------------------------------------
+// 6e. 0.109 — "hivecontrol is SLOW" must NOT be treated like "daemon is DEAD".
+// A daemon whose monitor calls time out (ETIMEDOUT, or any transient failure)
+// never stamps a PERMANENT spawn-error code (ENOENT/EACCES/ENOTDIR — see
+// devswarm-ingest.js's PERMANENT_SPAWN_ERROR_CODES/monitorFailureCode) onto
+// the heartbeat — lastMonitorErrorCode stays null. Reinstalling in that case
+// only interrupts an otherwise-alive, otherwise-fresh-heartbeat daemon without
+// making hivecontrol respond any faster. A genuine config fault (a resolvable
+// ENOENT/EACCES/ENOTDIR code) is the opposite: reinstall IS the remedy there
+// (re-bakes the resolved binary + PATH), so that path must keep reinstalling.
+// These three probe the gate-OPEN decision via --dry-run (never a real
+// launchctl/systemd call), matching every other reinstall-decision test in
+// this file's own documented posture.
+// ---------------------------------------------------------------------------
+test('doctor --dry-run (gate open): alive + monitor SLOW/TIMING OUT (no config code) -> plain-language status, NEVER would-reinstall', { skip: process.platform === 'win32' }, () => {
+  const home = mkTmp('mf-slow');
+  const cwd = makeGitRepo('mf-slow-cwd');
+  try {
+    seedUserSettings(home);
+    const { unitPath, repoKey } = writeOkIngestUnitFixture(home, cwd);
+    const hb = heartbeatPathFor(home, repoKey);
+    const lock = projectLockPathFor(home, repoKey);
+    fs.mkdirSync(path.dirname(hb), { recursive: true });
+    fs.mkdirSync(path.dirname(lock), { recursive: true });
+    // FRESH heartbeat + a live-pid lock (daemon is genuinely alive) — but every
+    // monitor call is timing out. No lastMonitorErrorCode (ETIMEDOUT is
+    // transient, per the breaker — it never stamps a permanent code).
+    fs.writeFileSync(hb, JSON.stringify({
+      ts: Date.now(), pid: process.pid, workspaceId: 'p',
+      consecutiveMonitorFailures: 40, lastMonitorOkMs: null, lastMonitorErrorCode: null,
+      lastMonitorError: 'monitor hivecontrol ETIMEDOUT after 35000ms',
+      startedAtMs: Date.now() - (20 * 60 * 1000),
+      hivecontrolBin: 'hivecontrol', hivecontrolSource: 'path',
+    }));
+    fs.writeFileSync(lock, JSON.stringify({ pid: process.pid, ts: Date.now() }));
+    const before = fs.readFileSync(unitPath, 'utf8');
+
+    const r = runDoctor({
+      cwd, args: ['--dry-run'],
+      env: { HOME: home, USERPROFILE: home, ANTIHALL_DEVSWARM_SUPERVISOR: 'on', DEVSWARM_REPO_ID: 'repo-x' },
+    });
+    assert.doesNotMatch(r.out, /GATED \[ingest\]/, 'never gated — no repair action is being decided');
+    assert.doesNotMatch(r.out, /would \(re\)install the ingest daemon/, 'a slow hivecontrol must NEVER trigger a reinstall:\n' + r.out);
+    assert.doesNotMatch(r.out, /ingest daemon installed and healthy/, 'must not be misreported as plain healthy either');
+    assert.match(r.out, /SLOW or timing out/i, 'reports the plain-language slow status:\n' + r.out);
+    assert.match(r.out, /NOT restarted/i, 'says explicitly that it is not restarted:\n' + r.out);
+    assert.strictEqual(fs.readFileSync(unitPath, 'utf8'), before, 'the unit must never be rewritten for a slow-hivecontrol status');
+  } finally { rm(home); rm(cwd); }
+});
+
+test('doctor --dry-run (gate open): alive + monitor FAILING with a genuine config code (ENOENT) -> STILL would-reinstall (regression guard)', { skip: process.platform === 'win32' }, () => {
+  const home = mkTmp('mf-config-fault');
+  const cwd = makeGitRepo('mf-config-fault-cwd');
+  try {
+    seedUserSettings(home);
+    const { repoKey } = writeOkIngestUnitFixture(home, cwd);
+    const hb = heartbeatPathFor(home, repoKey);
+    const lock = projectLockPathFor(home, repoKey);
+    fs.mkdirSync(path.dirname(hb), { recursive: true });
+    fs.mkdirSync(path.dirname(lock), { recursive: true });
+    fs.writeFileSync(hb, JSON.stringify({
+      ts: Date.now(), pid: process.pid, workspaceId: 'p',
+      consecutiveMonitorFailures: 120, lastMonitorOkMs: null, lastMonitorErrorCode: 'ENOENT',
+      lastMonitorError: 'spawnSync hivecontrol ENOENT',
+      hivecontrolBin: 'hivecontrol', hivecontrolSource: 'path',
+      daemonPath: '/usr/bin:/bin:/usr/sbin:/sbin',
+    }));
+    fs.writeFileSync(lock, JSON.stringify({ pid: process.pid, ts: Date.now() }));
+
+    const r = runDoctor({
+      cwd, args: ['--dry-run'],
+      env: { HOME: home, USERPROFILE: home, ANTIHALL_DEVSWARM_SUPERVISOR: 'on', DEVSWARM_REPO_ID: 'repo-x' },
+    });
+    assert.doesNotMatch(r.out, /GATED \[ingest\]/, 'must NOT be gated when the gate is open');
+    assert.match(r.out, /would \(re\)install the ingest daemon.*monitor-config-failing/,
+      'a genuine config fault (resolvable spawn-error code) must still reinstall:\n' + r.out);
+  } finally { rm(home); rm(cwd); }
+});
+
+test('doctor --dry-run (gate open): install-shape ok but DEAD daemon (no heartbeat/lock at all) -> STILL would-reinstall (regression guard)', { skip: process.platform === 'win32' }, () => {
+  const home = mkTmp('mf-dead-daemon');
+  const cwd = makeGitRepo('mf-dead-daemon-cwd');
+  try {
+    seedUserSettings(home);
+    writeOkIngestUnitFixture(home, cwd); // install-shape 'ok', but NO heartbeat/lock -> not alive
+
+    const r = runDoctor({
+      cwd, args: ['--dry-run'],
+      env: { HOME: home, USERPROFILE: home, ANTIHALL_DEVSWARM_SUPERVISOR: 'on', DEVSWARM_REPO_ID: 'repo-x' },
+    });
+    assert.doesNotMatch(r.out, /GATED \[ingest\]/, 'must NOT be gated when the gate is open');
+    assert.match(r.out, /would \(re\)install the ingest daemon.*dead-daemon/,
+      'a genuinely dead daemon must still reinstall:\n' + r.out);
+  } finally { rm(home); rm(cwd); }
+});
+
+// ---------------------------------------------------------------------------
 // 7. Backward-compat: --check is PURE read-only (no Repair section, exit 0).
 // ---------------------------------------------------------------------------
 test('doctor --check: no Repair section, exits 0 on a clean fake machine (read-only)', () => {

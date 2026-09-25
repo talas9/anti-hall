@@ -84,17 +84,30 @@ gated the same way):
    (default 10 min) — since the last success, or since the daemon started
    (`startedAtMs`) when it has never succeeded; inside that window a fresh
    daemon reports **starting up**, not failing. The heartbeat also carries
-   `lastMonitorAttemptMs` and `lastMonitorError` — reinstalling bakes
-   the resolved absolute binary + `PATH` into the regenerated unit, which is
-   the actual remedy. A heartbeat missing these fields (an older daemon build
-   that has not been relaunched yet) is UNKNOWN, never a fault. The SAME
-   verdict (same thresholds, same missing-fields=UNKNOWN rule — one shared
-   predicate, `hooks/lib/doctor-repair.js`'s exported `monitorFaultFor()`) also
-   drives the **in-session hot-path banner**: `companion/lib/ingest-health.js`'s
+   `lastMonitorAttemptMs` and `lastMonitorError`. **The remedy depends on
+   WHICH kind of fault it is** (`hooks/lib/doctor-repair.js`'s exported
+   `isMonitorConfigFault()`): a genuine config fault — the daemon's own
+   monitor breaker only stamps `lastMonitorErrorCode` for a PERMANENT
+   spawn-error code (`ENOENT`/`EACCES`/`ENOTDIR` — the binary itself cannot be
+   resolved/executed) — is repaired by reinstalling, which bakes the resolved
+   absolute binary + `PATH` into the regenerated unit. A **slow or
+   timing-out** `hivecontrol` (`ETIMEDOUT`, or any failure without a
+   resolvable spawn code — `lastMonitorErrorCode` stays `null`) is reported as
+   its own plain-language **status** (`monitorSlowReason()`) and is **never
+   reinstalled or restarted**: the daemon process is alive and its heartbeat
+   is fresh, so a reinstall would only interrupt an otherwise-healthy daemon
+   without making `hivecontrol` respond any faster. A heartbeat missing these
+   fields (an older daemon build that has not been relaunched yet) is
+   UNKNOWN, never a fault. The SAME verdict (same thresholds, same
+   missing-fields=UNKNOWN rule — one shared predicate, `hooks/lib/
+   doctor-repair.js`'s exported `monitorFaultFor()`) also drives the
+   **in-session hot-path banner**: `companion/lib/ingest-health.js`'s
    `daemonHealth()` returns `status:'failed'` (distinct from `'healthy'` and
-   `'stale'`) for this case, and `buildMonitorFaultBanner()` renders the
-   one-line in-session warning — so a daemon that is alive-but-broken is never
-   misreported as a mere staleness blip.
+   `'stale'`) for either kind of monitor fault, and `buildMonitorFaultBanner()`
+   renders the one-line in-session warning — so a daemon that is
+   alive-but-broken (of either kind) is never misreported as a mere staleness
+   blip, and repair mode alone decides whether that means reinstall or just a
+   status line.
 4. **No other consumer** — reads the per-worktree ingest lock(s) and cross-checks
    against a `ps` scan for `hivecontrol workspace monitor` processes; more than
    one, or one holding no lock, is a high-severity WARN (report-only — the

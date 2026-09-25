@@ -208,6 +208,10 @@ function monitorStartingUp(home, repoKey, now, io) {
 // monitorFaultReason(fault) -> the operator-facing FAILURE line. Names the
 // resolved binary, the daemon's ACTUAL inherited PATH when the daemon recorded
 // one, and the remedy (which is exactly what the reinstall below performs).
+// ONLY called for a genuine configuration fault (see isMonitorConfigFault) —
+// a reinstall is the correct remedy there because it re-bakes the resolved
+// binary + PATH; it is NEVER the remedy for a slow/timing-out hivecontrol
+// (see monitorSlowReason below), which reinstalling cannot speed up.
 function monitorFaultReason(fault, workingDir) {
   const f = fault || {};
   return 'ingest daemon is RUNNING but its `hivecontrol workspace monitor` calls are FAILING ('
@@ -220,6 +224,37 @@ function monitorFaultReason(fault, workingDir) {
     + (workingDir ? '; WorkingDirectory ' + workingDir : '')
     + '. Reinstalling bakes the resolved absolute binary + PATH into the scheduler unit; or export '
     + 'ANTIHALL_DEVSWARM_HIVECONTROL=/absolute/path/to/hivecontrol and reinstall.';
+}
+
+// isMonitorConfigFault(fault) -> bool. True ONLY when the recorded failure
+// code is a PERMANENT spawn/config error (ENOENT/EACCES/ENOTDIR — the
+// daemon's own PERMANENT_SPAWN_ERROR_CODES list, companion/devswarm-ingest.js
+// — "the hivecontrol binary itself cannot be resolved/executed"). A timeout
+// (ETIMEDOUT) or any other transient failure NEVER stamps beat.lastMonitorErrorCode
+// (the daemon's breaker only sets a code for a permanent/config fault — see
+// monitorFailureCode() there), so fault.code is null for "hivecontrol is just
+// slow" — the ONLY signal this module has for that distinction, and it is
+// exactly the one the daemon already computes. Reinstalling fixes a config
+// fault (re-bakes the resolved binary/PATH); it does nothing for a slow
+// hivecontrol and only interrupts an otherwise-alive, otherwise-healthy daemon.
+function isMonitorConfigFault(fault) {
+  return !!(fault && typeof fault.code === 'string' && fault.code);
+}
+
+// monitorSlowReason(fault, workingDir) -> the operator-facing STATUS line for
+// a monitor fault that is NOT a config fault (fault.code is null): the daemon
+// process is alive, its heartbeat is fresh, but `hivecontrol workspace
+// monitor` itself is slow/timing out/erroring without a resolvable spawn
+// code. Reported as a plain-language status, never as a reason to reinstall.
+function monitorSlowReason(fault, workingDir) {
+  const f = fault || {};
+  return 'ingest daemon is RUNNING and its heartbeat is fresh, but `hivecontrol workspace monitor` is '
+    + 'SLOW or timing out ('
+    + f.consecutive + ' consecutive'
+    + (f.lastOkMs === null ? ', no successful poll since start' + (Number.isFinite(f.startedAtMs) ? ' ' + Math.round((Date.now() - f.startedAtMs) / 60000) + 'm ago' : '') : (f.okStale ? ', last success ' + Math.round((Date.now() - f.lastOkMs) / 60000) + 'm ago' : ''))
+    + (f.error ? '; last error: ' + f.error : '')
+    + ') — the daemon itself is fine; reinstalling would not make hivecontrol faster, so it is NOT restarted'
+    + (workingDir ? ' (WorkingDirectory ' + workingDir + ')' : '') + '.';
 }
 
 // ---------------------------------------------------------------------------
@@ -1669,9 +1704,21 @@ function runRepairs(opts) {
             ? 'ingest daemon installed and STARTING UP — no monitor poll has succeeded yet (within the devswarm.monitorNoOkFailMin window; WorkingDirectory ' + read.workingDir + ')'
             : 'ingest daemon installed and healthy (WorkingDirectory ' + read.workingDir + ')');
         }
+      } else if (cls === 'ok' && alive && monitorFault && !isMonitorConfigFault(monitorFault)) {
+        // SLOW/TIMING-OUT hivecontrol, NOT a dead/misconfigured daemon: `alive`
+        // above is only ever true when daemonHealth()'s baseHealthy passed
+        // (fresh heartbeat + live-pid lock + same incarnation), so the daemon
+        // process itself is positively fine here — it is `hivecontrol workspace
+        // monitor` that is slow/timing out (ETIMEDOUT) or failing without a
+        // resolvable spawn code. A reinstall would only interrupt an otherwise-
+        // healthy daemon and cannot make hivecontrol respond faster — see
+        // isMonitorConfigFault's comment. Report-only, exactly like the healthy
+        // branch above; never gated, dry-run, or reinstalled.
+        push('ingest', 'install-ingest', 'skipped', monitorSlowReason(monitorFault, read.workingDir));
       } else {
         const deadDaemon = cls === 'ok' && !alive; // install-shape fine, liveness check failed
-        const reason = monitorFault ? monitorFaultReason(monitorFault, read.workingDir)
+        const configFault = monitorFault && isMonitorConfigFault(monitorFault) ? monitorFault : null;
+        const reason = configFault ? monitorFaultReason(configFault, read.workingDir)
           : cls === 'absent' ? 'ingest daemon not installed'
           : cls === 'wrong-path' ? 'ingest daemon WorkingDirectory is wrong (' + (read.workingDir || 'unset') + ')'
           : cls === 'unstable-script' ? 'ingest daemon ExecStart script is not the current stable build (' + (read.scriptPath || 'unset') + ' — pinned to an old/relocatable path)'
@@ -1682,7 +1729,7 @@ function runRepairs(opts) {
         } else if (dryRun) {
           let wt = cwd;
           try { const { resolveWorktree } = ingestConst(); wt = resolveWorktree(cwd) || cwd; } catch (_) {}
-          push('ingest', 'install-ingest', 'skipped', '[dry-run] would (re)install the ingest daemon from ' + wt + ' (' + (monitorFault ? 'monitor-failing' : deadDaemon ? 'dead-daemon' : cls) + ')');
+          push('ingest', 'install-ingest', 'skipped', '[dry-run] would (re)install the ingest daemon from ' + wt + ' (' + (configFault ? 'monitor-config-failing' : deadDaemon ? 'dead-daemon' : cls) + ')');
         } else {
           spawnInstaller(INGEST_INSTALLER, [], cwd, env);
           const read2 = readInstalledIngestWorkingDir({ home, platform, worktree: currentWorktree });
@@ -3150,6 +3197,7 @@ module.exports = {
   checkSupersededArchivedMarkers,
   // v0.66 — "alive but ingesting nothing" (monitor-outcome) detection:
   monitorFaultFor, monitorFaultReason, monitorStartingUp, monitorNoOkWindowMs,
+  isMonitorConfigFault, monitorSlowReason,
   MONITOR_FAILURE_FAIL_THRESHOLD, MONITOR_OK_STALE_MS, MONITOR_NO_OK_FAIL_MIN_DEFAULT,
   // stale-running (pacing-fix delivery gap) detection:
   staleRunningCheck, compareSemverLite,

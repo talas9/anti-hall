@@ -63,13 +63,20 @@ data staleness (gated on the daemon RUNNING + unread backlog —
 never flags an idle system), daemons RUNNING vs merely installed (report-only, never
 restarts) — **including (v0.66) the "alive but ingesting nothing" case**: a daemon can be
 RUNNING (fresh heartbeat, live-pid lock) while every `hivecontrol workspace monitor` spawn
-still FAILS (a permanent config fault, e.g. ENOENT/EACCES/ENOTDIR); the heartbeat carries
-the monitor outcome (`consecutiveMonitorFailures`/`lastMonitorOkMs`/`lastMonitorErrorCode`),
-and doctor reports this as its own FAILURE (not "healthy") once 3+ consecutive failures are
-recorded or no monitor poll has succeeded for longer than `devswarm.monitorNoOkFailMin`
-(default 10 min; since the daemon's start when it never succeeded — inside that window a
-fresh daemon reports "starting up", not failing) — a heartbeat missing
-these fields (older daemon build) is UNKNOWN, never a fault. The same shared predicate
+still FAILS; the heartbeat carries the monitor outcome
+(`consecutiveMonitorFailures`/`lastMonitorOkMs`/`lastMonitorErrorCode`), and doctor reports
+this as its own FAILURE (not "healthy") once 3+ consecutive failures are recorded or no
+monitor poll has succeeded for longer than `devswarm.monitorNoOkFailMin` (default 10 min;
+since the daemon's start when it never succeeded — inside that window a fresh daemon reports
+"starting up", not failing) — a heartbeat missing these fields (older daemon build) is
+UNKNOWN, never a fault. **The repair action depends on which kind of fault it is**
+(`isMonitorConfigFault()`): a permanent config fault (e.g. ENOENT/EACCES/ENOTDIR — the
+binary itself cannot be resolved) is repaired by reinstalling; a slow or timing-out
+`hivecontrol` (ETIMEDOUT, or any failure with no resolvable spawn code —
+`lastMonitorErrorCode` stays null) is reported as its own plain-language status
+(`monitorSlowReason()`) and is NEVER reinstalled or restarted — the daemon process is alive
+and its heartbeat is fresh, so reinstalling would only interrupt it without making
+`hivecontrol` respond any faster. The same shared predicate
 (`hooks/lib/doctor-repair.js`'s exported `monitorFaultFor()`) also drives the in-session
 hot-path banner on the Claude side (`companion/lib/ingest-health.js`'s `daemonHealth()`
 returns `status:'failed'`, distinct from `'healthy'`/`'stale'`) — and a no-other-consumer

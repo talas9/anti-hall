@@ -196,6 +196,173 @@ test('reapLegacyUnitsForRepo returns {plan:[],stopped:[]} when no worktrees are 
 });
 
 // ---------------------------------------------------------------------------
+// 0.109 — installer efficiency (SkyCrew live evidence): this installer runs
+// on EVERY workspace spawn. Before this fix, `reapLegacyUnitsForRepo` spawned
+// `launchctl unload` for EVERY enumerated legacy worktree unconditionally, so
+// ~33 already-reaped legacy labels each paid a real spawn (printing
+// "(not present)" for both the plist and the lock) on EVERY single spawn.
+// `stopLegacyUnitEntry` now checks the plist's on-disk existence (io.
+// schedFsExists) OR whether the label is loaded (a set pre-fetched ONCE via
+// io.listLoaded, not re-probed per entry) BEFORE spawning `launchctl unload`.
+// ---------------------------------------------------------------------------
+test('reapLegacyUnitsForRepo (darwin): absent legacy units (no plist, not loaded) -> ZERO launchctl unload spawns', () => {
+  const schedCalls = [];
+  const io = {
+    run: () => ({ ok: true, raw: PORCELAIN_TWO_WORKTREES }),
+    schedRun: (spec) => { schedCalls.push(spec); return { status: 0, stdout: '', error: null }; },
+    schedFs: () => {},
+    schedFsExists: () => false, // neither worktree's plist is present on disk
+    listLoaded: () => [], // launchd has nothing loaded for either label either
+  };
+  const result = m.reapLegacyUnitsForRepo('/repo/main', { platform: 'darwin', io });
+  assert.equal(result.plan.length, 2, 'both worktrees are still enumerated');
+  assert.equal(result.stopped.length, 2, 'both are still reported stopped (the rm side is unconditional/cheap)');
+  const unloadCmds = schedCalls.filter((c) => c.cmd === 'launchctl' && c.args[0] === 'unload');
+  assert.equal(unloadCmds.length, 0, 'no launchctl unload spawn for a unit that is neither on disk nor loaded');
+});
+
+test('reapLegacyUnitsForRepo (darwin): a legacy unit that IS loaded (but its plist is already gone) -> still unloaded exactly once', () => {
+  const schedCalls = [];
+  const io = {
+    run: () => ({ ok: true, raw: PORCELAIN_TWO_WORKTREES }),
+    schedRun: (spec) => { schedCalls.push(spec); return { status: 0, stdout: '', error: null }; },
+    schedFs: () => {},
+    schedFsExists: () => false,
+    listLoaded: () => {
+      // Report ONE of the two worktrees' labels as loaded — proves the
+      // pre-fetched loaded-label Set (not a per-entry probe) still drives an
+      // unload for a unit that genuinely needs one.
+      const wt = m.parseWorktreeListPorcelain(PORCELAIN_TWO_WORKTREES)[0];
+      return [{ label: m.labelForWorktree(wt), pid: 4242, lastExit: '0' }];
+    },
+  };
+  const result = m.reapLegacyUnitsForRepo('/repo/main', { platform: 'darwin', io });
+  const unloadCmds = schedCalls.filter((c) => c.cmd === 'launchctl' && c.args[0] === 'unload');
+  assert.equal(unloadCmds.length, 1, 'exactly the ONE loaded label is unloaded — not the other, absent one');
+  assert.equal(result.stopped.length, 2);
+});
+
+test('reapLegacyUnitsForRepo (darwin): a legacy unit whose plist IS present on disk -> still unloaded even if not reported loaded', () => {
+  const schedCalls = [];
+  const io = {
+    run: () => ({ ok: true, raw: PORCELAIN_TWO_WORKTREES }),
+    schedRun: (spec) => { schedCalls.push(spec); return { status: 0, stdout: '', error: null }; },
+    schedFs: () => {},
+    schedFsExists: () => true, // both plists present on disk
+    listLoaded: () => [],
+  };
+  const result = m.reapLegacyUnitsForRepo('/repo/main', { platform: 'darwin', io });
+  const unloadCmds = schedCalls.filter((c) => c.cmd === 'launchctl' && c.args[0] === 'unload');
+  assert.equal(unloadCmds.length, 2, 'plist-on-disk alone is still sufficient to unload, independent of the loaded-label set');
+});
+
+test('reapLegacyUnitsForRepo (darwin): empty plan (nothing to reap) never even fetches the loaded-label set', () => {
+  const io = {
+    run: () => ({ ok: false, raw: '' }),
+    schedRun: () => { throw new Error('must not be called — nothing to reap'); },
+    schedFs: () => { throw new Error('must not be called — nothing to reap'); },
+    schedFsExists: () => { throw new Error('must not be called — nothing to reap'); },
+    listLoaded: () => { throw new Error('must not be called — nothing to reap, no launchctl list needed'); },
+  };
+  const result = m.reapLegacyUnitsForRepo('/repo/main', { platform: 'darwin', io });
+  assert.deepEqual(result, { plan: [], stopped: [] });
+});
+
+// ---------------------------------------------------------------------------
+// 0.109 — macInstallProject "already installed, unchanged" short-circuit.
+// Before this fix, macInstallProject unconditionally wrote the plist, then
+// unloaded + (after waiting for the old pid to exit) reloaded it — on EVERY
+// call, i.e. on every single workspace spawn, restarting an already-healthy
+// daemon for no reason.
+// ---------------------------------------------------------------------------
+test('macInstallProject: plist unchanged AND label already loaded (live pid) -> "already installed, unchanged", NO write/unload/load', () => {
+  const label = m.labelForProject('deadbeef01234567');
+  const desired = m.buildPlist({ label, workdir: '/repo/main' });
+  const runCalls = [];
+  m.macInstallProject('/repo/main', 'deadbeef01234567', {
+    io: {
+      run: (cmd, args) => {
+        runCalls.push({ cmd, args: args.slice() });
+        if (cmd === 'launchctl' && args[0] === 'list') return { status: 0, stdout: '"PID" = 7777;' };
+        return { status: 0, stdout: '' };
+      },
+      readUnitFile: (p) => { assert.ok(String(p).endsWith(label + '.plist'), 'readUnitFile is asked for THIS label\'s plist path: ' + p); return desired; },
+      isAlive: () => { throw new Error('must not be called — nothing to wait for, no unload happened'); },
+      sleep: () => { throw new Error('must not sleep — the daemon was never unloaded'); },
+      kill: () => { throw new Error('must not kill — the daemon was never unloaded'); },
+    },
+  });
+  // Only the ONE `launchctl list` probe (readLaunchdPid) — never `unload`/`load`.
+  assert.equal(runCalls.length, 1, 'only the pid-probe ran, no unload/load:\n' + JSON.stringify(runCalls));
+  assert.equal(runCalls[0].args[0], 'list');
+});
+
+// captureSay(fn) -> stdout text written while fn() runs. macInstallProject's
+// unload/load calls go through this module's OWN module-level planRun (DRYRUN-
+// protected under `node --test`, exactly like every other install call in this
+// file — see install-devswarm-ingest-daemon-wait.test.js's own header comment)
+// rather than io.run (io.run is ONLY the readLaunchdPid pid-probe seam), so
+// "did it actually (re)install" has to be read off the `say()` lines
+// (process.stdout.write) planRun/planWrite/the final "installed LaunchAgent"
+// line emit — never off io.run call counts, which stay constant either way.
+function captureSay(fn) {
+  const orig = process.stdout.write;
+  let out = '';
+  process.stdout.write = (chunk, ...rest) => { out += String(chunk); return true; };
+  try { fn(); } finally { process.stdout.write = orig; }
+  return out;
+}
+
+test('macInstallProject: plist CONTENT differs (e.g. worktree changed) -> still writes + unloads + reloads', () => {
+  const label = m.labelForProject('cafef00d01234567');
+  const runCalls = [];
+  const out = captureSay(() => {
+    m.macInstallProject('/repo/new-main', 'cafef00d01234567', {
+      io: {
+        run: (cmd, args) => {
+          runCalls.push({ cmd, args: args.slice() });
+          if (cmd === 'launchctl' && args[0] === 'list') return { status: 0, stdout: '"PID" = 5150;' };
+          return { status: 0, stdout: '' };
+        },
+        // Existing on-disk plist is for a DIFFERENT worktree than the one
+        // being installed now — content mismatch must force the reload path.
+        readUnitFile: () => m.buildPlist({ label, workdir: '/repo/OLD-main' }),
+        isAlive: () => { return false; }, // old pid already gone
+        sleep: () => {},
+        kill: () => { throw new Error('must not kill — old pid already reports dead'); },
+      },
+    });
+  });
+  assert.doesNotMatch(out, /already installed, unchanged/, 'content differs -> must NOT take the skip path:\n' + out);
+  assert.match(out, /would write .*\.plist|wrote .*\.plist/, 'content differs -> still (re)writes the plist:\n' + out);
+  assert.match(out, /would run: launchctl .*unload|ran: launchctl .*unload/, 'content differs -> still unloads:\n' + out);
+  assert.match(out, /would run: launchctl .*load(?! .*unload)|ran: launchctl .*load(?! .*unload)|installed LaunchAgent/, 'content differs -> still (re)loads:\n' + out);
+});
+
+test('macInstallProject: label is NOT currently loaded (no live pid), even with byte-identical content -> still reinstalls', () => {
+  const label = m.labelForProject('01234567cafef00d');
+  const desired = m.buildPlist({ label, workdir: '/repo/main' });
+  const runCalls = [];
+  const out = captureSay(() => {
+    m.macInstallProject('/repo/main', '01234567cafef00d', {
+      io: {
+        run: (cmd, args) => {
+          runCalls.push({ cmd, args: args.slice() });
+          if (cmd === 'launchctl' && args[0] === 'list') return { status: 113, stdout: '' }; // not loaded
+          return { status: 0, stdout: '' };
+        },
+        readUnitFile: () => desired, // byte-identical, but nothing is actually running
+        isAlive: () => { throw new Error('must not be called — no prior pid to wait for'); },
+        sleep: () => { throw new Error('must not sleep — nothing to wait for'); },
+        kill: () => { throw new Error('must not kill — no prior pid'); },
+      },
+    });
+  });
+  assert.doesNotMatch(out, /already installed, unchanged/, 'not loaded -> the skip condition (pidBefore !== null) never holds:\n' + out);
+  assert.match(out, /installed LaunchAgent/, 'not loaded -> still (re)installs:\n' + out);
+});
+
+// ---------------------------------------------------------------------------
 // listInstalledIngestUnits — repoKey shape recognized, DISJOINT from the
 // legacy 8-hex shape (D28): a repoKey unit is NEVER matched by the legacy
 // reap filter, and vice versa.
