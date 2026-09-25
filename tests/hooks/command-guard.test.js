@@ -157,6 +157,11 @@ const BLOCK = [
   'gh api repos/o/r/issues --method DELETE',
   'gh api repos/o/r/issues -f title=x',
   'gh api graphql -F query=x',
+  // defect.js: only report/list/show are exempt (append-only or read). `rule`
+  // (maintainer ruling) and `archive` (rotation sweep — moves files) mutate
+  // more than an append and must stay gated.
+  'node plugins/anti-hall/scripts/defect.js rule abc123 --status fixed',
+  'node plugins/anti-hall/scripts/defect.js archive',
 ];
 
 const ALLOW = [
@@ -267,6 +272,14 @@ const ALLOW = [
   'gh pr checks 1',
   'gh api repos/o/r/issues',
   'gh workflow list',
+  // defect.js report/list/show: append-only (report) or read-only (list/show)
+  // anti-hall CLI subcommands — same narrow, anchored carve-out discipline as
+  // the jev-setup.js/settings.js/jev-report.js exemptions above.
+  'node plugins/anti-hall/scripts/defect.js report --class x --sev p2 --sym test',
+  'node plugins/anti-hall/scripts/defect.js list --open',
+  'node plugins/anti-hall/scripts/defect.js list --json',
+  'node plugins/anti-hall/scripts/defect.js show abc123',
+  'node plugins/anti-hall/scripts/defect.js show abc123 --json',
 ];
 
 for (const cmd of BLOCK) {

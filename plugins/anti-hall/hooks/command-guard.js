@@ -137,6 +137,15 @@ const LIGHT_EXCEPTIONS = [
   /\bnode\s+(?:\S*[\\/])?scripts[\\/]jev-setup\.js\s+(?:-\S+\s+)*status\b/i,
   /\bnode\s+(?:\S*[\\/])?scripts[\\/]settings\.js\s+(?:-\S+\s+)*(?:show|get)\b/i,
   /\bnode\s+(?:\S*[\\/])?scripts[\\/]jev-report\.js\b(?![^\n]*\b(?:label|prune-audit)\b)/i,
+  //   defect.js report|list|show — anti-hall's own defect-report CLI (see
+  //   scripts/defect.js). ONLY these three subcommands are exempt: `report`
+  //   appends one line to a defect file (never rewrites/deletes), and
+  //   `list`/`show` are pure reads. Deliberately NARROWER than this: `rule`
+  //   (maintainer ruling) and `archive` (rotation sweep — MOVES files between
+  //   directories) are NOT matched here, so they stay gated like every other
+  //   mutating command — anchored the same way as the exemptions above
+  //   (parent dir segment anchored at token start or path separator).
+  /\bnode\s+(?:\S*[\\/])?scripts[\\/]defect\.js\s+(?:-\S+\s+)*(?:report|list|show)\b/i,
   // hooks/doctor.js: read-only diagnostics by default — --repair/--fix (and the
   // explicit opt-in repair flags, including --reclaim-ingest-lock, which forces
   // a stale-lock takeover — a mutating action) switch it to a mutating repair
