@@ -44,6 +44,7 @@
 const os = require('os');
 const fs = require('fs');
 const path = require('path');
+const lockLib = require('./lock.js');
 const { spawn } = require('child_process');
 const { devswarmRoot, livenessPathFor, writeVerdict, unreadBacklog, isSafeId } = require('./liveness.js');
 const { verifyTarget } = require('./target-session.js');
@@ -99,135 +100,31 @@ function defaultIsAlive(pid) {
   catch (e) { return !!(e && e.code === 'EPERM'); }
 }
 
-// acquireLock(id, home, io) -> release() | null. Atomic create carrying the
-// holder {pid, ts, token}, published via write-then-link (see below) so a
-// concurrent acquirer NEVER observes a lock file that exists but is still
-// empty. On EEXIST it STEALS iff the holder pid is dead OR the lock is older
-// than LOCK_STALE_MS (mirrors swarm-guard's stale-steal); otherwise a live,
-// fresh holder is respected -> null (caller aborts rather than double-
-// resume). Release unlinks ONLY when the on-disk token is still ours.
+// acquireLock(id, home, io) -> release() | null. The per-workspace-id lock,
+// via the shared primitive companion/lib/lock.js (write-then-link publish with
+// an O_EXCL fallback, mtime torn-read guard, rename-aside token-verified
+// reclaim, token-checked release — the design first built here, see lock.js's
+// header for the incidents behind each piece). Policy unchanged: steal iff the
+// holder pid is dead OR the lock is older than LOCK_STALE_MS; a live, fresh
+// holder is respected -> null (caller aborts rather than double-resume).
 //
-// FIX (TOCTOU, discovered via the primary-seat concurrent-adoption test):
-// this used to be `openSync(p, 'wx')` immediately followed by a SEPARATE
-// `writeSync(fd, ...)` -- two syscalls, not one. A second acquireLock call
-// that hit EEXIST in the (real, observed) window between those two syscalls
-// read the lock file WHILE IT WAS STILL EMPTY: JSON.parse('') threw, `holder`
-// stayed null, and `stale = holderTs === null || ...` evaluated true
-// UNCONDITIONALLY for a null holder -- stealing a lock its rightful, live,
-// milliseconds-old owner was still in the middle of writing. Two callers then
-// both believed they held the SAME id's lock at the SAME instant (verified:
-// two real processes both logged `got=true` for one id at one Date.now() ms),
-// which is exactly how two DevSwarm sessions could both "adopt" one closed
-// Primary seat. Fix: write the FULL {pid, ts, token} payload to a private
-// temp file first, then PUBLISH it atomically with `linkSync` (a hard link
-// fails closed with EEXIST if the target already exists, same fail mode as
-// the old `wx` open, but the linked file is never visible with anything less
-// than its complete, already-written content).
 // LOCK_SCRATCH_STALE_MS — how old an orphaned `*.lock.tmp-*` / `*.lock.reap-*`
 // scratch file must be before doctor --repair's sweep (below) will remove it.
-// Both are normally cleaned up inline (their own `finally`/verified-discard);
-// this is only the belt-and-suspenders backstop for a crash/kill between
-// "create" and "cleanup" -- 15 minutes, same horizon as LOCK_STALE_MS itself,
-// so nothing from a genuinely in-flight acquire is ever touched.
+// Both are normally cleaned up inline by lock.js; this is only the backstop
+// for a crash/kill between "create" and "cleanup" -- 15 minutes, same horizon
+// as LOCK_STALE_MS itself, so nothing from an in-flight acquire is touched.
 const LOCK_SCRATCH_STALE_MS = 15 * 60 * 1000;
 
 function acquireLock(id, home, io) {
-  const F = (io && io.fs) || fs;
-  const isAlive = (io && io.isAlive) || defaultIsAlive;
-  const now = (io && io.now) || Date.now;
-  const p = lockPathFor(id, home);
-  try { F.mkdirSync(path.dirname(p), { recursive: true }); } catch (_) {}
-  for (let attempt = 0; attempt < 2; attempt++) {
-    const ts = now();
-    const token = process.pid + ':' + ts + ':' + Math.random().toString(36).slice(2);
-    const payload = JSON.stringify({ pid: process.pid, ts, token });
-    const tmp = p + '.tmp-' + process.pid + '-' + Math.random().toString(36).slice(2);
-    try {
-      F.writeFileSync(tmp, payload);
-      try {
-        F.linkSync(tmp, p);
-      } catch (linkErr) {
-        if (linkErr && linkErr.code === 'EEXIST') {
-          const eexist = new Error('lock exists');
-          eexist.code = 'EEXIST';
-          throw eexist;
-        }
-        // FIX (P3, v0.108.1 follow-up): linkSync itself can be unsupported on
-        // the underlying filesystem (EPERM/ENOTSUP/EXDEV/ENOSYS -- observed on
-        // SMB/exFAT mounts of ~/.anti-hall) even though hardlinks work on a
-        // normal local disk. Without this fallback EVERY acquireLock call on
-        // such a filesystem would hit this branch, throw, and return null --
-        // silently refusing every DevSwarm mutation withIdLock ever gates,
-        // forever, on that filesystem. Fall back to the pre-fix create-then-
-        // write for THIS attempt only: still atomic against a concurrent
-        // EEXIST (openSync's own O_EXCL), just without write-then-publish's
-        // empty-content protection -- an accepted, narrower guarantee on an
-        // already-degraded filesystem, not a silent full outage.
-        const fd = F.openSync(p, 'wx'); // EEXIST or any other error -> falls through to the outer catch below
-        try { F.writeSync(fd, payload); } finally { F.closeSync(fd); }
-      }
-      return function release() {
-        try {
-          const cur = JSON.parse(F.readFileSync(p, 'utf8'));
-          if (cur && cur.token === token) F.unlinkSync(p);
-        } catch (_) { /* not ours / unreadable -> leave it; a later stale-steal reclaims it */ }
-      };
-    } catch (e) {
-      if (!e || e.code !== 'EEXIST') return null; // any other error -> fail-open (no lock)
-      let holder = null;
-      try { holder = JSON.parse(F.readFileSync(p, 'utf8')); } catch (_) {}
-      const holderPid = holder && Number.isFinite(holder.pid) ? holder.pid : null;
-      const holderTs = holder && Number.isFinite(holder.ts) ? holder.ts : null;
-      const holderToken = holder && typeof holder.token !== 'undefined' ? holder.token : null;
-      const dead = holderPid !== null && !isAlive(holderPid);
-      const stale = holderTs === null || (now() - holderTs) > LOCK_STALE_MS;
-      if (dead || stale) {
-        // FIX (P1, pre-existing -- reclaim race): a blind `unlinkSync(p)` here
-        // deletes WHATEVER currently sits at `p`, not the specific dead/stale
-        // holder we just read. Two callers that both read the SAME dead
-        // holder concurrently used to both decide "stale, steal it", and
-        // whichever unlinked SECOND deleted the FIRST's brand-new, live,
-        // legitimately-published lock -- both then recreated it and both
-        // "won" (verified via a direct repro: two nested acquireLock calls
-        // both returned a release fn for one id). Fix: move the file aside
-        // ATOMICALLY first (renameSync fails closed if `p` no longer exists —
-        // someone else already reclaimed or replaced it), re-read the MOVED
-        // copy, and only actually discard it if its token still matches the
-        // one we read before renaming (proof nothing else touched it in
-        // between). A token mismatch means a real, fresh lock got caught in
-        // our rename — put it back and respect it; NEVER steal it.
-        const reapPath = p + '.reap-' + process.pid + '-' + Math.random().toString(36).slice(2);
-        try {
-          F.renameSync(p, reapPath);
-        } catch (_) {
-          // `p` is already gone or already moved by another reclaimer --
-          // nothing here for US to steal; retry the create (a fresh, live
-          // holder that raced in is respected by the NEXT attempt's own
-          // EEXIST handling, same as always).
-          continue;
-        }
-        let movedHolder = null;
-        try { movedHolder = JSON.parse(F.readFileSync(reapPath, 'utf8')); } catch (_) {}
-        const movedToken = movedHolder && typeof movedHolder.token !== 'undefined' ? movedHolder.token : null;
-        if (movedToken !== holderToken) {
-          // Something else's FRESH lock got caught in our rename -- restore
-          // it exactly where it was and respect it, never delete it.
-          try { F.renameSync(reapPath, p); } catch (_) { /* best-effort restore */ }
-          return null;
-        }
-        try { F.unlinkSync(reapPath); } catch (_) { /* best-effort; already gone is fine */ }
-        continue; // retry the create+link — the stale holder is genuinely ours to replace
-      }
-      return null; // live, fresh holder -> respected
-    } finally {
-      // The temp file is private (pid+random name) and never the thing other
-      // acquirers look at -- always clean it up. A successful linkSync gives
-      // `p` its own independent directory entry sharing the same inode, so
-      // removing `tmp` afterward does not touch `p` or its content.
-      try { F.unlinkSync(tmp); } catch (_) { /* best-effort; ENOENT if it was never created, or the wx fallback ran instead */ }
-    }
-  }
-  return null;
+  const h = lockLib.acquire(lockPathFor(id, home), {
+    fs: io && io.fs,
+    isAlive: (io && io.isAlive) || defaultIsAlive,
+    now: io && io.now,
+    staleMs: LOCK_STALE_MS,
+    liveStaleMs: LOCK_STALE_MS,
+    stealDead: true,
+  });
+  return h ? function release() { h.release(); } : null;
 }
 
 // sweepStaleLockScratchFiles(home, { dryRun, now, io }) -> { pending, detail,
