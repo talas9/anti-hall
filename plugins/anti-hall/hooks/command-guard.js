@@ -180,14 +180,17 @@ const LIGHT_EXCEPTIONS = [
   //                                 positional argument is the mutating `label`
   //                                 or `prune-audit` subcommand (negative lookahead)
   anchoredAntiHallCli('scripts', 'jev-report', '\\b(?![^\\n]*\\b(?:label|prune-audit)\\b)'),
-  //   defect.js report|list|show — anti-hall's own defect-report CLI (see
-  //   scripts/defect.js). ONLY these three subcommands are exempt: `report`
-  //   appends one line to a defect file (never rewrites/deletes), and
-  //   `list`/`show` are pure reads. Deliberately NARROWER than this: `rule`
-  //   (maintainer ruling) and `archive` (rotation sweep — MOVES files between
-  //   directories) are NOT matched here, so they stay gated like every other
-  //   mutating command.
-  anchoredAntiHallCli('scripts', 'defect', '\\s+(?:-\\S+\\s+)*(?:report|list|show)\\b'),
+  //   defect.js report|list|show|recurring|similar — anti-hall's own
+  //   defect-report CLI (see scripts/defect.js). ONLY these subcommands are
+  //   exempt: `report` appends one line to a defect file (never
+  //   rewrites/deletes); `list`/`show` and the bug-history reads
+  //   `recurring`/`similar` are pure reads (the root-cause skill tells the
+  //   main thread to run `similar` before an anti-hall fix). Deliberately
+  //   NARROWER than this: `rule` (maintainer ruling), `archive` (rotation
+  //   sweep — MOVES files between directories) and `backfill` (writes
+  //   history records) are NOT matched here, so they stay gated like every
+  //   other mutating command.
+  anchoredAntiHallCli('scripts', 'defect', '\\s+(?:-\\S+\\s+)*(?:report|list|show|recurring|similar)\\b'),
   // hooks/doctor.js: read-only diagnostics by default — --repair/--fix (and the
   // explicit opt-in repair flags, including --reclaim-ingest-lock, which forces
   // a stale-lock takeover — a mutating action) switch it to a mutating repair

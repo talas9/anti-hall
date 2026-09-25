@@ -157,11 +157,14 @@ const BLOCK = [
   'gh api repos/o/r/issues --method DELETE',
   'gh api repos/o/r/issues -f title=x',
   'gh api graphql -F query=x',
-  // defect.js: only report/list/show are exempt (append-only or read). `rule`
+  // defect.js: only report/list/show/recurring/similar are exempt (append-only
+  // or read). `backfill` writes history records and stays gated. `rule`
   // (maintainer ruling) and `archive` (rotation sweep — moves files) mutate
   // more than an append and must stay gated.
   'node plugins/anti-hall/scripts/defect.js rule abc123 --status fixed',
   'node plugins/anti-hall/scripts/defect.js archive',
+  'node plugins/anti-hall/scripts/defect.js backfill --repo .',
+  'npm run build -- node scripts/defect.js similar foo',
   // review P2: the defect.js exemption is anchored to the START of a
   // segment — a heavy command merely carrying it as trailing args must
   // not be exempted.
@@ -297,6 +300,8 @@ const ALLOW = [
   'node plugins/anti-hall/scripts/defect.js list --json',
   'node plugins/anti-hall/scripts/defect.js show abc123',
   'node plugins/anti-hall/scripts/defect.js show abc123 --json',
+  'node plugins/anti-hall/scripts/defect.js recurring --top 10 --json',
+  'node plugins/anti-hall/scripts/defect.js similar gate blocks archived --component hooks/devswarm-parent-gate',
   'cd /repo && node scripts/defect.js list --open',
   'FOO=1 node scripts/defect.js list',
 ];
