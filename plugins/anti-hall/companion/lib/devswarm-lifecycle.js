@@ -193,13 +193,15 @@ function resolveDeps(o) {
 
 // ---------- shared fact helpers ----------
 // isPrimaryBuilder(b, db, o) — gate (e). Authority: the app DB's builderType
-// when that column is readable. Otherwise the anti-hall Primary seat's own
+// when that column is readable AND carries a value for this row. Otherwise
+// (no column, or a NULL/empty value) the anti-hall Primary seat's own
 // definition (primary-seat.js primaryCheckout: the project's main checkout).
 // NEVER a `primary-<hash>` descriptor id: that is also the worktree label a
 // legacy CHILD descriptor carries, and matching it made a standard child count
 // as the Primary. Unresolvable -> true (fail-safe: stays blocked).
 function isPrimaryBuilder(b, db, o) {
-  if (db && db.hasBuilderType) return String((b && b.builderType) || '').toLowerCase() === 'primary';
+  const bt = String((b && b.builderType) || '').toLowerCase();
+  if (db && db.hasBuilderType && bt) return bt === 'primary';
   const wt = b && b.worktreePath;
   if (!wt || !fs.existsSync(wt)) return true;
   try {

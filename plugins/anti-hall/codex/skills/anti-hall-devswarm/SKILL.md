@@ -288,7 +288,7 @@ determined, and only for a done-report still tied to HEAD. The `done` verb recor
 it reported at, and gate (a) ignores that report once HEAD moves on. A `done` set with a
 plain `gate --set done` needs the git proof),
 (c) `git status --porcelain` is empty, (d) there's no unread mail to it or from it,
-(e) it isn't the Primary (the app DB's `builderType` decides; a `primary-<hash>` descriptor id never does), (f) the owner hasn't selected it in the app for 10 min, and
+(e) it isn't the Primary (the app DB's `builderType` decides; when it is missing or empty for the row, the main-checkout rule does; a `primary-<hash>` descriptor id never does), (f) the owner hasn't selected it in the app for 10 min, and
 (g) it has been idle >= `idleMin`. A fact that can't be read counts as not proven.
 `hivecontrol workspace check-merge` is never used as a probe, because it can create a source
 worktree. Settings live in `~/.anti-hall/settings.json`:

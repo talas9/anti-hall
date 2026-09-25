@@ -517,3 +517,47 @@ test('no builderType column: the Primary seat (main checkout) decides, never the
     assert.deepStrictEqual(plan.toArchive, ['c1']);
   } finally { try { fs.rmSync(base, { recursive: true, force: true }); } catch (_) {} }
 });
+
+// P2 — the builderType column exists but the row's value is NULL or empty:
+// fall through to the Primary seat's main-checkout rule (fail safe), never
+// "not primary".
+for (const [label, bt] of [['NULL', null], ['empty', '']]) {
+  test('builderType column present but ' + label + ' for the row: the main-checkout rule decides', { skip }, () => {
+    const cp = require('node:child_process');
+    const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ah-lifecycle-btnull-')));
+    const home = path.join(base, 'home'); fs.mkdirSync(home);
+    const repo = path.join(base, 'main');
+    cp.spawnSync('git', ['init', '-q', repo]);
+    cp.spawnSync('git', ['-C', repo, '-c', 'user.email=a@b.c', '-c', 'user.name=T', 'commit', '-q', '--allow-empty', '-m', 'init']);
+    const child = path.join(base, 'child');
+    cp.spawnSync('git', ['-C', repo, 'worktree', 'add', '-q', child, '-b', 'feat/child']);
+    const dbFile = path.join(base, 'devswarm.db');
+    const db = new sqlite.DatabaseSync(dbFile);
+    db.exec('CREATE TABLE builders (id TEXT PRIMARY KEY, repositoryId TEXT, branchName TEXT, sourceBranch TEXT, worktreePath TEXT,'
+      + ' builderType TEXT, isActive INTEGER, isHidden INTEGER, lastSelectedAt TEXT, label TEXT, pullRequestId TEXT)');
+    const ins = db.prepare('INSERT INTO builders VALUES (?,?,?,?,?,?,?,?,?,?,?)');
+    ins.run('p-1', 'r1', 'main', null, repo, bt, 1, 0, null, 'Primary', null);
+    ins.run('c1', 'r1', 'feat/child', 'main', child, bt, 1, 0, null, 'Child', null);
+    db.close();
+    try {
+      const bin = fakeHivecontrol(path.join(base, 'bin'), V252);
+      const env = { HOME: home, PATH: bin.dir + path.delimiter + process.env.PATH, ANTIHALL_DEVSWARM_APP_DB: dbFile, ANTIHALL_DEVSWARM_APP_DB_CACHE_MS: '0' };
+      caps.resetCache();
+      const ready = (id) => ({ id, archive_ready: true, gates: {}, unread: 0, broadcastUnread: 0 });
+      const deps = {
+        descriptors: () => [{ id: 'c1', worktreePath: child }, { id: 'p-1', worktreePath: repo }],
+        repoKey: () => 'proj-abc123',
+        summary: () => ({ workspaces: { c1: ready('c1'), 'p-1': ready('p-1') } }),
+        unreadFrom: () => 0,
+        activityTs: () => NOW - 60 * MIN,
+      };
+      const plan = L.planAutoArchive({ home, env, now: NOW, deps, settings: DRY });
+      assert.strictEqual(plan.ok, true, JSON.stringify(plan));
+      const p1 = plan.candidates.find((c) => c.id === 'p-1');
+      const c1 = plan.candidates.find((c) => c.id === 'c1');
+      assert.ok(p1.blockers.some((b) => b.gate === 'e-primary'), 'the main checkout stays the Primary: ' + JSON.stringify(p1.blockers));
+      assert.ok(!c1.blockers.some((b) => b.gate === 'e-primary'), JSON.stringify(c1.blockers));
+      assert.deepStrictEqual(plan.toArchive, ['c1']);
+    } finally { try { fs.rmSync(base, { recursive: true, force: true }); } catch (_) {} }
+  });
+}

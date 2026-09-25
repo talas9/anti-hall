@@ -63,8 +63,8 @@ the update.
 - **Auto-archive treated a child as the Primary.** Gate (e) counted any `primary-<hash>`
   descriptor id sharing a builder's worktree as the Primary, and a legacy child descriptor
   carries exactly that label, so a standard child was never archived. The app DB's
-  `builderType` is now the authority; without that column the Primary seat's main-checkout
-  rule decides; a `primary-` id prefix never does. An unreadable app DB still archives
+  `builderType` is now the authority; without that column, or when the row's value is NULL or
+  empty, the Primary seat's main-checkout rule decides; a `primary-` id prefix never does. An unreadable app DB still archives
   nothing.
 - **A stale anti-hall archived marker overrode the DevSwarm app.** A workspace open in the
   app (`isActive=1`, `isHidden=0`) but still holding `archived/<id>.json` kept counting as
