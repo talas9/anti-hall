@@ -94,6 +94,20 @@ the update.
   is untouched — it stays broad because being generous there only prevents a
   block, the safe direction.
 
+### Fixes
+
+- **`jev-assist.test.js` no longer reads the real machine's home.** The `getMode`
+  test for `codexNudgeSubstantial`/`tasklistTrivial` called `getMode(id, cfg)`
+  without the 3rd `home` argument; both ids have a `settings-schema.js`
+  `integrations.<id>` entry, so `getMode` resolved them via
+  `schemaIntegrationMode(id, home) -> settings.js get(..., { home })`, and a
+  missing `home` fell back to `os.homedir()` — reading the real
+  `~/.anti-hall/settings.json`/`jev.json`. Failed on any machine with a
+  customized Jev mode for those ids. Fixed by passing an isolated `home` from
+  `makeHome()`. Extended `tests/hygiene/settings-home-injection.test.js` with a
+  `getMode` regression guard that points `HOME` at a poisoned settings.json and
+  proves `getMode(id, cfg, home)` never reads it.
+
 ## 0.108.3
 
 ### Features

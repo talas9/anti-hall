@@ -148,3 +148,43 @@ test('legacy jev.json nested keys still resolve when settings.json has none', ()
     fs.rmSync(home, { recursive: true, force: true });
   }
 });
+
+// getMode(id, fileCfg, home) — regression guard for the class of bug fixed
+// in jev-assist.test.js: for a schema-backed integration id (jev.integrations.<id>
+// has a settings-schema entry), getMode() resolves via
+// schemaIntegrationMode(id, home) -> settings.js get(..., { home }). Called
+// without a home, that silently fell back to os.homedir() and read whatever
+// real machine ~/.anti-hall/settings.json says -- a test that omitted the
+// 3rd arg would pass on a clean machine and fail on one with a customized
+// Jev mode for that id. Simulate exactly that: point HOME at a temp dir
+// holding a POISONED settings.json (values that would flip every assertion
+// below if read), then prove getMode(id, cfg, home) with an isolated,
+// unpoisoned `home` never touches it, and — via the poisoned os.homedir()
+// throw — never falls back to the process's real home either.
+test('getMode: schema-backed integration ids never fall back to os.homedir() or a poisoned real-HOME settings.json', () => {
+  const assist = require(P('hooks', 'lib', 'jev-assist.js'));
+  const poisonedRealHome = isolatedHome();
+  const home = isolatedHome();
+  const savedHome = process.env.HOME;
+  try {
+    // Poison what os.homedir()/env.HOME would resolve to if the code under
+    // test leaked past the explicit `home` argument.
+    fs.mkdirSync(path.join(poisonedRealHome, '.anti-hall'), { recursive: true });
+    fs.writeFileSync(path.join(poisonedRealHome, '.anti-hall', 'settings.json'), JSON.stringify({
+      jev: { integrations: { codexNudgeSubstantial: 'on', tasklistTrivial: 'off', gitGuardSelfCredit: 'on' } },
+    }));
+    process.env.HOME = poisonedRealHome;
+
+    withPoisonedHomedir(() => {
+      // Isolated `home` is empty -> schema defaults (all "shadow") must win,
+      // never the poisoned real-HOME values above.
+      assert.strictEqual(assist.getMode('codexNudgeSubstantial', { enabled: true }, home), 'shadow');
+      assert.strictEqual(assist.getMode('tasklistTrivial', { enabled: true }, home), 'shadow');
+      assert.strictEqual(assist.getMode('gitGuardSelfCredit', { enabled: true }, home), 'shadow');
+    });
+  } finally {
+    if (savedHome === undefined) delete process.env.HOME; else process.env.HOME = savedHome;
+    fs.rmSync(poisonedRealHome, { recursive: true, force: true });
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
