@@ -14624,6 +14624,117 @@ function resolveSendTarget(storeHandle, arg, home, opts) {
   return { target: null, ambiguous: false, candidates: null };
 }
 
+// cmdRelay(seqOrReceipt, flags, ctx) — relay <seq|receipt> --to <id> [--note-file f]
+// Forwards a message THIS caller already received (in its OWN inbox
+// partition, i.e. addressed to its own registered id) to `--to`, VERBATIM,
+// prefixed with a provenance header ("relayed from X, seq N, M bytes"). Peer
+// request (SkyCrew + tf3 Primaries): a Primary receiving mail meant to be
+// forwarded to a sibling/child had no verb for it — copy/pasting a body by
+// hand into a fresh `send` risks a silent partial-paste, which is exactly
+// what this verb's own byte-length verification below guards against.
+//
+// `<seq>` is the message's own `storeSeq` (the `seq` field `inbox messages`/
+// `read-primary` prints per row) inside the CALLER's own partition — never a
+// cross-workspace seq, since a caller can only relay mail it was actually
+// the addressee of. `<receipt>` is a `read-primary` readReceiptId (`r...`);
+// it resolves ONLY when it covers EXACTLY ONE message (a receipt can span
+// several) — otherwise this refuses ambiguous rather than guessing which one
+// to relay, and points the caller at the exact `<seq>` instead.
+//
+// SAFETY: refuses (ok:false) on an empty source body, and after sending,
+// recomputes the expected byte length (header + body + optional note) and
+// compares it against the underlying `send`'s own echoed `bytes` — any
+// mismatch fails loud rather than silently forwarding a truncated body.
+function cmdRelay(seqOrReceipt, flags, ctx) {
+  const home = ctx.home;
+  const cwd = ctx.cwd || process.cwd();
+  const repoKey = repokey.repoKeyForWorktree(cwd);
+  if (!repoKey) return { ok: false, action: 'relay', reason: 'no-project', error: 'relay requires running inside a registered devswarm project' };
+  const toFlag = one(flags, 'to');
+  if (!toFlag) return { ok: false, action: 'relay', error: 'relay requires --to <id>' };
+  if (!seqOrReceipt) return { ok: false, action: 'relay', error: 'relay requires a <seq> or <receipt> identifying the message to forward' };
+  const noteFileFlag = one(flags, 'note-file');
+  let note;
+  if (noteFileFlag !== undefined) {
+    try { note = fs.readFileSync(noteFileFlag, 'utf8'); }
+    catch (e) { return { ok: false, action: 'relay', error: 'relay --note-file ' + JSON.stringify(noteFileFlag) + ' could not be read: ' + String(e && e.message || e) }; }
+  }
+  const fromDetailed = senderIdentityDetailed(ctx.env, cwd, registrySnapshot(ctx, repoKey), home);
+  const callerId = fromDetailed.identity;
+
+  const isReceipt = /^r[a-z0-9]+$/i.test(String(seqOrReceipt));
+  let seq = null;
+  let sourceHash = null;
+  if (isReceipt) {
+    const found = readReadReceipt(home, callerId, String(seqOrReceipt));
+    if (!found) {
+      return { ok: false, action: 'relay', reason: 'unknown-receipt', error: 'no read receipt ' + JSON.stringify(seqOrReceipt) + ' for ' + JSON.stringify(callerId) + ' — re-run `inbox read-primary ' + callerId + '`' };
+    }
+    const hashes = (Array.isArray(found.rec.hashes) ? found.rec.hashes : []).filter(Boolean);
+    if (hashes.length !== 1) {
+      return {
+        ok: false, action: 'relay', reason: 'ambiguous-receipt',
+        error: 'receipt ' + JSON.stringify(seqOrReceipt) + ' covers ' + hashes.length + ' message(s) — relay needs '
+          + 'exactly one; pass the exact <seq> instead (see `inbox messages ' + callerId + '`)',
+        count: hashes.length,
+      };
+    }
+    sourceHash = hashes[0];
+  } else {
+    const n = Number(seqOrReceipt);
+    if (!Number.isFinite(n) || n < 0) {
+      return { ok: false, action: 'relay', error: 'relay requires a non-negative integer <seq> or a read receipt id (r...), got ' + JSON.stringify(String(seqOrReceipt)) };
+    }
+    seq = Math.floor(n);
+  }
+
+  const s = store.openStore({ home, hash: repoKey, backend: ctx.backend, env: ctx.env });
+  let row;
+  try {
+    const rows = (typeof s.listMessages === 'function' ? s.listMessages(callerId) : []) || [];
+    row = sourceHash ? rows.find((r) => r && r.hash === sourceHash) : rows.find((r) => r && Number(r.storeSeq) === seq);
+  } finally { s.close(); }
+  if (!row) {
+    return {
+      ok: false, action: 'relay', reason: 'message-not-found',
+      error: 'no message ' + (sourceHash ? 'for receipt ' + JSON.stringify(seqOrReceipt) : 'at seq ' + seq)
+        + ' in ' + JSON.stringify(callerId) + "'s own inbox",
+    };
+  }
+  const body = row.body != null ? String(row.body) : '';
+  const sourceBytes = Buffer.byteLength(body, 'utf8');
+  if (!body || sourceBytes === 0) {
+    return { ok: false, action: 'relay', reason: 'empty-body', error: 'source message (seq ' + row.storeSeq + ') has an empty body — refusing to relay nothing' };
+  }
+  const header = 'relayed from ' + row.sender + ', seq ' + row.storeSeq + ', ' + sourceBytes + ' bytes\n\n';
+  const noteSuffix = note ? ('\n\n---\n' + note) : '';
+  const relayedMessage = header + body + noteSuffix;
+  const expectedBytes = Buffer.byteLength(header, 'utf8') + sourceBytes + Buffer.byteLength(noteSuffix, 'utf8');
+
+  const sendFlags = { to: [toFlag], message: [relayedMessage] };
+  const sendRes = cmdSend(sendFlags, ctx);
+  const out = {
+    ok: !!(sendRes && sendRes.ok), action: 'relay', from: callerId, to: toFlag,
+    seq: row.storeSeq, sourceBytes, relayedBytes: (sendRes && sendRes.bytes), expectedBytes,
+    receiptId: isReceipt ? String(seqOrReceipt) : undefined,
+    send: sendRes,
+  };
+  if (!sendRes || !sendRes.ok) {
+    out.ok = false;
+    out.reason = out.reason || (sendRes && sendRes.reason) || 'relay-send-failed';
+    out.error = 'relay send failed: ' + String((sendRes && sendRes.error) || 'unknown send failure');
+    return out;
+  }
+  if (sendRes.bytes !== expectedBytes) {
+    return Object.assign(out, {
+      ok: false, reason: 'byte-length-mismatch',
+      error: 'relayed byte length (' + sendRes.bytes + ') does not match the expected length (' + expectedBytes
+        + ' = header + ' + sourceBytes + ' source bytes + note) — refusing to report a silent partial relay',
+    });
+  }
+  return out;
+}
+
 // cmdSend(flags, ctx) — send --from <id> --to <meshId>|--broadcast --message
 // TEXT [--urgency low|normal|high|urgent]. Opens store/<repoKey>/ directly.
 //
@@ -18298,6 +18409,7 @@ const VERB_HELP = {
   logs: { synopsis: 'query the shared devswarm JSONL log', mutates: 'read-only' },
   'migrate-owner-keys': { synopsis: 'forward-migrate descriptor owner keys', mutates: 'MUTATES descriptor files on disk' },
   send: { synopsis: 'send a mesh message (--to/--broadcast)', mutates: 'MUTATES the store — appends a mesh message and may wake recipients' },
+  relay: { synopsis: 'relay <seq|receipt> --to <id> [--note-file <path>] — forward a message THIS caller already received (its own inbox) to <id> verbatim, prefixed with a provenance header ("relayed from X, seq N, M bytes"). <seq> is the row\'s own `seq` (from `inbox messages`/`read-primary`); <receipt> is a read-primary readReceiptId and resolves only when it covers exactly one message. Verifies the relayed byte length against the source and refuses (ok:false) on a mismatch or an empty source body — never a silent partial relay. Example: `relay 42 --to sibling-workspace-id`.', mutates: 'MUTATES the store — appends one mesh message (via `send`, under this file\'s own Primary-seat gate)' },
   roster: { synopsis: 'show the mesh roster (--ack clears your own broadcast-unread)', mutates: 'read-only, unless --ack is passed (clears broadcastUnread)' },
   'wake-directive': { synopsis: 'reprint the SessionStart mailbox wake directive', mutates: 'read-only' },
   diagnose: { synopsis: 'read-only mesh-health projection', mutates: 'read-only' },
@@ -18426,7 +18538,7 @@ function run(argv, ctx0) {
 function runArmed(cmd, positionals, flags, ctx, argv) {
   // v0.108.0 Primary seat: a session that does not hold a LIVE-held seat may
   // not send, ack, spawn or merge-broadcast as the Primary.
-  if (cmd === 'send' || cmd === 'spawn' || cmd === 'merge'
+  if (cmd === 'send' || cmd === 'relay' || cmd === 'spawn' || cmd === 'merge'
       || (cmd === 'inbox' && (positionals[1] === 'ack' || positionals[1] === 'ack-primary'))) {
     const refusal = seatRefusal(ctx);
     if (refusal) return { code: 2, result: Object.assign({ action: cmd }, refusal) };
@@ -18593,6 +18705,12 @@ function runArmed(cmd, positionals, flags, ctx, argv) {
         // Send-time self-heal (Phase 7): runs before every mesh send.
         const r = withSelfHeal(() => cmdSend(flags, ctx), ctx);
         logVerbOutcome('send', one(flags, 'to'), r, ctx);
+        return { code: r.ok ? 0 : 2, result: r };
+      }
+      case 'relay': {
+        const seqOrReceipt = positionals[1];
+        const r = withSelfHeal(() => cmdRelay(seqOrReceipt, flags, ctx), ctx);
+        logVerbOutcome('relay', one(flags, 'to'), r, ctx);
         return { code: r.ok ? 0 : 2, result: r };
       }
       case 'roster': {
@@ -18884,6 +19002,9 @@ module.exports = {
   runningAntiHallVersion,
   appendIntoPartition, isIdLockHeld, withIdLockHeld,
   run, parseArgs, one, many, csvList,
+  // peer request B (SkyCrew + tf3 Primaries, 2026-09-26) — exported for
+  // direct unit testing:
+  cmdRelay,
   emitKnownWarning, resolveReadArgToId,
   buildDescriptorFromFlags, readDescriptorFile, descriptorPath,
   retireWorktreeDuplicates, isLiveSessionId, archiveLeftReason,

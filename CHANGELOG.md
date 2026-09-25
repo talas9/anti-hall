@@ -115,6 +115,17 @@ the update.
   `devswarm.stableLauncher = false`, falls straight back to the previous
   version-pinned path — byte-identical to pre-fix behavior).
 
+### Added
+
+- **`devswarm.js relay <seq|receipt> --to <id> [--note-file <path>]`.** Forwards a
+  message the caller already received (its own inbox) to another workspace,
+  verbatim, prefixed with a provenance header (`relayed from X, seq N, M
+  bytes`). `<receipt>` (an `inbox read-primary` readReceiptId) resolves only
+  when it covers exactly one message; otherwise it refuses ambiguous rather
+  than guessing. Verifies the relayed byte length against the source and
+  refuses (`ok:false`) on a mismatch or an empty source body — never a silent
+  partial relay.
+
 ## 0.110.0 (2026-09-26)
 
 ### Features
