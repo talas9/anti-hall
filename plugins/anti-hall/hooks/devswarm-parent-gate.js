@@ -139,15 +139,17 @@ const { stateFileFor } = require('../companion/lib/devswarm-gate-state.js');
 const { readDescriptors } = require('../companion/devswarm-supervisor.js');
 const { readUnreadMessages } = require('../companion/lib/devswarm-inbox-cursor.js');
 const devswarmUnread = require('../companion/lib/devswarm-unread.js');
-const { livenessPathFor, devswarmRoot, hasFreshHeartbeat, isSessionAliveRow } = require('../companion/lib/liveness.js');
-// childBusyState — the ONE "is this child provably doing real work" reader
-// (companion/lib/devswarm-idle.js, reusing its transcript classifier rather
-// than a second parser). A live pid or a fresh heartbeat is NOT evidence of
-// work (an idle child at its prompt has a live pid; the wake cron's inbox
-// tick rewrites the heartbeat) — only a fresh real-work transcript is.
-const { childBusyState } = require('../companion/lib/devswarm-idle.js');
+const { livenessPathFor, devswarmRoot, hasFreshHeartbeat } = require('../companion/lib/liveness.js');
+// busy (devswarm-idle.js childBusyState, reached through row-eligibility.js):
+// the ONE "is this child provably doing real work" reader. A live pid or a
+// fresh heartbeat is NOT evidence of work (an idle child at its prompt has a
+// live pid; the wake cron's inbox tick rewrites the heartbeat) — only a fresh
+// real-work transcript is.
 const devswarmNames = require('../companion/lib/devswarm-names.js');
-const { rowState } = require('../companion/lib/row-state.js');
+// row-eligibility.js: THE one per-row projection (every archive source, the
+// owner's heldPartitions / archive-ignore opt-outs, live/busy/waiting). This
+// gate only applies its own policy to it — see the family loop below.
+const rowEligibilityLib = require('../companion/lib/row-eligibility.js');
 // devswarm-ignore.js: the user-editable ~/.anti-hall/devswarm/ignore.json
 // {"ids":[...]} list — see that module's header. Suppresses this gate's
 // neglect block for a listed id (never hides it anywhere else).
@@ -1043,8 +1045,13 @@ function main() {
   // never counts toward NEGLECT/escalation, even inside the Primary's own
   // family — EXCEPT the current Primary's own live id, which is never
   // excluded. Resolved ONCE; fail-open to an empty set.
-  let heldIds = new Set();
-  try { heldIds = require('../companion/lib/devswarm-store.js').heldPartitionIdsFrom(process.env); } catch (_) { heldIds = new Set(); }
+  // The held list is resolved once by the eligibility context below (fail-open
+  // to an empty set); the own-id exception is this gate's policy, applied at
+  // the rawEntries push.
+  const elig = rowEligibilityLib.createContext({
+    home, env: process.env, now: appArchiveNow, cache: appArchivedCache, xcache: true,
+    liveness: true, busyFreshMs,
+  });
   for (const d of descriptors) {
     // The Primary's OWN descriptor (workspaces/<own.id>.json) is already
     // accounted for by the own row above (readOwnUnread: this reader's own
@@ -1459,10 +1466,12 @@ function main() {
     // untouched, so a live-but-idle workspace with REAL unread still gates
     // (that is coordination neglect, a separate axis). Fail-soft: no session
     // file, a dead pid, or an unreadable sessions dir leaves the verdict as-is.
-    let idleAlive = false;
-    if (d.sessionId) {
-      try { idleAlive = isSessionAliveRow({ sessionId: d.sessionId }, home); } catch (_) { idleAlive = false; }
-    }
+    // ONE projection per row (row-eligibility.js): live/busy/waitingOnUser and
+    // every archive/held/ignore axis used below come from here.
+    const e = elig.of({
+      id: d.id, worktreePath: d.worktreePath, sessionId: d.sessionId || null, repoKey: dKey, descriptor: d,
+    });
+    const idleAlive = e.live === true;
     if (staleOrEscalated && idleAlive) staleOrEscalated = false;
     // busy / waitingOnUser (v0.109 safety review F1/F3/F4): computed
     // UNCONDITIONALLY — it feeds the separate unread/NEGLECT axis below. Busy
@@ -1475,19 +1484,12 @@ function main() {
     // on a stale transcript (permission prompt / hung tool). Any doubt —
     // missing/unreadable transcript, a Codex child with no Claude transcript,
     // a throw — resolves to NOT busy, so the family blocks as before.
-    let busy = false;
-    let waitingOnUser = false;
-    try {
-      const bs = childBusyState(d, home, { freshMs: busyFreshMs });
-      busy = !!(bs && bs.busy);
-      waitingOnUser = !!(bs && bs.waiting);
-    } catch (_) { busy = false; waitingOnUser = false; }
     // 0.109.4 (field: 5 archived rows reported "waiting on a human answer" in
     // sessions that no longer existed): a transcript's unanswered prompt is
-    // only a WAIT while its session is still running. A dead or unknown
-    // session is never waiting — it falls back to the ordinary unread path.
-    if (waitingOnUser && !idleAlive) waitingOnUser = false;
-    if (waitingOnUser) busy = false;
+    // only a WAIT while its session is still running, and a wait is never
+    // busy — both rules live in row-eligibility.js's computeLiveness.
+    const busy = e.busy === true;
+    const waitingOnUser = e.waitingOnUser === true;
     // Final oldest-unread age: the older of the NDJSON rows' own timestamps
     // and the store-side union's age. Unknown (see unreadAgeUnknown) -> null.
     if (ndjsonOldestTs !== null) {
@@ -1524,24 +1526,13 @@ function main() {
     // Here it clears the liveness axis only; the family loop below (0.109.4,
     // "ARCHIVED NEVER BLOCKS") then drops an archived/held member of a CHILD
     // family from every blocking axis, unread included.
-    let archived = false;
-    let appArchived = false;
-    try {
-      const st = rowState({
-        home, id: d.id, worktreePath: d.worktreePath, sessionId: d.sessionId || null,
-        repoKey: dKey, env: process.env, now: appArchiveNow, cache: appArchivedCache(), xcache: true,
-      });
-      archived = st.archived;
-      appArchived = st.appArchived;
-    } catch (_) { archived = false; appArchived = false; }
-    if (archived) staleOrEscalated = false;
-    if (appArchived) staleOrEscalated = false;
+    const archived = e.markerArchived;
+    const appArchived = e.appArchived;
+    if (e.archived) staleOrEscalated = false;
     // archiveIgnored (0.109.4): the owner's per-row archive-ignore marker
     // (`devswarm.js archive-ignore <id>` -> archive-ignore/<id>.json), used for
-    // deliberately held specimen/twin rows. Existence check, same as
-    // devswarm-parent-inbox.js's isArchiveIgnored.
-    let archiveIgnored = false;
-    try { fs.statSync(path.join(devswarmRoot(home), 'archive-ignore', String(d.id) + '.json')); archiveIgnored = true; } catch (_) { archiveIgnored = false; }
+    // deliberately held specimen/twin rows (row-eligibility.js `ignored`).
+    const archiveIgnored = e.ignored;
 
     // Pushed UNCONDITIONALLY (not gated on unreadUnknown/realUnread/
     // staleOrEscalated here) — the gate is applied ONCE per FAMILY after the
@@ -1576,7 +1567,7 @@ function main() {
       // archived (per a FRESH supervisor-written cache)".
       appArchived,
       archiveIgnored,
-      held: heldIds.has(String(d.id)) && !(own.id && String(d.id) === String(own.id)),
+      held: e.held && !(own.id && String(d.id) === String(own.id)),
       status: staleOrEscalated ? status : '',
       verdictPending,
       urgencyMax: null,
@@ -1745,7 +1736,7 @@ function main() {
     // tallied into ONE aggregated stderr advisory after the loop. Dead-worktree
     // (not archived) rows are unchanged: their mail still blocks. The
     // Primary's OWN family is never filtered by archive state; an owner-held
-    // member (`held`, see heldIds above) is dropped from ANY family, but the
+    // member (`held`, row-eligibility.js) is dropped from ANY family, but the
     // current Primary's own live id is never marked held.
     const famSurvivorId = (fam && fam.survivor && fam.survivor.id != null)
       ? String(fam.survivor.id) : (members[0] && members[0].id != null ? String(members[0].id) : null);
