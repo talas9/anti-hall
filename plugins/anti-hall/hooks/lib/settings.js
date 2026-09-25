@@ -294,9 +294,13 @@ function readLegacy(entry, opts) {
 //   'add' — risky when the new csv value ADDS at least one token not already
 //           in the current effective value (widening an allow-list); a
 //           removal-only or no-op change needs no confirmation.
-// reset() always REMOVES an override (or restores the tightest value) and so
-// never needs confirmation — "removing an allowance" is the safe direction.
-// Without confirmation, set() writes nothing and returns a short, factual,
+// reset() REMOVES the settings.json override, so the key falls back to the
+// next tier (/config, legacy, default). That fallback can itself be the risky
+// direction — e.g. guards.stashGuard defaults to false, so resetting a
+// human-armed `true` disarms it — so reset() computes the effective value
+// AFTER removal and gates it through the same isRiskyChange() as set(); a
+// reset that leaves the effective value unchanged or safer needs no
+// confirmation. Without confirmation, set()/reset() write nothing and returns a short, factual,
 // human-readable warning instead — built from the entry's own `safetyNote`
 // (the plain-language CONSEQUENCE of the change) — so the caller can show it
 // to a human and ask before re-running with --confirmed.
@@ -358,6 +362,14 @@ function get(section, key, dflt, opts) {
   const coercedFile = coerceValue(entry, fileVal);
   if (coercedFile !== undefined) return coercedFile;
 
+  return resolveBelowFile(entry, dflt, opts);
+}
+
+// resolveBelowFile(entry, dflt, opts) -> the value the tiers BELOW
+// settings.json resolve to (/config plugin-option, legacy, default). get()
+// falls through to it; reset() uses it to learn the effective value a key
+// will have once its settings.json override is removed.
+function resolveBelowFile(entry, dflt, opts) {
   // Until the one-time forward-migration is stamped for this plugin version,
   // legacy config (e.g. jev.json) outranks a /config plugin-option value —
   // otherwise a pre-existing jev.json {enabled:true} would be masked forever
@@ -496,12 +508,27 @@ function set(section, key, value, opts) {
 
 // reset(section, key, opts?) -> {ok, error?}. Removes the settings.json
 // override for one key (so /config or legacy/default takes over again).
-// A no-op success when the key was never overridden. Never needs
-// `opts.confirmed`, even for a `locked` (safety) key — removing an override
-// is always the safe direction (see isRiskyChange above).
+// A no-op success when the key was never overridden. For a `locked` (safety)
+// key it needs `opts.confirmed` when the effective value AFTER removal is the
+// RISKY direction relative to the current one (see isRiskyChange above) —
+// without it nothing is written and it returns {ok:false,
+// needsConfirmation:true, warning}.
 function reset(section, key, opts) {
   const entry = schema.findSetting(section, key);
   if (!entry) return { ok: false, error: 'unknown setting: ' + section + '.' + key };
+
+  if (entry.locked && !(opts && opts.confirmed)) {
+    const store = load(opts);
+    if (store[section] && Object.prototype.hasOwnProperty.call(store[section], key)) {
+      const currentValue = get(section, key, undefined, opts);
+      const envVal = readEnvOverride(entry, opts);
+      const afterValue = envVal !== undefined ? envVal : resolveBelowFile(entry, undefined, opts);
+      const changes = entry.safetyDirection === 'add' || afterValue !== currentValue;
+      if (changes && isRiskyChange(entry, afterValue, currentValue)) {
+        return { ok: false, needsConfirmation: true, warning: safetyWarning(entry, afterValue, currentValue) };
+      }
+    }
+  }
 
   return withSettingsLock(opts, () => {
   const backedUpCorruptTo = backupCorruptIfNeeded(opts);

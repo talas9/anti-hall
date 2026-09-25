@@ -189,6 +189,14 @@ the update.
   An idempotent forward-migration seeds it from existing ndjson records (wired into both
   `doctor --repair` and `update.js`'s post-pull pass); the ndjson log itself is still
   written on every archive and still read as a fallback for any pre-migration record.
+- **`settings.js reset` could silently disarm a human-armed safety guard.** `reset()` never
+  asked for `--confirmed` on the assumption that removing an override is always the safe
+  direction — false for `guards.stashGuard`, whose default is `false`: resetting a
+  human-armed `true` fell back to the default and disarmed it with no warning. `reset()`
+  now computes the effective value the key will have AFTER its settings.json override is
+  removed (env, `/config`, legacy, default) and gates it through the same risky-direction
+  check as `set`; a reset that leaves the value unchanged or restores a safe default
+  (e.g. `safety.gitGuard` back to `true`) still needs no confirmation.
 
 ## 0.108.3
 

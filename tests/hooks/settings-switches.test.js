@@ -11,7 +11,8 @@
 //       runs the SAME fixture both ways, so "off" is never a vacuous pass.
 //   (4) CONFIRMATION GATE (0.108.4, revised): the safety keys read through the
 //       normal precedence chain like any other setting; set/reset need
-//       --confirmed (lib + CLI) or nothing changes and a one-line factual
+//       --confirmed (lib + CLI) for the risky direction (reset: judged on the
+//       effective value AFTER the override is removed) or nothing changes and a one-line factual
 //       warning (built from safetyNote) is returned instead.
 // Every spawn uses an isolated HOME (tests/helpers/spawn-hook.js).
 
@@ -412,12 +413,51 @@ test('SAFETY: settings.set needs --confirmed ONLY for the risky direction; the s
       assert.strictEqual(riskySet.ok, true, k + ': ' + JSON.stringify(riskySet));
       assert.strictEqual(settings.get(sec, key, undefined, { home, env: {} }), risky, k);
 
-      // reset never needs confirmation, regardless of current (risky) state
+      // reset back to a safe (or unchanged) default needs no confirmation
       const r = settings.reset(sec, key, { home });
       assert.strictEqual(r.ok, true, k);
       assert.strictEqual(r.needsConfirmation, undefined, k);
       assert.strictEqual(settings.source(sec, key, { home, env: {} }), 'default', k + ': reset must clear the override');
     }
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+test('SAFETY: reset is gated on the effective value AFTER removal — resetting a human-armed guards.stashGuard (default off) needs --confirmed; resetting a disarmed guard back to its safe default does not', () => {
+  const home = tmpHome();
+  try {
+    const opts = { home, env: {} };
+    // armed by a human -> reset would fall back to default false (disarm)
+    assert.strictEqual(settings.set('guards', 'stashGuard', true, opts).ok, true);
+    const blocked = settings.reset('guards', 'stashGuard', opts);
+    assert.strictEqual(blocked.ok, false, JSON.stringify(blocked));
+    assert.strictEqual(blocked.needsConfirmation, true);
+    assert.strictEqual(blocked.warning, EXPECTED_WARNING['guards.stashGuard']);
+    assert.strictEqual(settings.get('guards', 'stashGuard', undefined, opts), true, 'nothing written');
+    assert.strictEqual(settings.source('guards', 'stashGuard', opts), 'file');
+
+    const confirmed = settings.reset('guards', 'stashGuard', Object.assign({ confirmed: true }, opts));
+    assert.strictEqual(confirmed.ok, true, JSON.stringify(confirmed));
+    assert.strictEqual(settings.source('guards', 'stashGuard', opts), 'default');
+
+    // disarmed gitGuard -> reset restores default true (safe): no confirmation
+    assert.strictEqual(settings.set('safety', 'gitGuard', false, Object.assign({ confirmed: true }, opts)).ok, true);
+    const safe = settings.reset('safety', 'gitGuard', opts);
+    assert.strictEqual(safe.ok, true, JSON.stringify(safe));
+    assert.strictEqual(settings.get('safety', 'gitGuard', undefined, opts), true);
+
+    // an allow-list reset only removes tokens -> safe
+    assert.strictEqual(settings.set('guards', 'editGuardAllow', 'src/**', Object.assign({ confirmed: true }, opts)).ok, true);
+    assert.strictEqual(settings.reset('guards', 'editGuardAllow', opts).ok, true);
+
+    // CLI: same gate, exit 1 + warning without --confirmed
+    const env = { PATH: process.env.PATH, HOME: home, USERPROFILE: home };
+    assert.strictEqual(settings.set('guards', 'stashGuard', true, opts).ok, true);
+    const cli = spawnSync(process.execPath, [CLI, 'reset', 'guards.stashGuard', '--json'], { env, encoding: 'utf8' });
+    assert.strictEqual(cli.status, 1, cli.stdout + cli.stderr);
+    assert.deepStrictEqual(JSON.parse(cli.stdout), { ok: false, needsConfirmation: true, warning: EXPECTED_WARNING['guards.stashGuard'] });
+    const cliOk = spawnSync(process.execPath, [CLI, 'reset', 'guards.stashGuard', '--confirmed', '--json'], { env, encoding: 'utf8' });
+    assert.strictEqual(cliOk.status, 0, cliOk.stdout + cliOk.stderr);
+    assert.strictEqual(JSON.parse(cliOk.stdout).value, false);
   } finally { fs.rmSync(home, { recursive: true, force: true }); }
 });
 
@@ -452,7 +492,7 @@ test('SAFETY: guards.editGuardAllow is risky only when ADDING a path not already
   } finally { fs.rmSync(home, { recursive: true, force: true }); }
 });
 
-test('SAFETY: the CLI `set` needs --confirmed for the risky direction (exit 1, warning text + --json); the safe direction and `reset` never do', () => {
+test('SAFETY: the CLI `set` needs --confirmed for the risky direction (exit 1, warning text + --json); the safe direction and a reset back to a safe default never do', () => {
   const home = tmpHome();
   try {
     const env = { PATH: process.env.PATH, HOME: home, USERPROFILE: home };
@@ -479,7 +519,7 @@ test('SAFETY: the CLI `set` needs --confirmed for the risky direction (exit 1, w
       assert.strictEqual(JSON.parse(confirmed.stdout).value, expected, k);
 
       const reset = spawnSync(process.execPath, [CLI, 'reset', k], { env, encoding: 'utf8' });
-      assert.strictEqual(reset.status, 0, k + ' (reset never needs --confirmed): ' + reset.stdout + reset.stderr);
+      assert.strictEqual(reset.status, 0, k + ' (reset to a safe default needs no --confirmed): ' + reset.stdout + reset.stderr);
     }
   } finally { fs.rmSync(home, { recursive: true, force: true }); }
 });
