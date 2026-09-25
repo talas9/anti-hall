@@ -89,19 +89,55 @@ const HEAVY_PATTERNS = [
 // We allow these even if the verb matches HEAVY_VERBS.
 const LIGHT_EXCEPTIONS = [
   // git subcommands that are read-only / instant
-  /\bgit\s+(?:status|log|diff|show|branch|rev-parse|config\s+--get|config\s+--list|worktree\s+list|remote\s+-v|shortlog|stash\s+list|tag\s+-l|describe)\b/i,
+  /\bgit\s+(?:status|log|diff|show|branch(?:\s+--list)?|rev-parse|config\s+--get|config\s+--list|worktree\s+list|remote\s+-v|shortlog|stash\s+list|tag\s+-l|describe|ls-remote|ls-tree|merge-base|reflog\s+show)\b/i,
+  // git fetch alone only updates local remote-tracking refs/objects — it never
+  // touches the working tree or any local branch, so it is read-only from the
+  // working-tree's perspective (unlike push/pull, which stay gated below).
+  /\bgit\s+fetch\b/i,
   // npm/node version queries
   /\bnpm\s+(?:--version|-v|view|info|ls)\b/i,
-  /\bnode\s+(?:--version|-v|-e\s+"[^"]*"|-e\s+'[^']*')\b/i,
+  // `node -e "..."` / `-e '...'` is intentionally NOT blanket-exempted here —
+  // its content is classified by isSafeNodeEval() below (write/spawn-API
+  // deny-list) instead of a blind quoted-content match, so a write/spawn
+  // payload (e.g. `-e "require('fs').writeFileSync(...)"`) is correctly
+  // still gated.
+  /\bnode\s+(?:--version|-v)\b/i,
   /\bflutter\s+--version\b/i,
   /\bgo\s+version\b/i,
   /\bcargo\s+(?:--version|version)\b/i,
   // go env (read-only) — but NOT `go env -w KEY=VAL` which mutates config.
   /\bgo\s+env\b(?![^\n]*\s-w\b)/i,
-  // git push/pull/fetch with --dry-run is non-mutating (no refs/objects change).
-  /\bgit\s+(?:push|pull|fetch)\b[^\n]*\s--dry-run\b/i,
+  // git push/pull with --dry-run is non-mutating (no refs/objects change).
+  /\bgit\s+(?:push|pull)\b[^\n]*\s--dry-run\b/i,
   // docker ps/images/inspect (read-only)
   /\bdocker\s+(?:ps|images|inspect|logs|stats)\b/i,
+  // sqlite3 opened with -readonly: the connection itself refuses writes, so no
+  // statement it runs can mutate the db file.
+  /\bsqlite3\b[^\n]*\s-readonly\b/i,
+  // gcloud/gh/kubectl read-only inspection subcommands (describe/list/get/view).
+  // `get` also matches inside compound read subcommands like `get-iam-policy`
+  // (word-boundary substring) — those are read-only too, so that is not a gap.
+  /\b(?:gcloud|gh|kubectl)\s+(?:\S+\s+)*?(?:describe|list|get|view)\b/i,
+  // gcloud logging read (the log-tail/query command, not a mutation).
+  /\bgcloud\s+(?:\S+\s+)*?logging\s+read\b/i,
+  // anti-hall's own read-only CLI subcommands. Each is a NARROW, anchored
+  // exemption of one specific script + one specific read-only subcommand set
+  // (not the whole script), mirroring the devswarm.js carve-out's anchoring
+  // discipline (parent dir segment anchored at token start or path separator,
+  // both `/` and `\` accepted) so a look-alike prefix is never exempted.
+  //   jev-setup.js status        — read-only status report (enable/disable/
+  //                                 set-key/test/mode are NOT matched, still gated)
+  //   settings.js show|get       — read-only (set/reset are NOT matched)
+  //   jev-report.js (default)    — read-only report/scorecard UNLESS its first
+  //                                 positional argument is the mutating `label`
+  //                                 or `prune-audit` subcommand (negative lookahead)
+  /\bnode\s+(?:\S*[\\/])?scripts[\\/]jev-setup\.js\s+(?:-\S+\s+)*status\b/i,
+  /\bnode\s+(?:\S*[\\/])?scripts[\\/]settings\.js\s+(?:-\S+\s+)*(?:show|get)\b/i,
+  /\bnode\s+(?:\S*[\\/])?scripts[\\/]jev-report\.js\b(?![^\n]*\b(?:label|prune-audit)\b)/i,
+  // hooks/doctor.js: read-only diagnostics by default — --repair/--fix (and the
+  // explicit opt-in repair flags) switch it to a mutating repair pass, so any
+  // of those flags anywhere on the line disqualifies the exemption.
+  /\bnode\s+(?:\S*[\\/])?hooks[\\/]doctor\.js\b(?![^\n]*--(?:repair|fix|repair-ingest-orphans|repair-test-stores)\b)/i,
   // anti-hall's own coordinator-owned phase-state helpers. These are documented
   // to run INLINE on the main thread on purpose — phase-state is written by the
   // coordinator, never a subagent (orchestration/SKILL.md, ship-it/SKILL.md).
@@ -1034,6 +1070,37 @@ function blankPatternArgument(text, verb) {
   return text;
 }
 
+// isSafeNodeEval(segment) -> true iff this segment is `node -e <code>` (or
+// `--eval`) AND <code> contains no recognizable write/spawn API call. This is
+// a GENERALIZATION of the existing quoted `-e "..."` LIGHT_EXCEPTIONS entry
+// above (which only matches the exact `-e "..."` / `-e '...'` literal shape):
+// this one tokenizes the segment (quote-aware, via tokenizeQuoted, so the
+// payload's own spaces/quoting do not confuse it) and inspects the ACTUAL
+// eval payload text for a closed, conservative deny-list of Node.js APIs that
+// write, delete, or spawn a process (fs write/rm/rename/chmod/etc.,
+// child_process spawn/exec/fork, or any reference to `child_process` at all).
+// Deliberately CONSERVATIVE: this only ever WIDENS what is allowed (never
+// narrows a block) — any payload it cannot confidently classify as safe
+// (no recognized `-e`/`--eval` flag, or a payload containing ANY of the
+// deny-listed substrings) returns false, leaving the normal heavy-command
+// checks below to decide as before. Only the SPACED `-e <code>` / `--eval
+// <code>` form is recognized (matching the existing quoted LIGHT_EXCEPTIONS
+// entry's own scope) — an unrecognized shape is never exempted here, it is
+// simply left for the pre-existing checks.
+const NODE_EVAL_UNSAFE_RE =
+  /\b(?:writeFile(?:Sync)?|appendFile(?:Sync)?|unlink(?:Sync)?|rm(?:Sync)?|rmdir(?:Sync)?|mkdir(?:Sync)?|rename(?:Sync)?|truncate(?:Sync)?|chmod(?:Sync)?|chown(?:Sync)?|symlink(?:Sync)?|copyFile(?:Sync)?|spawn(?:Sync)?|exec(?:Sync)?|execFile(?:Sync)?|fork)\s*\(|child_process/;
+function isSafeNodeEval(segment) {
+  if (effectiveVerb(segment) !== 'node') return false;
+  const tokens = tokenizeQuoted(segment);
+  for (let i = 0; i < tokens.length; i++) {
+    if (tokens[i] === '-e' || tokens[i] === '--eval') {
+      const payload = i + 1 < tokens.length ? tokens[i + 1] : '';
+      return !!payload && !NODE_EVAL_UNSAFE_RE.test(payload);
+    }
+  }
+  return false;
+}
+
 // Evaluate one segment: heavy if (its effective verb is a HEAVY_VERB) OR (it
 // matches a HEAVY_PATTERN), AND it is NOT itself a LIGHT_EXCEPTION. Light
 // exceptions are checked PER SEGMENT so `git status && npm run build` blocks on
@@ -1042,6 +1109,7 @@ function isHeavySegment(segment) {
   for (const re of LIGHT_EXCEPTIONS) {
     if (re.test(segment)) return false;
   }
+  if (isSafeNodeEval(segment)) return false;
   const verb = effectiveVerb(segment);
   if (verb && HEAVY_VERBS.has(verb)) return true;
   // For PATTERN matching only, neutralize quoted string contents so a benign

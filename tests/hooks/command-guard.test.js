@@ -61,6 +61,21 @@ const BLOCK = [
   // shell, so a substitution inside that body must still be flagged.
   "cat > f <<EOF\n`pytest`\nEOF",
   "cat > f <<EOF\n$(pytest)\nEOF",
+  // f0958b13-adjacent: state-changing variants of the newly-allowed read-only
+  // commands must stay blocked — the allowlist is read-only-scoped, not a
+  // blanket exemption of the whole script/verb.
+  'git push origin main',
+  'git pull origin main',
+  'node plugins/anti-hall/scripts/settings.js set devswarm.enabled true --confirmed',
+  'sqlite3 /tmp/x.db "delete from t"',
+  'sqlite3 -readwrite /tmp/x.db "delete from t"',
+  'npm test',
+  'node plugins/anti-hall/hooks/doctor.js --repair',
+  'node plugins/anti-hall/hooks/doctor.js --fix',
+  'node plugins/anti-hall/scripts/jev-report.js label abc123 tp',
+  'node plugins/anti-hall/scripts/jev-report.js prune-audit --days 30',
+  'gcloud compute instances delete foo',
+  'kubectl delete pod foo',
 ];
 
 const ALLOW = [
@@ -132,6 +147,31 @@ const ALLOW = [
   "cat > f <<'EOF'\n`pytest`\nEOF",
   "cat > f <<'EOF'\n$(pytest)\nEOF",
   'cat > f << "EOF"\n`pytest`\nEOF',
+  // f0958b13-adjacent: read-only allowlist additions (0.108.4). Every
+  // verbatim example from the field report must ALLOW in coordinator context.
+  'node <plugin>/scripts/jev-setup.js status | head -30'.replace('<plugin>', 'plugins/anti-hall'),
+  'node plugins/anti-hall/scripts/settings.js show',
+  'node plugins/anti-hall/scripts/settings.js get devswarm.enabled',
+  'node plugins/anti-hall/scripts/devswarm.js inbox tick',
+  'node plugins/anti-hall/scripts/devswarm.js roster',
+  'node plugins/anti-hall/scripts/devswarm.js inbox peek-primary',
+  'sqlite3 -readonly /tmp/x.db "select count(*) from t"',
+  'gcloud run services describe foo --project p --region r --format=value(status.url)',
+  'git ls-remote origin main; git fetch -q origin main; git merge-base --is-ancestor abc def; git diff --name-only abc def',
+  'git rev-parse HEAD',
+  'git log --oneline -5',
+  'git status --short',
+  'git show --stat HEAD',
+  'git ls-tree HEAD',
+  'git fetch origin main',
+  'git branch --list',
+  'git reflog show',
+  'gh pr list',
+  'kubectl get pods',
+  'gcloud logging read "severity>=ERROR" --limit 5',
+  'node plugins/anti-hall/hooks/doctor.js',
+  'node plugins/anti-hall/scripts/jev-report.js --weekly',
+  'node plugins/anti-hall/scripts/jev-report.js --days 7 --json',
 ];
 
 for (const cmd of BLOCK) {

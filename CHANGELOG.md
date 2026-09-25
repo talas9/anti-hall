@@ -109,6 +109,22 @@ the update.
   is passed; that flag is anti-hall's own and is not forwarded to hivecontrol. The result carries a
   `sourceCheck` object.
 - New setting `devswarm.spawnFromOrigin` (default `true`, a /config row) turns the check off.
+- **`command-guard.js` no longer forces a subagent spawn just to read one value.**
+  Trivial READ-ONLY commands in the main coordinator thread — `git ls-remote`/
+  `fetch`/`merge-base`/`ls-tree`, `sqlite3 -readonly`, `gcloud/gh/kubectl
+  describe|list|get|view` (and `gcloud logging read`), and anti-hall's own
+  read-only CLI subcommands (`jev-setup.js status`, `settings.js show|get`,
+  `hooks/doctor.js` without `--repair`/`--fix`, `jev-report.js` without
+  `label`/`prune-audit`) — tripped the generic heavy-verb/`node *.js` heuristic
+  and were blocked with "Heavy command detected", forcing a subagent spawn for
+  a one-line lookup. Added a narrow, per-segment read-only allowlist evaluated
+  BEFORE the heavy-command check (same place/discipline as the existing
+  `devswarm.js` carve-out), plus a conservative `isSafeNodeEval()` classifier
+  for `node -e`/`--eval` payloads (deny-listed write/spawn Node APIs only).
+  State-changing variants (`git push/pull`, `settings.js set`, `sqlite3`
+  without `-readonly`, `doctor.js --repair`, `jev-report.js label`, `gcloud
+  ... delete`) stay blocked — the allowlist is scoped to the specific
+  read-only subcommand, never the whole script/verb.
 - **`model-routing-guard`'s planning-shaped-on-haiku advisory false-positived on
   mechanical work.** Row 4 matched the broad `COMPLEX` word list (bare `review`,
   `audit`, `design`, `plan`, `root cause`, `regression`, `logic`, `security`)
