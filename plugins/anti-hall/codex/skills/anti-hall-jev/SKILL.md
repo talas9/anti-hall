@@ -84,8 +84,18 @@ itself.
   `docs/KB-jev-classifier.md` §10.
 - "how is jev doing" / "jev scorecard": run `jev-report.js`, then for each row
   explain KEEP (promote-worthy) / REMOVE (offer to set mode off) / REVIEW (not
-  enough data, or p95 latency over budget). Mention the headline one-liner per
-  integration for a quick summary.
+  enough data, needs more labels, label-only, or p95 latency over budget).
+  Mention the headline one-liner per integration for a quick summary.
+  **v0.108.1 fix:** KEEP and REMOVE now BOTH require a labelled sample (tp+fp,
+  human+auto) of at least 20 — below that it's `REVIEW (needs labels: n/20)`
+  regardless of the raw rates; a <1% changed-decision rate is a low-yield NOTE
+  only, never a REMOVE trigger by itself; a shadow-mode row's yield is now
+  computed from `wouldChange` (what Jev would have done) instead of `changed`
+  (which is always null in shadow by construction — see `docs/KB-jev-classifier.md`).
+- `jev-report.js --since <iso> --until <iso>` / `--exclude-window <iso>..<iso>`
+  (repeatable) exclude rows by `ts` before anything else — use this to drop a
+  known-accidental run from the numbers, e.g.
+  `--exclude-window 2026-09-24T19:56:00Z..2026-09-24T22:23:00Z`.
 - `jev-report.js --weekly [--json]` — compact ALWAYS-7-day summary, one line
   per integration (`[mode]`, suggestion, short reason, calls). A SessionStart
   hook (`hooks/jev-weekly-scorecard.js`, shared with the Claude port) checks

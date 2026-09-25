@@ -569,15 +569,38 @@ changed (by direction), outcome rates (joined by hash), latency p50/p95, an ESTI
 cost (`calls × jev.json "costPerCall"`, an owner-supplied constant — shows `n/a` if
 unset; this is a rough estimate, not a bill), and a KEEP/REVIEW/REMOVE suggestion.
 Thresholds (documented in the script's header, tune by editing them there): below 50
-calls always `REVIEW (not enough data)`; `REMOVE` at ≥200 calls when changed-rate <1%,
-or good-outcome-rate <60%, or failure-rate >20%; `KEEP` when changed-rate ≥5% AND
-good-outcome-rate ≥80% — **and only when an outcome signal actually exists**: a `null`
-good-outcome-rate (no `recordOutcome` ever observed for this integration) can NEVER earn
-`KEEP`, no matter how high the changed-decision rate is; a label-only integration with
-zero outcomes reports `REVIEW (label-only, no outcome signal yet)`. `REVIEW` otherwise
-(including p95 latency over the integration's configured budget). A separate section
-(not per-integration, since it's latency keyed by urgency, not a decision row) reports
-`triage`'s urgent-vs-non-urgent time-to-answer p50/p95 from `recordAnswered`'s data.
+calls always `REVIEW (not enough data)`. **v0.108.1 fix:** KEEP and REMOVE now BOTH
+require a labelled sample of at least `MIN_LABELED_FOR_VERDICT` (20, tp+fp, human+auto
+combined) — below that, `REVIEW (needs labels: n/20)`, no matter how the raw rates look
+(this closed a real gap where a 3-changed/304-fresh integration hit REMOVE off
+changed-rate alone, with zero labelled outcomes behind it). Once labelled: `REMOVE` at
+≥200 calls when good-outcome-rate <60% or failure-rate >20% — changed-rate <1% is now a
+**low-yield note only**, appended to whatever verdict the other numbers already produced,
+and can never trigger REMOVE by itself; `KEEP` when changed-rate ≥5% AND good-outcome-rate
+≥80% — **and only when an outcome signal actually exists**: a `null` good-outcome-rate (no
+`recordOutcome` ever observed for this integration) can NEVER earn `KEEP`, no matter how
+high the changed-decision rate is; a label-only integration (no boolean baseline, e.g.
+`newRequest`) never uses changed-rate at all and reports `REVIEW (label-only, no outcome
+signal yet)` — this guard runs BEFORE the labelled-sample/REMOVE/KEEP checks, not after.
+`REVIEW` otherwise (including p95 latency over the integration's configured budget). A
+separate section (not per-integration, since it's latency keyed by urgency, not a decision
+row) reports `triage`'s urgent-vs-non-urgent time-to-answer p50/p95 from `recordAnswered`'s
+data.
+
+**v0.108.1 shadow-mode yield fix.** A shadow-mode row's `changed` field is always `null`
+by construction (`jev-assist.js`'s `finalize()` only applies/reports a change when
+`mode==='on'`) — reading only `row.changed` meant a shadow integration's changed-decision
+rate was always 0, which could hit REMOVE at ≥200 calls no matter how good Jev's shadow
+answers actually were. `finalize()` now also logs `row.wouldChange` — the same trust-rule
+outcome computed WITHOUT the mode gate — and `jev-report.js` reads it for shadow/off rows
+(an `on` row's `wouldChange` would just duplicate `changed`, so it is omitted there).
+
+**`--since <iso>` / `--until <iso>` / `--exclude-window <iso>..<iso>`** (repeatable) filter
+rows by `ts` before anything else (`--project`/`--by`/`--weekly` included), across both
+`jev-assist.ndjson` and `jev-triage.ndjson`. Use this to drop a known-accidental run from a
+report without editing the log file — e.g. excluding the 2026-09-24T19:56Z..22:23Z
+accidental unreleased-supervisor `supervisorBlockerLabel` run:
+`--exclude-window 2026-09-24T19:56:00Z..2026-09-24T22:23:00Z`.
 
 **Codex parity:** speculation-guard.js, speculation-judge.js, and model-routing-guard.js
 are all shared files under `plugins/anti-hall/hooks/` (§ codex/README.md) — the Codex

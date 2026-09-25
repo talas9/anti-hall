@@ -146,16 +146,28 @@ Jev is doing:
    to narrow the cost window; default shows both).
 2. For EACH integration row, read its **suggestion** column and explain what it
    means and what to do next:
-   - **KEEP** — changed-decision rate ≥5% AND good-outcome rate ≥80% with a real
-     outcome signal. Tell the user it's earning its keep; no action needed
-     (already `on`, or a good candidate to promote from `shadow` to `on` — see
-     "Per-integration modes" below).
-   - **REMOVE** — ≥200 calls with either <1% changed-decision rate, <60%
-     good-outcome rate, or >20% failure rate. Tell the user Jev is not adding
-     value here; offer to set its mode to `off`.
+   - **KEEP** — changed-decision rate ≥5% AND good-outcome rate ≥80%, with a real
+     outcome signal AND a labelled sample (tp+fp, human+auto) of at least 20
+     (`MIN_LABELED_FOR_VERDICT`). Tell the user it's earning its keep; no action
+     needed (already `on`, or a good candidate to promote from `shadow` to `on`
+     — see "Per-integration modes" below).
+   - **REMOVE** — ≥200 calls, a labelled sample of at least 20, AND either <60%
+     good-outcome rate or >20% failure rate. Tell the user Jev is not adding
+     value here; offer to set its mode to `off`. A <1% changed-decision rate is
+     LOW YIELD ONLY (v0.108.1 fix) — it shows up as a note on the verdict, never
+     as a REMOVE reason by itself.
    - **REVIEW (not enough data: N < 50 calls)** — too early to judge; explain
      more calls are needed (or the owner can `label` some decisions manually to
      seed outcome signal faster — see "labeling" below).
+   - **REVIEW (needs labels: n/20)** — v0.108.1 fix: KEEP and REMOVE are BOTH
+     withheld below a labelled sample of 20, regardless of how the raw
+     changed/good-outcome/failure rates look. Tell the user to run `jev report
+     label <hash> tp|fp` on a few more decisions (see "labeling" below) to seed
+     the sample, or wait for more `recordOutcome` signal to accrue.
+   - **REVIEW (label-only, no outcome signal yet)** — a `choice` classifier (no
+     boolean baseline, e.g. `newRequest`) never uses changed-decision rate at
+     all; explain it needs human labels before any KEEP/REMOVE verdict is even
+     possible.
    - **REVIEW (p95 latency exceeds budget)** — the classifier is slow relative
      to its own hook's timeout budget; flag it, but this is a performance note,
      not a correctness one.
@@ -201,6 +213,20 @@ one to thread through (not every integration is session-scoped — e.g.
 `devswarm-supervisor.js`'s background sweep never has one). A row from BEFORE
 this feature existed, or from an integration that genuinely has no session,
 groups under `unknown` — not an error, not dropped.
+
+### Excluding a known-accidental run (v0.108.1)
+
+`--since <iso>` / `--until <iso>` bound the report to rows with `ts` inside that
+window; `--exclude-window <iso>..<iso>` (repeatable) drops rows inside one
+closed interval instead. All three apply BEFORE `--project`/`--by`/`--weekly`,
+to both `jev-assist.ndjson` and `jev-triage.ndjson`. Use this when the user
+wants a bad/accidental run out of the numbers without editing the log file
+directly:
+
+```
+node "${CLAUDE_PLUGIN_ROOT}/scripts/jev-report.js" \
+  --exclude-window 2026-09-24T19:56:00Z..2026-09-24T22:23:00Z
+```
 
 ### Weekly scorecard (automatic + on-demand)
 
