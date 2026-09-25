@@ -6,6 +6,33 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.108.3 (unreleased)
+
+### Fixes
+
+- **`recordOutcome()` (`hooks/lib/jev-assist.js`) never populated `project`
+  on its `type:'outcome'` rows**, unlike every decision row `ask()`/`askSync()`/
+  `askDetached()` log via `finalize()`. `triage`'s answer-latency join
+  (`hooks/lib/jev-triage.js`'s `recordAnswered`) and `speculation`'s
+  evidence-added/user-override outcomes are the two current callers, so
+  their `jev-assist.ndjson` rows silently grouped under `unknown` for `jev
+  report --by project`/`--project <name>`. `recordOutcome()` now applies the
+  same cwd-basename fallback (`defaultProject()`) `finalize()` already uses,
+  and accepts an explicit `project` override for future callers. Rows logged
+  before this fix cannot be repaired (no source cwd to recover) and keep
+  grouping under `unknown` — this is expected, not a bug.
+- **`jev-report.js`'s per-integration table showed a bare `0.0%` in the
+  `changed%` column (and `0 changed` in the headline) for label-only
+  integrations** (a `choice`/string classifier with no boolean baseline to
+  diff against, e.g. `newRequest`, `supervisorBlockerLabel`) — indistinguishable
+  from "Jev never changed anything here" when the real story is "there is
+  nothing boolean to compare". The table now prints `n/a (N distinct)`, a new
+  `label-only integrations` note below the table (and the `headlines` section)
+  spells out the real signal — `label-only: no boolean outcome to compare; N
+  distinct decisions (M fresh)`, deduped by content hash so repeated cache
+  hits of the same decision count once. KEEP/REMOVE/REVIEW verdict gating is
+  unchanged.
+
 ## 0.108.2 (2026-09-25)
 
 ### Fixes
