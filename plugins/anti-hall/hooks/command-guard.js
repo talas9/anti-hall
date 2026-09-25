@@ -145,7 +145,11 @@ const LIGHT_EXCEPTIONS = [
   //   directories) are NOT matched here, so they stay gated like every other
   //   mutating command — anchored the same way as the exemptions above
   //   (parent dir segment anchored at token start or path separator).
-  /\bnode\s+(?:\S*[\\/])?scripts[\\/]defect\.js\s+(?:-\S+\s+)*(?:report|list|show)\b/i,
+  //   ALSO anchored to the START of the segment (optional leading env
+  //   assignments only): `node` must be the segment's own verb, so a heavy
+  //   command merely carrying it as trailing args (`npm run build -- node
+  //   scripts/defect.js list`) is never exempted.
+  /^\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*node\s+(?:\S*[\\/])?scripts[\\/]defect\.js\s+(?:-\S+\s+)*(?:report|list|show)\b/i,
   // hooks/doctor.js: read-only diagnostics by default — --repair/--fix (and the
   // explicit opt-in repair flags, including --reclaim-ingest-lock, which forces
   // a stale-lock takeover — a mutating action) switch it to a mutating repair

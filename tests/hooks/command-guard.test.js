@@ -162,6 +162,11 @@ const BLOCK = [
   // more than an append and must stay gated.
   'node plugins/anti-hall/scripts/defect.js rule abc123 --status fixed',
   'node plugins/anti-hall/scripts/defect.js archive',
+  // review P2: the defect.js exemption is anchored to the START of a
+  // segment — a heavy command merely carrying it as trailing args must
+  // not be exempted.
+  'npm run build -- node scripts/defect.js list',
+  'make all node scripts/defect.js show abc123',
 ];
 
 const ALLOW = [
@@ -280,6 +285,8 @@ const ALLOW = [
   'node plugins/anti-hall/scripts/defect.js list --json',
   'node plugins/anti-hall/scripts/defect.js show abc123',
   'node plugins/anti-hall/scripts/defect.js show abc123 --json',
+  'cd /repo && node scripts/defect.js list --open',
+  'FOO=1 node scripts/defect.js list',
 ];
 
 for (const cmd of BLOCK) {
