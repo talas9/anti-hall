@@ -15,6 +15,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 
 const UNKNOWN_SESSION = 'unknown-session';
 const HANDOVER_FILE_RE = /^HANDOVER(?:-(\d+))?\.md$/;
@@ -36,9 +37,15 @@ function localDate(d) {
   return t.getFullYear() + '-' + pad(t.getMonth() + 1) + '-' + pad(t.getDate());
 }
 
+// realHome() -> realpath'd os.homedir(), or the raw value when it can't be
+// realpath'd (fail-open — the homedir guard below just never matches).
+function realHome() {
+  try { return fs.realpathSync(os.homedir()); } catch (_) { return os.homedir(); }
+}
+
 // repoRoot(cwd) -> the git toplevel of cwd via the ONE canonical resolver
 // (companion/lib/identity.js's resolveContext), or cwd itself when cwd is
-// missing/not-a-repo (fail-open, matches the pre-existing plain-cwd
+// missing/not-a-repo/homedir (fail-open, matches the pre-existing plain-cwd
 // behavior). FIXES the PreCompact doubled-path bug: a session whose cwd was
 // `<repo>/.anti-hall/handovers` used to get `<repo>/.anti-hall/handovers`
 // joined onto AGAIN, writing snapshots under
@@ -51,12 +58,30 @@ function localDate(d) {
 // identical to its worktreeRoot (resolveContext never climbs past a linked
 // worktree that isn't itself a submodule), so this still resolves to the
 // worktree's OWN root, never the main checkout's.
+//
+// Deliberately NO `missingPath: 'ancestor'` (coordinator safety-review P2,
+// 2026-09-25): every caller of repoRoot() is a live hook whose cwd exists for
+// the running session — 'ancestor' only matters once cwd itself has been
+// deleted mid-session (e.g. a removed nested worktree), and for that case
+// climbing to the nearest SURVIVING ancestor would resolve to an unrelated
+// enclosing repo (the main checkout) and write/read this session's state
+// there instead. Falling back to the raw (now-missing) cwd means the
+// subsequent fs call (mkdir/read/write) simply fails and the caller's
+// existing fail-open handling takes over — never a cross-repo write.
+//
+// Homedir guard (coordinator safety-review P2, 2026-09-25): a dotfiles repo
+// checked out AT $HOME (`~/.git`) would otherwise resolve toplevel === HOME,
+// sending every handover/progress/history write into
+// ~/.anti-hall/{handovers,progress,history} — anti-hall's OWN global state
+// directory (session state, skip.json, etc.), silently mixing per-project
+// session bookkeeping into it. Falls back to the raw cwd instead, same as
+// the non-git case.
 function repoRoot(cwd) {
   if (typeof cwd !== 'string' || !cwd) return cwd;
   try {
     const identity = require('../../companion/lib/identity.js');
-    const ctx = identity.resolveContext(cwd, { missingPath: 'ancestor' });
-    if (ctx && ctx.toplevel) return ctx.toplevel;
+    const ctx = identity.resolveContext(cwd);
+    if (ctx && ctx.toplevel && ctx.toplevel !== realHome()) return ctx.toplevel;
   } catch (_) { /* fall through to raw cwd */ }
   return cwd;
 }

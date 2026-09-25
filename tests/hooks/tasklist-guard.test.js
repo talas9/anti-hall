@@ -8,6 +8,7 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
+const { execFileSync } = require('node:child_process');
 const { testHook, testHookRaw } = require('../helpers/spawn-hook.js');
 const { makeHome } = require('../helpers/fixtures.js');
 
@@ -236,6 +237,47 @@ test('BLOCK: missing per-session progress (4 edits + completed task) includes ex
     assert.match(r.json.reason, /missing or stale/i);
     assert.ok(r.json.reason.includes(expected), `reason must include exact path ${expected}; got ${r.json.reason}`);
   } finally { h.cleanup(); }
+});
+
+// P1 (coordinator safety-review of 1a88abc, 2026-09-25): the freshness check
+// reads root-joined paths (root = git toplevel of cwd), but with cwd inside a
+// repo subdir the block message used to name only the bare RELATIVE path --
+// an agent resolving that against its own cwd would write
+// packages/foo/.anti-hall/progress/... where this guard never looks, so it
+// blocks every Stop until the loop cap and litters a stray subdir. The
+// message must name the ABSOLUTE (root-joined) progress and history paths.
+test('BLOCK from a repo subdir cwd: message names the ABSOLUTE root-joined path, not a bare relative one', () => {
+  const h = makeHome();
+  // realpathSync: macOS's /tmp is a symlink to /private/tmp -- identity.js's
+  // resolveContext realpath's everything it returns, so comparing against a
+  // non-realpath'd `repo` here would spuriously mismatch.
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'antihall-tlg-subdir-')));
+  try {
+    const g = (...a) => execFileSync('git', a, { cwd: repo, stdio: 'ignore' });
+    g('init', '-q');
+    g('-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '--allow-empty', '-m', 'first commit');
+    const subdir = path.join(repo, 'packages', 'foo');
+    fs.mkdirSync(subdir, { recursive: true });
+
+    const session = 'subdir-session';
+    const date = todayUtc();
+    const wrongPath = path.join(subdir, '.anti-hall', 'progress', date, safeSession(session) + '.md');
+    const correctPath = path.join(repo, '.anti-hall', 'progress', date, safeSession(session) + '.md');
+    const correctHistory = path.join(repo, '.anti-hall', 'history', date, safeSession(session) + '.md');
+
+    const tp = h.writeTranscript([
+      ...edits(4),
+      ...taskCreate(1, 'do the work', 'completed'),
+    ]);
+    const r = testHook(HOOK, stopPayload(tp, subdir, session), { home: h.home });
+    assert.ok(isBlock(r), `expected block; stdout: ${r.stdout}`);
+    assert.ok(r.json.reason.includes(correctPath), `reason must name the repo-rooted absolute path ${correctPath}; got ${r.json.reason}`);
+    assert.ok(r.json.reason.includes(correctHistory), `reason must name the repo-rooted absolute history path ${correctHistory}; got ${r.json.reason}`);
+    assert.ok(!r.json.reason.includes(wrongPath), `reason must NOT point at the subdir-relative wrong path ${wrongPath}; got ${r.json.reason}`);
+  } finally {
+    h.cleanup();
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
 });
 
 test('BLOCK: stale per-session progress (4 edits + completed task + old-mtime progress)', () => {

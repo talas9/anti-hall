@@ -239,9 +239,17 @@ function main() {
   const progressHeader = '<!-- session: ' + (rawSessionId || UNKNOWN_SESSION) +
     ' | started: ' + new Date().toISOString() + ' -->';
   const progressRelPath = path.join('.anti-hall', 'progress', progressDate, sessionIdForPath + '.md');
+  const historyRelPath = path.join('.anti-hall', 'history', progressDate, sessionIdForPath + '.md');
   const cwd = payload && payload.cwd;
   const root = (cwd && typeof cwd === 'string') ? repoRoot(cwd) : cwd;
   const progressAbsPath = (root && typeof root === 'string') ? path.join(root, progressRelPath) : null;
+  // historyAbsPath (P1 fix, coordinator safety-review 2026-09-25): the block
+  // message must name the path the guard itself reads/writes (root-joined),
+  // never the bare relative path -- with cwd = repo/packages/foo, root is the
+  // repo toplevel, and a message naming the RELATIVE path led the agent to
+  // write packages/foo/.anti-hall/... where this guard never looks, blocking
+  // every Stop until the loop cap.
+  const historyAbsPath = (root && typeof root === 'string') ? path.join(root, historyRelPath) : null;
 
   // Single-pass scan: WORK_COUNT, sawTaskActivity, reconstructed task state, and
   // (FIX 6) the newest transcript-observed write to the progress file itself.
@@ -345,9 +353,7 @@ function main() {
   // Wrapped so any error here can never affect progressFresh/shouldBlock above.
   try {
     if (root && typeof root === 'string') {
-      const historyRelPath = path.join('.anti-hall', 'history', progressDate, sessionIdForPath + '.md');
-      const hPath = path.join(root, historyRelPath);
-      const hSt = fs.lstatSync(hPath); // lstat — do NOT follow symlinks (mirrors progress's guard)
+      const hSt = fs.lstatSync(historyAbsPath); // lstat — do NOT follow symlinks (mirrors progress's guard)
       if (hSt.isFile()) {
         maintainSessionIndex(root, progressDate, sessionIdForPath, 'history');
       }
@@ -500,7 +506,7 @@ function main() {
   } else {
     lead =
       'You made ' + workCount + ' file-changing actions but ' +
-      progressRelPath + ' is missing or stale.';
+      (progressAbsPath || progressRelPath) + ' is missing or stale.';
   }
 
   const reason = sanitizeReason(
@@ -508,11 +514,10 @@ function main() {
       ' Capture this work as priority-sorted tasks via TaskCreate/TaskUpdate ' +
       '(check TaskList FIRST to dedup/relate — do not duplicate an existing task; ' +
       'link related ones with addBlockedBy/addBlocks), set statuses ' +
-      '(in_progress/completed), and update ' + progressRelPath + ' ' +
+      '(in_progress/completed), and update ' + (progressAbsPath || progressRelPath) + ' ' +
       '(done/in-progress/next); if creating it, put this header at the very top: ' +
       progressHeader + '. Gitignore it so it never ships. ' +
-      'Also append each COMPLETED task to .anti-hall/history/' + progressDate + '/' +
-      sessionIdForPath + '.md (append-only ' +
+      'Also append each COMPLETED task to ' + (historyAbsPath || historyRelPath) + ' (append-only ' +
       'ledger, one entry per task: Cause / Fix / Verified) so the fix history ' +
       'persists across sessions — gitignore it too.'
   );
@@ -715,10 +720,18 @@ function maintainSessionIndex(cwd, date, sessionId, kind) {
 
 // sanitizeReason — single line, no control chars, bounded length so a task
 // subject or path can't reshape the Stop reason or inject instruction-like lines.
+// Cap raised 900 -> 2000 (P1 fix, coordinator safety-review of 1a88abc,
+// 2026-09-25): the reason now names ABSOLUTE (root-joined) progress/history
+// paths instead of short repo-relative ones, and the base message alone
+// (two progress-path mentions + one history-path mention + the header) can
+// approach 900 chars on its own with a realistically-nested repo path,
+// leaving no room for the THREAD 5 / THREAD 7b advisory suffixes appended
+// afterward -- they were silently sliced off. 2000 keeps a hard bound (still
+// no unbounded growth from a task subject/path) while leaving real headroom.
 function sanitizeReason(s) {
   if (typeof s !== 'string') return '';
   let out = s.replace(/[\x00-\x1F\x7F-\x9F]/g, ' ').replace(/\s+/g, ' ').trim();
-  if (out.length > 900) out = out.slice(0, 900).trimEnd() + '…';
+  if (out.length > 2000) out = out.slice(0, 2000).trimEnd() + '…';
   return out;
 }
 

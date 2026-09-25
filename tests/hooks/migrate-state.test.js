@@ -9,6 +9,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { execFileSync } = require('node:child_process');
 const { migrateLegacyState, migrateGsdPlanning, migrateDevswarmStore } = require('../../plugins/anti-hall/scripts/migrate-state.js');
 
 function makeTmpDir() {
@@ -120,6 +121,50 @@ test('only one legacy file present: migrates that one, reports not-found for the
     assert.strictEqual(progress.action, 'migrated');
     assert.strictEqual(history.action, 'not-found');
   } finally { cleanup(); }
+});
+
+// P2 (coordinator safety-review of 1a88abc, 2026-09-25): `dir` a git toplevel
+// (the normal case) must migrate exactly as before -- the shared repoRoot()
+// this now routes through resolves toplevel === dir here, so nothing changes.
+test('migrateLegacyState: dir is already the repo toplevel -> resolves to itself, migrates normally', () => {
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'migrate-state-toplevel-')));
+  const g = (...a) => execFileSync('git', a, { cwd: dir, stdio: 'ignore' });
+  try {
+    g('init', '-q');
+    g('-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '--allow-empty', '-m', 'first commit');
+    fs.writeFileSync(path.join(dir, '.anti-hall-progress.md'), '# progress\n', 'utf8');
+
+    const results = migrateLegacyState({ dir });
+    const progress = results.find((r) => r.file === '.anti-hall-progress.md');
+    assert.strictEqual(progress.action, 'migrated');
+    assert.strictEqual(
+      fs.readFileSync(path.join(dir, '.anti-hall', 'history', 'legacy', '.anti-hall-progress.md'), 'utf8'),
+      '# progress\n'
+    );
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+// P2 (coordinator safety-review of 1a88abc, 2026-09-25): a `dir` that no
+// longer exists (e.g. a removed nested worktree, forwarded verbatim from a
+// caller) must NOT climb to a surviving ancestor repo and migrate legacy
+// files into THAT repo's .anti-hall/history/legacy/ -- it must fail-open
+// (not-found for every legacy file, nothing written) instead of touching an
+// unrelated repo.
+test('migrateLegacyState: a dir that no longer exists does NOT climb to a surviving ancestor repo', () => {
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'migrate-state-ancestor-')));
+  const g = (...a) => execFileSync('git', a, { cwd: repo, stdio: 'ignore' });
+  try {
+    g('init', '-q');
+    g('-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '--allow-empty', '-m', 'first commit');
+    // A legacy file at the ANCESTOR repo's root -- must be left untouched.
+    fs.writeFileSync(path.join(repo, '.anti-hall-progress.md'), '# ancestor progress\n', 'utf8');
+
+    const removedNestedWorktree = path.join(repo, 'child-worktrees', 'gone-worktree');
+    const results = migrateLegacyState({ dir: removedNestedWorktree });
+    assert.ok(results.every((r) => r.action === 'not-found'), `expected every file not-found; got ${JSON.stringify(results)}`);
+    assert.ok(!fs.existsSync(path.join(repo, '.anti-hall', 'history', 'legacy')),
+      'must NOT write into the surviving ancestor repo');
+  } finally { fs.rmSync(repo, { recursive: true, force: true }); }
 });
 
 // --- migrateGsdPlanning (GSD .planning/ -> .anti-hall/history/legacy/planning/) ---
