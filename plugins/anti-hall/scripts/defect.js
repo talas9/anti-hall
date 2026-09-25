@@ -11,7 +11,7 @@
 //          Append a report line. --sym-file/--repro-file read the field's body
 //          from a file (byte-exact — no shell interpolation of the body) and
 //          are overridden by --sym/--repro when both are given. `proj`
-//          defaults via reporterIdentity(): --proj -> ANTIHALL_DEFECT_PROJ ->
+//          defaults via reporterIdentity(): --proj -> defects.defaultProj (env ANTIHALL_DEFECT_PROJ first) ->
 //          repoKeyForWorktree(cwd) -> 'no-repo'. Exits 0 ONLY on 'recorded' or
 //          'occurrence-appended' — every other outcome (registry-full,
 //          occurrence-capped, defect-full, too-large, write-unverified,
@@ -95,10 +95,20 @@ function warnIdentityTruncated(raw, label) {
   );
 }
 
+// defaultProj(env) -> defects.defaultProj through the settings precedence
+// chain (env ANTIHALL_DEFECT_PROJ > settings.json > /config > ''), fail-open
+// to the historical env-only read.
+function defaultProj(env) {
+  const e = env || process.env;
+  try { return String(require(path.join(__dirname, '..', 'hooks', 'lib', 'settings.js')).getWithEnv('defects', 'defaultProj', '', e) || ''); }
+  catch (_) { return typeof e.ANTIHALL_DEFECT_PROJ === 'string' ? e.ANTIHALL_DEFECT_PROJ : ''; }
+}
+
 // reporterIdentity(flags, env, cwd) -> the `proj` value a report is filed
 // under. First hit wins:
 //   1. --proj <s>                          (clamped to 64 chars)
-//   2. ANTIHALL_DEFECT_PROJ env var         (clamped to 64 chars)
+//   2. defects.defaultProj setting          (clamped to 64 chars; env
+//      ANTIHALL_DEFECT_PROJ > settings.json > /config, via settings.js)
 //   3. repokey.repoKeyForWorktree(cwd)      (fails open to null outside git)
 //   4. literal 'no-repo'
 // This is intentionally NOT a cutover from the old cwd-basename identity —
@@ -109,9 +119,10 @@ function reporterIdentity(flags, env, cwd) {
     warnIdentityTruncated(flags.proj, '--proj');
     return clampIdentity(flags.proj);
   }
-  if (env && typeof env.ANTIHALL_DEFECT_PROJ === 'string' && env.ANTIHALL_DEFECT_PROJ) {
-    warnIdentityTruncated(env.ANTIHALL_DEFECT_PROJ, 'ANTIHALL_DEFECT_PROJ');
-    return clampIdentity(env.ANTIHALL_DEFECT_PROJ);
+  const proj = defaultProj(env);
+  if (proj) {
+    warnIdentityTruncated(proj, 'defects.defaultProj');
+    return clampIdentity(proj);
   }
   try {
     const repokey = require(path.join(__dirname, '..', 'companion', 'lib', 'devswarm-repokey.js'));
@@ -134,9 +145,8 @@ function mineIdentities(flags, env, cwd) {
     if (key) ids.add(key);
   } catch (_) { /* repokey unavailable -> basename-only */ }
   if (flags && typeof flags.proj === 'string' && flags.proj) ids.add(clampIdentity(flags.proj));
-  if (env && typeof env.ANTIHALL_DEFECT_PROJ === 'string' && env.ANTIHALL_DEFECT_PROJ) {
-    ids.add(clampIdentity(env.ANTIHALL_DEFECT_PROJ));
-  }
+  const proj = defaultProj(env);
+  if (proj) ids.add(clampIdentity(proj));
   return ids;
 }
 

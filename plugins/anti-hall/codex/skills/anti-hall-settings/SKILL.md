@@ -20,55 +20,45 @@ All commands below run as `node "$ANTI_HALL_ROOT/scripts/settings.js" <verb>`.
 
 ## No `/config` equivalent on Codex
 
-Claude Code exposes a handful of these settings natively in its `/config` panel
-(via `plugin.json`'s `userConfig`) as a convenience. **Codex has no equivalent** —
-there is no native settings UI this plugin can register into. `~/.anti-hall/settings.json`
-via this CLI/skill is the ONLY way to see or change a setting on Codex; it is
-complete (every setting, not just the headline ones) and it is what the file-based
-precedence chain falls back to on the Claude side too, so a value set here is
-honored by both platforms sharing the same `~/.anti-hall/` home.
+On Claude Code every non-advanced setting is an arrow-key row in the native `/config`
+panel (via `plugin.json`'s `userConfig`, section-prefixed titles). **Codex has no
+equivalent** — its plugin manifest has no `userConfig` and there is no plugin settings UI.
+On Codex this skill (over `scripts/settings.js`) is the ONLY way to see or change a
+setting. It is complete (every setting, advanced included), and a value set here lands
+in `~/.anti-hall/settings.json`, which both platforms read from the same `~/.anti-hall/` home.
 
-## Direct requests skip the menu
+## Direct named changes: one `set`, no table
 
-If the user already named the setting and the value ("turn off the merge gate",
-"set auto-handover to 80%", "disable Jev"), resolve it straight to a `section.key`
-and value and apply it — do not walk them through the menu below. Confirm by
-re-running `get` on that one key afterward.
+If the user named the setting and the value ("turn off the merge gate", "set
+auto-handover to 80%", "disable Jev"), resolve it to a `section.key` and value and apply it:
+```bash
+node "$ANTI_HALL_ROOT/scripts/settings.js" set <section.key> <value>
+```
+then confirm with the single-key line from `get <section.key>`. Never print the full
+table for a direct change. A validation failure (out-of-range number, unknown enum
+value) comes back as `{ok:false, error}` on `--json` or an `error:` line otherwise —
+relay it and ask for a valid value; never silently coerce or guess one. A question
+about ONE value is a single `get <section.key>`.
 
-## Menu flow (when the user just says "show/change my settings")
+## Browsing (only when the user asks to see or pick settings)
 
-1. Run:
+1. `show` prints every section's tables — run it ONLY when the user explicitly asks to
+   see their settings:
    ```bash
-   node "$ANTI_HALL_ROOT/scripts/settings.js" show
+   node "$ANTI_HALL_ROOT/scripts/settings.js" show        # or: show --section <key> [--all]
    ```
-   Present the output as-is (already grouped into per-section markdown tables:
-   Setting / Value / Default / Source / Description). Mention that advanced/tuning
-   knobs are hidden by default and can be shown with `show --all` if asked.
+   Present the output as-is. Advanced/tuning knobs are hidden unless `--all`.
 
-2. Codex has no `AskUserQuestion` tool, so present choices as a **numbered list**
-   in prose instead:
-   - First, number the sections (autoHandover, guards, jev, limitConserve,
-     devswarm, statusline, codexNudge, versionAlerts, updates, defects) and ask
-     the user to pick one by number.
-   - Then number that section's settings and ask again.
-   - Then, for a `boolean` or `enum` setting, number its allowed values (an
-     `enum`'s options come from the schema's `values` list; boolean is just
-     1) true / 2) false) and ask the user to pick a number. For a `number` or
-     `string`/`csv` setting, ask for a free value in prose instead (respecting
-     any `min`/`max` shown in the table).
+2. To help the user pick without a wall of tables, Codex has no `AskUserQuestion`
+   tool, so use **numbered lists** in prose:
+   - Number the sections (autoHandover, guards, jev, limitConserve, devswarm,
+     statusline, codexNudge, versionAlerts, updates, defects); ask for one.
+   - Show just that section (`show --section <key>`), number its settings, ask again.
+   - For a `boolean` or `enum` setting, number its allowed values (enum `values`
+     from the schema; boolean is 1) true / 2) false). For a `number` or
+     `string`/`csv` setting, ask for a free value (respecting any `min`/`max`).
 
-3. Apply the change:
-   ```bash
-   node "$ANTI_HALL_ROOT/scripts/settings.js" set <section.key> <value>
-   ```
-   A validation failure (out-of-range number, unknown enum value) is returned as
-   `{ok:false, error}` on `--json` or a plain `error:` line otherwise — relay the
-   error and re-ask for a valid value; never silently coerce or guess one.
-
-4. Re-show just the changed row to confirm:
-   ```bash
-   node "$ANTI_HALL_ROOT/scripts/settings.js" get <section.key>
-   ```
+3. Apply with `set` and confirm with `get`, as above.
 
 ## Auto-handover (`autoHandover` section)
 

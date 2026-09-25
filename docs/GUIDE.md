@@ -735,9 +735,16 @@ from it (never `os.homedir()`), so a test's isolated HOME is always honored —
 `tests/hygiene/settings-home-injection.test.js` proves this mechanically for every
 wired resolver.
 
-- **Ask for it** — say "show my anti-hall settings", "turn off the merge gate", or
-  "set auto-handover to 80%" and the `settings` skill walks you through it (or applies a
-  direct request straight away).
+- **`/config` (arrow keys, no model involved)** — every non-advanced setting is a row in
+  Claude Code's native `/config` panel (v2.1.269+; enum settings render as a picker,
+  v2.1.271+). There is no grouping field, so each row's title is prefixed with its section
+  ("Auto Handover · Threshold %"). `plugin.json` `userConfig` is hand-kept and
+  `tests/hooks/settings-schema.test.js` fails if it drifts
+  from the schema's non-advanced set (key, type, options, default, min/max, title prefix).
+  Advanced/tuning knobs stay off `/config`; use the CLI below.
+- **Ask for it** — say "turn off the merge gate" or "set auto-handover to 80%" and the
+  `settings` skill applies it with one `set` (no table dump); "show my anti-hall settings"
+  prints the tables only when you ask.
 - **CLI directly**:
   ```bash
   node plugins/anti-hall/scripts/settings.js show                      # every section, headline settings
@@ -749,9 +756,8 @@ wired resolver.
   Every subcommand takes `--json` for scripting.
 - **Precedence** (highest to lowest): an `ANTIHALL_*` env var override → a value in
   `~/.anti-hall/settings.json` → a value set via Claude Code's native `/config` panel
-  (a handful of the most-changed settings — auto-handover, the merge gate, Jev,
-  limit-conservation, DevSwarm supervisor mode, the statusline — are also declared in
-  `plugin.json`'s `userConfig` so they show up there) → a legacy per-feature config file
+  (every non-advanced setting, plus the DevSwarm auto-archive tuning pair, is declared in
+  `plugin.json`'s `userConfig` so it shows up there; shown as Source `/config`) → a legacy per-feature config file
   (e.g. `~/.anti-hall/jev.json`) → the schema default. `show`'s Source column tells you
   which tier answered a given row.
 - **Known limitation (`/config`):** a `/config` value that equals the manifest default
@@ -766,8 +772,8 @@ wired resolver.
 - **Codex parity**: the mirrored skill lives at
   `plugins/anti-hall/codex/skills/anti-hall-settings/SKILL.md` and drives the SAME CLI.
   Codex has no `AskUserQuestion` (the menu flow falls back to a numbered-choice prompt)
-  and no `/config` panel — `~/.anti-hall/settings.json` via this CLI is the only front
-  door there, and it's the same file Claude Code's fallback path reads too.
+  and no plugin settings UI (no `userConfig` equivalent in the Codex manifest) —
+  `~/.anti-hall/settings.json` via the skill/CLI is the only front door there, and it's the same file Claude Code's fallback path reads too.
 
 ### Every setting
 

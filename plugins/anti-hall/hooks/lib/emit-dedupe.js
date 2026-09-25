@@ -125,8 +125,13 @@ function matchesExact(els, ch, k) {
   return false;
 }
 
-function disabled(env) {
-  return !!env && env.ANTIHALL_EMIT_DEDUPE === '0';
+// disabled(env, home) -> guards.emitDedupe === false via the settings precedence
+// chain (env ANTIHALL_EMIT_DEDUPE > settings.json > /config > default true);
+// fail-open to the historical env-only kill switch.
+function disabled(env, home) {
+  if (!env) return false;
+  try { return require('./settings.js').get('guards', 'emitDedupe', true, { env, home: home || os.homedir() }) === false; }
+  catch (_) { return env.ANTIHALL_EMIT_DEDUPE === '0'; }
 }
 
 // scanTail(transcriptPath, bytes) -> { atts: [{ts, els}], size } | null.
@@ -225,7 +230,7 @@ function shouldEmit(opts) {
   try {
     const o = opts || {};
     const env = o.env || process.env;
-    if (disabled(env)) return true;
+    if (disabled(env, o.home)) return true;
     if (!o.sessionId || !o.key) return true;
     const home = o.home || os.homedir();
     const now = Number.isFinite(o.now) ? o.now : Date.now();
@@ -304,7 +309,7 @@ function record(opts) {
   try {
     const o = opts || {};
     const env = o.env || process.env;
-    if (disabled(env) || !o.sessionId || !o.key) return;
+    if (disabled(env, o.home) || !o.sessionId || !o.key) return;
     const now = Number.isFinite(o.now) ? o.now : Date.now();
     writeEntry(o.home || os.homedir(), o.sessionId, String(o.key), Object.assign({
       hash: hashOf(o.content, o.normalize), tp: tpId(o.transcriptPath),
@@ -321,7 +326,7 @@ function resetSession(opts) {
   try {
     const o = opts || {};
     const env = o.env || process.env;
-    if (disabled(env) || !o.sessionId) return;
+    if (disabled(env, o.home) || !o.sessionId) return;
     const now = Number.isFinite(o.now) ? o.now : Date.now();
     writeEntry(o.home || os.homedir(), o.sessionId, RESET_KEY, { resetAt: now, lastSeenAt: now }, now);
   } catch (_) {}

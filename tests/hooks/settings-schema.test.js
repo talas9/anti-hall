@@ -91,6 +91,47 @@ test('every plugin.json userConfig key maps to a schema entry\'s pluginOption', 
   }
 });
 
+// DRIFT GUARD: every non-advanced setting is exposed in Claude Code's native
+// /config panel via plugin.json userConfig, and each userConfig entry's shape
+// is derived from its schema entry (type, options, default, min/max, a
+// section-prefixed title). Adding a headline setting without its userConfig
+// row, or letting the two drift, fails here.
+test('every non-advanced setting has a pluginOption (exposed in /config)', () => {
+  for (const sec of SCHEMA.SECTIONS) {
+    for (const e of sec.settings) {
+      if (e.advanced || e.type === 'object') continue;
+      assert.ok(e.pluginOption, sec.key + '.' + e.key + ' is non-advanced but has no pluginOption/userConfig row');
+    }
+  }
+});
+
+test('plugin.json userConfig entries match their schema entries (type/options/default/min/max/title)', () => {
+  const uc = require('../../plugins/anti-hall/.claude-plugin/plugin.json').userConfig;
+  for (const sec of SCHEMA.SECTIONS) {
+    const prefix = sec.label.replace(/\s*\(.*\)$/, '') + ' · ';
+    for (const e of sec.settings) {
+      if (!e.pluginOption) continue;
+      const u = uc[e.pluginOption];
+      const id = e.pluginOption + ' (' + sec.key + '.' + e.key + ')';
+      assert.ok(u, id + ' missing from userConfig');
+      assert.strictEqual(u.type, { enum: 'string', csv: 'string' }[e.type] || e.type, id + ' type');
+      assert.ok(u.title.startsWith(prefix) && u.title.length > prefix.length, id + ' title must start with "' + prefix + '": ' + u.title);
+      assert.ok(typeof u.description === 'string' && u.description.length > 0, id + ' description');
+      assert.ok(!/\[(verified|read by)/.test(u.description), id + ' description carries a source citation');
+      if (e.type === 'enum') {
+        assert.deepStrictEqual(u.options, e.values, id + ' options');
+        for (const o of u.options) assert.ok(o.length >= 1 && o.length <= 64, id + ' option label length');
+      } else {
+        assert.strictEqual(u.options, undefined, id + ' options only for enums');
+      }
+      if (e.default === null || e.default === undefined) assert.strictEqual(u.default, undefined, id + ' default');
+      else assert.deepStrictEqual(u.default, e.default, id + ' default');
+      assert.strictEqual(u.min, e.type === 'number' ? e.min : undefined, id + ' min');
+      assert.strictEqual(u.max, e.type === 'number' ? e.max : undefined, id + ' max');
+    }
+  }
+});
+
 test('findSection/findSetting/allSettings are consistent with SECTIONS', () => {
   const all = SCHEMA.allSettings();
   let count = 0;

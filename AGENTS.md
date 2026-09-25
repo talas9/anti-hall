@@ -20,7 +20,8 @@ then suggest starting a fresh session. When `version-alert.js` says a newer anti
 available or already installed, tell the user (update via the `anti-hall-update` skill,
 then restart Codex). Repairs run by themselves after an update (`repair-on-reload.js`).
 Every setting lives in `~/.anti-hall/settings.json`; change it only through the
-`anti-hall-settings` skill / `scripts/settings.js`, never by hand.
+`anti-hall-settings` skill / `scripts/settings.js`, never by hand (Codex has no
+`/config` settings UI; Claude Code shows non-advanced settings as `/config` rows).
 
 In the Claude Code plugin, the **root-cause** and **orchestration** disciplines below
 are enforced always-on via the hook layer (they fire every session/turn). **deadly-loop**

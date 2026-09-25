@@ -46,10 +46,10 @@ const SECTIONS = [
     settings: [
       { key: 'enabled', type: 'boolean', default: true, pluginOption: 'auto_handover_enabled', description: 'Write an automatic handover before context runs out.' },
       { key: 'pct', type: 'number', min: 1, max: 99, default: 85, env: 'ANTIHALL_AUTO_HANDOVER_PCT', pluginOption: 'auto_handover_pct', description: 'Context-usage percent that triggers an automatic handover.' },
-      { key: 'maxTokens', type: 'number', min: 0, default: 0, env: 'ANTIHALL_AUTO_HANDOVER_MAX_TOKENS', description: 'Opt-in absolute context-token ceiling that also triggers the handover, whichever of pct/maxTokens fires first; 0 (the default) = no ceiling — the real per-session context window size (85% of it) is the only trigger unless a user explicitly sets this.' },
+      { key: 'maxTokens', type: 'number', pluginOption: 'auto_handover_max_tokens', min: 0, default: 0, env: 'ANTIHALL_AUTO_HANDOVER_MAX_TOKENS', description: 'Opt-in absolute context-token ceiling that also triggers the handover, whichever of pct/maxTokens fires first; 0 (the default) = no ceiling — the real per-session context window size (85% of it) is the only trigger unless a user explicitly sets this.' },
       { key: 'nag', type: 'boolean', default: true, pluginOption: 'auto_handover_nag', description: 'Nag (remind) the user when a handover is due but not yet written.' },
-      { key: 'nagStepPct', type: 'number', min: 1, max: 100, default: 5, description: 'Percent increments between successive handover nags.' },
-      { key: 'nagQuietMin', type: 'number', min: 1, default: 15, description: 'Minutes to wait before repeating a handover nag.' },
+      { key: 'nagStepPct', type: 'number', pluginOption: 'auto_handover_nag_step_pct', min: 1, max: 100, default: 5, description: 'Percent increments between successive handover nags.' },
+      { key: 'nagQuietMin', type: 'number', pluginOption: 'auto_handover_nag_quiet_min', min: 1, default: 15, description: 'Minutes to wait before repeating a handover nag.' },
     ],
   },
   {
@@ -58,12 +58,12 @@ const SECTIONS = [
     description: 'On/off switches and tuning for the always-on safety guard hooks.',
     settings: [
       { key: 'mergeGate', type: 'boolean', default: false, env: 'ANTIHALL_MERGE_GATE', pluginOption: 'guards_merge_gate', description: 'Enable merge-readiness gate checks before merging. [verified: hooks/merge-gate.js:42 — default off, opt-in via =on]' },
-      { key: 'shipitGate', type: 'boolean', default: false, env: 'ANTIHALL_SHIPIT_GATE', description: 'Enable the ship-it workflow gate. [verified: hooks/ship-it-guard.js:71 — default off, opt-in via =on]' },
-      { key: 'outputVerifyGuard', type: 'boolean', default: true, env: 'ANTIHALL_OUTPUT_VERIFY_GUARD', description: 'Output-verification guard (blocks unverified completion claims). [verified: hooks/output-verify-guard.js:198 — default on, =off disables]' },
-      { key: 'failureRootCauseNudge', type: 'boolean', default: true, env: 'ANTIHALL_FAILURE_ROOT_CAUSE_NUDGE', description: 'Nudge toward root-cause analysis after a failure. [verified: hooks/failure-root-cause-nudge.js:49 — default on, =off disables]' },
-      { key: 'repoSelfDrift', type: 'boolean', default: true, env: 'ANTIHALL_REPO_SELF_DRIFT', description: "anti-hall's own repo-drift self-check hook. [verified: hooks/repo-self-drift.js:159 — default on, =off disables]" },
-      { key: 'stashGuard', type: 'boolean', default: false, env: 'ANTIHALL_STASH_GUARD', description: 'Arm stash-protection warnings in git-guard (also armed per-repo via .anti-hall/protected-stashes). [verified: hooks/command-guard.js:1333 — default off, =1 arms]' },
-      { key: 'emitDedupe', type: 'boolean', default: true, env: 'ANTIHALL_EMIT_DEDUPE', description: 'Deduplicate repeated hook-emit output. [verified: hooks/lib/emit-dedupe.js:129 — default on, =0 disables]' },
+      { key: 'shipitGate', type: 'boolean', pluginOption: 'guards_shipit_gate', default: false, env: 'ANTIHALL_SHIPIT_GATE', description: 'Enable the ship-it workflow gate. [verified: hooks/ship-it-guard.js:71 — default off, opt-in via =on]' },
+      { key: 'outputVerifyGuard', type: 'boolean', pluginOption: 'guards_output_verify_guard', default: true, env: 'ANTIHALL_OUTPUT_VERIFY_GUARD', description: 'Output-verification guard (blocks unverified completion claims). [verified: hooks/output-verify-guard.js:198 — default on, =off disables]' },
+      { key: 'failureRootCauseNudge', type: 'boolean', pluginOption: 'guards_failure_root_cause_nudge', default: true, env: 'ANTIHALL_FAILURE_ROOT_CAUSE_NUDGE', description: 'Nudge toward root-cause analysis after a failure. [verified: hooks/failure-root-cause-nudge.js:49 — default on, =off disables]' },
+      { key: 'repoSelfDrift', type: 'boolean', pluginOption: 'guards_repo_self_drift', default: true, env: 'ANTIHALL_REPO_SELF_DRIFT', description: "anti-hall's own repo-drift self-check hook. [verified: hooks/repo-self-drift.js:159 — default on, =off disables]" },
+      { key: 'stashGuard', type: 'boolean', pluginOption: 'guards_stash_guard', default: false, env: 'ANTIHALL_STASH_GUARD', description: 'Arm stash-protection warnings in git-guard (also armed per-repo via .anti-hall/protected-stashes). [verified: hooks/command-guard.js:1333 — default off, =1 arms]' },
+      { key: 'emitDedupe', type: 'boolean', pluginOption: 'guards_emit_dedupe', default: true, env: 'ANTIHALL_EMIT_DEDUPE', description: 'Deduplicate repeated hook-emit output. [verified: hooks/lib/emit-dedupe.js:129 — default on, =0 disables]' },
       { key: 'editGuardAllow', type: 'csv', default: '', env: 'ANTIHALL_EDIT_GUARD_ALLOW', advanced: true, description: 'Extra allowed file globs for edit-guard (comma/colon separated). [verified: hooks/edit-guard.js — no built-in default, empty means none]' },
       { key: 'allowSubagentMailbox', type: 'boolean', default: false, env: 'ANTIHALL_ALLOW_SUBAGENT_MAILBOX', advanced: true, description: 'One-off allow for the subagent-mailbox command pattern. [verified: hooks/command-guard.js:1298 — default off, =1 allows]' },
       { key: 'reaperMatch', type: 'string', default: '', env: 'ANTIHALL_REAPER_MATCH', advanced: true, description: 'Extra process-name pattern for the MCP session-end reaper. [verified: hooks/session-end-mcp-reaper.js — no built-in default, empty means none]' },
@@ -78,9 +78,9 @@ const SECTIONS = [
     label: 'Version Alerts',
     description: 'Update-available nudges for anti-hall, Claude CLI, and DevSwarm.',
     settings: [
-      { key: 'antiHall', type: 'boolean', default: true, env: 'ANTIHALL_VERSION_ALERT', description: 'Alert when a newer anti-hall version is available. [verified: hooks/version-alert.js:93 — default on, =off disables]' },
-      { key: 'claudeCli', type: 'boolean', default: true, env: 'ANTIHALL_CLAUDE_CLI_VERSION_ALERT', description: 'Alert when a newer Claude CLI version is available. [verified: hooks/claude-cli-version.js:54 — default on, =off disables]' },
-      { key: 'devswarm', type: 'boolean', default: true, env: 'ANTIHALL_DEVSWARM_VERSION_ALERT', description: 'Alert when a newer DevSwarm/hivecontrol version is available. [verified: hooks/devswarm-version.js:157 — default on, =off disables]' },
+      { key: 'antiHall', type: 'boolean', pluginOption: 'version_alerts_anti_hall', default: true, env: 'ANTIHALL_VERSION_ALERT', description: 'Alert when a newer anti-hall version is available. [verified: hooks/version-alert.js:93 — default on, =off disables]' },
+      { key: 'claudeCli', type: 'boolean', pluginOption: 'version_alerts_claude_cli', default: true, env: 'ANTIHALL_CLAUDE_CLI_VERSION_ALERT', description: 'Alert when a newer Claude CLI version is available. [verified: hooks/claude-cli-version.js:54 — default on, =off disables]' },
+      { key: 'devswarm', type: 'boolean', pluginOption: 'version_alerts_devswarm', default: true, env: 'ANTIHALL_DEVSWARM_VERSION_ALERT', description: 'Alert when a newer DevSwarm/hivecontrol version is available. [verified: hooks/devswarm-version.js:157 — default on, =off disables]' },
     ],
   },
   {
@@ -88,7 +88,7 @@ const SECTIONS = [
     label: 'Updates / Maintenance',
     description: '`/anti-hall:update` and its background sweep.',
     settings: [
-      { key: 'quiet', type: 'boolean', default: false, env: 'ANTIHALL_UPDATE_QUIET', description: 'Suppress update output (for scripted capture). [verified: skills/update/scripts/update.js:2687 — default off, =1 suppresses]' },
+      { key: 'quiet', type: 'boolean', pluginOption: 'updates_quiet', default: false, env: 'ANTIHALL_UPDATE_QUIET', description: 'Suppress update output (for scripted capture). [verified: skills/update/scripts/update.js:2687 — default off, =1 suppresses]' },
       { key: 'reconcileBudgetMs', type: 'number', min: 0, default: 60000, env: 'ANTIHALL_RECONCILE_BUDGET_MS', advanced: true, description: 'Time budget (ms) for the reconcile step during update; 0 = unlimited. [verified: scripts/devswarm.js DEFAULT_RECONCILE_BUDGET_MS = 60000]' },
       { key: 'postpullBudgetMs', type: 'number', min: 0, default: 90000, env: 'ANTIHALL_UPDATE_POSTPULL_BUDGET_MS', advanced: true, description: 'Time budget (ms) for the post-pull update sweep; 0 = unlimited. [verified: skills/update/scripts/update.js DEFAULT_POSTPULL_BUDGET_MS = 90000]' },
       { key: 'sweepBudgetMs', type: 'number', min: 0, default: 20000, env: 'ANTIHALL_UPDATE_SWEEP_BUDGET_MS', advanced: true, description: 'Overall time budget (ms) for the update sweep. [verified: skills/update/scripts/update.js DEFAULT_SWEEP_BUDGET_MS = 20000]' },
@@ -111,7 +111,7 @@ const SECTIONS = [
     settings: [
       { key: 'enabled', type: 'boolean', default: false, env: 'ANTIHALL_JEV', legacy: { file: 'jev.json', key: 'enabled' }, pluginOption: 'jev_enabled', description: 'Enable Jev (ANTIHALL_JEV=0 always force-disables regardless of this).' },
       { key: 'transport', type: 'enum', values: ['vercel', 'typesafe'], default: 'vercel', legacy: { file: 'jev.json', key: 'transport' }, pluginOption: 'jev_transport', description: 'Vercel AI Gateway passthrough (default) or a direct TypeSafe API call.' },
-      { key: 'judgeModel', type: 'string', default: 'claude-haiku-4-5', env: 'ANTIHALL_JUDGE_MODEL', description: 'Model used for speculation-judge / jev-triage LLM calls.' },
+      { key: 'judgeModel', type: 'string', pluginOption: 'jev_judge_model', default: 'claude-haiku-4-5', env: 'ANTIHALL_JUDGE_MODEL', description: 'Model used for speculation-judge / jev-triage LLM calls.' },
       { key: 'semanticJudge', type: 'boolean', default: false, env: 'ANTIHALL_SEMANTIC_JUDGE', pluginOption: 'jev_semantic_judge', description: 'Enable the semantic speculation-judge hook (off = hook no-ops).' },
       { key: 'keyFile', type: 'string', default: '', legacy: { file: 'jev.json', key: 'keyFile' }, advanced: true, description: 'Credential key-file path (default depends on transport).' },
       { key: 'timeoutMs', type: 'number', min: 1, max: 3000, default: 1500, legacy: { file: 'jev.json', key: 'timeoutMs' }, advanced: true, description: 'Per-call timeout (ms), capped at 3000.' },
@@ -132,11 +132,11 @@ const SECTIONS = [
       { key: 'integrations.tasklistTrivial', type: 'enum', values: ['on', 'shadow', 'off'], default: 'shadow', legacy: { file: 'jev.json', key: 'integrations.tasklistTrivial' }, advanced: true, description: 'tasklist-guard: when on, a confident "small bounded chore" verdict (asked synchronously, 1.5 s cap, fail-open) skips the task-tracking nudge. [read by: hooks/lib/jev-assist.js getMode]' },
       { key: 'integrations.supervisorBlockerLabel', type: 'enum', values: ['on', 'shadow', 'off'], default: 'shadow', legacy: { file: 'jev.json', key: 'integrations.supervisorBlockerLabel' }, advanced: true, description: 'Supervisor report label: waiting-on-parent vs wedged, from cached triage labels (advisory, no network). [read by: hooks/lib/jev-assist.js getMode]' },
       { key: 'integrations.codexNudgeSubstantial', type: 'enum', values: ['on', 'shadow', 'off'], default: 'shadow', legacy: { file: 'jev.json', key: 'integrations.codexNudgeSubstantial' }, advanced: true, description: 'codex-nudge: when on, a confident "edits are trivial" verdict (asked synchronously, 1.5 s cap, fail-open) skips the Codex-review nudge. [read by: hooks/lib/jev-assist.js getMode]' },
-      { key: 'weeklyNotice', type: 'boolean', default: true, legacy: { file: 'jev.json', key: 'weeklyNotice' }, description: 'Once-a-week SessionStart scorecard notice naming one integration worth promoting or turning off (Jev enabled only). [read by: hooks/jev-weekly-scorecard.js]' },
+      { key: 'weeklyNotice', type: 'boolean', pluginOption: 'jev_weekly_notice', default: true, legacy: { file: 'jev.json', key: 'weeklyNotice' }, description: 'Once-a-week SessionStart scorecard notice naming one integration worth promoting or turning off (Jev enabled only). [read by: hooks/jev-weekly-scorecard.js]' },
       // Audit / pricing / low-credit (0.108.0). Legacy home: the same keys in
       // ~/.anti-hall/jev.json (nested, e.g. {"audit": {"snippets": true}}).
       { key: 'audit.snippets', type: 'boolean', default: false, env: 'ANTIHALL_JEV_AUDIT_SNIPPETS', legacy: { file: 'jev.json', key: 'audit.snippets' }, advanced: true, description: 'Store a redacted ~200-char snippet for decisions Jev changed (off by default: privacy). [read by: hooks/lib/jev-assist.js readAuditConfig]' },
-      { key: 'budget.minCreditUsd', type: 'number', exclusiveMin: 0, default: null, optional: true, legacy: { file: 'jev.json', key: 'budget.minCreditUsd' }, description: 'optional: warn (once a day, budget.mode=watch only) when the gateway credit balance drops below this USD amount. [read by: scripts/jev-report.js readBudgetConfig]' },
+      { key: 'budget.minCreditUsd', type: 'number', pluginOption: 'jev_budget_min_credit_usd', exclusiveMin: 0, default: null, optional: true, legacy: { file: 'jev.json', key: 'budget.minCreditUsd' }, description: 'optional: warn (once a day, budget.mode=watch only) when the gateway credit balance drops below this USD amount. [read by: scripts/jev-report.js readBudgetConfig]' },
       { key: 'prices', type: 'object', default: null, computed: true, legacy: { file: 'jev.json', key: 'prices' }, advanced: true, description: 'computed: per-model USD price table {model: {inPerMTok, outPerMTok}} (or a "default" entry), used only when the gateway reports tokens but no cost. File-only (no env, no CLI set) — edit ~/.anti-hall/settings.json directly. [read by: hooks/lib/jev-assist.js readPrices]' },
     ],
   },
@@ -147,8 +147,8 @@ const SECTIONS = [
     settings: [
       { key: 'hivecontrol', type: 'string', default: '', env: 'ANTIHALL_DEVSWARM_HIVECONTROL', pluginOption: 'devswarm_hivecontrol', description: 'Explicit path to the hivecontrol CLI binary (default: PATH lookup — no single default value; empty means "look it up").' },
       { key: 'supervisorMode', type: 'enum', values: ['auto', 'on', 'off'], default: 'auto', env: 'ANTIHALL_DEVSWARM_SUPERVISOR', pluginOption: 'devswarm_supervisor_mode', description: 'Force the DevSwarm supervisor context on/off, or auto-detect. [verified: hooks/lib/devswarm-detect.js:33 — mode falsy/unset -> auto]' },
-      { key: 'requiredGates', type: 'csv', default: 'done,merged,tests_passed', env: 'ANTIHALL_DEVSWARM_REQUIRED_GATES', description: 'Merge gates required for DevSwarm tasks. [verified: companion/lib/devswarm-store.js:214 requiredGatesFrom — literal default array]' },
-      { key: 'inboxCmd', type: 'string', default: '', env: 'ANTIHALL_DEVSWARM_INBOX_CMD', description: 'Consumer-configured command to read pending mesh messages (no built-in default). [verified: hooks/command-guard.js:765 buildDevswarmReason — hasInboxCmd only true when explicitly set]' },
+      { key: 'requiredGates', type: 'csv', pluginOption: 'devswarm_required_gates', default: 'done,merged,tests_passed', env: 'ANTIHALL_DEVSWARM_REQUIRED_GATES', description: 'Merge gates required for DevSwarm tasks. [verified: companion/lib/devswarm-store.js:214 requiredGatesFrom — literal default array]' },
+      { key: 'inboxCmd', type: 'string', pluginOption: 'devswarm_inbox_cmd', default: '', env: 'ANTIHALL_DEVSWARM_INBOX_CMD', description: 'Consumer-configured command to read pending mesh messages (no built-in default). [verified: hooks/command-guard.js:765 buildDevswarmReason — hasInboxCmd only true when explicitly set]' },
       { key: 'childGateStrict', type: 'boolean', default: true, env: 'ANTIHALL_DEVSWARM_CHILD_GATE_STRICT', advanced: true, description: 'Strict child-gate enforcement. [verified: hooks/devswarm-child-gate.js:530-536 strictEnabled — raw undefined -> "1" -> true; "0" disables]' },
       { key: 'parentGateCap', type: 'number', min: 2, max: 5, default: 3, env: 'ANTIHALL_DEVSWARM_PARENT_GATE_CAP', advanced: true, description: 'Caps the parent-gate wait/child count, clamped to [2,5]. [verified: hooks/devswarm-parent-gate.js:185 DEFAULT_CAP = 3]' },
       { key: 'activeFloorPct', type: 'number', min: 0, max: 100, default: 50, env: 'ANTIHALL_DEVSWARM_ACTIVE_FLOOR_PCT', advanced: true, description: 'Min percent of active workspaces kept in the archived cache (0 disables the floor). [verified: companion/lib/devswarm-archived-cache.js:226 DEFAULT_ACTIVE_FLOOR_PCT = 50]' },
@@ -213,7 +213,7 @@ const SECTIONS = [
     label: 'Codex Nudge',
     description: 'Hand-off nudge suggesting Codex for review/diagnosis.',
     settings: [
-      { key: 'enabled', type: 'boolean', default: true, env: 'ANTIHALL_CODEX_NUDGE', description: 'Enable the Codex hand-off nudge hook.' },
+      { key: 'enabled', type: 'boolean', pluginOption: 'codex_nudge_enabled', default: true, env: 'ANTIHALL_CODEX_NUDGE', description: 'Enable the Codex hand-off nudge hook.' },
       { key: 'min', type: 'number', min: 1, default: 3, env: 'ANTIHALL_CODEX_NUDGE_MIN', advanced: true, description: 'Minimum substantial code-file edits before the nudge fires. [verified: hooks/codex-nudge.js:48 DEFAULT_MIN = 3]' },
     ],
   },
@@ -222,7 +222,7 @@ const SECTIONS = [
     label: 'Defects',
     description: 'The two-way defect-reporting channel.',
     settings: [
-      { key: 'defaultProj', type: 'string', default: '', env: 'ANTIHALL_DEFECT_PROJ', description: 'Default project tag used when filing an anti-hall defect (max 64 chars).' },
+      { key: 'defaultProj', type: 'string', pluginOption: 'defects_default_proj', default: '', env: 'ANTIHALL_DEFECT_PROJ', description: 'Default project tag used when filing an anti-hall defect (max 64 chars).' },
     ],
   },
 ];

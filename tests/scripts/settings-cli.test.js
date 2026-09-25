@@ -116,3 +116,29 @@ test('the CLI never touches the real machine HOME (isolated HOME leaves no ~/.an
     home.cleanup();
   }
 });
+
+test('get: every /config-exposed key set via CLAUDE_PLUGIN_OPTION_<KEY> reports source /config', () => {
+  const SCHEMA = require('../../plugins/anti-hall/hooks/lib/settings-schema.js');
+  const home = makeHome();
+  try {
+    const base = {};
+    for (const [k, v] of Object.entries(process.env)) {
+      if (!/^(ANTIHALL_|CLAUDE_PLUGIN_OPTION_)/.test(k)) base[k] = v;
+    }
+    Object.assign(base, { HOME: home.home, USERPROFILE: home.home });
+    const entries = SCHEMA.pluginOptionEntries();
+    assert.ok(entries.length >= 39);
+    for (const e of entries) {
+      let v;
+      if (e.type === 'boolean') v = String(!e.default);
+      else if (e.type === 'enum') v = e.values.find((x) => x !== e.default);
+      else if (e.type === 'number') v = String(e.default == null ? 7 : (Number.isFinite(e.max) && e.default + 1 > e.max ? e.default - 1 : e.default + 1));
+      else v = 'cfg-' + e.key;
+      const env = { ...base, ['CLAUDE_PLUGIN_OPTION_' + e.pluginOption.toUpperCase()]: v };
+      const out = execFileSync(process.execPath, [CLI, 'get', e.section + '.' + e.key], { env, encoding: 'utf8' });
+      assert.strictEqual(out, e.section + '.' + e.key + ' = ' + v + ' (source: /config, default: ' + (e.default === '' || e.default == null ? '(empty)' : String(e.default)) + ')\n');
+    }
+  } finally {
+    home.cleanup();
+  }
+});

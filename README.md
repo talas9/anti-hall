@@ -50,6 +50,9 @@ only), launched as `node <hook>.js`. No `node` on the hook shell's `PATH` means 
 Code silently skips every anti-hall hook — verify with `node --version`. No npm
 install, no native deps, no other config.
 
+**Claude Code ≥ 2.1.271.** The plugin's `/config` settings rows use `userConfig` `options`
+pickers; per the Claude Code plugin docs, older versions can't load a plugin that declares them.
+
 ## Capabilities
 
 | Area | What it does |
@@ -62,7 +65,7 @@ install, no native deps, no other config.
 | **Jev classifier** | Optional LLM-backed speculation classifier ([`docs/KB-jev-classifier.md`](docs/KB-jev-classifier.md)) — per-integration on/shadow/off modes, metrics + `jev report` KEEP/REVIEW/REMOVE calls. |
 | **Statusline** | Live two-line statusline: git/model/context/cost on line 1, live orchestration/context gauge on line 2. Installable globally or per-repo, consolidates with an existing statusline (e.g. OMC HUD). |
 | **doctor / update** | `doctor` runs live behavioral self-tests on every guard and repairs safe drift; `update` pulls the latest release and shows the changelog delta. Repairs also run by themselves after a plugin reload or on a new version. |
-| **Settings** | One place for every setting — `~/.anti-hall/settings.json`, browsable/editable via `/anti-hall:settings` or `scripts/settings.js`; a headline subset also shows in Claude Code's native `/config` panel. See [docs/GUIDE.md#settings-anti-hallsettings](docs/GUIDE.md#settings-anti-hallsettings). |
+| **Settings** | One place for every setting — `~/.anti-hall/settings.json`, every non-advanced setting is an arrow-key row in Claude Code's native `/config` panel (anti-hall rows, section-prefixed titles); or tell `/anti-hall:settings` "set X to Y". See [docs/GUIDE.md#settings-anti-hallsettings](docs/GUIDE.md#settings-anti-hallsettings). |
 
 Full per-hook reference (event, exact behavior, version history): [docs/GUIDE.md](docs/GUIDE.md#hook-reference--plugin-features-table-detailed-per-hook).
 

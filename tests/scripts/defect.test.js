@@ -504,18 +504,21 @@ test('a corrupt/torn line mid-file is skipped by list/show; the file itself is l
 test('reporterIdentity precedence: --proj wins, then ANTIHALL_DEFECT_PROJ, then repoKey, then no-repo outside git', () => {
   const gitCwd = process.cwd(); // this repo — a real git worktree
   const nonGitCwd = fs.mkdtempSync(path.join(os.tmpdir(), 'anti-hall-nogit-'));
+  // isolated HOME: the defaultProj setting is resolved through settings.js,
+  // which must never read the real ~/.anti-hall or ~/.claude settings.
+  const isoHome = fs.mkdtempSync(path.join(os.tmpdir(), 'anti-hall-defect-home-'));
   try {
     // 1. --proj wins over everything, clamped to 64 chars.
     const long = 'p'.repeat(100);
     assert.equal(
-      defectCli.reporterIdentity({ proj: long }, { ANTIHALL_DEFECT_PROJ: 'env-proj' }, gitCwd),
+      defectCli.reporterIdentity({ proj: long }, { HOME: isoHome, ANTIHALL_DEFECT_PROJ: 'env-proj' }, gitCwd),
       long.slice(0, 64),
       '--proj wins and is clamped to 64 chars'
     );
 
     // 2. ANTIHALL_DEFECT_PROJ wins when --proj absent.
     assert.equal(
-      defectCli.reporterIdentity({}, { ANTIHALL_DEFECT_PROJ: 'env-proj' }, gitCwd),
+      defectCli.reporterIdentity({}, { HOME: isoHome, ANTIHALL_DEFECT_PROJ: 'env-proj' }, gitCwd),
       'env-proj',
       'env var wins over repoKey when --proj is absent'
     );
@@ -524,18 +527,31 @@ test('reporterIdentity precedence: --proj wins, then ANTIHALL_DEFECT_PROJ, then 
     const expectedKey = repokey.repoKeyForWorktree(gitCwd);
     assert.ok(expectedKey, 'sanity: this repo resolves a repoKey');
     assert.equal(
-      defectCli.reporterIdentity({}, {}, gitCwd),
+      defectCli.reporterIdentity({}, { HOME: isoHome }, gitCwd),
       expectedKey,
       'repoKey wins when --proj and env are both absent'
     );
 
     // 4. 'no-repo' outside any git worktree, with nothing else set.
     assert.equal(
-      defectCli.reporterIdentity({}, {}, nonGitCwd),
+      defectCli.reporterIdentity({}, { HOME: isoHome }, nonGitCwd),
       'no-repo',
       'falls back to the literal no-repo outside git with no --proj/env override'
     );
-  } finally { rm(nonGitCwd); }
+
+    // 5. the /config (userConfig defects_default_proj) value is honored when
+    //    no env var is set, and the env var still outranks it.
+    assert.equal(
+      defectCli.reporterIdentity({}, { HOME: isoHome, CLAUDE_PLUGIN_OPTION_DEFECTS_DEFAULT_PROJ: 'cfg-proj' }, gitCwd),
+      'cfg-proj',
+      '/config defects_default_proj wins over repoKey'
+    );
+    assert.equal(
+      defectCli.reporterIdentity({}, { HOME: isoHome, ANTIHALL_DEFECT_PROJ: 'env-proj', CLAUDE_PLUGIN_OPTION_DEFECTS_DEFAULT_PROJ: 'cfg-proj' }, gitCwd),
+      'env-proj',
+      'env var outranks /config'
+    );
+  } finally { rm(nonGitCwd); rm(isoHome); }
 });
 
 // ============================================================================

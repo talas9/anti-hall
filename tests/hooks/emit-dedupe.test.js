@@ -74,6 +74,21 @@ test('vacuity: with dedupe disabled the same 60s-apart burst sees 5 emits, nothi
   } finally { rm(home); }
 });
 
+test('guards.emitDedupe=false via /config (CLAUDE_PLUGIN_OPTION_GUARDS_EMIT_DEDUPE) disables dedupe; the env kill switch still outranks it', () => {
+  const home = tmpHome();
+  try {
+    const tp = mkTranscript(home);
+    const b = { home, sessionId: 's1', key: 'k', content: 'BLOCK', transcriptPath: tp, env: { CLAUDE_PLUGIN_OPTION_GUARDS_EMIT_DEDUPE: 'false' } };
+    let n = 0;
+    for (let i = 0; i < 3; i++) if (emit({ ...b, now: T0 + i * MIN })) n++;
+    assert.strictEqual(n, 3, '/config off -> every invocation emits');
+    const b2 = { ...b, sessionId: 's2', env: { ANTIHALL_EMIT_DEDUPE: '1', CLAUDE_PLUGIN_OPTION_GUARDS_EMIT_DEDUPE: 'false' } };
+    n = 0;
+    for (let i = 0; i < 3; i++) if (emit({ ...b2, now: T0 + i * MIN })) n++;
+    assert.strictEqual(n, 1, 'env ANTIHALL_EMIT_DEDUPE=1 outranks /config');
+  } finally { rm(home); }
+});
+
 test('busy turn: assistant entries after the emit but the copy NOT yet delivered -> still suppressed', () => {
   // Field transcript: in 251/694 UPS attachments the busy turn kept writing
   // assistant entries (up to 45s) before the queued prompt was delivered, so an

@@ -192,7 +192,9 @@ Shared libraries (not hooks): `verify-first-core.js`, `coordinator-detect.js`, `
 
 Store: `~/.anti-hall/settings.json`. Precedence: env > settings.json > `/config`
 (plugin.json userConfig) > legacy file (e.g. `jev.json`) > default; legacy outranks `/config`
-until the one-time migration is stamped. Numbers clamp to schema bounds.
+until the one-time migration is stamped. Numbers clamp to schema bounds. Every non-advanced
+setting is a `/config` row (section-prefixed title; enums are pickers; Claude Code ≥ 2.1.271);
+a drift test keeps userConfig == the schema's non-advanced set. Codex: no `/config`, use the skill.
 
 | Setting | Default | Env |
 |---|---|---|

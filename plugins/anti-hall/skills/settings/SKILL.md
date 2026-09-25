@@ -7,60 +7,52 @@ description: Show or change any anti-hall setting. Use when the user says "anti-
 
 anti-hall keeps every user-facing setting in ONE place: `~/.anti-hall/settings.json`,
 organized into sections (autoHandover, guards, jev, limitConserve, devswarm,
-statusline, ...). `scripts/settings.js` is the only thing that reads or writes it —
-this skill is the conversational front door.
+statusline, ...). `scripts/settings.js` is the only thing that reads or writes it.
 
-A handful of the most-changed settings (auto-handover, the merge gate, Jev, limit
-conservation, DevSwarm supervisor mode, the statusline) are ALSO exposed natively
-in Claude Code's `/config` panel (see `plugin.json`'s `userConfig`). Those are a
-convenience for one-shot changes from `/config`; this skill and
-`~/.anti-hall/settings.json` remain the complete picture and the only way to see or
-change everything. If `show` reports a setting's source as `/config` and the user
-changes it here instead, the new value is stored in settings.json and WINS from
-then on (env > file > `/config` > legacy > default) — `reset` removes that override
-so `/config` takes over again. Known limitation: a `/config` value equal to the manifest default counts as unset
-(a lower tier answers); to pin a default-valued setting, set it here.
+## Default: point the user at `/config`
 
-## Direct requests skip the menu
+Every non-advanced setting is a row in Claude Code's native **`/config`** panel
+(declared in `plugin.json`'s `userConfig`). Titles carry the section as a prefix
+("Auto Handover · Threshold %", "Guards · Merge-readiness gate"); enum settings are
+pickers; everything is edited with the arrow keys, no model involved. When the user just
+says "anti-hall settings" / "change my settings", tell them that in one or two lines:
 
-If the user already named the setting and the value ("turn off the merge gate",
-"set auto-handover to 80%", "disable Jev", "hide the statusline email"), resolve it
-straight to a `section.key` and value and apply it — do not walk them through the
-menu below. Confirm by re-running `get` on that one key afterward.
+> Change settings in `/config` (the anti-hall rows) — arrow keys, no model; or tell me
+> "set X to Y".
 
-## Menu flow (when the user just says "show/change my settings")
+Do not run `show` or print tables for this. Advanced/tuning knobs are NOT in `/config`;
+for those, use a direct change below (`show --section <key> --all` lists them if asked).
 
-1. Run:
-   ```
-   node "${CLAUDE_PLUGIN_ROOT}/scripts/settings.js" show
-   ```
-   Present the output as-is (it is already grouped into per-section markdown
-   tables with a Setting / Value / Default / Source / Description) — do not
-   re-summarize it into prose. Mention that a section's advanced/tuning knobs are
-   hidden by default and can be shown with `show --all` (or
-   `show --section <key> --all` for one section) if the user asks for more detail.
+## Direct named changes: one `set`, no table
 
-2. Use `AskUserQuestion` to let the user pick a **section** (autoHandover, guards,
-   jev, limitConserve, devswarm, statusline, codexNudge, versionAlerts, updates,
-   defects), then a **setting** within it, then a **value**:
-   - For a `boolean` or `enum` setting, offer its allowed values as multiple-choice
-     options (an `enum`'s options come straight from the schema's `values` list;
-     boolean is just true/false).
-   - For a `number` or `string`/`csv` setting, ask for a free value in prose
-     instead of `AskUserQuestion` (respecting any `min`/`max` shown in the table).
+When the user names a setting and a value ("turn off the merge gate", "set auto-handover
+to 80%", "disable Jev", "hide the statusline email"), resolve it to a `section.key` and
+value and apply it:
+```
+node "${CLAUDE_PLUGIN_ROOT}/scripts/settings.js" set <section.key> <value>
+```
+then confirm with the single-key line from `get <section.key>`. Never print the full
+table for a direct change. A validation failure (out-of-range number, unknown enum value)
+comes back as `{ok:false, error}` on `--json` or an `error:` line otherwise — relay it
+and ask for a valid value; never silently coerce or guess one.
 
-3. Apply the change:
-   ```
-   node "${CLAUDE_PLUGIN_ROOT}/scripts/settings.js" set <section.key> <value>
-   ```
-   A validation failure (out-of-range number, unknown enum value) is returned as
-   `{ok:false, error}` on `--json` or a plain `error:` line otherwise — relay the
-   error and re-ask for a valid value; never silently coerce or guess one.
+A value set this way is stored in settings.json and WINS over `/config` from then on
+(env > file > `/config` > legacy > default); `reset <section.key>` removes the override
+so the `/config` row takes over again. Known limitation: a `/config` value equal to the
+manifest default counts as unset (a lower tier answers); to pin a default-valued
+setting, `set` it here.
 
-4. Re-show just the changed row to confirm:
-   ```
-   node "${CLAUDE_PLUGIN_ROOT}/scripts/settings.js" get <section.key>
-   ```
+## `show` only when asked
+
+Only when the user explicitly asks to see settings ("show my anti-hall settings", "what
+are my settings"), run:
+```
+node "${CLAUDE_PLUGIN_ROOT}/scripts/settings.js" show            # or: show --section <key> [--all]
+```
+and present the output as-is (per-section markdown tables; the Source column says
+which tier answered — `/config`, `file`, `env`, `legacy`, `default`).
+A question about ONE value ("what's the auto-handover threshold") is a single
+`get <section.key>`, not a `show`.
 
 ## Auto-handover (`autoHandover` section)
 

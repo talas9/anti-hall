@@ -343,3 +343,52 @@ test('a lock held by a live writer past the wait budget -> {ok:false, lockBusy} 
     assert.strictEqual(settings.set('guards', 'mergeGate', 'true', { home }).ok, true, 'dead holder reclaimed');
   } finally { fsx.rmSync(home, { recursive: true, force: true }); }
 });
+
+// ROUND-TRIP: every key exposed in /config (plugin.json userConfig) resolves
+// through settings.js's precedence chain from BOTH delivery paths Claude Code
+// uses — the CLAUDE_PLUGIN_OPTION_<KEY> env var (hook processes) and
+// ~/.claude/settings.json pluginConfigs (the CLI / statusline fallback) — with
+// source 'plugin-option' (rendered "/config"). The value used always differs
+// from the manifest default (a default-equal value is masked by design).
+const SCHEMA = require('../../plugins/anti-hall/hooks/lib/settings-schema.js');
+const path = require('node:path');
+function nonDefaultValue(e) {
+  if (e.type === 'boolean') return !e.default;
+  if (e.type === 'enum') return e.values.find((v) => v !== e.default);
+  if (e.type === 'number') {
+    if (e.default === null || e.default === undefined) return 7;
+    const up = e.default + 1;
+    return (Number.isFinite(e.max) && up > e.max) ? e.default - 1 : up;
+  }
+  return 'roundtrip-' + e.key;
+}
+
+test('every /config-exposed key round-trips via CLAUDE_PLUGIN_OPTION_<KEY> and pluginConfigs -> source plugin-option', () => {
+  const entries = SCHEMA.pluginOptionEntries();
+  assert.ok(entries.length >= 39, 'expected every non-advanced setting exposed, got ' + entries.length);
+  const home = makeHome();
+  try {
+    const options = {};
+    for (const e of entries) {
+      const v = nonDefaultValue(e);
+      options[e.pluginOption] = v;
+      const envName = 'CLAUDE_PLUGIN_OPTION_' + e.pluginOption.toUpperCase();
+      const opts = { home: home.home, env: { [envName]: String(v) } };
+      assert.deepStrictEqual(settings.get(e.section, e.key, undefined, opts), v, envName + ' -> ' + e.section + '.' + e.key);
+      assert.strictEqual(settings.source(e.section, e.key, opts), 'plugin-option', envName + ' source');
+      // and with no env var, nothing reaches it: the schema default answers
+      assert.strictEqual(settings.source(e.section, e.key, { home: home.home, env: {} }), 'default', e.pluginOption + ' default source');
+    }
+    const claudeDir = path.join(home.home, '.claude');
+    fs.mkdirSync(claudeDir, { recursive: true });
+    fs.writeFileSync(path.join(claudeDir, 'settings.json'), JSON.stringify({ pluginConfigs: { 'anti-hall': { options } } }));
+    for (const e of entries) {
+      const opts = { home: home.home, env: {} };
+      assert.deepStrictEqual(settings.get(e.section, e.key, undefined, opts), options[e.pluginOption], 'pluginConfigs -> ' + e.section + '.' + e.key);
+      assert.strictEqual(settings.source(e.section, e.key, opts), 'plugin-option', 'pluginConfigs source ' + e.pluginOption);
+    }
+  } finally {
+    home.cleanup();
+  }
+});
+

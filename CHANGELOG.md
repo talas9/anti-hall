@@ -8,6 +8,26 @@ the update.
 
 ## 0.108.3
 
+### Features
+
+- **Every non-advanced setting is now a row in Claude Code's native `/config` panel.**
+  `plugin.json` `userConfig` grows from 19 to 39 entries (existing keys unchanged). Titles
+  are prefixed with the section ("Guards · Stash guard") since `userConfig` has no grouping
+  field. Enum settings are `options` pickers, and numbers carry the schema's `min`/`max`. A
+  drift test (`tests/hooks/settings-schema.test.js`) fails if `userConfig` stops matching
+  the schema's non-advanced set. Each exposed key round-trips through
+  `CLAUDE_PLUGIN_OPTION_<KEY>` and `pluginConfigs` and shows Source `/config`.
+  **Requires Claude Code ≥ 2.1.271**, because older versions can't load a plugin that
+  declares `options` (per the plugin manifest reference). Codex has no `userConfig`
+  equivalent and still uses the `anti-hall-settings` skill.
+- Three settings used to read only their env var and skipped the settings chain. They now
+  go through `settings.js` (env > file > `/config` > default), so the new `/config` rows
+  take effect: `guards.emitDedupe` (`hooks/lib/emit-dedupe.js`), `jev.judgeModel`
+  (`hooks/speculation-judge.js`, `hooks/lib/jev-triage-worker.js`) and
+  `defects.defaultProj` (`scripts/defect.js`).
+- The `settings` skill (Claude and Codex) now points the user to `/config` by default.
+  It applies a named change with a single `set` and prints the full table only when asked.
+
 ### Fixes
 
 - **`recordOutcome()` (`hooks/lib/jev-assist.js`) never populated `project`

@@ -74,10 +74,18 @@ urgency — exactly one of:
 Respond with ONLY valid JSON, no prose, no markdown fences:
   {"kind":"<one of the five kind values>","urgency":"urgent"|"normal"}`;
 
+// judgeModel() -> jev.judgeModel via the settings precedence chain (env
+// ANTIHALL_JUDGE_MODEL > settings.json > /config > default), fail-open to the
+// historical env-or-default read.
+function judgeModel() {
+  try { return String(require('./settings.js').get('jev', 'judgeModel') || '').trim() || 'claude-haiku-4-5'; }
+  catch (_) { return process.env.ANTIHALL_JUDGE_MODEL || 'claude-haiku-4-5'; }
+}
+
 function callHaiku(text, apiKey, timeoutMs) {
   return new Promise((resolve) => {
     const body = JSON.stringify({
-      model: process.env.ANTIHALL_JUDGE_MODEL || 'claude-haiku-4-5',
+      model: judgeModel(),
       max_tokens: 64,
       system: HAIKU_SYSTEM,
       messages: [{ role: 'user', content: 'Message:\n\n' + String(text).slice(0, 4000) }],
