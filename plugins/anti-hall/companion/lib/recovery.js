@@ -123,6 +123,14 @@ function defaultIsAlive(pid) {
 // fails closed with EEXIST if the target already exists, same fail mode as
 // the old `wx` open, but the linked file is never visible with anything less
 // than its complete, already-written content).
+// LOCK_SCRATCH_STALE_MS — how old an orphaned `*.lock.tmp-*` / `*.lock.reap-*`
+// scratch file must be before doctor --repair's sweep (below) will remove it.
+// Both are normally cleaned up inline (their own `finally`/verified-discard);
+// this is only the belt-and-suspenders backstop for a crash/kill between
+// "create" and "cleanup" -- 15 minutes, same horizon as LOCK_STALE_MS itself,
+// so nothing from a genuinely in-flight acquire is ever touched.
+const LOCK_SCRATCH_STALE_MS = 15 * 60 * 1000;
+
 function acquireLock(id, home, io) {
   const F = (io && io.fs) || fs;
   const isAlive = (io && io.isAlive) || defaultIsAlive;
@@ -216,10 +224,45 @@ function acquireLock(id, home, io) {
       // acquirers look at -- always clean it up. A successful linkSync gives
       // `p` its own independent directory entry sharing the same inode, so
       // removing `tmp` afterward does not touch `p` or its content.
-      try { F.unlinkSync(tmp); } catch (_) { /* best-effort; ENOENT if it was never created */ }
+      try { F.unlinkSync(tmp); } catch (_) { /* best-effort; ENOENT if it was never created, or the wx fallback ran instead */ }
     }
   }
   return null;
+}
+
+// sweepStaleLockScratchFiles(home, { dryRun, now, io }) -> { pending, detail,
+// swept: [path,...] }. doctor --repair AUTO-SAFE backstop: removes any
+// `<id>.lock.tmp-*` (write-then-publish scratch) or `<id>.lock.reap-*`
+// (stale-reclaim verification scratch) file under devswarm/locks/ older than
+// LOCK_SCRATCH_STALE_MS. Both are normally self-cleaning (see acquireLock
+// above); this only ever touches leftovers from a crash/kill mid-acquire, and
+// only once they are unambiguously old enough that no in-flight acquire could
+// still own them. Read-only when dryRun; never touches an actual `<id>.lock`
+// file itself (those are covered by acquireLock's own dead/stale-holder
+// logic, not this sweep).
+function sweepStaleLockScratchFiles(home, opts) {
+  const o = opts || {};
+  const F = (o.io && o.io.fs) || fs;
+  const now = Number.isFinite(o.now) ? o.now : Date.now();
+  const dir = path.join(devswarmRoot(home), 'locks');
+  let entries = [];
+  try { entries = F.readdirSync(dir); } catch (_) { return { pending: false, detail: 'no locks dir', swept: [] }; }
+  const stale = [];
+  for (const name of entries) {
+    if (!/\.lock\.(tmp|reap)-/.test(name)) continue;
+    const full = path.join(dir, name);
+    let mtimeMs = null;
+    try { mtimeMs = F.statSync(full).mtimeMs; } catch (_) { continue; }
+    if (Number.isFinite(mtimeMs) && (now - mtimeMs) > LOCK_SCRATCH_STALE_MS) stale.push(full);
+  }
+  if (!o.dryRun) {
+    for (const full of stale) { try { F.unlinkSync(full); } catch (_) { /* best-effort */ } }
+  }
+  return {
+    pending: stale.length > 0,
+    detail: stale.length + ' stale lock scratch file(s)' + (stale.length ? ': ' + stale.map((full) => path.basename(full)).join(', ') : ''),
+    swept: stale,
+  };
 }
 
 function readRecoveries(id, home, F) {
@@ -700,8 +743,8 @@ function pokeOrEscalate(descriptor, verdict, opts, io) {
 
 module.exports = {
   DEFAULT_MAX_RECOVERIES, DEFAULT_GRACE_MS, DEFAULT_NUDGE_MAX_ATTEMPTS, DEFAULT_NUDGE_COOLDOWN_MS,
-  RESUME_GUARDRAIL, LOCK_STALE_MS,
-  lockPathFor, recoveryLogPath, acquireLock, recover, pokeOrEscalate, notifyParentEscalation,
+  RESUME_GUARDRAIL, LOCK_STALE_MS, LOCK_SCRATCH_STALE_MS,
+  lockPathFor, recoveryLogPath, acquireLock, sweepStaleLockScratchFiles, recover, pokeOrEscalate, notifyParentEscalation,
   escalationIntentPath, readEscalationIntent, listEscalationIntents, drainEscalationIntents,
   escalationIntentStats, parkedEscalationSegment,
 };

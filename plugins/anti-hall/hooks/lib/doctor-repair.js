@@ -49,6 +49,7 @@ const MCP_REAPER_MOD       = path.join(PLUGIN_ROOT, 'companion', 'mcp-reaper.js'
 const DEVSWARM_SCRIPT      = path.join(PLUGIN_ROOT, 'scripts', 'devswarm.js');
 const MIGRATIONS_LIB       = path.join(PLUGIN_ROOT, 'companion', 'lib', 'migrations.js');
 const DEVSWARM_STORE       = path.join(PLUGIN_ROOT, 'companion', 'lib', 'devswarm-store.js');
+const RECOVERY_LIB         = path.join(PLUGIN_ROOT, 'companion', 'lib', 'recovery.js');
 
 // v0.57 mesh Phase 6 (D9/D25/D28) — belt-and-suspenders orphan sweep for LEGACY
 // per-worktree ingest units. A legacy unit's heartbeat/lock are keyed by its own
@@ -1202,6 +1203,21 @@ function runRepairs(opts) {
     const r = require(MIGRATE_STATE).migrateGateIntents({ dryRun: true, home });
     return { pending: !!(r && r.pending > 0), detail: (r && r.pending || 0) + ' gate-state file(s)' };
   }, () => require(MIGRATE_STATE).migrateGateIntents({ home }));
+
+  // v0.108.1 P3: acquireLock's write-then-link publish (and its P1 stale-
+  // reclaim fix) both leave a short-lived scratch file next to a lock on the
+  // happy path -- `<id>.lock.tmp-<pid>-<rand>` and `<id>.lock.reap-<pid>-
+  // <rand>` -- and both clean up after themselves inline. This sweep is the
+  // belt-and-suspenders backstop for a crash/kill between "create" and
+  // "cleanup": a PURE file-age scan+unlink under devswarm/locks/ (no daemon/
+  // scheduler side effect) -> AUTO-SAFE, same posture as the migrations
+  // above. Never touches an actual `<id>.lock` file, and never anything
+  // younger than LOCK_SCRATCH_STALE_MS (15 min), so a scratch file from an
+  // acquire still genuinely in flight is never at risk.
+  migrationFix('sweep-lock-scratch', 'sweep-stale-lock-scratch-files', () => {
+    const r = require(RECOVERY_LIB).sweepStaleLockScratchFiles(home, { dryRun: true });
+    return { pending: r.pending, detail: r.detail };
+  }, () => require(RECOVERY_LIB).sweepStaleLockScratchFiles(home, { dryRun: false }));
 
   // #70: fold ALL prior mesh forms (phantom rows, dual/legacy pairs, subdir-splits)
   // into one canonical survivor per worktree. A PURE store read+write (forward-then-

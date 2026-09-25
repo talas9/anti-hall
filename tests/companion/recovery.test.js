@@ -434,6 +434,38 @@ test('acquireLock: P1 fix — a genuinely dead holder with NO racer is still rec
   } finally { cleanup(); }
 });
 
+test('sweepStaleLockScratchFiles: removes *.lock.tmp-* / *.lock.reap-* older than 15 min, leaves fresh ones and real locks alone', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const p = M.lockPathFor('sweep-id', home);
+    const dir = path.dirname(p);
+    fs.mkdirSync(dir, { recursive: true });
+    const old = Date.now() - (M.LOCK_SCRATCH_STALE_MS + 60000);
+    const oldTmp = p + '.tmp-111-aaa';
+    const oldReap = p + '.reap-222-bbb';
+    const freshTmp = p + '.tmp-333-ccc';
+    fs.writeFileSync(oldTmp, '{}'); fs.utimesSync(oldTmp, old / 1000, old / 1000);
+    fs.writeFileSync(oldReap, '{}'); fs.utimesSync(oldReap, old / 1000, old / 1000);
+    fs.writeFileSync(freshTmp, '{}'); // fresh mtime -- must survive
+    fs.writeFileSync(p, JSON.stringify({ pid: process.pid, ts: Date.now(), token: 'live' })); // real lock -- must survive regardless of age
+    fs.utimesSync(p, old / 1000, old / 1000);
+
+    const dry = M.sweepStaleLockScratchFiles(home, { dryRun: true });
+    assert.strictEqual(dry.pending, true);
+    assert.ok(fs.existsSync(oldTmp) && fs.existsSync(oldReap), 'dry-run must not delete anything');
+
+    const applied = M.sweepStaleLockScratchFiles(home, { dryRun: false });
+    assert.strictEqual(applied.swept.length, 2);
+    assert.strictEqual(fs.existsSync(oldTmp), false, 'old .tmp- scratch file removed');
+    assert.strictEqual(fs.existsSync(oldReap), false, 'old .reap- scratch file removed');
+    assert.strictEqual(fs.existsSync(freshTmp), true, 'fresh scratch file left alone');
+    assert.strictEqual(fs.existsSync(p), true, 'the real lock file itself is never touched by this sweep, regardless of age');
+
+    const clean = M.sweepStaleLockScratchFiles(home, { dryRun: true });
+    assert.strictEqual(clean.pending, false, 'idempotent: nothing left to sweep');
+  } finally { cleanup(); }
+});
+
 test('resume prompt PREPENDS the state-check guardrail before the backlog', () => {
   const { home, cleanup } = makeHome();
   try {

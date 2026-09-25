@@ -373,6 +373,46 @@ test('doctor --repair: migrate-gate-intents FIXES a pre-feature gate-state file,
   } finally { rm(home); rm(cwd); }
 });
 
+// v0.108.1 P3: doctor --repair sweeps stale acquireLock scratch files
+// (`*.lock.tmp-*` / `*.lock.reap-*`, companion/lib/recovery.js) older than
+// LOCK_SCRATCH_STALE_MS. In-process (fast, no subprocess spawn) — mirrors the
+// "runRepairs (in-process...)" pattern above.
+test('runRepairs (in-process): sweep-lock-scratch FIXES stale lock scratch files, leaves fresh ones and real locks alone, then a re-run is a clean no-op', () => {
+  const home = mkTmp('lock-scratch-home');
+  const cwd = mkTmp('lock-scratch-cwd');
+  try {
+    const recovery = require(path.join(REPO_ROOT, 'plugins', 'anti-hall', 'companion', 'lib', 'recovery.js'));
+    const p = recovery.lockPathFor('some-id', home);
+    const dir = path.dirname(p);
+    fs.mkdirSync(dir, { recursive: true });
+    const old = Date.now() - (recovery.LOCK_SCRATCH_STALE_MS + 60000);
+    const staleTmp = p + '.tmp-111-aaa';
+    const staleReap = p + '.reap-222-bbb';
+    const freshTmp = p + '.tmp-333-ccc';
+    fs.writeFileSync(staleTmp, '{}'); fs.utimesSync(staleTmp, old / 1000, old / 1000);
+    fs.writeFileSync(staleReap, '{}'); fs.utimesSync(staleReap, old / 1000, old / 1000);
+    fs.writeFileSync(freshTmp, '{}');
+    fs.writeFileSync(p, JSON.stringify({ pid: process.pid, ts: Date.now(), token: 'live' }));
+    fs.utimesSync(p, old / 1000, old / 1000); // old mtime too -- this sweep must never touch a real lock
+
+    const env = {};
+    const r1 = repair.runRepairs({ cwd, env, home, dryRun: false });
+    const fixed = r1.find((x) => x.id === 'sweep-lock-scratch');
+    assert.ok(fixed, 'a sweep-lock-scratch result must be present:\n' + JSON.stringify(r1, null, 2));
+    assert.strictEqual(fixed.status, 'fixed', JSON.stringify(fixed));
+    assert.match(fixed.msg, /2 stale lock scratch file/);
+    assert.strictEqual(fs.existsSync(staleTmp), false, 'stale .tmp- file removed');
+    assert.strictEqual(fs.existsSync(staleReap), false, 'stale .reap- file removed');
+    assert.strictEqual(fs.existsSync(freshTmp), true, 'fresh scratch file left alone');
+    assert.strictEqual(fs.existsSync(p), true, 'the real lock file is never touched by this sweep');
+
+    const r2 = repair.runRepairs({ cwd, env, home, dryRun: false });
+    const clean = r2.find((x) => x.id === 'sweep-lock-scratch');
+    assert.strictEqual(clean.status, 'skipped', 'second run is a clean idempotent no-op:\n' + JSON.stringify(clean));
+    assert.match(clean.msg, /nothing to migrate/);
+  } finally { rm(home); rm(cwd); }
+});
+
 // ---------------------------------------------------------------------------
 // 5. Statusline: install-if-missing vs custom-untouched.
 // ---------------------------------------------------------------------------
