@@ -21,6 +21,9 @@ the update.
   adopted from a previously closed one.
   First-use registration happens only under real DevSwarm (`DEVSWARM_REPO_ID`
   set) — forcing `devswarm.supervisorMode=on` alone never registers a seat.
+- **A corrupt Primary seat descriptor is reported, not overwritten.** An
+  unparseable `workspaces/<id>.json` now reads as seat state `unknown` with a
+  SessionStart warning naming the file, instead of being re-registered over.
 - **DevSwarm wake-watch no longer needs a manual re-arm after every release.**
   When a newer build's watcher is available, the running watcher now hands
   the stream off to it automatically instead of printing a re-arm instruction

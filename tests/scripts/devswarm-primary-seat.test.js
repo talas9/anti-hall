@@ -246,7 +246,8 @@ test('concurrent adoption: two live sessions race for a closed seat -> exactly o
 
 // ---------------------------------------------------------------------------
 // 0.109.5 review P2: first-ever registration ('none') needs REAL DevSwarm
-// (DEVSWARM_REPO_ID), never supervisorMode=on alone.
+// (DEVSWARM_REPO_ID), never supervisorMode=on alone; a corrupt descriptor is
+// 'unknown' and is reported, never re-registered over.
 // ---------------------------------------------------------------------------
 function descPath(f) { return path.join(f.home, '.anti-hall', 'devswarm', 'workspaces', f.id + '.json'); }
 
@@ -273,5 +274,24 @@ test('(review P2) never-registered seat WITH DEVSWARM_REPO_ID -> registered (fir
     const res = cli.adoptPrimarySeat({ home: f.home, env: f.env('sess-Y'), cwd: f.repo });
     assert.equal(res.adopted, true, JSON.stringify(res));
     assert.equal(anchorSid(f), 'sess-Y');
+  } finally { f.cleanup(); }
+});
+
+test('(review P2) corrupt descriptor JSON -> state unknown, NOT re-registered, reported', () => {
+  const f = fixture();
+  try {
+    sessionFile(f, 'sess-Z');
+    fs.mkdirSync(path.dirname(descPath(f)), { recursive: true });
+    fs.writeFileSync(descPath(f), '{"sessionId": "sess-old", trunc');
+    const v = seat.seatVerdict({ home: f.home, env: f.env('sess-Z'), cwd: f.repo, sessionId: 'sess-Z' });
+    assert.equal(v.state, 'unknown', JSON.stringify(v));
+    assert.equal(v.reason, 'corrupt-descriptor');
+    const res = cli.adoptPrimarySeat({ home: f.home, env: f.env('sess-Z'), cwd: f.repo });
+    assert.equal(res.adopted, false);
+    assert.equal(fs.readFileSync(descPath(f), 'utf8'), '{"sessionId": "sess-old", trunc', 'the corrupt descriptor must be left untouched');
+    const c = sessionStart(f, 'sess-Z');
+    assert.match(c, /corrupt|unparseable/i, c);
+    assert.match(c, new RegExp(f.id), c);
+    assert.equal(fs.readFileSync(descPath(f), 'utf8'), '{"sessionId": "sess-old", trunc');
   } finally { f.cleanup(); }
 });

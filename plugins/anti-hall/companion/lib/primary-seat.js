@@ -13,7 +13,9 @@
 //   'adopt'    the recorded session is CLOSED -> this session may adopt the seat
 //   'conflict' the recorded session is LIVE -> warn; mesh send/ack/spawn refused
 //              until `devswarm.js primary takeover`
-//   'unknown'  liveness cannot be established -> warn, never adopt
+//   'unknown'  liveness cannot be established, or the anchor descriptor exists
+//              but is unparseable (reason 'corrupt-descriptor') -> warn, never
+//              adopt or re-register
 //
 // Liveness of the recorded session, strongest evidence first:
 //   1. the harness session file (<home>/.claude/sessions/*.json) naming it with a
@@ -128,13 +130,22 @@ function seatVerdict(opts) {
     const pc = primaryCheckout(o);
     if (!pc) return { state: 'n/a' };
     const cur = o.sessionId ? String(o.sessionId) : '';
-    const desc = readJson(path.join(devswarmRoot(o.home), 'workspaces', pc.id + '.json'));
+    const descFile = path.join(devswarmRoot(o.home), 'workspaces', pc.id + '.json');
+    const desc = readJson(descFile);
+    // A descriptor that EXISTS but cannot be parsed is not "never registered":
+    // re-registering would overwrite the real anchor (its session, cursor,
+    // partitions). Report it as 'unknown' and never adopt/register over it.
+    let corrupt = false;
+    if (!desc || typeof desc !== 'object' || Array.isArray(desc)) {
+      try { corrupt = fs.existsSync(descFile); } catch (_) { corrupt = true; }
+    }
     const holder = desc && desc.sessionId && !String(desc.sessionId).startsWith('unclaimed:') ? String(desc.sessionId) : '';
     // light: the per-verb guard needs only the holder verdict — skip the
     // handover and transcript scans (SessionStart pays for those once).
     const handover = o.light ? null : newestWorktreeHandover(pc.worktree);
     const stale = o.light ? null : staleResume({ worktree: pc.worktree, home: o.home, currentSessionId: cur, handover });
     const base = { id: pc.id, worktree: pc.worktree, holder: holder || null, handover, stale };
+    if (corrupt) return Object.assign({ state: 'unknown', reason: 'corrupt-descriptor', descriptorPath: descFile }, base);
     if (!desc) return Object.assign({ state: 'none' }, base);
     if (!cur) return Object.assign({ state: 'unknown', reason: 'no-current-session' }, base);
     if (!holder || holder === cur) return Object.assign({ state: holder ? 'own' : 'adopt' }, base);
@@ -169,6 +180,10 @@ function seatNotices(v, o) {
       + (v.handover ? ' — read it first.' : '.'));
   } else if (v.state === 'conflict') {
     out.push(conflictText(v, cli));
+  } else if (v.state === 'unknown' && v.reason === 'corrupt-descriptor') {
+    out.push('⚠ DEVSWARM PRIMARY SEAT: the anchor descriptor for Primary ' + v.id + ' is corrupt/unparseable ('
+      + (v.descriptorPath || 'workspaces/' + v.id + '.json') + ') — NOT re-registering over it. Inspect or repair that file, '
+      + 'then run `node ' + cli + ' primary takeover`.');
   } else if (v.state === 'unknown') {
     out.push('⚠ DEVSWARM PRIMARY SEAT: could not verify whether session ' + (v.holder || '?') + ' (the recorded Primary) '
       + 'is still running — NOT adopting. If it is closed, run `node ' + cli + ' primary takeover`.');
