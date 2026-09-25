@@ -304,6 +304,71 @@ test('d3d571495bf6 consumers: ONE nonce only -> no instance-split hint, instance
   } finally { rm(home); rm(repo); }
 });
 
+// Field report (2026-09-25, post-DevSwarm-app-restart roster showing
+// instance-split on rows with only ONE live `claude` process per lsof):
+// deriveInstanceNonce is `<prefix>:<pid>:<startedAt>` — it legitimately
+// changes on every process restart (see devswarm-child-gate.js's TWIN-CASE
+// FIX comment). computeInstanceNonceCounts's ONLY test was "both nonces have
+// a row within the last DEFAULT_HEARTBEAT_FRESH_MS (15min) of NOW" — so an
+// ordinary restart, where the dying process's last heartbeat is still <15min
+// old when the fresh process sends its first one, counted as 2 CONCURRENT
+// instances even though the two processes never coexisted (real ~/.anti-hall
+// data showed the SAME shape: strictly sequential, non-overlapping nonce
+// blocks with multi-minute gaps between them, on every observed transition).
+// Fix: two nonces must be TEMPORALLY CLOSE (not just each individually
+// "fresh") to count as a split — restart leftovers, whose last activity
+// ends minutes before the new process's first activity, must not count.
+test('d3d571495bf6 restart false-positive: sequential nonces (5min gap, old one still <15min fresh) must NOT be instance-split', () => {
+  const home = tmpHome();
+  const repo = makeGitRepo('consumers-restart');
+  try {
+    const repoKey = repokey.repoKeyForWorktree(repo);
+    const top = inst.resolveWorktree(repo);
+    const backend = storeLib.sqliteAvailable && storeLib.sqliteAvailable() ? 'sqlite' : 'journal';
+    const now = Date.now();
+
+    const s = storeLib.openStore({ home, hash: repoKey, backend });
+    try {
+      s.upsertRegistry({ id: 'child-restart', worktreePath: top, sessionId: 'session-restart' });
+      // OLD process (pre-restart): its last heartbeat was 6 minutes ago —
+      // well within the 15-minute freshness window, but the process itself
+      // is long dead (lsof shows nothing for its pid).
+      const hbOld = {
+        from: 'child-restart', to: null, type: 'broadcast', message: 'working on A (pre-restart)',
+        timestamp: now - (6 * 60 * 1000), urgency: 'low',
+      };
+      storeLib.appendMeshMessage(s, Object.assign({}, hbOld, {
+        hash: storeLib.meshMessageHash(hbOld), isHeartbeat: true, instanceNonce: 'anc:11105:1000000',
+      }));
+      // NEW process (post-restart, same workspace/session, fresh pid+startedAt
+      // per deriveInstanceNonce's own documented restart behavior): sends its
+      // first heartbeat now. The two processes never ran at the same time.
+      const hbNew = {
+        from: 'child-restart', to: null, type: 'broadcast', message: 'working on A (post-restart)',
+        timestamp: now, urgency: 'low',
+      };
+      storeLib.appendMeshMessage(s, Object.assign({}, hbNew, {
+        hash: storeLib.meshMessageHash(hbNew), isHeartbeat: true, instanceNonce: 'anc:99999:9000000',
+      }));
+    } finally { s.close(); }
+
+    const ctx = { home, cwd: repo, env: {}, now };
+    const roster = cli.cmdRoster({}, ctx);
+    const rosterRow = roster.workspaces.find((w) => w.id === 'child-restart');
+    assert.ok(rosterRow, 'child-restart must appear on the roster');
+    assert.strictEqual(rosterRow.instances, 1,
+      'a restart (sequential, non-overlapping nonces) must read as ONE instance, not two');
+    assert.ok(!rosterRow.hints.includes('instance-split'),
+      'restart leftovers (old nonce still <15min "fresh" but the process is dead) must never trigger instance-split');
+
+    const s2 = storeLib.openStore({ home, hash: repoKey, backend });
+    let diag;
+    try { diag = cli.computeDiagnosis(s2, { home, env: {}, now }); } finally { s2.close(); }
+    assert.strictEqual(diag.instanceSplits.length, 0,
+      'diagnose must agree with roster: a restart must never appear in instanceSplits');
+  } finally { rm(home); rm(repo); }
+});
+
 test('d3d571495bf6 consumers: NO nonce at all -> no hint, row output matches the pre-fix (no instanceNonce keys) shape', () => {
   const home = tmpHome();
   const repo = makeGitRepo('consumers-none');

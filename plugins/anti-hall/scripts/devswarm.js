@@ -15247,6 +15247,25 @@ function rosterIdleDays(home, id, now) {
 // the DevSwarm app's own archived list, cached by the supervisor. Omitted (or
 // without a repoKey) the check is simply skipped, which is the pre-existing
 // behavior — this can only ever ADD an `archived` hint, never remove one.
+// INSTANCE_SPLIT_CONCURRENT_GAP_MS — two DISTINCT instanceNonce values only
+// count as a genuine split (two OS processes alive AT THE SAME TIME) when
+// their activity is within this gap of each other. Root cause (field report
+// 2026-09-25): deriveInstanceNonce is `<prefix>:<pid>:<startedAt>` and
+// LEGITIMATELY changes on every process restart (devswarm-child-gate.js's
+// TWIN-CASE FIX comment documents this exact behavior). The pre-fix test here
+// was only "does each nonce individually have a row within the last
+// DEFAULT_HEARTBEAT_FRESH_MS (15min) of NOW" — so an ordinary restart, where
+// the dying process's last heartbeat is still <15min old when the fresh
+// process's first heartbeat lands, always read as 2 concurrent instances even
+// though the two processes never coexisted. Real ~/.anti-hall data confirmed
+// the shape: every observed nonce transition was strictly sequential
+// (non-overlapping) with a multi-minute gap (the smallest observed was ~4.7
+// minutes) — nothing like true concurrency, which fires both nonces within
+// the same second (see the d3d571495bf6 fixture above). 60s sits comfortably
+// between the two: far above genuine simultaneous heartbeats, far below the
+// smallest observed restart gap.
+const INSTANCE_SPLIT_CONCURRENT_GAP_MS = 60 * 1000;
+
 // computeInstanceNonceCounts(rows, now, freshMs) -> Map<senderId, {instances, nonces}>.
 // instanceNonce CONSUMER (defect d3d571495bf6, item b), shared by `roster`
 // (instance-split hint) and `diagnose` (instanceSplits[]) so the two verbs can
@@ -15258,6 +15277,15 @@ function rosterIdleDays(home, id, now) {
 // instance from weeks ago does not keep flagging a row forever. Fail-open per
 // row: a row with a missing/non-finite `ts` or a null/empty `instanceNonce`
 // is silently skipped, never thrown on.
+//
+// `instances` is NOT simply the count of distinct nonces seen in the window —
+// that alone cannot tell a restart (sequential) apart from a real split
+// (concurrent). Each nonce's [min,max] activity span is computed, then spans
+// are padded by INSTANCE_SPLIT_CONCURRENT_GAP_MS and swept for the largest
+// set of nonces overlapping at any single point in time — that peak
+// concurrency count (and only the nonces in that peak set) is what gets
+// reported, so a dead nonce whose last activity ended minutes before the
+// live one's first activity is correctly never counted as concurrent with it.
 function computeInstanceNonceCounts(rows, now, freshMs) {
   const windowMs = Number.isFinite(freshMs) ? freshMs : DEFAULT_HEARTBEAT_FRESH_MS;
   const bySender = new Map();
@@ -15266,13 +15294,46 @@ function computeInstanceNonceCounts(rows, now, freshMs) {
     const ts = Number(r.ts);
     if (!Number.isFinite(ts) || (now - ts) > windowMs) continue;
     const key = String(r.sender);
-    let set = bySender.get(key);
-    if (!set) { set = new Set(); bySender.set(key, set); }
-    set.add(String(r.instanceNonce));
+    let spans = bySender.get(key);
+    if (!spans) { spans = new Map(); bySender.set(key, spans); }
+    const nonce = String(r.instanceNonce);
+    const span = spans.get(nonce);
+    if (!span) spans.set(nonce, { min: ts, max: ts });
+    else { if (ts < span.min) span.min = ts; if (ts > span.max) span.max = ts; }
   }
   const out = new Map();
-  for (const [id, set] of bySender.entries()) {
-    out.set(id, { instances: set.size, nonces: Array.from(set) });
+  for (const [id, spans] of bySender.entries()) {
+    const entries = Array.from(spans.entries()); // [nonce, {min,max}]
+    if (entries.length <= 1) {
+      out.set(id, { instances: entries.length, nonces: entries.map(([n]) => n) });
+      continue;
+    }
+    // Sweep line over spans padded by the concurrency gap on the END side
+    // only — a nonce's window of "still might be the same live process" ends
+    // INSTANCE_SPLIT_CONCURRENT_GAP_MS after its last observed activity, but
+    // starts exactly when its first activity was actually seen (padding the
+    // start too would let a LATER nonce's early padding reach back and
+    // wrongly link it to an EARLIER, already-dead one).
+    const events = [];
+    for (const [nonce, span] of entries) {
+      events.push([span.min, 1, nonce]);
+      events.push([span.max + INSTANCE_SPLIT_CONCURRENT_GAP_MS, -1, nonce]);
+    }
+    // Ties: process starts (+1) before ends (-1) so a start landing exactly
+    // on another's padded end still reads as overlapping (fail toward
+    // detecting a split at the boundary, not away from it).
+    events.sort((a, b) => a[0] - b[0] || b[1] - a[1]);
+    const active = new Set();
+    let bestSet = [];
+    for (const [, delta, nonce] of events) {
+      if (delta === 1) {
+        active.add(nonce);
+        if (active.size > bestSet.length) bestSet = Array.from(active);
+      } else {
+        active.delete(nonce);
+      }
+    }
+    out.set(id, { instances: bestSet.length, nonces: bestSet });
   }
   return out;
 }
