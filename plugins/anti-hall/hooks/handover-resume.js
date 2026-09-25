@@ -58,6 +58,7 @@ const {
   sanitizeSessionId,
   findNewestHandover,
   findNewestPrecompact,
+  handoversRoot: resolveHandoversRoot,
 } = require('./lib/handover-find.js');
 
 // readIndexOutcome(handoversRoot, date, sessionId, seq) -> one-line outcome
@@ -241,7 +242,12 @@ function main() {
   const source = typeof payload.source === 'string' ? payload.source : '';
   const isCompactOrClear = source === 'clear' || source === 'compact';
 
-  const handoversRoot = path.join(cwd, '.anti-hall', 'handovers');
+  // repoRoot(cwd) inside handoversRoot() resolves cwd's git toplevel via the
+  // canonical resolver, not a raw path.join(cwd, ...) — a cwd deep inside
+  // .anti-hall/handovers/ (or any subdir) must not double onto itself. Must
+  // match precompact-snapshot.js's write side exactly, or the resume notice
+  // points at nothing.
+  const handoversRoot = resolveHandoversRoot(cwd);
   let rootIsDir = false;
   try {
     rootIsDir = fs.statSync(handoversRoot).isDirectory();

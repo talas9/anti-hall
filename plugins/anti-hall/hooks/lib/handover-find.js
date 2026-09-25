@@ -36,8 +36,33 @@ function localDate(d) {
   return t.getFullYear() + '-' + pad(t.getMonth() + 1) + '-' + pad(t.getDate());
 }
 
+// repoRoot(cwd) -> the git toplevel of cwd via the ONE canonical resolver
+// (companion/lib/identity.js's resolveContext), or cwd itself when cwd is
+// missing/not-a-repo (fail-open, matches the pre-existing plain-cwd
+// behavior). FIXES the PreCompact doubled-path bug: a session whose cwd was
+// `<repo>/.anti-hall/handovers` used to get `<repo>/.anti-hall/handovers`
+// joined onto AGAIN, writing snapshots under
+// `<repo>/.anti-hall/handovers/.anti-hall/handovers/...` that
+// hooks/handover-resume.js could never find (verified field bug, 2026-09-25).
+// `toplevel` (not `worktreeRoot`) mirrors command-guard.js's
+// hasProtectedStashesMarker: the repo actually checked out AT cwd (a
+// submodule included) owns its own .anti-hall/ state, not an unrelated
+// superproject's. A linked (e.g. DevSwarm child) worktree's own toplevel is
+// identical to its worktreeRoot (resolveContext never climbs past a linked
+// worktree that isn't itself a submodule), so this still resolves to the
+// worktree's OWN root, never the main checkout's.
+function repoRoot(cwd) {
+  if (typeof cwd !== 'string' || !cwd) return cwd;
+  try {
+    const identity = require('../../companion/lib/identity.js');
+    const ctx = identity.resolveContext(cwd, { missingPath: 'ancestor' });
+    if (ctx && ctx.toplevel) return ctx.toplevel;
+  } catch (_) { /* fall through to raw cwd */ }
+  return cwd;
+}
+
 function handoversRoot(cwd) {
-  return path.join(cwd, '.anti-hall', 'handovers');
+  return path.join(repoRoot(cwd), '.anti-hall', 'handovers');
 }
 
 // listDirs(p) -> array of directory names directly under p, or [] on any error.
@@ -178,6 +203,7 @@ module.exports = {
   PRECOMPACT_FILE_RE,
   sanitizeSessionId,
   localDate,
+  repoRoot,
   handoversRoot,
   findNewestHandover,
   findNewestHandoverForSession,

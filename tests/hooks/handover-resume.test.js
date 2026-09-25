@@ -457,3 +457,54 @@ test('(n) Codex payload (rollout transcript) -> AGENTS.md re-read wording', () =
     fs.rmSync(cwd, { recursive: true, force: true });
   }
 });
+
+// 2026-09-25 verified field bug: precompact-snapshot.js wrote to a cwd-doubled
+// path when the session's cwd AT /compact was itself under
+// .anti-hall/handovers/ (e.g. an agent that cd'd there to inspect a prior
+// handover). handover-resume.js must find that repo's handover/snapshot
+// whether the RESUMING session's cwd is the repo root or that same weird
+// subdir -- both must resolve to the SAME repo-rooted .anti-hall/handovers/.
+test('(o) cwd = <repo>/.anti-hall/handovers at resume time -> still finds the handover (matches the write side)', () => {
+  const h = makeHome();
+  const cwd = makeProjectCwd();
+  try {
+    // Must be a real git repo: repoRoot() only resolves via the toplevel
+    // walk-up when cwd IS inside a repo -- a non-git cwd falls back to
+    // itself unchanged (spec requirement 3), which would make this
+    // assertion pass trivially without exercising the fix at all.
+    const g = (...a) => execFileSync('git', a, { cwd, stdio: 'ignore' });
+    g('init', '-q');
+    g('-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '--allow-empty', '-m', 'first commit');
+    const hp = writeHandover(cwd, '2026-09-24', 'sess-o', 1);
+    const weirdCwd = path.join(cwd, '.anti-hall', 'handovers');
+    const c = resumeCtx(h, weirdCwd, 'sess-o', 'compact');
+    assert.ok(c.includes(hp), 'resume from a cwd under .anti-hall/handovers/ must still find the repo-rooted handover');
+  } finally {
+    h.cleanup();
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test('(p) precompact-snapshot writes from a weird cwd, then handover-resume (normal cwd) finds it -- write/read sides agree', () => {
+  const h = makeHome();
+  const cwd = makeProjectCwd();
+  try {
+    const g = (...a) => execFileSync('git', a, { cwd, stdio: 'ignore' });
+    g('init', '-q');
+    g('-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '--allow-empty', '-m', 'first commit');
+    const weirdCwd = path.join(cwd, '.anti-hall', 'handovers');
+    fs.mkdirSync(weirdCwd, { recursive: true });
+    const tp = h.writeTranscript([
+      { type: 'user', message: { role: 'user', content: 'weird-cwd precompact rule' }, timestamp: '2026-09-25T10:00:00Z' },
+    ]);
+    const pr = testHook('precompact-snapshot.js', {
+      session_id: 'sess-p', transcript_path: tp, cwd: weirdCwd, hook_event_name: 'PreCompact', trigger: 'auto',
+    }, { home: h.home });
+    assert.strictEqual(pr.status, 0);
+    const c = resumeCtx(h, cwd, 'sess-p', 'compact');
+    assert.match(c, /PRE-COMPACTION SNAPSHOT/, c);
+  } finally {
+    h.cleanup();
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
+});

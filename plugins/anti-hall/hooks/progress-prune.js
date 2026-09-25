@@ -10,6 +10,11 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+// repoRoot(cwd) -- the canonical resolver (companion/lib/identity.js via
+// hooks/lib/handover-find.js): a cwd already under .anti-hall/progress/...
+// (or any subdir) must not double onto itself when joined below (same root
+// cause as the 2026-09-25 PreCompact doubled-path bug).
+const { repoRoot } = require('./lib/handover-find.js');
 
 const STATE_FILE = path.join(os.homedir(), '.anti-hall', 'progress-prune-state.json');
 const THROTTLE_MS = 24 * 60 * 60 * 1000;
@@ -74,7 +79,8 @@ function archiveAndDelete(progressFile, historyFile, prunedAt) {
 }
 
 function pruneProject(cwd, now) {
-  const progressRoot = path.join(cwd, '.anti-hall', 'progress');
+  const root = repoRoot(cwd);
+  const progressRoot = path.join(root, '.anti-hall', 'progress');
   const todayUtc = new Date(now).toISOString().slice(0, 10);
   const entries = fs.readdirSync(progressRoot, { withFileTypes: true });
 
@@ -103,7 +109,7 @@ function pruneProject(cwd, now) {
       if (now - st.mtimeMs <= PRUNE_SAFETY_MS) continue;
 
       const sessionId = path.basename(file.name, '.md');
-      const historyFile = path.join(cwd, '.anti-hall', 'history', dateDir, sessionId + '.md');
+      const historyFile = path.join(root, '.anti-hall', 'history', dateDir, sessionId + '.md');
       archiveAndDelete(progressFile, historyFile, new Date(now).toISOString());
     }
   }

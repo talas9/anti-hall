@@ -162,7 +162,19 @@ function safeWrite(destPath, content) {
  * is reported instead of re-copying.
  */
 function migrateLegacyState({ dir, dryRun } = {}) {
-  const root = path.resolve(dir || process.cwd());
+  const cwdArg = path.resolve(dir || process.cwd());
+  // Resolve to the git toplevel via the ONE canonical resolver (companion/
+  // lib/identity.js), not the raw `dir` -- a `dir` already inside
+  // .anti-hall/**/... (e.g. a caller that forwards a hook payload's raw cwd)
+  // must not double onto itself when joined with '.anti-hall/history/legacy'
+  // below (same root cause as the 2026-09-25 PreCompact doubled-path bug;
+  // see hooks/lib/handover-find.js). Falls back to the raw resolved `dir`
+  // when it isn't a git repo, matching this function's pre-existing behavior.
+  let root = cwdArg;
+  try {
+    const ctx = require('../companion/lib/identity.js').resolveContext(cwdArg, { missingPath: 'ancestor' });
+    if (ctx && ctx.toplevel) root = ctx.toplevel;
+  } catch (_) { /* fall through to raw resolved dir */ }
   const legacyDir = path.join(root, '.anti-hall', 'history', 'legacy');
   const results = [];
 

@@ -6,6 +6,7 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
+const { execFileSync } = require('node:child_process');
 const { testHook } = require('../helpers/spawn-hook.js');
 const { makeHome } = require('../helpers/fixtures.js');
 
@@ -108,6 +109,31 @@ test('throttles pruning per cwd for 24h', () => {
     assert.strictEqual(r2.status, 0, `exit 0; stderr: ${r2.stderr}`);
     assert.ok(fs.existsSync(second), 'second stale file should survive because cwd throttle is fresh');
     assert.ok(!fs.existsSync(historyPath(cwd, date, 'sess-second')), 'throttled run should not archive');
+  } finally { h.cleanup(); }
+});
+
+// 2026-09-25 verified field bug (same root cause as PreCompact's doubled-path
+// bug): a cwd already inside .anti-hall/progress/ (or any subdir) must not
+// double .anti-hall/progress onto itself when the hook resolves the repo's
+// progress root -- it must resolve to the git toplevel, same as the write side.
+test('cwd = <repo>/.anti-hall/progress -> still prunes the repo-rooted progress dir, not a doubled one', () => {
+  const h = makeHome();
+  try {
+    const cwd = makeProject(h);
+    const g = (...a) => execFileSync('git', a, { cwd, stdio: 'ignore' });
+    g('init', '-q');
+    g('-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '--allow-empty', '-m', 'first commit');
+
+    const date = '2000-01-05';
+    const session = 'sess-weird';
+    const progressFile = writeProgress(cwd, date, session, 'weird cwd\n', Date.now() - 7 * HOUR_MS);
+
+    const weirdCwd = path.join(cwd, '.anti-hall', 'progress');
+    const r = testHook(HOOK, payload(weirdCwd), { home: h.home });
+    assert.strictEqual(r.status, 0, `exit 0; stderr: ${r.stderr}`);
+    assert.ok(!fs.existsSync(progressFile), 'repo-rooted stale progress file should be pruned even from a weird cwd');
+    const history = fs.readFileSync(historyPath(cwd, date, session), 'utf8');
+    assert.match(history, /## Archived progress/);
   } finally { h.cleanup(); }
 });
 

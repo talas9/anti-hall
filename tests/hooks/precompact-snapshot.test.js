@@ -141,6 +141,46 @@ test('fail-open: garbage stdin, missing cwd, non-git dir, missing transcript -> 
   }
 });
 
+// 2026-09-25 verified field bug: a session whose cwd AT /compact was
+// <repo>/.anti-hall/handovers wrote the snapshot to a DOUBLED path
+// (<repo>/.anti-hall/handovers/.anti-hall/handovers/<date>/<sid>/...) because
+// the hook joined '.anti-hall/handovers' onto the raw cwd instead of the
+// resolved repo root. It must land at the SAME place a normal-cwd run would.
+test('cwd = <repo>/.anti-hall/handovers -> snapshot lands under <repo>/.anti-hall/handovers/<date>/<sid>/, not doubled', () => {
+  const h = makeHome();
+  const cwd = makeRepo();
+  try {
+    const weirdCwd = path.join(cwd, '.anti-hall', 'handovers');
+    fs.mkdirSync(weirdCwd, { recursive: true });
+    const r = run(h, { session_id: 'sess-weird', transcript_path: transcript(h), cwd: weirdCwd, hook_event_name: 'PreCompact', trigger: 'auto', custom_instructions: null });
+    assert.strictEqual(r.status, 0);
+    const expected = path.join(snapDir(cwd, 'sess-weird'), 'PRECOMPACT-1.md');
+    assert.ok(fs.existsSync(expected), 'snapshot must land at the repo-rooted path, not a doubled one');
+    const doubled = path.join(weirdCwd, '.anti-hall', 'handovers', find.localDate(), 'sess-weird', 'PRECOMPACT-1.md');
+    assert.ok(!fs.existsSync(doubled), 'snapshot must NOT double .anti-hall/handovers onto itself');
+  } finally {
+    h.cleanup();
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test('cwd = a deep subdir of the repo -> snapshot still lands under the repo TOPLEVEL .anti-hall/handovers/', () => {
+  const h = makeHome();
+  const cwd = makeRepo();
+  try {
+    const deep = path.join(cwd, 'src', 'nested', 'deeper');
+    fs.mkdirSync(deep, { recursive: true });
+    const r = run(h, { session_id: 'sess-deep', transcript_path: transcript(h), cwd: deep, hook_event_name: 'PreCompact', trigger: 'auto', custom_instructions: null });
+    assert.strictEqual(r.status, 0);
+    const expected = path.join(snapDir(cwd, 'sess-deep'), 'PRECOMPACT-1.md');
+    assert.ok(fs.existsSync(expected), 'snapshot must land at the repo toplevel, not under the deep subdir');
+    assert.ok(!fs.existsSync(path.join(snapDir(deep, 'sess-deep'), 'PRECOMPACT-1.md')));
+  } finally {
+    h.cleanup();
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 test('never snapshots for a subagent payload', () => {
   const h = makeHome();
   const cwd = makeRepo();

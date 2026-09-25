@@ -36,6 +36,12 @@ const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
 const { appendIndexLineIfAbsent } = require('./session-history-index.js');
+// repoRoot(cwd) -- the canonical resolver (companion/lib/identity.js via
+// hooks/lib/handover-find.js): every .anti-hall/progress|history|handovers
+// path below is joined onto the RESOLVED repo root, never the raw session
+// cwd -- a cwd already inside .anti-hall/handovers/... must not double onto
+// itself (2026-09-25 PreCompact doubled-path bug; same root cause here).
+const { repoRoot } = require('./lib/handover-find.js');
 
 // DEFERRED (accepted): (a) cumulative work counters vs the 512 KB tail clip — work
 // before the window is unseen, which can only SUPPRESS a block (fail-open, the safe
@@ -234,7 +240,8 @@ function main() {
     ' | started: ' + new Date().toISOString() + ' -->';
   const progressRelPath = path.join('.anti-hall', 'progress', progressDate, sessionIdForPath + '.md');
   const cwd = payload && payload.cwd;
-  const progressAbsPath = (cwd && typeof cwd === 'string') ? path.join(cwd, progressRelPath) : null;
+  const root = (cwd && typeof cwd === 'string') ? repoRoot(cwd) : cwd;
+  const progressAbsPath = (root && typeof root === 'string') ? path.join(root, progressRelPath) : null;
 
   // Single-pass scan: WORK_COUNT, sawTaskActivity, reconstructed task state, and
   // (FIX 6) the newest transcript-observed write to the progress file itself.
@@ -276,7 +283,7 @@ function main() {
     if (!cwdExists) {
       progressFresh = true; // FIX 5: cwd unreadable → fail-open, do not block
     } else {
-      const progressDir = path.join(cwd, '.anti-hall', 'progress', progressDate);
+      const progressDir = path.join(root, '.anti-hall', 'progress', progressDate);
       let progressDirReady = true;
       try {
         fs.mkdirSync(progressDir, { recursive: true });
@@ -287,12 +294,12 @@ function main() {
         progressFresh = true; // cannot prepare progress dir → fail-open
       } else {
         try {
-          const pPath = path.join(cwd, progressRelPath);
+          const pPath = path.join(root, progressRelPath);
           const st = fs.lstatSync(pPath); // FIX 4: lstat — do NOT follow symlinks
           if (!st.isFile()) {
             progressFresh = false; // a dir or symlink named like the file ≠ real progress
           } else {
-            maintainSessionIndex(cwd, progressDate, sessionIdForPath, 'progress');
+            maintainSessionIndex(root, progressDate, sessionIdForPath, 'progress');
             const age = Date.now() - st.mtimeMs;
             progressFresh = age <= readFreshMs();
           }
@@ -337,12 +344,12 @@ function main() {
   // own per-session history file, ensure exactly one index line exists for it.
   // Wrapped so any error here can never affect progressFresh/shouldBlock above.
   try {
-    if (cwd && typeof cwd === 'string') {
+    if (root && typeof root === 'string') {
       const historyRelPath = path.join('.anti-hall', 'history', progressDate, sessionIdForPath + '.md');
-      const hPath = path.join(cwd, historyRelPath);
+      const hPath = path.join(root, historyRelPath);
       const hSt = fs.lstatSync(hPath); // lstat — do NOT follow symlinks (mirrors progress's guard)
       if (hSt.isFile()) {
-        maintainSessionIndex(cwd, progressDate, sessionIdForPath, 'history');
+        maintainSessionIndex(root, progressDate, sessionIdForPath, 'history');
       }
     }
   } catch (_) {
@@ -477,7 +484,7 @@ function main() {
     // signal each Stop until sawTaskActivity flips true). Fail-open: any error
     // here just omits the pointer, never blocks/throws.
     try {
-      const priorState = findPriorSessionStateFile(cwd, progressDate, sessionIdForPath);
+      const priorState = findPriorSessionStateFile(root, progressDate, sessionIdForPath);
       if (priorState) {
         lead += ' A prior session\'s handover snapshot exists at ' + priorState +
           ' — recreate your task list from ' + priorState + ' first.';
@@ -538,8 +545,8 @@ function main() {
   // repeats nagging on subsequent Stops.
   let finalReason = reason;
   try {
-    if (cwd && typeof cwd === 'string') {
-      const handoverDir = path.join(cwd, '.anti-hall', 'handovers', progressDate, sessionIdForPath);
+    if (root && typeof root === 'string') {
+      const handoverDir = path.join(root, '.anti-hall', 'handovers', progressDate, sessionIdForPath);
       let handoverDirExists = false;
       try {
         handoverDirExists = fs.statSync(handoverDir).isDirectory();

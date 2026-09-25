@@ -20,6 +20,10 @@
 const fs = require('fs');
 const path = require('path');
 const { appendIndexLineIfAbsent } = require('./session-history-index.js');
+// repoRoot(cwd) -- the canonical resolver, so a cwd already inside
+// .anti-hall/**/... does not double onto itself (2026-09-25 fix; see
+// hooks/lib/handover-find.js for the full rationale).
+const { repoRoot } = require('./lib/handover-find.js');
 
 const UNKNOWN_SESSION = 'unknown-session';
 
@@ -71,14 +75,15 @@ function main() {
   if (subject) line += ' · ' + subject;
 
   try {
-    const historyDir = path.join(cwd, '.anti-hall', 'history', date);
+    const root = repoRoot(cwd);
+    const historyDir = path.join(root, '.anti-hall', 'history', date);
     fs.mkdirSync(historyDir, { recursive: true });
     const ledgerPath = path.join(historyDir, sessionIdForPath + '.md');
     fs.appendFileSync(ledgerPath, line + '\n', { flag: 'a' });
 
     // Same INDEX.md location + relative-link shape tasklist-guard.js's own
     // maintainSessionIndex() uses for kind='history' (.anti-hall/history/INDEX.md).
-    const indexPath = path.join(cwd, '.anti-hall', 'history', 'INDEX.md');
+    const indexPath = path.join(root, '.anti-hall', 'history', 'INDEX.md');
     const indexLine = '- ' + date + ' · ' + sessionIdForPath + ' · [history](../' +
       date + '/' + sessionIdForPath + '.md)';
     appendIndexLineIfAbsent(indexPath, sessionIdForPath, indexLine);
