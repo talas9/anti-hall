@@ -7392,6 +7392,43 @@ function cmdRegister(id, flags, ctx, { requireNew } = {}) {
   // re-entrant; HELD_ID_LOCKS verifies this process holds it).
   return withIdLockHeld(id, home, () => {
   let existing = readDescriptorFile(home, id);
+  // APP-DB ARCHIVE GUARD (0.109.1, field defect: two DevSwarm-app-archived
+  // workspaces' still-open terminal tabs relaunched `claude` ~10s after the
+  // process was killed; the fresh session's routine `ensure`/`register` call
+  // revived both rows to active). The DevSwarm app's own database is GROUND
+  // TRUTH for archived state (companion/lib/devswarm-app-db.js) — trust it
+  // over anti-hall's OWN archived/<id>.json marker, which this file's
+  // pre-existing `hasArchivedCounterpart` resurrection guard below checks but
+  // which is ONLY written by anti-hall's own `archive` CLI verb. A workspace
+  // archived from the DevSwarm APP UI (isActive=0, isHidden=1 in the app DB)
+  // never gets that marker, so the pre-existing guard is silent for it, and
+  // BOTH the `requireNew` (ensure) branch and the explicit `register` branch
+  // below would otherwise happily (re)write the descriptor + registry row.
+  // Checked ONCE, here, before either branch runs — so NEITHER path can
+  // revive an app-archived id, "regardless of new heartbeats or
+  // registrations" (owner rule: trust the app DB over anti-hall's own
+  // markers; restore, never delete). Fail-open: an unreadable/absent app DB
+  // (appArchivedVerdict returns null) keeps today's behavior exactly — see
+  // devswarm-app-db.js's own CONTRACT.
+  {
+    const wtForAppGuard = one(flags, 'worktree') || (existing && existing.worktreePath) || null;
+    let appArchivedGuard = null;
+    try {
+      appArchivedGuard = require('../companion/lib/devswarm-app-db.js').appArchivedVerdict({
+        home, env: ctx.env, id, worktreePath: wtForAppGuard, now: ctx.now,
+      });
+    } catch (_) { appArchivedGuard = null; }
+    if (appArchivedGuard === true) {
+      return {
+        ok: false, action: 'app-archived-skip', id, archived: true, appArchived: true,
+        reason: 'workspace ' + id + ' is archived in the DevSwarm app (isActive=0, isHidden=1); '
+          + 'registration is refused regardless of any local marker or heartbeat — the app DB is '
+          + 'ground truth over anti-hall\'s own markers (owner rule). A live session is still running '
+          + 'in this archived workspace: close its DevSwarm tab, or run `hivecontrol workspace archive '
+          + '<full id>`, to stop it retrying.',
+      };
+    }
+  }
   // RESERVED-TOKEN IDS (R2 Auditor item 13). Refuse a FRESH registration whose
   // id carries a token this file's cursor namespaces use. `#` separators already
   // make the new namespaces collision-proof, but `.seen-` genuinely collides
@@ -8414,6 +8451,19 @@ function cmdHeartbeat(id, flags, ctx) {
   let pending = false;
   let notDraining = false;
   let oldestUnreadAgeMs = null;
+  // APP-DB ARCHIVE GUARD (0.109.1, field defect — see cmdRegister's matching
+  // guard for the full story). A heartbeat from a still-running session in a
+  // workspace the DevSwarm app reports archived must never be read as proof
+  // of life: it must not clear the liveness verdict back to `alive`, and its
+  // `--summary` must not broadcast into the mesh (the field incident's "idle
+  // — awaiting task brief" came from exactly that broadcast reaching a
+  // supposedly-archived row's `working_on`). The base heartbeat FILE write
+  // above still always happens — this only gates the two ACTIVATING side
+  // effects below, so `doctor`'s leak check (part (b)) still has a fresh
+  // heartbeat file to detect the live session by. Fail-open: an
+  // unreadable/absent app DB (appArchivedVerdict null) keeps today's
+  // behavior exactly.
+  let appArchived = null;
   try {
     const descForPending = readDescriptorFile(home, id);
     if (descForPending) {
@@ -8421,6 +8471,11 @@ function cmdHeartbeat(id, flags, ctx) {
       pending = !!union.pending;
       notDraining = !!union.notDraining;
       oldestUnreadAgeMs = Number.isFinite(union.oldestUnreadAgeMs) ? union.oldestUnreadAgeMs : null;
+      try {
+        appArchived = require('../companion/lib/devswarm-app-db.js').appArchivedVerdict({
+          home, env: ctx.env, id, worktreePath: descForPending.worktreePath || null, now,
+        }) === true;
+      } catch (_) { appArchived = false; }
     }
   } catch (_) {
     pending = false; notDraining = false; oldestUnreadAgeMs = null; // fail-open
@@ -8435,13 +8490,17 @@ function cmdHeartbeat(id, flags, ctx) {
   // fresh-heartbeat short-circuit keeps it alive on subsequent recomputes.
   // Fail-open: an unsafe id (writeVerdict throws) or any fs error is swallowed —
   // the base heartbeat above already succeeded and must remain non-fatal.
-  try {
-    writeVerdict(id, {
-      status: 'alive', lastOutboundTs: now, staleSince: null,
-      nudgeAttempts: 0, nudgedAt: null, pending, notDraining, oldestUnreadAgeMs,
-      heartbeatTs: now,
-    }, home);
-  } catch (_) { /* fail-open: verdict refresh is best-effort, never breaks a heartbeat */ }
+  // Skipped entirely when appArchived (see above) — an app-archived row must
+  // stay archived regardless of a new heartbeat.
+  if (!appArchived) {
+    try {
+      writeVerdict(id, {
+        status: 'alive', lastOutboundTs: now, staleSince: null,
+        nudgeAttempts: 0, nudgedAt: null, pending, notDraining, oldestUnreadAgeMs,
+        heartbeatTs: now,
+      }, home);
+    } catch (_) { /* fail-open: verdict refresh is best-effort, never breaks a heartbeat */ }
+  }
 
   // v0.57 mesh (PLAN-v0.57-mesh.md D11/D22, Phase 4 step 4): `--summary TEXT`
   // ALSO broadcasts a mesh heartbeat row into THIS project's SHARED
@@ -8458,7 +8517,15 @@ function cmdHeartbeat(id, flags, ctx) {
   // succeeds; `meshBroadcast` reports why the mesh write was skipped.
   let meshBroadcast = null;
   const summaryText = one(flags, 'summary');
-  if (summaryText !== undefined) {
+  if (summaryText !== undefined && appArchived) {
+    // APP-DB ARCHIVE GUARD (0.109.1): never let an archived row's mesh
+    // `working_on` be refreshed by a still-running session — see above.
+    meshBroadcast = {
+      ok: false, reason: 'app-archived', dropped: true, dropReason: 'app-archived',
+      error: 'heartbeat --summary refused: workspace ' + id + ' is archived in the DevSwarm app; '
+        + 'the summary was DROPPED (not broadcast) — the base heartbeat still succeeded',
+    };
+  } else if (summaryText !== undefined) {
     const cwd = ctx.cwd || process.cwd();
     const repoKey = repokey.repoKeyForWorktree(cwd);
     if (!repoKey) {
@@ -8681,7 +8748,9 @@ function cmdHeartbeat(id, flags, ctx) {
     const d = callerIdentityDetailed(ctx.env, ctx.cwd || process.cwd());
     identity = { id: d.identity, kind: d.kind };
   } catch (_) { identity = null; }
-  return { ok: !hardMeshFailure, action: 'heartbeat', id, heartbeat: beat, meshBroadcast, identity, idMismatch };
+  const out = { ok: !hardMeshFailure, action: 'heartbeat', id, heartbeat: beat, meshBroadcast, identity, idMismatch };
+  if (appArchived) out.appArchived = true;
+  return out;
 }
 
 // cmdInboxPull(id, flags, ctx) — child-side reception drain. AUTO-ENSURES the
@@ -15359,7 +15428,21 @@ function rosterHints(home, id, worktreePath, now, sessionId, opts) {
       },
     });
   } catch (_) { archived = false; }
-  if (archived) { hints.push('archived'); return hints; }
+  if (archived) {
+    hints.push('archived');
+    // LEAK FLAG (0.109.1, field defect): archived precedence above is final —
+    // a fresh heartbeat can NEVER pull this row back to 'active' (see
+    // row-state.js's PRECEDENCE and cmdRegister/cmdHeartbeat's app-db archive
+    // guards) — but a fresh heartbeat file existing at all on an archived row
+    // means a `claude` process is still running against it (the field
+    // incident's killed-then-relaunched terminal tab). Surface that
+    // distinctly so a human sees it instead of a silently-suppressed retry
+    // loop. Additive only, never changes the archived verdict itself.
+    try {
+      if (hasFreshHeartbeat(id, home, { now })) hints.push('live session in archived workspace');
+    } catch (_) {}
+    return hints;
+  }
   // `dormant` / `idle (alive)` — rowLivenessState (companion/lib/liveness.js),
   // THE ONE read-side dormancy rule, shared with devswarm-parent-inbox.js's
   // per-turn injection so the roster and the UserPromptSubmit table can never

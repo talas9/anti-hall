@@ -6,6 +6,40 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.109.1
+
+### Fixes
+
+- **DevSwarm roster: a relaunched terminal can no longer revive an app-archived
+  workspace.** Field bug: two workspaces archived in the DevSwarm app
+  (`isActive=0`, `isHidden=1`) had their terminal tabs left open; when the
+  running `claude` process was killed, the tab's login shell relaunched
+  `claude` within ~10s, and the new session's routine `ensure` + explicit
+  `register` + `heartbeat` calls all flipped both rows back to `active` on
+  the roster — one even broadcast "idle — awaiting task brief". Anti-hall's
+  own resurrection guard only checks its OWN `archived/<id>.json` marker,
+  which is never written when a workspace is archived from the DevSwarm app
+  UI instead of anti-hall's own `archive` verb. `register`/`ensure`/
+  `heartbeat` now consult the DevSwarm app DB's own archived verdict first
+  and refuse to reactivate a row it reports archived — "regardless of new
+  heartbeats or registrations" (owner rule: the app DB is ground truth over
+  anti-hall's own markers). `heartbeat`'s base file write still always
+  succeeds; only the liveness-verdict clear-to-alive and the mesh
+  `--summary` broadcast are suppressed. The roster's `archived` hint gains a
+  `live session in archived workspace` flag when a fresh heartbeat still
+  exists for an archived row. If the app DB can't be read, behavior is
+  unchanged (fail-open).
+- **`doctor` reports (never kills) a live `claude` session left running in an
+  app-archived workspace.** New report-only check: `claude session alive in
+  an archived workspace: <title> (pid N)`, resolved from the app DB's own
+  AI-terminal session id through the same harness session-file mapping
+  `liveness.js` already used elsewhere. Never kills the process, never
+  archives or deletes anything — it names the leak and the two safe ways to
+  close it (close the DevSwarm tab, or `hivecontrol workspace archive <full
+  id>`). One aggregated WARN, never one per workspace. (Auto-archive was
+  already unaffected: `gatherCandidates` only considers `isActive=1`
+  builders, so an app-archived row was never an auto-archive candidate.)
+
 ## 0.109.0
 
 ### Features

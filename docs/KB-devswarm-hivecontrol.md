@@ -1796,6 +1796,68 @@ been archived at all. That label now calls the same shared gate too (worktree-di
 a bare marker `existsSync`), so a genuinely new, unrelated workspace reusing an old archived id at
 a different worktree is never mislabelled superseded.
 
+### A live terminal in an APP-archived workspace can never revive it (v0.109.1, field defect)
+
+**The defect.** Everything above is about anti-hall's OWN `archived/<id>.json` marker. The DevSwarm
+APP has its own, independent archive state (`companion/lib/devswarm-app-db.js`'s `builders.isActive
+= 0 AND isHidden = 1`, the ground truth per `docs/KB-devswarm-app-db.md`) — and a workspace archived
+from the app's own UI never gets anti-hall's marker written at all (only anti-hall's own `archive`
+CLI verb writes it). Field report: two workspaces were archived in the DevSwarm app; their terminal
+tabs were left OPEN. When the running `claude` process in each was killed, the tab's login shell
+relaunched `claude` within ~10s. The new session's routine `ensure` (auto-ensure, every `inbox
+pull` turn) AND the explicit `register` verb both proceeded normally — `hasArchivedCounterpart`
+(the resurrection guard from the section above) checks only anti-hall's own marker, so it was
+silent for an app-only archive. `heartbeat` had no archive check at all, of either kind. The roster
+flipped both rows from `archived` back to `active`, and one broadcast a fresh `--summary` ("idle —
+awaiting task brief") into the mesh's `working_on` field.
+
+**Owner rule.** Trust the DevSwarm app DB over anti-hall's own markers for archived state — a row
+the app reports archived must stay archived regardless of new heartbeats or registrations. Restore
+(bring anti-hall's state back in line), never delete.
+
+**The fix (`plugins/anti-hall/scripts/devswarm.js`).**
+- `cmdRegister` now calls `devswarm-app-db.js`'s `appArchivedVerdict({home, env, id, worktreePath})`
+  ONCE, before either the `requireNew`/`ensure` branch or the explicit-register/create branch —
+  so BOTH are refused (`{ok:false, action:'app-archived-skip', archived:true, appArchived:true}`)
+  when the app DB says archived. Unlike the anti-hall-marker resurrection guard above, this closes
+  the explicit `register`/`register-primary` escape hatch too — the owner rule is "regardless of
+  new heartbeats or registrations", not just the routine auto-ensure path. Fail-open: an
+  unreadable/absent app DB (`appArchivedVerdict` returns `null`) keeps the pre-0.109.1 behavior
+  exactly.
+- `cmdHeartbeat` now runs the same check (keyed off the descriptor's own `worktreePath`, read once
+  alongside the existing `unionPendingFor` pending computation). The base heartbeat FILE write
+  still always happens unconditionally — nothing downstream relies on it NOT existing, and
+  doctor's leak check (below) needs it to find the live session by. What's gated is the two
+  ACTIVATING side effects: the liveness-verdict clear-to-`alive` (`writeVerdict`) is skipped, and
+  a `--summary` mesh broadcast is refused (`meshBroadcast: {ok:false, reason:'app-archived',
+  dropped:true, dropReason:'app-archived'}`) instead of reaching the shared store's `working_on`.
+- `rosterHints` (the same function both `roster` and the per-turn parent-inbox table read) already
+  consulted `row-state.js`'s `appArchived` (via `appArchivedVerdict`, by id or by worktree) with
+  top precedence — an app-archived row could not actually be mislabelled `active` on read. What was
+  missing was the write-side guard above (the registry itself could still get re-populated) and a
+  distinct signal for "this archived row still has something alive attached to it": when
+  `hasFreshHeartbeat` is true for an archived row, the roster now ALSO appends a `live session in
+  archived workspace` hint alongside `archived` — additive only, the archived verdict itself never
+  flips back.
+
+**Doctor leak check (report only).** `doctor-devswarm.js`'s `appDbChecks` gained a check for a
+still-running `claude` process attached to an app-archived workspace: for every archived app-DB
+workspace with a current AI-terminal `sessionId` (`devswarm-app-db.js` already extracts this —
+"the live Claude session id"), it resolves that session id to a real OS pid through the SAME
+harness session-file mapping `liveness.js` already uses elsewhere (`<home>/.claude/sessions/
+<pid>.json`, via the new `liveness.js` export `sessionPidFor` — a thin variant of the existing
+`sessionPidAlive` that also returns the pid, since a report needs the number and the boolean alone
+discarded it). A confirmed-live pid produces ONE aggregated WARN — `claude session alive in an
+archived workspace: <title> (pid N), ...` — never one alert per workspace, naming the two safe ways
+to actually stop it (close the DevSwarm tab, or `hivecontrol workspace archive <full id>`). It
+never kills the process and never archives or deletes anything; it is a pure fs/sqlite read, same
+as the rest of `appDbChecks`.
+
+**Auto-archive parity (unaffected).** `devswarm-lifecycle.js`'s `autoArchiveSweep`/`gatherCandidates`
+already filters its candidate set to `Number(b.isActive) === 1` — an app-archived builder was never
+a candidate for auto-archive in the first place, so there is nothing to re-archive or spam here;
+verified, not newly guarded.
+
 ### Field aftermath — re-retiring rows an already-run buggy migration resurrected
 
 The gate above stops the store migration resurrecting rows GOING FORWARD; an install that already

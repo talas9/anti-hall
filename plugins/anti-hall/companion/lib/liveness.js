@@ -514,6 +514,39 @@ function sessionPidAlive(sessionId, home, opts) {
   return verdict;
 }
 
+// sessionPidFor(sessionId, home, opts) -> { pid, alive } | null. Same scan as
+// sessionPidAlive, but also returns the actual pid — sessionPidAlive discards
+// it after computing its bool, but a REPORT (0.109.1's archived-workspace
+// leak check, doctor-devswarm.js) needs the number to show a human ("pid N"),
+// not just the verdict. null = no session file for this sessionId at all (no
+// opinion, same as sessionPidAlive). Read-only, same fail-soft posture.
+function sessionPidFor(sessionId, home, opts) {
+  const o = opts || {};
+  const F = o.fs || fs;
+  const sid = sessionId != null ? String(sessionId) : '';
+  if (!sid) return null;
+  const dir = sessionsDirFor(home);
+  let names = [];
+  try { names = F.readdirSync(dir); } catch (_) { return null; }
+  let verdict = null;
+  for (const n of names) {
+    if (!/\.json$/.test(n)) continue;
+    const filePath = path.join(dir, n);
+    let rec = null;
+    try { rec = JSON.parse(F.readFileSync(filePath, 'utf8')); } catch (_) { continue; }
+    if (!rec || typeof rec !== 'object') continue;
+    if (rec.sessionId == null || String(rec.sessionId) !== sid) continue;
+    let sinceMs = null;
+    try { const st = F.statSync(filePath); sinceMs = Number.isFinite(st.mtimeMs) ? st.mtimeMs : null; } catch (_) { sinceMs = null; }
+    const pidOpts = Number.isFinite(sinceMs) ? { sinceMs, ps: o.ps } : undefined;
+    const pid = Number(rec.pid);
+    const alive = pidIsAlive(pid, o.kill, pidOpts);
+    if (alive === true) return { pid, alive: true }; // one live pid is proof; stop looking
+    if (alive === false) verdict = { pid, alive: false };
+  }
+  return verdict;
+}
+
 // isSessionAliveRow(row, home, opts) -> bool. True ONLY on positive proof that
 // this row's sessionId belongs to a running harness process.
 function isSessionAliveRow(row, home, opts) {
@@ -1041,6 +1074,6 @@ module.exports = {
   heartbeatTs, heartbeatVersion, hasFreshHeartbeat, isFreshBeat, dormantThresholdMs, isDormantActivity,
   idleThresholdMs, readActivityTs, isDormantRow, isSiblingPartitionLive,
   // session-sourced liveness axis (defect 699a236129c5)
-  sessionsDirFor, pidIsAlive, processStartMs, sessionPidAlive, isSessionAliveRow, rowLivenessState,
+  sessionsDirFor, pidIsAlive, processStartMs, sessionPidAlive, sessionPidFor, isSessionAliveRow, rowLivenessState,
   isDormantByActivity,
 };

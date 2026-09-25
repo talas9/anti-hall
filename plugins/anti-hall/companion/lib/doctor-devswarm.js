@@ -12,7 +12,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { isDevswarmActive } = require('../../hooks/lib/devswarm-detect.js');
-const { computeLiveness, livenessPathFor, projectDirFor, devswarmRoot, isSafeId, unreadBacklog, heartbeatVersion } = require('./liveness.js');
+const { computeLiveness, livenessPathFor, projectDirFor, devswarmRoot, isSafeId, unreadBacklog, heartbeatVersion, sessionPidFor } = require('./liveness.js');
 const { checkResults: descriptorChecks } = require('./doctor-descriptors.js');
 const { DEVSWARM_BASELINE } = require('../../hooks/lib/devswarm-baseline.js');
 const { classifyVersionDrift } = require('../../hooks/devswarm-version.js');
@@ -765,6 +765,43 @@ function appDbChecks(opts) {
   out.push({ status: PASS, message: 'DevSwarm app DB ' + (snap.appVersion || '(version unknown)') + ': ' + snap.workspaces.length + ' builders, ' + active.length + ' open' });
   if (snap.missing.length) out.push({ status: WARN, message: 'DevSwarm app schema changed: ' + snap.missing.join(', ') + ' — the dependent app-DB features are dormant until anti-hall is updated for it' });
   if (snap.gated && snap.gated.length) out.push({ status: WARN, message: 'DevSwarm app-DB reads capability-gated (dormant): ' + snap.gated.join(', ') });
+  // LEAK CHECK (0.109.1, field defect): a workspace the app DB reports
+  // archived (isActive=0, isHidden=1) whose terminal tab was left open — a
+  // killed `claude` process there relaunches within ~10s via the tab's login
+  // shell and starts registering/heartbeating again (see cmdRegister's /
+  // cmdHeartbeat's app-db archive guards, which now REFUSE to reactivate the
+  // row, but do nothing about the still-running process itself). REPORT ONLY:
+  // this never kills a process, never archives/deletes anything — it just
+  // names the leak so a human can close it. Detected via the app DB's own
+  // per-workspace AI-terminal sessionId (devswarm-app-db.js's `sessionId`,
+  // the live Claude session id) resolved to a real OS pid through the SAME
+  // harness session-file mapping liveness.js already uses elsewhere
+  // (`<home>/.claude/sessions/<pid>.json`) — never a guess, never a scan of
+  // `ps` for anything else. ONE aggregated result (never one per workspace),
+  // and the workspace's own app-db id is never embedded as part of a
+  // per-subject alert kind (bounded list in the message body only) — so a
+  // fleet of leaks can never fan out into one alert per row.
+  try {
+    const leaks = [];
+    for (const w of snap.workspaces) {
+      if (!w.archived || !w.sessionId) continue;
+      let hit = null;
+      try { hit = sessionPidFor(w.sessionId, home, { fs: F }); } catch (_) { hit = null; }
+      if (hit && hit.alive === true && Number.isFinite(hit.pid)) {
+        leaks.push({ id: w.id, title: w.label || w.id, pid: hit.pid });
+      }
+    }
+    if (leaks.length) {
+      out.push({
+        status: WARN,
+        message: 'claude session alive in an archived workspace: '
+          + leaks.map((l) => l.title + ' (pid ' + l.pid + ')').join(', ')
+          + ' — close the DevSwarm tab, or run `hivecontrol workspace archive <full id>`, to stop it '
+          + '(never auto-closed; report only)',
+        appArchivedLiveSessions: leaks,
+      });
+    }
+  } catch (_) { /* fail-open: the leak check never blocks the rest of doctor */ }
   const briefs = [];
   for (const w of active) {
     const b = appDb.briefDelivery(snap, w, now);
