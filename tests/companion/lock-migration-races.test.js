@@ -259,3 +259,34 @@ test('repair-on-reload lock: two hooks reclaiming the SAME dead holder never bot
     tornFresh(p, won);
   } finally { rm(home); }
 });
+
+test('swarm-guard lock: a stealer never deletes a fresh lock another stealer published just before its removal; a fresh torn lock is respected', (t) => {
+  const sg = require(path.join(ROOT, 'hooks', 'swarm-guard.js'));
+  const home = tmpHome();
+  try {
+    const p = path.join(home, 'swarm-spawns.lock');
+    // Legacy plain-token content, 60s old by mtime: stale for everyone.
+    fs.writeFileSync(p, 'legacy-token');
+    const old = (Date.now() - 60000) / 1000;
+    fs.utimesSync(p, old, old);
+    const realUnlink = fs.unlinkSync;
+    const realRename = fs.renameSync;
+    let other = 'not-run';
+    const inject = (target) => {
+      if (other !== 'not-run' || target !== p) return;
+      // Another stealer reclaimed the stale lock first and now holds a fresh one.
+      realUnlink.call(fs, p);
+      other = null;
+      other = sg.acquireLock(p);
+    };
+    const mu = t.mock.method(fs, 'unlinkSync', function (target) { inject(target); return realUnlink.call(fs, target); });
+    const mr = t.mock.method(fs, 'renameSync', function (a, b) { inject(a); return realRename.call(fs, a, b); });
+    let outer;
+    try { outer = sg.acquireLock(p); } finally { mu.mock.restore(); mr.mock.restore(); }
+    assert.ok(other && other.token, 'precondition: the competing stealer holds a fresh lock');
+    assert.strictEqual(outer, null, 'the second stealer must respect the fresh lock, not delete it');
+    assert.strictEqual(JSON.parse(fs.readFileSync(p, 'utf8')).token, other.token, 'the fresh lock survived');
+    sg.releaseLock(other);
+    tornFresh(p, () => sg.acquireLock(p));
+  } finally { rm(home); }
+});

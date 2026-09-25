@@ -104,110 +104,33 @@ const LOCK_STALE_MS = 5000;    // steal a lock whose mtime is older than this
 const LOCK_RETRY_MS = 50;      // bounded total spin time trying to acquire
 const LOCK_SPIN_STEP_MS = 5;   // busy-wait granularity (no async in a sync hook)
 
-// OWNERSHIP INVARIANT (TOCTOU fix): every lock file carries a unique owner token
-// written at O_EXCL-create time. A process may unlink the lock ONLY when it can
-// prove the token is the one it expects:
-//   - releaseLock: unlink ONLY if the on-disk token === OUR token. Never blind-
-//     unlink, so we can never delete a lock a *different* process now holds (which
-//     would let two holders run). If the token can't be read or doesn't match, we
-//     leave the file untouched — a later stale-steal will reclaim it.
-//   - stale-steal: read the token, re-stat to confirm it's still stale AND the token
-//     is unchanged, then unlink that exact token. Best-effort; if anything shifts
-//     under us we just retry the O_EXCL create.
-// MY_TOKEN is unique per process invocation: pid + create-time + a counter, so two
-// fast successive locks from the same pid still get distinct tokens.
-let LOCK_TOKEN_SEQ = 0;
-function newToken() {
-  // Date.now() is fine here — real runtime, only needs to be locally unique.
-  return process.pid + ':' + Date.now() + ':' + (++LOCK_TOKEN_SEQ);
-}
-
-// Best-effort cross-process mutex via O_EXCL lock file. On success returns a handle
-// { fd, token } — the token is written into the lock file and proves ownership so
-// release can never delete a lock a different process now holds (see OWNERSHIP
-// INVARIANT above). Returns null if it could not be acquired (caller fails open).
-// Steals a stale lock (mtime older than LOCK_STALE_MS) so a crashed holder cannot
-// wedge spawns forever. Bounded spin — never blocks long, never deadlocks.
-function acquireLock() {
-  try { fs.mkdirSync(LOG_DIR, { recursive: true }); } catch (_) {}
-  const deadline = Date.now() + LOCK_RETRY_MS;
-  for (;;) {
-    try {
-      const fd = fs.openSync(LOCK_FILE, 'wx'); // O_CREAT | O_EXCL
-      const token = newToken();
-      // Stamp ownership into the lock so release can verify it's ours. A write
-      // failure isn't fatal: release simply won't match and will leave the file,
-      // and a later stale-steal reclaims it — still fail-open, still safe.
-      try { fs.writeSync(fd, token); } catch (_) {}
-      return { fd, token };
-    } catch (e) {
-      if (e && e.code === 'EEXIST') {
-        // Held by someone else — steal ONLY if stale AND the owner token is
-        // unchanged across a re-stat (best-effort). This avoids stealing a lock
-        // that a fresh holder just re-created under the same path.
-        try {
-          const st = fs.statSync(LOCK_FILE);
-          if (Date.now() - st.mtimeMs > LOCK_STALE_MS) {
-            const tok1 = readLockToken();
-            // Re-stat: confirm still present, still stale, and that the FILE has
-            // not changed under us (same inode + same mtime). If anything shifted,
-            // someone else is acting on it — back off and retry.
-            const st2 = fs.statSync(LOCK_FILE);
-            const tok2 = readLockToken();
-            const unchanged = st.ino === st2.ino && st.mtimeMs === st2.mtimeMs;
-            // A token-bearing lock: steal only when the token is unchanged across
-            // the re-stat (the original owner-TOCTOU protection).
-            // A NULL/unreadable token (zero-byte or corrupt lock): readLockToken()
-            // returns null, so the token equality could NEVER fire and a corrupt
-            // stale lock would permanently disable the rate limiter (spawns then
-            // run un-capped). Reconcile: when the token is null AND the lock is
-            // confirmed unchanged + still stale via the inode/mtime re-stat, steal
-            // it too — the inode/mtime check stands in for the missing token to
-            // prove no fresh holder re-created the lock under us.
-            const tokenSafe = (tok1 !== null && tok1 === tok2) ||
-                              (tok1 === null && tok2 === null);
-            if (Date.now() - st2.mtimeMs > LOCK_STALE_MS && unchanged && tokenSafe) {
-              try { fs.unlinkSync(LOCK_FILE); } catch (_) {}
-            }
-            continue; // retry the O_EXCL create immediately
-          }
-        } catch (_) { /* lock vanished between calls — retry */ }
-        if (Date.now() >= deadline) return null; // give up -> fail-open
-        const until = Date.now() + LOCK_SPIN_STEP_MS;
-        while (Date.now() < until) { /* short busy-wait */ }
-        continue;
-      }
-      return null; // any other error -> fail-open (no lock)
-    }
-  }
-}
-
-// Best-effort read of the owner token stored in the lock file. Returns the trimmed
-// token string, or null if it can't be read/parsed (caller treats null as "unknown
-// owner" and does NOT unlink).
-function readLockToken() {
+// acquireLock(lockFile?) -> handle | null. Best-effort cross-process mutex via
+// the shared lock primitive (companion/lib/lock.js): token-bearing owner
+// record, token-checked release (never deletes a lock a different process now
+// holds), and an ATOMIC stale steal — a lock older than LOCK_STALE_MS is
+// renamed aside and verified before it is discarded, so two stealers of one
+// stale lock can never both win (the old stat/re-stat/unlink steal let the
+// second stealer unlink the first one's fresh lock). A zero-byte/corrupt lock
+// is dated by its mtime and stolen once stale, so it can never wedge the rate
+// limiter. Bounded wait (LOCK_RETRY_MS, LOCK_SPIN_STEP_MS steps) — never
+// blocks long, never deadlocks. null -> the caller fails open.
+function acquireLock(lockFile) {
   try {
-    const t = fs.readFileSync(LOCK_FILE, 'utf8').trim();
-    return t.length > 0 ? t : null;
-  } catch (_) {
-    return null;
-  }
+    return require('../companion/lib/lock.js').acquire(lockFile || LOCK_FILE, {
+      staleMs: LOCK_STALE_MS,
+      liveStaleMs: LOCK_STALE_MS, // staleness alone steals, whatever the holder pid
+      maxTries: Infinity,
+      waitMs: LOCK_RETRY_MS,
+      stepMs: LOCK_SPIN_STEP_MS,
+    });
+  } catch (_) { return null; }
 }
 
-// Release ONLY our own lock. Per the OWNERSHIP INVARIANT, unlink iff the on-disk
-// token still equals the token we wrote at acquire time. If it differs (a stale-
-// steal handed the lock to another process) or can't be read, we leave the file
-// alone — never blind-unlink — so we cannot delete a lock a different holder owns.
+// Release ONLY our own lock (token-checked; a lock reclaimed by another
+// process, or an unreadable one, is left alone).
 function releaseLock(handle) {
   if (!handle) return;
-  const { fd, token } = handle;
-  try { if (fd !== null && fd !== undefined) fs.closeSync(fd); } catch (_) {}
-  try {
-    if (token && readLockToken() === token) {
-      fs.unlinkSync(LOCK_FILE);
-    }
-    // else: not ours (or unreadable) -> leave it; a later stale-steal reclaims it.
-  } catch (_) { /* fail-open: leave the file rather than risk a wrong unlink */ }
+  try { handle.release(); } catch (_) { /* fail-open: leave the file rather than risk a wrong unlink */ }
 }
 
 function readTimestamps() {
@@ -304,7 +227,7 @@ function main() {
   // --- Spawn rate check (atomic across concurrent hook invocations) ---
   // The prune -> count -> cap-check -> append must be a single critical section,
   // or concurrent spawns each read a stale pre-cap log and race past the ceiling.
-  // We serialize it with a best-effort O_EXCL lock. FAIL-OPEN: if the lock can't
+  // We serialize it with a best-effort cross-process lock. FAIL-OPEN: if the lock can't
   // be acquired, proceed WITHOUT blocking (never deadlock a spawn). The cap check
   // happens INSIDE the lock on a FRESH read so it sees concurrent appends.
   const lock = acquireLock();
@@ -360,9 +283,13 @@ function main() {
   process.exit(0);
 }
 
-try {
-  main();
-} catch (_) {
-  // Fail-open.
+if (require.main === module) {
+  try {
+    main();
+  } catch (_) {
+    // Fail-open.
+  }
+  process.exit(0);
 }
-process.exit(0);
+
+module.exports = { acquireLock, releaseLock, LOCK_FILE, LOCK_STALE_MS };
