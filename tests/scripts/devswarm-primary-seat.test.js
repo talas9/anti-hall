@@ -158,9 +158,28 @@ test('child worktree and non-Primary sessions are untouched (n/a)', () => {
 });
 
 // Identity review (race): adoption is check-then-write under the Primary id's
-// lock. Two sessions adopting a closed seat AT THE SAME TIME (two real
+// lock (scripts/devswarm.js's withIdLock, acquireIdLock budgetMs default
+// 2000). Two sessions adopting a closed seat AT THE SAME TIME (two real
 // processes) -> exactly one adopts; the other re-reads the seat after the
 // winner's write and gets the conflict notice, never a silent overwrite.
+//
+// DETERMINISM (defect #21, flaked once on macOS CI): under load, the loser's
+// acquireIdLock can exceed its internal 2000ms budget before the winner's
+// withIdLock(...) call returns, in which case adoptPrimarySeat fails CLOSED
+// (documented, intentional: primary-seat.js "only a genuinely live-contended
+// mutation is refused, and the caller may retry") and reports state 'unknown'
+// (lockBusy) instead of 'conflict' -- a legitimate transient, not a real bug.
+// A bare single-shot Promise.all([...]) treated that transient as a failure.
+// Fixed with two independent, non-timing-based techniques:
+//   1. A BARRIER: both child processes are spawned first, and neither writes
+//      its stdin (which is what actually starts the SessionStart work) until
+//      BOTH processes' 'spawn' events have fired -- so the two race the lock
+//      together instead of leaving it to spawn-latency luck.
+//   2. BOUNDED RETRY: a result that is neither an adoption nor a conflict
+//      notice re-runs SessionStart for that same session (a fresh, outside-
+//      any-lock-contention check) with exponential backoff, capped at a fixed
+//      wall-clock deadline -- never a fixed sleep-then-hope guess about who
+//      wins.
 test('concurrent adoption: two live sessions race for a closed seat -> exactly one adopts, the loser gets the conflict notice', async () => {
   const f = fixture();
   try {
@@ -170,21 +189,52 @@ test('concurrent adoption: two live sessions race for a closed seat -> exactly o
     sessionFile(f, 'sess-B');
     sessionFile(f, 'sess-D');
     const hook = path.join(ROOT, 'hooks', 'devswarm-child-role.js');
-    const runOne = (sid) => new Promise((resolve) => {
+    const SETTLED_RE = /adopted Primary |Another live Primary session/;
+
+    function spawnSessionStart(sid) {
       const p = cp.spawn(process.execPath, [hook], {
         env: Object.assign({}, process.env, { HOME: f.home, USERPROFILE: f.home }, HOOK_ENV),
         stdio: ['pipe', 'pipe', 'pipe'],
       });
-      let out = '';
-      p.stdout.on('data', (d) => { out += d; });
-      p.on('close', () => {
-        let ctx = '';
-        try { ctx = JSON.parse(out).hookSpecificOutput.additionalContext || ''; } catch (_) { ctx = out; }
-        resolve({ sid, ctx });
+      const outcome = new Promise((resolve) => {
+        let out = '';
+        p.stdout.on('data', (d) => { out += d; });
+        p.on('close', () => {
+          let ctx = '';
+          try { ctx = JSON.parse(out).hookSpecificOutput.additionalContext || ''; } catch (_) { ctx = out; }
+          resolve({ sid, ctx });
+        });
       });
+      return { sid, p, outcome };
+    }
+
+    // 1. BARRIER: spawn both children, then hold their stdin (the write that
+    // actually triggers the SessionStart payload) until BOTH processes exist.
+    const procs = [spawnSessionStart('sess-B'), spawnSessionStart('sess-D')];
+    await Promise.all(procs.map(({ p }) => new Promise((resolve) => p.once('spawn', resolve))));
+    for (const { sid, p } of procs) {
       p.stdin.end(JSON.stringify({ hook_event_name: 'SessionStart', session_id: sid, cwd: f.repo, source: 'resume' }));
-    });
-    const results = await Promise.all([runOne('sess-B'), runOne('sess-D')]);
+    }
+    const initial = await Promise.all(procs.map(({ outcome }) => outcome));
+
+    // 2. BOUNDED RETRY: only for a result that settled into neither an
+    // adoption nor a conflict notice (the lockBusy/'unknown' transient) --
+    // re-check that SAME session fresh, outside any lock contention, with
+    // exponential backoff capped at a fixed deadline.
+    async function ensureSettled(result) {
+      if (SETTLED_RE.test(result.ctx)) return result;
+      const deadline = Date.now() + 5000;
+      let delayMs = 25;
+      let ctx = result.ctx;
+      while (Date.now() < deadline && !SETTLED_RE.test(ctx)) {
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+        delayMs = Math.min(delayMs * 2, 250);
+        ctx = (await spawnSessionStart(result.sid).outcome).ctx;
+      }
+      return { sid: result.sid, ctx };
+    }
+    const results = await Promise.all(initial.map(ensureSettled));
+
     const adopted = results.filter((r) => /adopted Primary /.test(r.ctx));
     assert.equal(adopted.length, 1, 'exactly one adopter: ' + JSON.stringify(results.map((r) => r.ctx.slice(0, 200))));
     const winner = adopted[0].sid;
