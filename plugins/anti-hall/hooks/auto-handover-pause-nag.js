@@ -10,8 +10,10 @@
 //
 // Complements hooks/auto-handover.js's fire + milestone nags with a
 // NATURAL-PAUSE reminder: once the fire directive has already gone out this
-// session and context is still over threshold, this fires (at most once per
-// `nagQuietMin` minutes, default 15) when the turn is ending at a genuinely
+// session and context is still over threshold, this fires when context has
+// risen >= `nagStepPct` points past the last nag's baseline, or otherwise at
+// most once per `nagQuietMin` minutes (default 15) — never repeating the
+// identical pct within one step — when the turn is ending at a genuinely
 // quiet point — no pending/in-progress task work (TodoWrite AND anti-hall's
 // own TaskCreate/TaskUpdate lifecycle — see hasOpenTasks()) and no subagent
 // spawn recorded in the last 2 minutes (phase-tracker.js's own activity
@@ -219,15 +221,27 @@ function main() {
       return;
     }
 
+    // RE-NAG RULE (v0.108.3): nag again only when context has RISEN at least
+    // nagStepPct points past the last nag's baseline (lastNagPct), OR at a
+    // quiet pause once nagQuietMin has elapsed since the last nag of either
+    // kind — and never repeat the identical pct/text within the same step
+    // (lastPauseNagPct is the rounded pct the last pause nag showed).
     const lastNagAt = Number.isFinite(latch.lastNagAt) ? latch.lastNagAt : 0;
-    if ((now - lastNagAt) < settings.nagQuietMin * 60 * 1000) { emit(); return; }
+    const lastNagPct = Number.isFinite(latch.lastNagPct) ? latch.lastNagPct : (Number.isFinite(latch.firedPct) ? latch.firedPct : settings.pct);
+    const shownPct = Math.round(result.pct);
+    const risen = result.pct >= lastNagPct + settings.nagStepPct;
+    const quietElapsed = (now - lastNagAt) >= settings.nagQuietMin * 60 * 1000;
+    if (!risen && !quietElapsed) { emit(); return; }
+    if (!risen && latch.lastPauseNagPct === shownPct) { emit(); return; } // same step, identical text
 
     const open = hasOpenTasks(lines);
     if (open === true) { emit(); return; } // KNOWN open work -> don't interrupt it
 
     if (hasRecentSpawn(tag, now)) { emit(); return; } // a subagent spawned recently
 
-    writeLatch(home, tag, Object.assign({}, latch, { lastNagAt: now }));
+    writeLatch(home, tag, Object.assign({}, latch, {
+      lastNagAt: now, lastPauseNagPct: shownPct, lastNagPct: risen ? result.pct : latch.lastNagPct,
+    }));
     emit(buildPauseNag(result.pct, payload));
   } catch (_) {
     emit(); // fail-open

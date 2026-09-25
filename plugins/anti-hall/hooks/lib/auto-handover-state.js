@@ -11,6 +11,9 @@
 //                (starts equal to firedPct; advances by nagStepPct each nag)
 //   lastNagAt  : ms timestamp of the last nag of EITHER kind (milestone or
 //                natural-pause) — the pause-nag hook's quiet-period gate
+//   lastPauseNagPct : the rounded pct the last natural-pause nag showed —
+//                the pause-nag hook never repeats that identical text within
+//                the same nagStepPct step
 //
 // tag: session_id (sanitized) if present, else sha1(transcript_path).slice(0,16)
 // — the same fallback scheme skills/handover/SKILL.md documents.

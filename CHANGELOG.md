@@ -49,6 +49,12 @@ the update.
   deleted. The new migration `retire-stale-archived-markers` (`doctor --repair`) retires
   existing ones. The screenshot ask now fires only when the app DB is unreadable. Nothing
   is unarchived in the app itself.
+- **The Stop-time handover pause nag could repeat the same text with no progress.**
+  `hooks/auto-handover-pause-nag.js` stored `nagStepPct` and `lastNagPct` but never compared
+  them. It now re-nags only when context has risen at least `nagStepPct` points since the
+  last nag (inside the quiet window too, advancing the baseline), or at a quiet pause after
+  `nagQuietMin`, and never repeats the identical percentage within the same step
+  (`lastPauseNagPct`). Shared by the Codex port.
 - **`recordOutcome()` (`hooks/lib/jev-assist.js`) never populated `project`
   on its `type:'outcome'` rows**, unlike every decision row `ask()`/`askSync()`/
   `askDetached()` log via `finalize()`. `triage`'s answer-latency join

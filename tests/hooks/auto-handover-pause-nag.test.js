@@ -71,7 +71,7 @@ test('does not nag again within the quiet window (nagQuietMin)', () => {
   try {
     const tag = sessionTag({ session_id: SESSION });
     writeLatch(h.home, tag, firedLatch({ lastNagAt: Date.now() - 1000 })); // 1s ago, well under 15 min
-    const tp = writeUsage(h, 90);
+    const tp = writeUsage(h, 88); // risen 3 < nagStepPct 5 past lastNagPct 85
     const r = testHook(HOOK, payload({ transcript_path: tp }), { home: h.home, expectJson: true });
     assert.strictEqual(decision(r), null);
   } finally {
@@ -87,6 +87,40 @@ test('nags again after the quiet window elapses (repeats at the throttle)', () =
     const tp = writeUsage(h, 90);
     const r = testHook(HOOK, payload({ transcript_path: tp }), { home: h.home, expectJson: true });
     assert.ok(decision(r), 'expected a repeat nag past the quiet window');
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('re-nags inside the quiet window once context rose >= nagStepPct past lastNagPct; advances the baseline', () => {
+  const h = makeHome();
+  try {
+    const tag = sessionTag({ session_id: SESSION });
+    writeLatch(h.home, tag, firedLatch({ lastNagAt: Date.now() - 1000, lastNagPct: 85 }));
+    const tp = writeUsage(h, 91);
+    const r = testHook(HOOK, payload({ transcript_path: tp }), { home: h.home, expectJson: true });
+    assert.ok(/~91%/.test(decision(r) || ''), 'risen 6 >= 5 -> nag despite the quiet window');
+    const { readLatch } = require('../../plugins/anti-hall/hooks/lib/auto-handover-state.js');
+    const l = readLatch(h.home, tag);
+    assert.strictEqual(Math.round(l.lastNagPct), 91, 'step baseline advanced');
+    assert.strictEqual(l.lastPauseNagPct, 91);
+    // Same pct again right away: neither risen nor quiet -> silent.
+    const r2 = testHook(HOOK, payload({ transcript_path: tp }), { home: h.home, expectJson: true });
+    assert.strictEqual(decision(r2), null);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('quiet pause past nagQuietMin never repeats the identical pct within the same step', () => {
+  const h = makeHome();
+  try {
+    const tag = sessionTag({ session_id: SESSION });
+    writeLatch(h.home, tag, firedLatch({ lastNagAt: Date.now() - 16 * 60 * 1000, lastNagPct: 88, lastPauseNagPct: 90 }));
+    const same = testHook(HOOK, payload({ transcript_path: writeUsage(h, 90) }), { home: h.home, expectJson: true });
+    assert.strictEqual(decision(same), null, 'no progress since the last pause nag -> no identical repeat');
+    const moved = testHook(HOOK, payload({ transcript_path: writeUsage(h, 91) }), { home: h.home, expectJson: true });
+    assert.ok(/~91%/.test(decision(moved) || ''), 'quiet pause with a changed pct inside the step still nags');
   } finally {
     h.cleanup();
   }

@@ -60,8 +60,8 @@ The auto-handover trigger (`hooks/auto-handover.js` + the Stop-time
 `hooks/auto-handover-pause-nag.js`) is **on by default at 85%** of this session's actual context window (an optional absolute `maxTokens`
 ceiling is available but off by default — see below). When the main agent first crosses it, it self-writes a handover, tells the user,
 and suggests `/compact` or `/clear`. Follow-up reminders fire every `nagStepPct`
-further points and at a quiet pause (at most once per `nagQuietMin` minutes)
-unless `nag` is off.
+further points and at a quiet pause (at most once per `nagQuietMin` minutes, and
+never the same percentage twice within one step) unless `nag` is off.
 
 | Key | Default | Meaning |
 |---|---|---|
