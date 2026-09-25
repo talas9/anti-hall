@@ -11109,7 +11109,32 @@ function cmdInboxTick(id, flags, ctx) {
     }
   } catch (_) { /* fail-open: measurement only, never breaks the tick */ }
 
-  const tickOut = Object.assign({}, counted, { action: 'tick', idMismatch });
+  // watcherArmed (peer D): does a LIVE Monitor wake-watch currently cover
+  // this id, right now, not "was one armed at some point" (Effect 3's
+  // cron-found-mail check above deliberately ignores staleness — this one
+  // must not). Reuses the SAME lock file + freshness window + pid-alive
+  // guard the watcher's own steal-check already uses (devswarm-wake-watch.js
+  // WATCH_LOCK_STALE_MS / lockPathFor, liveness.js pidIsAlive) — never a
+  // second staleness rule invented here. A missing/unreadable/malformed lock
+  // reads as false (fail CLOSED on this one signal specifically: the whole
+  // point is telling the cron-prompt directive "go re-arm it", and an
+  // over-optimistic true would suppress that nudge).
+  let watcherArmed = false;
+  try {
+    if (isSafeId(id)) {
+      const wakeWatch = require('../companion/lib/devswarm-wake-watch.js');
+      const lockPath = wakeWatch.lockPathFor(home, id);
+      const raw = fs.readFileSync(lockPath, 'utf8');
+      const lock = JSON.parse(raw);
+      const ts = lock && Number(lock.ts);
+      const fresh = Number.isFinite(ts) && (now - ts) <= wakeWatch.WATCH_LOCK_STALE_MS;
+      const pid = lock && Number.isInteger(lock.pid) ? lock.pid : null;
+      const alive = pid != null ? pidIsAlive(pid) : null;
+      watcherArmed = !!(fresh && alive !== false);
+    }
+  } catch (_) { watcherArmed = false; }
+
+  const tickOut = Object.assign({}, counted, { action: 'tick', idMismatch, watcherArmed });
   if (anchorRefresh && anchorRefresh.refreshed) tickOut.anchorRefresh = anchorRefresh;
   return tickOut;
 }

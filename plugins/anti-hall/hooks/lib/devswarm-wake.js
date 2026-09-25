@@ -246,7 +246,18 @@ const ACK_AFTER_READ = ' (read-only; after handling, run the `ackCommand` it ret
 // keeps the pre-D13 `inbox count` wording BYTE-IDENTICAL — omitting the 3rd
 // arg is exactly the pre-D13 call shape, so nothing here can silently regress
 // those tests.
-function drainCmd(cli, isChild, useTick, id) {
+// watcher (new, optional 5th param — peer D): the ABSOLUTE path to the
+// Monitor watch script, same value wakeDirective's own `watcher` carries.
+// ONLY meaningful together with useTick (the cron prompt body IS this text —
+// the tick's own `watcherArmed` field, added to `inbox tick`'s JSON by peer
+// D's scripts/devswarm.js change, tells THIS cron turn whether a live
+// Monitor watcher currently covers this workspace; the Monitor tool's own
+// 30-minute harness cap means the cron's 30-minute cadence is exactly the
+// right moment to check and, if it lapsed, re-arm it). Omitted/empty ->
+// unchanged text, byte-identical to pre-fix callers (same additive posture
+// as `id` above) — this is why the golden/byte-identical tests pinned to the
+// 4-arg call shape stay untouched.
+function drainCmd(cli, isChild, useTick, id, watcher) {
   if (typeof id !== 'string' || !id) id = '<DEVSWARM_BUILDER_ID>';
   // known-guard (Wave F1, P0): a store-unavailable `count`/`tick` reports
   // `known: false` alongside a numeric `unreadTotal` (often 0 — the NDJSON
@@ -290,10 +301,21 @@ function drainCmd(cli, isChild, useTick, id) {
         'mesh-direct instruction; `inbox read` is a non-mutating peek and cannot clear the ' +
         'withheld gap)'
       : ')';
+    // rearmClause (peer D): fires off the SAME `inbox tick` result this
+    // clause is already reading — no second command, no second field. Only
+    // emitted when a watcher script path is available; omitted -> byte-
+    // identical to pre-fix text.
+    const rearmClause = (typeof watcher === 'string' && watcher)
+      ? ' Also check that result\'s `watcherArmed` field: if it is `false`, your Monitor mailbox ' +
+        'watcher has lapsed (the harness caps a Monitor at 30 minutes; this cron tick runs on the ' +
+        'same 30-minute cadence, so this is expected to happen) — re-arm it now by calling ' +
+        '`Monitor` with command `node ' + watcher + '` (persistent: true if supported, else max ' +
+        'timeout_ms) before doing anything else this turn.'
+      : '';
     return 'run ' + tickCmd + plainNote + ' (with `--child` it first imports anything waiting in your ' +
       'native queue, then reports the SAME `unreadTotal`/`meshGapWithheld`/`known` fields ' +
       '`inbox count` does, and writes a liveness marker + refreshes your heartbeat — one ' +
-      'command instead of pull+count); ' + stopCond + ', say so and stop — do NOT spawn a ' +
+      'command instead of pull+count);' + rearmClause + ' ' + stopCond + ', say so and stop — do NOT spawn a ' +
       'subagent; otherwise (' + otherwise + '), run `node ' + cli +
       ' inbox read-primary ' + id + '`' + ACK_AFTER_READ + ' (delegate to a subagent only if the payload is large' + childNote + storeUnavailableClause;
   }
@@ -394,7 +416,11 @@ function wakeDirective(env, isChild, cli, watcher, explicitId) {
     // useTick:true — this `drain` text becomes the BODY of the CronCreate prompt
     // below (a cron tick, not a turn-native instruction), so it gets the D13
     // `inbox tick` verb (pull-if-child + count + marker write, one command).
-    const drain = drainCmd(cli, isChild, true, id);
+    // watcher threaded through (peer D): the CronCreate prompt body embeds
+    // the watcherArmed re-arm clause too — see drainCmd's own header for why
+    // that specific text belongs INSIDE the recurring cron prompt, not only
+    // the once-at-SessionStart monitorArmLine below.
+    const drain = drainCmd(cli, isChild, true, id, watcher);
     return ' MAILBOX WAKE (do this NOW, on your FIRST turn): call `CronList`; if your mailbox-' +
       'wake job is ABSENT — never created, or auto-expired (recurring tasks self-delete 7 days ' +
       'after creation) — call `CronCreate` with schedule `' + wakeCron(env) + '` and a prompt ' +

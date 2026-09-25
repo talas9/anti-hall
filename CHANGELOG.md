@@ -149,6 +149,12 @@ the update.
   (`deletions_under`), files outside `--allow` globs (`outside_allowed`), and
   a `verdict:'ok'|'review'|'block'` + `reasons[]`. Runs git read-only; no
   `fetch` unless `--fetch` is passed.
+- **`devswarm.js inbox tick` reports `watcherArmed`.** Whether a live Monitor
+  wake-watch currently covers this workspace (fresh lock, pid alive) — the
+  Claude-branch CronCreate prompt body now checks this field and tells the
+  agent to re-arm `Monitor` when it reads `false` (the harness caps a Monitor
+  at 30 minutes; this cron's own 30-minute fallback cadence is exactly when
+  it would have lapsed).
 
 ## 0.110.0 (2026-09-26)
 
