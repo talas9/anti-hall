@@ -158,7 +158,12 @@ function seatNotices(v, o) {
   const out = [];
   const cli = (o && o.cli) || 'scripts/devswarm.js';
   if (!v || v.state === 'n/a') return out;
-  if (o && o.adopted) {
+  if (o && o.adopted && v.state === 'none') {
+    // First-ever registration (adoptPrimarySeat's 'none' handling): no prior
+    // holder to adopt FROM — distinct wording from the 'adopt' branch below so
+    // this never misleadingly claims a closed session this seat never had.
+    out.push('DEVSWARM PRIMARY SEAT: registered Primary ' + v.id + ' for this worktree (first run — no prior anchor found).');
+  } else if (o && o.adopted) {
     out.push('DEVSWARM PRIMARY SEAT: adopted Primary ' + v.id + ' from ' + (v.holder || 'an unclaimed anchor')
       + ' (closed) — same identity, partitions and cursors; handover ' + (v.handover ? v.handover.path : '(none found for this worktree)')
       + (v.handover ? ' — read it first.' : '.'));

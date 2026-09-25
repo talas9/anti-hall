@@ -447,11 +447,25 @@ function wakeDirective(env, isChild, cli, watcher, explicitId) {
 // header comment above). Absent/empty `watcher` -> the Monitor clause is
 // omitted entirely (fail-open for a caller not yet passing it), matching
 // wakeDirective's own contract for an omitted watcher.
-function wakeReassert(env, cli, isChild, watcher) {
+//
+// `explicitId` (new, optional 5th param — same rationale as wakeDirective's
+// own 5th param above): a caller that already knows the RESOLVED mesh id
+// (e.g. devswarm-parent-gate.js's `own.id`, the SAME `primary-<hash>` id
+// wake-watch and the store use) passes it here so it wins over
+// `resolvedId(env)`. Without this, the Stop-gate re-verify pointer embedded
+// the raw `DEVSWARM_BUILDER_ID`/placeholder — for a Primary that is never the
+// resolved `primary-<hash>` id, so the `inbox tick` command it points the
+// agent at returns `unregistered-workspace`. ID_FIELD-validated exactly like
+// resolvedId(env)'s own output; an unsafe/absent `explicitId` falls back to
+// `resolvedId(env)` exactly as before (byte-identical for every caller not
+// yet passing it).
+function wakeReassert(env, cli, isChild, watcher, explicitId) {
   try {
     const child = isChild === undefined ? true : !!isChild;
     // defect 735b179362e8 fix: real id (validated), not the literal placeholder.
-    const id = resolvedId(env);
+    const id = (typeof explicitId === 'string' && ID_FIELD.test(explicitId))
+      ? explicitId
+      : resolvedId(env);
     // fl-wave3 fix (item 3): `cli` — the ABSOLUTE plugin path, realistically
     // 80-100+ chars once installed from the plugin cache (e.g.
     // `/Users/x/.claude/plugins/cache/anti-hall/anti-hall/0.98.0/scripts/devswarm.js`)

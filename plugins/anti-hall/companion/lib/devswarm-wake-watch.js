@@ -334,6 +334,113 @@ function formatUpdateAvailableLine(role, id, ownVersion, newestVersion) {
     + 'this will be re-checked on the next update sync.';
 }
 
+// ---------------------------------------------------------------------------
+// WATCHER HANDOFF (re-arm churn fix, field evidence 2026-09-26)
+// ---------------------------------------------------------------------------
+// Pre-fix, every STALE BUILD detection (checkStaleVersion above) printed one
+// line and exited, requiring the AGENT to manually re-arm Monitor on the new
+// build after every release — pure churn on every release cycle, and a real
+// gap: nothing wakes the agent to even NOTICE the watcher died until the next
+// mailbox check. Instead: when the newer build's watcher script genuinely
+// EXISTS on disk (staleVersion.scriptPath — checkStaleVersion already
+// existence-checked it), THIS process spawns it as a CHILD with stdio
+// 'inherit' — every line the child writes to stdout/stderr becomes this
+// process's own output, so Monitor's stream simply continues, uninterrupted,
+// on the new build — and passes through the child's exit code/signal, so
+// this process's own lifecycle looks, from Monitor's perspective, like
+// nothing happened except a version bump.
+const HANDOFF_ENV_VAR = 'ANTIHALL_WAKE_WATCH_HANDED_OFF';
+
+function formatHandoffLine(newestVersion) {
+  return '[wake-watch] handed off to ' + newestVersion;
+}
+
+// canHandoff(ownVersion, newestVersion, env) -> bool. Two independent guards
+// against a runaway handoff chain:
+//   1. VERSION GUARD — newestVersion must be STRICTLY newer than ownVersion.
+//      Structurally redundant with checkStaleVersion's own compareVersions
+//      check (which only ever returns a scriptPath for a confirmed-newer
+//      version), but checked again here, independently, rather than trusting
+//      the caller — a handoff is a one-way, hard-to-undo action (a live
+//      process replaces itself), so it earns its own guard.
+//   2. LOOP GUARD (env var) — at most ONE handoff per process chain. The
+//      spawned child inherits HANDOFF_ENV_VAR=1; if THAT child later also
+//      finds itself stale (e.g. two releases landed back to back before the
+//      chain caught up), it refuses to hand off again and falls back to the
+//      pre-fix print-and-exit behavior — so a broken/looping version chain
+//      can never spawn an unbounded process tree.
+// Fail-closed (never hands off) on any resolution error.
+function canHandoff(ownVersion, newestVersion, env) {
+  try {
+    const upd = require(path.join(__dirname, '..', '..', 'skills', 'update', 'scripts', 'update.js'));
+    if (!upd.isSemver(ownVersion) || !upd.isSemver(newestVersion)) return false;
+    if (upd.compareVersions(newestVersion, ownVersion) <= 0) return false; // same/older -> never
+  } catch (_) { return false; }
+  const e = env || process.env;
+  if (e && e[HANDOFF_ENV_VAR]) return false;
+  return true;
+}
+
+// attemptHandoff(opts) -> the spawned child process object when a handoff was
+// started, or null when the caller must fall back to the pre-fix
+// print-the-re-arm-line-and-exit behavior (loop guard tripped, version guard
+// tripped, or spawnFn threw SYNCHRONOUSLY).
+//
+// LOCK ORDERING (the "never two watchers" invariant): `opts.release()` is
+// called BEFORE spawnFn — the child acquires the SAME lock itself, via its
+// own ordinary main()/acquireExclLock call, so there is never a window where
+// two processes both believe they hold the watcher lock.
+//
+// Outcome once spawnFn has been called without throwing is resolved
+// ASYNCHRONOUSLY via the child's own 'spawn'/'error'/'exit' events (Node
+// gives no synchronous spawn-succeeded signal): 'spawn' -> print the ONE
+// handoff line; 'error' (e.g. an unusable interpreter/script at scriptPath)
+// -> print the SAME re-arm line the pre-handoff behavior always printed, so
+// a genuinely failed handoff is never silently swallowed; 'exit' -> forward
+// the child's exit code/signal onto this process so Monitor's view of this
+// watcher's lifecycle is unaffected by the handoff having happened at all.
+//
+// `opts.spawnFn` defaults to child_process.spawn; tests inject a fake to
+// exercise the synchronous-throw fallback deterministically.
+function attemptHandoff(opts) {
+  const o = opts || {};
+  const env = o.env || process.env;
+  if (!canHandoff(o.ownVersion, o.newestVersion, env)) return null;
+  const spawnFn = o.spawnFn || require('child_process').spawn;
+  // Release BEFORE spawning: see the header comment above.
+  try { if (typeof o.release === 'function') o.release(); } catch (_) {}
+  let child;
+  try {
+    child = spawnFn(process.execPath, [o.scriptPath], {
+      stdio: 'inherit',
+      env: Object.assign({}, env, { [HANDOFF_ENV_VAR]: '1' }),
+    });
+  } catch (_) {
+    return null; // synchronous spawn failure -> caller falls back
+  }
+  if (!child || typeof child.on !== 'function') return null;
+  let settled = false;
+  child.once('error', () => {
+    if (settled) return;
+    settled = true;
+    try { emitLine(formatStaleVersionLine(o.role, o.id, o.ownVersion, o.newestVersion, o.scriptPath)); } catch (_) {}
+    process.exitCode = 1;
+  });
+  child.once('spawn', () => {
+    if (settled) return;
+    settled = true;
+    try { emitLine(formatHandoffLine(o.newestVersion)); } catch (_) {}
+  });
+  child.on('exit', (code, signal) => {
+    if (signal) {
+      try { process.kill(process.pid, signal); } catch (_) { process.exitCode = 1; }
+    } else {
+      process.exitCode = code == null ? 0 : code;
+    }
+  });
+  return child;
+}
+
 // resolveOwnSessionId() -> string | undefined. Best-effort identifier for the
 // Claude Code (or Codex-companion) session that armed THIS watcher, stamped
 // into the lock file so a refused sibling can name WHICH session's watcher
@@ -1205,9 +1312,22 @@ function main() {
     }
     try { release(); } catch (_) {}
   }
+  // handoffChild — set (non-null) once attemptHandoff() below has actually
+  // spawned a successor. While set, this process forwards SIGTERM/SIGINT to
+  // the child instead of exiting directly, so the child gets the same
+  // opportunity to clean up that this process would have; the child's own
+  // 'exit' listener (see attemptHandoff) then forwards the outcome back onto
+  // THIS process.
+  let handoffChild = null;
   process.on('exit', cleanup);
-  process.on('SIGTERM', () => { cleanup(); process.exit(0); });
-  process.on('SIGINT', () => { cleanup(); process.exit(0); });
+  process.on('SIGTERM', () => {
+    if (handoffChild) { try { handoffChild.kill('SIGTERM'); } catch (_) {} return; }
+    cleanup(); process.exit(0);
+  });
+  process.on('SIGINT', () => {
+    if (handoffChild) { try { handoffChild.kill('SIGINT'); } catch (_) {} return; }
+    cleanup(); process.exit(0);
+  });
 
   function loop() {
     // Re-stamp the lock's `ts` every tick (defect 8143ced316d3) so a HEALTHY
@@ -1252,7 +1372,25 @@ function main() {
     const staleVersion = checkStaleVersion(ownVersion, env);
     if (staleVersion && staleVersion.scriptPath) {
       // A newer build is registered AND its cache dir/file genuinely exist on
-      // disk — safe to point the caller at a re-arm command that will work.
+      // disk — hand off to it (see attemptHandoff's header) instead of the
+      // pre-fix print-and-exit churn.
+      const child = attemptHandoff({
+        ownVersion, newestVersion: staleVersion.newestVersion, scriptPath: staleVersion.scriptPath,
+        role: watchedRole, id, env, release,
+      });
+      if (child) {
+        handoffChild = child;
+        // The child now owns stdout/the watcher lock/this process's
+        // lifecycle (its 'exit' listener drives this process's own exit).
+        // Skip the normal cleanup: `release()` was already called by
+        // attemptHandoff (idempotent no-op if called again at real exit via
+        // process.on('exit', cleanup)) and this process's `st` is about to
+        // go stale relative to the child's own — never persist it over the
+        // child's fresher state.
+        return;
+      }
+      // Loop/version guard tripped, or the spawn itself failed synchronously
+      // -- ORIGINAL print-the-re-arm-line-and-exit behavior.
       try {
         emitLine(formatStaleVersionLine(watchedRole, id, ownVersion, staleVersion.newestVersion, staleVersion.scriptPath));
       } catch (_) {}
@@ -1342,6 +1480,11 @@ module.exports = {
   // item 4c — stale-build per-poll check:
   checkStaleVersion,
   formatStaleVersionLine,
+  // re-arm churn fix — watcher handoff:
+  HANDOFF_ENV_VAR,
+  formatHandoffLine,
+  canHandoff,
+  attemptHandoff,
 };
 
 if (require.main === module) main();

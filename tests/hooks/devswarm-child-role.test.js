@@ -193,16 +193,104 @@ test('WAKE: Claude child -> CronCreate directive, default */30 schedule, ABSOLUT
   }
 });
 
-test('WAKE: Claude Primary -> CronCreate directive using the read-primary drain verb', () => {
+test('WAKE: Claude Primary -> CronCreate directive using the read-primary drain verb, with the REGISTERED resolved primary id (not the raw placeholder)', () => {
   const h = makeHome();
   try {
     const c = ctx(testHook(HOOK, sessionPayload(), { home: h.home, expectJson: true, env: CLAUDE_PRIMARY }));
     assert.ok(/MAILBOX WAKE/.test(c), `Primary has a mailbox too and must get the wake directive; ctx=${c}`);
-    assert.ok(/inbox read-primary <DEVSWARM_BUILDER_ID>/.test(c), `Primary must drain with read-primary; ctx=${c}`);
+    // MAILBOX WAKE fix (field evidence 2026-09-26): the directive must name the
+    // RESOLVED, now-REGISTERED `primary-<hash>` id — the SAME id wake-watch and
+    // the store already key on — never the raw `<DEVSWARM_BUILDER_ID>`
+    // placeholder (that placeholder is never a registered workspace, so every
+    // `inbox tick`/`inbox read-primary` against it returned
+    // `unregistered-workspace`).
+    assert.ok(!/inbox read-primary <DEVSWARM_BUILDER_ID>/.test(c), `must not use the raw placeholder id; ctx=${c}`);
+    assert.match(c, /inbox read-primary primary-[0-9a-f]{8}/, `Primary must drain with read-primary using a resolved primary-<hash> id; ctx=${c}`);
+    assert.match(c, /DEVSWARM PRIMARY SEAT: registered Primary primary-[0-9a-f]{8} for this worktree \(first run/, `a never-before-registered Primary checkout must be REGISTERED by SessionStart, not left as an unregistered id; ctx=${c}`);
   } finally {
     h.cleanup();
   }
 });
+
+// ---------------------------------------------------------------------------
+// MAILBOX WAKE fix (field evidence 2026-09-26): the directive previously named
+// an UNREGISTERED id (session id / raw DEVSWARM_BUILDER_ID) in two shapes seen
+// in the field — a repo where the Primary seat was simply never registered,
+// and one where it WAS registered but the directive still ignored the
+// resolved id. Both are covered directly here against a REAL, isolated
+// fixture git repo (never the ambient test-runner cwd), matching
+// tests/scripts/devswarm-primary-seat.test.js's own fixture() convention so
+// the resolved id is deterministic and the CLI's own `inbox tick` can be used
+// as the ground truth for "is this id actually registered/workable".
+// ---------------------------------------------------------------------------
+{
+  const cp = require('node:child_process');
+  const os = require('node:os');
+  const ROOT = path.join(__dirname, '..', '..', 'plugins', 'anti-hall');
+  const cli = require(path.join(ROOT, 'scripts', 'devswarm.js'));
+  const inst = require(path.join(ROOT, 'companion', 'install-devswarm-ingest.js'));
+
+  function rm(p) { try { fs.rmSync(p, { recursive: true, force: true }); } catch (_) {} }
+  function repoFixture() {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ah-wake-home-'));
+    fs.mkdirSync(path.join(home, '.claude', 'sessions'), { recursive: true });
+    const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ah-wake-repo-')));
+    cp.spawnSync('git', ['init', '-q', repo]);
+    cp.spawnSync('git', ['-C', repo, '-c', 'user.email=a@b.c', '-c', 'user.name=T', 'commit', '-q', '--allow-empty', '-m', 'init']);
+    const id = inst.primaryWorkspaceId(repo);
+    return { home, repo, id, cleanup() { rm(home); rm(repo); } };
+  }
+  function sessionStartAt(f, sid) {
+    const r = testHook(HOOK, { hook_event_name: 'SessionStart', source: 'startup', session_id: sid, cwd: f.repo },
+      { home: f.home, expectJson: true, env: CLAUDE_PRIMARY });
+    return ctx(r);
+  }
+
+  test('WAKE (registered repo): a Primary already registered via register-primary keeps the SAME id, and that id actually works (`inbox tick` is not unregistered-workspace)', () => {
+    const f = repoFixture();
+    try {
+      fs.mkdirSync(path.join(f.home, '.claude', 'sessions'), { recursive: true });
+      fs.writeFileSync(path.join(f.home, '.claude', 'sessions', 'sess-A.json'), JSON.stringify({ pid: process.pid, sessionId: 'sess-A', cwd: f.repo }));
+      const reg = cli.run(['register-primary'], { home: f.home, env: Object.assign({ CLAUDE_CODE_SESSION_ID: 'sess-A' }, CLAUDE_PRIMARY), cwd: f.repo });
+      assert.equal(reg.result.ok, true, JSON.stringify(reg.result));
+
+      const c = sessionStartAt(f, 'sess-A');
+      assert.ok(c.includes('inbox tick ' + f.id), `directive must tick the SAME registered id ${f.id}; ctx=${c}`);
+
+      const tick = cli.run(['inbox', 'tick', f.id], { home: f.home, env: CLAUDE_PRIMARY, cwd: f.repo });
+      assert.notEqual(tick.result.reason, 'unregistered-workspace', `the directive's own id must actually be a registered, workable workspace; got ${JSON.stringify(tick.result)}`);
+    } finally { f.cleanup(); }
+  });
+
+  test('WAKE (never-registered repo): the FIRST SessionStart in a repo with no prior Primary registration resolves+registers the seat, and the directive id actually works', () => {
+    const f = repoFixture();
+    try {
+      fs.writeFileSync(path.join(f.home, '.claude', 'sessions', 'sess-Z.json'), JSON.stringify({ pid: process.pid, sessionId: 'sess-Z', cwd: f.repo }));
+      // Confirm the precondition: genuinely never registered.
+      const preTick = cli.run(['inbox', 'tick', f.id], { home: f.home, env: CLAUDE_PRIMARY, cwd: f.repo });
+      assert.equal(preTick.result.reason, 'unregistered-workspace', `precondition: id must start out unregistered; got ${JSON.stringify(preTick.result)}`);
+
+      const c = sessionStartAt(f, 'sess-Z');
+      assert.ok(c.includes('inbox tick ' + f.id), `directive must name the resolved id ${f.id}, not a placeholder/session id; ctx=${c}`);
+      assert.match(c, /DEVSWARM PRIMARY SEAT: registered Primary /, `SessionStart must register a never-registered seat, not silently leave it unregistered; ctx=${c}`);
+
+      const postTick = cli.run(['inbox', 'tick', f.id], { home: f.home, env: CLAUDE_PRIMARY, cwd: f.repo });
+      assert.notEqual(postTick.result.reason, 'unregistered-workspace', `the directive's id must be workable AFTER SessionStart's own registration; got ${JSON.stringify(postTick.result)}`);
+    } finally { f.cleanup(); }
+  });
+
+  test('WAKE (child, unchanged): a child workspace keeps its OWN registered/env id — never substituted for a resolved primary id', () => {
+    const h = makeHome();
+    try {
+      const c = ctx(testHook(HOOK, sessionPayload(), {
+        home: h.home, expectJson: true,
+        env: Object.assign({}, CLAUDE_CHILD, { DEVSWARM_BUILDER_ID: 'kid-42' }),
+      }));
+      assert.match(c, /inbox tick kid-42 --child/, `a child's explicit DEVSWARM_BUILDER_ID must pass through unchanged; ctx=${c}`);
+      assert.doesNotMatch(c, /primary-[0-9a-f]{8}/, `a child must never be given a Primary primary-<hash> id; ctx=${c}`);
+    } finally { h.cleanup(); }
+  });
+}
 
 // CONSUMER-LEVEL (Monitor low-latency wake): this hook computes its own absolute
 // WATCHER path (companion/lib/devswarm-wake-watch.js, resolved from __dirname the

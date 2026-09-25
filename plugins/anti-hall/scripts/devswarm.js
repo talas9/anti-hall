@@ -10914,19 +10914,36 @@ function seatRefusal(ctx) {
 // partitions and cursors; only the anchor's sessionId changes) through
 // cmdRegisterPrimary, whose live-primary-conflict guard still refuses a live
 // holder. Never mints a new identity. 'unknown'/'conflict' -> no write.
+//
+// 'none' handling (MAILBOX WAKE fix, field evidence 2026-09-26): a Primary
+// checkout that has NEVER been registered (no `workspaces/<id>.json` at all —
+// e.g. a fresh repo, or a repo whose DevSwarm activity never ran
+// `register-primary`/`heartbeat`) reports seatVerdict state 'none', not
+// 'adopt'. Pre-fix, this function only handled 'adopt' (a PRIOR holder now
+// closed) — a never-registered seat fell through the `v0.state !== 'adopt'`
+// guard with no write at all, so `id` (the deterministic `primary-<hash>`
+// primaryCheckout() always computes, registered or not) stayed unregistered
+// forever. Every SessionStart in that repo kept injecting a MAILBOX WAKE
+// directive naming a real, correctly-resolved id that `inbox tick`/`inbox
+// count` still refuse with `reason: 'unregistered-workspace'` — the exact
+// field symptom this fix closes. 'none' is handled the SAME idempotent,
+// fail-open way as 'adopt' (cmdRegisterPrimary is safe to call as a first-ever
+// registration; its own child-worktree refusal still applies): this session
+// simply becomes the seat's first holder instead of adopting one from a
+// closed prior holder.
 function adoptPrimarySeat(ctx, flags) {
   const seat = require('../companion/lib/primary-seat.js');
   const sid = seatSessionId(ctx, flags);
   const verdict = () => seat.seatVerdict({ home: ctx.home, env: ctx.env, cwd: ctx.cwd || process.cwd(), sessionId: sid });
   const v0 = verdict();
-  if (v0.state !== 'adopt') return { verdict: v0, adopted: false };
+  if (v0.state !== 'adopt' && v0.state !== 'none') return { verdict: v0, adopted: false };
   // Check-then-write under the Primary id's lock (identity review): two
   // sessions adopting at once serialize; the second re-reads the seat AFTER
   // the first's write and gets the conflict verdict (and its notice), never a
   // silent overwrite or a silent block.
   const res = withIdLock(v0.id, ctx.home, () => {
     const v = verdict();
-    if (v.state !== 'adopt') return { verdict: v, adopted: false };
+    if (v.state !== 'adopt' && v.state !== 'none') return { verdict: v, adopted: false };
     const desc = readDescriptorFile(ctx.home, v.id);
     const regFlags = { worktree: [v.worktree], session: [sid] };
     if (desc && desc.cursorPath) regFlags.cursor = [String(desc.cursorPath)];

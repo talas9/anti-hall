@@ -211,10 +211,15 @@ const INTENT_ABSOLUTE_MULTIPLIER = 5;
 // a top-level require sits OUTSIDE main()'s try/catch, so a lib missing from a
 // package or throwing on load would CRASH this Stop hook instead of failing open.
 // Degrade to the pre-wake reason text — never crash, never wedge the stop.
-function wakeReassertLine(env, isChild) {
+// `explicitId` (MAILBOX WAKE fix, field evidence 2026-09-26): the caller
+// passes `own.id` (readOwnUnread's `installIngest.primaryWorkspaceId(top)` —
+// the SAME deterministic `primary-<hash>` id wake-watch and the store use,
+// resolved regardless of registration state) so the re-verify pointer names a
+// directly-runnable id instead of the raw env var wakeReassert falls back to.
+function wakeReassertLine(env, isChild, explicitId) {
   try {
     const wake = require('./lib/devswarm-wake.js');
-    return wake.isClaudeAgent(env) ? wake.wakeReassert(env, CLI, isChild, WATCHER) : '';
+    return wake.isClaudeAgent(env) ? wake.wakeReassert(env, CLI, isChild, WATCHER, explicitId) : '';
   } catch (_) {
     return ''; // fail-open: pre-v0.59 behavior
   }
@@ -2195,7 +2200,7 @@ function main() {
 
   // WAKE RE-VERIFY (v0.59, reused not re-invented — see header): rides along on
   // this SAME forced block, bounded by the SAME per-SET cap above. Claude-only.
-  const wakeLine = wakeReassertLine(process.env, false);
+  const wakeLine = wakeReassertLine(process.env, false, own && own.id ? own.id : null);
 
   const base = (blocking.length || unanswered.length || truncated)
     ? buildReason(blocking, own.id, unanswered, escalateTimes, truncated, qEscalateTimes, hasIntent, !!own.unknown, unansweredInformational, !!own.staleOwnCache, own.ownSource || null)

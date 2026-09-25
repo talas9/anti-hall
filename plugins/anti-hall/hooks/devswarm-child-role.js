@@ -122,20 +122,26 @@ const PARENT_QUESTION_LINE =
 // so a lib that is missing from a package or throws on load would CRASH this
 // SessionStart hook instead of failing open. Degrade to the pre-wake output (the
 // COMMUNICATION OVERRIDE, no wake directive) — never crash, never block.
-function wakeLine(env, isChild) {
+// `explicitId` (MAILBOX WAKE fix, field evidence 2026-09-26): for a Primary,
+// the caller resolves and passes the REGISTERED `primary-<hash>` id (the SAME
+// id wake-watch and the store use — see primarySeatResult() below) so the
+// emitted `inbox tick <id>` command is directly runnable instead of naming
+// whatever raw env var (session id / DEVSWARM_BUILDER_ID) happened to be set.
+// A child keeps its existing (registered) id unchanged — omit explicitId.
+function wakeLine(env, isChild, explicitId) {
   try {
-    return require('./lib/devswarm-wake.js').wakeDirective(env, isChild, CLI, WATCHER);
+    return require('./lib/devswarm-wake.js').wakeDirective(env, isChild, CLI, WATCHER, explicitId);
   } catch (_) {
     return ''; // fail-open: pre-v0.59 behavior
   }
 }
 
-function buildAdditionalContext(isChild, env) {
+function buildAdditionalContext(isChild, env, explicitId) {
   return OVERRIDE_CORE +
     (isChild ? CHILD_QUESTION_LINE : PARENT_QUESTION_LINE) +
     (isChild ? CHILD_DONE_LINE : '') +
     (isChild ? CHILD_IDLE_LINE : '') +
-    wakeLine(env, isChild);
+    wakeLine(env, isChild, explicitId);
 }
 
 // seatMarkerPath(home, sid) — per-session "seat conflict shown" counter; the
@@ -145,21 +151,31 @@ function seatMarkerPath(home, sid) {
   return path.join(home, '.anti-hall', 'devswarm', 'primary-seat', String(sid).replace(/[^A-Za-z0-9_-]/g, '') + '.json');
 }
 
-// primarySeatLines(payload) -> string[] (v0.108.0 Primary seat). In the
-// Primary checkout: adopt the SAME Primary id when its recorded session is
-// closed, warn (and let devswarm.js refuse send/ack/spawn) when another LIVE
-// session holds it, warn without adopting when liveness is unknown, and flag a
-// stale resume. Fail-open: any error -> no lines.
-function primarySeatLines(payload) {
+// primarySeatResult(payload) -> { notices: string[], id: string|null }
+// (v0.108.0 Primary seat; `id` added by the MAILBOX WAKE fix, field evidence
+// 2026-09-26). In the Primary checkout: adopt the SAME Primary id when its
+// recorded session is closed, REGISTER it for the first time when it has
+// never been registered at all (adoptPrimarySeat's 'none' handling — see that
+// function's header comment for the field symptom this closes: a never-
+// registered seat left `inbox tick <resolved id>` permanently refusing with
+// `unregistered-workspace`), warn (and let devswarm.js refuse send/ack/spawn)
+// when another LIVE session holds it, warn without adopting when liveness is
+// unknown, and flag a stale resume. `id` is the deterministic
+// `primary-<hash>` seatVerdict() always resolves for a real Primary checkout
+// (present even when adoption/registration did not happen, e.g. a live
+// conflict) — the SAME id wake-watch and the store already key on. Fail-open:
+// any error -> no notices, id null (caller falls back to the pre-fix
+// placeholder text rather than naming a wrong id).
+function primarySeatResult(payload) {
   try {
     const sid = payload && typeof payload.session_id === 'string' ? payload.session_id : '';
     const cwd = payload && typeof payload.cwd === 'string' && payload.cwd ? payload.cwd : process.cwd();
-    if (!sid) return [];
+    if (!sid) return { notices: [], id: null };
     const home = require('os').homedir();
     const env = Object.assign({}, process.env, { CLAUDE_CODE_SESSION_ID: sid });
     const res = require(CLI).adoptPrimarySeat({ home, env, cwd });
     const v = res && res.verdict;
-    if (!v || v.state === 'n/a') return [];
+    if (!v || v.state === 'n/a') return { notices: [], id: null };
     if (v.state === 'conflict') {
       try {
         const p = seatMarkerPath(home, sid);
@@ -167,8 +183,9 @@ function primarySeatLines(payload) {
         fs.writeFileSync(p, JSON.stringify({ holder: v.holder, id: v.id, shown: 1, at: Date.now() }));
       } catch (_) { /* marker is best-effort */ }
     }
-    return require('../companion/lib/primary-seat.js').seatNotices(v, { cli: CLI, adopted: !!res.adopted, currentSessionId: sid });
-  } catch (_) { return []; }
+    const notices = require('../companion/lib/primary-seat.js').seatNotices(v, { cli: CLI, adopted: !!res.adopted, currentSessionId: sid });
+    return { notices, id: v.id || null };
+  } catch (_) { return { notices: [], id: null }; }
 }
 
 function main() {
@@ -180,10 +197,15 @@ function main() {
   if (!isDevswarmActive(process.env)) return;
 
   const isChild = isChildWorkspace(process.env);
-  let additionalContext = buildAdditionalContext(isChild, process.env);
+  let explicitId = null;
+  let additionalContext;
   if (!isChild) {
-    const seat = primarySeatLines(payload);
-    if (seat.length) additionalContext = seat.join('\n\n') + '\n\n' + additionalContext;
+    const seat = primarySeatResult(payload);
+    explicitId = seat.id;
+    additionalContext = buildAdditionalContext(isChild, process.env, explicitId);
+    if (seat.notices.length) additionalContext = seat.notices.join('\n\n') + '\n\n' + additionalContext;
+  } else {
+    additionalContext = buildAdditionalContext(isChild, process.env, null);
   }
 
   const out = {

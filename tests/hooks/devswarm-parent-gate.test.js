@@ -800,7 +800,15 @@ test('WAKE RE-ASSERT: Claude Primary -> the neglect block reason also carries th
     assert.ok(!/`CronCreate`/.test(reason), `trimmed reassert must NOT re-state CronCreate inline; reason=${reason}`);
     assert.ok(/wake-directive/.test(reason), `must point at the wake-directive re-run; reason=${reason}`);
     assert.ok(reason.includes('`*/30 * * * *`'), `must carry the default schedule; reason=${reason}`);
-    assert.ok(/inbox tick <DEVSWARM_BUILDER_ID>/.test(reason), `Primary must drain with the tick verb (no --child suffix); reason=${reason}`);
+    // MAILBOX WAKE fix (field evidence 2026-09-26): the Stop-gate re-verify
+    // must name the SAME resolved `primary-<hash>` id the SessionStart
+    // directive/wake-watch/the store already use (own.id, threaded through
+    // wakeReassertLine's explicitId param) — never the raw
+    // `<DEVSWARM_BUILDER_ID>` placeholder, which is never a registered
+    // workspace (see tests/hooks/devswarm-child-role.test.js's own MAILBOX
+    // WAKE tests for the full field symptom this closes).
+    assert.ok(!/inbox tick <DEVSWARM_BUILDER_ID>/.test(reason), `must not use the raw placeholder id; reason=${reason}`);
+    assert.match(reason, /inbox tick primary-[0-9a-f]{8}(?!\s*--child)/, `Primary must drain with the tick verb using a resolved primary-<hash> id (no --child suffix); reason=${reason}`);
     for (const m of [...reason.matchAll(/`node ([^`]*?devswarm\.js)\b/g)]) {
       assert.ok(path.isAbsolute(m[1]), `emitted CLI path must be absolute: ${m[1]}`);
       assert.ok(fs.existsSync(m[1]), `emitted CLI path must exist: ${m[1]}`);
