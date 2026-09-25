@@ -262,6 +262,62 @@ test('acquireLock: a DEAD-holder lock is stolen; a LIVE-holder lock is respected
   } finally { cleanup(); }
 });
 
+// TOCTOU FIX (defect #21's real root cause -- discovered via the
+// devswarm-primary-seat "concurrent adoption" test flaking on macOS CI).
+// acquireLock used to `openSync(p, 'wx')` then, as a SEPARATE syscall,
+// `writeSync(fd, ...)` the {pid, ts, token} payload. A second acquireLock
+// call that hit EEXIST in the window between those two syscalls read the
+// lock file WHILE IT WAS STILL EMPTY: JSON.parse('') threw, `holder` stayed
+// null, and the old `stale = holderTs === null || ...` check read a null
+// holder as unconditionally stale -- stealing a lock its rightful, live,
+// milliseconds-old owner was still writing. Two real processes were observed
+// both reporting a successful acquire for the SAME id at the SAME
+// Date.now() millisecond. The fix publishes the lock via write-then-link
+// (linkSync fails EEXIST the same way `wx` did, but only ever exposes a
+// FULLY WRITTEN file) so this interleaving can no longer produce a
+// visible-but-empty lock file.
+test('acquireLock: TOCTOU fix — a racer that hits EEXIST inside the write-then-publish window never sees an empty/unparseable lock file, and respects the (now fully-written) live holder instead of stealing it', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const id = 'race-toctou';
+    const p = M.lockPathFor(id, home);
+    let sawEmptyOrUnparseable = false;
+    const tracedFs = Object.assign({}, fs, {
+      readFileSync(file, enc) {
+        const raw = fs.readFileSync(file, enc);
+        if (file === p) {
+          try { JSON.parse(raw); } catch (_) { sawEmptyOrUnparseable = true; }
+        }
+        return raw;
+      },
+    });
+    // Fire a SECOND, fully-nested acquireLock call from inside the FIRST
+    // call's own linkSync -- the tightest possible interleaving (tighter
+    // than two real OS processes could ever guarantee), landing exactly in
+    // the old two-syscall gap this fix closes.
+    let racerResult = 'not-run';
+    const racingFs = Object.assign({}, tracedFs, {
+      linkSync(src, dest) {
+        if (dest === p && racerResult === 'not-run') {
+          racerResult = M.acquireLock(id, home, { fs: tracedFs, isAlive: () => true });
+        }
+        return fs.linkSync(src, dest);
+      },
+    });
+    const outer = M.acquireLock(id, home, { fs: racingFs, isAlive: () => true });
+    assert.notStrictEqual(racerResult, 'not-run', 'the nested racer must actually have run inside the window');
+    // Exactly one of {outer, racer} wins (gets a release fn); the other gets
+    // null because it correctly reads the WINNER's fully-written, live,
+    // fresh lock -- never because it saw an empty file and stole a live lock.
+    const results = [outer, racerResult];
+    const winners = results.filter((r) => typeof r === 'function');
+    assert.strictEqual(winners.length, 1, 'exactly one acquireLock call wins the race: ' + JSON.stringify(results.map((r) => typeof r)));
+    assert.ok(results.includes(null), 'the loser is null (a respected live holder), not a second, silently-granted lock');
+    assert.strictEqual(sawEmptyOrUnparseable, false, 'the fix guarantees the lock file is never observed with missing/unparseable content');
+    winners[0]();
+  } finally { cleanup(); }
+});
+
 test('resume prompt PREPENDS the state-check guardrail before the backlog', () => {
   const { home, cleanup } = makeHome();
   try {

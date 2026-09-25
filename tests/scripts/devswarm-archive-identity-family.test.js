@@ -426,19 +426,24 @@ const inoOf = (p) => { const s = fs.lstatSync(p); return s.dev + ':' + s.ino; };
 // retirement reaches for `locks/<id>.lock`, i.e. AFTER the candidate scan has
 // classified the twin and BEFORE the critical section opens. That window is the
 // P0-1 defect verbatim; there is no other way to hit it deterministically.
-// acquireLock's first act is openSync(<lockpath>, 'wx').
+// acquireLock's first act touching the LOCK PATH ITSELF (v0.108.1 TOCTOU fix:
+// recovery.js's acquireLock now writes the full lock payload to a private temp
+// file first, then publishes it atomically via linkSync(tmp, lockPath) instead
+// of openSync(lockPath, 'wx') — so this must hook linkSync's DESTINATION, not
+// openSync; a plain openSync(lockPath) no longer happens at all on the acquire
+// path, only unlinkSync/readFileSync on steal/release).
 function interposeAtLockAcquire(id, fn) {
   const suffix = path.sep + 'locks' + path.sep + id + '.lock';
-  const real = fs.openSync;
+  const real = fs.linkSync;
   const state = { fired: false };
-  fs.openSync = function (p) {
-    if (!state.fired && typeof p === 'string' && p.endsWith(suffix)) {
+  fs.linkSync = function (src, dest) {
+    if (!state.fired && typeof dest === 'string' && dest.endsWith(suffix)) {
       state.fired = true;
       fn();
     }
     return real.apply(fs, arguments);
   };
-  state.restore = () => { fs.openSync = real; };
+  state.restore = () => { fs.linkSync = real; };
   return state;
 }
 

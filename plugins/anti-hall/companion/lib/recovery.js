@@ -99,11 +99,30 @@ function defaultIsAlive(pid) {
   catch (e) { return !!(e && e.code === 'EPERM'); }
 }
 
-// acquireLock(id, home, io) -> release() | null. Atomic O_EXCL create carrying the
-// holder {pid, ts, token}. On EEXIST it STEALS iff the holder pid is dead OR the
-// lock is older than LOCK_STALE_MS (mirrors swarm-guard's stale-steal); otherwise
-// a live, fresh holder is respected -> null (caller aborts rather than double-
+// acquireLock(id, home, io) -> release() | null. Atomic create carrying the
+// holder {pid, ts, token}, published via write-then-link (see below) so a
+// concurrent acquirer NEVER observes a lock file that exists but is still
+// empty. On EEXIST it STEALS iff the holder pid is dead OR the lock is older
+// than LOCK_STALE_MS (mirrors swarm-guard's stale-steal); otherwise a live,
+// fresh holder is respected -> null (caller aborts rather than double-
 // resume). Release unlinks ONLY when the on-disk token is still ours.
+//
+// FIX (TOCTOU, discovered via the primary-seat concurrent-adoption test):
+// this used to be `openSync(p, 'wx')` immediately followed by a SEPARATE
+// `writeSync(fd, ...)` -- two syscalls, not one. A second acquireLock call
+// that hit EEXIST in the (real, observed) window between those two syscalls
+// read the lock file WHILE IT WAS STILL EMPTY: JSON.parse('') threw, `holder`
+// stayed null, and `stale = holderTs === null || ...` evaluated true
+// UNCONDITIONALLY for a null holder -- stealing a lock its rightful, live,
+// milliseconds-old owner was still in the middle of writing. Two callers then
+// both believed they held the SAME id's lock at the SAME instant (verified:
+// two real processes both logged `got=true` for one id at one Date.now() ms),
+// which is exactly how two DevSwarm sessions could both "adopt" one closed
+// Primary seat. Fix: write the FULL {pid, ts, token} payload to a private
+// temp file first, then PUBLISH it atomically with `linkSync` (a hard link
+// fails closed with EEXIST if the target already exists, same fail mode as
+// the old `wx` open, but the linked file is never visible with anything less
+// than its complete, already-written content).
 function acquireLock(id, home, io) {
   const F = (io && io.fs) || fs;
   const isAlive = (io && io.isAlive) || defaultIsAlive;
@@ -113,9 +132,17 @@ function acquireLock(id, home, io) {
   for (let attempt = 0; attempt < 2; attempt++) {
     const ts = now();
     const token = process.pid + ':' + ts + ':' + Math.random().toString(36).slice(2);
+    const tmp = p + '.tmp-' + process.pid + '-' + Math.random().toString(36).slice(2);
     try {
-      const fd = F.openSync(p, 'wx');
-      try { F.writeSync(fd, JSON.stringify({ pid: process.pid, ts, token })); } finally { F.closeSync(fd); }
+      F.writeFileSync(tmp, JSON.stringify({ pid: process.pid, ts, token }));
+      try {
+        F.linkSync(tmp, p);
+      } catch (linkErr) {
+        if (!linkErr || linkErr.code !== 'EEXIST') throw linkErr; // any other error -> fail-open (no lock)
+        const eexist = new Error('lock exists');
+        eexist.code = 'EEXIST';
+        throw eexist;
+      }
       return function release() {
         try {
           const cur = JSON.parse(F.readFileSync(p, 'utf8'));
@@ -132,9 +159,15 @@ function acquireLock(id, home, io) {
       const stale = holderTs === null || (now() - holderTs) > LOCK_STALE_MS;
       if (dead || stale) {
         try { F.unlinkSync(p); } catch (_) {}
-        continue; // retry the O_EXCL create
+        continue; // retry the create+link
       }
       return null; // live, fresh holder -> respected
+    } finally {
+      // The temp file is private (pid+random name) and never the thing other
+      // acquirers look at -- always clean it up. A successful linkSync gives
+      // `p` its own independent directory entry sharing the same inode, so
+      // removing `tmp` afterward does not touch `p` or its content.
+      try { F.unlinkSync(tmp); } catch (_) { /* best-effort; ENOENT if it was never created */ }
     }
   }
   return null;
