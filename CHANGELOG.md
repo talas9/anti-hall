@@ -6,6 +6,31 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.114.1 (2026-09-26)
+
+### Fixes
+
+- **command-guard: P0 — the version-independent stable-launcher form (`~/.anti-hall/bin/devswarm.js` / `wake-watch.js`) was wrongly blocked as a heavy command.**
+  Since 0.109 (`devswarm.stableLauncher`, default on), every hook-emitted
+  directive — the mailbox wake cron prompt, the Monitor re-arm command, the
+  DevSwarm comms-override role text, and Stop-gate drain/handover pointers —
+  names the version-independent launcher under `~/.anti-hall/bin/` instead
+  of the plugin-relative `scripts/devswarm.js` path. The command-guard
+  allowlist only ever anchored `scripts/devswarm.js`, so every one of those
+  emitted commands fell through to the generic `node <file>.js`
+  HEAVY_PATTERN and was blocked in coordinator context — breaking every
+  Primary's cron tick and inline mesh command that used the launcher form
+  (peer-reported by the SkyCrew Primary). Added
+  `anchoredAntiHallStableLauncher()`, a home-anchored carve-out (accepts
+  `~`, `$HOME`, `"${HOME}"`, and the resolved absolute home directory
+  immediately followed by `/.anti-hall/bin/devswarm.js` or
+  `/.anti-hall/bin/wake-watch.js`, no other prefix) with the same
+  whole-invocation scope as the existing `scripts/devswarm.js` carve-out. A
+  look-alike path (`evil/.anti-hall/bin/devswarm.js`,
+  `/tmp/x/.anti-hall/bin/devswarm.js`) is still NOT exempt, and chaining a
+  second heavy command after the launcher invocation still blocks on that
+  segment.
+
 ## 0.114.0 (2026-09-26)
 
 ### Fixes

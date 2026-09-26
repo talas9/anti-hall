@@ -44,6 +44,17 @@ const BLOCK = [
   // Look-alike prefix must NOT satisfy the anchored devswarm.js carve-out.
   'node evilscripts/devswarm.js',
   'node scripts/other.js',
+  // 0.114.1 hotfix: look-alike paths must NOT satisfy the home-anchored
+  // stable-launcher carve-out either — the home anchor must be followed
+  // IMMEDIATELY by /.anti-hall/bin/, not any other prefix directory, and an
+  // arbitrary absolute path (not the resolved home dir) is never exempt.
+  'node evil/.anti-hall/bin/devswarm.js x',
+  'node /tmp/x/.anti-hall/bin/devswarm.js x',
+  'node ~evil/.anti-hall/bin/devswarm.js x',
+  // Chaining still behaves as it does for the plugin-relative devswarm.js
+  // form: the stable-launcher segment itself is exempt, but a second heavy
+  // segment in the chain still blocks the whole command.
+  'node ~/.anti-hall/bin/devswarm.js x && npm test',
   // A heavy verb at command position must still block, including through
   // transparent wrappers (taskpolicy, xargs-as-runner) and with the verb
   // itself present only as prose text alongside a real invocation elsewhere.
@@ -283,6 +294,17 @@ const ALLOW = [
   // coordinator context (its internal spawn is the non-destructive count-gate +
   // one bounded read-messages, never a blocking monitor).
   'node scripts/devswarm.js inbox pull x',
+  // 0.114.1 hotfix (peer report, SkyCrew Primary): the version-independent
+  // stable-launcher form under ~/.anti-hall/bin/ (hooks/lib/stable-launcher.js)
+  // that every hook-emitted directive now names when devswarm.stableLauncher
+  // is on (default) — `~`, `$HOME`, and `"${HOME}"` home-anchor forms. The
+  // absolute-resolved-home-path form is covered by its own dedicated test
+  // below (DIRECTIVE-TEXT ALLOW), since it must match the per-test fixture
+  // HOME rather than a fixed literal.
+  'node ~/.anti-hall/bin/devswarm.js inbox tick x --quiet | tail -2',
+  'node $HOME/.anti-hall/bin/devswarm.js roster | tail -5',
+  'node "${HOME}"/.anti-hall/bin/devswarm.js heartbeat | tail -1',
+  'node ~/.anti-hall/bin/wake-watch.js --once | tail -3',
   // Field report (seen twice): a heavy verb appearing only inside DATA (a
   // heredoc message body, or a quoted printf/echo argument) must not be
   // mistaken for a command at command position.
@@ -425,6 +447,62 @@ for (const cmd of ALLOW) {
     assert.strictEqual(r.status, 0, `expected allow for: ${cmd}\nstdout: ${r.stdout}`);
   });
 }
+
+// 0.114.1 hotfix regression guard: build the ACTUAL `node <CLI/WATCHER> ...`
+// directive commands anti-hall's own hooks embed in injected text (mailbox
+// wake cron prompt / wakeReassert, Monitor re-arm, DevSwarm comms-override
+// role text, Stop-gate drain nudge, child/parent gate pointers, primary-seat
+// notices) — via the SAME stable-launcher.js resolver those hooks call,
+// against a fixture home — and run each one through command-guard exactly as
+// a coordinator would. This is the test that prevents this whole regression
+// class: any future hook that starts naming a new subcommand off CLI/WATCHER
+// is covered automatically since the carve-out has no subcommand
+// restriction, and any future change to the home-anchoring itself will fail
+// this test immediately instead of silently blocking every Primary's cron
+// tick again.
+test('DIRECTIVE-TEXT ALLOW: every hook-emitted CLI/WATCHER directive command is allowed', () => {
+  const h = makeHome();
+  try {
+    const stableLauncher = require('../../plugins/anti-hall/hooks/lib/stable-launcher.js');
+    const rawCli = '/plugin/root/scripts/devswarm.js'; // never used: launcher install succeeds
+    const rawWatcher = '/plugin/root/companion/lib/devswarm-wake-watch.js';
+    const { cli: CLI, watcher: WATCHER } = stableLauncher.installLaunchers({
+      cliFallback: rawCli,
+      watcherFallback: rawWatcher,
+      home: h.home,
+    });
+    // Sanity: the launcher actually installed under the fixture home (not a
+    // silent fallback to the raw path — a fallback would defeat the point of
+    // this test, since the raw plugin-relative form is covered separately).
+    assert.ok(CLI.startsWith(h.home), `CLI should resolve under fixture home, got: ${CLI}`);
+    assert.ok(WATCHER.startsWith(h.home), `WATCHER should resolve under fixture home, got: ${WATCHER}`);
+
+    // Verbatim shapes each hook builds (devswarm-wake.js wakeDirective/
+    // wakeReassert/monitorArmLine, devswarm-child-role.js, devswarm-child-
+    // drain.js, devswarm-child-gate.js, primary-seat.js).
+    const directives = [
+      `node ${CLI} inbox tick x --child --quiet`,
+      `node ${CLI} inbox tick x --quiet`,
+      `node ${WATCHER}`,
+      `node ${CLI} inbox count x`,
+      `node ${CLI} inbox pull x`,
+      `node ${CLI} inbox read-primary x`,
+      `node ${CLI} inbox pull x && node ${CLI} inbox count x`,
+      `node ${CLI} heartbeat x --summary "idle — reassign me a task"`,
+      `node ${CLI} send --to-primary --message-file /tmp/m.txt`,
+      `node ${CLI} done --summary "merged"`,
+      `node ${CLI} help --short`,
+      `node ${CLI} wake-directive x`,
+      `node ${CLI} primary takeover`,
+    ];
+    for (const cmd of directives) {
+      const r = testHook(HOOK, bashPayload(cmd), { home: h.home, env: COORD });
+      assert.strictEqual(r.status, 0, `expected allow for directive: ${cmd}\nstdout: ${r.stdout}`);
+    }
+  } finally {
+    h.cleanup();
+  }
+});
 
 test('SUBAGENT allows heavy command (agent_id in payload, no cli entrypoint)', () => {
   const h = makeHome();

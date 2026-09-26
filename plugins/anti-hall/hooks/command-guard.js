@@ -119,6 +119,75 @@ function anchoredAntiHallCli(dir, script, tailSrc) {
   );
 }
 
+// anchoredAntiHallStableLauncher(scriptFile) -> RegExp for one of the two
+// version-independent ~/.anti-hall/bin/ stable launchers (hooks/lib/
+// stable-launcher.js: devswarm.js, wake-watch.js). ROOT CAUSE (peer report,
+// SkyCrew Primary, 2026-09-26): anchoredAntiHallCli('scripts', 'devswarm',
+// '\\b') above only exempts the PLUGIN-RELATIVE `.../scripts/devswarm.js`
+// form. Since the devswarm.stableLauncher setting defaulted on (v0.109+),
+// every hook-emitted directive (mailbox wake cron, Monitor re-arm command,
+// DevSwarm comms override, Stop-gate drain/handover text) instead names the
+// STABLE LAUNCHER path under ~/.anti-hall/bin/ — a form the old regex never
+// recognized, so it fell through to the generic `node <file>.js`
+// HEAVY_PATTERN and every Primary's cron tick / inline mesh command using
+// the launcher was wrongly blocked.
+//
+// FIX: exempt `node` invocations of the stable launcher with the SAME
+// whole-invocation scope as anchoredAntiHallCli('scripts', 'devswarm', ...),
+// but anchored to the user's home directory instead of a plugin-relative
+// path — a look-alike prefix must NOT be exempt (`evil/.anti-hall/bin/...`,
+// `/tmp/x/.anti-hall/bin/...`). Four home-anchor forms are accepted, since
+// stable-launcher.js's installLaunchers() bakes the OS-resolved absolute
+// home path into directive text (os.homedir()-derived), while a human typing
+// the command at a shell commonly uses `~` or `$HOME`:
+//   - literal `~`
+//   - `$HOME` / `${HOME}` (optionally wrapped in one pair of double quotes,
+//     e.g. `"${HOME}"/.anti-hall/bin/devswarm.js`)
+//   - the actual resolved absolute home directory: os.homedir() (the
+//     HOME-env-aware value stable-launcher.js's resolveHome() actually
+//     bakes into directive text) plus os.userInfo().homedir() (the OS
+//     passwd-DB value, immune to a HOME override) when it differs
+// immediately followed by `/.anti-hall/bin/<scriptFile>` with NOTHING else
+// between the home anchor and `.anti-hall` (so `~/evil/.anti-hall/bin/...`
+// or `~x/.anti-hall/bin/...` do NOT match) — same `^\s*` segment-start +
+// optional-leading-env-assignment anchoring discipline as
+// anchoredAntiHallCli, so a heavy command merely carrying the launcher path
+// as trailing args is never exempted, and chaining
+// (`node ~/.anti-hall/bin/devswarm.js x && npm test`) still blocks on the
+// npm segment exactly as it does for the plugin-relative form.
+//
+// os.homedir() is the PRIMARY absolute-path source: it is what
+// stable-launcher.js's binDir() -> test-home-guard.js resolveHome() actually
+// resolves to in production (`explicitHome || os.homedir()`, HOME-env-aware
+// on POSIX), so it is the exact string the real directive text embeds — and
+// it is what makes this exemption testable against an isolated fixture HOME.
+// os.userInfo().homedir (queried straight from the OS user DB, immune to a
+// HOME override) is added as a SECOND alternative only when it differs, so
+// an operator whose shell profile doesn't export $HOME identically to the
+// passwd entry is still covered.
+function anchoredAntiHallStableLauncher(scriptFile) {
+  const scriptSrc = scriptFile.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const rawHomes = [];
+  try {
+    const homedir = os.homedir();
+    if (typeof homedir === 'string' && homedir) rawHomes.push(homedir);
+  } catch (_) { /* fail-open: home-anchor alternation just skips this form */ }
+  try {
+    const passwdHome = os.userInfo().homedir;
+    if (typeof passwdHome === 'string' && passwdHome && !rawHomes.includes(passwdHome)) {
+      rawHomes.push(passwdHome);
+    }
+  } catch (_) { /* fail-open: home-anchor alternation just skips this form */ }
+  const homeAbsSrcs = rawHomes.map((h) => h.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  const homeAlt = '(?:~|"?\\$\\{HOME\\}"?|\\$HOME'
+    + (homeAbsSrcs.length ? '|' + homeAbsSrcs.join('|') : '') + ')';
+  return new RegExp(
+    '^\\s*(?:[A-Za-z_][A-Za-z0-9_]*=\\S*\\s+)*node\\s+' +
+      homeAlt + '[\\\\/]\\.anti-hall[\\\\/]bin[\\\\/]' + scriptSrc + '\\b',
+    'i'
+  );
+}
+
 // Commands that look heavy by verb but are actually lightweight inspection commands.
 // We allow these even if the verb matches HEAVY_VERBS.
 const LIGHT_EXCEPTIONS = [
@@ -223,6 +292,20 @@ const LIGHT_EXCEPTIONS = [
   // `reconcile`, `spawn`, `merge`) already runs inline, exempt from the heavy-
   // command gate, with no further change needed here.
   anchoredAntiHallCli('scripts', 'devswarm', '\\b'),
+  // anti-hall's own version-independent stable launchers under
+  // ~/.anti-hall/bin/ (hooks/lib/stable-launcher.js) — the SAME
+  // scripts/devswarm.js CLI wrapper (and its companion wake-watch poller),
+  // just reached through a home-anchored, version-independent path that
+  // every hook-emitted directive (mailbox wake cron, Monitor re-arm,
+  // DevSwarm comms override, Stop-gate drain/handover) now names when the
+  // devswarm.stableLauncher setting is on (default). Without this, every one
+  // of those emitted commands fell through to the generic `node <file>.js`
+  // HEAVY_PATTERN and was wrongly blocked (0.114.1 hotfix). See
+  // anchoredAntiHallStableLauncher's own doc comment for the anchoring
+  // discipline (home-anchored only; no subcommand restriction, mirroring the
+  // plugin-relative devswarm.js entry immediately above).
+  anchoredAntiHallStableLauncher('devswarm.js'),
+  anchoredAntiHallStableLauncher('wake-watch.js'),
 ];
 
 // DevSwarm destructive-read redirect: the two CONSUMING native hivecontrol inbox

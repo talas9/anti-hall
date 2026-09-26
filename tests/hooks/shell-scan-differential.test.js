@@ -241,6 +241,18 @@ const CG_INTENTIONAL_ALLOW_CHANGES = [
   'gcloud projects get-iam-policy my-proj --format=json',
   'T=$(gcloud auth print-access-token); curl -s -H "Authorization: Bearer $T" https://run.googleapis.com/v2/projects/p/locations/l/services | jq .',
   'T=$(gcloud auth print-access-token); curl -sS -H "Authorization: Bearer $T" https://example.googleapis.com/v1/x | head -40',
+  // Stable-launcher carve-out (0.114.1 hotfix, peer report SkyCrew Primary):
+  // blocked at BASE_REV (stable-launcher.js/~/.anti-hall/bin/ didn't exist
+  // yet, so these fell through to the generic `node <file>.js` HEAVY_PATTERN
+  // like any other node script), allowed by
+  // anchoredAntiHallStableLauncher(). command-guard.test.js's ALLOW array and
+  // its DIRECTIVE-TEXT ALLOW test cover the full allow/block matrix
+  // (including the look-alike-path BLOCK cases); this corpus only needs to
+  // prove the differential harness itself does not choke on the new shapes.
+  'node ~/.anti-hall/bin/devswarm.js inbox tick x --quiet | tail -2',
+  'node $HOME/.anti-hall/bin/devswarm.js roster | tail -5',
+  'node "${HOME}"/.anti-hall/bin/devswarm.js heartbeat | tail -1',
+  'node ~/.anti-hall/bin/wake-watch.js --once | tail -3',
 ];
 
 // -----------------------------------------------------------------------
