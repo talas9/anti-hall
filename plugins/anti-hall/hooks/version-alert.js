@@ -268,7 +268,8 @@ function main() {
     let harnessRegistered = true;
     try {
       const upd = require(path.join(__dirname, '..', 'skills', 'update', 'scripts', 'update.js'));
-      const updPaths = upd.resolvePaths(process.env, os.homedir());
+      const { resolveHome } = require('../companion/lib/test-home-guard.js');
+      const updPaths = upd.resolvePaths(process.env, resolveHome(undefined, process.env));
       const harnessVersion = upd.versionFromInstalledJson(updPaths.installedJson);
       if (upd.isSemver(harnessVersion) && semverGreater(mirrored, harnessVersion)) harnessRegistered = false;
     } catch (_) { harnessRegistered = true; }
