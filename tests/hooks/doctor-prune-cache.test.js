@@ -114,6 +114,28 @@ test('prune-cache plan: a registered installPath through /tmp, a trailing slash 
   }
 });
 
+test('prune-cache plan: live argv/cwd match on the cache suffix whatever the prefix, with a path boundary', () => {
+  const f = makeFixture(VERSIONS);
+  try {
+    const suffix = (v) => '/plugins/cache/anti-hall/anti-hall/' + v;
+    const plan = cachePrune.planCachePrune({
+      home: f.home,
+      scanCwds: () => ['/', '/tmp/aliased-home/.claude' + suffix('0.100.0')],
+      scanArgv: () => [
+        'node /some/symlinked/home/.claude' + suffix('0.101.0') + '/hooks/x.js',
+        'node "/quoted/.claude' + suffix('0.102.0') + '"',
+        'node /h/.claude' + suffix('0.103.0') + '.bak/x.js',   // no boundary: not 0.103.0
+        'node /h/.claude' + suffix('0.104.0') + '0/x.js',      // 0.104.00: not 0.104.0
+      ],
+    });
+    const e = byName(plan);
+    for (const v of ['0.100.0', '0.101.0', '0.102.0']) assert.ok(e[v].reasons.includes('live process'), v);
+    for (const v of ['0.103.0', '0.104.0']) assert.strictEqual(e[v].action, 'remove', v);
+  } finally {
+    f.cleanup();
+  }
+});
+
 test('prune-cache plan: an unavailable live-process scan keeps everything', () => {
   const f = makeFixture(VERSIONS);
   try {

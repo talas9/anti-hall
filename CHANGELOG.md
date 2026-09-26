@@ -75,6 +75,11 @@ the update.
   registered path spelled in a different case, or reached via `/tmp`, `..` or a trailing
   slash, is kept.
 
+- **doctor --prune-cache: live-process match on the cache suffix (P3).** A process cwd or
+  argv now counts as live when it names `plugins/cache/anti-hall/anti-hall/<ver>` followed
+  by a path boundary, whatever the prefix (`/tmp` vs `/private/tmp`, a symlinked home).
+  `<ver>.bak` never matches.
+
 ## 0.112.0 (2026-09-26)
 
 ### Features

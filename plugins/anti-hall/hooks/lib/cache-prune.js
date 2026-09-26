@@ -116,18 +116,15 @@ function defaultScanCwds() {
   }
 }
 
-// mentionsDir(text, dirs) -> true when text names one of dirs as a path
-// (the dir itself, or anything below it).
-function mentionsDir(text, dirs) {
-  for (const d of dirs) {
-    let i = text.indexOf(d);
-    while (i !== -1) {
-      const next = text[i + d.length];
-      if (next === undefined || next === '/' || next === path.sep || /\s|["']/.test(next)) return true;
-      i = text.indexOf(d, i + 1);
-    }
-  }
-  return false;
+// mentionsVersion(text, ver) -> true when text names the cache version dir
+// `…/plugins/cache/anti-hall/anti-hall/<ver>` (itself or anything below it)
+// with a path boundary after <ver>, WHATEVER the prefix — /tmp vs
+// /private/tmp, a symlinked home, a relative path (0.113 P3). `<ver>.bak` or
+// `<ver>0` never match. Case-insensitive on darwin.
+function mentionsVersion(text, ver) {
+  const esc = ver.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const re = new RegExp('plugins[\\/]cache[\\/]anti-hall[\\/]anti-hall[\\/]' + esc + '(?=$|[\\/\\s"\'])', process.platform === 'darwin' ? 'i' : '');
+  return re.test(text);
 }
 
 // planCachePrune(opts) -> { root, ok, error?, entries: [{name, dir, action:'remove'|'keep', reasons:[], bytes}], removeBytes }
@@ -141,7 +138,6 @@ function planCachePrune(opts) {
   if (rootStat.isSymbolicLink() || !rootStat.isDirectory()) {
     plan.ok = false; plan.error = 'refused: the cache root is a symlink or not a directory (' + root + ')'; return plan;
   }
-  const realRoot = realOrNull(root) || root;
 
   let dirents = [];
   try { dirents = fs.readdirSync(root, { withFileTypes: true }); } catch (e) { plan.ok = false; plan.error = 'cannot read ' + root; return plan; }
@@ -183,8 +179,7 @@ function planCachePrune(opts) {
   const argv = scanArgv();
   const liveScanOk = Array.isArray(cwds) && Array.isArray(argv);
   for (const e of versions) {
-    const names = [e.dir, path.join(realRoot, e.name)];
-    const live = liveScanOk && (cwds.some((c) => mentionsDir(c, names)) || argv.some((a) => mentionsDir(a, names)));
+    const live = liveScanOk && (cwds.some((c) => mentionsVersion(c, e.name)) || argv.some((a) => mentionsVersion(a, e.name)));
     if (live) e.reasons.push('live process');
     if (!liveScanOk) e.reasons.push('live-process scan unavailable');
   }
