@@ -72,6 +72,27 @@ around the confirmation.
 A one-off pause is still the per-guard `skip.json` escape hatch, only on the user's
 explicit request.
 
+## Trusting a project command allowlist
+
+A repo can list its own sanctioned commands in `<repo>/.anti-hall/command-allow.json`
+(`{"patterns":["^literal command ...$"]}`), which command-guard then lets the main
+thread run inline. Because that file lives in the working tree, a cloned repo could
+ship one — so it applies ONLY after the user trusts that exact file content with `trust-command-allow`:
+
+```
+node <plugin-root>/scripts/settings.js trust-command-allow [<repo>]              # print patterns, record nothing
+node <plugin-root>/scripts/settings.js trust-command-allow [<repo>] --confirmed  # record the trust
+```
+
+Trust is a sha256 of the file bytes stored OUTSIDE the repo in
+`~/.anti-hall/trusted-command-allow.json`, keyed by the repo's real path; any edit to
+the file makes it untrusted until re-trusted. A symlinked allowlist is refused.
+Patterns must start with `^` + a literal command word and end with `$`; unbounded
+wildcards (`.*`, `.+`, `[^x]*`) and top-level `|` are ignored. `/anti-hall:doctor`
+reports untrusted/changed allowlists and ignored patterns. Same consent rule as the
+safety keys above: `--confirmed` only on the user's direct request or a yes after
+showing them the printed patterns — never on your own initiative.
+
 ## Turning a hook off
 
 Every hook the Codex port registers reads the same switch as on Claude Code, so "turn

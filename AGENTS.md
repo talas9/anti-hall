@@ -336,7 +336,7 @@ Codex `anti-hall-<name>`: activate, context-conserve, deadly-loop, debt, defects
 
 **CLI verbs**:
 - `scripts/devswarm.js`: `primary`, `register`, `ensure`, `heartbeat`, `inbox`, `workspaces`, `gate`, `done`, `nudge`, `archive`, `reap-orphans`, `reconcile-registry`, `unarchive`, `archive-ignore`, `archive-unignore`, `archive-request`, `register-primary`, `migrate`, `logs`, `migrate-owner-keys`, `send`, `relay`, `roster`, `wake-directive`, `app-state`, `sync-ui`, `app-sync`, `diagnose`, `healthcheck`, `ready-check`, `mesh`, `reconcile`, `reap-stale`, `reconcile-active`, `spawn`, `merge`, `skip`, `auto-archive`, `prune-archived`, `gate-intent`, `retention` (`help <verb>` for detail).
-- `scripts/settings.js`: `show`, `get`, `set`, `reset`; `scripts/auto-handover-config.js`: `get`, `set`, `nag`, `nag-step`, `nag-quiet`, `max-tokens`.
+- `scripts/settings.js`: `show`, `get`, `set`, `reset`, `trust-command-allow`; `scripts/auto-handover-config.js`: `get`, `set`, `nag`, `nag-step`, `nag-quiet`, `max-tokens`.
 - `scripts/jev-setup.js`: `status`, `enable`, `disable`, `set-key`, `test`, `mode`; `scripts/jev-report.js`: report (default), `label`, `prune-audit`; `scripts/defect.js`: `report`, `list`, `show`, `rule`, `archive`, `backfill`, `recurring`, `similar`.
 - `hooks/doctor.js [--repair]`; `skills/update/scripts/update.js [--check]`; `companion/devswarm-recover.js <id>` (the only kill path).
 

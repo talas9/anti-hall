@@ -93,7 +93,7 @@ the guards fire?", use `doctor`.
 
 ## CLI verbs (run from the plugin root; heavy ones via a subagent)
 
-- `scripts/settings.js` — `show` [--all] [--section s] [--json] (list), `get <section.key>`, `set <section.key> <value>` (validated), `reset <section.key>` (drop the override).
+- `scripts/settings.js` — `show` [--all] [--section s] [--json] (list), `get <section.key>`, `set <section.key> <value>` (validated), `reset <section.key>` (drop the override), `trust-command-allow [<repo>] --confirmed` (trust a repo's `.anti-hall/command-allow.json` by content hash).
 - `scripts/auto-handover-config.js` — `get`, `set <1-99>`, `off`, `on`, `nag on|off`, `max-tokens <n>`, `nag-step <n>`, `nag-quiet <n>` (alias over `autoHandover.*`).
 - `scripts/jev-setup.js` — `status`, `enable`, `disable`, `set-key`, `test`, `mode <integration> on|shadow|off`.
 - `scripts/jev-report.js` — (no verb) the report [--json] [--window 24h|7d] [--by project|session] [--project <name>] [--weekly]; `label <hash> tp|fp`; `prune-audit` (trim audit snippets).

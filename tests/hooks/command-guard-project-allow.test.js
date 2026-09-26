@@ -65,9 +65,22 @@ function payload(command, { agentId, cwd } = {}) {
   };
 }
 
+// The allowlist applies only when the user trusted this exact file content
+// (~/.anti-hall/trusted-command-allow.json). These tests exercise the matching
+// rules, so a present config is trusted in the fixture home; the trust gate
+// itself is covered in command-guard-security.test.js.
+const allowLib = require('../../plugins/anti-hall/hooks/lib/command-allow.js');
+function trustIfPresent(home, cwd) {
+  const top = cwd && allowLib.repoToplevel(cwd);
+  if (!top) return;
+  const f = allowLib.readAllowFile(top);
+  if (f.state === 'ok') allowLib.recordTrust(home, top, f.hash);
+}
+
 function run(command, opts) {
   const o = opts || {};
   const h = makeHome();
+  trustIfPresent(h.home, o.cwd);
   try {
     const res = testHook(HOOK, payload(command, { agentId: o.agentId, cwd: o.cwd }), {
       home: h.home, env: Object.assign({ CLAUDE_CODE_ENTRYPOINT: 'cli' }, o.env || {}),

@@ -11,6 +11,16 @@
 //   node scripts/settings.js get <section.key> [--json]
 //   node scripts/settings.js set <section.key> <value> [--confirmed] [--json]
 //   node scripts/settings.js reset <section.key> [--confirmed] [--json]
+//   node scripts/settings.js trust-command-allow [<repo>] [--confirmed] [--json]
+//
+// `trust-command-allow` prints the repo's .anti-hall/command-allow.json
+// patterns (valid / ignored) and, with --confirmed, records the sha256 of the
+// file bytes in ~/.anti-hall/trusted-command-allow.json keyed by the repo's
+// realpath. command-guard applies a project allowlist ONLY while that hash
+// matches — a cloned repo cannot authorize itself, and any edit to the file
+// needs a fresh trust. Without --confirmed nothing is recorded (same consent
+// rule as a safety-locked key: a human's direct command, or a yes to the
+// agent's question, is the confirmation).
 //
 // `show --all` includes advanced (tuning/timeout) settings; by default they
 // are collapsed to a count per section. `--section` filters to one section.
@@ -224,6 +234,53 @@ function cmdReset(args, opts) {
   else process.stdout.write(section + '.' + key + ' reset -> ' + fmtValue(value) + '\n');
 }
 
+function cmdTrustCommandAllow(args, opts) {
+  const allowLib = require('../hooks/lib/command-allow.js');
+  const testHomeGuard = require('../companion/lib/test-home-guard.js');
+  const target = args._[0] ? path.resolve(args._[0]) : process.cwd();
+  const top = allowLib.repoToplevel(target);
+  const fail = (error) => {
+    if (args.json) process.stdout.write(JSON.stringify({ ok: false, error }) + '\n');
+    else process.stderr.write('error: ' + error + '\n');
+    process.exitCode = 1;
+  };
+  if (!top) return fail('not inside a git repository: ' + target);
+  const f = allowLib.readAllowFile(top);
+  if (f.state === 'missing') return fail('no .anti-hall/command-allow.json in ' + top);
+  if (f.state === 'symlink') return fail('refusing a symlinked .anti-hall/command-allow.json (or .anti-hall dir) in ' + top);
+  if (f.state !== 'ok') return fail('.anti-hall/command-allow.json in ' + top + ' is ' + (f.state === 'invalid-json' ? 'not valid JSON' : 'unreadable'));
+  const rows = f.patterns.map((p) => {
+    const v = allowLib.validatePattern(p);
+    return { pattern: p, valid: v.ok, reason: v.ok ? null : v.reason };
+  });
+  const home = testHomeGuard.resolveHome(opts.home, process.env);
+  const repo = allowLib.repoKey(top);
+  if (!args.confirmed) {
+    const warning = 'Trusting lets the main thread run these commands in ' + repo +
+      ' without delegating them. Re-run with --confirmed to trust this exact file content (sha256 ' + f.hash + ').';
+    if (args.json) {
+      process.stdout.write(JSON.stringify({ ok: false, needsConfirmation: true, repo, sha256: f.hash, patterns: rows, warning }) + '\n');
+    } else {
+      process.stdout.write(repo + '/.anti-hall/command-allow.json:\n');
+      for (const r of rows) process.stdout.write('  ' + (r.valid ? '  ' : '! ') + r.pattern + (r.valid ? '' : '   (ignored: ' + r.reason + ')') + '\n');
+      process.stdout.write(warning + '\n');
+    }
+    process.exitCode = 1;
+    return;
+  }
+  try {
+    allowLib.recordTrust(home, top, f.hash);
+  } catch (e) {
+    return fail('could not write ' + allowLib.trustFilePath(home) + ': ' + (e && e.message));
+  }
+  if (args.json) {
+    process.stdout.write(JSON.stringify({ ok: true, repo, sha256: f.hash, patterns: rows }) + '\n');
+  } else {
+    process.stdout.write('trusted ' + repo + '/.anti-hall/command-allow.json (sha256 ' + f.hash + '):\n');
+    for (const r of rows) process.stdout.write('  ' + (r.valid ? '  ' : '! ') + r.pattern + (r.valid ? '' : '   (ignored: ' + r.reason + ')') + '\n');
+  }
+}
+
 function main() {
   const argv = process.argv.slice(2);
   const cmd = argv[0];
@@ -235,12 +292,13 @@ function main() {
     case 'get': return cmdGet(args, opts);
     case 'set': return cmdSet(args, opts);
     case 'reset': return cmdReset(args, opts);
+    case 'trust-command-allow': return cmdTrustCommandAllow(args, opts);
     default:
-      process.stderr.write('usage: settings.js <show|get|set|reset> [args] [--json]\n');
+      process.stderr.write('usage: settings.js <show|get|set|reset|trust-command-allow> [args] [--json]\n');
       process.exitCode = 1;
   }
 }
 
 if (require.main === module) main();
 
-module.exports = { parseArgs, splitKey, cmdShow, cmdGet, cmdSet, cmdReset };
+module.exports = { parseArgs, splitKey, cmdShow, cmdGet, cmdSet, cmdReset, cmdTrustCommandAllow };

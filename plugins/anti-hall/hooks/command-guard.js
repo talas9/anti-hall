@@ -1991,43 +1991,20 @@ function isBoundedVerificationCommand(command) {
 // a second/third hand-rolled segment splitter).
 // ---------------------------------------------------------------------------
 
-// projectCommandAllowConfigPath(cwd) -> <repo-toplevel>/.anti-hall/command-allow.json,
-// or null if the repo toplevel cannot be resolved.
-function projectCommandAllowConfigPath(cwd) {
-  try {
-    const top = require('../companion/lib/identity.js').resolveContext(cwd || process.cwd(), { missingPath: 'ancestor' }).toplevel;
-    if (!top) return null;
-    return path.join(top, '.anti-hall', 'command-allow.json');
-  } catch (_) {
-    return null;
-  }
-}
-
-// loadProjectCommandAllowPatterns(cwd) -> array of VALID anchored regex
-// source strings (lib/command-allow.js validatePattern: literal `^` + a
-// literal command word, closing `$`, no unbounded wildcard such as `.*`/`.+`,
-// no top-level `|` — `^.*$` is NOT an anchored rule, it allows everything).
-// Anything else is silently ignored here; doctor.js reports each ignored
-// pattern with its reason.
-// Fail-open to [] on any missing/malformed/unreadable config — default is no
-// behavior change.
+// loadProjectCommandAllowPatterns(cwd) -> the VALID patterns of this repo's
+// allowlist, and only when the user TRUSTED that exact file content
+// (lib/command-allow.js: ~/.anti-hall/trusted-command-allow.json maps the
+// repo realpath to the sha256 of the file bytes; any edit -> untrusted until
+// `node scripts/settings.js trust-command-allow --confirmed` re-trusts it).
+// A pattern is valid per validatePattern: literal `^` + a literal command
+// word, closing `$`, no unbounded wildcard such as `.*`/`.+`, no top-level
+// `|` — `^.*$` is NOT an anchored rule, it allows everything. Symlinked,
+// missing, malformed or untrusted config -> [] (no behavior change);
+// doctor.js reports each case.
 function loadProjectCommandAllowPatterns(cwd) {
-  const cfgPath = projectCommandAllowConfigPath(cwd);
-  if (!cfgPath) return [];
-  let parsed;
-  try {
-    parsed = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
-  } catch (_) {
-    return [];
-  }
-  const patterns = parsed && Array.isArray(parsed.patterns) ? parsed.patterns : [];
-  const out = [];
-  const { validatePattern } = require('./lib/command-allow.js');
-  for (const p of patterns) {
-    if (!validatePattern(p).ok) continue; // unanchored/wildcard/invalid: ignore
-    out.push(p);
-  }
-  return out;
+  const lib = require('./lib/command-allow.js');
+  const testHomeGuard = require('../companion/lib/test-home-guard.js');
+  return lib.loadTrustedPatterns(cwd, testHomeGuard.resolveHome(undefined, process.env));
 }
 
 // hasUnquotedRedirectChar(segment) -> true if a bare (unquoted) '>' or '<'
@@ -2069,7 +2046,7 @@ function isSingleUnbrokenSegment(command) {
 
 // matchedProjectCommandAllowPattern(command, cwd) -> the matching pattern
 // string, or null. ALL of these must hold:
-//   1. the config resolves at least one valid anchored pattern for this repo;
+//   1. the config resolves at least one valid, TRUSTED pattern for this repo;
 //   2. the WHOLE command is exactly one segment (no chaining/pipes/subshells/
 //      command substitution — see isSingleUnbrokenSegment);
 //   3. no unquoted redirect character anywhere in the command;

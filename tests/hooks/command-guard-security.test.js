@@ -115,10 +115,18 @@ function writeAllow(repo, patterns) {
   fs.writeFileSync(path.join(repo, '.anti-hall', 'command-allow.json'), JSON.stringify({ patterns }));
 }
 
-// allowRun(repo, command, patterns) -> spawn result with a fresh home.
+const allowLib = require('../../plugins/anti-hall/hooks/lib/command-allow.js');
+function trustAllow(home, repo) {
+  const f = allowLib.readAllowFile(repo);
+  allowLib.recordTrust(home, repo, f.hash);
+}
+
+// allowRun(repo, command, patterns) -> spawn result with a fresh home in
+// which the written allowlist is TRUSTED (so the other gates are what's tested).
 function allowRun(repo, command, patterns) {
   writeAllow(repo, patterns);
   const h = makeHome();
+  trustAllow(h.home, repo);
   try {
     return run(command, { cwd: repo, home: h.home });
   } finally {
@@ -199,6 +207,105 @@ test('doctor: reports an ignored wildcard pattern with its reason', () => {
       const out = runDoctor(repo, h.home);
       assert.match(out, /command-allow\.json has 2 ignored pattern/);
       assert.match(out, /unbounded wildcard/);
+    } finally {
+      h.cleanup();
+    }
+  });
+});
+
+// ---- #4 trust: a working-tree allowlist cannot self-authorize ---------------
+
+const SETTINGS_JS = path.join(__dirname, '..', '..', 'plugins', 'anti-hall', 'scripts', 'settings.js');
+const TRUSTED_ARG = 'npm run deploy -- prod';
+
+function settingsCli(args, home, cwd) {
+  return cp.spawnSync(process.execPath, [SETTINGS_JS].concat(args), {
+    cwd, encoding: 'utf8', timeout: 30000,
+    env: Object.assign({}, process.env, { HOME: home, USERPROFILE: home }),
+  });
+}
+
+test('trust: an untrusted (never-trusted) allowlist applies nothing', () => {
+  withRepo((repo) => {
+    writeAllow(repo, [DEPLOY_ARG]);
+    const h = makeHome();
+    try {
+      const r = run(TRUSTED_ARG, { cwd: repo, home: h.home });
+      assert.strictEqual(r.status, 2, 'an untrusted working-tree allowlist must not allow: ' + r.stdout);
+    } finally {
+      h.cleanup();
+    }
+  });
+});
+
+test('trust: editing a trusted allowlist makes it untrusted (hash mismatch)', () => {
+  withRepo((repo) => {
+    writeAllow(repo, ['^npm run deploy -- staging$']);
+    const h = makeHome();
+    try {
+      trustAllow(h.home, repo);
+      writeAllow(repo, [DEPLOY_ARG]); // content changed after trust
+      const r = run(TRUSTED_ARG, { cwd: repo, home: h.home });
+      assert.strictEqual(r.status, 2, 'an edited allowlist must be untrusted: ' + r.stdout);
+    } finally {
+      h.cleanup();
+    }
+  });
+});
+
+test('trust: a symlinked allowlist file is refused even when its target hash is trusted', () => {
+  withRepo((repo) => {
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'cgsec-outside-'));
+    const h = makeHome();
+    try {
+      writeAllow(repo, [DEPLOY_ARG]);
+      trustAllow(h.home, repo);
+      const real = path.join(outside, 'allow.json');
+      fs.copyFileSync(path.join(repo, '.anti-hall', 'command-allow.json'), real);
+      fs.rmSync(path.join(repo, '.anti-hall', 'command-allow.json'));
+      fs.symlinkSync(real, path.join(repo, '.anti-hall', 'command-allow.json'));
+      const r = run(TRUSTED_ARG, { cwd: repo, home: h.home });
+      assert.strictEqual(r.status, 2, 'a symlinked allowlist must be refused: ' + r.stdout);
+    } finally {
+      h.cleanup();
+      fs.rmSync(outside, { recursive: true, force: true });
+    }
+  });
+});
+
+test('trust CLI: without --confirmed prints patterns and records nothing; with it the allowlist applies', () => {
+  withRepo((repo) => {
+    writeAllow(repo, [DEPLOY_ARG, '^.*$']);
+    const h = makeHome();
+    try {
+      const dry = settingsCli(['trust-command-allow', repo], h.home, repo);
+      assert.strictEqual(dry.status, 1);
+      assert.match(dry.stdout, /npm run deploy/);
+      assert.match(dry.stdout, /ignored: must begin with a literal command word/);
+      assert.ok(!fs.existsSync(allowLib.trustFilePath(h.home)), 'nothing recorded without --confirmed');
+      assert.strictEqual(run(TRUSTED_ARG, { cwd: repo, home: h.home }).status, 2);
+
+      const yes = settingsCli(['trust-command-allow', repo, '--confirmed', '--json'], h.home, repo);
+      assert.strictEqual(yes.status, 0, yes.stderr);
+      const out = JSON.parse(yes.stdout);
+      assert.strictEqual(out.ok, true);
+      const rec = JSON.parse(fs.readFileSync(allowLib.trustFilePath(h.home), 'utf8'));
+      assert.strictEqual(rec[fs.realpathSync(repo)], out.sha256);
+      assert.strictEqual(run(TRUSTED_ARG, { cwd: repo, home: h.home }).status, 0, 'trusted allowlist applies');
+    } finally {
+      h.cleanup();
+    }
+  });
+});
+
+test('doctor: reports an untrusted allowlist with the trust command', () => {
+  withRepo((repo) => {
+    writeAllow(repo, [DEPLOY_ARG]);
+    const h = makeHome();
+    try {
+      const out = runDoctor(repo, h.home);
+      assert.match(out, /command-allow\.json is NOT trusted/);
+      assert.match(out, /trust-command-allow/);
     } finally {
       h.cleanup();
     }
