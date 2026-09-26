@@ -279,6 +279,32 @@ function cgds(cmd) { return runHook('command-guard.js', { tool_name: 'Bash', too
 BLOCKED(cgds('hivecontrol workspace monitor')) ? ok('command-guard blocks `hivecontrol workspace monitor` under DevSwarm (blocking long-poll)') : bad('command-guard did NOT block hivecontrol monitor under DevSwarm — destructive-read redirect regressed');
 ALLOWED(cgds("grep -n 'hivecontrol workspace monitor' docs/KB.md")) ? ok('command-guard allows grep of quoted hivecontrol DATA under DevSwarm (no false-positive)') : bad('command-guard wrongly blocked a grep of quoted hivecontrol data — destructive-read redirect over-blocks');
 
+// Per-project command allowlist (owner-approved 2026-09-26): if THIS repo
+// opted in via .anti-hall/command-allow.json, report any pattern that is not
+// literally anchored (`^...$`) — command-guard silently ignores such a
+// pattern (never matches), so a project author who typo'd the anchors gets a
+// clear doctor warning instead of a silently-dead allow rule.
+try {
+  const allowTop = require('../companion/lib/identity.js').resolveContext(cwd, { missingPath: 'ancestor' }).toplevel;
+  const allowCfgPath = allowTop ? path.join(allowTop, '.anti-hall', 'command-allow.json') : null;
+  if (allowCfgPath && fs.existsSync(allowCfgPath)) {
+    const cfg = JSON.parse(fs.readFileSync(allowCfgPath, 'utf8'));
+    const pats = Array.isArray(cfg.patterns) ? cfg.patterns : [];
+    const bad_ = [];
+    for (const p of pats) {
+      if (typeof p !== 'string' || !p.startsWith('^') || !p.endsWith('$')) { bad_.push(p); continue; }
+      try { new RegExp(p); } catch (_) { bad_.push(p); }
+    }
+    if (bad_.length) {
+      warnl('command-allow.json has ' + bad_.length + ' unanchored/invalid pattern(s), silently ignored by command-guard: ' + bad_.map((p) => JSON.stringify(p)).join(', '));
+    } else if (pats.length) {
+      ok('command-allow.json: ' + pats.length + ' valid anchored pattern(s)');
+    }
+  }
+} catch (_) {
+  // fail-open: this is a diagnostic, never a hard failure.
+}
+
 // edit-guard: blocks direct Edit-family tool use in COORDINATOR; allows in SUBAGENT (payload agent_id)
 function eg(extra) { return runHook('edit-guard.js', Object.assign({ tool_name: 'Edit', tool_input: { file_path: 'src/x.js', old_string: 'a', new_string: 'b' } }, extra), { CLAUDE_CODE_ENTRYPOINT: 'cli' }); }
 BLOCKED(eg()) ? ok('edit-guard blocks coordinator edit') : bad('edit-guard did NOT block coordinator edit');

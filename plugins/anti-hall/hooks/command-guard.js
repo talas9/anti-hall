@@ -1936,6 +1936,142 @@ function isBoundedVerificationCommand(command) {
   return sawQualifying && sawPipedBoundedSink;
 }
 
+// ---------------------------------------------------------------------------
+// Per-project command allowlist (owner-approved 2026-09-26). Lets a PROJECT
+// declare its own sanctioned exact commands (e.g. its deploy script) that run
+// inline in the MAIN THREAD ONLY, even though they classify heavy above — a
+// project's own rule may require its deploy to never be delegated to a
+// subagent (a subagent once reshaped one). The project opts in itself, by
+// committing `<repo-toplevel>/.anti-hall/command-allow.json` — anti-hall
+// ships with nothing allowed anywhere (default empty list == no behavior
+// change for a repo that never created this file). Gated by
+// guards.projectCommandAllow (default true); NEVER applied outside
+// isCoordinator(payload) — see the call site in main().
+//
+// Reuses splitSegmentsDetailed — no new parser (a recurring bug class here is
+// a second/third hand-rolled segment splitter).
+// ---------------------------------------------------------------------------
+
+// projectCommandAllowConfigPath(cwd) -> <repo-toplevel>/.anti-hall/command-allow.json,
+// or null if the repo toplevel cannot be resolved.
+function projectCommandAllowConfigPath(cwd) {
+  try {
+    const top = require('../companion/lib/identity.js').resolveContext(cwd || process.cwd(), { missingPath: 'ancestor' }).toplevel;
+    if (!top) return null;
+    return path.join(top, '.anti-hall', 'command-allow.json');
+  } catch (_) {
+    return null;
+  }
+}
+
+// loadProjectCommandAllowPatterns(cwd) -> array of VALID anchored regex
+// source strings (each must start with '^' and end with '$' — literal chars,
+// not just semantically anchored — anything else is silently ignored here;
+// doctor.js separately reports a config that carries an invalid pattern).
+// Fail-open to [] on any missing/malformed/unreadable config — default is no
+// behavior change.
+function loadProjectCommandAllowPatterns(cwd) {
+  const cfgPath = projectCommandAllowConfigPath(cwd);
+  if (!cfgPath) return [];
+  let parsed;
+  try {
+    parsed = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+  } catch (_) {
+    return [];
+  }
+  const patterns = parsed && Array.isArray(parsed.patterns) ? parsed.patterns : [];
+  const out = [];
+  for (const p of patterns) {
+    if (typeof p !== 'string' || !p.startsWith('^') || !p.endsWith('$')) continue;
+    try { new RegExp(p); } catch (_) { continue; } // invalid regex: ignore
+    out.push(p);
+  }
+  return out;
+}
+
+// hasUnquotedRedirectChar(segment) -> true if a bare (unquoted) '>' or '<'
+// appears anywhere — the per-project allowlist bans ANY redirect regardless
+// of destination (unlike the narrow-allow carve-out above, which only cares
+// about the destination path), since the whole point is running the
+// project's declared command EXACTLY, never a redirected variant of it.
+function hasUnquotedRedirectChar(segment) {
+  let inSingle = false;
+  let inDouble = false;
+  for (let i = 0; i < segment.length; i++) {
+    const c = segment[i];
+    const c2 = i + 1 < segment.length ? segment[i + 1] : '';
+    if (inSingle) { if (c === "'") inSingle = false; continue; }
+    if (inDouble) {
+      if (c === '\\' && c2) { i++; continue; }
+      if (c === '"') inDouble = false;
+      continue;
+    }
+    if (c === "'") { inSingle = true; continue; }
+    if (c === '"') { inDouble = true; continue; }
+    if (c === '>' || c === '<') return true;
+  }
+  return false;
+}
+
+// isSingleUnbrokenSegment(command) -> the command splits into exactly ONE
+// logical segment via splitSegmentsDetailed, terminated by 'end' (i.e. no
+// ';'/'&&'/'||'/'|'/'&'/newline/heredoc/subshell-or-group/command-substitution
+// boundary was found outside quotes anywhere in the line) — this is what
+// rules out chaining, pipes, subshells, backticks and `$( )` in one check,
+// reusing the guard's own canonical splitter rather than a second parser.
+function isSingleUnbrokenSegment(command) {
+  const { segments, delims } = splitSegmentsDetailed(command);
+  if (segments.length !== 1) return false;
+  return delims[0] === 'end';
+}
+
+// matchedProjectCommandAllowPattern(command, cwd) -> the matching pattern
+// string, or null. ALL of these must hold:
+//   1. the config resolves at least one valid anchored pattern for this repo;
+//   2. the WHOLE command is exactly one segment (no chaining/pipes/subshells/
+//      command substitution — see isSingleUnbrokenSegment);
+//   3. no unquoted redirect character anywhere in the command;
+//   4. the WHOLE (trimmed) command line matches one whole pattern exactly.
+function matchedProjectCommandAllowPattern(command, cwd) {
+  if (typeof command !== 'string' || !command.trim()) return null;
+  const patterns = loadProjectCommandAllowPatterns(cwd);
+  if (!patterns.length) return null;
+  if (!isSingleUnbrokenSegment(command)) return null;
+  if (hasUnquotedRedirectChar(command)) return null;
+  const trimmed = command.trim();
+  for (const p of patterns) {
+    let re;
+    try { re = new RegExp(p); } catch (_) { continue; }
+    if (re.test(trimmed)) return p;
+  }
+  return null;
+}
+
+// appendProjectCommandAllowAudit({cwd, repo, pattern, command}) -> best-effort,
+// ONE ndjson line per allowed run, to ~/.anti-hall/logs/command-allow.ndjson.
+// Uses the canonical resolveHome() helper (see test-home-guard.js and
+// tests/hygiene/homedir-call-site-ratchet.test.js) so a test with an isolated
+// HOME never touches the real developer machine. Fully fail-open: a write
+// failure never blocks or un-allows the command that already passed.
+function appendProjectCommandAllowAudit(entry) {
+  try {
+    const testHomeGuard = require('../companion/lib/test-home-guard.js');
+    const home = testHomeGuard.resolveHome(undefined, process.env);
+    const logDir = path.join(home, '.anti-hall', 'logs');
+    fs.mkdirSync(logDir, { recursive: true });
+    const line = JSON.stringify({
+      ts: new Date().toISOString(),
+      cwd: entry.cwd || '',
+      repo: entry.repo || '',
+      pattern: entry.pattern || '',
+      command: entry.command || '',
+    }) + '\n';
+    fs.appendFileSync(path.join(logDir, 'command-allow.ndjson'), line);
+  } catch (_) {
+    // fail-open: audit logging never blocks or un-allows an already-allowed command.
+  }
+}
+
 function main() {
   // Read + parse the payload FIRST — coordinator/subagent detection needs the
   // payload's agent_id/agent_type markers (the only reliable signal under cmux).
@@ -2115,6 +2251,27 @@ function main() {
   try {
     if (settingsGet('guards', 'allowReadOnlyVerify') !== false && isBoundedVerificationCommand(command)) {
       process.exit(0);
+    }
+  } catch (_) {
+    // fail-closed: never let a bug in this carve-out bypass the heavy-command gate.
+  }
+
+  // Per-project command allowlist (owner-approved 2026-09-26): the repo at
+  // `cwd` declared this EXACT command as sanctioned to run inline in the main
+  // thread (e.g. its own deploy script, never delegated by project rule).
+  // MAIN THREAD ONLY — we are already past the isCoordinator(payload) gate
+  // above, so a subagent never reaches this carve-out. Fail-closed on any
+  // error (falls through to the ordinary block below).
+  try {
+    if (settingsGet('guards', 'projectCommandAllow') !== false) {
+      const cwd = (payload && payload.cwd) || '';
+      const matched = matchedProjectCommandAllowPattern(command, cwd);
+      if (matched) {
+        let repoTop = '';
+        try { repoTop = require('../companion/lib/identity.js').resolveContext(cwd || process.cwd(), { missingPath: 'ancestor' }).toplevel || ''; } catch (_) { /* best-effort only */ }
+        appendProjectCommandAllowAudit({ cwd, repo: repoTop, pattern: matched, command });
+        process.exit(0);
+      }
     }
   } catch (_) {
     // fail-closed: never let a bug in this carve-out bypass the heavy-command gate.

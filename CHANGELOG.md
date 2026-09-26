@@ -10,6 +10,20 @@ the update.
 
 ### Features
 
+- **command-guard per-project command allowlist** (owner-approved 2026-09-26). A repo may
+  declare its own sanctioned exact commands — e.g. a deploy script the project's own rule
+  says must never be delegated to a subagent — in `<repo-toplevel>/.anti-hall/command-allow.json`
+  (`{"patterns":["^anchored regex$", ...]}`). Applies in the MAIN THREAD ONLY (a subagent
+  never reaches this carve-out; it already passes through command-guard before this point).
+  Every pattern must be literally anchored (`^...$`) or it is ignored, never matched. The
+  WHOLE command must be exactly one unbroken segment (no chaining, pipes, subshells,
+  backticks, or `$( )` command substitution — reuses the guard's own `splitSegmentsDetailed`,
+  no new parser) and carry no unquoted redirect anywhere, or it never qualifies regardless
+  of the pattern. A qualifying match writes one audit line to
+  `~/.anti-hall/logs/command-allow.ndjson`. Default config is empty (no behavior change for
+  a repo that never opted in). New setting `guards.projectCommandAllow` (default on).
+  `doctor` reports an unanchored/invalid pattern in a repo's own config as a warning.
+
 - **command-guard "narrow allow": bounded read-only verification for the coordinator.**
   The coordinator may now run a short, single-target, read-only verification command
   inline instead of delegating it — e.g. re-running one delegated test file to verify a
