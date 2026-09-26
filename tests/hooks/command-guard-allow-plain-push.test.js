@@ -167,6 +167,17 @@ test('allow-plain-push: a push to another (non-current) branch is blocked', () =
   }
 });
 
+test('allow-plain-push: on branch `feat`, `git push origin main` (not the current branch) is blocked', () => {
+  const repo = makeGitRepo();
+  try {
+    cp.spawnSync('git', ['-C', repo, 'checkout', '-q', '-b', 'feat']);
+    const res = run('git push origin main', { cwd: repo });
+    assert.strictEqual(res.status, 2, 'ref must match the CURRENT branch (feat), not main: ' + res.stdout);
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+});
+
 test('allow-plain-push: a chain with a non-git command (npm test) is blocked', () => {
   const repo = makeGitRepo();
   try {

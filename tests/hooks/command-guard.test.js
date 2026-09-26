@@ -64,11 +64,10 @@ const BLOCK = [
   // f0958b13-adjacent: state-changing variants of the newly-allowed read-only
   // commands must stay blocked — the allowlist is read-only-scoped, not a
   // blanket exemption of the whole script/verb.
-  // NOTE: `git push origin main` moved to ALLOW below (owner-approved
-  // 2026-09-26, "allow plain push" — see command-guard-allow-plain-push.test.js
-  // for the full matrix; this file's runCoord() runs with cwd=process.cwd(),
-  // this repo, checked out on `main`, so the ref-matches-current-branch rule
-  // is satisfied).
+  // NOTE: `git push origin main` is NOT listed here or in ALLOW below — see
+  // command-guard-allow-plain-push.test.js for the full "allow plain push"
+  // matrix (owner-approved 2026-09-26), run against a fixture repo instead
+  // of this file's ambient-cwd runCoord().
   'git pull origin main',
   'node plugins/anti-hall/scripts/settings.js set devswarm.enabled true --confirmed',
   'sqlite3 /tmp/x.db "delete from t"',
@@ -246,11 +245,12 @@ const ALLOW = [
   'eval "echo hi"',
   'git push --dry-run origin main',
   // "Allow plain push" (owner-approved 2026-09-26): a plain `git push` to the
-  // CURRENT branch is now allowed inline in the coordinator — this repo is
-  // checked out on `main`. See command-guard-allow-plain-push.test.js for the
-  // full allow/block matrix (force/mirror/delete/tags/foreign-branch stay
-  // blocked exactly as before).
-  'git push origin main',
+  // CURRENT branch is allowed inline in the coordinator. NOT tested here —
+  // runCoord()/bashPayload() use the ambient process.cwd() (this repo's own
+  // checkout), whose branch is environment-dependent (e.g. a detached HEAD
+  // under actions/checkout of a tag in CI), so the plain-push ALLOW/BLOCK
+  // matrix lives entirely in command-guard-allow-plain-push.test.js against a
+  // fixture repo with a known, controlled branch/HEAD state instead.
   'go env GOPATH',
   'echo "hello world"',
   // Coordinator-owned phase-state helpers (orchestration/SKILL.md:305, ship-it/SKILL.md:280).
