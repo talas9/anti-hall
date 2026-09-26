@@ -262,6 +262,93 @@ test('doctor --prune-cache is refused when updates.allowCachePrune=false', () =>
   }
 });
 
+test('prune-cache plan: a version named in a recent transcript tail is KEPT with the referenced reason', () => {
+  const f = makeFixture(VERSIONS);
+  try {
+    const plan = cachePrune.planCachePrune({
+      home: f.home,
+      scanCwds: () => ['/'],
+      scanArgv: () => [],
+      scanTranscripts: () => new Set(['0.104.0']),
+    });
+    const e = byName(plan);
+    assert.ok(e['0.104.0'].reasons.includes('referenced by a recent session (cron/Monitor/command)'));
+    assert.strictEqual(e['0.104.0'].action, 'keep');
+    // Not otherwise protected: 0.105.0 is still removed.
+    assert.strictEqual(e['0.105.0'].action, 'remove');
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('prune-cache plan: an unavailable transcript scan keeps everything (fail-safe)', () => {
+  const f = makeFixture(VERSIONS);
+  try {
+    const plan = cachePrune.planCachePrune({
+      home: f.home,
+      scanCwds: () => ['/'],
+      scanArgv: () => [],
+      scanTranscripts: () => null,
+    });
+    assert.deepStrictEqual(plan.entries.filter((x) => x.action === 'remove'), []);
+    const e = byName(plan);
+    assert.ok(e['0.104.0'].reasons.includes('transcript scan unavailable'));
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('defaultScanTranscripts: no ~/.claude/projects at all is an empty scan, not "unavailable"', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'antihall-prune-transcripts-empty-'));
+  try {
+    const result = cachePrune.defaultScanTranscripts(home);
+    assert.ok(result instanceof Set, 'ENOENT must return an empty Set, not null');
+    assert.strictEqual(result.size, 0);
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('defaultScanTranscripts: finds a versioned cache path in the TAIL of a recent transcript, ignores old/oversize-prefix files', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'antihall-prune-transcripts-'));
+  try {
+    const projDir = path.join(home, '.claude', 'projects', 'my-project');
+    fs.mkdirSync(projDir, { recursive: true });
+    // Recent transcript: padding then a line naming a versioned cache path near the end.
+    const pad = 'x'.repeat(10000) + '\n';
+    const recentLine = JSON.stringify({ text: 'node ' + path.join(home, '.claude', 'plugins', 'cache', 'anti-hall', 'anti-hall', '0.109.0', 'scripts', 'devswarm.js') + ' inbox tick abc' });
+    fs.writeFileSync(path.join(projDir, 'recent.jsonl'), pad + recentLine + '\n');
+    // Old transcript (mtime > 7 days ago): must NOT contribute even though it names a version.
+    const oldLine = JSON.stringify({ text: 'plugins/cache/anti-hall/anti-hall/0.110.0/scripts/devswarm.js' });
+    const oldFile = path.join(projDir, 'old.jsonl');
+    fs.writeFileSync(oldFile, oldLine + '\n');
+    const eightDaysAgo = Date.now() - 8 * 24 * 60 * 60 * 1000;
+    fs.utimesSync(oldFile, eightDaysAgo / 1000, eightDaysAgo / 1000);
+
+    const result = cachePrune.defaultScanTranscripts(home);
+    assert.ok(result instanceof Set, 'scan must succeed');
+    assert.ok(result.has('0.109.0'), 'must find the version in the recent transcript tail');
+    assert.ok(!result.has('0.110.0'), 'must NOT count a transcript older than 7 days');
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('doctor --prune-cache prints the cron/Monitor versioned-path warning in BOTH list and --confirmed output', () => {
+  const f = makeFixture(CLI_VERSIONS);
+  try {
+    const listed = runDoctorScanned(f.home, ['--prune-cache']);
+    assert.match(listed.out, /Crons\/Monitors that name a versioned cache path/);
+    assert.match(listed.out, /~\/\.anti-hall\/bin\/devswarm\.js/);
+    assert.match(listed.out, /~\/\.anti-hall\/bin\/wake-watch\.js/);
+
+    const confirmed = runDoctorScanned(f.home, ['--prune-cache', '--confirmed']);
+    assert.match(confirmed.out, /Crons\/Monitors that name a versioned cache path/);
+  } finally {
+    f.cleanup();
+  }
+});
+
 test('nothing but doctor --prune-cache reaches the prune code', () => {
   const pluginDir = path.join(REPO_ROOT, 'plugins', 'anti-hall');
   const hits = [];

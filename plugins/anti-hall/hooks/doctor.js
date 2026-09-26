@@ -246,6 +246,7 @@ if (process.argv.includes('--prune-cache')) {
     bad('--prune-cache is disabled by updates.allowCachePrune=false');
     emitVerdictAndExit();
   }
+  warnl('Crons/Monitors that name a versioned cache path (…/plugins/cache/anti-hall/anti-hall/<ver>/…) will break when that version is pruned — point them at the stable launchers ~/.anti-hall/bin/devswarm.js and ~/.anti-hall/bin/wake-watch.js instead.');
   try {
     const cachePrune = require('./lib/cache-prune.js');
     const home = require('../companion/lib/test-home-guard.js').resolveHome(undefined, process.env);

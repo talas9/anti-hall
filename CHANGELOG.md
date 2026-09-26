@@ -6,6 +6,26 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## Unreleased
+
+### Fixes
+
+- **doctor --prune-cache: a session-only cron/Monitor naming a versioned cache
+  path silently broke after prune.** A `CronCreate`/`Monitor` job created
+  during a session (hooks cannot read `CronList`) could still literally name
+  `.../plugins/cache/anti-hall/anti-hall/<ver>/...` — pruning that version
+  left the job failing silently on every tick. `doctor --prune-cache` now (1)
+  prints one warning line, in both the listing and the `--confirmed` output,
+  pointing crons/Monitors at the version-independent stable launchers
+  (`~/.anti-hall/bin/devswarm.js`, `~/.anti-hall/bin/wake-watch.js`) instead;
+  and (2) does a cheap, bounded (<=2s, <=20 files, 512 KB tail each), read-only
+  best-effort scan of the newest recent (<=7 day) session transcripts under
+  `~/.claude/projects/*/` for any versioned cache path they mention, and adds
+  those versions to the keep set ("referenced by a recent session
+  (cron/Monitor/command)"). Same fail-safe as the existing live-process scan:
+  if the transcript scan cannot complete, everything it could not prove
+  unreferenced is kept.
+
 ## 0.114.1 (2026-09-26)
 
 ### Fixes

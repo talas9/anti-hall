@@ -11,9 +11,13 @@
 //   - every dir a live process runs from (process cwd, via doctor-devswarm's
 //     scanProcessCwds, or the cache path in its argv via `ps`);
 //   - the running version (and the dir the running doctor itself lives in);
+//   - any version mentioned in the tail of a recent (<=7 day) session
+//     transcript (best-effort — a session-only CronCreate/Monitor job can
+//     still name a versioned path; hooks cannot read CronList);
 //   - anything it cannot parse (non-semver names, non-directories), and every
 //     symlink (refused, never followed).
-// If the live-process scan is unavailable, NOTHING is removed.
+// If the live-process scan OR the transcript scan is unavailable, NOTHING is
+// removed (fail-safe: keep everything neither scan could prove unreferenced).
 // With --confirmed each listed dir is re-validated right before removal
 // (still a real directory, not a symlink, its realpath's parent is the cache
 // root's realpath) and each removal is logged by the caller.
@@ -116,6 +120,81 @@ function defaultScanCwds() {
   }
 }
 
+// TRANSCRIPT_TIME_BUDGET_MS / TRANSCRIPT_MAX_FILES / TRANSCRIPT_TAIL_BYTES /
+// TRANSCRIPT_MAX_AGE_MS — the cheap best-effort "keep" scan below (peer
+// report, 2026-09-26): a session-only CronCreate/Monitor job can still name a
+// versioned cache path that prune would otherwise remove, and hooks cannot
+// read CronList (in-memory per session). This scans the TAIL of the newest
+// few recent transcripts for a literal versioned-cache mention and adds those
+// versions to the keep set. Bounded and read-only; on ANY failure or
+// time-out it returns null, and the caller keeps EVERYTHING it could not
+// prove unreferenced — the same fail-safe as the live-process scan.
+const TRANSCRIPT_TIME_BUDGET_MS = 2000;
+const TRANSCRIPT_MAX_FILES = 20;
+const TRANSCRIPT_TAIL_BYTES = 512 * 1024;
+const TRANSCRIPT_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+const TRANSCRIPT_VERSION_RE = /plugins[\/\\]cache[\/\\]anti-hall[\/\\]anti-hall[\/\\](\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)(?=$|[\/\\\s"'])/g;
+
+// defaultScanTranscripts(home) -> Set<version string> | null (unavailable/
+// timed out — caller must keep everything). Scans ~/.claude/projects/*/*.jsonl
+// files modified in the last 7 days, newest first, capped at 20 files and a
+// 512 KB tail read each, all within a 2s wall-clock budget. Read-only.
+function defaultScanTranscripts(home) {
+  const start = Date.now();
+  try {
+    const projectsDir = path.join(home, '.claude', 'projects');
+    let projectDirs;
+    try {
+      projectDirs = fs.readdirSync(projectsDir, { withFileTypes: true });
+    } catch (err) {
+      // No ~/.claude/projects at all is a legitimate empty state (fresh
+      // install / fixture home), not a scan failure — only a REAL error
+      // (permissions, etc.) means "unavailable".
+      if (err && err.code === 'ENOENT') return new Set();
+      return null;
+    }
+    const files = [];
+    for (const pd of projectDirs) {
+      if (Date.now() - start > TRANSCRIPT_TIME_BUDGET_MS) return null;
+      if (!pd.isDirectory()) continue;
+      const dir = path.join(projectsDir, pd.name);
+      let entries;
+      try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch (_) { continue; }
+      for (const e of entries) {
+        if (!e.isFile() || !e.name.endsWith('.jsonl')) continue;
+        const p = path.join(dir, e.name);
+        let st;
+        try { st = fs.statSync(p); } catch (_) { continue; }
+        if (start - st.mtimeMs > TRANSCRIPT_MAX_AGE_MS) continue;
+        files.push({ p, mtime: st.mtimeMs, size: st.size });
+      }
+    }
+    files.sort((a, b) => b.mtime - a.mtime);
+    const chosen = files.slice(0, TRANSCRIPT_MAX_FILES);
+    const versions = new Set();
+    for (const f of chosen) {
+      if (Date.now() - start > TRANSCRIPT_TIME_BUDGET_MS) return null;
+      let fd;
+      try {
+        fd = fs.openSync(f.p, 'r');
+        const readLen = Math.min(TRANSCRIPT_TAIL_BYTES, f.size);
+        if (readLen > 0) {
+          const buf = Buffer.alloc(readLen);
+          fs.readSync(fd, buf, 0, readLen, f.size - readLen);
+          const text = buf.toString('utf8');
+          TRANSCRIPT_VERSION_RE.lastIndex = 0;
+          let m;
+          while ((m = TRANSCRIPT_VERSION_RE.exec(text))) versions.add(m[1]);
+        }
+      } catch (_) { /* skip this unreadable file */ }
+      finally { if (fd !== undefined) { try { fs.closeSync(fd); } catch (_) { /* ignore */ } } }
+    }
+    return versions;
+  } catch (_) {
+    return null;
+  }
+}
+
 // mentionsVersion(text, ver) -> true when text names the cache version dir
 // `…/plugins/cache/anti-hall/anti-hall/<ver>` (itself or anything below it)
 // with a path boundary after <ver>, WHATEVER the prefix — /tmp vs
@@ -184,6 +263,13 @@ function planCachePrune(opts) {
     if (!liveScanOk) e.reasons.push('live-process scan unavailable');
   }
 
+  const scanTranscripts = typeof o.scanTranscripts === 'function' ? o.scanTranscripts : () => defaultScanTranscripts(o.home);
+  const transcriptVersions = scanTranscripts();
+  for (const e of versions) {
+    if (transcriptVersions === null) e.reasons.push('transcript scan unavailable');
+    else if (transcriptVersions.has(e.name)) e.reasons.push('referenced by a recent session (cron/Monitor/command)');
+  }
+
   for (const e of versions) {
     if (e.reasons.length) continue;
     e.action = 'remove';
@@ -232,4 +318,4 @@ function formatBytes(n) {
   return n + ' B';
 }
 
-module.exports = { cacheRootFor, planCachePrune, applyCachePrune, formatBytes, registeredInstallPaths, KEEP_NEWEST };
+module.exports = { cacheRootFor, planCachePrune, applyCachePrune, formatBytes, registeredInstallPaths, KEEP_NEWEST, defaultScanTranscripts };
