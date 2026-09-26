@@ -98,12 +98,26 @@ const HARD_EXECUTION = ['run script', 'install', 'build', 'run tests', 'git push
 // DEPLOY / MIGRATION / SECRET FLOOR (0.112, setting guards.modelRoutingDeployFloor,
 // default 'sonnet'). Production deploys, migrations, rollbacks and secret/credential
 // work are exactly where auth/secret edge cases get mishandled by a cheap model, so
-// the guard must never push such a spawn toward haiku. A deploy-shaped spawn on a
-// model at or above the floor is allowed silently (no block, whatever its mechanical
-// signals); one below the floor (or with no explicit model) gets an ADVISORY naming
-// the floor. It never blocks. 'off' restores the pre-0.112 table.
-const DEPLOY_SHAPED_RE =
-  /\b(deploy\w*|redeploy\w*|migrat\w*|rollbacks?|roll\s+back|prod|production|secrets?|credentials?|token\s+rotation|rotat\w*\s+(?:the\s+|a\s+)?(?:api\s+)?(?:tokens?|keys?|secrets?|credentials?)|wrangler|terraform|kubectl\s+apply|helm\s+(?:install|upgrade)|firebase\s+deploy|db\s+migrate)\b/i;
+// the guard must never push such a spawn toward haiku. A deploy-shaped spawn:
+//   - at or above the floor: the rows that push toward haiku (1 and 3; row 2 cannot
+//     apply to an explicit model) are suppressed — every other row still evaluates;
+//   - below the floor, or with no explicit model: an ADVISORY naming the floor
+//     replaces the haiku push (row 2's omitted-model block included). Never a block.
+// 'off' restores the plain table.
+// DEPLOY-SHAPED = one STRONG action signal (deploy/migrate/rollback/rotation/infra
+// tool), or TWO distinct WEAK context words (prod, production, secret, credential).
+// A single stray weak word ("grep for TODO, no secrets") is not enough.
+const DEPLOY_STRONG_RE =
+  /\b(deploy\w*|redeploy\w*|migrat\w*|rollbacks?|roll\s+back|token\s+rotation|rotat\w*\s+(?:the\s+|a\s+)?(?:api\s+)?(?:tokens?|keys?|secrets?|credentials?)|wrangler|terraform|kubectl\s+apply|helm\s+(?:install|upgrade)|firebase\s+deploy|db\s+migrate)\b/i;
+const DEPLOY_WEAK_RE = /\b(prod|production|secrets?|credentials?)\b/gi;
+function isDeployShaped(corpus) {
+  if (DEPLOY_STRONG_RE.test(corpus)) return true;
+  const kinds = new Set();
+  for (const m of corpus.matchAll(DEPLOY_WEAK_RE)) {
+    kinds.add(m[1].toLowerCase().replace(/s$/, '').replace(/^production$/, 'prod'));
+  }
+  return kinds.size >= 2;
+}
 const MODEL_RANK = { haiku: 1, sonnet: 2, opus: 3, fable: 3 };
 
 // Complex signals -> opus/fable. COMPLEX ANYWHERE (description OR prompt) => never
@@ -375,11 +389,12 @@ function main() {
 
   const isFlagship = FLAGSHIP_MODELS.has(model);
 
-  // Deploy/migration/secret floor (see DEPLOY_SHAPED_RE): runs BEFORE rows 1-4 so
-  // no row can steer this spawn toward haiku.
+  // Deploy/migration/secret floor (see isDeployShaped): runs BEFORE rows 1-4 so no
+  // row can steer this spawn toward haiku; it only ever suppresses those rows.
   let deployFloor = 'sonnet';
   try { deployFloor = require('./lib/settings.js').get('guards', 'modelRoutingDeployFloor'); } catch (_) { deployFloor = 'sonnet'; }
-  if (deployFloor !== 'off' && DEPLOY_SHAPED_RE.test(corpus)) {
+  let suppressHaikuRows = false;
+  if (deployFloor !== 'off' && isDeployShaped(corpus)) {
     const floor = MODEL_RANK[deployFloor] ? deployFloor : 'sonnet';
     if (modelOmitted) {
       advise(
@@ -399,14 +414,14 @@ function main() {
           : '')
       );
     }
-    process.exit(0); // at/above the floor, or an unknown tier: allow silently
+    suppressHaikuRows = true; // at/above the floor (or an unknown tier): rows 1 and 3 never fire
   }
 
   // ---- Decision table (rows computed exemption-blind; modifier applied after) ----
 
   // Row 1: mechanical-only ∧ explicit flagship ∧ generic agent => BLOCK
   //        (exemption modifier may downgrade to advisory).
-  if (isMechanicalOnly && !modelOmitted && isFlagship && isGenericAgent) {
+  if (!suppressHaikuRows && isMechanicalOnly && !modelOmitted && isFlagship && isGenericAgent) {
     const blockReason =
       'anti-hall model-routing-guard: execution-shaped task on a flagship model ' +
       "(model: '" + model + "'). Respawn with model:'haiku' (or 'sonnet' if it " +
@@ -473,7 +488,7 @@ function main() {
 
   // Row 3: mechanical-only ∧ explicit flagship ∧ NAMED custom subagent_type =>
   //        advisory (custom defs may pin models).
-  if (isMechanicalOnly && !modelOmitted && isFlagship && isCustomAgent) {
+  if (!suppressHaikuRows && isMechanicalOnly && !modelOmitted && isFlagship && isCustomAgent) {
     advise(
       "MODEL-ROUTING (advisory): execution-shaped task on a flagship model ('" +
       model + "') via a custom subagent_type ('" + subagentType + "'). If that " +

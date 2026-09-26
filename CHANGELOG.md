@@ -62,10 +62,12 @@ the update.
 - **model-routing-guard: deploys, migrations and secret work are never pushed to haiku.**
   An opus spawn that ran a production deploy (`wrangler … cors set`, `deploy_webui.sh prod`)
   was blocked with "respawn with haiku", which is the wrong advice for deploys, migrations,
-  rollbacks and secret/credential work. A spawn with deploy, migration, rollback, prod,
-  secret, credential or token-rotation wording (or wrangler/terraform/`kubectl apply`/
-  `firebase deploy`/`db migrate`) is now allowed silently at or above a floor. Below the
-  floor, or with no explicit model, it gets an advisory naming the floor. It is never
+  rollbacks and secret/credential work. A spawn is deploy-shaped when it has one action
+  signal: deploy, migrate, rollback, token rotation, or wrangler/terraform/`kubectl apply`/
+  `firebase deploy`/`db migrate`. Two distinct context words out of prod, secret and
+  credential also count; one stray "no secrets" does not. At or above a floor, the rows
+  that push toward haiku are skipped and every other row still runs. Below the floor, or
+  with no explicit model, the spawn gets an advisory naming the floor instead. It is never
   blocked. New setting `guards.modelRoutingDeployFloor` (`sonnet` default, `opus`, or `off`
   for the old table).
 

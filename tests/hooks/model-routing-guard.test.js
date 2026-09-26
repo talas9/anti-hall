@@ -969,3 +969,37 @@ test('DEPLOY FLOOR: an ordinary mechanical task keeps the current behaviour (opu
     assertBlock(r, /haiku/);
   } finally { h.cleanup(); }
 });
+
+test('DEPLOY FLOOR (F4): one stray weak word ("no secrets") in an opus mechanical task keeps the original BLOCK', () => {
+  const h = makeHome();
+  try {
+    const r = testHook(HOOK, payload({
+      model: 'opus', subagent_type: 'general-purpose', description: 'grep for TODO',
+      prompt: 'grep for TODO markers in src and list them, no secrets involved',
+    }), { home: h.home });
+    assertBlock(r, /haiku/);
+  } finally { h.cleanup(); }
+});
+
+test('DEPLOY FLOOR (F4): two weak words (prod + credentials) count as deploy-shaped -> opus allowed', () => {
+  const h = makeHome();
+  try {
+    const r = testHook(HOOK, payload({
+      model: 'opus', subagent_type: 'general-purpose', description: 'update prod credentials',
+      prompt: 'download the new credentials and install them on the prod box',
+    }), { home: h.home });
+    assertSilentAllow(r);
+  } finally { h.cleanup(); }
+});
+
+test('DEPLOY FLOOR (F4): a deploy-shaped opus spawn no longer skips the other rows (Explore advisory still evaluates)', () => {
+  const h = makeHome();
+  try {
+    // research-shaped, no write verb; "prod" + "secrets" make it deploy-shaped.
+    const r = testHook(HOOK, payload({
+      model: 'opus', subagent_type: 'general-purpose', description: 'audit prod secrets usage',
+      prompt: 'investigate where prod secrets are read and map every call site',
+    }), { home: h.home });
+    assertAdvisory(r, /AGENT-ROUTING/);
+  } finally { h.cleanup(); }
+});
