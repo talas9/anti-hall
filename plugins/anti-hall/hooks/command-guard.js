@@ -2637,9 +2637,18 @@ function isBackgroundScratchScript(command, payload) {
   if (!script || script.startsWith('-')) return false;
   if (!isScratchpadOrTmpPath(script, ctx)) return false;
   const base = (typeof payload.cwd === 'string' && payload.cwd) || process.cwd();
+  let realScript;
   try {
-    if (!fs.statSync(path.resolve(base, script)).isFile()) return false;
+    const abs = path.resolve(base, script);
+    if (!fs.statSync(abs).isFile()) return false;
+    realScript = fs.realpathSync(abs);
   } catch (_) { return false; }
+  // Mirrors the 0.112 F1 rule of the script-check carve-out: never a way to
+  // flip a safety switch or trust an allowlist from the main thread —
+  // `--confirmed` anywhere refuses, and so does any script inside an
+  // anti-hall plugin root (this install, a cache copy, a dev checkout).
+  if (tokens.some((t) => t === '--confirmed' || t.startsWith('--confirmed='))) return false;
+  if (isInsideAntiHallPlugin(realScript)) return false;
   return true;
 }
 

@@ -13,7 +13,7 @@ const { testHook } = require('../helpers/spawn-hook.js');
 const { makeHome } = require('../helpers/fixtures.js');
 
 const HOOK = 'command-guard.js';
-let dir; let jsFile; let pyFile; let shFile; let escapeLink;
+let dir; let jsFile; let pyFile; let shFile; let escapeLink; let pluginScript; let pluginLink;
 
 before(() => {
   // '/tmp', not os.tmpdir(): the hook child runs with a controlled env
@@ -29,6 +29,15 @@ before(() => {
   // A tmp-looking path whose realpath is OUTSIDE every tmp root.
   escapeLink = path.join(dir, 'escape.js');
   fs.symlinkSync(process.execPath, escapeLink);
+  // A fake anti-hall plugin root inside tmp (a cache copy / dev checkout shape).
+  const fakePlugin = path.join(dir, 'fake-plugin');
+  fs.mkdirSync(path.join(fakePlugin, '.claude-plugin'), { recursive: true });
+  fs.mkdirSync(path.join(fakePlugin, 'scripts'), { recursive: true });
+  fs.writeFileSync(path.join(fakePlugin, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: 'anti-hall' }));
+  pluginScript = path.join(fakePlugin, 'scripts', 'settings.js');
+  fs.writeFileSync(pluginScript, 'console.log(1)\n');
+  pluginLink = path.join(dir, 'plugin-link.js');
+  fs.symlinkSync(pluginScript, pluginLink);
 });
 after(() => { fs.rmSync(dir, { recursive: true, force: true }); });
 
@@ -86,6 +95,11 @@ test('background-scratch: negatives stay blocked even with run_in_background', (
     'node ' + jsFile + ' > /nonexistent-anti-hall-dir/out.log',
     'node ' + jsFile + ' < /etc/hosts',
     'node ' + jsFile + ' # trailing',
+    // 0.113 P3 (mirrors 0.112 F1): anti-hall scripts and --confirmed never qualify.
+    'node ' + pluginScript + ' set safety.commandGuard false',
+    'node ' + pluginLink,
+    'node ' + jsFile + ' --confirmed',
+    'node ' + jsFile + ' --confirmed=yes',
   ];
   const wrong = cmds.filter((c) => run(c).status !== 2);
   assert.deepStrictEqual(wrong, []);

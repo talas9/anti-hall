@@ -85,6 +85,10 @@ the update.
   `input_filename`, `import`, `include` or `$__loc__`. `grep -f`/`--file`, including in a
   short-flag cluster, is refused.
 
+- **command-guard background scratch scripts: same F1 rule as the script check (P3).** A
+  script whose realpath is inside any anti-hall plugin root (this install, a cache copy,
+  or a dev checkout), or any `--confirmed` argument, never qualifies.
+
 ## 0.112.0 (2026-09-26)
 
 ### Features
