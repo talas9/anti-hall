@@ -16,7 +16,9 @@ the update.
   `gcloud <group…> <describe|list|get-iam-policy|read> … --format=json|yaml|value(...)`,
   optionally piped into `tail`/`head`/`wc`/`grep -c`/`grep -m N`/`jq`; and
   `T=$(gcloud auth print-access-token); curl -s|-sS [-H "Authorization: Bearer $T"] <https URL>`
-  (`;` or `&&`). The curl must be a GET, and its output must be piped into a bounded
+  (`;` or `&&`). The URL's parsed host must be `googleapis.com` or a subdomain of it (no
+  userinfo, no IP literal, no other host), and `-L`/`--location`, `--resolve`, `--connect-to`,
+  `-x`/`--proxy`, `--url` and `-K`/`--config` are refused, so the token never leaves Google. The curl must be a GET, and its output must be piped into a bounded
   sink or `jq`, or capped with `--max-filesize`. Everything else stays blocked:
   create/delete/deploy/set/update/add-iam-policy-binding/remove-*/patch/import/export/
   rollback/start/stop/ssh/scp/submit/run/apply, `curl -X` other than GET,

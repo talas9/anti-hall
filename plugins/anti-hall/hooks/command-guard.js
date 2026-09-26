@@ -2493,6 +2493,22 @@ function isGcloudReadSegment(segment) {
 
 // Shape C's curl segment. `tokenVar` is the variable the token was assigned
 // to; `$T`/`${T}` may appear ONLY as `Authorization: Bearer $T`.
+// The token may only ever reach Google: the URL's PARSED host must be
+// googleapis.com or a subdomain of it — no userinfo, no IP literal, no other
+// host. Redirect-following (-L), --resolve/--connect-to, proxies (-x),
+// --url and -K/--config are refused by the flag allowlist below (every flag
+// not listed is refused).
+const GOOGLEAPIS_HOST_RE = /(^|\.)googleapis\.com$/;
+function isGoogleApisHttpsUrl(raw) {
+  let u;
+  try { u = new URL(raw); } catch (_) { return false; }
+  if (u.protocol !== 'https:') return false;
+  if (u.username || u.password || raw.includes('@')) return false;
+  const host = u.hostname.toLowerCase();
+  if (!host || host.startsWith('[') || /^[\d.]+$/.test(host)) return false; // IP literal
+  return GOOGLEAPIS_HOST_RE.test(host);
+}
+
 const CURL_SHORT_FLAG_RE = /^-[sSf]+$/;
 const CURL_BARE_FLAGS = new Set(['--silent', '--show-error', '--fail']);
 function curlSegmentShape(segment, tokenVar) {
@@ -2527,6 +2543,7 @@ function curlSegmentShape(segment, tokenVar) {
     if (t.startsWith('-')) return null; // every other flag (-d/-F/-T/-o/-O/-K/--data*…) is refused
     if (url !== null) return null;
     if (!/^https:\/\/[^\s$`\\@]+$/.test(t)) return null;
+    if (!isGoogleApisHttpsUrl(t)) return null;
     url = t;
   }
   if (!silent || !url) return null;
