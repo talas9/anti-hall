@@ -2526,8 +2526,15 @@ function isGcloudReadSegment(segment) {
 // not listed is refused).
 const GOOGLEAPIS_HOST_RE = /(^|\.)googleapis\.com$/;
 function isGoogleApisHttpsUrl(raw) {
+  // The RAW host text must already be plain ASCII and identical to what the
+  // URL parser yields — no percent-encoding, IDN/full-width lookalikes or
+  // curl URL globbing ({a,b} / [1-2]) that curl could expand differently.
+  if (/[{}\[\]]/.test(raw)) return false;
+  const rawHost = (raw.match(/^https:\/\/([^/?#:]*)/) || [])[1] || '';
+  if (!/^[A-Za-z0-9.-]+$/.test(rawHost)) return false;
   let u;
   try { u = new URL(raw); } catch (_) { return false; }
+  if (u.hostname.toLowerCase() !== rawHost.toLowerCase()) return false;
   if (u.protocol !== 'https:') return false;
   if (u.username || u.password || raw.includes('@')) return false;
   const host = u.hostname.toLowerCase();

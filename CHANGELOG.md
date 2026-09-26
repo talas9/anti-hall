@@ -91,6 +91,10 @@ the update.
   script whose realpath is inside any anti-hall plugin root (this install, a cache copy,
   or a dev checkout), or any `--confirmed` argument, never qualifies.
 
+- **command-guard gcloud token curl: canonical ASCII host only.** The raw URL host must be
+  plain ASCII and equal to the parsed host, with no curl URL globbing (`{…}`, `[…]`).
+  This refuses percent-encoded and full-width lookalike hosts.
+
 ## 0.112.0 (2026-09-26)
 
 ### Features
