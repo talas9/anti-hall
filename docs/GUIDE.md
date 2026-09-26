@@ -982,7 +982,7 @@ Generated from `hooks/lib/settings-schema.js` (a hygiene test keeps this table a
 | `devswarm.rowStaleMs` adv | `86400000` [0..] | `ANTIHALL_DEVSWARM_ROW_STALE_MS` | Staleness threshold (ms) for workspace row selection. |
 | `devswarm.sendReceiptRetentionDays` adv | `7` (>0) | `ANTIHALL_DEVSWARM_SEND_RECEIPT_RETENTION_DAYS` | Retention window (days) for send-receipt records. |
 | `devswarm.summaryRetentionDays` adv | `30` [0..] | `ANTIHALL_DEVSWARM_SUMMARY_RETENTION_DAYS` | Retention window (days) for summary records. |
-| `devswarm.wakeCron` adv | `*/30 * * * *` | `ANTIHALL_DEVSWARM_WAKE_CRON` | Wake-poll cron schedule override (treated as untrusted input). |
+| `devswarm.wakeCron` adv | `7,37 * * * *` | `ANTIHALL_DEVSWARM_WAKE_CRON` | Wake-poll cron schedule override (treated as untrusted input). |
 | `devswarm.wakeWatchPollMs` adv | `2000` [250..60000] | `ANTIHALL_DEVSWARM_WAKE_WATCH_POLL_MS` | Poll interval (ms) for the wake-watch loop, clamped [250,60000]. |
 | `devswarm.childGateRetentionDays` adv | `14` (>0) | `ANTIHALL_DEVSWARM_CHILD_GATE_RETENTION_DAYS` | Days a per-session child-gate state file is kept before the housekeeping/doctor sweep removes it. |
 | `devswarm.housekeepingSweep` adv | `auto` (auto/off) | `ANTIHALL_DEVSWARM_HOUSEKEEPING_SWEEP` | Supervisor disk-hygiene sweep (reaped logs, child-gate state); only "off" disables it. |
