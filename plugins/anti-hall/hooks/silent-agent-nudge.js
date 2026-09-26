@@ -311,8 +311,19 @@ function transcriptCandidates(transcriptPath, now, thresholdMs) {
   return out;
 }
 
-// heartbeatCandidates(home, now, thresholdMs) -> [{ key, id, label, age, snapshot }]
-function heartbeatCandidates(home, now, thresholdMs) {
+// heartbeatCandidates(home, now, thresholdMs, sessionId) -> [{ key, id, label, age, snapshot }]
+//
+// The ~/.anti-hall/agents/ directory is SHARED machine-wide (home-scoped, not
+// per-session/per-project): phase-tracker.js writes a rolling
+// recent-spawn.json = {ts} "orchestration live" marker (not an agent) into the
+// very same directory, and other projects'/workspaces' DevSwarm tooling can
+// drop devswarm-<branch>.json files there too. Globbing every *.json and
+// treating it as a subagent heartbeat (falling back to the filename as `id`)
+// misreads either as a silently-dead agent and blocks Stop with no subagent
+// involved at all. Only a file matching the genuine per-agent heartbeat
+// convention (SKILL.md "orchestration" skill: `{ id, ts, status, step,
+// session }`, self-reported by a subagent) may become a candidate.
+function heartbeatCandidates(home, now, thresholdMs, sessionId) {
   const dir = path.join(home, '.anti-hall', 'agents');
   let files = [];
   try {
@@ -322,15 +333,35 @@ function heartbeatCandidates(home, now, thresholdMs) {
   }
   const out = [];
   for (const f of files) {
+    // Defense-in-depth: exclude known non-heartbeat files by name explicitly,
+    // even though the shape checks below already reject them.
+    if (f === 'recent-spawn.json') continue; // phase-tracker.js orchestration-live marker
+    if (/^devswarm-/.test(f)) continue; // DevSwarm workspace tooling, not a subagent heartbeat
+
     let data;
     try { data = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8')); } catch (_) { continue; }
     if (!data || typeof data !== 'object') continue;
 
-    const id = (typeof data.id === 'string' && data.id) || f.replace(/\.json$/, '');
+    // Explicit discriminator: a genuine heartbeat always carries its OWN `id`
+    // and `status` fields (never fall back to the filename — that's exactly
+    // how recent-spawn.json/devswarm-*.json got misread as agents before).
+    if (typeof data.id !== 'string' || !data.id) continue;
+    if (typeof data.status !== 'string') continue;
+
+    // Session scoping: only nudge for THIS session's own subagent. A
+    // heartbeat that names a `session` must match payload.session_id exactly;
+    // one from another session/project sharing this home dir is never ours.
+    // A heartbeat with no `session` field at all predates this discriminator
+    // and cannot be attributed to any session — treat as not-ours (fail-open
+    // toward no block, never toward a nudge for an unverified owner).
+    if (typeof data.session !== 'string' || !data.session) continue;
+    if (!sessionId || data.session !== sessionId) continue;
+
+    const id = data.id;
     const ts = (typeof data.ts === 'number' && Number.isFinite(data.ts)) ? data.ts : 0;
     if (!ts) continue; // no timestamp -> can't judge staleness -> skip (fail-open toward no nudge)
 
-    const status = typeof data.status === 'string' ? data.status : '';
+    const status = data.status;
     if (FINISHED_HEARTBEAT_STATUS.test(status.trim())) continue; // finished agent -> nothing
 
     const age = now - ts;
@@ -367,6 +398,8 @@ function main() {
   const home = process.env.HOME || process.env.USERPROFILE;
   if (!home) process.exit(0);
 
+  const sessionId = typeof payload.session_id === 'string' ? payload.session_id : '';
+
   let minMinutes = settingsGet('guards', 'silentAgentNudgeMin', DEFAULT_MIN);
   if (!Number.isFinite(minMinutes) || minMinutes < 1) minMinutes = DEFAULT_MIN;
   const thresholdMs = minMinutes * 60 * 1000;
@@ -376,7 +409,7 @@ function main() {
 
   let candidates = [];
   try { candidates = candidates.concat(transcriptCandidates(transcriptPath, now, thresholdMs)); } catch (_) { /* fail-open: skip this source */ }
-  try { candidates = candidates.concat(heartbeatCandidates(home, now, thresholdMs)); } catch (_) { /* fail-open: skip this source */ }
+  try { candidates = candidates.concat(heartbeatCandidates(home, now, thresholdMs, sessionId)); } catch (_) { /* fail-open: skip this source */ }
 
   if (candidates.length === 0) process.exit(0);
 
@@ -411,7 +444,6 @@ function main() {
   // a repeat). Keyed by sessionId + agentId so two different sessions with a
   // coincidentally equal agent id never share a cap, and TTL-pruned (30 days)
   // so the map does not grow unbounded across many past sessions.
-  const sessionId = typeof payload.session_id === 'string' ? payload.session_id : '';
   const everKey = (id) => sessionId + '::' + id;
   const EVER_NUDGED_TTL_MS = 30 * 24 * 60 * 60 * 1000;
   const nextEverNudged = {};

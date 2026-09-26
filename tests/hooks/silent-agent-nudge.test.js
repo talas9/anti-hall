@@ -428,14 +428,28 @@ test('the SAME agent id showing up through BOTH the transcript AND heartbeat sou
 // Heartbeat source (kept as an ADDITIONAL signal)
 // ---------------------------------------------------------------------------
 
+// writeHeartbeatAgent(h, id, opts) — writes a genuine per-agent heartbeat.
+// `opts.session` defaults to 't' (the session_id stopPayload() uses) so a
+// heartbeat is "ours" by default; pass a different value (or omit via
+// `opts.noSession: true`) to simulate another session's/legacy heartbeat.
 function writeHeartbeatAgent(h, id, opts) {
   const o = opts || {};
   const ts = Date.now() - (typeof o.ageMs === 'number' ? o.ageMs : 0);
   const dir = path.join(h.antiHall, 'agents');
   fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(path.join(dir, id + '.json'), JSON.stringify({
-    id, ts, status: o.status || 'running', step: o.step || 'doing work',
-  }), 'utf8');
+  const body = { id, ts, status: o.status || 'running', step: o.step || 'doing work' };
+  if (!o.noSession) body.session = o.session || 't';
+  fs.writeFileSync(path.join(dir, id + '.json'), JSON.stringify(body), 'utf8');
+}
+
+// writeRawAgentsFile(h, filename, obj) — writes an arbitrary raw JSON blob
+// straight into ~/.anti-hall/agents/, for simulating non-heartbeat files that
+// share that directory (phase-tracker.js's recent-spawn.json, other
+// projects'/workspaces' devswarm-<branch>.json).
+function writeRawAgentsFile(h, filename, obj) {
+  const dir = path.join(h.antiHall, 'agents');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, filename), JSON.stringify(obj), 'utf8');
 }
 
 test('HEARTBEAT SOURCE: still nudges on a stale ~/.anti-hall/agents heartbeat with no transcript activity', () => {
@@ -454,6 +468,47 @@ test('HEARTBEAT SOURCE: finished status -> nothing', () => {
     writeHeartbeatAgent(h, 'hb-worker2', { ageMs: THRESHOLD_MS + 60 * 60 * 1000, status: 'done' });
     const r = testHook(HOOK, stopPayload(''), { home: h.home });
     assert.ok(!isBlock(r));
+  } finally { h.cleanup(); }
+});
+
+// ---------------------------------------------------------------------------
+// Shared-directory false positives (probeB regression: a stale non-heartbeat
+// file in ~/.anti-hall/agents/ must never be mistaken for a silent subagent).
+// ---------------------------------------------------------------------------
+
+test('SHARED DIR: stale recent-spawn.json alone (phase-tracker orchestration-live marker, no id/status) -> no block', () => {
+  const h = makeHome();
+  try {
+    writeRawAgentsFile(h, 'recent-spawn.json', { ts: Date.now() - (THRESHOLD_MS + 45 * 60 * 1000) });
+    const r = testHook(HOOK, stopPayload(''), { home: h.home });
+    assert.ok(!isBlock(r), 'recent-spawn.json must never be read as a subagent heartbeat: ' + JSON.stringify(r.json));
+  } finally { h.cleanup(); }
+});
+
+test('SHARED DIR: stale devswarm-<branch>.json alone (foreign DevSwarm tooling file) -> no block', () => {
+  const h = makeHome();
+  try {
+    writeRawAgentsFile(h, 'devswarm-some-branch.json', { ts: Date.now() - (THRESHOLD_MS + 60 * 60 * 1000), branch: 'some-branch' });
+    const r = testHook(HOOK, stopPayload(''), { home: h.home });
+    assert.ok(!isBlock(r), 'devswarm-*.json must never be read as a subagent heartbeat: ' + JSON.stringify(r.json));
+  } finally { h.cleanup(); }
+});
+
+test('SHARED DIR: another session\'s stale genuine heartbeat -> no block (session mismatch)', () => {
+  const h = makeHome();
+  try {
+    writeHeartbeatAgent(h, 'hb-other-session', { ageMs: THRESHOLD_MS + 30 * 60 * 1000, status: 'running', session: 'some-other-session-id' });
+    const r = testHook(HOOK, stopPayload(''), { home: h.home }); // stopPayload() uses session_id 't'
+    assert.ok(!isBlock(r), 'a heartbeat naming a DIFFERENT session must never nudge this session: ' + JSON.stringify(r.json));
+  } finally { h.cleanup(); }
+});
+
+test('SHARED DIR: legacy heartbeat with no session field at all -> no block (unattributable, fail-open toward no nudge)', () => {
+  const h = makeHome();
+  try {
+    writeHeartbeatAgent(h, 'hb-legacy', { ageMs: THRESHOLD_MS + 30 * 60 * 1000, status: 'running', noSession: true });
+    const r = testHook(HOOK, stopPayload(''), { home: h.home });
+    assert.ok(!isBlock(r), 'a pre-session-field heartbeat cannot be attributed to any session and must not nudge: ' + JSON.stringify(r.json));
   } finally { h.cleanup(); }
 });
 

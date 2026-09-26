@@ -291,14 +291,21 @@ Long-running or background subagents MUST write a heartbeat file periodically
 while they work. File path: `~/.anti-hall/agents/<id>.json`. Format:
 
 ```json
-{ "id": "my-agent-id", "ts": 1748000000000, "status": "running", "step": "compiling module X" }
+{ "id": "my-agent-id", "ts": 1748000000000, "status": "running", "step": "compiling module X", "session": "<parent session_id>" }
 ```
 
-- `id`     — stable identifier for this agent (string; unique per run).
-- `ts`     — `Date.now()` at the time of the write. Update at every meaningful
-             checkpoint (e.g. after each file processed, each sub-step done).
-- `status` — free-form: `"running"`, `"done"`, `"error"`, etc.
-- `step`   — current human-readable step description (optional but useful).
+- `id`      — stable identifier for this agent (string; unique per run).
+- `ts`      — `Date.now()` at the time of the write. Update at every meaningful
+              checkpoint (e.g. after each file processed, each sub-step done).
+- `status`  — free-form: `"running"`, `"done"`, `"error"`, etc.
+- `step`    — current human-readable step description (optional but useful).
+- `session` — the `session_id` of the PARENT session that spawned this agent
+              (from that session's hook payloads). REQUIRED: `~/.anti-hall/agents/`
+              is a single home-scoped directory shared by every project/session on
+              the machine, so `silent-agent-nudge.js` only ever nudges for a
+              heartbeat whose `session` matches the session that is about to Stop —
+              a heartbeat with no `session` field (or a mismatched one) is treated
+              as belonging to someone else and never nudges.
 
 Write the file with `fs.writeFileSync` from Node (built-ins only; no shell).
 Delete it on clean exit. Do not write to os.tmpdir() — use the home-dir path

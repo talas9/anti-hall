@@ -129,6 +129,21 @@ the update.
   specific field that failed), capped at 10 with a "...and K more", and
   states plainly that sources are never deleted so no data can be lost —
   re-running the (idempotent) migration re-verifies.
+- **`silent-agent-nudge.js` could block Stop with no subagent involved at all.**
+  `~/.anti-hall/agents/` is a single home-scoped directory shared by every
+  project/session on the machine, but `heartbeatCandidates()` globbed EVERY
+  `*.json` in it and treated each as a subagent heartbeat, falling back to the
+  filename as `id` when one was missing. That misread `phase-tracker.js`'s
+  rolling `recent-spawn.json` (`{ts}` only, a 20-minute "orchestration live"
+  marker, not an agent) and other projects'/workspaces' `devswarm-<branch>.json`
+  files as silently-dead agents. A heartbeat candidate now requires its OWN
+  `id` and `status` fields (never the filename) plus a `session` field that
+  matches the session about to Stop; `recent-spawn.json` and `devswarm-*.json`
+  are also excluded by name as defense-in-depth. The heartbeat convention
+  (`skills/orchestration/SKILL.md`) gained a required `session` field
+  (`session_id` of the spawning session); a heartbeat written before this
+  field existed has no owner to verify and is now treated as not-ours
+  (fail-open toward no nudge, never toward blocking on an unverified file).
 - **Static per-turn reminder blocks (VERIFY-FIRST, the DEVSWARM PRIMARY
   dispatch-tier and top-fan-out-tier suffixes) no longer repeat every single
   turn.** They now follow the same once-per-session / once-after-compact-or-
