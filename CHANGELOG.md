@@ -57,6 +57,14 @@ the update.
   non-heavy. Claude and Codex share the hook. New setting
   `guards.allowReadOnlyVerifyScripts` (default `true`).
 
+- **`devswarm.js spawn` refuses a flag value that is really the next option.**
+  `spawn b -s main -t -p "brief"` made `-p` the workspace title and dropped the brief
+  without a word. Spawn now refuses before fetching or creating anything, and the message
+  names the flag. It checks `-s/--source`, `-a/--agent`, `-t/--title` or `-p/--prompt` with
+  no value, or with a value that starts with `-`. For `-p`, only a single option-shaped
+  token counts, so a brief that opens with a `- ` bullet is still accepted. New setting
+  `devswarm.spawnStrictFlagValues` (default `true`).
+
 ## 0.111.0 (2026-09-26)
 
 ### Security

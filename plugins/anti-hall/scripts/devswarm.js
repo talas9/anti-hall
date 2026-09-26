@@ -18210,9 +18210,56 @@ function parseSubmoduleWorktreeFailures(res, cwd) {
   return out;
 }
 
+// spawnFlagValueError(rest) -> string | null (0.112). `hivecontrol workspace
+// create`'s value-taking options are -s/--source, -a/--agent, -p/--prompt and
+// -t/--title. A value that is really the NEXT option (`spawn b -s main -t -p
+// "brief"` made "-p" the title and dropped the brief) is refused up front,
+// before anything is fetched or created. -s/-a/-t refuse any value starting
+// with "-"; -p refuses only an option-shaped value (a single "-x"/"--xx" token),
+// because a real brief can start with a markdown bullet ("- fix the thing").
+// A value-taking flag with no value at all is refused too. Setting
+// devswarm.spawnStrictFlagValues (default true) turns the check off.
+const SPAWN_VALUE_FLAGS = [
+  { short: '-s', long: '--source', anyDash: true },
+  { short: '-a', long: '--agent', anyDash: true },
+  { short: '-t', long: '--title', anyDash: true },
+  { short: '-p', long: '--prompt', anyDash: false },
+];
+function spawnFlagValueError(rest) {
+  if (!Array.isArray(rest)) return null;
+  for (let i = 1; i < rest.length; i++) {
+    const a = rest[i];
+    if (typeof a !== 'string') continue;
+    for (const f of SPAWN_VALUE_FLAGS) {
+      let value;
+      let name;
+      if (a === f.short || a === f.long) { name = a; value = rest[i + 1]; }
+      else if (a.indexOf(f.long + '=') === 0) { name = f.long; value = a.slice(f.long.length + 1); }
+      else continue;
+      const label = f.short + '/' + f.long;
+      if (typeof value !== 'string' || value === '') {
+        return 'spawn: ' + label + ' needs a value, but none was given after ' + name + '.';
+      }
+      const bad = f.anyDash ? value.startsWith('-') : /^--?[A-Za-z][\w-]*(?:=\S*)?$/.test(value);
+      if (bad) {
+        return 'spawn: ' + label + ' got ' + JSON.stringify(value) + ' as its value, which looks like another option. '
+          + 'Give ' + name + ' a real value (quote it), e.g. `spawn <branch> ' + f.short + ' "<value>"`.';
+      }
+      if (name === a) i++; // skip the consumed value
+    }
+  }
+  return null;
+}
+
 function cmdSpawn(rest, ctx) {
   const branch = rest && rest[0];
   if (!branch) return { ok: false, error: 'spawn requires a branch name' };
+  let strictFlagValues = true;
+  try { strictFlagValues = require('../hooks/lib/settings.js').get('devswarm', 'spawnStrictFlagValues', true, { env: ctx.env || process.env, home: ctx.home }) !== false; } catch (_) { strictFlagValues = true; }
+  if (strictFlagValues) {
+    const flagError = spawnFlagValueError(rest);
+    if (flagError) return { ok: false, action: 'spawn', branch, created: false, error: flagError };
+  }
   const cwd = ctx.cwd || process.cwd();
   const run = (ctx.io && ctx.io.run) || hcRun;
   const env = ctx.env || process.env;

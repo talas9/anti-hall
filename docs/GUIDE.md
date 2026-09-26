@@ -1012,6 +1012,7 @@ Generated from `hooks/lib/settings-schema.js` (a hygiene test keeps this table a
 | `devswarm.appSync` | `true` | `ANTIHALL_DEVSWARM_APP_SYNC` | Supervisor app-DB sync: apply the DevSwarm app database (archive state, names, drift) every tick. |
 | `devswarm.screenshotSync` | `true` | — | `devswarm.js sync-ui`: reconcile a transcribed sidebar screenshot against the app DB. |
 | `devswarm.spawnFromOrigin` | `true` | — | `devswarm.js spawn`: fetch origin first and fast-forward the local default branch so a child never starts from stale tooling; refuses when it is behind and cannot be updated (unless --from-local). |
+| `devswarm.spawnStrictFlagValues` | `true` | `ANTIHALL_DEVSWARM_SPAWN_STRICT_FLAG_VALUES` | `devswarm.js spawn`: refuse when `-s/--source`, `-a/--agent`, `-t/--title` or `-p/--prompt` has no value or is given what looks like the next option (`spawn b -t -p "brief"` used to make `-p` the title), naming the flag. `-p` accepts a brief that starts with a markdown bullet. |
 | `devswarm.spawnFetchTtlSec` adv | `300` | `ANTIHALL_DEVSWARM_SPAWN_FETCH_TTL_SEC` | `devswarm.js spawn`: skip the origin fetch when the remote-tracking ref was already updated within this many seconds (0 = always fetch). |
 | `devswarm.spawnCreateTimeoutMs` adv | `180000` | `ANTIHALL_DEVSWARM_SPAWN_CREATE_TIMEOUT_MS` | Timeout (ms) for the `hivecontrol workspace create` call spawn makes; on timeout only our own child process is killed. |
 | `statusline.base` | — | `ANTIHALL_STATUSLINE_BASE` | Shell command run as the line-1 base in consolidated statusline mode. |
