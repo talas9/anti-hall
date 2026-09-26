@@ -2673,8 +2673,21 @@ function computeSummary(store, opts) {
     // is no unread row, or no row carries a finite ts (fail-open to omitting
     // age rather than fabricating one).
     let oldestDirectUnreadTs = null;
+    // oldestDirectUnreadSender (peer-bug fix, 2026-09-26): the SENDER of that
+    // SAME oldest-unread row — zero extra store reads (same loop). Consumed
+    // by hooks/devswarm-parent-inbox.js's unreadIsGraced to decide whether
+    // the fresh-mail grace window applies to a KNOWN third-party sender
+    // (never graced) vs this Primary's own send or an unresolvable/legacy
+    // sender (graced, unchanged pre-fix behavior — fail-open toward the
+    // EXISTING lenient advisory posture, not toward blocking, since this is
+    // an advisory nag, never a hard Stop-gate block). null when there is no
+    // unread row or the oldest row carries no sender (pre-mesh legacy row).
+    let oldestDirectUnreadSender = null;
     for (const r of unreadRows) {
-      if (r && Number.isFinite(r.ts) && (oldestDirectUnreadTs === null || r.ts < oldestDirectUnreadTs)) oldestDirectUnreadTs = r.ts;
+      if (r && Number.isFinite(r.ts) && (oldestDirectUnreadTs === null || r.ts < oldestDirectUnreadTs)) {
+        oldestDirectUnreadTs = r.ts;
+        oldestDirectUnreadSender = r.sender != null ? String(r.sender) : null;
+      }
     }
 
     // archive_requested (v0.58, additive): true when an UNREAD DIRECT row
@@ -2870,6 +2883,7 @@ function computeSummary(store, opts) {
       total, cursor, unread,
       directUnread: unread,
       oldestDirectUnreadTs,
+      oldestDirectUnreadSender,
       broadcastUnread,
       urgencyMax,
       broadcastUrgencyMax,

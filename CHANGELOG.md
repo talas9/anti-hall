@@ -113,11 +113,26 @@ the update.
   send (advisory), an old own send (still blocks), a fresh send plus an unanswered child
   question (still blocks), a fresh third-party mesh-direct row (still blocks), and an
   unresolvable sender (fail-open, still blocks).
-- **`devswarm-parent-inbox.js`'s "CHILD NOT DRAINING" per-turn nag was verified to
-  already cover mesh-direct sends** via its own independent 120s grace window
-  (`unreadIsGraced`/`resolveInboxGraceMs`, sourced from the summary projection's
-  `directUnread`/`oldestDirectUnreadTs`, which is source-agnostic) — no fix was needed
-  there; this entry documents that verification alongside the Stop-gate fix above.
+- **`devswarm-parent-inbox.js`'s "CHILD NOT DRAINING" per-turn nag: the 120s grace
+  window (`unreadIsGraced`) was defeated by a busy child's own heartbeat.** A field
+  report showed the exact scenario the grace window exists to fix still reproducing
+  verbatim: a 9-second-old own mesh-direct send to an actively-working (uuid-addressed)
+  child, whose heartbeat was 1 second old, still produced "CHILD NOT DRAINING" and blocked
+  the next Stop. Root cause: `unreadIsGraced` disqualified grace the instant the child
+  recorded ANY heartbeat after the send — but a heartbeat file is rewritten on every
+  `inbox tick`/turn cycle regardless of whether the specific message was ever read, so a
+  busy, continuously heartbeating child (precisely who this window protects) almost always
+  fails that check within its very first tick. The heartbeat check is removed entirely and
+  replaced with the same sender-keyed predicate used in the Stop-gate fix above: grace
+  applies while the message is within the window UNLESS its sender is positively known to
+  be someone other than this Primary (an unresolvable/legacy sender still gets grace,
+  matching the pre-fix lenient default). `devswarm-store.js`'s summary projection now
+  additively emits `oldestDirectUnreadSender` (the sender of the oldest unread row,
+  computed alongside `oldestDirectUnreadTs` at zero extra cost) so the hook can make this
+  call without a second store read. New/updated tests in
+  `tests/hooks/devswarm-parent-inbox-grace-window.test.js` reproduce the exact field
+  shape (fresh own send, fresh child heartbeat -> still graced) and cover a known
+  third-party sender (never graced, however fresh).
 
 ## 0.111.0 (2026-09-26)
 

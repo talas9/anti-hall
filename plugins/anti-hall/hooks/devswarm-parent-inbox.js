@@ -1106,16 +1106,31 @@ function resolveInboxGraceMs(env) {
   return Number.isFinite(n) && n >= 0 ? n * 1000 : DEFAULT_INBOX_GRACE_MS;
 }
 
-// unreadIsGraced({unread, oldestUnreadTs, id, home, now, graceMs, heartbeatTsFn}) -> bool.
+// unreadIsGraced({unread, oldestUnreadTs, sender, ownId, now, graceMs}) -> bool.
 // PURE decision function (unit-testable without spawning this hook): true
-// (suppress the unread-only nag trigger) ONLY while BOTH (a) the oldest
-// still-unread message is younger than the grace window AND (b) the child has
-// recorded NO heartbeat since that message was sent — a heartbeat after the
-// send is proof the child's own loop already had a chance to notice/drain it,
-// so grace no longer applies even inside the window. Fail-open TOWARD
-// flagging: a missing/unreadable oldestUnreadTs or heartbeat never suppresses
-// (returns false) — this only ever narrows the TIMING of an already-unread
-// row, never hides a genuinely long-unread one.
+// (suppress the unread-only nag trigger) while the oldest still-unread
+// message is younger than the grace window AND its sender is NOT positively
+// known to be someone other than this Primary. Fail-open TOWARD flagging on
+// age (a missing/unreadable oldestUnreadTs or an aged-out message never
+// suppresses) but fail-open TOWARD GRACE on sender (an absent/unresolvable
+// sender or ownId never disqualifies) — this is an ADVISORY nag, not the
+// Stop-gate's hard block, so an unverifiable sender keeps the EXISTING
+// lenient pre-fix posture rather than adopting the gate's stricter
+// fail-toward-blocking rule.
+//
+// PEER-BUG FIX (2026-09-26): this used to ALSO require "no heartbeat
+// recorded since the send" (heartbeatTsFn) — proven wrong by a field report.
+// A heartbeat file is rewritten on every `inbox tick`/turn cycle regardless
+// of whether the SPECIFIC new message was ever read, so a busy, continuously
+// heartbeating child (exactly the child this grace window exists to protect)
+// almost always has a heartbeat newer than a message sent seconds ago,
+// disqualifying grace within the first tick — reproducing "DEVSWARM PARENT
+// INBOX ... CHILD NOT DRAINING" on a 9-second-old own send with a 1-second-
+// old heartbeat. Heartbeat is not evidence of mailbox drainage; it is
+// dropped. The SAME sender-keyed predicate the Stop gate uses (devswarm-
+// parent-gate.js's `hadStoreOnlyRealRows`) replaces it: age decides the
+// window, a KNOWN third-party sender still forces the nag inside it exactly
+// like the Stop gate's own-vs-third-party distinction.
 function unreadIsGraced(opts) {
   const o = opts || {};
   if (!(o.unread > 0) || !Number.isFinite(o.oldestUnreadTs)) return false;
@@ -1123,21 +1138,8 @@ function unreadIsGraced(opts) {
   const now = Number.isFinite(o.now) ? o.now : Date.now();
   const ageMs = now - o.oldestUnreadTs;
   if (ageMs >= graceMs) return false;
-  // heartbeatTs (production) already fails open to null on any read error —
-  // it never throws. The try/catch here guards ONLY a pathological injected
-  // heartbeatTsFn; on a genuine throw this fails open TOWARD flagging (assume
-  // a heartbeat landed after the send), matching this codebase's consistent
-  // "when in doubt, keep blocking/flagging" posture elsewhere (e.g.
-  // devswarm-parent-gate.js's realUnread computation) — a null return (the
-  // ordinary "no heartbeat recorded yet" case, ubiquitous right after a fresh
-  // send) is NOT an error and keeps grace applying normally.
-  let heartbeatAfterSend = false;
-  try {
-    const fn = o.heartbeatTsFn || livenessLib.heartbeatTs;
-    const hbTs = fn(o.id, o.home);
-    heartbeatAfterSend = Number.isFinite(hbTs) && hbTs > o.oldestUnreadTs;
-  } catch (_) { heartbeatAfterSend = true; }
-  return !heartbeatAfterSend;
+  if (o.sender != null && o.ownId != null && String(o.sender) !== String(o.ownId)) return false;
+  return true;
 }
 
 // broadcastKey(r) -> a stable dedup identity for one recent[] row: sender +
@@ -1755,7 +1757,10 @@ function main() {
     // by this, only the unread-ONLY trigger is.
     const oldestUnreadTsForGate = Number.isFinite(entry.oldestDirectUnreadTs) ? entry.oldestDirectUnreadTs : null;
     const unreadGraced = unreadIsGraced({
-      unread, oldestUnreadTs: oldestUnreadTsForGate, id, home, now, graceMs: resolveInboxGraceMs(process.env),
+      unread, oldestUnreadTs: oldestUnreadTsForGate,
+      sender: entry.oldestDirectUnreadSender != null ? entry.oldestDirectUnreadSender : null,
+      ownId: primaryId || null,
+      now, graceMs: resolveInboxGraceMs(process.env),
     });
     const unreadForNag = unread > 0 && !unreadGraced;
     // v0.107.1: row state is resolved BEFORE the attention/archive-ready pushes.
