@@ -152,6 +152,14 @@ the update.
   Never applies to a store-only (mesh-direct send, or dead/foreign-descriptor)
   row, and never suppresses an unanswered child question or a corroborated
   stale/escalated verdict.
+- **`task-guard`'s IDLE NEGLECT check now recognizes an explicit owner-blocked
+  marker instead of forcing a fake `blockedBy` dependency to silence it.** A
+  task with `metadata.blockedOn` (or top-level `blockedOn`) === `'owner'` /
+  `'user'` / `'human'` (case-insensitive), or a subject starting with
+  `"OWNER:"` / `"OWNER DECISION"` (case-insensitive), is excluded from the
+  ACTIONABLE-NOW set and never nags. New setting
+  `guards.taskGuardOwnerBlockedMarker` (default on). Documented in
+  `docs/TASK-WORK.md`, `docs/KB.md`, and the nudge text itself.
 - **Static per-turn reminder blocks (VERIFY-FIRST, the DEVSWARM PRIMARY
   dispatch-tier and top-fan-out-tier suffixes) no longer repeat every single
   turn.** They now follow the same once-per-session / once-after-compact-or-
