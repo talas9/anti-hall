@@ -23,6 +23,15 @@ the update.
   `~/.anti-hall/logs/command-allow.ndjson`. Default config is empty (no behavior change for
   a repo that never opted in). New setting `guards.projectCommandAllow` (default on).
   `doctor` reports an unanchored/invalid pattern in a repo's own config as a warning.
+- **command-guard "allow plain push"** (owner-approved 2026-09-26). In the MAIN THREAD
+  ONLY, `git add`/`git commit`/a plain `git push [remote] [ref]`, and `&&`/`;` chains made
+  up only of those three, run inline instead of being delegated. `ref` must be omitted,
+  `HEAD`, or the current branch (resolved fresh via `git symbolic-ref --short HEAD`,
+  fail-closed if unresolvable). `--force`/`-f`/`--force-with-lease`/`--force-if-includes`/
+  `--mirror`/`--delete`/`-d`/`--all`/`--tags`/`+refspec`/`src:dst` to another branch, any
+  other chained segment, and pipes/redirects/subshells stay exactly as blocked as before.
+  `git-guard.js` keeps its own independent force-push/AI-credit checks, untouched. New
+  setting `guards.allowPlainPush` (default on).
 
 ### Changed
 

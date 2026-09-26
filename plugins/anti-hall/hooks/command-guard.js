@@ -2072,6 +2072,127 @@ function appendProjectCommandAllowAudit(entry) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// "Allow plain push" carve-out (owner-approved 2026-09-26). Lets the MAIN
+// THREAD run `git add …`, `git commit …`, and a plain `git push [remote]
+// [ref]` — plus `&&`/`;` chains made up ONLY of those three — inline, even
+// though a `git push` segment is classified heavy above (HEAVY_PATTERNS).
+// git-guard.js keeps its own independent force-push and AI-credit checks;
+// this carve-out never touches or duplicates those.
+//
+// A push segment qualifies ONLY as the bare shape `git push`, `git push
+// <remote>`, or `git push <remote> <ref>` — no flags, no `+refspec`, no
+// `src:dst` (a `:` or leading `+`/`-` token disqualifies the whole chain,
+// which then falls through to the ordinary heavy-command block, i.e. no
+// behavior CHANGE for --force/--mirror/--delete/-d/--all/--tags/a foreign
+// dst — they are exactly as blocked as before). A given `ref` must be `HEAD`
+// or the CURRENT branch (`git -C <cwd> symbolic-ref --short HEAD`) — a push
+// to any other branch never qualifies; the resolver failing (detached HEAD,
+// not a repo, spawn error) fails CLOSED (does not qualify).
+// ---------------------------------------------------------------------------
+
+// A bare remote/ref token: no leading '-' or '+' (rules out every flag and
+// force-refspec form), and no ':' anywhere (rules out `src:dst`/delete
+// refspecs) — enforced by the character class simply never including ':'.
+const PLAIN_PUSH_SEGMENT_RE = /^git\s+push(?:\s+((?![-+])[A-Za-z0-9_.\/-]+))?(?:\s+((?![-+])[A-Za-z0-9_.\/-]+))?\s*$/;
+
+// hasSubstitutionOutsideSingleQuotes(segment) -> true if a `` ` `` or `$(`
+// appears anywhere the shell would actually EXPAND it — i.e. outside single
+// quotes (double quotes still expand command substitution; only single
+// quotes make it literal). This is what keeps `git commit -m "$(evil)"` out
+// of the allow-chain even though it is still a single, unbroken `git commit`
+// segment by the plain chain-delimiter check alone.
+function hasSubstitutionOutsideSingleQuotes(segment) {
+  let inSingle = false;
+  let inDouble = false;
+  for (let i = 0; i < segment.length; i++) {
+    const c = segment[i];
+    const c2 = i + 1 < segment.length ? segment[i + 1] : '';
+    if (inSingle) { if (c === "'") inSingle = false; continue; }
+    if (inDouble) {
+      if (c === '\\' && c2) { i++; continue; }
+      if (c === '"') { inDouble = false; continue; }
+      if (c === '`') return true;
+      if (c === '$' && c2 === '(') return true;
+      continue;
+    }
+    if (c === "'") { inSingle = true; continue; }
+    if (c === '"') { inDouble = true; continue; }
+    if (c === '`') return true;
+    if (c === '$' && c2 === '(') return true;
+  }
+  return false;
+}
+
+// classifyPlainGitChainSegment(segment) -> {kind:'add'|'commit'} |
+// {kind:'push', ref} | null. `ref` is the second bare token of a plain push
+// (null when omitted/only a remote was given).
+function classifyPlainGitChainSegment(segment) {
+  const trimmed = segment.trim();
+  if (hasUnquotedRedirectChar(trimmed)) return null;
+  if (hasSubstitutionOutsideSingleQuotes(trimmed)) return null;
+  if (/^git\s+add\b/i.test(trimmed)) return { kind: 'add' };
+  if (/^git\s+commit\b/i.test(trimmed)) return { kind: 'commit' };
+  const m = trimmed.match(PLAIN_PUSH_SEGMENT_RE);
+  if (m) return { kind: 'push', ref: m[2] || null };
+  return null;
+}
+
+// currentBranchName(cwd) -> the checked-out branch name, or null (detached
+// HEAD, not a repo, spawn failure/timeout — every failure mode reads as
+// null, and the caller treats null as FAIL CLOSED, never as a pass).
+function currentBranchName(cwd) {
+  try {
+    const { spawnSync } = require('child_process');
+    const res = spawnSync('git', ['-C', cwd || process.cwd(), 'symbolic-ref', '--short', 'HEAD'], {
+      encoding: 'utf8', timeout: 5000,
+    });
+    if (!res || res.status !== 0) return null;
+    const name = String(res.stdout || '').trim();
+    return name || null;
+  } catch (_) {
+    return null;
+  }
+}
+
+// isPlainPushRefAllowed(ref, cwd) -> bool. No ref given, or `HEAD`, always
+// qualifies; any other ref must equal the ACTUAL current branch — resolved
+// fresh per call (never trusted from the command text itself).
+function isPlainPushRefAllowed(ref, cwd) {
+  if (!ref) return true;
+  if (ref === 'HEAD') return true;
+  const branch = currentBranchName(cwd);
+  if (!branch) return false; // fail closed: could not resolve the current branch
+  return ref === branch;
+}
+
+// isAllowedPlainPushChain(command, cwd) -> bool. See the header block above.
+function isAllowedPlainPushChain(command, cwd) {
+  if (typeof command !== 'string' || !command.trim()) return false;
+  const { segments, delims } = splitSegmentsDetailed(command);
+  if (!segments.length) return false;
+  // Every delimiter between segments must be '&&' or ';' — a pipe, '||',
+  // background '&', newline, heredoc, subshell/group, or command
+  // substitution boundary disqualifies the WHOLE chain. The final delimiter
+  // must be 'end' (nothing trails the last segment).
+  for (let i = 0; i < delims.length; i++) {
+    const isLast = i === delims.length - 1;
+    if (isLast) {
+      if (delims[i] !== 'end') return false;
+    } else if (delims[i] !== '&&' && delims[i] !== ';') {
+      return false;
+    }
+  }
+  for (const seg of segments) {
+    const trimmed = seg.trim();
+    if (!trimmed) continue;
+    const cls = classifyPlainGitChainSegment(trimmed);
+    if (!cls) return false; // any other segment disqualifies the whole chain
+    if (cls.kind === 'push' && !isPlainPushRefAllowed(cls.ref, cwd)) return false;
+  }
+  return true;
+}
+
 function main() {
   // Read + parse the payload FIRST — coordinator/subagent detection needs the
   // payload's agent_id/agent_type markers (the only reliable signal under cmux).
@@ -2270,6 +2391,22 @@ function main() {
         let repoTop = '';
         try { repoTop = require('../companion/lib/identity.js').resolveContext(cwd || process.cwd(), { missingPath: 'ancestor' }).toplevel || ''; } catch (_) { /* best-effort only */ }
         appendProjectCommandAllowAudit({ cwd, repo: repoTop, pattern: matched, command });
+        process.exit(0);
+      }
+    }
+  } catch (_) {
+    // fail-closed: never let a bug in this carve-out bypass the heavy-command gate.
+  }
+
+  // "Allow plain push" (owner-approved 2026-09-26): `git add`/`git commit`/a
+  // plain `git push [remote] [ref]`, and &&/; chains made up only of those
+  // three, run inline in the MAIN THREAD ONLY — already past the
+  // isCoordinator(payload) gate above. git-guard.js's own independent
+  // force-push/AI-credit checks are untouched. Fail-closed on any error.
+  try {
+    if (settingsGet('guards', 'allowPlainPush') !== false) {
+      const cwd = (payload && payload.cwd) || '';
+      if (isAllowedPlainPushChain(command, cwd)) {
         process.exit(0);
       }
     }

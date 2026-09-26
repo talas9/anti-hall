@@ -64,7 +64,11 @@ const BLOCK = [
   // f0958b13-adjacent: state-changing variants of the newly-allowed read-only
   // commands must stay blocked — the allowlist is read-only-scoped, not a
   // blanket exemption of the whole script/verb.
-  'git push origin main',
+  // NOTE: `git push origin main` moved to ALLOW below (owner-approved
+  // 2026-09-26, "allow plain push" — see command-guard-allow-plain-push.test.js
+  // for the full matrix; this file's runCoord() runs with cwd=process.cwd(),
+  // this repo, checked out on `main`, so the ref-matches-current-branch rule
+  // is satisfied).
   'git pull origin main',
   'node plugins/anti-hall/scripts/settings.js set devswarm.enabled true --confirmed',
   'sqlite3 /tmp/x.db "delete from t"',
@@ -242,6 +246,12 @@ const ALLOW = [
   "printf 'go test ./...'",
   'eval "echo hi"',
   'git push --dry-run origin main',
+  // "Allow plain push" (owner-approved 2026-09-26): a plain `git push` to the
+  // CURRENT branch is now allowed inline in the coordinator — this repo is
+  // checked out on `main`. See command-guard-allow-plain-push.test.js for the
+  // full allow/block matrix (force/mirror/delete/tags/foreign-branch stay
+  // blocked exactly as before).
+  'git push origin main',
   'go env GOPATH',
   'echo "hello world"',
   // Coordinator-owned phase-state helpers (orchestration/SKILL.md:305, ship-it/SKILL.md:280).

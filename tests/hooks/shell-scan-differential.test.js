@@ -205,6 +205,24 @@ const CG_ALLOW = [
   'x=$((1<<2)); echo $x',
 ];
 
+// "Allow plain push" (owner-approved 2026-09-26): these commands were
+// genuinely BLOCKED at BASE_REV (a bare `git push` has always matched
+// HEAVY_PATTERNS) and are now genuinely ALLOWED by the new
+// isAllowedPlainPushChain() carve-out — an INTENTIONAL weakening, not a
+// migration regression. Listed separately (not in CG_ALLOW) so the
+// differential loop below can treat their BLOCK(base)->ALLOW(new) flip as
+// expected instead of failing the "guards never get weaker" invariant.
+// command-guard.test.js and command-guard-allow-plain-push.test.js cover the
+// full allow/block matrix for this feature; this corpus only needs to prove
+// the differential harness itself does not choke on it and no OTHER command
+// in the corpus is affected.
+const CG_INTENTIONAL_ALLOW_CHANGES = [
+  'git push',
+  'git push origin',
+  'git push origin main',
+  'git add . && git commit -m "wip" && git push origin main',
+];
+
 // -----------------------------------------------------------------------
 // CORPUS — git-guard.js. Every BLOCK/ALLOW/GH_BLOCK/GH_ALLOW case already in
 // tests/hooks/git-guard.test.js, PLUS the explicit bypass repros from the
@@ -271,9 +289,11 @@ test(`shell-scan differential corpus (base=${BASE_REV})`, (t) => {
     t.skip(baseUnavailableReason);
     return;
   }
+  const intentionalAllowChanges = new Set(CG_INTENTIONAL_ALLOW_CHANGES);
   const cgCases = [
     ...CG_BLOCK.map((cmd) => ({ cmd, guard: 'command-guard.js', payload: cgPayload(cmd), env: COORD_ENV })),
     ...CG_ALLOW.map((cmd) => ({ cmd, guard: 'command-guard.js', payload: cgPayload(cmd), env: COORD_ENV })),
+    ...CG_INTENTIONAL_ALLOW_CHANGES.map((cmd) => ({ cmd, guard: 'command-guard.js', payload: cgPayload(cmd), env: COORD_ENV, intentionalAllowChange: true })),
     ...GG_BLOCK.map((cmd) => ({ cmd, guard: 'git-guard.js', payload: ggPayload(cmd), env: {} })),
     ...GG_ALLOW.map((cmd) => ({ cmd, guard: 'git-guard.js', payload: ggPayload(cmd), env: {} })),
   ];
@@ -293,6 +313,11 @@ test(`shell-scan differential corpus (base=${BASE_REV})`, (t) => {
     const baseBlocked = baseClass === 'BLOCK';
     const newBlocked = newClass === 'BLOCK';
     if (baseBlocked && !newBlocked) {
+      if (c.guard === 'command-guard.js' && (c.intentionalAllowChange || intentionalAllowChanges.has(c.cmd))) {
+        summary.intentionalAllowChanges = summary.intentionalAllowChanges || [];
+        summary.intentionalAllowChanges.push({ guard: c.guard, cmd: c.cmd });
+        continue;
+      }
       blockedOnBaseButAllowedOnNew++;
       assert.fail(`SAFETY REGRESSION: ${c.guard} base=BLOCK new=ALLOW for: ${JSON.stringify(c.cmd)}`);
     }
@@ -301,7 +326,7 @@ test(`shell-scan differential corpus (base=${BASE_REV})`, (t) => {
     }
   }
 
-  assert.strictEqual(blockedOnBaseButAllowedOnNew, 0, 'no command may flip from BLOCK (base) to ALLOW (new)');
+  assert.strictEqual(blockedOnBaseButAllowedOnNew, 0, 'no command may flip from BLOCK (base) to ALLOW (new), other than the documented CG_INTENTIONAL_ALLOW_CHANGES list');
 
   // Print the allow->block flips (tightenings) for the human report, with the
   // justification: every one of these is either (a) an intentional additive
@@ -315,6 +340,10 @@ test(`shell-scan differential corpus (base=${BASE_REV})`, (t) => {
   if (summary.flips.length) {
     process.stderr.write('\nALLOW(base) -> BLOCK(new) flips (' + summary.flips.length + '):\n');
     for (const f of summary.flips) process.stderr.write(`  [${f.guard}] ${JSON.stringify(f.cmd)}\n`);
+  }
+  if (summary.intentionalAllowChanges && summary.intentionalAllowChanges.length) {
+    process.stderr.write('\nBLOCK(base) -> ALLOW(new) INTENTIONAL changes ("allow plain push", 2026-09-26) (' + summary.intentionalAllowChanges.length + '):\n');
+    for (const f of summary.intentionalAllowChanges) process.stderr.write(`  [${f.guard}] ${JSON.stringify(f.cmd)}\n`);
   }
 });
 
