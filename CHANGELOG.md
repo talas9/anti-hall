@@ -46,6 +46,17 @@ the update.
   blocked. New setting `guards.modelRoutingDeployFloor` (`sonnet` default, `opus`, or `off`
   for the old table).
 
+- **command-guard: a read-only `--check` run of a real script file is allowed again.**
+  0.111 refused every interpreter verb on the check-flag path, so
+  `python3 tools/gen_contract.py --check | tail -5` blocked. The main thread may now run
+  `<python*|node|ruby|perl|php> <existing script file> --check|--dry-run|--list` piped to a
+  bounded sink. The script must be an existing regular file named right after the
+  interpreter. Inline code (`-c`/`-e`/`-m`/`-p`/`--eval`/`--require`), stdin or heredoc
+  scripts, `$`/backtick/process substitution, env-assignment prefixes and wrapper verbs
+  (sh/bash/eval/exec/xargs/env/nice) never qualify, and the remaining arguments must be
+  non-heavy. Claude and Codex share the hook. New setting
+  `guards.allowReadOnlyVerifyScripts` (default `true`).
+
 ## 0.111.0 (2026-09-26)
 
 ### Security

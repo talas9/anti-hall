@@ -108,6 +108,91 @@ test('verify-allow: a plain script with --check piped to tail is still allowed (
   assert.strictEqual(r.status, 0, r.stdout);
 });
 
+// ---- 0.112 read-only verify: interpreter + existing script FILE + check flag --
+
+function withScripts(fn) {
+  return withRepo((repo) => {
+    fs.mkdirSync(path.join(repo, 'tools'), { recursive: true });
+    fs.writeFileSync(path.join(repo, 'tools', 'gen_contract.py'), 'print("ok")\n');
+    fs.writeFileSync(path.join(repo, 'tools', 'gen.js'), 'console.log("ok")\n');
+    return fn(repo);
+  });
+}
+
+const SCRIPT_CHECK_ALLOW = [
+  'python3 tools/gen_contract.py --check | tail -5',
+  'node tools/gen.js --check | tail -5',
+  'python3 tools/gen_contract.py --dry-run | head -20',
+];
+for (const cmd of SCRIPT_CHECK_ALLOW) {
+  test('verify-allow (script): an existing script + check flag piped to a sink is allowed: ' + cmd, () => {
+    withScripts((repo) => {
+      const r = run(cmd, { cwd: repo });
+      assert.strictEqual(r.status, 0, 'expected ALLOW for ' + cmd + '\n' + r.stdout);
+    });
+  });
+}
+
+const SCRIPT_CHECK_BLOCK = [
+  // the listed regressions that reach the carve-out
+  "node -e \"require('child_process').execSync('npm test')\" --check | tail",
+  'python3 tools/gen_contract.py --check; npm test',
+  'python3 tools/gen_contract.py --check | tail; npm test',
+  'python3 tools/gen_contract.py --check && npm test | tail',
+  // inline-code / stdin forms riding on a real script
+  'python3 tools/gen_contract.py -c "import os" --check | tail',
+  'python3 tools/gen_contract.py -m x --check | tail',
+  // (a side-effect-free -e payload is already non-heavy in the base classifier)
+  "node tools/gen.js -e \"require('child_process').execSync('npm test')\" --check | tail",
+  "node tools/gen.js --eval \"require('fs').writeFileSync('x','y')\" --check | tail",
+  'node tools/gen.js -p "1" --check | tail',
+  'node tools/gen.js --require ./x.js --check | tail',
+  'python3 tools/gen_contract.py --check < /etc/passwd | tail',
+  'python3 tools/gen_contract.py --check <<EOF | tail\nimport os\nEOF',
+  // the script arg must be an existing regular file
+  'python3 tools/missing.py --check | tail',
+  'node tools/missing.js --check | tail',
+  // expansion / heavy remaining args / unbounded / writes
+  'python3 tools/gen_contract.py --check $(npm test) | tail',
+  'python3 tools/gen_contract.py --check `npm test` | tail',
+  'python3 tools/gen_contract.py --check <(npm test) | tail',
+  'python3 tools/gen_contract.py --check npm run build | tail',
+  'python3 tools/gen_contract.py --check',
+  'python3 tools/gen_contract.py --check > /etc/out | tail',
+  'python3 tools/gen_contract.py --check | tee /etc/out',
+  'python3 tools/gen_contract.py | tail -5',
+  // env-assignment prefixes and wrappers stay refused
+  'NODE_OPTIONS=--require=./evil.js node tools/gen.js --check | tail',
+  'PYTHONSTARTUP=x python3 tools/gen_contract.py --check | tail',
+  'env python3 tools/gen_contract.py --check | tail',
+  'nice python3 tools/gen_contract.py --check | tail',
+  'sh -c "python3 tools/gen_contract.py --check" | tail',
+  "bash -lc 'python3 tools/gen_contract.py' --check | tail",
+  'eval python3 tools/gen_contract.py --check | tail',
+  'exec python3 tools/gen_contract.py --check | tail',
+  'xargs python3 tools/gen_contract.py --check | tail',
+];
+for (const cmd of SCRIPT_CHECK_BLOCK) {
+  test('verify-allow (script): stays BLOCK: ' + JSON.stringify(cmd), () => {
+    withScripts((repo) => {
+      const r = run(cmd, { cwd: repo });
+      assert.strictEqual(r.status, 2, 'expected BLOCK for ' + cmd + '\n' + r.stdout);
+    });
+  });
+}
+
+test('verify-allow (script): guards.allowReadOnlyVerifyScripts=false turns the script form off', () => {
+  withScripts((repo) => {
+    const h = makeHome();
+    try {
+      const r = testHook(HOOK, payload('python3 tools/gen_contract.py --check | tail -5', repo), {
+        home: h.home, env: { CLAUDE_CODE_ENTRYPOINT: 'cli', ANTIHALL_ALLOW_READ_ONLY_VERIFY_SCRIPTS: 'false' },
+      });
+      assert.strictEqual(r.status, 2, r.stdout);
+    } finally { h.cleanup(); }
+  });
+});
+
 // ---- per-project allowlist fixtures -----------------------------------------
 
 function writeAllow(repo, patterns) {

@@ -1815,6 +1815,55 @@ function isGenericCheckFlagCommand(segment) {
   return VERIFY_CHECK_FLAG_RE.test(' ' + neutralized + ' ');
 }
 
+// Interpreter + existing script FILE + check flag (0.112, setting
+// guards.allowReadOnlyVerifyScripts, default true). The generic check-flag
+// rule above refuses interpreter verbs outright because `python -c "…" --check`
+// / `node -e "…" --check` hide a payload. A real script file is a different
+// shape: `python3 tools/gen_contract.py --check | tail -5`. It qualifies ONLY
+// when ALL hold:
+//   - the segment STARTS with the interpreter itself (no env assignment —
+//     NODE_OPTIONS/PYTHONSTARTUP can inject code — and no wrapper: sh/bash/
+//     eval/exec/xargs/env/nice/… never lead here);
+//   - the very next token is the script path: not `-`, not starting with `-`
+//     (so no interpreter option at all), unquoted, no expansion/glob chars,
+//     and it resolves (against the payload cwd) to an existing regular FILE;
+//   - no inline-code flag ANYWHERE (-c/-e/-m/-p/-r and combined forms,
+//     --eval/--command/--print/--require/--import/--loader), no stdin/heredoc
+//     redirect (`<`), no `$`/backtick/process substitution;
+//   - a --check/--dry-run/--list flag is present (quote-neutralized);
+//   - the remaining arguments (script + interpreter swapped for `true`, check
+//     flags removed) are non-heavy under the FULL classifier.
+// Bounded output (a piped sink) and every-other-segment rules are enforced by
+// isBoundedVerificationCommand exactly as for the other qualifying checks.
+const SCRIPT_CHECK_INTERPRETER_RE = /^(?:python[0-9.]*|node|ruby|perl|php)$/;
+const SCRIPT_CHECK_REFUSED_FLAG_RE =
+  /(^|\s)(?:-[A-Za-z]*[cemprI]|--eval|--command|--print|--require|--import|--loader|--experimental-loader|--interactive)(?=[\s=]|$)/;
+
+function isInterpreterScriptCheck(segment, ctx) {
+  if (settingsGet('guards', 'allowReadOnlyVerifyScripts') === false) return false;
+  const trimmed = segment.trim();
+  const tokens = trimmed.split(/\s+/).filter(Boolean);
+  if (tokens.length < 3) return false;
+  if (!SCRIPT_CHECK_INTERPRETER_RE.test(tokens[0])) return false;
+  const script = tokens[1];
+  if (script === '-' || script.startsWith('-')) return false;
+  if (/[$`'"~*?[\]{}\\<>();&|]/.test(script)) return false;
+  // Anywhere in the segment: no expansion, no stdin/heredoc, no inline code.
+  if (/[$`\\]|<\(|>\(/.test(segment)) return false;
+  const neutralized = neutralizeQuotedContents(segment);
+  if (/</.test(neutralized)) return false;
+  if (SCRIPT_CHECK_REFUSED_FLAG_RE.test(neutralized)) return false;
+  if (!VERIFY_CHECK_FLAG_RE.test(' ' + neutralized + ' ')) return false;
+  const payload = ctx && ctx.payload;
+  const base = (payload && typeof payload.cwd === 'string' && payload.cwd) || process.cwd();
+  try {
+    if (!fs.statSync(path.resolve(base, script)).isFile()) return false;
+  } catch (_) { return false; }
+  const rest = trimmed.slice(trimmed.indexOf(script) + script.length);
+  if (isHeavyCommand(('true ' + rest).replace(VERIFY_CHECK_FLAG_RE_G, ' '))) return false;
+  return true;
+}
+
 function isSyntaxOnlyCompileCheck(segment) {
   const verb = effectiveVerb(segment);
   if (!verb || !VERIFY_SYNTAX_ONLY_COMPILERS.has(verb)) return false;
@@ -1896,6 +1945,7 @@ function isQualifyingSingleTargetCheck(segment, ctx) {
   if (isCtestNameCheck(segment)) return true;
   if (isSafeScratchpadGitClone(segment, ctx)) return true;
   if (isGenericCheckFlagCommand(segment)) return true;
+  if (isInterpreterScriptCheck(segment, ctx)) return true;
   return false;
 }
 
