@@ -213,6 +213,111 @@ test('NO IDLE NEGLECT: pending task is owned by a subagent -> not actionable-now
   }
 });
 
+// ---- OWNER-BLOCKED MARKER (field report: a Primary faked a blockedBy to
+// silence IDLE NEGLECT when every pending task was genuinely blocked on the
+// owner). isOwnerBlocked() recognizes an EXPLICIT marker instead. ----
+
+test('OWNER-BLOCKED (metadata.blockedOn): every pending task marked owner-blocked -> NO idle-neglect', () => {
+  const h = makeHome();
+  try {
+    const tp = h.writeTranscript([
+      todoWrite([
+        { id: '1', content: 'flash the dev board', status: 'pending', metadata: { blockedOn: 'owner' } },
+        { id: '2', content: 'pick the auth provider', status: 'pending', metadata: { blockedOn: 'user' } },
+      ]),
+    ]);
+    const r = testHook(HOOK, stopPayload(tp), { home: h.home });
+    assert.ok(!isIdleNeglect(r), `owner-blocked tasks must never drive idle-neglect; reason: ${r.json && r.json.reason}`);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('OWNER-BLOCKED (subject prefix "OWNER:"): non-dispatchable without any blockedOn field', () => {
+  const h = makeHome();
+  try {
+    const tp = h.writeTranscript([
+      todoWrite([
+        { id: '1', content: 'OWNER: approve the production deploy window', status: 'pending' },
+      ]),
+    ]);
+    const r = testHook(HOOK, stopPayload(tp), { home: h.home });
+    assert.ok(!isIdleNeglect(r), `"OWNER:" subject prefix must suppress idle-neglect; reason: ${r.json && r.json.reason}`);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('OWNER-BLOCKED (subject prefix "OWNER DECISION", case-insensitive): non-dispatchable', () => {
+  const h = makeHome();
+  try {
+    const tp = h.writeTranscript([
+      todoWrite([
+        { id: '1', content: 'owner decision: pick the cloud region', status: 'pending' },
+      ]),
+    ]);
+    const r = testHook(HOOK, stopPayload(tp), { home: h.home });
+    assert.ok(!isIdleNeglect(r), `"owner decision" prefix (case-insensitive) must suppress idle-neglect; reason: ${r.json && r.json.reason}`);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('OWNER-BLOCKED marker does not suppress a DIFFERENT, genuinely actionable task', () => {
+  const h = makeHome();
+  try {
+    const tp = h.writeTranscript([
+      todoWrite([
+        { id: '1', content: 'OWNER: sign off on the migration', status: 'pending' },
+        { id: '2', content: 'write the release notes', status: 'pending' },
+      ]),
+    ]);
+    const r = testHook(HOOK, stopPayload(tp), { home: h.home });
+    assert.ok(isIdleNeglect(r), `a genuinely actionable sibling task must still trigger idle-neglect; stdout: ${r.stdout}`);
+    assert.match(r.json.reason, /write the release notes/, 'names only the actionable task');
+    assert.ok(!/sign off on the migration/.test(r.json.reason), 'must not name the owner-blocked task as actionable');
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('OWNER-BLOCKED marker is honored through TaskCreate/TaskUpdate (not just TodoWrite)', () => {
+  const h = makeHome();
+  try {
+    const createEntry = {
+      type: 'assistant',
+      message: {
+        role: 'assistant',
+        content: [{ type: 'tool_use', name: 'TaskCreate', id: 'toolu_c1', input: { subject: 'wait for hardware from the owner', metadata: { blockedOn: 'owner' } } }],
+      },
+    };
+    const resultEntry = {
+      type: 'user',
+      message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_c1', content: 'Task #1 created successfully: wait for hardware from the owner' }] },
+    };
+    const tp = h.writeTranscript([createEntry, resultEntry]);
+    const r = testHook(HOOK, stopPayload(tp), { home: h.home });
+    assert.ok(!isIdleNeglect(r), `TaskCreate-marked owner-blocked task must not drive idle-neglect; reason: ${r.json && r.json.reason}`);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('OWNER-BLOCKED MARKER SETTING: guards.taskGuardOwnerBlockedMarker off -> falls back to pre-marker behavior (blocks)', () => {
+  const h = makeHome();
+  try {
+    const tp = h.writeTranscript([
+      todoWrite([
+        { id: '1', content: 'OWNER: approve the budget', status: 'pending' },
+      ]),
+    ]);
+    const r = testHook(HOOK, stopPayload(tp), { home: h.home, env: { ANTIHALL_TASK_GUARD_OWNER_BLOCKED_MARKER: 'off' } });
+    assert.ok(isIdleNeglect(r), `marker disabled via setting -> task must be treated as ordinary actionable work; stdout: ${r.stdout}`);
+  } finally {
+    h.cleanup();
+  }
+});
+
 test('BLOCKER FREED on completion: dependent pending task becomes actionable (idle-neglect)', () => {
   const h = makeHome();
   try {

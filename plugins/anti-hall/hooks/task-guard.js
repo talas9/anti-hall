@@ -261,7 +261,10 @@ function main() {
       'NO agents running — dispatch them in PARALLEL NOW (one background agent ' +
       'each, cap ~min(16, cores-2)): ' + list + more + '. ' +
       'Do not end the turn idle; only stop if a task truly needs the user (then ' +
-      'say which + why).';
+      'say which + why). If a task is genuinely blocked on the OWNER (hardware, a ' +
+      'decision only a human can make), mark it non-dispatchable honestly — ' +
+      'metadata.blockedOn:\'owner\' (or \'user\'/\'human\'), or an "OWNER:" / ' +
+      '"OWNER DECISION" subject prefix — never a fake blockedBy dependency.';
   } else {
     const list = renderList(openTasks);
     const more = openTasks.length > 5 ? ' (and ' + (openTasks.length - 5) + ' more)' : '';
@@ -413,6 +416,42 @@ function isActionablePriority(p) {
   return s !== 'p2' && s !== 'low' && s !== 'deferred';
 }
 
+// normBlockedOn — normalize a raw blockedOn value to a lowercased trimmed
+// string or ''. Non-string/blank collapses to ''.
+function normBlockedOn(v) {
+  return typeof v === 'string' ? v.trim().toLowerCase() : '';
+}
+
+// OWNER-BLOCKED MARKER (field report — a Primary faked a `blockedBy` pointing
+// at a nonexistent task id to silence IDLE NEGLECT when every pending task
+// was genuinely blocked on the OWNER, e.g. hardware or a decision only the
+// human can make; `blockedBy` has no way to express "blocked on a human", so
+// the fake-dependency trick was the only lever available). isOwnerBlocked(t)
+// recognizes an EXPLICIT marker instead, so a task can honestly declare
+// "not dispatchable, and not because of another task":
+//   - metadata.blockedOn (or a top-level blockedOn) === 'owner' | 'user' |
+//     'human' (case-insensitive), OR
+//   - the subject/content starts with "OWNER:" or "OWNER DECISION"
+//     (case-insensitive, leading whitespace ignored).
+// A task matching either is treated as non-dispatchable — excluded from the
+// ACTIONABLE-NOW set (never nagged) — WITHOUT needing a fake blockedBy
+// dependency. It still counts as an open task for the generic nudge; it just
+// never drives the sharp IDLE NEGLECT accusation.
+const OWNER_BLOCKED_VALUES = new Set(['owner', 'user', 'human']);
+const OWNER_SUBJECT_RE = /^\s*owner(:|\s+decision\b)/i;
+function isOwnerBlocked(t) {
+  // Settings switch guards.taskGuardOwnerBlockedMarker (default on): fail-open
+  // to true (marker honored) on any read error, matching this hook's existing
+  // fail-open posture — a settings-read failure must never silently start
+  // re-nagging an honestly-marked owner-blocked task.
+  try {
+    if (!require('./lib/settings.js').enabled('guards', 'taskGuardOwnerBlockedMarker')) return false;
+  } catch (_) { /* fail open -> marker still honored */ }
+  if (t && OWNER_BLOCKED_VALUES.has(normBlockedOn(t.blockedOn))) return true;
+  const subject = (t && (t.content || t.subject)) || '';
+  return typeof subject === 'string' && OWNER_SUBJECT_RE.test(subject);
+}
+
 // classifyOpen(openTasks) — split open tasks into ACTIONABLE-NOW vs the rest.
 // ACTIONABLE NOW = status pending AND unowned (no owner, or owner is the main
 // thread) AND no OPEN blocker (every blockedBy id is either absent from the map
@@ -443,6 +482,9 @@ function classifyOpen(openTasks, taskMap) {
     // Owned by a subagent => not the main thread's to dispatch. Treat "main"/
     // "orchestrator"/"coordinator" owner labels as the main thread (still ours).
     if (owner && !/^(main|orchestrator|coordinator)$/i.test(owner)) continue;
+    // OWNER-BLOCKED (explicit marker) — see isOwnerBlocked's own header. Not
+    // dispatchable without a fake blockedBy dependency; never actionable-now.
+    if (isOwnerBlocked(t)) continue;
     const blockers = normBlockedBy(t.blockedBy);
     // A blocker is OPEN if it is not-done OR unknown (dangling id => assume open).
     const hasOpenBlocker = blockers.some(id => {
@@ -529,6 +571,11 @@ function parseTasksFromFile(filePath) {
                 (todo.metadata != null && todo.metadata.priority != null)
                   ? todo.metadata.priority : todo.priority
               ),
+              // blockedOn — the explicit owner-blocked marker (metadata.blockedOn
+              // preferred, top-level blockedOn as a fallback). See
+              // isOwnerBlocked's own header.
+              blockedOn: (todo.metadata != null && todo.metadata.blockedOn != null)
+                ? todo.metadata.blockedOn : todo.blockedOn,
             });
           }
         }
@@ -553,8 +600,12 @@ function parseTasksFromFile(filePath) {
           (inp.metadata != null && inp.metadata.priority != null)
             ? inp.metadata.priority : inp.priority
         );
+        // blockedOn — see isOwnerBlocked's own header (metadata.blockedOn
+        // preferred, top-level blockedOn as a fallback).
+        const blockedOn = (inp.metadata != null && inp.metadata.blockedOn != null)
+          ? inp.metadata.blockedOn : inp.blockedOn;
         if (toolUseId) {
-          provisionalMap.set(toolUseId, { toolUseId, content, status, owner, blockedBy, priority });
+          provisionalMap.set(toolUseId, { toolUseId, content, status, owner, blockedBy, priority, blockedOn });
         }
         continue;
       }
@@ -579,6 +630,15 @@ function parseTasksFromFile(filePath) {
                   ? inp.metadata.priority : inp.priority
               )
             : (existing.priority || null);
+          // blockedOn — only overwrite when the update explicitly carries the
+          // field (metadata.blockedOn preferred, top-level blockedOn as a
+          // fallback); a status-only update must not clear a marker set at
+          // create-time. See isOwnerBlocked's own header.
+          const hasBlockedOnUpdate = inp.blockedOn !== undefined ||
+            (inp.metadata != null && inp.metadata.blockedOn !== undefined);
+          const updatedBlockedOn = hasBlockedOnUpdate
+            ? ((inp.metadata != null && inp.metadata.blockedOn != null) ? inp.metadata.blockedOn : inp.blockedOn)
+            : existing.blockedOn;
           taskMap.set(id, {
             id: existing.id,
             content: existing.content,
@@ -589,6 +649,7 @@ function parseTasksFromFile(filePath) {
             blockedBy: inp.blockedBy !== undefined ? normBlockedBy(inp.blockedBy)
                                                     : (existing.blockedBy || []),
             priority: updatedPriority,
+            blockedOn: updatedBlockedOn,
           });
         }
         continue;
@@ -609,7 +670,7 @@ function parseTasksFromFile(filePath) {
       taskMap.set(key, {
         id: key, content: rec.content, status: rec.status,
         owner: rec.owner || '', blockedBy: rec.blockedBy || [],
-        priority: rec.priority || null,
+        priority: rec.priority || null, blockedOn: rec.blockedOn,
       });
     } else if (!existing.content || existing.content === key) {
       // Backfill subject from provisional record (update may have arrived first).
@@ -618,6 +679,7 @@ function parseTasksFromFile(filePath) {
         owner: existing.owner || rec.owner || '',
         blockedBy: (existing.blockedBy && existing.blockedBy.length) ? existing.blockedBy : (rec.blockedBy || []),
         priority: existing.priority || rec.priority || null,
+        blockedOn: existing.blockedOn !== undefined ? existing.blockedOn : rec.blockedOn,
       });
     }
     // If existing already has a richer status from TaskUpdate, leave it.

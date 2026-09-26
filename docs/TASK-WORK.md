@@ -59,6 +59,18 @@ and `TaskGet` read back. Designed for long, multi-session, multi-subagent work.
   (all deps resolved).
 - **Ownership:** `owner` keys multi-agent coordination — an unowned available
   task is free to claim; an owned one is someone's in-flight work.
+- **Owner-blocked marker (anti-hall `task-guard` convention, not a harness
+  field):** a task that is genuinely non-dispatchable because it is blocked
+  on the OWNER — hardware, a decision only a human can make, anything no
+  agent can resolve — should be marked honestly rather than given a fake
+  `blockedBy` pointing at a nonexistent/unrelated task id (a real field
+  incident: a Primary faked a dependency purely to silence the nag). Mark it
+  with `metadata.blockedOn: 'owner'` (`'user'`/`'human'` also recognized,
+  case-insensitive), or give the subject an `"OWNER:"` / `"OWNER DECISION"`
+  prefix (case-insensitive). `task-guard.js`'s IDLE NEGLECT check
+  (`isOwnerBlocked()`) treats either as non-dispatchable — it is excluded
+  from the ACTIONABLE-NOW set and never nagged, without needing a fabricated
+  blocker. Toggle: `guards.taskGuardOwnerBlockedMarker` (default on).
 - **Persistence:** written to disk immediately under
   `~/.claude/tasks/<TASK_LIST_ID>/` (`index.json` + `task-*.json`). Survives
   compaction, restart, and multi-day gaps. `CLAUDE_CODE_TASK_LIST_ID` selects
