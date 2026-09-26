@@ -33,6 +33,14 @@ the update.
   or a loud `ok:false ...` line + non-zero exit on failure. The JSON default (no
   `--quiet`) is unchanged. The DevSwarm wake-cron prompt now uses `--quiet` and words
   its stop condition against that line.
+- **`devswarm.js send` takes several recipients.** `--to <id1>,<id2>[,…]` or a repeated
+  `--to` sends the same body to each recipient (duplicates dropped), so a caller no longer
+  needs a shell `for` loop, which command-guard treats as heavy. Every recipient is
+  attempted even after one fails. The result lists per-recipient `ok`/`seq`/`bytes`, and
+  the exit is non-zero if any recipient failed. `--quiet` prints one line per recipient.
+  A list does not combine with `--broadcast`, `--to-primary` or `--cc-primary`.
+  Documented in the devswarm skill (Claude and Codex) and `help`. New setting
+  `devswarm.sendMultiRecipient` (default `true`; `false` keeps "last `--to` wins").
 
 ### Fixes
 

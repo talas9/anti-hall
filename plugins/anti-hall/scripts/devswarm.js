@@ -14800,6 +14800,59 @@ function cmdRelay(seqOrReceipt, flags, ctx) {
 // identity derivation, so a spoofed DEVSWARM_BUILDER_ID on a non-git cwd can
 // NEVER emit an env-derived `from` (callerIdentity is never even reached on
 // that path — `no-project` is returned first, unconditionally).
+// cmdSendMulti(recipients, flags, ctx) (0.112) — `send --to <id1>,<id2>[,…]`
+// (or a repeated --to). Sends the SAME body to each deduped recipient through
+// the ordinary single-recipient cmdSend (so addressing, spoof checks, readback
+// verification and self-heal are identical), NEVER stopping on a partial
+// failure: every recipient is attempted and reported. ok is true only when
+// EVERY recipient succeeded (the verb exits non-zero otherwise). The body is
+// resolved ONCE up front — a --message-stdin pipe can only be read once, and a
+// --message-file is read once so every recipient gets identical bytes.
+// --broadcast / --to-primary / --cc-primary do not combine with a recipient
+// list (refused before anything is sent).
+function cmdSendMulti(recipients, flags, ctx) {
+  if (hasFlag(flags, 'broadcast') || one(flags, 'type') === 'broadcast' || hasFlag(flags, 'to-primary')) {
+    return { ok: false, action: 'send', error: 'send with several --to recipients cannot be combined with --broadcast or --to-primary' };
+  }
+  if (hasFlag(flags, 'cc-primary')) {
+    return { ok: false, action: 'send', error: 'send with several --to recipients does not support --cc-primary (it would copy the Primary once per recipient); add the Primary to the --to list instead' };
+  }
+  let sendCtx = ctx;
+  let perFlags = flags;
+  const fileFlag = one(flags, 'message-file');
+  const sourceCount = (one(flags, 'message') !== undefined ? 1 : 0) + (fileFlag !== undefined ? 1 : 0) + (hasFlag(flags, 'message-stdin') ? 1 : 0);
+  if (sourceCount === 1 && (fileFlag !== undefined || hasFlag(flags, 'message-stdin')) && !(ctx.io && typeof ctx.io.stdin === 'string')) {
+    let body;
+    try { body = fileFlag !== undefined ? fs.readFileSync(fileFlag, 'utf8') : fs.readFileSync(0, 'utf8'); }
+    catch (e) {
+      return { ok: false, action: 'send', error: 'send ' + (fileFlag !== undefined ? '--message-file ' + JSON.stringify(fileFlag) : '--message-stdin') + ' could not be read: ' + String((e && e.message) || e) };
+    }
+    sendCtx = Object.assign({}, ctx, { io: Object.assign({}, ctx.io, { stdin: body }) });
+    perFlags = Object.assign({}, flags, { 'message-stdin': [true] });
+    delete perFlags['message-file'];
+  }
+  const results = [];
+  for (const to of recipients) {
+    let r;
+    try {
+      r = withSelfHeal(() => cmdSend(Object.assign({}, perFlags, { to: [to] }), sendCtx), sendCtx);
+    } catch (e) {
+      r = { ok: false, error: 'send threw: ' + String((e && e.message) || e) };
+    }
+    try { logVerbOutcome('send', to, r, sendCtx); } catch (_) { /* logging never breaks the verb */ }
+    const row = { to, ok: !!(r && r.ok), seq: r && r.seq, bytes: r && r.bytes };
+    if (r && r.toId !== undefined) row.toId = r.toId;
+    if (!row.ok) { row.error = (r && (r.error || r.reason)) || 'send failed'; if (r && r.reason) row.reason = r.reason; }
+    results.push(row);
+  }
+  const failed = results.filter((x) => !x.ok).length;
+  return {
+    ok: failed === 0, action: 'send', type: 'multi',
+    recipients: results, sent: results.length - failed, failed,
+    error: failed ? failed + ' of ' + results.length + ' recipient(s) failed' : undefined,
+  };
+}
+
 function cmdSend(flags, ctx) {
   const home = ctx.home;
   const cwd = ctx.cwd || process.cwd();
@@ -18664,7 +18717,7 @@ const VERB_HELP = {
   migrate: { synopsis: 'run the store forward-migration', mutates: 'MUTATES the store — this is a real migration run, not a dry check' },
   logs: { synopsis: 'query the shared devswarm JSONL log', mutates: 'read-only' },
   'migrate-owner-keys': { synopsis: 'forward-migrate descriptor owner keys', mutates: 'MUTATES descriptor files on disk' },
-  send: { synopsis: 'send a mesh message: --to <id>|--to-primary|--broadcast --message TEXT|--message-file <path>|--message-stdin [--urgency low|normal|high|urgent] [--question] [--answers] [--quiet] [--cc-primary]. `--quiet` prints one line ("sent seq N -> X, B bytes, ok") instead of the full JSON, and still prints "ok:false ..." + a non-zero exit on failure. `--cc-primary` (direct --to sends only) ALSO copies the Primary with the identical message body, best-effort — reported under the result\'s `ccPrimary`, never flips the primary send\'s own ok/exit code.', mutates: 'MUTATES the store — appends a mesh message (and, with --cc-primary, a second one to the Primary) and may wake recipients' },
+  send: { synopsis: 'send a mesh message: --to <id>[,<id2>…]|--to-primary|--broadcast --message TEXT|--message-file <path>|--message-stdin [--urgency low|normal|high|urgent] [--question] [--answers] [--quiet] [--cc-primary]. `--quiet` prints one line ("sent seq N -> X, B bytes, ok") instead of the full JSON, and still prints "ok:false ..." + a non-zero exit on failure. `--cc-primary` (direct --to sends only) ALSO copies the Primary with the identical message body, best-effort — reported under the result\'s `ccPrimary`, never flips the primary send\'s own ok/exit code. Several recipients (`--to a,b` or a repeated `--to`, deduped) each get the same body; every one is attempted, results come back per recipient (ok, seq, bytes), and the exit is non-zero if any failed.', mutates: 'MUTATES the store — appends a mesh message (and, with --cc-primary, a second one to the Primary) and may wake recipients' },
   relay: { synopsis: 'relay <seq|receipt> --to <id> [--note-file <path>] — forward a message THIS caller already received (its own inbox) to <id> verbatim, prefixed with a provenance header ("relayed from X, seq N, M bytes"). <seq> is the row\'s own `seq` (from `inbox messages`/`read-primary`); <receipt> is a read-primary readReceiptId and resolves only when it covers exactly one message. relay never acks: the read still needs its own `inbox ack-primary --receipt <receipt>`. Verifies the relayed byte length against the source and refuses (ok:false) on a mismatch or an empty source body — never a silent partial relay. Example: `relay 42 --to sibling-workspace-id`.', mutates: 'MUTATES the store — appends one mesh message (via `send`, under this file\'s own Primary-seat gate)' },
   roster: { synopsis: 'show the mesh roster (--ack clears your own broadcast-unread)', mutates: 'read-only, unless --ack is passed (clears broadcastUnread)' },
   'wake-directive': { synopsis: 'reprint the SessionStart mailbox wake directive', mutates: 'read-only' },
@@ -19026,6 +19079,21 @@ function runArmed(cmd, positionals, flags, ctx, argv) {
           catch (e) { stdinBody = undefined; }
           if (stdinBody !== undefined) sendCtx = Object.assign({}, ctx, { io: Object.assign({}, ctx.io, { stdin: stdinBody }) });
         }
+        // MULTI-RECIPIENT (0.112, setting devswarm.sendMultiRecipient): `--to a,b`
+        // or a repeated `--to` sends the SAME body to each recipient (deduped,
+        // in order) so a caller never needs a shell `for` loop. See
+        // cmdSendMulti. A single recipient (after dedupe) takes the unchanged
+        // single-send path below with the normalized id.
+        let multiOn = true;
+        try { multiOn = require('../hooks/lib/settings.js').get('devswarm', 'sendMultiRecipient', true, { env: ctx.env || process.env, home: ctx.home }) !== false; } catch (_) { multiOn = true; }
+        if (multiOn && many(flags, 'to').length) {
+          const recipients = csvList(flags, 'to');
+          if (recipients.length > 1) {
+            const mr = cmdSendMulti(recipients, flags, sendCtx);
+            return { code: mr.ok ? 0 : 2, result: mr };
+          }
+          if (recipients.length === 1) flags.to = [recipients[0]];
+        }
         // Send-time self-heal (Phase 7): runs before every mesh send.
         const r = withSelfHeal(() => cmdSend(flags, sendCtx), sendCtx);
         logVerbOutcome('send', one(flags, 'to'), r, sendCtx);
@@ -19348,6 +19416,12 @@ function inboxReadPrimaryTextLines(result) {
 // path already does (r.ok ? 0 : 2), so a script checking `$?` alone still
 // catches the failure even under --quiet.
 function sendQuietLine(result) {
+  // Multi-recipient send (0.112): one line per recipient, same shape.
+  if (result && Array.isArray(result.recipients)) {
+    return result.recipients.map((r) => (r.ok
+      ? 'sent seq ' + r.seq + ' -> ' + r.to + ', ' + r.bytes + ' bytes, ok'
+      : 'ok:false -> ' + r.to + ': ' + String(r.error || 'send failed'))).join('\n');
+  }
   if (result && result.ok) {
     const to = result.type === 'broadcast' ? '(broadcast)' : (result.to != null ? String(result.to) : '(unknown)');
     return 'sent seq ' + result.seq + ' -> ' + to + ', ' + result.bytes + ' bytes, ok';
