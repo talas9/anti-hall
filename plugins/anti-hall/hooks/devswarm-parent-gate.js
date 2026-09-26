@@ -1251,18 +1251,22 @@ function main() {
     // inbox AND a gone worktree). Carried out of the try so the UNION guard can
     // widen for exactly this row — see its own note there.
     let deadDescriptor = false;
-    // hadStoreOnlyRealRows (grace-window scoping): true when ANY of this
-    // descriptor's real-unread rows came from the STORE-ONLY union path
-    // (a mesh-direct `send --to`, or the dead/foreign-descriptor fallback)
-    // rather than the native NDJSON inbox. The fresh-mail grace window below
-    // is scoped OUT of this case — the union path is exactly what several
-    // pre-existing "MUST NOT BREAK" regressions exercise with a freshly
-    // inserted (Date.now()) fixture row that must still block unconditionally
-    // (worktree-gone / ENOENT-inbox live-teardown scenarios), and its
-    // Date.now() timestamp is a fixture convenience, not evidence the row is
-    // "a message the child hasn't had a turn to read yet". The real field
-    // report this grace window fixes is specifically an ordinary Primary->
-    // child send landing in the child's own native inbox file.
+    // hadStoreOnlyRealRows (grace-window scoping, peer-bug fix): true when
+    // ANY of this descriptor's real-unread STORE-ONLY rows (a mesh-direct
+    // `send --to`, or the dead/foreign-descriptor fallback) is NOT positively
+    // attributable to this Primary's own outbound send (`row.sender !==
+    // own.id`, including every row with an absent/unresolvable sender —
+    // fail-open toward blocking, unchanged). A mesh-direct row this Primary
+    // itself just sent is EXACTLY the same "awaiting the child's pickup"
+    // shape the native-inbox grace window already covers below — excluding
+    // it categorically (the pre-fix behavior) reproduced the peer field
+    // report verbatim: `send --to <busy child>` landing in the STORE queue
+    // got hard-blocked as NEGLECT seconds later. The pre-existing "MUST NOT
+    // BREAK" regressions (worktree-gone / ENOENT-inbox / foreign-project
+    // fallback rows) all use a THIRD-PARTY sender (e.g. 'some-child') or no
+    // sender at all, so they are unaffected and keep blocking unconditionally
+    // — only a row this Primary can prove is its own recent send is ever
+    // eligible for the grace label below.
     let hadStoreOnlyRealRows = false;
     try {
       const u = readUnreadMessages(d.inboxPath, d.cursorPath);
@@ -1464,17 +1468,23 @@ function main() {
               unreadReasonErrno = null;
             }
             let storeRealRows = 0;
+            let storeRealRowsAllOwnSend = true;
             for (const row of union.storeOnlyUnreadRows) {
               if (isNoiseText(row && row.body)) continue;
               storeRealRows++;
-              // SENDER FILTER REMOVED — see the matching NDJSON-tier comment
-              // above (~:1190): a mesh-direct row this Primary sent IS the
-              // child's real unread backlog and must count identically to how
-              // devswarm-store.js's unionUnreadFor (roster/parent-inbox)
-              // already counts it.
+              // SENDER FILTER REMOVED (for COUNTING) — see the matching
+              // NDJSON-tier comment above (~:1190): a mesh-direct row this
+              // Primary sent IS the child's real unread backlog and must
+              // count identically to how devswarm-store.js's unionUnreadFor
+              // (roster/parent-inbox) already counts it. Sender IS still
+              // consulted below, but only to decide grace-window ELIGIBILITY
+              // (never to hide the row from realUnread/unionUnread).
               realUnread++;
+              if (!(own.id && row && row.sender != null && String(row.sender) === String(own.id))) {
+                storeRealRowsAllOwnSend = false; // third-party or unresolvable sender -> never graced
+              }
             }
-            if (storeRealRows > 0) hadStoreOnlyRealRows = true;
+            if (storeRealRows > 0 && !storeRealRowsAllOwnSend) hadStoreOnlyRealRows = true;
             // oldestUnreadAgeMsForDescriptor (Bug 2 — busy/NEGLECT): captured
             // from the SAME countFor/unionUnread call so the advisory text
             // below can name how old the oldest unread row is, without a
@@ -1849,11 +1859,11 @@ function main() {
     let familyWaitingOnUser = false;
     let familyAgeUnknown = false;
     // familyHadStoreOnlyRealRows (grace-window scoping): true when ANY live
-    // member's real unread included a STORE-ONLY-union row — see
-    // `hadStoreOnlyRealRows`'s own comment above. Blocks the fresh-mail grace
-    // window below for this family, leaving the pre-existing behavior
-    // (age-independent block) exactly as it was for every union-sourced
-    // scenario.
+    // member's real unread included a STORE-ONLY-union row NOT attributable
+    // to this Primary's own send — see `hadStoreOnlyRealRows`'s own comment
+    // above. Blocks the fresh-mail grace window below for this family; a
+    // family whose ONLY store-only real rows are the Primary's own recent
+    // sends is left eligible for grace, same as a native-inbox send.
     let familyHadStoreOnlyRealRows = false;
     for (const m of members) {
       if (m && (m.held || (famIsChild && (m.archived || m.appArchived || m.archiveIgnored)))) {
@@ -1970,20 +1980,20 @@ function main() {
         // exactly the same scope the busy downgrade above already uses. An
         // unanswered CHILD QUESTION is a wholly separate axis (`unanswered`,
         // handled before main() ever reaches this loop) and is NEVER
-        // suppressed by this window. Also excludes any family whose real
-        // unread included a STORE-ONLY-union row (`familyHadStoreOnlyRealRows`
-        // — a mesh-direct send, or the dead/foreign-descriptor fallback) —
-        // several pre-existing "MUST NOT BREAK" regressions exercise that
-        // exact path with a freshly inserted (Date.now()) fixture row that
-        // must still block unconditionally; this window is scoped to the
-        // ordinary native-inbox Primary->child send the field report
-        // actually describes.
+        // suppressed by this window. `familyHadStoreOnlyRealRows` (peer-bug
+        // fix) now excludes ONLY a family whose store-only real unread
+        // includes a row NOT attributable to this Primary's own send (a
+        // third-party mesh-direct message, or the dead/foreign-descriptor
+        // fallback, or any row with no resolvable sender) — see its own
+        // header. A mesh-direct row THIS Primary itself just sent is treated
+        // identically to a fresh native-inbox send: eligible for grace, same
+        // as the field report this window was built to fix.
         const ageKnown = !familyAgeUnknown && Number.isFinite(familyOldestUnreadAgeMs);
         if (!familyHadStoreOnlyRealRows && ageKnown && familyOldestUnreadAgeMs <= neglectGraceMs) {
           try {
-            const ageTxt = ' (' + Math.max(1, Math.round(familyOldestUnreadAgeMs / 60000)) + 'm old)';
-            fs.writeSync(2, 'anti-hall: ' + survivorIdForBusyCheck + ': ' + unionUnread + ' unread' + ageTxt
-              + ' — within the grace window, not yet neglect\n');
+            const ageSec = Math.max(1, Math.round(familyOldestUnreadAgeMs / 1000));
+            fs.writeSync(2, 'anti-hall: ' + survivorIdForBusyCheck + ': ' + unionUnread
+              + ' unread — awaiting child pickup (' + ageSec + 's)\n');
           } catch (_) {}
           busyAdvisoryHeld = true;
           continue; // advisory only — mail too young to count as neglect

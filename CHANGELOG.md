@@ -98,6 +98,26 @@ the update.
   no value, or with a value that starts with `-`. For `-p`, only a single option-shaped
   token counts, so a brief that opens with a `- ` bullet is still accepted. New setting
   `devswarm.spawnStrictFlagValues` (default `true`).
+- **`devswarm-parent-gate.js`: the fresh-mail grace window (`parentGateNeglectGraceMin`,
+  0.111.0) now covers mesh-direct `send --to` messages, not just the native NDJSON
+  inbox.** A Primary that ran `devswarm.js send --to <child>` and ended its turn seconds
+  later still got hard-blocked with `DEVSWARM NEGLECT` (peer field report), because the
+  grace window's own scoping blanket-excluded every STORE-ONLY-union row (a mesh-direct
+  send is store-only, no NDJSON line at all) regardless of who sent it. The exclusion now
+  keys on the row's `sender`: a store-only row this Primary itself sent, still within the
+  grace window, is downgraded to a stderr advisory — `"N unread — awaiting child pickup
+  (Ns)"` — exactly like a fresh native-inbox send; a row from anyone else (or with no
+  resolvable sender) still blocks unconditionally, unchanged. The pre-existing busy-child
+  downgrade already applied to store rows and needed no change. New tests in
+  `tests/hooks/devswarm-parent-gate-neglect-grace.test.js` cover a fresh own mesh-direct
+  send (advisory), an old own send (still blocks), a fresh send plus an unanswered child
+  question (still blocks), a fresh third-party mesh-direct row (still blocks), and an
+  unresolvable sender (fail-open, still blocks).
+- **`devswarm-parent-inbox.js`'s "CHILD NOT DRAINING" per-turn nag was verified to
+  already cover mesh-direct sends** via its own independent 120s grace window
+  (`unreadIsGraced`/`resolveInboxGraceMs`, sourced from the summary projection's
+  `directUnread`/`oldestDirectUnreadTs`, which is source-agnostic) — no fix was needed
+  there; this entry documents that verification alongside the Stop-gate fix above.
 
 ## 0.111.0 (2026-09-26)
 

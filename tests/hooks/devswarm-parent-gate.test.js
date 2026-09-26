@@ -2128,11 +2128,16 @@ test('UNTRUNCATED: an ordinary (non-truncated) projection behaves exactly as tod
 // (appendMeshMessage, the same primitive `send --to` uses) addressed TO `id`,
 // with `sender` set to `from`. Mirrors devswarm-child-gate.test.js's own
 // seedOutboundReport helper (same store/openStore/appendMeshMessage pattern).
-function seedStoreOnlyRow(home, id, from, hash) {
+// ageMs (peer-bug fix, 2026-09-26): defaults to 0 (fresh) for every EXISTING
+// caller below whose row is from a THIRD-PARTY sender (unaffected by the
+// fresh-mail grace window — see devswarm-parent-gate-neglect-grace.test.js's
+// "MESH-DIRECT" section) or is deliberately backdated past the grace window
+// where it matters (the OWN-sender case just below).
+function seedStoreOnlyRow(home, id, from, hash, ageMs) {
   const s = meshStore.openStore({ home, workspaceId: id, hash: REPO_KEY });
   try {
     meshStore.appendMeshMessage(s, {
-      from, to: id, type: 'direct', message: 'store-direct row', timestamp: Date.now(), hash,
+      from, to: id, type: 'direct', message: 'store-direct row', timestamp: Date.now() - (ageMs || 0), hash,
     });
   } finally { s.close(); }
 }
@@ -2149,12 +2154,19 @@ function drainStoreCursor(home, id) {
   } finally { s.close(); }
 }
 
-test('FIX 3a SUPERSEDED (v0.109 Bug 1 fix): a store-only row whose sender IS this Primary STILL counts as real unread', () => {
+test('FIX 3a SUPERSEDED (v0.109 Bug 1 fix), now aged past the grace window: a store-only row whose sender IS this Primary STILL counts as real unread and blocks', () => {
+  // UPDATED (peer-bug fix, 2026-09-26): a FRESH own-outbound store row is now
+  // graced exactly like a fresh native-inbox send — see the "MESH-DIRECT PEER
+  // BUG" test in devswarm-parent-gate-neglect-grace.test.js. This test keeps
+  // proving the underlying invariant this section exists for (the row is
+  // never silently excluded from the COUNT, matching devswarm-store.js's
+  // unionUnreadFor) by backdating it past parentGateNeglectGraceMin — old
+  // own-outbound mail the child has plainly not drained still hard-blocks.
   const h = makeHome();
   const wt = makeLinkedWorktree();
   try {
     seedWorkspace(h.home, 'ws-out1', { worktreePath: wt.dir, messages: [], cursor: 0 });
-    seedStoreOnlyRow(h.home, 'ws-out1', OWN_ID, 'test-out-1');
+    seedStoreOnlyRow(h.home, 'ws-out1', OWN_ID, 'test-out-1', 10 * 60000); // 10m old, past the grace window
     const r = run(h.home, stopPayload());
     assert.strictEqual(r.status, 0, 'must exit 0');
     // Not busy (no heartbeat/live session seeded) -> real unread hard-blocks,

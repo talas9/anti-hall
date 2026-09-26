@@ -20,10 +20,13 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
+const cp = require('node:child_process');
+const os = require('node:os');
 const { testHookRaw } = require('../helpers/spawn-hook.js');
 const { makeHome } = require('../helpers/fixtures.js');
 const installIngest = require('../../plugins/anti-hall/companion/install-devswarm-ingest.js');
 const repokey = require('../../plugins/anti-hall/companion/lib/devswarm-repokey.js');
+const meshStore = require('../../plugins/anti-hall/companion/lib/devswarm-store.js');
 
 const HOOK = 'devswarm-parent-gate.js';
 const PRIMARY_ENV = { DEVSWARM_REPO_ID: 'repo-1' };
@@ -93,7 +96,7 @@ test('GRACE: a message sent seconds ago (no busy evidence) -> advisory, not a bl
     const r = run(h.home, stopPayload('grace-fresh'));
     assert.strictEqual(r.status, 0);
     assert.strictEqual(r.stdout, '', `fresh mail (no busy evidence) must not block; stdout=${r.stdout} stderr=${r.stderr}`);
-    assert.match(r.stderr, /within the grace window, not yet neglect/, `stderr=${r.stderr}`);
+    assert.match(r.stderr, /awaiting child pickup/, `stderr=${r.stderr}`);
   } finally { h.cleanup(); }
 });
 
@@ -128,4 +131,127 @@ test('NOT SUPPRESSED: fresh unread PLUS an unanswered child question -> still BL
     assert.strictEqual(r.json && r.json.decision, 'block', `an unanswered child question must still block despite fresh mail elsewhere; stdout=${r.stdout} stderr=${r.stderr}`);
     assert.match(r.json.reason, /UNANSWERED QUESTION/, `reason=${r.json && r.json.reason}`);
   } finally { h.cleanup(); }
+});
+
+// --- MESH-DIRECT (store-only) rows: peer bug (2026-09-26) --------------------
+//
+// A Primary running `devswarm.js send --to <busy child id>` writes a
+// STORE-ONLY row (no NDJSON line at all) — the mesh-direct shape. Before this
+// fix, `hadStoreOnlyRealRows` blanket-excluded EVERY store-only row from the
+// grace window regardless of who sent it, so this exact peer scenario
+// (Primary sends, ends its turn seconds later) still hard-blocked with
+// "DEVSWARM NEGLECT", reproducing the bug this whole file exists to fix, just
+// via the store path instead of the NDJSON path. Fix: the exclusion now keys
+// on `row.sender` — only a row NOT attributable to this Primary's own send
+// (third-party, or unresolvable) still forces the block; a row THIS Primary
+// sent is graced exactly like a fresh native-inbox send.
+//
+// GIT_AVAILABLE / makeLinkedWorktree(): a mesh-direct row is looked up by
+// resolving the descriptor's OWN worktreePath to a repoKey (`dKey` in the
+// hook) via a REAL git spawn — a fake non-git directory resolves to no key at
+// all and the union step never runs. A linked worktree of THIS repo gives a
+// real, DISTINCT (non-Primary) identity with the SAME repoKey, mirroring how
+// a real child workspace is actually laid out.
+const GIT_AVAILABLE = (() => {
+  try { const r = cp.spawnSync('git', ['--version']); return !r.error && r.status === 0; } catch (_) { return false; }
+})();
+function makeLinkedWorktree() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'parent-gate-mesh-wt-'));
+  fs.rmdirSync(dir);
+  const branch = 'parent-gate-mesh-' + path.basename(dir);
+  const r = cp.spawnSync('git', ['worktree', 'add', '-q', '-b', branch, dir, 'HEAD'], { cwd: REPO_CWD });
+  if (r.status !== 0) throw new Error('git worktree add failed: ' + (r.stderr && r.stderr.toString()));
+  return {
+    dir,
+    cleanup() {
+      cp.spawnSync('git', ['worktree', 'remove', '--force', dir], { cwd: REPO_CWD });
+      cp.spawnSync('git', ['branch', '-D', branch], { cwd: REPO_CWD });
+    },
+  };
+}
+
+// seedMeshWorkspace: a child descriptor with an EMPTY (readable, 0-row)
+// native inbox and a mesh-direct message living ONLY in the store — the
+// `send --to` shape. `sender` defaults to OWN_ID (a message this Primary
+// itself sent); pass a different value to simulate a third-party mesh row.
+function seedMeshWorkspace(home, id, wt, opts = {}) {
+  const root = path.join(home, '.anti-hall', 'devswarm');
+  const wsDir = path.join(root, 'workspaces');
+  const inboxPath = path.join(root, 'inbox', id + '.ndjson');
+  const cursorPath = path.join(root, 'cursor', id + '.json');
+  for (const d of [wsDir, path.dirname(inboxPath), path.dirname(cursorPath)]) fs.mkdirSync(d, { recursive: true });
+  fs.writeFileSync(inboxPath, ''); // readable, 0 rows — never ENOENT
+  fs.writeFileSync(cursorPath, '0');
+  fs.writeFileSync(path.join(wsDir, id + '.json'), JSON.stringify({
+    id, worktreePath: wt, sessionId: 'sess-' + id, repoKey: REPO_KEY, inboxPath, cursorPath,
+  }));
+  const sender = opts.sender !== undefined ? opts.sender : OWN_ID;
+  const ageMs = opts.ageMs == null ? 1000 : opts.ageMs;
+  const s = meshStore.openStore({ home, workspaceId: id, hash: REPO_KEY });
+  try {
+    meshStore.appendMeshMessage(s, {
+      from: sender, to: id, type: 'direct', message: opts.message || 'do the thing',
+      timestamp: Date.now() - ageMs, hash: opts.hash || ('test-mesh-' + id + '-' + Date.now()),
+    });
+  } finally { s.close(); }
+}
+
+test('MESH-DIRECT PEER BUG: fresh own `send --to` (store-only, no NDJSON line) -> advisory, not a block', (t) => {
+  if (!GIT_AVAILABLE) return t.skip('git unavailable');
+  const h = makeHome();
+  const wt = makeLinkedWorktree();
+  try {
+    seedMeshWorkspace(h.home, 'mesh-fresh', wt.dir, { ageMs: 1000 }); // 1s old, sender = OWN_ID
+    const r = run(h.home, stopPayload('mesh-fresh'));
+    assert.strictEqual(r.stdout, '', `a fresh own mesh-direct send must not block; stdout=${r.stdout} stderr=${r.stderr}`);
+    assert.match(r.stderr, /awaiting child pickup/, `stderr=${r.stderr}`);
+  } finally { h.cleanup(); wt.cleanup(); }
+});
+
+test('MESH-DIRECT: an OLD own `send --to` (past the grace window) -> still BLOCKS', (t) => {
+  if (!GIT_AVAILABLE) return t.skip('git unavailable');
+  const h = makeHome();
+  const wt = makeLinkedWorktree();
+  try {
+    seedMeshWorkspace(h.home, 'mesh-old', wt.dir, { ageMs: 30 * 60000 }); // 30m old, sender = OWN_ID
+    const r = run(h.home, stopPayload('mesh-old'));
+    assert.strictEqual(r.json && r.json.decision, 'block', `an old own mesh-direct send must still block; stdout=${r.stdout} stderr=${r.stderr}`);
+    assert.match(r.json.reason, /1 unread/);
+  } finally { h.cleanup(); wt.cleanup(); }
+});
+
+test('MESH-DIRECT: fresh unread PLUS an unanswered child question -> still BLOCKS on the question axis', (t) => {
+  if (!GIT_AVAILABLE) return t.skip('git unavailable');
+  const h = makeHome();
+  const wt = makeLinkedWorktree();
+  try {
+    seedMeshWorkspace(h.home, 'mesh-ask', wt.dir, { ageMs: 1000 }); // fresh, would otherwise get grace
+    writeOwnSummary(h.home, 0, [{ from: 'mesh-ask', ts: Date.now() - 60000, seq: 1 }]);
+    const r = run(h.home, stopPayload('mesh-question'));
+    assert.strictEqual(r.json && r.json.decision, 'block', `an unanswered child question must still block despite fresh mesh-direct mail elsewhere; stdout=${r.stdout} stderr=${r.stderr}`);
+    assert.match(r.json.reason, /UNANSWERED QUESTION/, `reason=${r.json && r.json.reason}`);
+  } finally { h.cleanup(); wt.cleanup(); }
+});
+
+test('MESH-DIRECT NOT SUPPRESSED: a fresh THIRD-PARTY mesh-direct row (not this Primary\'s own send) -> still BLOCKS', (t) => {
+  if (!GIT_AVAILABLE) return t.skip('git unavailable');
+  const h = makeHome();
+  const wt = makeLinkedWorktree();
+  try {
+    seedMeshWorkspace(h.home, 'mesh-third-party', wt.dir, { ageMs: 1000, sender: 'some-other-child' });
+    const r = run(h.home, stopPayload('mesh-third-party'));
+    assert.strictEqual(r.json && r.json.decision, 'block', `a fresh message NOT sent by this Primary must still block, regardless of age; stdout=${r.stdout} stderr=${r.stderr}`);
+    assert.match(r.json.reason, /1 unread/);
+  } finally { h.cleanup(); wt.cleanup(); }
+});
+
+test('MESH-DIRECT NOT SUPPRESSED: a fresh mesh-direct row with NO resolvable sender -> still BLOCKS (fail-open)', (t) => {
+  if (!GIT_AVAILABLE) return t.skip('git unavailable');
+  const h = makeHome();
+  const wt = makeLinkedWorktree();
+  try {
+    seedMeshWorkspace(h.home, 'mesh-no-sender', wt.dir, { ageMs: 1000, sender: null });
+    const r = run(h.home, stopPayload('mesh-no-sender'));
+    assert.strictEqual(r.json && r.json.decision, 'block', `an unresolvable sender must fail open toward blocking; stdout=${r.stdout} stderr=${r.stderr}`);
+  } finally { h.cleanup(); wt.cleanup(); }
 });
