@@ -144,6 +144,14 @@ the update.
   (`session_id` of the spawning session); a heartbeat written before this
   field existed has no owner to verify and is now treated as not-ours
   (fail-open toward no nudge, never toward blocking on an unverified file).
+- **The parent Stop gate no longer force-blocks a Primary seconds after it
+  sends a child a message, before the child has had any chance to read it.**
+  New setting `devswarm.parentGateNeglectGraceMin` (default 1 minute): a
+  plain, native-inbox unread backlog younger than this never counts as
+  neglect by itself, independent of whether the child is separately busy.
+  Never applies to a store-only (mesh-direct send, or dead/foreign-descriptor)
+  row, and never suppresses an unanswered child question or a corroborated
+  stale/escalated verdict.
 - **Static per-turn reminder blocks (VERIFY-FIRST, the DEVSWARM PRIMARY
   dispatch-tier and top-fan-out-tier suffixes) no longer repeat every single
   turn.** They now follow the same once-per-session / once-after-compact-or-
