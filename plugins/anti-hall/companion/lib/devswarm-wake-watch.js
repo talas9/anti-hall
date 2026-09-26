@@ -578,6 +578,55 @@ function formatRefusalLine(reason) {
   return '[wake-watch] REFUSED TO ARM: ' + reason;
 }
 
+// ---------------------------------------------------------------------------
+// PARENT-DEATH DETECTION (field evidence 2026-09-26): a watcher started by a
+// test's intermediate parent (the Monitor's shell, or the stable-launcher
+// wrapper ~/.anti-hall/bin/wake-watch.js — see stable-launcher.js) never
+// exited when that parent died; ps showed it 19h later still running with
+// PPID 1. Nothing in the loop ever checked liveness of the process that
+// started it, so a crashed/killed parent silently orphans this watcher
+// forever (and it may keep holding the per-child watch lock — see
+// WATCH_LOCK_STALE_MS above — so the NEXT session's watcher either refuses to
+// arm or reports watcherArmed from a dead watcher). Same failure in
+// production, not just tests.
+//
+// parentGone(startPpid, io) -> bool. `startPpid` is process.ppid CAPTURED AT
+// STARTUP (main(), before any loop tick) — never re-read fresh each call,
+// because the only reliable orphan signal is "my ORIGINAL parent is gone",
+// not "my CURRENT ppid differs from some earlier observation of itself".
+// Two independent, either-is-sufficient checks:
+//   (1) the OS itself already reparented us — process.ppid no longer equals
+//       startPpid, or has become 1 (the universal orphan-reaper pid on
+//       Linux/macOS); cheap, no syscall.
+//   (2) startPpid, even if ppid somehow still reads unchanged (e.g. a
+//       platform that does not reparent onto 1), no longer resolves to a
+//       live process — process.kill(startPpid, 0) throws ESRCH.
+// Fail-closed toward NOT exiting on an unexpected error from the liveness
+// probe (e.g. EPERM means the pid exists but isn't ours to signal — still
+// alive) — a probe failure must never falsely kill a healthy watcher.
+function parentGone(startPpid, io) {
+  const ioo = io || {};
+  if (!Number.isFinite(startPpid) || startPpid <= 0) return false;
+  const currentPpid = Number.isFinite(ioo.ppid) ? ioo.ppid : process.ppid;
+  if (currentPpid !== startPpid || currentPpid === 1) return true;
+  const kill = ioo.processKill || process.kill;
+  try {
+    kill(startPpid, 0);
+    return false;
+  } catch (e) {
+    return !!(e && e.code === 'ESRCH');
+  }
+}
+
+// formatParentGoneLine() -> the ONE line emitted (to STDERR, same channel as
+// formatLockLostLine — a lifecycle diagnostic about THIS watcher's own
+// process tree, never a wake event) when parentGone() fires. Fixed text, no
+// runtime-derived content (same injection-hygiene posture as the other
+// closed-vocabulary lines in this file).
+function formatParentGoneLine() {
+  return '[wake-watch] parent gone — exiting';
+}
+
 // formatLockLostLine(reason) -> the ONE line emitted (to STDERR, never stdout
 // — this is diagnostic noise about THIS watcher's own lifecycle, not a wake
 // event) when a healthy-looking watcher discovers mid-loop that its lock was
@@ -1201,6 +1250,10 @@ function isDevswarmActiveGate(env, cwd, io) {
 
 function main() {
   const env = process.env;
+  // Captured BEFORE anything else (cheap, no disk/stdout touch) — see
+  // parentGone()'s header comment for why this must be the STARTUP ppid, not
+  // one re-read on each check.
+  const startPpid = process.ppid;
   // process.cwd() itself touches no disk state (no mkdir/lock/read/write), so
   // reading it before the gate is safe and lets the gate's tiers (c)/(d)
   // evaluate against the real cwd.
@@ -1381,6 +1434,16 @@ function main() {
   });
 
   function loop() {
+    // PARENT-DEATH CHECK — first thing every tick, ahead of the restamp/
+    // stale-build checks below: a watcher whose starting parent is gone must
+    // never even try to keep the lock fresh, it must give the lock up. See
+    // parentGone()'s header comment for the field incident this closes.
+    if (parentGone(startPpid, {})) {
+      try { fs.writeSync(2, formatParentGoneLine() + '\n'); } catch (_) {}
+      cleanup();
+      return;
+    }
+
     // Re-stamp the lock's `ts` every tick (defect 8143ced316d3) so a HEALTHY
     // watcher's lock never reads as stale to another watcher's steal-check —
     // only a genuinely hung watcher (stuck before reaching this line again)
@@ -1504,6 +1567,8 @@ module.exports = {
   formatErrorLine,
   formatRefusalLine,
   formatLockLostLine,
+  parentGone,
+  formatParentGoneLine,
   formatUpdateAvailableLine,
   REFUSAL_REASONS,
   ERROR_TOLERANCE,

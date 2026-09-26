@@ -261,6 +261,18 @@ test('F (P2): readInstalledPluginVersion resolves the REAL installed plugin.json
 
 test('F: a watcher whose lock is stolen mid-loop prints LOCK LOST to stderr, exits cleanly, and never deletes the new holder\'s lock', async () => {
   const home = tmpHome();
+  // Root cause of a real leaked orphan (field evidence 2026-09-26): this test
+  // spawns a real wake-watch.js child process, but previously only ever killed
+  // it on the *success* path (the 5s watchdog timeout inside the exitCode
+  // Promise below). Any assertion thrown BEFORE that point (e.g. the
+  // fs.existsSync/ownToken/seeded-baseline asserts) skipped straight to the
+  // outer `finally { rm(home) }`, which deletes the tmp HOME but never touches
+  // the still-running child — it keeps polling (ANTIHALL_DEVSWARM_WAKE_WATCH_
+  // POLL_MS=80 below) and outlives the test process entirely once the test
+  // runner exits, reparented onto PPID 1 exactly like the live incident.
+  // Track the child here and always kill it, regardless of how this test
+  // exits.
+  let child = null;
   try {
     const id = 'builder-8143-lockloss-test';
     const lockPath = wakeWatch.lockPathFor(home, id);
@@ -283,7 +295,7 @@ test('F: a watcher whose lock is stolen mid-loop prints LOCK LOST to stderr, exi
       // Fast tick so the test does not need to wait multiple seconds.
       ANTIHALL_DEVSWARM_WAKE_WATCH_POLL_MS: '80',
     };
-    const child = require('node:child_process').spawn(process.execPath, [wakeWatchPath], { env });
+    child = require('node:child_process').spawn(process.execPath, [wakeWatchPath], { env });
     let stderrBuf = '';
     child.stderr.on('data', (d) => { stderrBuf += d.toString(); });
     let stdoutBuf = '';
@@ -336,5 +348,12 @@ test('F: a watcher whose lock is stolen mid-loop prints LOCK LOST to stderr, exi
     const finalSeen = JSON.parse(fs.readFileSync(seenPath, 'utf8'));
     assert.strictEqual(finalSeen.lastTotal, 99, 'a lock-lost exit must never overwrite the new holder\'s fresher seen-state');
     assert.strictEqual(finalSeen.lastTotal2, 12, 'a lock-lost exit must never overwrite the new holder\'s fresher seen-state (lastTotal2)');
-  } finally { rm(home); }
+  } finally {
+    // Unconditional child kill — see the header comment above: this must run
+    // even when an assertion above threw before the process naturally exited.
+    if (child && child.exitCode === null && child.signalCode === null) {
+      try { child.kill('SIGKILL'); } catch (_) {}
+    }
+    rm(home);
+  }
 });
