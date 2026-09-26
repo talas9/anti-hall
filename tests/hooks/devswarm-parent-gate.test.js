@@ -18,6 +18,7 @@ const installIngest = require('../../plugins/anti-hall/companion/install-devswar
 const repokey = require('../../plugins/anti-hall/companion/lib/devswarm-repokey.js');
 const replyStateLib = require('../../plugins/anti-hall/companion/lib/devswarm-reply-state.js');
 const meshStore = require('../../plugins/anti-hall/companion/lib/devswarm-store.js');
+const { WAKE_CRON_DEFAULT } = require('../../plugins/anti-hall/hooks/lib/devswarm-wake.js');
 const gateStateLib = require('../../plugins/anti-hall/companion/lib/devswarm-gate-state.js');
 const drainMarkerLib = require('../../plugins/anti-hall/companion/lib/devswarm-drain-marker.js');
 
@@ -892,7 +893,7 @@ test('WAKE RE-ASSERT: Claude Primary -> the neglect block reason also carries th
     // inline — points at `wake-directive <id>` instead.
     assert.ok(!/`CronCreate`/.test(reason), `trimmed reassert must NOT re-state CronCreate inline; reason=${reason}`);
     assert.ok(/wake-directive/.test(reason), `must point at the wake-directive re-run; reason=${reason}`);
-    assert.ok(reason.includes('`*/30 * * * *`'), `must carry the default schedule; reason=${reason}`);
+    assert.ok(reason.includes('`' + WAKE_CRON_DEFAULT + '`'), `must carry the default schedule; reason=${reason}`);
     // MAILBOX WAKE fix (field evidence 2026-09-26): the Stop-gate re-verify
     // must name the SAME resolved `primary-<hash>` id the SessionStart
     // directive/wake-watch/the store already use (own.id, threaded through

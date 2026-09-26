@@ -11,6 +11,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { testHook, testHookRaw } = require('../helpers/spawn-hook.js');
 const { makeHome } = require('../helpers/fixtures.js');
+const { WAKE_CRON_DEFAULT } = require('../../plugins/anti-hall/hooks/lib/devswarm-wake.js');
 
 const HOOK = 'devswarm-child-gate.js';
 
@@ -1160,7 +1161,7 @@ test('WAKE RE-ASSERT: Claude child -> the forced-ack reason also carries the tri
     // (scripts/devswarm.js's on-demand reprint of the FULL SessionStart text).
     assert.ok(!/`CronCreate`/.test(reason), `trimmed reassert must NOT re-state CronCreate inline; reason=${reason}`);
     assert.ok(/wake-directive/.test(reason), `must point at the wake-directive re-run; reason=${reason}`);
-    assert.ok(reason.includes('`*/30 * * * *`'), `must carry the default schedule; reason=${reason}`);
+    assert.ok(reason.includes('`' + WAKE_CRON_DEFAULT + '`'), `must carry the default schedule; reason=${reason}`);
     for (const m of [...reason.matchAll(/`node ([^`]*?devswarm\.js)\b/g)]) {
       assert.ok(path.isAbsolute(m[1]), `emitted CLI path must be absolute: ${m[1]}`);
       assert.ok(fs.existsSync(m[1]), `emitted CLI path must exist: ${m[1]}`);

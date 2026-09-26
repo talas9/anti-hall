@@ -64,7 +64,15 @@
 // The interval is a real cost: 1-minute = 1,440 wake-turns/day/workspace,
 // 5-minute (the old default) = 288, 30-minute = 48. ANTIHALL_DEVSWARM_WAKE_CRON is the one
 // knob for machines that want tighter latency and are willing to pay for it.
-const WAKE_CRON_DEFAULT = '*/30 * * * *';
+//
+// OFF-MINUTE OFFSET (peer ask 1, 0.112 lane): `*/30 * * * *` fires exactly on
+// `:00`/`:30` — the scheduler's own guidance is to avoid those (every other
+// machine's `*/N` cron piles onto the same wall-clock instant). `7,37 * * *
+// *` keeps the SAME 30-minute cadence (still 48 ticks/day) at an off-minute
+// offset, matching the pattern peer Primaries already run in the wild (e.g.
+// `13,43 * * * *`). ANTIHALL_DEVSWARM_WAKE_CRON still overrides this for any
+// caller that wants a different offset/cadence.
+const WAKE_CRON_DEFAULT = '7,37 * * * *';
 
 // CRON_FIELD — the ONLY characters a cron field may contain. This is a PROMPT-
 // INJECTION boundary, not cosmetics: ANTIHALL_DEVSWARM_WAKE_CRON is untrusted
@@ -295,7 +303,18 @@ function drainCmd(cli, isChild, useTick, id, watcher) {
     + 'report the `reason` (and `storeUnavailableReason`/`storeUnavailableDetail` when present) '
     + 'in one line and stop (do not loop, do not spawn a subagent)';
   if (useTick) {
-    const tickCmd = '`node ' + cli + ' inbox tick ' + id + (isChild ? ' --child' : '') + '`';
+    // --quiet (peer ask 2, 0.112 lane): `inbox tick`'s JSON carries duplicate
+    // legacy+new field names (unread/unreadTotal, cursor/cursorNdjson,
+    // storeCursor/cursorStore — see devswarm.js cmdInbox's 'count' shape,
+    // which cmdInboxTick's result extends), which the raw-JSON prose below
+    // used to make the model eyeball directly. `--quiet` collapses the ONLY
+    // four fields this decision needs into one line: `tick <id>: unread N,
+    // known true|false, meshGap true|false, watcherArmed true|false` — so the
+    // stop condition below is worded against THAT line, not the JSON field
+    // names. `--json` still forces the full object back if ever needed.
+    const tickCmd = '`node ' + cli + ' inbox tick ' + id + (isChild ? ' --child' : '') + ' --quiet`';
+    const tickStopCond = 'if the printed line reads `unread 0` AND `meshGap false` AND `known` is NOT `false`';
+    const tickOtherwise = 'either `unread` is greater than 0, or `meshGap` is `true`, or `known` is `false`';
     const childNote = isChild
       ? ' — this is the cursor-advancing verb, matching devswarm-child-turn.js\'s own ' +
         'mesh-direct instruction; `inbox read` is a non-mutating peek and cannot clear the ' +
@@ -306,15 +325,15 @@ function drainCmd(cli, isChild, useTick, id, watcher) {
     // emitted when a watcher script path is available; omitted -> byte-
     // identical to pre-fix text.
     const rearmClause = (typeof watcher === 'string' && watcher)
-      ? ' If its `watcherArmed` is `false` (your Monitor lapsed at its 30-minute harness cap), ' +
+      ? ' If its `watcherArmed` reads `false` (your Monitor lapsed at its 30-minute harness cap), ' +
         're-arm it first: `Monitor` with command `node ' + watcher + '` (persistent: true if ' +
         'supported, else max timeout_ms).'
       : '';
     return 'run ' + tickCmd + plainNote + ' (with `--child` it first imports anything waiting in your ' +
-      'native queue, then reports the SAME `unreadTotal`/`meshGapWithheld`/`known` fields ' +
-      '`inbox count` does, and writes a liveness marker + refreshes your heartbeat — one ' +
-      'command instead of pull+count);' + rearmClause + ' ' + stopCond + ', say so and stop — do NOT spawn a ' +
-      'subagent; otherwise (' + otherwise + '), run `node ' + cli +
+      'native queue, then prints one line with the SAME unread/meshGap/known signal `inbox ' +
+      'count` reports, and writes a liveness marker + refreshes your heartbeat — one ' +
+      'command instead of pull+count);' + rearmClause + ' ' + tickStopCond + ', say so and stop — do NOT spawn a ' +
+      'subagent; otherwise (' + tickOtherwise + '), run `node ' + cli +
       ' inbox read-primary ' + id + '`' + ACK_AFTER_READ + ' (delegate to a subagent only if the payload is large' + childNote + storeUnavailableClause;
   }
   const countCmd = '`node ' + cli + ' inbox count ' + id + '`';
@@ -419,11 +438,12 @@ function wakeDirective(env, isChild, cli, watcher, explicitId) {
     // that specific text belongs INSIDE the recurring cron prompt, not only
     // the once-at-SessionStart monitorArmLine below.
     const drain = drainCmd(cli, isChild, true, id, watcher);
-    return ' MAILBOX WAKE (do this NOW, on your FIRST turn): call `CronList`; if your mailbox-' +
-      'wake job is ABSENT — never created, or auto-expired (recurring tasks self-delete 7 days ' +
-      'after creation) — call `CronCreate` with schedule `' + wakeCron(env) + '` and a prompt ' +
-      'that runs ' + drain + ' and acts on anything unread. If the job is already listed, do ' +
-      'nothing — never create a second one. Cron jobs fire while this session is IDLE (each ' +
+    return ' MAILBOX WAKE (do this NOW, on your FIRST turn): call `CronList`. If ANY existing ' +
+      'job already runs `inbox tick` for this workspace — any schedule, id, or partition UUID ' +
+      '— that counts as present; do nothing, never create a second one. Only if ABSENT — never ' +
+      'created, or auto-expired (recurring tasks self-delete 7 days after creation) — ' +
+      'call `CronCreate` with schedule `' + wakeCron(env) + '` and a prompt that runs ' + drain +
+      ' and acts on anything unread. Cron jobs fire while this session is IDLE (each ' +
       'tick is a full turn) — this cron is now a 30-MINUTE FALLBACK cadence (cheaper than the ' +
       'pre-D13 5-minute default), NEVER disarmed — it is the only thing that will wake you to ' +
       'drain your mailbox once you go idle; a message that lands after you stop is otherwise ' +

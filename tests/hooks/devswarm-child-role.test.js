@@ -168,7 +168,7 @@ test('P1 FIX: every emitted `node <cli>` instruction carries an ABSOLUTE, existi
 const CLAUDE_CHILD = { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main', DEVSWARM_AI_AGENT: 'claude' };
 const CLAUDE_PRIMARY = { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: '', DEVSWARM_AI_AGENT: 'claude' };
 
-test('WAKE: Claude child -> CronCreate directive, default */30 schedule, ABSOLUTE cli path, child drain verbs', () => {
+test('WAKE: Claude child -> CronCreate directive, default off-minute 30-min schedule, ABSOLUTE cli path, child drain verbs', () => {
   const h = makeHome();
   try {
     const r = testHook(HOOK, sessionPayload(), { home: h.home, expectJson: true, env: CLAUDE_CHILD });
@@ -176,7 +176,7 @@ test('WAKE: Claude child -> CronCreate directive, default */30 schedule, ABSOLUT
     assert.strictEqual(r.status, 0);
     assert.ok(/MAILBOX WAKE/.test(c), `child must get the wake directive; ctx=${c}`);
     assert.ok(/`CronCreate`/.test(c), `must name the CronCreate tool; ctx=${c}`);
-    assert.ok(c.includes('`*/30 * * * *`'), `must carry the default 30-minute schedule; ctx=${c}`);
+    assert.ok(c.includes('`' + WAKE_CRON_DEFAULT + '`'), `must carry the default 30-minute schedule; ctx=${c}`);
     // D13: the cron prompt's drain verb is now `inbox tick <id> --child` (folds
     // pull-if-child + count + marker into one command) — not a bare `inbox pull`.
     assert.ok(/inbox tick <DEVSWARM_BUILDER_ID> --child/.test(c), `child cron drain must use inbox tick --child; ctx=${c}`);
@@ -325,7 +325,7 @@ test('WAKE INTERVAL: ANTIHALL_DEVSWARM_WAKE_CRON is honored verbatim', () => {
     const env = Object.assign({}, CLAUDE_CHILD, { ANTIHALL_DEVSWARM_WAKE_CRON: '*/1 * * * *' });
     const c = ctx(testHook(HOOK, sessionPayload(), { home: h.home, expectJson: true, env }));
     assert.ok(c.includes('`*/1 * * * *`'), `override must be honored; ctx=${c}`);
-    assert.ok(!c.includes('`*/30 * * * *`'), `default must not also appear; ctx=${c}`);
+    assert.ok(!c.includes('`' + WAKE_CRON_DEFAULT + '`'), `default must not also appear; ctx=${c}`);
   } finally {
     h.cleanup();
   }
@@ -339,7 +339,7 @@ test('WAKE INTERVAL: garbage / wrong-arity overrides fall back to the default, n
       const r = testHook(HOOK, sessionPayload(), { home: h.home, expectJson: true, env });
       assert.strictEqual(r.status, 0, `must exit 0 on ${JSON.stringify(bad)}`);
       const c = ctx(r);
-      assert.ok(c.includes('`*/30 * * * *`'), `must fall back to default for ${JSON.stringify(bad)}; ctx=${c}`);
+      assert.ok(c.includes('`' + WAKE_CRON_DEFAULT + '`'), `must fall back to default for ${JSON.stringify(bad)}; ctx=${c}`);
       // The rejected value must never be emitted AS the schedule (backticked slot).
       assert.ok(!c.includes('`' + bad + '`'), `must not emit the rejected value as the schedule: ${bad}`);
     }
@@ -474,7 +474,7 @@ test('WAKE CRON: hostile / degenerate values never crash the hook (fallback is t
       const env = Object.assign({}, CLAUDE_CHILD, { ANTIHALL_DEVSWARM_WAKE_CRON: v });
       const r = testHook(HOOK, sessionPayload(), { home: h.home, expectJson: true, env });
       assert.strictEqual(r.status, 0, `must exit 0 on ${JSON.stringify(v.slice(0, 40))}`);
-      assert.ok(ctx(r).includes('`*/30 * * * *`'), `must fall back to default for ${JSON.stringify(v.slice(0, 40))}`);
+      assert.ok(ctx(r).includes('`' + WAKE_CRON_DEFAULT + '`'), `must fall back to default for ${JSON.stringify(v.slice(0, 40))}`);
     }
   } finally {
     h.cleanup();
