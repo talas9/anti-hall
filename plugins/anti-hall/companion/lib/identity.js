@@ -145,6 +145,37 @@ function nearestDotGit(F, dir) {
   }
 }
 
+// rawGitInfo(dir) -> { commonDir, toplevel } for the git checkout that
+// directly owns `dir` (nearest ancestor holding a `.git` entry), WITHOUT
+// climbing to an enclosing superproject. Unlike resolveContext — which
+// deliberately collapses every submodule kind onto the OUTERMOST
+// superproject for repoKey/meshId (decided rule) — this answers "which
+// exact .git store backs this exact directory", and the two answers differ
+// ON PURPOSE for a submodule. For callers that need real repo-IDENTITY
+// (e.g. command-guard's leading-`cd` carve-out: is this cd target the SAME
+// repo as the payload cwd, or a submodule/nested repo masquerading as one)
+// rather than devswarm's "which primary owns this" question. A linked
+// worktree's raw commonDir still resolves to its main worktree's store (the
+// `commondir` file points there), so worktrees of one repo still compare
+// equal; a submodule or independently-`git init`'d nested repo never does.
+// Null on any resolution failure (fails closed).
+function rawGitInfo(dir, opts) {
+  const o = opts || {};
+  const F = o.fs || fs;
+  try {
+    const abs = path.resolve(String(dir));
+    let real;
+    try { real = F.realpathSync(abs); } catch (_) { return null; }
+    const T = nearestDotGit(F, real);
+    if (!T) return null;
+    const info = gitdirOf(F, T);
+    if (!info) return null;
+    return { commonDir: info.common, toplevel: T };
+  } catch (_) {
+    return null;
+  }
+}
+
 function defaultSpawn(cmd, args, options) { return spawnSync(cmd, args, options); }
 
 function freeze(o) { return Object.freeze(o); }
@@ -366,6 +397,6 @@ function sessionWorktreeCoherent(sessionId, worktreePath, opts) {
 
 module.exports = {
   resolveContext, clearCache, sessionWorktreeCoherent, findNestedCheckouts,
-  repoKeyForCommonDir, meshIdForRealPath,
+  repoKeyForCommonDir, meshIdForRealPath, rawGitInfo,
   sanitizeRepoName, GIT_SPAWN_TIMEOUT_MS,
 };

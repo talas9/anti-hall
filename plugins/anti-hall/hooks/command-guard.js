@@ -2421,36 +2421,21 @@ function classifyLeadingCdSegment(segment) {
   return p;
 }
 
-// gitRevParseDir(dir, arg) -> trimmed stdout of `git -C dir rev-parse <arg>`,
-// or null on any failure/timeout (fails closed).
-function gitRevParseDir(dir, arg) {
-  try {
-    const { spawnSync } = require('child_process');
-    const res = spawnSync('git', ['-C', dir, 'rev-parse', arg], { encoding: 'utf8', timeout: 5000 });
-    if (!res || res.status !== 0) return null;
-    const out = String(res.stdout || '').trim();
-    return out || null;
-  } catch (_) {
-    return null;
-  }
-}
-
-// gitCommonDirRealpath(dir) -> realpath of `git -C dir rev-parse
-// --git-common-dir` — the actual, physical .git STORE (never the worktree
-// checkout path). Two directories share this iff they are the SAME
-// repository: the main worktree and every one of its `git worktree add`
-// linked worktrees all resolve to the identical common dir, while a git
-// SUBMODULE or any independently-`git init`'d nested repo — even though it
-// lives physically inside the outer repo's directory tree — has its OWN,
-// different common dir. This is the actual repo-IDENTITY check (a path
-// containment check is not one). git prints a path relative to `dir` from
-// inside the main worktree (bare "`.git`"); resolved against `dir` before
-// realpath-ing. Null (fails closed) on any git error or unresolvable path.
+// gitCommonDirRealpath(dir) -> realpath of the actual, physical .git STORE
+// (never the worktree checkout path) for `dir`, via the canonical identity
+// resolver (companion/lib/identity.js resolveContext — the ONE "where am I"
+// resolver; see tests/hygiene/identity-single-resolver.test.js). Two
+// directories share this iff they are the SAME repository: the main
+// worktree and every one of its `git worktree add` linked worktrees all
+// resolve to the identical common dir, while a git SUBMODULE or any
+// independently-`git init`'d nested repo — even though it lives physically
+// inside the outer repo's directory tree — has its OWN, different common
+// dir. This is the actual repo-IDENTITY check (a path containment check is
+// not one). Null (fails closed) on any resolution failure.
 function gitCommonDirRealpath(dir) {
-  const raw = gitRevParseDir(dir, '--git-common-dir');
-  if (!raw) return null;
   try {
-    return fs.realpathSync(path.isAbsolute(raw) ? raw : path.join(dir, raw));
+    const info = require('../companion/lib/identity.js').rawGitInfo(dir);
+    return info && info.commonDir ? info.commonDir : null;
   } catch (_) {
     return null;
   }
@@ -2470,23 +2455,21 @@ function gitCommonDirRealpath(dir) {
 // push against a repo/branch/remote the operator never confirmed. Path
 // containment is not repo identity; git-common-dir equality is (worktrees of
 // one repo share it, a submodule/nested repo never does — see
-// gitCommonDirRealpath's header). Fails CLOSED on any git error, an
-// unresolvable target, or a target whose common dir cannot itself be
-// resolved to a valid toplevel.
+// gitCommonDirRealpath's header). Fails CLOSED on any resolution error, an
+// unresolvable target, or a target whose own toplevel cannot be resolved.
 function resolvedLeadingCdTarget(rawPath, payloadCwd) {
   try {
     const cwd = payloadCwd || process.cwd();
     const target = fs.realpathSync(path.resolve(cwd, rawPath));
     const payloadCommonDir = gitCommonDirRealpath(cwd);
     if (!payloadCommonDir) return null;
-    const targetCommonDir = gitCommonDirRealpath(target);
-    if (!targetCommonDir) return null;
-    if (targetCommonDir !== payloadCommonDir) return null;
+    const targetInfo = require('../companion/lib/identity.js').rawGitInfo(target);
+    if (!targetInfo || !targetInfo.commonDir) return null;
+    if (targetInfo.commonDir !== payloadCommonDir) return null;
     // Defensive sanity check (git-common-dir equality above is already the
     // security boundary): the target must itself resolve to a real toplevel.
-    const targetToplevelRaw = gitRevParseDir(target, '--show-toplevel');
-    if (!targetToplevelRaw) return null;
-    try { fs.realpathSync(targetToplevelRaw); } catch (_) { return null; }
+    if (!targetInfo.toplevel) return null;
+    try { fs.realpathSync(targetInfo.toplevel); } catch (_) { return null; }
     return target;
   } catch (_) {
     return null; // fail closed: unresolvable path, not a repo, etc.
