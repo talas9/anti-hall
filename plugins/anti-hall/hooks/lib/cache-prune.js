@@ -42,6 +42,16 @@ function realOrNull(p) {
   try { return fs.realpathSync(p); } catch (_) { return null; }
 }
 
+// canonicalPath(p) -> fs.realpathSync.native(p) (resolves symlinks, `..`,
+// /tmp vs /private/tmp), falling back to path.resolve(p) when p does not
+// exist; lowercased on darwin, whose default volumes are case-insensitive —
+// a registered path spelled in a different case names the same dir (0.113 P2).
+function canonicalPath(p) {
+  let out;
+  try { out = fs.realpathSync.native(p); } catch (_) { out = path.resolve(p); }
+  return process.platform === 'darwin' ? out.toLowerCase() : out;
+}
+
 function isInside(child, parent) {
   const rel = path.relative(parent, child);
   return rel === '' || (!!rel && !rel.startsWith('..') && !path.isAbsolute(rel));
@@ -151,10 +161,9 @@ function planCachePrune(opts) {
   versions.slice(0, KEEP_NEWEST).forEach((e) => e.reasons.push('newest ' + KEEP_NEWEST));
 
   for (const p of registeredInstallPaths(o.home)) {
-    const real = realOrNull(p) || path.resolve(p);
+    const reg = canonicalPath(p);
     for (const e of versions) {
-      const realDir = realOrNull(e.dir) || e.dir;
-      if (isInside(real, realDir) || isInside(path.resolve(p), e.dir)) e.reasons.push('registered installPath');
+      if (isInside(reg, canonicalPath(e.dir))) e.reasons.push('registered installPath');
     }
   }
 

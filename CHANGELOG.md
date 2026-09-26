@@ -70,6 +70,11 @@ the update.
   (`HTTPS_PROXY`, `http_proxy`, `CURL_CA_BUNDLE`, `SSLKEYLOGFILE`, …) could be an env var
   curl itself reads, and is refused.
 
+- **doctor --prune-cache: registered installPath compared canonically (P2).** Both sides go
+  through `fs.realpathSync.native`, and the comparison is case-insensitive on darwin. A
+  registered path spelled in a different case, or reached via `/tmp`, `..` or a trailing
+  slash, is kept.
+
 ## 0.112.0 (2026-09-26)
 
 ### Features

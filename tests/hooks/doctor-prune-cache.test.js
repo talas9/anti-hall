@@ -83,6 +83,37 @@ test('prune-cache plan: keep rules (newest 3, registered, live cwd/argv, running
   }
 });
 
+test('prune-cache plan: a registered installPath in a different case is KEPT (darwin, case-insensitive)', { skip: process.platform !== 'darwin' }, () => {
+  const f = makeFixture(VERSIONS);
+  try {
+    // Change the case of the fixture home segment: same dir on a case-insensitive volume.
+    const base = path.basename(f.home);
+    const odd = path.join(path.dirname(f.home), base.toUpperCase(), '.claude', 'plugins', 'cache', 'anti-hall', 'anti-hall', '0.100.0');
+    register(f.home, odd);
+    const plan = cachePrune.planCachePrune({ home: f.home, scanCwds: () => ['/'], scanArgv: () => [] });
+    const e = byName(plan);
+    assert.ok(e['0.100.0'].reasons.includes('registered installPath'), JSON.stringify(e['0.100.0']));
+    assert.strictEqual(e['0.100.0'].action, 'keep');
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('prune-cache plan: a registered installPath through /tmp, a trailing slash or .. is KEPT', () => {
+  const f = makeFixture(VERSIONS);
+  try {
+    const cases = [path.join(f.root, '0.100.0') + '/', path.join(f.root, '0.105.0', '..', '0.100.0')];
+    if (process.platform === 'darwin' && f.root.startsWith('/private/tmp/')) cases.push(f.root.replace('/private/tmp/', '/tmp/') + '/0.100.0');
+    for (const reg of cases) {
+      register(f.home, reg);
+      const plan = cachePrune.planCachePrune({ home: f.home, scanCwds: () => ['/'], scanArgv: () => [] });
+      assert.ok(byName(plan)['0.100.0'].reasons.includes('registered installPath'), reg);
+    }
+  } finally {
+    f.cleanup();
+  }
+});
+
 test('prune-cache plan: an unavailable live-process scan keeps everything', () => {
   const f = makeFixture(VERSIONS);
   try {
