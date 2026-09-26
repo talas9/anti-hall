@@ -453,7 +453,7 @@ test('TABLE: finish column renders "working" when no done report has ever been m
 // TABLE test above only relaxes its regex to tolerate the marker; it never
 // proves the marker text itself is correct.
 
-test('RISK MARKER: noUpstream:true renders "⚠ no upstream" in the title cell', () => {
+test('RISK MARKER: noUpstream:true renders "local only (not pushed)" in the title cell (no warning glyph — not pushed yet is normal, not an error)', () => {
   const h = makeHome();
   try {
     writeSharedSummary(h.home, {
@@ -462,7 +462,8 @@ test('RISK MARKER: noUpstream:true renders "⚠ no upstream" in the title cell',
     const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
     assert.strictEqual(r.status, 0);
     const row = tableRow(ctx(r), 'wsRisky');
-    assert.ok(/wsRisky ⚠ no upstream/.test(row), `expected literal "⚠ no upstream" marker; row=${row}`);
+    assert.ok(/wsRisky local only \(not pushed\)/.test(row), `expected literal "local only (not pushed)" marker; row=${row}`);
+    assert.ok(!/⚠/.test(row), `no-upstream marker must NOT carry the warning glyph; row=${row}`);
   } finally { h.cleanup(); }
 });
 
@@ -488,7 +489,7 @@ test('RISK MARKER: noUpstream:true takes priority over a stale unpushed count (u
     const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
     assert.strictEqual(r.status, 0);
     const row = tableRow(ctx(r), 'wsBoth');
-    assert.ok(/wsBoth ⚠ no upstream/.test(row), `noUpstream must win over the unpushed count; row=${row}`);
+    assert.ok(/wsBoth local only \(not pushed\)/.test(row), `noUpstream must win over the unpushed count; row=${row}`);
     assert.ok(!/unpushed/.test(row), `must NOT also render the unpushed count; row=${row}`);
   } finally { h.cleanup(); }
 });

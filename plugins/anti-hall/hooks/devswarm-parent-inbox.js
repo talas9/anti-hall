@@ -570,9 +570,15 @@ function displayStatus(archiveReady, status, activityTs, now, dormant, notDraini
 // by git ancestry (mergedVerified !== true covers both `false` and
 // unset/undefined — "lacking verification" either way). Never blocks or
 // implies anything beyond "look before archiving".
+// Wording (owner-approved 2026-09-26): a branch with no upstream (e.g. a
+// `spawn`-created child that was never pushed) is normal, not an error — the
+// old "⚠ no upstream" wording, with its warning glyph, read like something
+// had gone wrong. Renders as "local only (not pushed)" instead, no glyph.
+// The underlying `noUpstream` field/priority-over-unpushed-count logic is
+// unchanged.
 function riskMarker(r) {
   const parts = [];
-  if (r.noUpstream) parts.push('⚠ no upstream');
+  if (r.noUpstream) parts.push('local only (not pushed)');
   else if (Number.isFinite(r.unpushed) && r.unpushed > 0) parts.push('⚠ ' + r.unpushed + ' unpushed');
   if (r.label === 'archive-ready' && r.mergedVerified !== true) parts.push('merged (unverified)');
   return parts.length ? ' ' + parts.join(', ') : '';

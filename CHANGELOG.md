@@ -24,6 +24,15 @@ the update.
   a repo that never opted in). New setting `guards.projectCommandAllow` (default on).
   `doctor` reports an unanchored/invalid pattern in a repo's own config as a warning.
 
+### Changed
+
+- **Roster wording: "no upstream" no longer reads as an error.** A workspace `spawn`
+  creates a branch with no upstream until it is pushed — normal, not a problem — but the
+  Primary's per-turn workspace table (`devswarm-parent-inbox.js`'s `riskMarker()`) rendered
+  it with a warning glyph, `⚠ no upstream`. Now renders `local only (not pushed)`, no glyph.
+  The underlying `noUpstream` field and its priority over a stale unpushed count are
+  unchanged.
+
 - **command-guard "narrow allow": bounded read-only verification for the coordinator.**
   The coordinator may now run a short, single-target, read-only verification command
   inline instead of delegating it — e.g. re-running one delegated test file to verify a
