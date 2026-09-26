@@ -60,6 +60,9 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+// tmpRoots / ownScratchpadDirs / realpathOrSelf live in lib/scratchpad.js
+// (shared with command-guard.js); their rationale is documented below.
+const { ownScratchpadDirs, realpathOrSelf } = require('./lib/scratchpad.js');
 
 // Tools this guard applies to. Anything else passes through untouched.
 const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
@@ -397,38 +400,10 @@ function isHandoverDoc(filePath) {
 // dir is realpath'd independently at the comparison site
 // (isOwnScratchpadPath), so two string-distinct roots that resolve to the
 // same real directory simply produce two candidates that both match.
-function tmpRoots() {
-  const roots = [];
-  const seen = new Set();
-  const add = (r) => {
-    if (typeof r === 'string' && r && !seen.has(r)) { seen.add(r); roots.push(r); }
-  };
-  try { add(os.tmpdir()); } catch (_) { /* ignore */ }
-  add('/tmp');
-  add('/private/tmp');
-  return roots;
-}
 
 // ownScratchpadDirs(payload) -> array of candidate scratchpad directories (one
 // per known tmp root), or [] when the payload lacks the fields needed to
 // compute one, or on win32. Never throws.
-function ownScratchpadDirs(payload) {
-  try {
-    if (process.platform === 'win32') return [];
-    const cwd = payload && payload.cwd;
-    const sessionId = payload && payload.session_id;
-    if (typeof cwd !== 'string' || !cwd || !path.isAbsolute(cwd)) return [];
-    if (typeof sessionId !== 'string' || !/^[A-Za-z0-9._-]+$/.test(sessionId)) return [];
-    let uid = null;
-    try { uid = typeof process.getuid === 'function' ? process.getuid() : null; } catch (_) { uid = null; }
-    if (uid === null || uid === undefined || Number.isNaN(uid)) return [];
-    const sanitizedCwd = cwd.replace(/\//g, '-');
-    return tmpRoots().map((root) =>
-      path.join(root, 'claude-' + uid, sanitizedCwd, sessionId, 'scratchpad'));
-  } catch (_) {
-    return []; // fail CLOSED: no exemption on any unexpected error
-  }
-}
 
 // realpathOrSelf(p) -> fs.realpathSync(p) when it resolves, else `p`
 // unchanged. Fail-safe, not fail-open: a path that does not exist yet (a
@@ -438,27 +413,6 @@ function ownScratchpadDirs(payload) {
 // existing ancestor, realpaths THAT, and reattaches the remaining (still
 // un-resolved) suffix — never silently drops the exemption just because the
 // leaf does not exist yet, and never THROWS/blocks on a missing path either.
-function realpathOrSelf(p) {
-  try {
-    return fs.realpathSync(p);
-  } catch (_) {
-    // Walk up to the nearest existing ancestor.
-    let cur = p;
-    const suffix = [];
-    for (;;) {
-      const parent = path.dirname(cur);
-      if (parent === cur) return p; // hit filesystem root without finding anything real
-      suffix.unshift(path.basename(cur));
-      cur = parent;
-      try {
-        const real = fs.realpathSync(cur);
-        return path.join(real, ...suffix);
-      } catch (_) {
-        // keep walking up
-      }
-    }
-  }
-}
 
 // isOwnScratchpadPath(filePath, payload) -> true when filePath resolves
 // strictly INSIDE this session's own computed scratchpad directory (never

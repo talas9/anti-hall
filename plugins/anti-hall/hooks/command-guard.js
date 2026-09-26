@@ -1854,30 +1854,27 @@ function isCtestNameCheck(segment) {
   return /^ctest\s+-R\s+\S+$/.test(segment.trim());
 }
 
-// tmpRoots() -> known tmp roots (os.tmpdir(), '/tmp', '/private/tmp'),
-// de-duplicated. Deliberately simple (string-prefix match, no symlink
-// resolution like edit-guard.js's full ownScratchpadDirs/isOwnScratchpadPath
-// machinery) — this carve-out is scoped to a git-clone DESTINATION path
-// only, and fails CLOSED (not exempt) on anything ambiguous.
-function verifyTmpRoots() {
-  const roots = [];
-  const seen = new Set();
-  const add = (r) => { if (typeof r === 'string' && r && !seen.has(r)) { seen.add(r); roots.push(r); } };
-  try { add(os.tmpdir()); } catch (_) { /* ignore */ }
-  add('/tmp');
-  add('/private/tmp');
-  return roots;
-}
-
-function isScratchpadOrTmpPath(p) {
+// isScratchpadOrTmpPath(p, ctx) -> true when p (relative paths resolve
+// against the payload cwd) lands strictly inside THIS session's own
+// scratchpad (lib/scratchpad.js ownScratchpadDirs — computed from the
+// payload's cwd + session_id + the process uid, never a name match) or a
+// tmp root (tmpRoots: os.tmpdir(), /tmp, /private/tmp — the same set
+// edit-guard uses; a hook child may not inherit TMPDIR). Both sides are realpath'd (nearest existing ancestor) BEFORE
+// the containment test, so `…/scratchpad/../../etc/x` and a symlinked
+// component pointing outside are both rejected — the old raw
+// `/scratchpad/` substring test accepted any path merely containing it.
+function isScratchpadOrTmpPath(p, ctx) {
   if (typeof p !== 'string' || !p) return false;
   const unquoted = p.replace(/^['"]|['"]$/g, '');
-  if (/\/scratchpad(\/|$)/.test(unquoted)) return true;
-  let resolved = unquoted;
-  try { resolved = path.resolve(unquoted); } catch (_) { /* keep raw */ }
-  for (const root of verifyTmpRoots()) {
-    const r = root.replace(/\/+$/, '');
-    if (resolved === r || resolved.startsWith(r + '/')) return true;
+  if (!unquoted || /[$`~*?[\]{}]/.test(unquoted)) return false; // expansion/glob: unknowable target
+  const payload = ctx && ctx.payload;
+  const base = (payload && typeof payload.cwd === 'string' && payload.cwd) || process.cwd();
+  let abs;
+  try { abs = path.resolve(base, unquoted); } catch (_) { return false; }
+  const sp = require('./lib/scratchpad.js');
+  const roots = sp.ownScratchpadDirs(payload).concat(sp.tmpRoots());
+  for (const root of roots) {
+    if (sp.isInsideDir(abs, root)) return true;
   }
   return false;
 }
@@ -1885,26 +1882,26 @@ function isScratchpadOrTmpPath(p) {
 // `git clone --depth 1 <url> <dest>` (dest in scratchpad/tmp), or
 // `git clone <local path> <dest-in-scratchpad>` (src is NOT a remote
 // URL/scp-style shorthand — a real local-to-local clone only).
-function isSafeScratchpadGitClone(segment) {
+function isSafeScratchpadGitClone(segment, ctx) {
   const trimmed = segment.trim();
   let m = trimmed.match(/^git\s+clone\s+--depth\s+1\s+(\S+)\s+(\S+)$/);
-  if (m) return isScratchpadOrTmpPath(m[2]);
+  if (m) return isScratchpadOrTmpPath(m[2], ctx);
   m = trimmed.match(/^git\s+clone\s+(\S+)\s+(\S+)$/);
   if (m) {
     const src = m[1];
     if (/^[a-z][a-z0-9+.-]*:\/\//i.test(src)) return false; // scheme URL (https://, git://, ...)
     if (/^[\w.-]+@[\w.-]+:/.test(src)) return false; // scp-style ssh shorthand
-    return isScratchpadOrTmpPath(m[2]);
+    return isScratchpadOrTmpPath(m[2], ctx);
   }
   return false;
 }
 
-function isQualifyingSingleTargetCheck(segment) {
+function isQualifyingSingleTargetCheck(segment, ctx) {
   if (isSyntaxOnlyCompileCheck(segment)) return true;
   if (isSinglePytestFileCheck(segment)) return true;
   if (isBoundedNodeTestCheck(segment)) return true;
   if (isCtestNameCheck(segment)) return true;
-  if (isSafeScratchpadGitClone(segment)) return true;
+  if (isSafeScratchpadGitClone(segment, ctx)) return true;
   if (isGenericCheckFlagCommand(segment)) return true;
   return false;
 }
@@ -1927,13 +1924,13 @@ function isTriviallySafeSegment(segment) {
 // Any write redirect (`>`, `>>`) or `tee` target that resolves outside the
 // scratchpad/tmp disqualifies the whole command. `2>&1`/`&>`-style fd-dup
 // targets (no real path) are ignored.
-function hasDisallowedWriteRedirect(segment) {
+function hasDisallowedWriteRedirect(segment, ctx) {
   const re = /(^|[^<>&])(>>?)\s*(\S+)/g;
   let m;
   while ((m = re.exec(segment))) {
     const target = m[3];
     if (/^&\d*$/.test(target)) continue;
-    if (!isScratchpadOrTmpPath(target)) return true;
+    if (!isScratchpadOrTmpPath(target, ctx)) return true;
   }
   const verb = effectiveVerb(segment);
   if (verb === 'tee') {
@@ -1941,7 +1938,7 @@ function hasDisallowedWriteRedirect(segment) {
     for (let i = 1; i < tokens.length; i++) {
       const t = tokens[i];
       if (t.startsWith('-')) continue;
-      return !isScratchpadOrTmpPath(t);
+      return !isScratchpadOrTmpPath(t, ctx);
     }
   }
   return false;
@@ -1951,7 +1948,7 @@ function hasDisallowedWriteRedirect(segment) {
 // for the full rule. No command-substitution/`bash -c`/`eval` unwrapping is
 // performed here on purpose — this exception is scoped to a literal, visible
 // command line only; anything obfuscated through those never qualifies.
-function isBoundedVerificationCommand(command) {
+function isBoundedVerificationCommand(command, ctx) {
   if (typeof command !== 'string' || !command.trim()) return false;
   const { segments, delims } = splitSegmentsDetailed(command);
   if (!segments.length) return false;
@@ -1961,8 +1958,8 @@ function isBoundedVerificationCommand(command) {
   for (let idx = 0; idx < segments.length; idx++) {
     const seg = segments[idx].trim();
     if (!seg) continue;
-    if (hasDisallowedWriteRedirect(seg)) return false;
-    if (isQualifyingSingleTargetCheck(seg)) { sawQualifying = true; continue; }
+    if (hasDisallowedWriteRedirect(seg, ctx)) return false;
+    if (isQualifyingSingleTargetCheck(seg, ctx)) { sawQualifying = true; continue; }
     if (isBoundedSinkSegment(seg)) {
       const precedingDelim = idx > 0 ? delims[idx - 1] : null;
       if (precedingDelim !== '|') return false; // sequential (;/&&), not piped: not bounded
@@ -2465,7 +2462,7 @@ function main() {
   // subagent's "done" claim. Fail-closed on any error (falls through to the
   // ordinary block below). See isBoundedVerificationCommand's header.
   try {
-    if (settingsGet('guards', 'allowReadOnlyVerify') !== false && isBoundedVerificationCommand(command)) {
+    if (settingsGet('guards', 'allowReadOnlyVerify') !== false && isBoundedVerificationCommand(command, { payload })) {
       process.exit(0);
     }
   } catch (_) {

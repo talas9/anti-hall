@@ -399,3 +399,56 @@ test('audit log: a symlinked logs dir is never written through', () => {
     }
   });
 });
+
+// ---- #8 redirect targets are resolved before the scratchpad/tmp test --------
+
+// '/tmp' (not os.tmpdir()): the hook child runs with an isolated env that may
+// not carry TMPDIR, and /tmp is a tmp root on every supported platform.
+const TMPD = fs.realpathSync('/tmp');
+
+// A heavy primary (`git clone`, HEAVY_PATTERNS) is what makes the carve-out
+// reachable; a `node --test` line is not heavy and is allowed regardless.
+const CLONE_OK = `git clone --depth 1 https://example.com/r.git ${TMPD}/cgsec-c`;
+const PATH_BLOCK = [
+  CLONE_OK + ' | tail > /Users/x/scratchpad/../../../etc/zz',
+  CLONE_OK + ` | tail > ${TMPD}/../../../etc/zz`,
+  CLONE_OK + ' | tail > /opt/scratchpad/x',
+  'git clone --depth 1 https://example.com/r.git /Users/x/scratchpad/../../etc/r | tail',
+  'git clone --depth 1 https://example.com/r.git /opt/scratchpad/r | tail',
+  `git clone --depth 1 https://example.com/r.git ${TMPD}/../../r | tail`,
+];
+
+for (const cmd of PATH_BLOCK) {
+  test('verify-allow: path escape / non-https clone does not qualify: ' + cmd, () => {
+    const r = run(cmd);
+    assert.strictEqual(r.status, 2, 'expected BLOCK for ' + cmd + '\n' + r.stdout);
+  });
+}
+
+test('verify-allow: a symlinked component under tmp that points outside is rejected', () => {
+  const dir = fs.mkdtempSync(path.join(TMPD, 'cgsec-link-'));
+  try {
+    // A link inside tmp pointing at a real non-tmp dir (nothing is written:
+    // the guard only classifies the command).
+    fs.symlinkSync('/usr', path.join(dir, 'escape'));
+    const r = run(CLONE_OK + ` | tail > ${dir}/escape/zz.log`);
+    assert.strictEqual(r.status, 2, 'redirect through a symlink out of tmp must BLOCK: ' + r.stdout);
+    const r2 = run(`git clone --depth 1 https://example.com/r.git ${dir}/escape/clone | tail`);
+    assert.strictEqual(r2.status, 2, 'clone through a symlink out of tmp must BLOCK: ' + r2.stdout);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('verify-allow: control — https --depth 1 clone into os.tmpdir() still qualifies', () => {
+  const r = run(`git clone --depth 1 https://example.com/r.git ${TMPD}/cgsec-clone-ok | tail -1`);
+  assert.strictEqual(r.status, 0, r.stdout);
+});
+
+test('verify-allow: control — clone into the session scratchpad qualifies', () => {
+  const cwd = fs.realpathSync(os.tmpdir());
+  const uid = process.getuid();
+  const sp = path.join('/tmp', 'claude-' + uid, cwd.replace(/\//g, '-'), 't', 'scratchpad');
+  const r = run(`git clone --depth 1 https://example.com/r.git ${sp}/x | tail -1`, { cwd });
+  assert.strictEqual(r.status, 0, r.stdout);
+});
