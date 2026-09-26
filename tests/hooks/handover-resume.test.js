@@ -28,13 +28,27 @@ function writeHandover(cwd, date, sessionId, seq, opts = {}) {
   fs.mkdirSync(dir, { recursive: true });
   const fname = seq > 1 ? `HANDOVER-${seq}.md` : 'HANDOVER.md';
   const filePath = path.join(dir, fname);
-  fs.writeFileSync(filePath, '# Handover\n\n## Situation\ntest\n', 'utf8');
+  fs.writeFileSync(filePath, opts.body || '# Handover\n\n## Situation\ntest\n', 'utf8');
   if (opts.ageMs != null) {
     const t = new Date(Date.now() - opts.ageMs);
     fs.utimesSync(filePath, t, t);
   }
   return filePath;
 }
+
+// writeDetailFiles(cwd, date, sessionId, names) -> writes an empty-but-real
+// file for each name (e.g. 'state.md') beside the handover, for the
+// adaptive-shape tests below (peer ask 3, 0.112 lane).
+function writeDetailFiles(cwd, date, sessionId, names) {
+  const dir = path.join(cwd, '.anti-hall', 'handovers', date, sessionId);
+  fs.mkdirSync(dir, { recursive: true });
+  for (const name of names) fs.writeFileSync(path.join(dir, name), '# ' + name + '\n', 'utf8');
+}
+
+// FULL_SHAPE_BODY -- a handover carrying the skill template's OWN
+// "## Resume-verification checklist" heading verbatim.
+const FULL_SHAPE_BODY = '# Handover\n\n## Situation\ntest\n\n## Resume-verification checklist\n' +
+  '- [ ] `git status`\n- [ ] `pwd`\n';
 
 function appendIndexRow(cwd, date, sessionId, outcome, seq = 1) {
   const indexPath = path.join(cwd, '.anti-hall', 'handovers', 'INDEX.md');
@@ -107,7 +121,7 @@ test('(a3) handovers dir exists but is empty (no HANDOVER*.md yet) + source clea
   }
 });
 
-test("(b) handover present + source 'compact' -> context has path, SUPERSEDES, and guided steps", () => {
+test("(b) handover present (minimal shape, no checklist/detail files) + source 'compact' -> context has path, SUPERSEDES, and the FALLBACK guided steps", () => {
   const h = makeHome();
   const cwd = makeProjectCwd();
   try {
@@ -131,15 +145,60 @@ test("(b) handover present + source 'compact' -> context has path, SUPERSEDES, a
     const ctx = r.json.hookSpecificOutput.additionalContext;
     assert.ok(ctx.includes(filePath), 'context must include the full HANDOVER.md path');
     assert.match(ctx, /SUPERSEDES/, 'must carry the override clause');
+    // ADAPTIVE (peer ask 3, 0.112 lane): this handover has NO
+    // "## Resume-verification checklist" section and none of the detail
+    // files (state.md/decisions.md/trials.md/knowledge.md) — the guided
+    // steps must name only what actually exists, falling back to a generic
+    // 3-check + still require the resume-verified line.
     assert.match(ctx, /^1\. Read/m, 'numbered guided step 1');
-    assert.match(ctx, /^2\. Run its section-10 resume-verification checklist/m, 'numbered guided step 2');
-    assert.match(ctx, /^3\. Load detail files ONLY as needed/m, 'numbered guided step 3');
-    assert.match(ctx, /^4\. Check trials\.md do-not-repeat list/m, 'numbered guided step 4');
-    assert.match(ctx, /^5\. READ-BACK: .*Session rules \(verbatim\)/m, 'numbered guided step 5: receiver read-back');
-    assert.match(ctx, /^6\. Continue from the single Next Action/m, 'numbered guided step 6');
+    assert.match(ctx, /^2\. No Resume-verification checklist section was found in it -- fall back to a generic check/m, 'numbered guided step 2: fallback checklist');
+    assert.match(ctx, /`git status --short --branch`/, 'fallback checklist must name git status --short --branch');
+    assert.match(ctx, /`pwd`/, 'fallback checklist must name pwd');
+    assert.match(ctx, /CLAUDE\.md re-read/, 'fallback checklist must name re-reading CLAUDE.md');
+    assert.match(ctx, /resume-verified: <ISO timestamp>/, 'fallback branch must still require the resume-verified line');
+    assert.ok(!/Load detail files ONLY as needed/.test(ctx), 'must NOT mention the detail-file pointer table when none exist');
+    assert.ok(!/Check trials\.md do-not-repeat list/.test(ctx), 'must NOT mention trials.md when it does not exist');
+    assert.match(ctx, /^3\. READ-BACK: .*Session rules \(verbatim\)/m, 'step 3 (renumbered): receiver read-back');
+    assert.match(ctx, /^4\. Continue from the single Next Action/m, 'step 4 (renumbered)');
+    assert.ok(!/Recreate\/reconcile your task list from state\.md/.test(ctx), 'must NOT reference state.md\'s task-list snapshot when state.md does not exist');
     assert.match(ctx, /finished the widget refactor/, 'must surface the INDEX.md one-line outcome');
     assert.match(ctx, /found for this continuation/, 'compact source must use the continuation prefix wording');
     assert.ok(ctx.length < 4000, `context must stay well under 4k chars, got ${ctx.length}`);
+  } finally {
+    h.cleanup();
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("(b-full) handover present (FULL shape: checklist section + all 4 detail files) + source 'compact' -> the ORIGINAL full guided steps", () => {
+  const h = makeHome();
+  const cwd = makeProjectCwd();
+  try {
+    const date = '2026-08-02';
+    const sessionId = 'session-fullshape';
+    const filePath = writeHandover(cwd, date, sessionId, 1, { body: FULL_SHAPE_BODY });
+    writeDetailFiles(cwd, date, sessionId, ['state.md', 'decisions.md', 'trials.md', 'knowledge.md']);
+
+    const r = testHook(HOOK, {
+      session_id: sessionId,
+      transcript_path: '/tmp/whatever.jsonl',
+      cwd,
+      source: 'compact',
+      hook_event_name: 'SessionStart',
+    }, { home: h.home, expectJson: true });
+
+    assert.strictEqual(r.status, 0);
+    assert.ok(r.json, `expected JSON context on stdout, got: ${r.stdout}`);
+    const ctx = r.json.hookSpecificOutput.additionalContext;
+    assert.ok(ctx.includes(filePath), 'context must include the full HANDOVER.md path');
+    assert.match(ctx, /^1\. Read/m, 'numbered guided step 1');
+    assert.match(ctx, /^2\. Run its Resume-verification checklist/m, 'numbered guided step 2: real checklist named');
+    assert.match(ctx, /resume-verified: <ISO timestamp>/, 'must still require the resume-verified line');
+    assert.match(ctx, /^3\. Load detail files ONLY as needed via the pointer table \(state\.md \/ decisions\.md \/ trials\.md \/ knowledge\.md\)/m, 'numbered guided step 3');
+    assert.match(ctx, /^4\. Check trials\.md do-not-repeat list/m, 'numbered guided step 4');
+    assert.match(ctx, /^5\. READ-BACK: .*Session rules \(verbatim\)/m, 'numbered guided step 5');
+    assert.match(ctx, /^6\. Continue from the single Next Action/m, 'numbered guided step 6');
+    assert.match(ctx, /^7\. Recreate\/reconcile your task list from state\.md/m, 'numbered guided step 7');
   } finally {
     h.cleanup();
     fs.rmSync(cwd, { recursive: true, force: true });

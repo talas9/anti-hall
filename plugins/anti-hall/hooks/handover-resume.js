@@ -113,11 +113,47 @@ function freshnessLine(cwd, sinceMs) {
     'count means the handover\'s git/state claims may be stale -- re-verify them before trusting them.';
 }
 
+// RESUME_CHECKLIST_HEADING -- matches the handover skill's OWN template
+// heading (SKILL.md: "## Resume-verification checklist"). A handover written
+// before that section existed, or hand-edited without it, has nothing for
+// step 2's old "run its section-10 checklist" wording to point at -- telling
+// the agent to run a checklist that is not there leaves it nothing to follow.
+const RESUME_CHECKLIST_HEADING = /^##\s*Resume-verification checklist\b/im;
+
+// DETAIL_FILES -- the pointer-table files the handover skill's own template
+// names (state.md / decisions.md / trials.md / knowledge.md), in the same
+// order the old, unconditional wording listed them. Checked for EXISTENCE
+// next to the handover file itself -- a handover written without the full
+// detail-file set (a short/manual one, an older-skill-version one) must not
+// send the agent chasing a file that was never written.
+const DETAIL_FILES = ['state.md', 'decisions.md', 'trials.md', 'knowledge.md'];
+
+// detectHandoverShape(candidate) -> { hasChecklist, existingDetailFiles }.
+// Fail-open: an unreadable/missing file reads as "nothing found" (the
+// fallback generic checklist below), never a thrown error.
+function detectHandoverShape(candidate) {
+  let hasChecklist = false;
+  try {
+    const content = fs.readFileSync(candidate.filePath, 'utf8');
+    hasChecklist = RESUME_CHECKLIST_HEADING.test(content);
+  } catch (_) { hasChecklist = false; }
+  let dir = '';
+  try { dir = path.dirname(candidate.filePath); } catch (_) { dir = ''; }
+  const existingDetailFiles = dir
+    ? DETAIL_FILES.filter((f) => {
+      try { return fs.statSync(path.join(dir, f)).isFile(); } catch (_) { return false; }
+    })
+    : [];
+  return { hasChecklist, existingDetailFiles };
+}
+
 function buildContext(candidate, outcome, prefix, freshness, platform) {
   const seqLabel = candidate.seq > 1 ? 'HANDOVER-' + candidate.seq + '.md' : 'HANDOVER.md';
   const predecessor = candidate.seq > 1
     ? (candidate.seq === 2 ? 'HANDOVER.md' : 'HANDOVER-' + (candidate.seq - 1) + '.md')
     : null;
+  const ruleFile = platform === 'codex' ? 'AGENTS.md' : 'CLAUDE.md';
+  const { hasChecklist, existingDetailFiles } = detectHandoverShape(candidate);
 
   const lines = [];
   lines.push(
@@ -129,13 +165,32 @@ function buildContext(candidate, outcome, prefix, freshness, platform) {
   if (freshness) lines.push(freshness);
   lines.push('');
   lines.push('GUIDED RESUME PATH:');
-  lines.push('1. Read ' + candidate.filePath + ' FULLY -- front matter (first ~15 lines) carries Situation + Next Action.');
-  lines.push('2. Run its section-10 resume-verification checklist (git status, pwd, ' + (platform === 'codex' ? 'AGENTS.md' : 'CLAUDE.md') + ' re-read, smoke command) BEFORE trusting any written state, THEN append a line to ' + candidate.filePath + ': `resume-verified: <ISO timestamp> -- <one-line git-status/pwd/smoke summary>`.');
-  lines.push('3. Load detail files ONLY as needed via the pointer table (state.md / decisions.md / trials.md / knowledge.md).');
-  lines.push('4. Check trials.md do-not-repeat list before re-attempting anything.');
-  lines.push('5. READ-BACK: before any new work, tell the user in your own words (not a paste) the goal, the single Next Action and every active rule from its "Session rules (verbatim)" section, and invite corrections.');
-  lines.push('6. Continue from the single Next Action.');
-  lines.push("7. Recreate/reconcile your task list from state.md's Task list snapshot BEFORE working.");
+  // ADAPTIVE (peer ask 3, 0.112 lane): step 2 and step 3 only name what this
+  // SPECIFIC handover actually has -- a handover written without a
+  // Resume-verification checklist section, or without the detail files,
+  // otherwise left the agent nothing to follow. Both branches still require
+  // the resume-verified line before trusting anything (that requirement is
+  // NOT conditional -- tasklist-guard.js's Stop-side check for it isn't
+  // either).
+  const steps = [];
+  steps.push('Read ' + candidate.filePath + ' FULLY -- front matter (first ~15 lines) carries Situation + Next Action.');
+  if (hasChecklist) {
+    steps.push('Run its Resume-verification checklist (git status, pwd, ' + ruleFile + ' re-read, smoke command) BEFORE trusting any written state, THEN append a line to ' + candidate.filePath + ': `resume-verified: <ISO timestamp> -- <one-line git-status/pwd/smoke summary>`.');
+  } else {
+    steps.push('No Resume-verification checklist section was found in it -- fall back to a generic check BEFORE trusting any written state: `git status --short --branch`, `pwd`, ' + ruleFile + ' re-read. THEN append a line to ' + candidate.filePath + ': `resume-verified: <ISO timestamp> -- <one-line git-status/pwd summary>`.');
+  }
+  if (existingDetailFiles.length) {
+    steps.push('Load detail files ONLY as needed via the pointer table (' + existingDetailFiles.join(' / ') + ').');
+  }
+  if (existingDetailFiles.includes('trials.md')) {
+    steps.push('Check trials.md do-not-repeat list before re-attempting anything.');
+  }
+  steps.push('READ-BACK: before any new work, tell the user in your own words (not a paste) the goal, the single Next Action and every active rule from its "Session rules (verbatim)" section, and invite corrections.');
+  steps.push('Continue from the single Next Action.');
+  if (existingDetailFiles.includes('state.md')) {
+    steps.push("Recreate/reconcile your task list from state.md's Task list snapshot BEFORE working.");
+  }
+  steps.forEach((s, i) => lines.push((i + 1) + '. ' + s));
   lines.push('');
   lines.push(
     'This handover SUPERSEDES the auto-compact summary and any legacy CONTINUE-HERE-style ' +
