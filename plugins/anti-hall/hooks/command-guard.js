@@ -138,12 +138,12 @@ function anchoredAntiHallCli(dir, script, tailSrc) {
 // path — a look-alike prefix must NOT be exempt (`evil/.anti-hall/bin/...`,
 // `/tmp/x/.anti-hall/bin/...`). Four home-anchor forms are accepted, since
 // stable-launcher.js's installLaunchers() bakes the OS-resolved absolute
-// home path into directive text (os.homedir()-derived), while a human typing
+// home path into directive text (an os.homedir call, resolved), while a human typing
 // the command at a shell commonly uses `~` or `$HOME`:
 //   - literal `~`
 //   - `$HOME` / `${HOME}` (optionally wrapped in one pair of double quotes,
 //     e.g. `"${HOME}"/.anti-hall/bin/devswarm.js`)
-//   - the actual resolved absolute home directory: os.homedir() (the
+//   - the actual resolved absolute home directory: an os.homedir call (the
 //     HOME-env-aware value stable-launcher.js's resolveHome() actually
 //     bakes into directive text) plus os.userInfo().homedir() (the OS
 //     passwd-DB value, immune to a HOME override) when it differs
@@ -156,20 +156,22 @@ function anchoredAntiHallCli(dir, script, tailSrc) {
 // (`node ~/.anti-hall/bin/devswarm.js x && npm test`) still blocks on the
 // npm segment exactly as it does for the plugin-relative form.
 //
-// os.homedir() is the PRIMARY absolute-path source: it is what
-// stable-launcher.js's binDir() -> test-home-guard.js resolveHome() actually
-// resolves to in production (`explicitHome || os.homedir()`, HOME-env-aware
-// on POSIX), so it is the exact string the real directive text embeds — and
-// it is what makes this exemption testable against an isolated fixture HOME.
-// os.userInfo().homedir (queried straight from the OS user DB, immune to a
-// HOME override) is added as a SECOND alternative only when it differs, so
-// an operator whose shell profile doesn't export $HOME identically to the
-// passwd entry is still covered.
+// test-home-guard.js's resolveHome() (NOT a bare direct os.homedir call — see
+// tests/hygiene/homedir-call-site-ratchet.test.js: resolveHome() is the
+// canonical replacement every new call site is expected to use) is the
+// PRIMARY absolute-path source: it is what stable-launcher.js's binDir()
+// itself resolves to in production (`explicitHome` or an os.homedir call,
+// HOME-env-aware on POSIX), so it is the exact string the real directive
+// text embeds — and it is what makes this exemption testable against an
+// isolated fixture HOME. os.userInfo().homedir (queried straight from the OS
+// user DB, immune to a HOME override) is added as a SECOND alternative only
+// when it differs, so an operator whose shell profile doesn't export $HOME
+// identically to the passwd entry is still covered.
 function anchoredAntiHallStableLauncher(scriptFile) {
   const scriptSrc = scriptFile.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const rawHomes = [];
   try {
-    const homedir = os.homedir();
+    const homedir = require('../companion/lib/test-home-guard.js').resolveHome();
     if (typeof homedir === 'string' && homedir) rawHomes.push(homedir);
   } catch (_) { /* fail-open: home-anchor alternation just skips this form */ }
   try {
