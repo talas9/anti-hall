@@ -169,10 +169,17 @@ const { validatePattern } = require('../../plugins/anti-hall/hooks/lib/command-a
 const DOCTOR_JS = path.join(__dirname, '..', '..', 'plugins', 'anti-hall', 'hooks', 'doctor.js');
 
 function runDoctor(cwd, home) {
+  // A bare `HOME: undefined` here does NOT isolate anything — os.homedir()
+  // falls back through the platform passwd db to the REAL user home when
+  // HOME is unset. Every current call site passes its own isolated `home`,
+  // but the default must still be a safe, disposable temp dir — never the
+  // real machine home — so a future call site that omits `home` can't leak
+  // into the real store (see tests/hooks/doctor-default-home-isolation.test.js).
+  const fallbackHome = home || fs.mkdtempSync(path.join(os.tmpdir(), 'antihall-doctor-default-home-'));
   const res = cp.spawnSync(process.execPath, [DOCTOR_JS, '--check'], {
     cwd, encoding: 'utf8', timeout: 60000,
     env: Object.assign({}, process.env, {
-      HOME: home, USERPROFILE: home, DEVSWARM_REPO_ID: undefined,
+      HOME: fallbackHome, USERPROFILE: fallbackHome, DEVSWARM_REPO_ID: undefined,
       DISABLE_ANTIHALL_DEVSWARM: undefined, ANTIHALL_DEVSWARM_SUPERVISOR: undefined,
     }),
   });
