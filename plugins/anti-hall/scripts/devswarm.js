@@ -19307,6 +19307,30 @@ function sendQuietLine(result) {
   }
   return 'ok:false ' + String((result && result.error) || (result && result.reason) || 'send failed');
 }
+// inboxTickQuietLine(result) -> the one-line `inbox tick --quiet` rendering
+// (peer ask, 0.112 lane): `inbox tick`'s JSON carries duplicate legacy+new
+// field names (unread/unreadTotal, cursor/cursorNdjson, storeCursor/
+// cursorStore — see cmdInbox's own 'count' shape, which cmdInboxTick's
+// result extends) — a cron-prompt directive that has to eyeball raw JSON for
+// "is there anything to do" gets tripped up picking the right field. This
+// collapses the ONLY four fields that decision needs into one line, same
+// opt-in/--json-override precedence as read-primary --format text / send
+// --quiet above. `ok:false` still renders LOUD (never silently swallowed)
+// with a reason, and main()'s exit code stays `r.ok ? 0 : 2` exactly as the
+// JSON path already does, so a script checking `$?` alone still catches the
+// failure under --quiet. The JSON default (no --quiet) is UNCHANGED —
+// this is a strictly additive rendering, not a field removal.
+function inboxTickQuietLine(result) {
+  if (result && result.ok) {
+    const id = result.id != null ? String(result.id) : '';
+    const unread = Number.isFinite(result.unreadTotal) ? result.unreadTotal : (result.unreadTotal == null ? 'null' : String(result.unreadTotal));
+    return 'tick ' + id + ': unread ' + unread
+      + ', known ' + (result.known ? 'true' : 'false')
+      + ', meshGap ' + (result.meshGapWithheld ? 'true' : 'false')
+      + ', watcherArmed ' + (result.watcherArmed ? 'true' : 'false');
+  }
+  return 'ok:false ' + String((result && result.error) || (result && result.reason) || 'inbox tick failed');
+}
 function main() {
   const argv = process.argv.slice(2);
   const { code, result } = run(argv);
@@ -19329,12 +19353,14 @@ function main() {
   const isInboxReadPrimaryText = argv[0] === 'inbox' && argv[1] === 'read-primary'
     && (argv.includes('--format=text') || (argv.includes('--format') && argv[argv.indexOf('--format') + 1] === 'text'));
   const isSendQuiet = argv[0] === 'send' && argv.includes('--quiet');
+  const isInboxTickQuiet = argv[0] === 'inbox' && argv[1] === 'tick' && argv.includes('--quiet');
   const wantHuman = (argv[0] === 'healthcheck' || argv[0] === 'diagnose' || argv[0] === 'app-state' || isHelpResult
-    || isInboxReadPrimaryText || isSendQuiet) && !argv.includes('--json');
+    || isInboxReadPrimaryText || isSendQuiet || isInboxTickQuiet) && !argv.includes('--json');
   const out = wantHuman
     ? (argv[0] === 'healthcheck' ? healthcheckHumanLine(result) : (argv[0] === 'diagnose' ? diagnoseHumanLine(result)
       : (argv[0] === 'app-state' ? (result.text || JSON.stringify(result))
-        : (isInboxReadPrimaryText ? inboxReadPrimaryTextLines(result) : (isSendQuiet ? sendQuietLine(result) : result.usage)))))
+        : (isInboxReadPrimaryText ? inboxReadPrimaryTextLines(result) : (isSendQuiet ? sendQuietLine(result)
+          : (isInboxTickQuiet ? inboxTickQuietLine(result) : result.usage))))))
     : JSON.stringify(result);
   // fs.writeSync(1, ...) per repo rule (macOS node 18/20 exit-vs-async-flush race).
   fs.writeSync(1, out + '\n');
@@ -19348,7 +19374,7 @@ module.exports = {
   run, parseArgs, one, many, csvList,
   // peer request B/C/D/F (SkyCrew + tf3 Primaries, 2026-09-26) — exported for
   // direct unit testing:
-  cmdRelay, inboxReadPrimaryTextLines, sendQuietLine,
+  cmdRelay, inboxReadPrimaryTextLines, sendQuietLine, inboxTickQuietLine,
   emitKnownWarning, resolveReadArgToId,
   buildDescriptorFromFlags, readDescriptorFile, descriptorPath,
   retireWorktreeDuplicates, isLiveSessionId, archiveLeftReason,
