@@ -974,6 +974,12 @@ function splitSegmentsDetailed(cmd) {
     if (c === '\\' && (c2 === '\n' || (c2 === '\r' && cmd[i + 2] === '\n'))) {
       cur += ' '; i += (c2 === '\r') ? 3 : 2; continue;
     }
+    // Outside quotes a backslash escapes the NEXT character: `\"`/`\'` are
+    // literal quote chars (no quote state change) and `\;`/`\|`/`\&` are
+    // literal, not operators — exactly as bash reads them. Without this,
+    // `git commit -m \" ; npm test ; echo \"` looked like ONE quoted arg to
+    // the splitter while bash runs `npm test` as its own command.
+    if (c === '\\' && c2) { cur += c + c2; i += 2; continue; }
 
     // Heredoc: consume the opener on the current segment, then skip the BODY
     // (up to and including the terminator line) without emitting it as
@@ -1110,6 +1116,8 @@ function neutralizeQuotedContents(segment) {
       if (c === '\\' && c2) { out += '  '; i += 2; continue; }
       out += ' '; if (c === '"') inDouble = false; i++; continue;
     }
+    // Outside quotes, `\x` is a literal x (no quote state change) — keep it.
+    if (c === '\\' && c2) { out += c + c2; i += 2; continue; }
     if (c === "'") { inSingle = true; out += ' '; i++; continue; }
     if (c === '"') { inDouble = true; out += ' '; i++; continue; }
     out += c; i++;
@@ -2006,6 +2014,7 @@ function hasUnquotedRedirectChar(segment) {
       if (c === '"') inDouble = false;
       continue;
     }
+    if (c === '\\' && c2) { i++; continue; } // outside quotes: escaped char is literal
     if (c === "'") { inSingle = true; continue; }
     if (c === '"') { inDouble = true; continue; }
     if (c === '>' || c === '<') return true;
@@ -2116,6 +2125,7 @@ function hasSubstitutionOutsideSingleQuotes(segment) {
       if (c === '$' && c2 === '(') return true;
       continue;
     }
+    if (c === '\\' && c2) { i++; continue; } // outside quotes: escaped char is literal
     if (c === "'") { inSingle = true; continue; }
     if (c === '"') { inDouble = true; continue; }
     if (c === '`') return true;
