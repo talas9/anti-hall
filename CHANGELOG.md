@@ -10,6 +10,18 @@ the update.
 
 ### Fixes
 
+- **doctor: orphaned-workspace-process report gave the wrong remedy for an ARCHIVED (not gone) workspace.**
+  Peer report: the claude process in an archived DevSwarm tab stays alive, and
+  killing it just relaunches it from the pty shell — the only real remedy is
+  re-archiving the workspace in the app. `orphanedWorkspaceProcessCheck`
+  previously suggested `kill <pid>` for every hit regardless of reason. It now
+  prints the exact safe remedy line (`hivecontrol workspace archive <full
+  id>`) with an explicit "do not kill it — the pty shell relaunches it"
+  warning for `archived`/`app-archived` hits, and keeps the plain kill
+  suggestion for a genuinely `gone` workspace (worktree removed from under a
+  still-registered row, no relaunch mechanism). Still report-only — never
+  kills or archives anything itself.
+
 - **devswarm: app-archive retry regex missed a reworded DevSwarm error text.**
   `attemptAppArchive`'s single retry only fired on the exact phrase "could not
   confirm terminal process boundary"; a later DevSwarm build rewords the same

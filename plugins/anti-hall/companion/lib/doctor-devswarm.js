@@ -1009,11 +1009,23 @@ function orphanedWorkspaceProcessCheck(opts) {
       }
     }
     if (hits.length) {
+      // Peer field report: killing the pid of a process in an ARCHIVED (not
+      // gone) workspace does not fix anything — the workspace's own pty
+      // shell relaunches `claude` there within seconds (same relaunch this
+      // file's other leak check above already documents), so the only real
+      // remedy is re-archiving the workspace in the app. A 'gone' workspace
+      // (worktree removed from under a still-registered row) has no such
+      // relaunch mechanism, so a plain kill is still the accurate remedy
+      // there. Per-hit remedy text; still report-only — this never kills or
+      // archives anything itself.
+      const remedyFor = (h) => (h.reason === 'archived' || h.reason === 'app-archived')
+        ? 'do not kill it — the pty shell relaunches it; run `hivecontrol workspace archive ' + h.workspaceId + '` to stop it for good'
+        : 'safe to `kill ' + h.pid + '` after confirming it is unneeded';
       out.push({
         status: WARN,
         message: hits.length + ' process(es) alive with cwd in archived/gone workspaces: '
-          + hits.map((h) => 'pid ' + h.pid + ' (' + h.comm + ') cwd=' + h.cwd + ' [' + h.reason + ']').join('; ')
-          + ' — never auto-killed (report only); to close one, run e.g. `kill <pid>` after confirming it is safe',
+          + hits.map((h) => 'pid ' + h.pid + ' (' + h.comm + ') cwd=' + h.cwd + ' [' + h.reason + '] — ' + remedyFor(h)).join('; ')
+          + ' — never auto-killed or auto-archived (report only)',
         orphanedWorkspaceProcesses: hits,
       });
     }
