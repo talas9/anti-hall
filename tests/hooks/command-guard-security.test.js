@@ -83,3 +83,27 @@ test('splitter: a real double-quoted arg with an escaped quote inside stays one 
     assert.strictEqual(r.status, 0, 'a genuinely quoted message must still be allowed: ' + r.stdout);
   });
 });
+
+// ---- #1 read-only verify: a check flag never launders a wrapped payload -----
+
+const CHECK_FLAG_BLOCK = [
+  'sh -c "npm test" --check | tail -5',
+  "bash -lc 'npm test' --dry-run | tail",
+  'eval "npm test" --check | tail',
+  "node -e \"require('child_process').execSync('npm test')\" --check | tail",
+  'nice -n 19 bash -c "npm test" --check | tail',
+  'env npm test --check | tail',
+  'xargs npm test --check | tail',
+];
+
+for (const cmd of CHECK_FLAG_BLOCK) {
+  test('verify-allow: check flag on a shell/interpreter/wrapper does not qualify: ' + cmd, () => {
+    const r = run(cmd);
+    assert.strictEqual(r.status, 2, 'expected BLOCK for ' + cmd + '\n' + r.stdout);
+  });
+}
+
+test('verify-allow: a plain script with --check piped to tail is still allowed (no over-block)', () => {
+  const r = run('./scripts/verify.sh --check | tail');
+  assert.strictEqual(r.status, 0, r.stdout);
+});

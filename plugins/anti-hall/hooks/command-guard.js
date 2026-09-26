@@ -1772,9 +1772,40 @@ const VERIFY_TRIVIAL_VERBS = new Set(['cd', 'pwd', 'true']);
 // because it also carries a --check-shaped token. The flag itself is also
 // checked on the QUOTE-NEUTRALIZED segment, so `git commit -m "deploy
 // --check"` (a flag-shaped substring inside quoted DATA) does not qualify.
+// Verbs that EXECUTE another command/program text: a --check flag riding on
+// one of these checks nothing about the payload it runs (`sh -c "npm test"
+// --check`, `node -e "...execSync('npm test')" --check`), so they never
+// qualify for the generic check-flag rule. Matched against the leading
+// wrapper words AND the effective verb (effectiveVerb skips exec/env/xargs/…).
+const CHECK_FLAG_REFUSED_VERBS = new Set([
+  'sh', 'bash', 'zsh', 'ksh', 'dash', 'fish', 'eval', 'exec', 'xargs', 'env',
+  'nohup', 'time', 'command', 'builtin', 'node', 'perl', 'ruby', 'php', 'deno', 'bun',
+]);
+const CHECK_FLAG_INLINE_CODE_FLAG_RE = /(^|\s)(?:-[A-Za-z]*[ce]|--eval|--command)(?=[\s=]|$)/;
+const VERIFY_CHECK_FLAG_RE_G = new RegExp(VERIFY_CHECK_FLAG_RE.source, 'g');
+
+function leadsWithRefusedCheckVerb(segment) {
+  const tokens = segment.trim().split(/\s+/).filter(Boolean);
+  let idx = 0;
+  while (idx < tokens.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[idx])) idx++;
+  for (; idx < tokens.length; idx++) {
+    const word = basename(tokens[idx]).toLowerCase().replace(/^['"]+|['"]+$/g, '');
+    if (CHECK_FLAG_REFUSED_VERBS.has(word) || /^python[0-9.]*$/.test(word)) return true;
+    if (!WRAPPERS.has(word) && !/^-/.test(word) && !/^\d+[smhd]?$/.test(word)) break;
+  }
+  const verb = effectiveVerb(segment);
+  return !!verb && (CHECK_FLAG_REFUSED_VERBS.has(verb) || /^python[0-9.]*$/.test(verb));
+}
+
 function isGenericCheckFlagCommand(segment) {
   const verb = effectiveVerb(segment);
   if (verb && HEAVY_VERBS.has(verb)) return false;
+  if (leadsWithRefusedCheckVerb(segment)) return false;
+  if (CHECK_FLAG_INLINE_CODE_FLAG_RE.test(neutralizeQuotedContents(segment))) return false;
+  // With the check flag(s) removed, the segment must not be heavy under the
+  // FULL classifier (wrapper/-c/eval/substitution unwrapping included) — the
+  // flag may only ever narrow a non-heavy command, never launder a heavy one.
+  if (isHeavyCommand(segment.replace(VERIFY_CHECK_FLAG_RE_G, ' '))) return false;
   let forPatterns = neutralizeQuotedContents(segment);
   forPatterns = blankPatternArgument(forPatterns, verb);
   for (const re of HEAVY_PATTERNS) {
