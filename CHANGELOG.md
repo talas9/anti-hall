@@ -8,6 +8,51 @@ the update.
 
 ## 0.111.0 (2026-09-26)
 
+### Security
+
+A security review of the three new main-thread command-guard allowances (read-only
+verify, per-project allowlist, plain push) reproduced nine bypasses; each is fixed with
+regression tests (`tests/hooks/command-guard-security.test.js`), and every reproduced
+case blocks again (or more strictly than 0.110.0).
+
+- **Splitter: an unquoted backslash is an escape.** `git commit -m \" ; npm test ; echo \"`
+  hid `npm test` inside a fake quoted argument (bash reads `\"` as a literal quote), and
+  every allowance inherited the gap. The shared splitter and its quote scanners now treat
+  `\x` outside quotes as a literal pair. No shell-scan differential or command-guard
+  corpus verdict changed.
+- **Read-only verify: a check flag never launders a wrapped payload.**
+  `sh -c "npm test" --check | tail`, `bash -lc '…' --dry-run`, `eval "…" --check` and
+  `node -e "…execSync('npm test')" --check` were allowed. The check-flag path refuses
+  shell/interpreter/wrapper verbs and `-c`/`-e`/`--eval`/`-lc`, and the segment minus the
+  flag must be non-heavy under the full unwrapping classifier.
+- **Project allowlist: no shell expansion in a matched command.** `npm run deploy --
+  "$(npm${IFS}test|sh)"` matched `^npm run deploy -- \S+$`. Any `$`, backtick, backslash
+  or `<(`/`>(` anywhere (quoted or not) disqualifies the command.
+- **Project allowlist: `^.*$` is not an anchored rule.** A pattern now needs a literal
+  command word after `^`, a closing `$`, no unbounded wildcard (`.*`, `.+`, `[^;]*`,
+  `[\s\S]+`, quantified wide groups) and no top-level `|`; doctor reports each ignored
+  pattern with its reason (its allowlist report also never printed before — a TDZ read of
+  `cwd`, fixed).
+- **Project allowlist requires per-user trust.** A cloned repo's working-tree
+  `.anti-hall/command-allow.json` could authorize itself. It now applies only while
+  `~/.anti-hall/trusted-command-allow.json` maps the repo's real path to the sha256 of the
+  file bytes (any edit → untrusted); symlinked files/dirs are refused. New verb:
+  `node scripts/settings.js trust-command-allow [<repo>] --confirmed` (prints the patterns;
+  records nothing without `--confirmed`). doctor reports untrusted/changed allowlists with
+  that command.
+- **Plain push: the remote must be a configured remote name.** `git push ../other-repo
+  main` and `git push host/evil main` qualified; the remote must be one of `git remote`
+  (fail closed).
+- **Allowlist audit log: no symlink follow, secrets redacted.** The log dirs are lstat-checked,
+  the file is opened `O_NOFOLLOW` (mode 600), and the logged command is redacted (secret-named
+  flag values, then the existing `scrubSecrets`).
+- **Verify redirect/clone targets are resolved first.** `| tail > …/scratchpad/../../etc/x`
+  passed a raw substring test. Targets are resolved and realpath'd and must land inside the
+  session's own scratchpad or a tmp root (helpers shared with edit-guard via
+  `hooks/lib/scratchpad.js`).
+- **Verify clone: only `git clone --depth 1 https://… <tmp dest>`.** The local-path clone
+  form and non-https `--depth 1` sources no longer qualify.
+
 ### Features
 
 - **command-guard per-project command allowlist** (owner-approved 2026-09-26). A repo may
