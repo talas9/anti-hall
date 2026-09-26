@@ -234,9 +234,8 @@ const BLOCK = [
   // git clone --depth 1 to a destination OUTSIDE the scratchpad/tmp must
   // stay blocked (git clone is HEAVY_PATTERNS-matched).
   'git clone --depth 1 https://example.com/repo.git /Users/talas9/Projects/anti-hall/x | tail -1',
-  // git clone whose SOURCE is a remote URL does not satisfy the "local path"
-  // form even when the dest is in tmp and no --depth 1 is given — plain
-  // (no --depth 1) remote-URL clones are not one of the two allowed shapes.
+  // Only `git clone --depth 1 https://… <tmp dest>` qualifies — a clone
+  // without --depth 1 (or from a local path) never does.
   'git clone https://example.com/repo.git /tmp/x | tail -1',
 ];
 

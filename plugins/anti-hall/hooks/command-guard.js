@@ -1879,21 +1879,14 @@ function isScratchpadOrTmpPath(p, ctx) {
   return false;
 }
 
-// `git clone --depth 1 <url> <dest>` (dest in scratchpad/tmp), or
-// `git clone <local path> <dest-in-scratchpad>` (src is NOT a remote
-// URL/scp-style shorthand — a real local-to-local clone only).
+// `git clone --depth 1 <https-url> <dest>` with dest inside this session's
+// scratchpad or a tmp root — the only clone shape that qualifies. The
+// local-path clone form is gone: a local "source" can be any path on disk
+// (or an `ext::`/transport-ish token git interprets), so it never qualifies.
 function isSafeScratchpadGitClone(segment, ctx) {
-  const trimmed = segment.trim();
-  let m = trimmed.match(/^git\s+clone\s+--depth\s+1\s+(\S+)\s+(\S+)$/);
-  if (m) return isScratchpadOrTmpPath(m[2], ctx);
-  m = trimmed.match(/^git\s+clone\s+(\S+)\s+(\S+)$/);
-  if (m) {
-    const src = m[1];
-    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(src)) return false; // scheme URL (https://, git://, ...)
-    if (/^[\w.-]+@[\w.-]+:/.test(src)) return false; // scp-style ssh shorthand
-    return isScratchpadOrTmpPath(m[2], ctx);
-  }
-  return false;
+  const m = segment.trim().match(/^git\s+clone\s+--depth\s+1\s+(https:\/\/\S+)\s+(\S+)$/);
+  if (!m) return false;
+  return isScratchpadOrTmpPath(m[2], ctx);
 }
 
 function isQualifyingSingleTargetCheck(segment, ctx) {

@@ -401,6 +401,7 @@ test('audit log: a symlinked logs dir is never written through', () => {
 });
 
 // ---- #8 redirect targets are resolved before the scratchpad/tmp test --------
+// ---- #9 clone: only --depth 1 https into scratchpad/os.tmpdir() -------------
 
 // '/tmp' (not os.tmpdir()): the hook child runs with an isolated env that may
 // not carry TMPDIR, and /tmp is a tmp root on every supported platform.
@@ -413,8 +414,11 @@ const PATH_BLOCK = [
   CLONE_OK + ' | tail > /Users/x/scratchpad/../../../etc/zz',
   CLONE_OK + ` | tail > ${TMPD}/../../../etc/zz`,
   CLONE_OK + ' | tail > /opt/scratchpad/x',
+  'git clone /Users/me/big /tmp/scratchpad/x | tail',
+  `git clone ${TMPD}/src ${TMPD}/dst | tail`,
   'git clone --depth 1 https://example.com/r.git /Users/x/scratchpad/../../etc/r | tail',
   'git clone --depth 1 https://example.com/r.git /opt/scratchpad/r | tail',
+  `git clone --depth 1 ssh://example.com/r.git ${TMPD}/r | tail`,
   `git clone --depth 1 https://example.com/r.git ${TMPD}/../../r | tail`,
 ];
 
