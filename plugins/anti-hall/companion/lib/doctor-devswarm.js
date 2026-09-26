@@ -23,6 +23,26 @@ const { classifyVersionDrift } = require('../../hooks/devswarm-version.js');
 // version, item 4a, against the newest anti-hall build known on THIS machine).
 const versionCheck = require('./devswarm-version-check.js');
 
+// RAW_DEVSWARM_CLI — version-pinned plugin-cache path; only the FALLBACK for
+// the stable launcher below (lib/stable-launcher.js header).
+const RAW_DEVSWARM_CLI = path.join(__dirname, '..', '..', 'scripts', 'devswarm.js');
+
+// devswarmCliPath(home) -> the path to embed in remedy text that runs
+// anti-hall's OWN `archive` verb (carries the app-archive retry fixed above
+// + the app-DB target-gate verification), not raw hivecontrol. Prefers the
+// version-independent ~/.anti-hall/bin/ stable launcher (devswarm.stableLauncher,
+// default on) so the printed command survives an anti-hall update; fails
+// open to RAW_DEVSWARM_CLI on any install failure or when the setting is off.
+function devswarmCliPath(home) {
+  try {
+    if (require('../../hooks/lib/settings.js').enabled('devswarm', 'stableLauncher') !== false) {
+      const installed = require('../../hooks/lib/stable-launcher.js').installLauncher('devswarm', RAW_DEVSWARM_CLI, home);
+      if (installed) return installed;
+    }
+  } catch (_) { /* fail-open to RAW_DEVSWARM_CLI */ }
+  return RAW_DEVSWARM_CLI;
+}
+
 const PASS = 'PASS';
 const WARN = 'WARN';
 const FAIL = 'FAIL';
@@ -1018,8 +1038,14 @@ function orphanedWorkspaceProcessCheck(opts) {
       // relaunch mechanism, so a plain kill is still the accurate remedy
       // there. Per-hit remedy text; still report-only — this never kills or
       // archives anything itself.
+      // The remedy runs anti-hall's OWN `archive` verb — not raw `hivecontrol
+      // workspace archive` — because it carries the app-archive retry fixed
+      // above (attemptAppArchive's APP_ARCHIVE_RETRYABLE_RE) plus the app-DB
+      // target-gate verification (appBuilderGate), neither of which a bare
+      // hivecontrol call gets.
+      const cli = devswarmCliPath(home);
       const remedyFor = (h) => (h.reason === 'archived' || h.reason === 'app-archived')
-        ? 'do not kill it — the pty shell relaunches it; run `hivecontrol workspace archive ' + h.workspaceId + '` to stop it for good'
+        ? 'do not kill it — the pty shell relaunches it; run `node ' + cli + ' archive ' + h.workspaceId + '` to stop it for good'
         : 'safe to `kill ' + h.pid + '` after confirming it is unneeded';
       out.push({
         status: WARN,

@@ -27,6 +27,14 @@ the update.
   [--short|-s]` / `git show --stat [-N|HEAD]`, only after a push segment has
   already appeared in the chain.
 
+- **doctor: orphaned-workspace-process remedy now runs anti-hall's own `archive` verb, not raw hivecontrol.**
+  The re-archive remedy for an archived/app-archived hit printed `hivecontrol
+  workspace archive <id>` directly. It now prints `node <cli> archive <id>`
+  (the stable-launcher path when available, falling back to the plugin's own
+  `scripts/devswarm.js`) — anti-hall's own verb carries the app-archive
+  retry-once fix above plus the app-DB target-gate verification, neither of
+  which a bare hivecontrol call gets.
+
 - **doctor: orphaned-workspace-process report gave the wrong remedy for an ARCHIVED (not gone) workspace.**
   Peer report: the claude process in an archived DevSwarm tab stays alive, and
   killing it just relaunches it from the pty shell — the only real remedy is

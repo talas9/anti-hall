@@ -5,11 +5,14 @@
 // already documents). orphanedWorkspaceProcessCheck's report text used to
 // suggest `kill <pid>` for EVERY hit, including ones in an ARCHIVED (not
 // gone) workspace — the wrong remedy. It must now say the safe remedy is
-// re-archiving (`hivecontrol workspace archive <full id>`) and explicitly
-// warn not to kill, for archived/app-archived hits, while a 'gone' hit
-// (worktree removed from under a still-registered row) keeps the plain kill
-// suggestion. This only ever REPORTS; it never kills or archives anything
-// itself (scanProcessCwds/staleWorkspacePaths are pure reads).
+// re-archiving via anti-hall's OWN `archive` verb (`node <cli> archive <full
+// id>`) — never raw `hivecontrol workspace archive`, since anti-hall's verb
+// carries attemptAppArchive's retry (widened in the sibling fix) plus the
+// app-DB target-gate verification a bare hivecontrol call skips — and
+// explicitly warn not to kill, for archived/app-archived hits, while a
+// 'gone' hit (worktree removed from under a still-registered row) keeps the
+// plain kill suggestion. This only ever REPORTS; it never kills or archives
+// anything itself (scanProcessCwds/staleWorkspacePaths are pure reads).
 
 const { test } = require('node:test');
 const assert = require('node:assert');
@@ -47,9 +50,10 @@ test('a process in an ARCHIVED (anti-hall) workspace: no kill suggestion, exact 
     const m = rows[0].message;
     assert.strictEqual(rows[0].status, 'WARN');
     assert.ok(!/`kill 4242`/.test(m), 'must NOT suggest killing the archived-workspace pid: ' + m);
+    assert.ok(!/hivecontrol workspace archive/.test(m), 'must NOT suggest raw hivecontrol — anti-hall\'s own archive verb carries the retry + app-DB gate: ' + m);
     assert.ok(/do not kill it/.test(m), 'must warn not to kill: ' + m);
     assert.ok(/pty shell relaunches it/.test(m), 'must explain why: ' + m);
-    assert.ok(m.includes('`hivecontrol workspace archive ' + id + '`'), 'must give the exact remedy command: ' + m);
+    assert.match(m, /`node .*devswarm\.js archive b3f1c2d4-1111-4000-8000-abcdef012345`/, 'must give anti-hall\'s own archive command: ' + m);
     assert.strictEqual(rows[0].orphanedWorkspaceProcesses[0].reason, 'archived');
   } finally { rm(base); }
 });
