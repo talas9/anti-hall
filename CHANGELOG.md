@@ -10,6 +10,18 @@ the update.
 
 ### Fixes
 
+- **command-guard: P1 — the leading-`cd` carve-out let a nested repo (submodule or untracked nested `.git`) hijack a push.**
+  `cd realsub && git add z && git commit -m x && git push origin subbr`
+  qualified for the plain-push carve-out whenever `realsub` merely lived
+  under the outer repo's directory tree, even when it was a git submodule or
+  any independently-`git init`'d nested repo with its own .git/remote/branch
+  — branch/remote resolution then ran against the WRONG repository. Path
+  containment was never a repo-identity check. `resolvedLeadingCdTarget` now
+  requires the cd target to share the payload cwd's `git-common-dir` (the
+  real `.git` store) — linked worktrees of the same repo share it and still
+  qualify, but a submodule or untracked nested repo never does. Fails closed
+  on any git error.
+
 - **command-guard: "allow plain push" missed three common shapes.**
   Peer-reported: `cd <repo> && git add a b && git commit -q -m "fix: x" &&
   git push -q origin main && git log --oneline -1` was blocked as

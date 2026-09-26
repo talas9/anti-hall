@@ -438,6 +438,89 @@ test('allow-plain-push (widened): `git log` appearing BEFORE the push does not q
 
 // ---- Negative: git worktree (linked worktree, .git is a FILE) ----
 
+// ---------------------------------------------------------------------------
+// P1 field repro (security probe, 2026-09-26): `cd realsub && git add z &&
+// git commit -m x && git push origin subbr` qualified whenever `realsub`
+// merely lived under the outer repo's directory tree, even when `realsub`
+// was a git SUBMODULE or any other independently-`git init`'d nested repo —
+// its own .git, own remote, own branch. Branch/remote resolution then ran
+// against the WRONG repository. resolvedLeadingCdTarget now requires the cd
+// target to share the payload cwd's git-common-dir (the real .git store —
+// worktrees of one repo share it, a submodule/nested repo never does).
+// ---------------------------------------------------------------------------
+
+function initNestedRepo(dir, branch) {
+  fs.mkdirSync(dir, { recursive: true });
+  cp.spawnSync('git', ['init', '-q', '-b', branch, dir]);
+  cp.spawnSync('git', ['-C', dir, 'config', 'user.email', 'test@example.com']);
+  cp.spawnSync('git', ['-C', dir, 'config', 'user.name', 'Test']);
+}
+
+test('allow-plain-push (widened): cd into an UNTRACKED NESTED repo (own .git/remote/branch) is blocked', () => {
+  const repo = makeGitRepo();
+  try {
+    const nested = path.join(repo, 'realsub');
+    initNestedRepo(nested, 'subbr');
+    fs.writeFileSync(path.join(nested, 'z'), '1\n');
+    cp.spawnSync('git', ['-C', nested, 'commit', '--allow-empty', '-q', '-m', 'init']);
+    cp.spawnSync('git', ['-C', nested, 'remote', 'add', 'origin', 'https://example.invalid/inner.git']);
+    const cmd = 'cd realsub && git add z && git commit -m x && git push origin subbr';
+    const res = run(cmd, { cwd: repo });
+    assert.strictEqual(res.status, 2, 'a nested repo must never resolve branch/remote as if it were the outer repo: ' + res.stdout);
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('allow-plain-push (widened): cd into a real git SUBMODULE is blocked', () => {
+  const repo = makeGitRepo();
+  const subUpstream = fs.mkdtempSync(path.join(os.tmpdir(), 'allowpush-subup-'));
+  try {
+    initNestedRepo(subUpstream, 'main');
+    fs.writeFileSync(path.join(subUpstream, 's'), '1\n');
+    cp.spawnSync('git', ['-C', subUpstream, 'add', 's']);
+    cp.spawnSync('git', ['-C', subUpstream, 'commit', '-q', '-m', 'init']);
+    const sm = cp.spawnSync('git', ['-C', repo, '-c', 'protocol.file.allow=always', 'submodule', 'add', subUpstream, 'realsub'], { encoding: 'utf8' });
+    assert.strictEqual(sm.status, 0, 'submodule add must succeed for this test to be meaningful: ' + sm.stderr);
+    const subDir = path.join(repo, 'realsub');
+    cp.spawnSync('git', ['-C', subDir, 'checkout', '-q', '-b', 'subbr']);
+    cp.spawnSync('git', ['-C', subDir, 'remote', 'set-url', 'origin', 'https://example.invalid/inner2.git']);
+    const cmd = 'cd realsub && git add s && git commit -m x && git push origin subbr';
+    const res = run(cmd, { cwd: repo });
+    assert.strictEqual(res.status, 2, 'a submodule must never resolve branch/remote as if it were the outer repo: ' + res.stdout);
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
+    fs.rmSync(subUpstream, { recursive: true, force: true });
+  }
+});
+
+test('allow-plain-push (widened): cd into a plain SUBDIRECTORY of the same repo is still allowed', () => {
+  const repo = makeGitRepo();
+  try {
+    fs.mkdirSync(path.join(repo, 'plainsub'));
+    const res = run('cd plainsub && git push origin main', { cwd: repo });
+    assert.notStrictEqual(res.status, 2, res.stdout);
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('allow-plain-push (widened): cd into a LINKED WORKTREE of the same repo (shared git-common-dir) is allowed', () => {
+  const repo = makeGitRepo();
+  const wtParent = fs.mkdtempSync(path.join(os.tmpdir(), 'allowpush-wt2-'));
+  try {
+    const wtDir = path.join(wtParent, 'wt');
+    const add = cp.spawnSync('git', ['-C', repo, 'worktree', 'add', '-b', 'wtbranch', wtDir], { encoding: 'utf8' });
+    assert.strictEqual(add.status, 0, 'worktree add must succeed for this test to be meaningful: ' + add.stderr);
+    const cmd = 'cd ' + wtDir + ' && git push origin wtbranch';
+    const res = run(cmd, { cwd: repo });
+    assert.notStrictEqual(res.status, 2, 'a linked worktree of the SAME repo shares git-common-dir and must still qualify: ' + res.stdout);
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
+    fs.rmSync(wtParent, { recursive: true, force: true });
+  }
+});
+
 test('allow-plain-push (widened): a linked git worktree (.git is a file) still resolves branch/remote correctly', () => {
   const repo = makeGitRepo();
   const wtDir = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'allowpush-wt-')), 'wt');
