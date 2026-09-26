@@ -6,7 +6,7 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
-## Unreleased
+## 0.111.0 (2026-09-26)
 
 ### Features
 
