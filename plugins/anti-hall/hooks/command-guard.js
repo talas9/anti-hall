@@ -1534,6 +1534,31 @@ function isHeavyGhSegment(segment) {
 // substring match) — evaluated alongside LIGHT_EXCEPTIONS in isHeavySegment.
 const LIGHT_EXCEPTION_FNS = [isSafeGitFetch, isSafeSqliteReadonly, isReadOnlyCloudInspect];
 
+// isFlaggedInterpreterScript(segment) -> true when the segment is
+// `python*|node <flag...> <script>.py|.js|.mjs|.cjs ...` — an interpreter
+// invocation of a real script file with one or more interpreter FLAGS
+// (dash-prefixed tokens, value-taking or not, e.g. `-i`, `-X importtime`,
+// `--inspect`, `--env-file=.env`) sitting between the interpreter and the
+// script. HEAVY_PATTERNS above only matches the flagless shape
+// (`python3 x.py`) because it requires the script token to sit immediately
+// after the interpreter; without this check a flag placed BEFORE the script
+// (`python3 -i x.py`, `node --inspect x.js`) never classifies heavy at all,
+// so the command exits ALLOW before the --check carve-out's
+// isInterpreterScriptCheck ever runs to refuse it (that refusal is correct
+// but unreachable). This function only WIDENS the heavy net to make sure the
+// carve-out is reached; it does not by itself decide the carve-out's ALLOW.
+function isFlaggedInterpreterScript(segment) {
+  const tokens = segment.trim().split(/\s+/).filter(Boolean);
+  if (tokens.length < 3) return false;
+  if (!SCRIPT_CHECK_INTERPRETER_RE.test(tokens[0])) return false;
+  if (!tokens[1].startsWith('-')) return false; // flagless shape: HEAVY_PATTERNS already covers it
+  const ext = /^node$/.test(tokens[0]) ? /\.(?:js|mjs|cjs)$/i : /\.py$/i;
+  for (let i = 1; i < tokens.length; i++) {
+    if (ext.test(tokens[i])) return true;
+  }
+  return false;
+}
+
 // Evaluate one segment: heavy if (its effective verb is a HEAVY_VERB) OR (it
 // matches a HEAVY_PATTERN) OR (it is a heavy git/gh invocation per the
 // tokenized checks above), AND it is NOT itself a LIGHT_EXCEPTION. Light
@@ -1553,6 +1578,7 @@ function isHeavySegment(segment, command) {
   if (isNodeDashEInvocation(segment)) return true;
   if (isHeavyGitSegment(segment)) return true;
   if (isHeavyGhSegment(segment)) return true;
+  if (isFlaggedInterpreterScript(segment)) return true;
   const verb = effectiveVerb(segment);
   if (verb && HEAVY_VERBS.has(verb)) return true;
   // For PATTERN matching only, neutralize quoted string contents so a benign

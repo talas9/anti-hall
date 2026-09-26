@@ -620,3 +620,58 @@ test('verify-allow: control — clone into the session scratchpad qualifies', ()
   const r = run(`git clone --depth 1 https://example.com/r.git ${sp}/x | tail -1`, { cwd });
   assert.strictEqual(r.status, 0, r.stdout);
 });
+
+// ---- F5: interpreter flags placed BEFORE the script never pass the -------
+// ---- --check allowance (real gap probed with $S/flagprobe.js) -----------
+// Root cause: HEAVY_PATTERNS' `\bpython[23]?\s+\S+\.py\b` / `\bnode\s+\S+\.js\b`
+// require the script token to sit IMMEDIATELY after the interpreter, so a
+// flag in between (`python3 -i x.py`, `node --inspect x.js`) never classified
+// heavy at all — the command exited ALLOW before ever reaching the
+// isInterpreterScriptCheck refusal (which already correctly refuses any
+// token starting with `-` right after the interpreter). Fixed by
+// isFlaggedInterpreterScript widening the heavy net so the already-correct
+// carve-out refusal is actually reached.
+const F5_BEFORE_SCRIPT_BLOCK = [
+  'python3 -i tools/gen_contract.py --check | tail -3',
+  'python3 -I tools/gen_contract.py --check | tail -3',
+  'python3 -X importtime tools/gen_contract.py --check | tail -3',
+  'python3 -W ignore tools/gen_contract.py --check | tail -3',
+  'node --inspect tools/gen.js --check | tail -3',
+  'node --inspect-brk tools/gen.js --check | tail -3',
+  'node --env-file=.env tools/gen.js --check | tail -3',
+  'node --require ./x.js tools/gen.js --check | tail -3',
+  'node --import ./x.mjs tools/gen.js --check | tail -3',
+  'node --loader ./x.mjs tools/gen.js --check | tail -3',
+  'node --experimental-vm-modules tools/gen.js --check | tail -3',
+  'node --experimental-loader ./x.mjs tools/gen.js --check | tail -3',
+];
+for (const cmd of F5_BEFORE_SCRIPT_BLOCK) {
+  test('verify-allow (script): an interpreter flag BEFORE the script never qualifies: ' + JSON.stringify(cmd), () => {
+    withScripts((repo) => {
+      const r = run(cmd, { cwd: repo });
+      assert.strictEqual(r.status, 2, 'expected BLOCK for ' + cmd + '\n' + r.stdout);
+    });
+  });
+}
+
+// Control: the SAME flags placed AFTER the script are passed to the script
+// (not the interpreter) and stay allowed — this is the documented, intended
+// shape (`python3 tools/gen_contract.py --check -i | tail -3`). `-I`/
+// `--require`/`--import`/`--loader` are excluded here: SCRIPT_CHECK_REFUSED_FLAG_RE
+// already refuses those ANYWHERE in the segment (by design — an inline-code
+// class of flag), regardless of position, so they are not this fix's concern.
+const F5_AFTER_SCRIPT_ALLOW = [
+  'python3 tools/gen_contract.py --check -i | tail -3',
+  'node tools/gen.js --check --inspect | tail -3',
+  'node tools/gen.js --check --inspect-brk | tail -3',
+  'node tools/gen.js --check --env-file=.env | tail -3',
+  'node tools/gen.js --check --experimental-vm-modules | tail -3',
+];
+for (const cmd of F5_AFTER_SCRIPT_ALLOW) {
+  test('verify-allow (script): control — the same flags AFTER the script still qualify: ' + JSON.stringify(cmd), () => {
+    withScripts((repo) => {
+      const r = run(cmd, { cwd: repo });
+      assert.strictEqual(r.status, 0, 'expected ALLOW for ' + cmd + '\n' + r.stdout);
+    });
+  });
+}
