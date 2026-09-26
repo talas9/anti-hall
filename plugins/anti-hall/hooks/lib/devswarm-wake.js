@@ -306,11 +306,9 @@ function drainCmd(cli, isChild, useTick, id, watcher) {
     // emitted when a watcher script path is available; omitted -> byte-
     // identical to pre-fix text.
     const rearmClause = (typeof watcher === 'string' && watcher)
-      ? ' Also check that result\'s `watcherArmed` field: if it is `false`, your Monitor mailbox ' +
-        'watcher has lapsed (the harness caps a Monitor at 30 minutes; this cron tick runs on the ' +
-        'same 30-minute cadence, so this is expected to happen) — re-arm it now by calling ' +
-        '`Monitor` with command `node ' + watcher + '` (persistent: true if supported, else max ' +
-        'timeout_ms) before doing anything else this turn.'
+      ? ' If its `watcherArmed` is `false` (your Monitor lapsed at its 30-minute harness cap), ' +
+        're-arm it first: `Monitor` with command `node ' + watcher + '` (persistent: true if ' +
+        'supported, else max timeout_ms).'
       : '';
     return 'run ' + tickCmd + plainNote + ' (with `--child` it first imports anything waiting in your ' +
       'native queue, then reports the SAME `unreadTotal`/`meshGapWithheld`/`known` fields ' +

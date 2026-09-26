@@ -27,7 +27,16 @@ const INJECTION_CAP = 10000;
 // is the same in any checkout and matches what installed users actually get.
 const PLUGIN_ROOT = path.resolve(__dirname, '..', '..', 'plugins', 'anti-hall');
 const INSTALLED_ROOT = '/Users/someuser/.claude/plugins/cache/anti-hall/anti-hall/0.108.0';
-function normalizedLength(c) { return c.split(PLUGIN_ROOT).join(INSTALLED_ROOT).length; }
+// Since 0.111 the directive names the version-independent launcher under
+// <home>/.anti-hall/bin/ (hooks/lib/stable-launcher.js), so the fixture HOME
+// (a long OS tmp dir) is embedded too; normalize it to a representative
+// installed home the same way.
+const INSTALLED_HOME = '/Users/someuser';
+function normalizedLength(c, home) {
+  let s = c.split(PLUGIN_ROOT).join(INSTALLED_ROOT);
+  if (home) s = s.split(home).join(INSTALLED_HOME);
+  return s.length;
+}
 
 function sessionPayload() {
   return { hook_event_name: 'SessionStart', source: 'startup', session_id: 't' };
@@ -90,7 +99,7 @@ test('CAP: worst-case injected payload (child + Claude wake directive) stays wel
   const h = makeHome();
   try {
     const c = ctx(testHook(HOOK, sessionPayload(), { home: h.home, expectJson: true, env: CHILD_ENV }));
-    const n = normalizedLength(c);
+    const n = normalizedLength(c, h.home);
     assert.ok(n < INJECTION_CAP, `child payload ${n} chars (installed-path normalized) must stay under the ${INJECTION_CAP}-char cap`);
     // Real headroom check, not just "under the line" — this addition must be
     // TIGHT, not merely non-fatal.
@@ -104,7 +113,7 @@ test('CAP: Primary worst-case payload also stays well under the cap', () => {
   const h = makeHome();
   try {
     const c = ctx(testHook(HOOK, sessionPayload(), { home: h.home, expectJson: true, env: PRIMARY_ENV }));
-    const n = normalizedLength(c);
+    const n = normalizedLength(c, h.home);
     assert.ok(n < INJECTION_CAP, `Primary payload ${n} chars (installed-path normalized) must stay under the ${INJECTION_CAP}-char cap`);
   } finally {
     h.cleanup();
