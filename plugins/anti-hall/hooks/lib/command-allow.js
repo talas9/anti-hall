@@ -68,7 +68,11 @@ function scanPattern(src) {
       if (src[j] === ']') j++;
       while (j < src.length && src[j] !== ']') { if (src[j] === '\\') j++; j++; }
       const body = src.slice(i + 1, j);
-      const spansSpace = body.startsWith('^') || /\\s|\\S|\\W|\\D| /.test(body);
+      // Spans whitespace: a negated class that does not exclude space
+      // (`[^;]`), or a class that includes it (`[\s\S]`, `[ a-z]`, `\W`, `\D`).
+      const spansSpace = body.startsWith('^')
+        ? !/ |\\s/.test(body)
+        : /\\s|\\W|\\D| /.test(body);
       if (spansSpace && isUnboundedQuant(j + 1) && !unboundedWildcard) {
         unboundedWildcard = src.slice(i, j + 2);
       }
