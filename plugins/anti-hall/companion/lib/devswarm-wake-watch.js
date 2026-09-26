@@ -252,7 +252,22 @@ function readInstalledPluginVersion() {
   } catch (_) { return null; }
 }
 
-// checkStaleVersion(ownVersion, env) -> { newestVersion, scriptPath: string|null } | null.
+// checkStaleVersion(ownVersion, env) -> { newestVersion, scriptPath: string|null, registered: bool } | null.
+// `registered` distinguishes two DISTINCT no-cache states (field repro
+// 2026-09-26: on-disk installed_plugins.json still named 0.110.0 while the
+// marketplace clone had already fast-forwarded to 0.111.0 with no cache dir
+// mirrored yet) — `newest` above is the MAX of three sources and previously
+// collapsed both into one "registered" message even when the harness had
+// NEVER seen the version at all:
+//   registered=true  -> installed_plugins.json itself already names
+//                        `newest` (or newer) — the harness knows about this
+//                        build, only the cache mirror is missing.
+//   registered=false -> `newest` came ONLY from the marketplace clone (or a
+//                        cache dir) that installed_plugins.json has not
+//                        caught up to — nothing is "registered" yet, and
+//                        telling the user to just restart/reload is false;
+//                        they need `/anti-hall:update` first (syncs the
+//                        cache AND runs the harness registration).
 // P0 field root cause (item 4c): a child auto-resumed BEFORE the harness
 // re-registered a newer anti-hall build keeps this watcher (and everything
 // else in its process) running the OLD build's code indefinitely — nothing
@@ -273,8 +288,9 @@ function checkStaleVersion(ownVersion, env) {
     if (!upd.isSemver(ownVersion)) return null;
     const home = os.homedir();
     const paths = upd.resolvePaths(env || process.env, home);
+    const jsonVersion = upd.versionFromInstalledJson(paths.installedJson);
     const candidates = [
-      upd.versionFromInstalledJson(paths.installedJson),
+      jsonVersion,
       upd.newestCacheVersion(paths.cacheRoot),
       upd.versionFromMarketplace(paths.pluginJson),
     ];
@@ -283,6 +299,11 @@ function checkStaleVersion(ownVersion, env) {
       if (upd.isSemver(v) && (!newest || upd.compareVersions(v, newest) > 0)) newest = v;
     }
     if (!newest || upd.compareVersions(ownVersion, newest) >= 0) return null;
+    // See the header comment above: `registered` is true only when
+    // installed_plugins.json (the harness registry, read-only) itself
+    // already names `newest` or newer — never true just because `newest`
+    // happened to be the max across cache-dir/marketplace sources too.
+    const registered = upd.isSemver(jsonVersion) && upd.compareVersions(jsonVersion, newest) >= 0;
     const scriptPath = path.join(paths.cacheRoot, newest, 'companion', 'lib', 'devswarm-wake-watch.js');
     // Root-cause fix (field repro 2026-09-25): `newest` above is the MAX of
     // three independent sources — installed_plugins.json, the newest CACHE
@@ -297,7 +318,7 @@ function checkStaleVersion(ownVersion, env) {
     // file, not just the version directory, before returning it.
     let scriptExists = false;
     try { scriptExists = fs.statSync(scriptPath).isFile(); } catch (_) { scriptExists = false; }
-    return { newestVersion: newest, scriptPath: scriptExists ? scriptPath : null };
+    return { newestVersion: newest, scriptPath: scriptExists ? scriptPath : null, registered };
   } catch (_) {
     return null; // fail-open: a resolution failure must never falsely exit a healthy watcher
   }
@@ -317,21 +338,39 @@ function formatStaleVersionLine(role, id, ownVersion, newestVersion, scriptPath)
     + 'Exiting now — never running on as a silent stale watcher.';
 }
 
-// formatUpdateAvailableLine(role, id, ownVersion, newestVersion) -> the ONE
-// line emitted when checkStaleVersion sees a newer version NAME but has no
-// existing path to re-arm against (the version is only known via
-// installed_plugins.json/marketplace — its cache dir has not been mirrored
-// yet). Unlike formatStaleVersionLine, this NEVER tells the caller to exit:
-// there is nothing to re-arm against yet, and leaving a workspace with no
-// watcher at all over an update that has not finished syncing would be
-// strictly worse than staying on the current (still-working) build. Edge-
-// triggered by the caller (once per newestVersion) so it does not spam every
-// poll tick the way the stale-build check itself runs.
-function formatUpdateAvailableLine(role, id, ownVersion, newestVersion) {
-  return '[wake-watch] update available: anti-hall ' + newestVersion + ' is registered, but no cache directory for it '
-    + 'exists on disk yet (this watcher for ' + (role || 'unknown') + ' ' + (id || 'unknown')
-    + ' stays on ' + (ownVersion || 'unknown') + '). Not exiting — nothing to re-arm against yet; '
-    + 'this will be re-checked on the next update sync.';
+// formatUpdateAvailableLine(role, id, ownVersion, newestVersion, registered) ->
+// the ONE line emitted when checkStaleVersion sees a newer version NAME but
+// has no existing path to re-arm against (its cache dir has not been
+// mirrored yet). Unlike formatStaleVersionLine, this NEVER tells the caller
+// to exit: there is nothing to re-arm against yet, and leaving a workspace
+// with no watcher at all over an update that has not finished syncing would
+// be strictly worse than staying on the current (still-working) build.
+// Edge-triggered by the caller (once per newestVersion) so it does not spam
+// every poll tick the way the stale-build check itself runs.
+//
+// `registered` (see checkStaleVersion's header comment) picks between two
+// DISTINCT states that were previously collapsed into one misleading
+// "registered" line:
+//   registered=true  -> installed_plugins.json genuinely already names this
+//                        version; only the cache mirror is pending — today's
+//                        wording (accurate: the harness knows about it).
+//   registered=false -> `newestVersion` is only known from the marketplace
+//                        clone (or a cache dir) that the harness has NOT
+//                        registered at all — saying "is registered" here is
+//                        false and just "restart" would not load it; the
+//                        fix is `/anti-hall:update` (syncs the cache AND
+//                        runs the harness registration), then restart.
+function formatUpdateAvailableLine(role, id, ownVersion, newestVersion, registered) {
+  if (registered) {
+    return '[wake-watch] update available: anti-hall ' + newestVersion + ' is registered, but no cache directory for it '
+      + 'exists on disk yet (this watcher for ' + (role || 'unknown') + ' ' + (id || 'unknown')
+      + ' stays on ' + (ownVersion || 'unknown') + '). Not exiting — nothing to re-arm against yet; '
+      + 'this will be re-checked on the next update sync.';
+  }
+  return '[wake-watch] update available: anti-hall ' + newestVersion + ' is newer (seen via the marketplace clone) but '
+    + 'is not registered with the harness and has no cache directory yet (this watcher for ' + (role || 'unknown') + ' '
+    + (id || 'unknown') + ' stays on ' + (ownVersion || 'unknown') + '). Not exiting; run /anti-hall:update to sync '
+    + 'the cache and register it with the harness, then restart — this will be re-checked on the next update sync.';
 }
 
 // ---------------------------------------------------------------------------
@@ -1418,7 +1457,7 @@ function main() {
       if (staleVersion.newestVersion !== notifiedUpdateVersion) {
         notifiedUpdateVersion = staleVersion.newestVersion;
         try {
-          emitLine(formatUpdateAvailableLine(watchedRole, id, ownVersion, staleVersion.newestVersion));
+          emitLine(formatUpdateAvailableLine(watchedRole, id, ownVersion, staleVersion.newestVersion, staleVersion.registered));
         } catch (_) {}
       }
     }

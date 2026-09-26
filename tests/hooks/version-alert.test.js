@@ -306,6 +306,56 @@ test('RUNNING VERSION: a stale installed_plugins.json is ignored entirely', () =
   } finally { h.cleanup(); }
 });
 
+// ── CASE 2 HARNESS-REGISTRATION GAP (o2) ────────────────────────────────────
+// Root-cause regression (field repro, 2026-09-26): mirroring the cache dir
+// does NOT mean the Claude Code harness has re-registered it —
+// harnessRegisterPostUpdate can mirror the cache and then fail/timeout on
+// `claude plugin update anti-hall@anti-hall`. Telling the user "reload picks
+// it up" in that state is false (doctor.js's own harness-registration check
+// documents the same gap). Write installed_plugins.json (v2 schema) reporting
+// an OLDER version than the mirrored cache dir to reproduce it.
+function writeInstalledPlugins(h, version) {
+  const dir = path.join(h.home, '.claude', 'plugins');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(
+    path.join(dir, 'installed_plugins.json'),
+    JSON.stringify({ version: 2, plugins: { 'anti-hall@anti-hall': [{ scope: 'user', version }] } }),
+    'utf8'
+  );
+}
+
+test('CASE 2 HARNESS GAP: cache mirrored but installed_plugins.json still lags it => "not registered" directive, not a bare reload nudge', () => {
+  const h = makeHome();
+  try {
+    writeMirroredVersion(h, '999.0.0');
+    writeInstalledPlugins(h, '1.0.0'); // still the OLD version — harness never re-registered
+    const r = testHook(HOOK, payload(), { home: h.home, expectJson: true });
+    assert.strictEqual(r.status, 0, `exit 0; stderr: ${r.stderr}`);
+    assert.ok(hasContext(r), `expected additionalContext; stdout: ${r.stdout}`);
+    const ctx = r.json.hookSpecificOutput.additionalContext;
+    assert.match(ctx, /Tell the user now/);
+    assert.match(ctx, /has not registered it yet/i);
+    assert.match(ctx, /\/anti-hall:update/);
+    assert.doesNotMatch(ctx, /already downloaded \(you are running/i,
+      'must not claim reload alone will pick it up when the harness has not registered the build');
+  } finally { h.cleanup(); }
+});
+
+test('CASE 2 HARNESS OK: cache mirrored AND installed_plugins.json already names it => original reload-only directive', () => {
+  const h = makeHome();
+  try {
+    writeMirroredVersion(h, '999.0.0');
+    writeInstalledPlugins(h, '999.0.0'); // harness already registered this build
+    const r = testHook(HOOK, payload(), { home: h.home, expectJson: true });
+    assert.strictEqual(r.status, 0, `exit 0; stderr: ${r.stderr}`);
+    assert.ok(hasContext(r), `expected additionalContext; stdout: ${r.stdout}`);
+    const ctx = r.json.hookSpecificOutput.additionalContext;
+    assert.match(ctx, /already downloaded/i);
+    assert.match(ctx, /\/reload-plugins/);
+    assert.doesNotMatch(ctx, /\/anti-hall:update/);
+  } finally { h.cleanup(); }
+});
+
 // ── CASE 2 DEDUPE WITHOUT ANY REMOTE CACHE (o) ──────────────────────────────
 // The reload nudge must still be once-per-session even when
 // ~/.anti-hall/version-check.json has never existed (case 2 must not depend

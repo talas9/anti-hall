@@ -152,6 +152,37 @@ found and fixed before release (F1–F4):
   credential) to qualify, keeping the original BLOCK for the weak case while still letting
   genuinely deploy-shaped spawns through.
 
+### Fixed
+
+- **`mcp-reaper`: `GRACE=0` honored via a deterministic `parseGrace()`, not a
+  wall-clock e2e bound.** The e2e test asserted elapsed time < 2500ms for a real
+  subprocess run (spawnSync + two real `ps` scans) to prove `GRACE=0` wasn't
+  coerced to the default 3 by a `0 || 3` gotcha; that bound is
+  wall-clock/scheduler-dependent and flaked under heavy local CPU load. The
+  grace-parsing logic is now a pure, exported `parseGrace()` (used in production
+  at `mcp-reaper.js:569`) covered by exact-equality unit tests (no subprocess, no
+  timing); the e2e test keeps only a generous-deadline poll for the orphan's
+  actual death.
+- **"Restart" advice no longer implies harness registration that hasn't happened.**
+  Two sites could tell a user to just reload/restart to pick up a newer anti-hall build
+  even when the Claude Code harness (`installed_plugins.json`) had not actually
+  re-registered it yet — restarting alone does not load a version the harness has never
+  seen (`claude plugin update anti-hall@anti-hall` is required first; see doctor.js's own
+  harness-registration check). Field repro (2026-09-26): the marketplace clone had
+  fast-forwarded to 0.111.0 while `installed_plugins.json` still reported 0.110.0 and no
+  cache dir existed for 0.111.0 — `devswarm-wake-watch.js`'s "update available" line said
+  the version "is registered" when it was only known from the marketplace clone.
+  - `plugins/anti-hall/companion/lib/devswarm-wake-watch.js`: `checkStaleVersion()` now
+    returns a `registered` flag (true only when `installed_plugins.json` itself already
+    names the newest version or newer); `formatUpdateAvailableLine()` branches wording
+    accordingly — pointing at `/anti-hall:update` instead of claiming "is registered"
+    when the harness has not caught up.
+  - `plugins/anti-hall/hooks/version-alert.js`: CASE 2 ("already downloaded ... run
+    /reload-plugins") now checks the harness's own `installed_plugins.json` (read-only,
+    reusing `update.js`'s resolver) before claiming a reload/restart is enough; when the
+    harness lags the mirrored cache dir it instead tells the user to run
+    `/anti-hall:update` first.
+
 ## 0.111.0 (2026-09-26)
 
 ### Security

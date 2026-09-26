@@ -138,7 +138,7 @@ test('checkStaleVersion: nothing laid out at all (fresh machine) -> fails open t
   } finally { rm(home); }
 });
 
-test('checkStaleVersion: newest known version comes from the marketplace plugin.json alone (no cache dirs yet) -> flags the version but names NO path (nothing exists on disk to re-arm)', () => {
+test('checkStaleVersion: newest known version comes from the marketplace plugin.json alone (no cache dirs yet, no installed_plugins.json) -> flags the version, names NO path, and registered=false (state a: not registered at all)', () => {
   const home = tmpHome();
   try {
     layoutPlugins(home, { marketplaceVersion: '0.108.0' });
@@ -152,46 +152,77 @@ test('checkStaleVersion: newest known version comes from the marketplace plugin.
     // crashing the printed re-arm command with exit 1. scriptPath must be
     // null whenever the target version's cache dir is not actually on disk.
     assert.strictEqual(out.scriptPath, null, 'must not name a path that does not exist on disk');
+    // Root-cause regression (field repro, 2026-09-26): installed_plugins.json
+    // does not know this version at all -> it must never be reported as
+    // "registered".
+    assert.strictEqual(out.registered, false, 'no installed_plugins.json entry names this version at all');
   } finally { rm(home); }
 });
 
-test('checkStaleVersion: a newer version is registered/marketplace-known but its cache dir does NOT exist -> scriptPath null even though an older cache dir does exist', () => {
+test('checkStaleVersion: a newer version is known via the marketplace but installed_plugins.json still lags it, and its cache dir does NOT exist -> scriptPath null, registered=false (state a: harness has not caught up)', () => {
   const home = tmpHome();
   try {
     // Realistic shape of the live repro: 0.108.4 is cached (this process is
-    // running it), the marketplace has already fast-forwarded to 0.108.5, but
-    // 0.108.5's cache dir has not been mirrored yet.
+    // running it) AND is what installed_plugins.json still reports, the
+    // marketplace has already fast-forwarded to 0.108.5, but 0.108.5's cache
+    // dir has not been mirrored yet and the harness has not re-registered.
     layoutPlugins(home, { installedVersion: '0.108.4', cacheVersions: ['0.108.4'], marketplaceVersion: '0.108.5' });
     const out = checkStaleVersion('0.108.4', { ANTIHALL_MARKETPLACE_DIR: path.join(home, '.claude', 'plugins', 'marketplaces', 'anti-hall') });
     assert.ok(out, 'must still surface that an update is known');
     assert.strictEqual(out.newestVersion, '0.108.5');
     assert.strictEqual(out.scriptPath, null, 'the 0.108.5 cache dir does not exist; must not fabricate a path into it');
+    assert.strictEqual(out.registered, false, 'installed_plugins.json still names 0.108.4, not 0.108.5 — not registered');
   } finally { rm(home); }
 });
 
-test('checkStaleVersion: the newer cache dir DOES exist -> scriptPath names it', () => {
+test('checkStaleVersion: installed_plugins.json already names the newest version, but its cache dir does NOT exist -> scriptPath null, registered=true (state c: registered, cache pending)', () => {
   const home = tmpHome();
   try {
-    layoutPlugins(home, { installedVersion: '0.108.4', cacheVersions: ['0.108.4', '0.108.5'], marketplaceVersion: '0.108.5' });
+    layoutPlugins(home, { installedVersion: '0.108.5', cacheVersions: ['0.108.4'], marketplaceVersion: '0.108.5' });
+    const out = checkStaleVersion('0.108.4', { ANTIHALL_MARKETPLACE_DIR: path.join(home, '.claude', 'plugins', 'marketplaces', 'anti-hall') });
+    assert.ok(out);
+    assert.strictEqual(out.newestVersion, '0.108.5');
+    assert.strictEqual(out.scriptPath, null, 'the 0.108.5 cache dir does not exist yet');
+    assert.strictEqual(out.registered, true, 'installed_plugins.json already names 0.108.5 — the harness knows about it');
+  } finally { rm(home); }
+});
+
+test('checkStaleVersion: the newer cache dir DOES exist -> scriptPath names it, registered=true (state b: registered + cached)', () => {
+  const home = tmpHome();
+  try {
+    layoutPlugins(home, { installedVersion: '0.108.5', cacheVersions: ['0.108.4', '0.108.5'], marketplaceVersion: '0.108.5' });
     const out = checkStaleVersion('0.108.4', { ANTIHALL_MARKETPLACE_DIR: path.join(home, '.claude', 'plugins', 'marketplaces', 'anti-hall') });
     assert.ok(out);
     assert.strictEqual(out.newestVersion, '0.108.5');
     assert.ok(out.scriptPath, 'the 0.108.5 cache dir + this file both exist; scriptPath must be populated');
     assert.ok(fs.existsSync(out.scriptPath), 'scriptPath must actually exist on disk');
     assert.ok(out.scriptPath.endsWith(path.join('0.108.5', 'companion', 'lib', 'devswarm-wake-watch.js')));
+    assert.strictEqual(out.registered, true);
   } finally { rm(home); }
 });
 
-test('formatUpdateAvailableLine: names role, id, own version, newest version, and never tells the caller to exit', () => {
-  const line = formatUpdateAvailableLine('child', 'abc-123', '0.108.4', '0.108.5');
+test('formatUpdateAvailableLine: registered=true names role, id, own version, newest version, says "registered", and never tells the caller to exit', () => {
+  const line = formatUpdateAvailableLine('child', 'abc-123', '0.108.4', '0.108.5', true);
   assert.match(line, /update available/);
   assert.match(line, /0\.108\.5/);
   assert.match(line, /child abc-123/);
   assert.match(line, /0\.108\.4/);
+  assert.match(line, /is registered/);
+  assert.doesNotMatch(line, /Exiting/);
+});
+
+test('formatUpdateAvailableLine: registered=false never claims the version is "registered" and points at /anti-hall:update', () => {
+  const line = formatUpdateAvailableLine('child', 'abc-123', '0.108.4', '0.108.5', false);
+  assert.match(line, /update available/);
+  assert.match(line, /0\.108\.5/);
+  assert.doesNotMatch(line, /is registered/, 'must never claim harness registration that has not happened');
+  assert.match(line, /\/anti-hall:update/);
   assert.doesNotMatch(line, /Exiting/);
 });
 
 test('formatUpdateAvailableLine: never throws on missing fields', () => {
+  assert.doesNotThrow(() => formatUpdateAvailableLine(null, null, null, '0.108.5', true));
+  assert.doesNotThrow(() => formatUpdateAvailableLine(null, null, null, '0.108.5', false));
   assert.doesNotThrow(() => formatUpdateAvailableLine(null, null, null, '0.108.5'));
 });
 

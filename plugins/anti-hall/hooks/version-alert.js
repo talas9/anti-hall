@@ -252,10 +252,36 @@ function main() {
     if (sessionId && reloadMarker && alreadyAdvisedKey(reloadMarker, key)) return;
 
     const headline = changelogHeadline(mirrored);
-    const additionalContext =
-      `Tell the user now: anti-hall v${mirrored} is already downloaded (you are running v${running}) ` +
-      `— run /reload-plugins (Claude) or restart Codex / start a fresh session (Codex) to pick it up.` +
-      (headline ? ` Highlight: ${headline}` : '');
+    // Root-cause fix (field repro, harness-registration gap): the cache
+    // being mirrored does NOT mean the Claude Code harness has re-registered
+    // it — `/anti-hall:update`'s own harnessRegisterPostUpdate can mirror the
+    // cache and then fail/timeout on `claude plugin update anti-hall@anti-hall`
+    // (see update.js's harnessAction). When that happens, installed_plugins.json
+    // (HARNESS-OWNED — read-only here, reusing update.js's own resolver
+    // rather than re-deriving path logic) still names the OLD version, and
+    // telling the user "/reload-plugins picks it up" is FALSE: doctor.js's
+    // own harness-registration check documents that a harness registry lag
+    // needs `claude plugin update`, not a reload/restart, before a newer
+    // build actually loads. Fail-open: an unreadable/unknown harness version
+    // keeps today's behavior (assume reload/restart is enough) rather than
+    // block on a fact we cannot verify.
+    let harnessRegistered = true;
+    try {
+      const upd = require(path.join(__dirname, '..', 'skills', 'update', 'scripts', 'update.js'));
+      const updPaths = upd.resolvePaths(process.env, os.homedir());
+      const harnessVersion = upd.versionFromInstalledJson(updPaths.installedJson);
+      if (upd.isSemver(harnessVersion) && semverGreater(mirrored, harnessVersion)) harnessRegistered = false;
+    } catch (_) { harnessRegistered = true; }
+
+    const additionalContext = harnessRegistered
+      ? `Tell the user now: anti-hall v${mirrored} is already downloaded (you are running v${running}) ` +
+        `— run /reload-plugins (Claude) or restart Codex / start a fresh session (Codex) to pick it up.` +
+        (headline ? ` Highlight: ${headline}` : '')
+      : `Tell the user now: anti-hall v${mirrored} is downloaded locally (you are running v${running}), but the ` +
+        `Claude Code harness has not registered it yet — run /anti-hall:update (Claude; syncs the cache AND the ` +
+        `harness registration) or the anti-hall-update skill (Codex), then restart. /reload-plugins alone will not ` +
+        `pick this up until the harness registers it.` +
+        (headline ? ` Highlight: ${headline}` : '');
     emit(additionalContext);
 
     // Own dedupe marker (never the remote-latest cache) — see RELOAD_MARK_FILE
