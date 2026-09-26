@@ -23,9 +23,14 @@
 //     the legacy files stay byte-for-byte intact so a rollback is always possible.
 //   - SINGLE-CONSUMER-LOCKED: an O_EXCL lock (dead-holder/stale-steal, mirroring
 //     the supervisor sweep lock) so two migrations never race the same store.
-//   - COUNT-VERIFIED: after import, the store's messageCount(id) must equal the
-//     number of distinct non-empty legacy inbox lines for that id before the
-//     migration is reported `verified:true` for that workspace.
+//   - COVERAGE-VERIFIED: after import, every distinct non-empty legacy inbox
+//     line for that id must be represented in the store — freshly imported, or
+//     already covered by another path's row (e.g. native mesh traffic) — before
+//     the migration is reported `verified:true` for that workspace. NOT a raw
+//     messageCount(id)-equals-line-count check: a workspace's store also
+//     accumulates rows with nothing to do with the legacy inbox (native mesh
+//     writes), so requiring the two totals to match made `verified` false
+//     forever the instant any such row existed — see migrateOne's comment.
 //
 // OPT-IN "mark imported backlog as read" (field issue A, v0.56.0): a legacy
 // source with no consumed-cursor of its own imports its whole backlog at
@@ -291,15 +296,32 @@ function migrateOne(s, descriptor, F, opts) {
     if (r && r.inserted) imported++;
   }
 
-  // Count-verify: the store must now hold exactly as many messages for this id as
-  // there are distinct non-empty legacy inbox lines (the inbox we actually read).
-  // ALSO require the registry upsert to have actually applied (registryWritten !==
-  // false) — a message-count match alone does not prove the registry row landed;
-  // the F2 guard can skip that write while messages import normally.
+  // Count-verify (fixed — see below): every legacy line we just read must now be
+  // COVERED by the store — either freshly imported above, or already represented
+  // by some other path's row (a native mesh-drained message, an earlier import,
+  // etc.) under the SAME cross-path body identity migrateOne used to decide what
+  // to import (pendingLegacyLines/consumeBody, shared with
+  // migrateLegacyInbox's own hash read-back verify — see its test "verifies
+  // SOURCE-line coverage even though a native row also exists").
+  //
+  // PRIOR BUG: this used to require `s.messageCount(id) === lines.length` — i.e.
+  // the store's TOTAL row count for this id must equal TODAY's legacy-inbox line
+  // count. That equality only ever holds for a workspace whose store rows come
+  // exclusively from this legacy import. The instant a workspace ALSO carries
+  // native mesh traffic (routine since the v0.57 mesh added direct native
+  // store writes alongside the legacy NDJSON path), messageCount(id) permanently
+  // exceeds lines.length and `verified` goes false forever — a structural false
+  // positive, not a sign anything is missing. On a live production store this
+  // fires for effectively every active workspace, which is why "SOME COUNTS
+  // UNVERIFIED" is not a reliable signal today. Re-checking COVERAGE (every
+  // legacy line accounted for) instead of total-count EQUALITY fixes this while
+  // still catching a genuine gap (e.g. an appendMessage that silently failed to
+  // insert a line neither pre-existing nor freshly written).
   const legacyCount = lines.length;
   const storeCount = s.messageCount(id);
+  const stillPending = pendingLegacyLines(s, id, lines).length;
   const registryVerified = registryWritten !== false;
-  const verified = storeCount === legacyCount && registryVerified;
+  const verified = stillPending === 0 && registryVerified;
 
   // Carry the legacy consumed-count forward as the store cursor (idempotent
   // set) — UNLESS opts.markRead is set, in which case advance the cursor to
@@ -321,6 +343,14 @@ function migrateOne(s, descriptor, F, opts) {
   if (!registryVerified) {
     report.error = 'registry upsert skipped for ' + JSON.stringify(id)
       + ': an existing row already maps to a different worktree_path (possible id collision or an unintended path change) — not overwritten';
+  } else if (stillPending > 0) {
+    // A genuine gap: after import + the cross-path coverage check, some legacy
+    // line(s) are STILL not represented in the store (e.g. appendMessage silently
+    // declined to insert one). Named so a caller can report which field failed
+    // rather than a bare "unverified".
+    report.error = stillPending + ' of ' + legacyCount
+      + ' legacy inbox line(s) for ' + JSON.stringify(id)
+      + ' are still not represented in the store after import (expected 0 pending, got ' + stillPending + ')';
   }
   // gate && gate.migrateAsLive: the archive-resurrection gate positively proved
   // this is a genuine LATER reuse of a previously-archived id (differing
@@ -374,6 +404,10 @@ function migrateToStore(opts) {
         // and threaded through opts.archiveGate.
         const archiveGate = migrationArchiveGate(home, d.id, d, F, { now: o.now, worktreeIndex: archivedWorktreeIndex });
         const report = migrateOne(s, d, F, { markRead, archiveGate });
+        // Human-friendly label for reporting only (never used for identity/dedupe):
+        // the worktree's own basename, falling back to the raw id when there is no
+        // worktreePath to derive one from.
+        report.title = (d.worktreePath && path.basename(String(d.worktreePath))) || d.id;
         migrated.push(report);
         // Skip deriving a projection for an id the gate refused to resurrect —
         // nothing was written to this id's registry/messages, so there is

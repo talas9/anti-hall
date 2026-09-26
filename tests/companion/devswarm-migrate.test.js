@@ -217,6 +217,35 @@ test('legacyLineHash is stable per (id,index,content) and distinguishes duplicat
   assert.notEqual(migrate.legacyLineHash('a', 0, 'x'), migrate.legacyLineHash('b', 0, 'x')); // diff workspace
 });
 
+// migrateOne must verify by COVERAGE, not by raw messageCount === legacyCount
+// equality (defect: "SOME COUNTS UNVERIFIED" false-flagged every workspace with
+// ANY native mesh traffic, since messageCount(id) then permanently exceeds
+// today's legacy-inbox line count even though nothing is missing).
+test('migrateOne verifies coverage even when the store ALSO holds a native-drained row for the same id', () => {
+  const home = tmpHome();
+  try {
+    // A native-drained row already sits in this workspace's store (unrelated to
+    // the legacy inbox — e.g. live mesh traffic since the last migration).
+    const s0 = require('../../plugins/anti-hall/companion/lib/devswarm-store.js')
+      .openStore({ home, workspaceId: 'a', backend: 'journal' });
+    try { s0.appendMessage({ workspaceId: 'a', body: 'native-only', hash: 'native:1' }); } finally { s0.close(); }
+
+    writeWorkspace(home, 'a', { lines: ['m1', 'm2'], cursor: 0 });
+    const rep = migrate.migrateToStore(opts(home));
+    const a = rep.migrated.find((m) => m.id === 'a');
+    // storeCount (3: native row + 2 legacy) does NOT equal legacyCount (2) — the
+    // old equality check would have reported this unverified despite nothing
+    // being missing. Coverage-based verify must still say true.
+    assert.equal(a.storeCount, 3);
+    assert.equal(a.legacyCount, 2);
+    assert.equal(a.verified, true, 'a coexisting native row must not false-flag verification');
+    assert.equal(rep.verifiedAll, true);
+
+    const s = storeLib.openStore({ home, workspaceId: 'a', backend: 'journal' });
+    try { assert.equal(s.messageCount('a'), 3, 'native row + 2 legacy lines, no dup'); } finally { s.close(); }
+  } finally { rm(home); }
+});
+
 // ---- migrateLegacyInbox: direct single-source import into a workspaceId --------
 test('migrateLegacyInbox folds a legacy NDJSON into an explicit workspaceId, verified + non-destructive', () => {
   const home = tmpHome();

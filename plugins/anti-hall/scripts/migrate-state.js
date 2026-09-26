@@ -504,8 +504,11 @@ if (require.main === module) {
       console.log('DevSwarm store: no on-disk workspace registry to migrate');
     } else {
       console.log('DevSwarm store: migrated ' + ds.workspaces + ' workspace(s) into the ' +
-        ds.backend + ' backend' + (ds.verifiedAll ? ' (all counts verified)' : ' (SOME COUNTS UNVERIFIED — sources kept)') +
+        ds.backend + ' backend' + (ds.verifiedAll ? ' (all counts verified)' : ' (SOME COUNTS UNVERIFIED — sources kept, no data can be lost)') +
         (ds.markRead ? ' [--mark-read: imported backlog marked as already-read]' : ''));
+      if (!ds.verifiedAll) {
+        for (const line of formatUnverifiedWorkspaces(ds.migrated)) console.log('  ' + line);
+      }
     }
   } else if (ds && ds.locked === false) {
     console.log('DevSwarm store: another migration/consumer holds the lock — skipped this run');
@@ -601,7 +604,37 @@ function migrateAutoArchivedState({ dryRun, home } = {}) {
   }
 }
 
+/**
+ * formatUnverifiedWorkspaces(migrated) -> string[] — human-readable detail lines
+ * for the DevSwarm migration workspaces that came back `verified:false`, so
+ * "SOME COUNTS UNVERIFIED" names WHICH workspace and WHICH field failed instead
+ * of leaving the reader to guess whether their data is at risk. Each report's
+ * own `.error` already names the specific failure (see devswarm-migrate.js
+ * migrateOne: a coverage gap, a readInbox failure, or a registry-collision
+ * skip) — this just labels it with the workspace's title/id and caps the list
+ * so one run with many unverified workspaces doesn't flood the console (full
+ * detail is always in the returned report/JSON, e.g. via `devswarm.js migrate
+ * --json`). Re-verification is just re-running the same migration: it is
+ * idempotent, so `node plugins/anti-hall/scripts/migrate-state.js` (or the
+ * update.js path that calls it) can be re-run any time to re-check.
+ */
+const UNVERIFIED_DISPLAY_CAP = 10;
+function formatUnverifiedWorkspaces(migrated) {
+  const unverified = (Array.isArray(migrated) ? migrated : []).filter((m) => m && !m.verified && !m.archivedSkipped);
+  if (!unverified.length) return [];
+  const lines = unverified.slice(0, UNVERIFIED_DISPLAY_CAP).map((m) => {
+    const label = (m.title || m.id) + (m.title && m.id && m.title !== m.id ? ' (' + m.id + ')' : '');
+    const reason = m.error || ('expected ' + m.legacyCount + ' legacy line(s), store holds ' + m.storeCount);
+    return '- ' + label + ': ' + reason;
+  });
+  if (unverified.length > UNVERIFIED_DISPLAY_CAP) {
+    lines.push('...and ' + (unverified.length - UNVERIFIED_DISPLAY_CAP) + ' more (see the full report for detail)');
+  }
+  lines.push('No data loss: sources (legacy NDJSON inboxes) are never deleted or modified by migration — re-run the migration to re-verify; it is idempotent and safe to repeat.');
+  return lines;
+}
+
 module.exports = {
   migrateLegacyState, migrateGsdPlanning, migrateDevswarmStore, migrateReplyState, migrateGateIntents,
-  migrateAutoArchivedState, findPlanningDamage, restorePlanning,
+  migrateAutoArchivedState, findPlanningDamage, restorePlanning, formatUnverifiedWorkspaces,
 };

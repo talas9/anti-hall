@@ -113,6 +113,22 @@ the update.
 
 ### Fixes
 
+- **DevSwarm store migration's "SOME COUNTS UNVERIFIED" no longer false-flags
+  every workspace that has ANY native mesh traffic.** `migrateOne`'s
+  count-verify used to require the store's TOTAL message count for a
+  workspace to EQUAL today's legacy-inbox line count — but a workspace's
+  store also accumulates rows from native mesh writes that have nothing to
+  do with the legacy inbox, so that equality permanently breaks the instant
+  any such row exists (not a data-integrity signal; confirmed on a live
+  store where 100% of an actively-used project's workspaces failed the old
+  check despite complete data). Verification now checks legacy-line
+  COVERAGE (every legacy line is represented in the store, freshly imported
+  or already covered by another path's row) via the same cross-path
+  identity `migrateLegacyInbox` already used correctly. `migrate-state.js`'s
+  CLI output now names each still-unverified workspace (title/id + the
+  specific field that failed), capped at 10 with a "...and K more", and
+  states plainly that sources are never deleted so no data can be lost —
+  re-running the (idempotent) migration re-verifies.
 - **Static per-turn reminder blocks (VERIFY-FIRST, the DEVSWARM PRIMARY
   dispatch-tier and top-fan-out-tier suffixes) no longer repeat every single
   turn.** They now follow the same once-per-session / once-after-compact-or-
