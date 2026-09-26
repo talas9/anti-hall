@@ -78,6 +78,14 @@ const BLOCK = [
   'node plugins/anti-hall/scripts/jev-report.js label abc123 tp',
   'node plugins/anti-hall/scripts/jev-report.js prune-audit --days 30',
   'gcloud compute instances delete foo',
+  // 0.113 P1: a read verb only counts as the LAST command-path word; a
+  // separated flag value (or any later token) posing as the verb is refused,
+  // and so is a separated flag value in general.
+  'gcloud compute instances reset vm1 --zone list',
+  'gcloud compute instances reset vm1 list',
+  'gcloud secrets versions access latest --secret list',
+  'gcloud run services describe foo --project p --region r',
+  'gcloud logging read "severity>=ERROR" --limit 5',
   'kubectl delete pod foo',
   // P1 fp (rc-v0.108.4.2 review): a mutating verb earlier on the line must not
   // be shadowed by a LATER compound word that merely CONTAINS a read-only
@@ -323,7 +331,7 @@ const ALLOW = [
   'node plugins/anti-hall/scripts/devswarm.js roster',
   'node plugins/anti-hall/scripts/devswarm.js inbox peek-primary',
   'sqlite3 -readonly /tmp/x.db "select count(*) from t"',
-  'gcloud run services describe foo --project p --region r --format=value(status.url)',
+  'gcloud run services describe foo --project=p --region=r --format=value(status.url)',
   'git ls-remote origin main; git fetch -q origin main; git merge-base --is-ancestor abc def; git diff --name-only abc def',
   'git rev-parse HEAD',
   'git log --oneline -5',
@@ -335,7 +343,7 @@ const ALLOW = [
   'git reflog show',
   'gh pr list',
   'kubectl get pods',
-  'gcloud logging read "severity>=ERROR" --limit 5',
+  'gcloud logging read "severity>=ERROR" --limit=5',
   'node plugins/anti-hall/hooks/doctor.js',
   'node plugins/anti-hall/scripts/jev-report.js --weekly',
   'node plugins/anti-hall/scripts/jev-report.js --days 7 --json',

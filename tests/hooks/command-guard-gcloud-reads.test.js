@@ -42,11 +42,11 @@ const ALLOW = [
   'gcloud auth print-access-token',
   'gcloud projects get-iam-policy my-proj --format=json',
   'gcloud projects get-iam-policy my-proj --format=json | jq -r .bindings',
-  'gcloud run services describe api --region us-central1 --format=yaml',
+  'gcloud run services describe api --region=us-central1 --format=yaml',
   "gcloud run services describe api --format='value(status.url)'",
   'gcloud compute instances list --format=json | head -50',
-  'gcloud logging read "severity>=ERROR" --limit 20 --format=json',
-  'gcloud secrets list --format json | wc -l',
+  'gcloud logging read "severity>=ERROR" --limit=20 --format=json',
+  'gcloud secrets list --format=json | wc -l',
   TOKEN + 'curl -s ' + AUTH + ' https://run.googleapis.com/v2/projects/p/locations/l/services | jq .',
   TOKEN + 'curl -sS ' + AUTH + ' https://example.googleapis.com/v1/x | head -40',
   'T=$(gcloud auth print-access-token) && curl -s -X GET ' + AUTH + ' https://example.googleapis.com/v1/x | jq -c .',
@@ -93,6 +93,28 @@ const BLOCK = [
   'gcloud projects get-iam-policy p --format=json && gcloud run deploy api',
   'FOO=1 gcloud projects get-iam-policy p --format=json',
   'gcloud projects get-iam-policy $P --format=json',
+  // 0.113 P1 (security review): the read verb must be the LAST command-path
+  // word — never a positional or a separated flag value — every flag is
+  // --k=v or a known boolean, and no path word is a mutating/secret action.
+  'gcloud compute instances reset vm1 --zone read --format=json',
+  'gcloud compute instances reset vm read --format=json',
+  'gcloud compute instances suspend vm1 --zone get-iam-policy --format=json',
+  'gcloud pubsub topics publish t --message read --format=json',
+  'gcloud pubsub topics publish t --message=x read --format=json',
+  'gcloud secrets versions access latest --secret read --format=json',
+  'gcloud secrets versions access latest --secret=x get-iam-policy --format=json',
+  'gcloud kms decrypt --ciphertext-file=c --plaintext-file=p read --format=json',
+  'gcloud auth print-identity-token read --format=json',
+  'gcloud run jobs execute j read --format=json',
+  'gcloud functions call f read --format=json',
+  'gcloud sql users set-password u --password=p read --format=json',
+  'gcloud compute instances attach-disk vm read --format=json',
+  'gcloud compute instances add-metadata vm --metadata=startup-script=x read --format=json',
+  'gcloud projects get-iam-policy p q --format=json',                  // two positionals
+  'gcloud projects get-iam-policy p --format json',                    // separated value
+  'gcloud projects get-iam-policy --format=json p',                    // positional after a flag
+  'gcloud --project=p projects get-iam-policy p --format=json',        // flag before the path
+  'gcloud projects get-iam-policy p -q --format=json',                 // short flag
   // curl pattern: every refused flag and shape
   TOKEN + 'curl -s -X POST ' + AUTH + ' https://x.googleapis.com/v1/y | jq .',
   TOKEN + 'curl -s -XPOST ' + AUTH + ' https://x.googleapis.com/v1/y | jq .',

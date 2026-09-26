@@ -49,6 +49,22 @@ the update.
   is removed. New setting `updates.allowCachePrune` (default `true`), which only
   enables the verb.
 
+### Security fixes
+
+- **command-guard gcloud reads: the read verb must be the last command-path word (P1).**
+  The new read-only gcloud carve-out, and the older read-only cloud-inspect exemption,
+  accepted `read`/`list`/`get-iam-policy` in ANY position. That included a separated flag
+  value, so `gcloud compute instances reset vm1 --zone read --format=json`,
+  `gcloud secrets versions access latest --secret read …`, `gcloud kms decrypt … read …`
+  and similar ran inline. Both paths now accept only
+  `gcloud <group…> <verb> [≤1 positional] [--k=v…]`. The verb is the last path word.
+  Every flag is `--k=v` or a known boolean (`--quiet`, `--uri`); a separated value is
+  refused. No path word may be access/reset/suspend/resume/publish/call/execute/decrypt/
+  encrypt/sign/print-*/attach-*/detach-*/add-*/set-*/remove-*/delete/create/update/
+  deploy/ssh/scp/run (`run` is allowed only as the product group). Behavior change for
+  the older exemption: `gcloud … describe foo --region r` must now be written
+  `--region=r` to run inline.
+
 ## 0.112.0 (2026-09-26)
 
 ### Features

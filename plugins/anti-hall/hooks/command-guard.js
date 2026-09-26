@@ -1433,20 +1433,67 @@ function isSafeSqliteReadonly(segment, wholeCommand) {
 // `kubectl delete pod get-worker-1` both matched (on `list`/`get` inside
 // `list-users`/`get-worker-1`) even though the real, earlier verb was the
 // mutating `deploy`/`delete`.
-//   - gcloud: `gcloud <group...> <verb> [resource] [flags]` — the first
-//     non-flag token is always a product/resource-group name (e.g. `run` in
-//     `gcloud run services describe foo`, Cloud Run — never itself a verb),
-//     so it is excluded from both the verb search and the mutating-verb scan.
-//     Every OTHER non-flag token is checked: ANY exact match to a mutating
-//     verb rejects the whole segment; a read-only verb token being present
-//     is what allows it.
+//   - gcloud: gcloudReadGrammar (0.113 P1) — `gcloud <group…> <verb>
+//     [≤1 positional] [--k=v…]` with verb describe|list|get|view (or
+//     `logging read`), the verb the LAST path word, no separated flag value,
+//     and no mutating/secret-returning path word.
 //   - gh / kubectl: no product-group prefix — the verb is exactly the FIRST
 //     token after the binary.
 // Belt + suspenders: a standalone mutating-verb token anywhere in the
 // (non-exempt) argv rejects the exemption outright, even if a read-only verb
 // also appears — a real gcloud/kubectl/gh invocation never combines the two.
+// gcloudReadGrammar(rest, verbs) -> {verb, positional, flags} | null, where
+// `rest` is the argv AFTER the gcloud binary. Enforces the ONLY accepted
+// read shape: `gcloud <group…> <verb> [≤1 positional resource] [--k=v…]`.
+//   - the verb is the LAST word of the command path: every leading non-flag
+//     word up to it is a path word; after it at most ONE positional, then
+//     only flags (a non-flag token after any flag is refused — that is how a
+//     separated flag value such as `--zone read` used to pose as the verb);
+//   - every flag is `--k=v` or a known boolean — a SEPARATE value is refused;
+//   - path words are lowercase gcloud words and none may be a mutating/
+//     secret-returning action (GCLOUD_REFUSED_PATH_RE), except `run` as the
+//     product group in position 0 (`gcloud run services describe`).
+const GCLOUD_REFUSED_PATH_RE = /^(?:access|reset|suspend|resume|publish|call|execute|decrypt|encrypt|sign|print-.*|attach-.*|detach-.*|add-.*|set-.*|remove-.*|delete|create|update|deploy|ssh|scp|run)$/;
+const GCLOUD_BOOLEAN_FLAGS = new Set(['--quiet', '--uri']);
+function gcloudReadGrammar(rest, verbs) {
+  let i = 0;
+  const path = [];
+  while (i < rest.length && !rest[i].startsWith('-')) {
+    const w = rest[i];
+    if (verbs.has(w.toLowerCase())) break;
+    path.push(w);
+    i++;
+  }
+  if (i >= rest.length || rest[i].startsWith('-')) return null; // no verb in the path
+  const verb = rest[i].toLowerCase();
+  i++;
+  if (!path.length) return null;
+  for (let k = 0; k < path.length; k++) {
+    const w = path[k];
+    if (!/^[a-z][a-z0-9-]*$/.test(w)) return null;
+    if (k === 0 && w === 'run') continue;
+    if (GCLOUD_REFUSED_PATH_RE.test(w)) return null;
+  }
+  let positional = null;
+  if (i < rest.length && !rest[i].startsWith('-')) { positional = rest[i]; i++; }
+  const flags = [];
+  for (; i < rest.length; i++) {
+    const t = rest[i];
+    if (!t.startsWith('--')) return null; // a second positional, a short flag, or a separated value
+    if (/^--[a-z][a-z0-9-]*=/.test(t)) {
+      if (/^--flags-file=/.test(t)) return null;
+      flags.push(t);
+      continue;
+    }
+    if (GCLOUD_BOOLEAN_FLAGS.has(t)) { flags.push(t); continue; }
+    return null;
+  }
+  return { verb, positional, flags };
+}
+
 const CLOUD_BINARIES = new Set(['gcloud', 'gh', 'kubectl']);
 const CLOUD_READONLY_VERBS = new Set(['describe', 'list', 'get', 'view']);
+const GCLOUD_INSPECT_VERBS = new Set(['describe', 'list', 'get', 'view', 'read']);
 const CLOUD_MUTATING_VERBS = new Set([
   'deploy', 'delete', 'create', 'update', 'set', 'patch', 'apply', 'rm',
   'remove', 'scale', 'rollout', 'run', 'exec', 'push', 'merge', 'close', 'edit',
@@ -1458,19 +1505,13 @@ function isReadOnlyCloudInspect(segment) {
   const bin = basename(tokens[binIdx]).toLowerCase();
   const rest = tokens.slice(binIdx + 1);
   if (bin === 'gcloud') {
-    for (let i = 0; i < rest.length - 1; i++) {
-      if (rest[i].toLowerCase() === 'logging' && rest[i + 1].toLowerCase() === 'read') return true;
-    }
-    let exemptedProductWord = false;
-    let sawReadonlyVerb = false;
-    for (const t of rest) {
-      if (t.startsWith('-')) continue;
-      if (!exemptedProductWord) { exemptedProductWord = true; continue; }
-      const low = t.toLowerCase();
-      if (CLOUD_MUTATING_VERBS.has(low)) return false;
-      if (CLOUD_READONLY_VERBS.has(low)) sawReadonlyVerb = true;
-    }
-    return sawReadonlyVerb;
+    // Same strict grammar as the narrow gcloud-read carve-out (0.113 P1):
+    // a read verb found in ANY position (e.g. as a separated flag value,
+    // `gcloud compute instances reset vm --zone list`) no longer qualifies.
+    const g = gcloudReadGrammar(rest, GCLOUD_INSPECT_VERBS);
+    if (!g) return false;
+    if (g.verb === 'read' && !(rest[0] === 'logging')) return false;
+    return true;
   }
   // gh / kubectl: the verb is exactly the first token after the binary.
   const first = (rest[0] || '').toLowerCase();
@@ -2426,17 +2467,8 @@ function isAllowedPlainPushChain(command, cwd) {
 // ---------------------------------------------------------------------------
 
 const GCLOUD_READ_VERBS = new Set(['describe', 'list', 'get-iam-policy', 'read']);
-const GCLOUD_REFUSED_VERBS = new Set([
-  'create', 'delete', 'deploy', 'set', 'update', 'add-iam-policy-binding', 'patch',
-  'import', 'export', 'rollback', 'start', 'stop', 'ssh', 'scp', 'submit', 'run', 'apply',
-]);
 const GCLOUD_FORMAT_RE = /^(?:json|yaml|value\(.+\))$/;
 const JQ_SAFE_FLAGS = new Set(['-r', '-c', '-e', '-S', '-M', '--raw-output', '--compact-output', '--sort-keys', '--monochrome-output']);
-
-function isRefusedGcloudWord(word) {
-  const w = word.toLowerCase();
-  return GCLOUD_REFUSED_VERBS.has(w) || w.startsWith('remove-');
-}
 
 // A pipe-fed tail segment for shapes B and C: a bounded sink (tail/head/wc/
 // grep -c/grep -m N) or `jq` with only formatting flags and one filter. No
@@ -2464,30 +2496,10 @@ function isGcloudReadSegment(segment) {
   if (tokens[0] !== 'gcloud') return false; // no env prefix, no wrapper
   const rest = tokens.slice(1);
   if (rest.length === 2 && rest[0] === 'auth' && rest[1] === 'print-access-token') return 'token';
-  let verbIdx = -1;
-  let format = null;
-  const words = [];
-  for (let i = 0; i < rest.length; i++) {
-    const t = rest[i];
-    if (t.startsWith('-')) {
-      if (t === '--flags-file' || t.startsWith('--flags-file=')) return false;
-      if (t.startsWith('--format=')) { if (format !== null) return false; format = t.slice(9); continue; }
-      if (t === '--format') { if (format !== null) return false; format = rest[i + 1] || ''; i++; continue; }
-      continue;
-    }
-    words.push(t);
-    if (verbIdx === -1 && GCLOUD_READ_VERBS.has(t.toLowerCase())) verbIdx = words.length - 1;
-  }
-  if (verbIdx < 1) return false; // need at least one group word before the verb
-  if (format === null || !GCLOUD_FORMAT_RE.test(format)) return false;
-  for (let i = 0; i < verbIdx; i++) {
-    if (!/^[a-z][a-z0-9-]*$/.test(words[i])) return false;
-  }
-  // The first word is the product group (`gcloud run services describe`):
-  // it names a product, not a verb, so only the words after it are checked.
-  for (let i = 1; i < words.length; i++) {
-    if (isRefusedGcloudWord(words[i])) return false;
-  }
+  const g = gcloudReadGrammar(rest, GCLOUD_READ_VERBS);
+  if (!g) return false;
+  const formats = g.flags.filter((f) => f.startsWith('--format='));
+  if (formats.length !== 1 || !GCLOUD_FORMAT_RE.test(formats[0].slice(9))) return false;
   return 'read';
 }
 
