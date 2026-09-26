@@ -24,6 +24,16 @@ the update.
   curl flag, redirects, and any chained segment. `$T` may appear only in the
   Authorization header. Subagents are unaffected. New setting
   `guards.allowGcloudReads` (default `true`).
+- **command-guard: background scratch scripts in the main thread (owner-approved).**
+  A Bash call with `run_in_background: true` may run ONE segment
+  `<python3|node|sh|bash> <script file> [args…]` inline when the file is an existing
+  regular file in the session scratchpad or a tmp root (`os.tmpdir()`, `/tmp`,
+  `/private/tmp`). The path is checked on its realpath, so a symlink out is refused.
+  Refused: an interpreter option before the file (`-c`/`-e`/`-m`), an env prefix or
+  wrapper, chaining, pipes, `$`/backtick/backslash/process substitution, a stdin
+  redirect, and a write redirect outside the scratchpad/tmp. Foreground runs keep
+  today's verdict, and Monitor is unchanged. New setting
+  `guards.allowBackgroundScratchScripts` (default `true`).
 
 ## 0.112.0 (2026-09-26)
 

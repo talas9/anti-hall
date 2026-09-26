@@ -2565,6 +2565,43 @@ function isAllowedGcloudReadCommand(command) {
   return true;
 }
 
+// ---------------------------------------------------------------------------
+// Background scratch scripts (owner-approved 2026-09-26). In the MAIN THREAD
+// ONLY, a Bash call with `tool_input.run_in_background: true` may run ONE
+// segment of the shape `<python3|node|sh|bash> <script file> [args…]` when
+// the script is an existing regular file inside this session's scratchpad or
+// a tmp root (isScratchpadOrTmpPath -> lib/scratchpad.js, realpath'd). The
+// output goes to the background task's file, not the main thread. Refused:
+// any interpreter option before the file (-c/-e/-m/…), a leading env
+// assignment or wrapper, chaining/pipes/groups (isSingleUnbrokenSegment), any
+// `$`/backtick/backslash/process substitution, a stdin redirect, and a
+// write redirect outside the scratchpad/tmp. A foreground run keeps today's
+// rules. Gated by guards.allowBackgroundScratchScripts (default true).
+// ---------------------------------------------------------------------------
+const BACKGROUND_SCRIPT_INTERPRETERS = new Set(['python3', 'node', 'sh', 'bash']);
+
+function isBackgroundScratchScript(command, payload) {
+  if (!payload || !payload.tool_input || payload.tool_input.run_in_background !== true) return false;
+  if (typeof command !== 'string' || !command.trim()) return false;
+  if (/#/.test(neutralizeQuotedContents(command))) return false;
+  if (!isSingleUnbrokenSegment(command)) return false;
+  if (hasShellExpansionAnywhere(command)) return false;
+  const neutralized = neutralizeQuotedContents(command);
+  if (/</.test(neutralized)) return false;
+  const ctx = { payload };
+  if (hasDisallowedWriteRedirect(command, ctx)) return false;
+  const tokens = tokenizeQuoted(command.replace(/\d*>>?\s*\S+/g, ' '));
+  if (tokens.length < 2 || !BACKGROUND_SCRIPT_INTERPRETERS.has(tokens[0])) return false;
+  const script = tokens[1];
+  if (!script || script.startsWith('-')) return false;
+  if (!isScratchpadOrTmpPath(script, ctx)) return false;
+  const base = (typeof payload.cwd === 'string' && payload.cwd) || process.cwd();
+  try {
+    if (!fs.statSync(path.resolve(base, script)).isFile()) return false;
+  } catch (_) { return false; }
+  return true;
+}
+
 function main() {
   // Read + parse the payload FIRST — coordinator/subagent detection needs the
   // payload's agent_id/agent_type markers (the only reliable signal under cmux).
@@ -2781,6 +2818,18 @@ function main() {
       if (isAllowedPlainPushChain(command, cwd)) {
         process.exit(0);
       }
+    }
+  } catch (_) {
+    // fail-closed: never let a bug in this carve-out bypass the heavy-command gate.
+  }
+
+  // Background scratch scripts (owner-approved 2026-09-26): MAIN THREAD ONLY
+  // — already past the isCoordinator(payload) gate. Only when the payload's
+  // tool_input.run_in_background is true; foreground runs are unchanged.
+  // See isBackgroundScratchScript's header. Fail-closed on any error.
+  try {
+    if (settingsGet('guards', 'allowBackgroundScratchScripts') !== false && isBackgroundScratchScript(command, payload)) {
+      process.exit(0);
     }
   } catch (_) {
     // fail-closed: never let a bug in this carve-out bypass the heavy-command gate.
