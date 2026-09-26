@@ -181,6 +181,42 @@ for (const cmd of SCRIPT_CHECK_BLOCK) {
   });
 }
 
+// F1: the script form must never flip a safety switch or trust an allowlist.
+const PLUGIN_SETTINGS_JS = path.join(__dirname, '..', '..', 'plugins', 'anti-hall', 'scripts', 'settings.js');
+const F1_BLOCK = [
+  'node ' + PLUGIN_SETTINGS_JS + ' set safety.editGuard false --confirmed --check | tail -5',
+  'node ' + PLUGIN_SETTINGS_JS + ' trust-edit-allow . --confirmed --dry-run | tail',
+  'node ' + PLUGIN_SETTINGS_JS + ' trust-command-allow . --confirmed --list | tail',
+  // no --confirmed at all: still an anti-hall script (settings `show`/`get` are
+  // separately allowlisted as read-only, so use a mutating verb here)
+  'node ' + PLUGIN_SETTINGS_JS + ' set guards.modelRouting off --check | tail',
+  'node tools/gen.js trust-edit-allow . --confirmed --dry-run | tail -5',
+  'node tools/gen.js --check --confirmed=yes | tail -5',
+];
+for (const cmd of F1_BLOCK) {
+  test('verify-allow (script): an anti-hall script or --confirmed never qualifies: ' + JSON.stringify(cmd), () => {
+    withScripts((repo) => {
+      const r = run(cmd, { cwd: repo });
+      assert.strictEqual(r.status, 2, 'expected BLOCK for ' + cmd + '\n' + r.stdout);
+    });
+  });
+}
+
+test('verify-allow (script): a script inside ANOTHER anti-hall checkout (found by its plugin.json) never qualifies', () => {
+  withScripts((repo) => {
+    const other = path.join(repo, 'vendor', 'ah');
+    fs.mkdirSync(path.join(other, '.claude-plugin'), { recursive: true });
+    fs.mkdirSync(path.join(other, 'scripts'), { recursive: true });
+    fs.writeFileSync(path.join(other, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: 'anti-hall' }));
+    fs.writeFileSync(path.join(other, 'scripts', 'tool.js'), 'x\n');
+    const r = run('node vendor/ah/scripts/tool.js --check | tail -5', { cwd: repo });
+    assert.strictEqual(r.status, 2, r.stdout);
+    // control: a different plugin's manifest does not count
+    fs.writeFileSync(path.join(other, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: 'other' }));
+    assert.strictEqual(run('node vendor/ah/scripts/tool.js --check | tail -5', { cwd: repo }).status, 0);
+  });
+});
+
 test('verify-allow (script): guards.allowReadOnlyVerifyScripts=false turns the script form off', () => {
   withScripts((repo) => {
     const h = makeHome();

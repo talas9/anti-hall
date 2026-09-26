@@ -1839,6 +1839,32 @@ const SCRIPT_CHECK_INTERPRETER_RE = /^(?:python[0-9.]*|node|ruby|perl|php)$/;
 const SCRIPT_CHECK_REFUSED_FLAG_RE =
   /(^|\s)(?:-[A-Za-z]*[cemprI]|--eval|--command|--print|--require|--import|--loader|--experimental-loader|--interactive)(?=[\s=]|$)/;
 
+// isInsideAntiHallPlugin(realPath) -> true when realPath lies under THIS
+// plugin's root (hooks/..) or under any ancestor directory whose
+// .claude-plugin/plugin.json or .codex-plugin/plugin.json names "anti-hall"
+// (a second install, a cache copy, a dev checkout). Fail-closed: an error
+// reading a manifest that exists counts as anti-hall.
+function isInsideAntiHallPlugin(realPath) {
+  let ownRoot;
+  try { ownRoot = fs.realpathSync(path.resolve(__dirname, '..')); } catch (_) { ownRoot = path.resolve(__dirname, '..'); }
+  const relOwn = path.relative(ownRoot, realPath);
+  if (relOwn && !relOwn.startsWith('..') && !path.isAbsolute(relOwn)) return true;
+  let dir = path.dirname(realPath);
+  for (let i = 0; i < 16; i++) {
+    for (const m of ['.claude-plugin', '.codex-plugin']) {
+      const manifest = path.join(dir, m, 'plugin.json');
+      if (!fs.existsSync(manifest)) continue;
+      try {
+        if (String(JSON.parse(fs.readFileSync(manifest, 'utf8')).name) === 'anti-hall') return true;
+      } catch (_) { return true; }
+    }
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return false;
+}
+
 function isInterpreterScriptCheck(segment, ctx) {
   if (settingsGet('guards', 'allowReadOnlyVerifyScripts') === false) return false;
   const trimmed = segment.trim();
@@ -1856,9 +1882,18 @@ function isInterpreterScriptCheck(segment, ctx) {
   if (!VERIFY_CHECK_FLAG_RE.test(' ' + neutralized + ' ')) return false;
   const payload = ctx && ctx.payload;
   const base = (payload && typeof payload.cwd === 'string' && payload.cwd) || process.cwd();
+  let realScript;
   try {
-    if (!fs.statSync(path.resolve(base, script)).isFile()) return false;
+    const abs = path.resolve(base, script);
+    if (!fs.statSync(abs).isFile()) return false;
+    realScript = fs.realpathSync(abs);
   } catch (_) { return false; }
+  // Never a way to flip a safety switch or trust an allowlist from the main
+  // thread: `--confirmed` anywhere refuses, and so does any anti-hall script
+  // (this plugin's own root, or any other anti-hall install/checkout found by
+  // walking up from the script's realpath).
+  if (tokens.some((t) => t === '--confirmed' || t.startsWith('--confirmed='))) return false;
+  if (isInsideAntiHallPlugin(realScript)) return false;
   const rest = trimmed.slice(trimmed.indexOf(script) + script.length);
   if (isHeavyCommand(('true ' + rest).replace(VERIFY_CHECK_FLAG_RE_G, ' '))) return false;
   return true;

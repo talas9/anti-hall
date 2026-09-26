@@ -79,7 +79,9 @@ the update.
   interpreter. Inline code (`-c`/`-e`/`-m`/`-p`/`--eval`/`--require`), stdin or heredoc
   scripts, `$`/backtick/process substitution, env-assignment prefixes and wrapper verbs
   (sh/bash/eval/exec/xargs/env/nice) never qualify, and the remaining arguments must be
-  non-heavy. Claude and Codex share the hook. New setting
+  non-heavy. An anti-hall script (this plugin, or any other anti-hall install found by
+  its `plugin.json`) never qualifies, and neither does any command carrying `--confirmed`,
+  so the main thread cannot flip a safety switch or trust an allowlist this way. Claude and Codex share the hook. New setting
   `guards.allowReadOnlyVerifyScripts` (default `true`).
 
 - **`devswarm.js spawn` refuses a flag value that is really the next option.**
