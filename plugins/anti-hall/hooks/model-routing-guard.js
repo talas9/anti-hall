@@ -95,6 +95,17 @@ const MECHANICAL = [
 // really is mechanical," even if a research word is also present.
 const HARD_EXECUTION = ['run script', 'install', 'build', 'run tests', 'git push', 'deploy'];
 
+// DEPLOY / MIGRATION / SECRET FLOOR (0.112, setting guards.modelRoutingDeployFloor,
+// default 'sonnet'). Production deploys, migrations, rollbacks and secret/credential
+// work are exactly where auth/secret edge cases get mishandled by a cheap model, so
+// the guard must never push such a spawn toward haiku. A deploy-shaped spawn on a
+// model at or above the floor is allowed silently (no block, whatever its mechanical
+// signals); one below the floor (or with no explicit model) gets an ADVISORY naming
+// the floor. It never blocks. 'off' restores the pre-0.112 table.
+const DEPLOY_SHAPED_RE =
+  /\b(deploy\w*|redeploy\w*|migrat\w*|rollbacks?|roll\s+back|prod|production|secrets?|credentials?|token\s+rotation|rotat\w*\s+(?:the\s+|a\s+)?(?:api\s+)?(?:tokens?|keys?|secrets?|credentials?)|wrangler|terraform|kubectl\s+apply|helm\s+(?:install|upgrade)|firebase\s+deploy|db\s+migrate)\b/i;
+const MODEL_RANK = { haiku: 1, sonnet: 2, opus: 3, fable: 3 };
+
 // Complex signals -> opus/fable. COMPLEX ANYWHERE (description OR prompt) => never
 // block: a single planning signal vetoes the misroute classification.
 // 'validate' is DELIBERATELY broad (R2-N3): it anchors the deadly-loop seat-brief
@@ -363,6 +374,33 @@ function main() {
   const isCustomAgent = subagentType !== '' && subagentType !== 'general-purpose';
 
   const isFlagship = FLAGSHIP_MODELS.has(model);
+
+  // Deploy/migration/secret floor (see DEPLOY_SHAPED_RE): runs BEFORE rows 1-4 so
+  // no row can steer this spawn toward haiku.
+  let deployFloor = 'sonnet';
+  try { deployFloor = require('./lib/settings.js').get('guards', 'modelRoutingDeployFloor'); } catch (_) { deployFloor = 'sonnet'; }
+  if (deployFloor !== 'off' && DEPLOY_SHAPED_RE.test(corpus)) {
+    const floor = MODEL_RANK[deployFloor] ? deployFloor : 'sonnet';
+    if (modelOmitted) {
+      advise(
+        'MODEL-ROUTING (advisory, deploy/migration/secret-shaped): this spawn sets no ' +
+        "explicit model. Deploys, migrations and secret/credential work need at least " +
+        "model:'" + floor + "' — never haiku (auth/secret edge cases get mishandled)."
+      );
+    }
+    if (MODEL_RANK[model] && MODEL_RANK[model] < MODEL_RANK[floor]) {
+      advise(
+        "MODEL-ROUTING (advisory, deploy/migration/secret-shaped): this spawn runs on '" +
+        model + "'. Deploys, migrations and secret/credential work need at least " +
+        "model:'" + floor + "' (auth/secret edge cases get mishandled by a cheap model)." +
+        // Keep Row 4's planning-shaped note when it would also have fired.
+        (model === 'haiku' && !readOnlyMechanical(corpus) && PLANNING_INTENT_RE.test(stripCodeSpans(corpus))
+          ? ' It also looks planning-shaped (architecture/design/plan/brainstorm/deep review) — consider opus or fable for deeper reasoning.'
+          : '')
+      );
+    }
+    process.exit(0); // at/above the floor, or an unknown tier: allow silently
+  }
 
   // ---- Decision table (rows computed exemption-blind; modifier applied after) ----
 

@@ -868,6 +868,7 @@ Generated from `hooks/lib/settings-schema.js` (a hygiene test keeps this table a
 | `guards.progressFreshMs` adv | `1800000` [0..] | `ANTIHALL_PROGRESS_FRESH_MS` | Freshness window (ms) for the progress file in tasklist-guard. |
 | `guards.apiGuardThirdparty` adv | `false` | `ANTIHALL_API_GUARD_THIRDPARTY` | Also verify installed 3rd-party package APIs, not just stdlib/builtins. |
 | `guards.modelRouting` | `strict` (strict/advisory/off) | `ANTIHALL_MODEL_ROUTING` | model-routing-guard (PreToolUse Agent/Task): strict blocks a mis-tiered spawn, advisory only warns, off disables the hook. |
+| `guards.modelRoutingDeployFloor` | `sonnet` (sonnet/opus/off) | `ANTIHALL_MODEL_ROUTING_DEPLOY_FLOOR` | model-routing-guard floor for deploy/migration/rollback/production/secret/credential-shaped spawns: at or above the floor the spawn is never blocked; below it (or with no explicit model) it gets an advisory to use at least the floor. off restores the plain routing table. |
 | `guards.apiGuard` | `true` | — | api-guard (PreToolUse Write/Edit): block fabricated stdlib/builtin APIs in written code. |
 | `guards.speculationGuard` | `true` | — | speculation-guard (Stop): block a turn that ends on unverified hedged claims. |
 | `guards.claimLedger` | `true` | — | claim-ledger (Stop, never blocks): record claims in the last reply that nothing in the session backs. |

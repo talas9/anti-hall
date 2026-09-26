@@ -8,6 +8,17 @@ the update.
 
 ## Unreleased
 
+### Features
+
+- **`inbox tick --quiet`** (peer ask, SkyCrew/tf3 Primaries 2026-09-26). `inbox tick`'s
+  JSON carries duplicate legacy+new field names (`unread`/`unreadTotal`,
+  `cursor`/`cursorNdjson`, `storeCursor`/`cursorStore`), which made a cron-prompt
+  directive eyeballing raw JSON error-prone. `--quiet` prints one line: `tick <id>:
+  unread N, known true|false, meshGap true|false, watcherArmed true|false` on success,
+  or a loud `ok:false ...` line + non-zero exit on failure. The JSON default (no
+  `--quiet`) is unchanged. The DevSwarm wake-cron prompt now uses `--quiet` and words
+  its stop condition against that line.
+
 ### Fixes
 
 - **DevSwarm wake-cron default moved off :00/:30** (peer ask, SkyCrew/tf3 Primaries
@@ -25,17 +36,15 @@ the update.
   generic 3-step check (`git status --short --branch`, `pwd`, CLAUDE.md/AGENTS.md
   re-read) when the checklist section is absent — still requiring the
   `resume-verified:` line either way.
-
-### Features
-
-- **`inbox tick --quiet`** (peer ask, SkyCrew/tf3 Primaries 2026-09-26). `inbox tick`'s
-  JSON carries duplicate legacy+new field names (`unread`/`unreadTotal`,
-  `cursor`/`cursorNdjson`, `storeCursor`/`cursorStore`), which made a cron-prompt
-  directive eyeballing raw JSON error-prone. `--quiet` prints one line: `tick <id>:
-  unread N, known true|false, meshGap true|false, watcherArmed true|false` on success,
-  or a loud `ok:false ...` line + non-zero exit on failure. The JSON default (no
-  `--quiet`) is unchanged. The DevSwarm wake-cron prompt now uses `--quiet` and words
-  its stop condition against that line.
+- **model-routing-guard: deploys, migrations and secret work are never pushed to haiku.**
+  An opus spawn that ran a production deploy (`wrangler … cors set`, `deploy_webui.sh prod`)
+  was blocked with "respawn with haiku", which is the wrong advice for deploys, migrations,
+  rollbacks and secret/credential work. A spawn with deploy, migration, rollback, prod,
+  secret, credential or token-rotation wording (or wrangler/terraform/`kubectl apply`/
+  `firebase deploy`/`db migrate`) is now allowed silently at or above a floor. Below the
+  floor, or with no explicit model, it gets an advisory naming the floor. It is never
+  blocked. New setting `guards.modelRoutingDeployFloor` (`sonnet` default, `opus`, or `off`
+  for the old table).
 
 ## 0.111.0 (2026-09-26)
 

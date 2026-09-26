@@ -140,13 +140,14 @@ test('ROW 1 RESEARCH EXEMPT: investigate + ambiguous data-I/O verb (no hard-exec
 test('ROW 1 RESEARCH EXEMPT does NOT apply when a HARD_EXECUTION verb is present -> BLOCK stands', () => {
   const h = makeHome();
   try {
-    // 'investigate' is present, but so is 'deploy' (HARD_EXECUTION) -- a research
+    // 'investigate' is present, but so is 'install' (HARD_EXECUTION) -- a research
     // word must not mask an unambiguous execution verb; this must still block.
+    // (A 'deploy' verb would now take the 0.112 deploy-floor path instead.)
     const r = testHook(HOOK, payload({
       model: 'opus',
       subagent_type: 'general-purpose',
-      description: 'investigate the build, then deploy it',
-      prompt: 'install dependencies and run tests before deploying',
+      description: 'investigate the build, then install it',
+      prompt: 'install dependencies and run tests before building',
     }), { home: h.home });
     assertBlock(r, /flagship model/);
   } finally { h.cleanup(); }
@@ -892,4 +893,79 @@ test('ORDER: model-routing-guard is FIRST (before swarm-guard) in BOTH Agent and
     assert.strictEqual(idxRouting, 0, `${matcher}: model-routing-guard must be FIRST`);
     assert.ok(idxRouting < idxSwarm, `${matcher}: model-routing-guard must precede swarm-guard`);
   }
+});
+
+// ------------------------------------ 0.112 deploy/migration/secret model floor
+
+const DEPLOY_PROMPT = 'Run `wrangler r2 bucket cors set` for the assets bucket, then tools/deploy_webui.sh prod';
+
+test('DEPLOY FLOOR: an opus production-deploy spawn is NOT blocked (silent allow)', () => {
+  const h = makeHome();
+  try {
+    const r = testHook(HOOK, payload({
+      model: 'opus', subagent_type: 'general-purpose', description: 'deploy the web UI', prompt: DEPLOY_PROMPT,
+    }), { home: h.home });
+    assertSilentAllow(r);
+  } finally { h.cleanup(); }
+});
+
+test('DEPLOY FLOOR: a sonnet migration spawn is allowed silently', () => {
+  const h = makeHome();
+  try {
+    const r = testHook(HOOK, payload({
+      model: 'sonnet', subagent_type: 'general-purpose', description: 'run db migrate', prompt: 'run the database migration then check status',
+    }), { home: h.home });
+    assertSilentAllow(r);
+  } finally { h.cleanup(); }
+});
+
+test('DEPLOY FLOOR: a haiku deploy spawn gets an advisory to use at least sonnet (never a block)', () => {
+  const h = makeHome();
+  try {
+    const r = testHook(HOOK, payload({
+      model: 'haiku', subagent_type: 'general-purpose', description: 'deploy the web UI', prompt: DEPLOY_PROMPT,
+    }), { home: h.home });
+    assertAdvisory(r, /at least model:'sonnet'/);
+    assert.doesNotMatch(r.json.hookSpecificOutput.additionalContext, /model:'haiku'/);
+  } finally { h.cleanup(); }
+});
+
+test('DEPLOY FLOOR: omitted-model secret-rotation spawn -> advisory (not the strict row-2 block)', () => {
+  const h = makeHome();
+  try {
+    const r = testHook(HOOK, payload({
+      subagent_type: 'general-purpose', description: 'token rotation', prompt: 'download the new credentials and run script rotate.sh',
+    }), { home: h.home });
+    assertAdvisory(r, /no explicit model[\s\S]*at least model:'sonnet'/);
+  } finally { h.cleanup(); }
+});
+
+test('DEPLOY FLOOR: guards.modelRoutingDeployFloor=opus advises a sonnet deploy spawn to use opus', () => {
+  const h = makeHome();
+  try {
+    const r = testHook(HOOK, payload({
+      model: 'sonnet', subagent_type: 'general-purpose', description: 'deploy', prompt: DEPLOY_PROMPT,
+    }), { home: h.home, env: { ANTIHALL_MODEL_ROUTING_DEPLOY_FLOOR: 'opus' } });
+    assertAdvisory(r, /at least model:'opus'/);
+  } finally { h.cleanup(); }
+});
+
+test('DEPLOY FLOOR: guards.modelRoutingDeployFloor=off restores the plain table (opus deploy -> BLOCK)', () => {
+  const h = makeHome();
+  try {
+    const r = testHook(HOOK, payload({
+      model: 'opus', subagent_type: 'general-purpose', description: 'deploy the web UI', prompt: DEPLOY_PROMPT,
+    }), { home: h.home, env: { ANTIHALL_MODEL_ROUTING_DEPLOY_FLOOR: 'off' } });
+    assertBlock(r, /flagship model/);
+  } finally { h.cleanup(); }
+});
+
+test('DEPLOY FLOOR: an ordinary mechanical task keeps the current behaviour (opus -> BLOCK toward haiku)', () => {
+  const h = makeHome();
+  try {
+    const r = testHook(HOOK, payload({
+      model: 'opus', subagent_type: 'general-purpose', description: 'fetch the logs', prompt: 'curl the endpoint, download the dump and tail the logs',
+    }), { home: h.home });
+    assertBlock(r, /haiku/);
+  } finally { h.cleanup(); }
 });
