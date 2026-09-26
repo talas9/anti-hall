@@ -2004,9 +2004,11 @@ function projectCommandAllowConfigPath(cwd) {
 }
 
 // loadProjectCommandAllowPatterns(cwd) -> array of VALID anchored regex
-// source strings (each must start with '^' and end with '$' — literal chars,
-// not just semantically anchored — anything else is silently ignored here;
-// doctor.js separately reports a config that carries an invalid pattern).
+// source strings (lib/command-allow.js validatePattern: literal `^` + a
+// literal command word, closing `$`, no unbounded wildcard such as `.*`/`.+`,
+// no top-level `|` — `^.*$` is NOT an anchored rule, it allows everything).
+// Anything else is silently ignored here; doctor.js reports each ignored
+// pattern with its reason.
 // Fail-open to [] on any missing/malformed/unreadable config — default is no
 // behavior change.
 function loadProjectCommandAllowPatterns(cwd) {
@@ -2020,9 +2022,9 @@ function loadProjectCommandAllowPatterns(cwd) {
   }
   const patterns = parsed && Array.isArray(parsed.patterns) ? parsed.patterns : [];
   const out = [];
+  const { validatePattern } = require('./lib/command-allow.js');
   for (const p of patterns) {
-    if (typeof p !== 'string' || !p.startsWith('^') || !p.endsWith('$')) continue;
-    try { new RegExp(p); } catch (_) { continue; } // invalid regex: ignore
+    if (!validatePattern(p).ok) continue; // unanchored/wildcard/invalid: ignore
     out.push(p);
   }
   return out;

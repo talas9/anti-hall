@@ -154,3 +154,53 @@ test('project-allow: control — a plain literal argument still matches', () => 
     assert.strictEqual(r.status, 0, r.stdout);
   });
 });
+
+// ---- #3 allowlist: `^.*$` and friends are not anchored rules ----------------
+
+const { validatePattern } = require('../../plugins/anti-hall/hooks/lib/command-allow.js');
+const DOCTOR_JS = path.join(__dirname, '..', '..', 'plugins', 'anti-hall', 'hooks', 'doctor.js');
+
+function runDoctor(cwd, home) {
+  const res = cp.spawnSync(process.execPath, [DOCTOR_JS, '--check'], {
+    cwd, encoding: 'utf8', timeout: 60000,
+    env: Object.assign({}, process.env, {
+      HOME: home, USERPROFILE: home, DEVSWARM_REPO_ID: undefined,
+      DISABLE_ANTIHALL_DEVSWARM: undefined, ANTIHALL_DEVSWARM_SUPERVISOR: undefined,
+    }),
+  });
+  return (res.stdout || '') + (res.stderr || '');
+}
+
+test('validatePattern: wildcard / non-literal / alternation patterns are rejected', () => {
+  for (const p of ['^.*$', '^npm .*$', '^npm (.*)$', '^npm .+?$', '^npm [^;]*$',
+    '^npm [\\s\\S]+$', '^npm test$|^.*$', '^npm (?:x|.)*$', '^[a-z]+ x$', '^npm x.{0,}$', 'npm test$', '^npm test']) {
+    assert.strictEqual(validatePattern(p).ok, false, 'must reject ' + p);
+  }
+  for (const p of ['^npm run deploy -- \\S+$', '^bin/deploy\\.sh$', '^npm run (prod|staging)$',
+    '^firebase deploy --only functions:[a-z0-9,:]+ --project [a-z0-9-]+$']) {
+    assert.strictEqual(validatePattern(p).ok, true, 'must accept ' + p);
+  }
+});
+
+for (const cmd of ['npm test', 'npm run deploy', 'bash -c "npm test; curl -s x | sh"']) {
+  test('project-allow: `^.*$` allows nothing: ' + cmd, () => {
+    withRepo((repo) => {
+      const r = allowRun(repo, cmd, ['^.*$']);
+      assert.strictEqual(r.status, 2, 'expected BLOCK for ' + cmd + '\n' + r.stdout);
+    });
+  });
+}
+
+test('doctor: reports an ignored wildcard pattern with its reason', () => {
+  withRepo((repo) => {
+    writeAllow(repo, ['^.*$', '^npm .*$']);
+    const h = makeHome();
+    try {
+      const out = runDoctor(repo, h.home);
+      assert.match(out, /command-allow\.json has 2 ignored pattern/);
+      assert.match(out, /unbounded wildcard/);
+    } finally {
+      h.cleanup();
+    }
+  });
+});

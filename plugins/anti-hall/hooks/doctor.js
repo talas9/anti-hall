@@ -280,23 +280,27 @@ BLOCKED(cgds('hivecontrol workspace monitor')) ? ok('command-guard blocks `hivec
 ALLOWED(cgds("grep -n 'hivecontrol workspace monitor' docs/KB.md")) ? ok('command-guard allows grep of quoted hivecontrol DATA under DevSwarm (no false-positive)') : bad('command-guard wrongly blocked a grep of quoted hivecontrol data — destructive-read redirect over-blocks');
 
 // Per-project command allowlist (owner-approved 2026-09-26): if THIS repo
-// opted in via .anti-hall/command-allow.json, report any pattern that is not
-// literally anchored (`^...$`) — command-guard silently ignores such a
-// pattern (never matches), so a project author who typo'd the anchors gets a
-// clear doctor warning instead of a silently-dead allow rule.
+// opted in via .anti-hall/command-allow.json, report every pattern
+// command-guard ignores (lib/command-allow.js validatePattern: unanchored,
+// no literal command word, unbounded wildcard like `.*`, top-level `|`,
+// invalid regex) with its reason, instead of a silently-dead allow rule.
 try {
-  const allowTop = require('../companion/lib/identity.js').resolveContext(cwd, { missingPath: 'ancestor' }).toplevel;
+  // process.cwd(), not `cwd`: the top-level `const cwd` is declared further
+  // down, so reading it here threw a TDZ ReferenceError the catch swallowed
+  // (this whole report never printed).
+  const allowTop = require('../companion/lib/identity.js').resolveContext(process.cwd(), { missingPath: 'ancestor' }).toplevel;
   const allowCfgPath = allowTop ? path.join(allowTop, '.anti-hall', 'command-allow.json') : null;
   if (allowCfgPath && fs.existsSync(allowCfgPath)) {
     const cfg = JSON.parse(fs.readFileSync(allowCfgPath, 'utf8'));
     const pats = Array.isArray(cfg.patterns) ? cfg.patterns : [];
+    const { validatePattern } = require('./lib/command-allow.js');
     const bad_ = [];
     for (const p of pats) {
-      if (typeof p !== 'string' || !p.startsWith('^') || !p.endsWith('$')) { bad_.push(p); continue; }
-      try { new RegExp(p); } catch (_) { bad_.push(p); }
+      const v = validatePattern(p);
+      if (!v.ok) bad_.push(JSON.stringify(p) + ' (' + v.reason + ')');
     }
     if (bad_.length) {
-      warnl('command-allow.json has ' + bad_.length + ' unanchored/invalid pattern(s), silently ignored by command-guard: ' + bad_.map((p) => JSON.stringify(p)).join(', '));
+      warnl('command-allow.json has ' + bad_.length + ' ignored pattern(s) (command-guard never matches them): ' + bad_.join(', '));
     } else if (pats.length) {
       ok('command-allow.json: ' + pats.length + ' valid anchored pattern(s)');
     }
