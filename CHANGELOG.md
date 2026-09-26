@@ -6,7 +6,7 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
-## Unreleased
+## 0.112.0 (2026-09-26)
 
 ### Features
 
@@ -61,11 +61,6 @@ the update.
   generic 3-step check (`git status --short --branch`, `pwd`, CLAUDE.md/AGENTS.md
   re-read) when the checklist section is absent — still requiring the
   `resume-verified:` line either way.
-- **command-guard read-only verify: a comment or an unbounded check no longer passes.**
-  `x --check #| tail -5` passed as bounded, because the comment hides the sink from the
-  shell, and so did `x --check && x --check | tail`, where the first check is unbounded.
-  An unquoted `#` now disqualifies the line, as does a background `&`. Every pipeline that
-  runs a check must end in a bounded sink.
 - **model-routing-guard: deploys, migrations and secret work are never pushed to haiku.**
   An opus spawn that ran a production deploy (`wrangler … cors set`, `deploy_webui.sh prod`)
   was blocked with "respawn with haiku", which is the wrong advice for deploys, migrations,
@@ -133,6 +128,29 @@ the update.
   `tests/hooks/devswarm-parent-inbox-grace-window.test.js` reproduce the exact field
   shape (fresh own send, fresh child heartbeat -> still graced) and cover a known
   third-party sender (never graced, however fresh).
+
+### Security
+
+Hardening for the new 0.112.0 command-guard/edit-guard/model-routing surfaces above,
+found and fixed before release (F1–F4):
+
+- **F1 — command-guard script `--check`: an anti-hall script, or any command carrying
+  `--confirmed`, never qualifies for the read-only allowance**, closing a path where the
+  main thread could otherwise flip a safety switch or self-trust an allowlist through the
+  new script-check exemption.
+- **F2 — edit-guard project allowlist: path segments are folded with NFKC + lowercase
+  before the deny-list check**, so unicode-confusable spellings (`hookſ.json` long-s,
+  `.huſky`) are denied exactly like their plain-ASCII equivalents.
+- **F3 — command-guard read-only verify: a comment or an unbounded check no longer
+  passes.** `x --check #| tail -5` was allowed because the comment hid the sink from the
+  shell, and so was `x --check && x --check | tail`, where the first check is unbounded.
+  An unquoted `#` now disqualifies the line, as does a background `&`; every pipeline that
+  runs a check must end in a bounded sink.
+- **F4 — model-routing deploy floor: weak single-word context no longer counts as
+  deploy-shaped.** One stray "no secrets" in an otherwise mechanical opus task used to
+  count toward the floor; it now takes two distinct context words (out of prod, secret,
+  credential) to qualify, keeping the original BLOCK for the weak case while still letting
+  genuinely deploy-shaped spawns through.
 
 ## 0.111.0 (2026-09-26)
 
