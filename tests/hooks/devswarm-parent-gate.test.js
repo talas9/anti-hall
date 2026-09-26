@@ -1112,8 +1112,14 @@ test('FAIL-FIRST PROOF: the ghost fixture actually has a nonzero RAW unread coun
 test('REAL: unread has a genuine inbound message -> BLOCKS', () => {
   const h = makeHome();
   try {
+    // createdAt backdated 5 minutes (past the parentGateNeglectGraceMin
+    // fresh-mail grace window added alongside this test's own file — see
+    // DEFAULT_NEGLECT_GRACE_MIN's header): this test's intent is "a genuine,
+    // non-noise unread message blocks", independent of age — a literal
+    // `new Date()` timestamp here would incidentally land INSIDE the new
+    // grace window and stop proving that at all.
     seedWorkspace(h.home, 'real1', {
-      messageRows: [{ _h: 'native:ccc', message: 'status: finished the migration, needs review', createdAt: new Date().toISOString() }],
+      messageRows: [{ _h: 'native:ccc', message: 'status: finished the migration, needs review', createdAt: new Date(Date.now() - 5 * 60000).toISOString() }],
       cursor: 0,
       verdict: { status: 'alive' },
     });

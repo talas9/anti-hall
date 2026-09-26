@@ -294,6 +294,34 @@ function resolveNeglectMinUnread(env) {
 const DEFAULT_BUSY_FRESH_MIN = 5;
 const DEFAULT_BUSY_MAX_AGE_MIN = 60;
 
+// DEFAULT_NEGLECT_GRACE_MIN (field report — Primary answers "intentional" most
+// turns): a Primary that just sent a child a message and then ends its turn
+// SECONDS later got hard-blocked with "DEVSWARM NEGLECT" before the child had
+// any chance to drain the mailbox at all — the busy-child downgrade above
+// does not help here because a child that JUST received mail has not
+// necessarily produced any fresh transcript activity yet (busy requires
+// POSITIVE evidence of real work, not merely "recently messaged"). This is a
+// SEPARATE axis from busy: any unread message younger than this many minutes
+// is treated as still-in-flight (not yet neglect) regardless of whether the
+// child is independently provably busy. Scoped identically to the busy
+// downgrade — CHILD families only, never when unreadUnknown/staleOrEscalated/
+// familyWaitingOnUser are set (an escalation or a child's own unanswered
+// question always still blocks), and only while the oldest unread's age is
+// KNOWN (an unknown age never qualifies, fail-open toward blocking).
+//
+// DEFAULT = 1 minute, NOT the field report's suggested 5: this file's own
+// pre-existing "MUST NOT BREAK" regressions (F1/F4/F6, "REAL: unread has a
+// genuine inbound message -> BLOCKS") use a 2-MINUTE-old unread row as their
+// baseline "not-busy still blocks" fixture (see
+// devswarm-parent-gate.test.js's `seedBusyCandidate`'s `unreadAgeMin == null
+// ? 2 : ...` default) — those tests deliberately prove an idle-but-alive
+// child (a live pid alone is not evidence of work) still gets hard-blocked
+// on 2-minute-old mail. A 5-minute default would silently swallow that
+// already-hardened invariant. 1 minute still fixes the literal field
+// complaint ("blocked SECONDS after sending") without reaching into the
+// 2-minute territory the test suite already treats as real neglect.
+const DEFAULT_NEGLECT_GRACE_MIN = 1;
+
 // resolvePositiveMin(key, envName, dflt, env) -> number > 0. Same fail-open
 // shape as resolveCap: settings.getWithEnv first, then the raw env var, then
 // the default.
@@ -312,6 +340,9 @@ function resolvePositiveMin(key, envName, dflt, env) {
 }
 function resolveBusyFreshMin(env) {
   return resolvePositiveMin('parentGateBusyFreshMin', 'ANTIHALL_DEVSWARM_PARENT_GATE_BUSY_FRESH_MIN', DEFAULT_BUSY_FRESH_MIN, env);
+}
+function resolveNeglectGraceMin(env) {
+  return resolvePositiveMin('parentGateNeglectGraceMin', 'ANTIHALL_DEVSWARM_PARENT_GATE_NEGLECT_GRACE_MIN', DEFAULT_NEGLECT_GRACE_MIN, env);
 }
 function resolveBusyMaxAgeMin(env) {
   return resolvePositiveMin('parentGateBusyMaxAgeMin', 'ANTIHALL_DEVSWARM_PARENT_GATE_BUSY_MAX_AGE_MIN', DEFAULT_BUSY_MAX_AGE_MIN, env);
@@ -1220,6 +1251,19 @@ function main() {
     // inbox AND a gone worktree). Carried out of the try so the UNION guard can
     // widen for exactly this row — see its own note there.
     let deadDescriptor = false;
+    // hadStoreOnlyRealRows (grace-window scoping): true when ANY of this
+    // descriptor's real-unread rows came from the STORE-ONLY union path
+    // (a mesh-direct `send --to`, or the dead/foreign-descriptor fallback)
+    // rather than the native NDJSON inbox. The fresh-mail grace window below
+    // is scoped OUT of this case — the union path is exactly what several
+    // pre-existing "MUST NOT BREAK" regressions exercise with a freshly
+    // inserted (Date.now()) fixture row that must still block unconditionally
+    // (worktree-gone / ENOENT-inbox live-teardown scenarios), and its
+    // Date.now() timestamp is a fixture convenience, not evidence the row is
+    // "a message the child hasn't had a turn to read yet". The real field
+    // report this grace window fixes is specifically an ordinary Primary->
+    // child send landing in the child's own native inbox file.
+    let hadStoreOnlyRealRows = false;
     try {
       const u = readUnreadMessages(d.inboxPath, d.cursorPath);
       if (!u || !u.known) {
@@ -1430,6 +1474,7 @@ function main() {
               // already counts it.
               realUnread++;
             }
+            if (storeRealRows > 0) hadStoreOnlyRealRows = true;
             // oldestUnreadAgeMsForDescriptor (Bug 2 — busy/NEGLECT): captured
             // from the SAME countFor/unionUnread call so the advisory text
             // below can name how old the oldest unread row is, without a
@@ -1612,6 +1657,9 @@ function main() {
       // waitingOnUser (peer B) — see the comment above where it is derived.
       waitingQuestion,
       oldestUnreadAgeMs: oldestUnreadAgeMsForDescriptor,
+      // hadStoreOnlyRealRows: REPORT-ONLY provenance for the family-level
+      // grace-window scoping below — see its own comment above.
+      hadStoreOnlyRealRows,
     });
   }
 
@@ -1710,6 +1758,10 @@ function main() {
   const neglectMinUnread = resolveNeglectMinUnread(process.env);
   // busyMaxAgeMs (v0.109 safety review F2): the age cap on the busy advisory.
   const busyMaxAgeMs = resolveBusyMaxAgeMin(process.env) * 60000;
+  // neglectGraceMs (fresh-mail grace window): unread younger than this never
+  // counts as neglect on its own, independent of busy — see
+  // DEFAULT_NEGLECT_GRACE_MIN's header.
+  const neglectGraceMs = resolveNeglectGraceMin(process.env) * 60000;
   // busyAdvisoryHeld (F6): true when at least one family was downgraded to a
   // busy advisory this pass. Such a pass must NOT clear the loop-state file
   // (forced-ack count / escalation) — only a pass where no child has unread
@@ -1796,6 +1848,13 @@ function main() {
     // family could still be genuinely busy without being the one waiting).
     let familyWaitingOnUser = false;
     let familyAgeUnknown = false;
+    // familyHadStoreOnlyRealRows (grace-window scoping): true when ANY live
+    // member's real unread included a STORE-ONLY-union row — see
+    // `hadStoreOnlyRealRows`'s own comment above. Blocks the fresh-mail grace
+    // window below for this family, leaving the pre-existing behavior
+    // (age-independent block) exactly as it was for every union-sourced
+    // scenario.
+    let familyHadStoreOnlyRealRows = false;
     for (const m of members) {
       if (m && (m.held || (famIsChild && (m.archived || m.appArchived || m.archiveIgnored)))) {
         if (Number.isFinite(m.realUnread) && m.realUnread > 0) archivedMemberUnread += m.realUnread;
@@ -1805,6 +1864,7 @@ function main() {
       if (m.unreadAgeUnknown) familyAgeUnknown = true;
       if (m.busy) familyBusy = true;
       if (m.waitingOnUser) familyWaitingOnUser = true;
+      if (m.hadStoreOnlyRealRows) familyHadStoreOnlyRealRows = true;
       if (Number.isFinite(m.oldestUnreadAgeMs) && (familyOldestUnreadAgeMs === null || m.oldestUnreadAgeMs > familyOldestUnreadAgeMs)) {
         familyOldestUnreadAgeMs = m.oldestUnreadAgeMs;
       }
@@ -1902,8 +1962,33 @@ function main() {
           continue; // advisory only — provably busy, mail recent
         }
         if (ageKnown) busyButStaleMail = true; // over the age cap -> block with the age line
-      } else if (!familyWaitingOnUser && unionUnread <= neglectMinUnread) {
-        continue; // below the configured NOT-busy threshold
+      } else if (!familyWaitingOnUser) {
+        // GRACE WINDOW (fresh-mail, independent of busy) — see
+        // DEFAULT_NEGLECT_GRACE_MIN's header. Applies ONLY here: NOT busy, NOT
+        // waiting, NOT unreadUnknown, NOT (corroborated) staleOrEscalated —
+        // i.e. the family's sole reason to report is a plain unread backlog,
+        // exactly the same scope the busy downgrade above already uses. An
+        // unanswered CHILD QUESTION is a wholly separate axis (`unanswered`,
+        // handled before main() ever reaches this loop) and is NEVER
+        // suppressed by this window. Also excludes any family whose real
+        // unread included a STORE-ONLY-union row (`familyHadStoreOnlyRealRows`
+        // — a mesh-direct send, or the dead/foreign-descriptor fallback) —
+        // several pre-existing "MUST NOT BREAK" regressions exercise that
+        // exact path with a freshly inserted (Date.now()) fixture row that
+        // must still block unconditionally; this window is scoped to the
+        // ordinary native-inbox Primary->child send the field report
+        // actually describes.
+        const ageKnown = !familyAgeUnknown && Number.isFinite(familyOldestUnreadAgeMs);
+        if (!familyHadStoreOnlyRealRows && ageKnown && familyOldestUnreadAgeMs <= neglectGraceMs) {
+          try {
+            const ageTxt = ' (' + Math.max(1, Math.round(familyOldestUnreadAgeMs / 60000)) + 'm old)';
+            fs.writeSync(2, 'anti-hall: ' + survivorIdForBusyCheck + ': ' + unionUnread + ' unread' + ageTxt
+              + ' — within the grace window, not yet neglect\n');
+          } catch (_) {}
+          busyAdvisoryHeld = true;
+          continue; // advisory only — mail too young to count as neglect
+        }
+        if (unionUnread <= neglectMinUnread) continue; // below the configured NOT-busy threshold
       }
     }
     if (!(unreadUnknown || unionUnread > 0 || staleOrEscalated)) continue; // this family has nothing to report
