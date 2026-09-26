@@ -34,6 +34,18 @@ the update.
   redirect, and a write redirect outside the scratchpad/tmp. Foreground runs keep
   today's verdict, and Monitor is unchanged. New setting
   `guards.allowBackgroundScratchScripts` (default `true`).
+- **`doctor --prune-cache` (opt-in plugin cache prune, owner-approved).** It never runs
+  automatically: update.js, the supervisor, crons, SessionStart and hooks never call it.
+  Without `--confirmed` it lists the old
+  `~/.claude/plugins/cache/anti-hall/anti-hall/<semver>/` dirs it would remove and
+  their total size. `--confirmed` removes them and logs each removal. It always keeps
+  the newest 3, every dir holding an `installPath` registered in
+  `installed_plugins.json`, every version a live process runs from (process cwd via the
+  0.111 doctor scan, or the cache path in its argv), the running version, and anything
+  it cannot parse. Symlinks and paths outside that root are refused, both when listing
+  and again just before each removal. If the live-process scan is unavailable, nothing
+  is removed. New setting `updates.allowCachePrune` (default `true`), which only
+  enables the verb.
 
 ## 0.112.0 (2026-09-26)
 

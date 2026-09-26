@@ -184,6 +184,15 @@ after one clean pass, so a repeat `--repair` skips it with a single marker read 
 re-scanning every store. Deletion-class repairs (`--repair-resurrected`) are never in that
 set — opting into `--repair` is not opting into row removal.
 
+**Plugin cache prune (opt-in, never automatic).** `doctor --prune-cache` lists the old
+`~/.claude/plugins/cache/anti-hall/anti-hall/<semver>/` dirs it would remove and their total
+size; only `doctor --prune-cache --confirmed` removes them, logging each removal. It keeps the
+newest 3, the `installPath` registered in `installed_plugins.json`, every version a live
+process runs from (cwd or argv), the running version, and anything it cannot parse; symlinks
+and paths outside that root are refused, and nothing is removed if the process scan is
+unavailable. Nothing else ever runs it (not `update`, the supervisor, a cron or a hook).
+Setting `updates.allowCachePrune` (default `true`) enables the verb.
+
 **Leaked scheduler units (always on, report-only).** Every run (including plain `doctor`
 and `--check`) scans each anti-hall launchd/systemd unit file — ingest, supervisor, reaper —
 and flags one whose `WorkingDirectory` is under a temp root or gone, or whose script is

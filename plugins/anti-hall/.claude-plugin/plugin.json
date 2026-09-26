@@ -47,6 +47,7 @@
     "version_alerts_claude_cli": { "type": "boolean", "title": "Version Alerts · Claude Code CLI updates", "description": "Alert when a newer Claude CLI version is available.", "default": true },
     "version_alerts_devswarm": { "type": "boolean", "title": "Version Alerts · DevSwarm updates", "description": "Alert when a newer DevSwarm/hivecontrol version is available.", "default": true },
     "updates_quiet": { "type": "boolean", "title": "Updates / Maintenance · Quiet update output", "description": "Suppress update output (for scripted capture).", "default": false },
+    "updates_allow_cache_prune": { "type": "boolean", "title": "Updates / Maintenance · Allow doctor --prune-cache", "description": "Enables the opt-in doctor --prune-cache verb. It never runs automatically; without --confirmed it only lists the old plugin cache version dirs it would remove. Keeps the newest 3, the registered install, every version a live process runs from, and the running version.", "default": true },
     "limit_conserve_mode": { "type": "string", "title": "Limit Conservation · Mode", "description": "Force usage-limit conservation on/off, or auto-detect. Allowed: auto | on | off.", "default": "auto" },
     "limit_conserve_threshold": { "type": "number", "title": "Limit Conservation · Threshold %", "description": "Usage percent that triggers conservation mode.", "default": 85, "min": 1, "max": 99 },
     "jev_enabled": { "type": "boolean", "title": "Jev · Enabled", "description": "Enable the opt-in Jev semantic decision engine.", "default": false },

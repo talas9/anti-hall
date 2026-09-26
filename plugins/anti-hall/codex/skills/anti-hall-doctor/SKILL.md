@@ -38,7 +38,10 @@ Repair flags (mirror the Claude `doctor` skill): plain doctor is read-only; `--r
 (`companion/lib/migrations.js`) shared with `update` and the supervisor and are stamped
 done per plugin version (`~/.anti-hall/update-sweep-state.json`), so a repeat `--repair`
 skips them with one marker read; deletion-class repairs (`--repair-resurrected`) are never
-in that set. Every run also scans each anti-hall launchd/systemd unit file and REPORTS
+in that set. `--prune-cache` (opt-in, never automatic) lists old plugin cache version dirs
+and their size; `--prune-cache --confirmed` removes them (keeps the newest 3, the registered
+install, live-process and running versions, anything unparseable; setting
+`updates.allowCachePrune`). Every run also scans each anti-hall launchd/systemd unit file and REPORTS
 (never unloads or moves) one whose `WorkingDirectory` is under a temp root or gone, or whose
 script is gone, with the bootout + quarantine commands. Two classes: **AUTO-SAFE** (state migrations; statusline only when none
 is configured; idempotent supervisor relaunch; **Codex hook refresh when a

@@ -229,6 +229,51 @@ try {
   infol(`harness registration check skipped: ${e.message}`);
 }
 
+// --- 1b. --prune-cache [--confirmed] (EXPLICIT, OPT-IN, human-invoked ONLY;
+// owner-approved 2026-09-26). Lists the old anti-hall plugin cache version
+// dirs it would remove and their total size; only --confirmed removes them,
+// each removal logged below. Keep rules, symlink/outside-root refusal and the
+// live-process scan live in lib/cache-prune.js. Never run by update.js, the
+// supervisor, a cron, SessionStart or any hook — only this flag reaches it.
+// Runs before the self-tests and exits right after its own section.
+// Setting updates.allowCachePrune (default true) only enables the verb.
+if (process.argv.includes('--prune-cache')) {
+  const confirmed = process.argv.includes('--confirmed');
+  head('Prune plugin cache' + (confirmed ? ' [--confirmed]' : ' (list only — nothing removed; add --confirmed to remove)'));
+  let enabled = true;
+  try { enabled = require('./lib/settings.js').get('updates', 'allowCachePrune') !== false; } catch (_) { enabled = true; }
+  if (!enabled) {
+    bad('--prune-cache is disabled by updates.allowCachePrune=false');
+    emitVerdictAndExit();
+  }
+  try {
+    const cachePrune = require('./lib/cache-prune.js');
+    const home = require('../companion/lib/test-home-guard.js').resolveHome(undefined, process.env);
+    const plan = cachePrune.planCachePrune({ home, runningVersion: version, runningRoot: ROOT });
+    if (!plan.ok) {
+      infol(plan.error);
+    } else {
+      for (const e of plan.entries) {
+        if (e.action === 'remove') infol('would remove ' + e.dir + ' (' + cachePrune.formatBytes(e.bytes) + ')');
+        else infol('keep ' + e.dir + ' (' + e.reasons.join(', ') + ')');
+      }
+      const toRemove = plan.entries.filter((e) => e.action === 'remove');
+      infol(toRemove.length + ' dir(s) to remove, ' + cachePrune.formatBytes(plan.removeBytes) + ' total');
+      if (confirmed && toRemove.length) {
+        const res = cachePrune.applyCachePrune(plan, (msg) => infol(msg));
+        const freed = res.removed.reduce((n, r) => n + r.bytes, 0);
+        ok('removed ' + res.removed.length + ' dir(s), freed ' + cachePrune.formatBytes(freed));
+        if (res.refused.length) warnl(res.refused.length + ' dir(s) refused at removal time (see above)');
+      } else if (confirmed) {
+        ok('nothing to remove');
+      }
+    }
+  } catch (e) {
+    bad('prune-cache raised (nothing removed after the error): ' + (e && e.message));
+  }
+  emitVerdictAndExit();
+}
+
 // --- 2. Hooks present + syntax-valid ----------------------------------------
 head('Hooks (present + syntax)');
 let registered = [];

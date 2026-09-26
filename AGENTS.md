@@ -347,7 +347,7 @@ Codex `anti-hall-<name>`: activate, context-conserve, deadly-loop, debt, defects
 - context: verifyFirstSession=true, verifyFirstOrchestration=true, verifyFirstTurn=true, verifyFirstSubagent=true, taskTracker=true, handoverResume=true, defectNudge=true
 - maintenance: repairOnReload=true, progressPrune=true, precompactSnapshot=true, taskLifecycleLog=true, sessionEndReaper=true
 - versionAlerts: antiHall=true, claudeCli=true, devswarm=true
-- updates: quiet=false | reconcileBudgetMs, postpullBudgetMs, sweepBudgetMs
+- updates: quiet=false, allowCachePrune=true | reconcileBudgetMs, postpullBudgetMs, sweepBudgetMs
 - limitConserve: mode=auto, threshold=85 | accountCheck
 - jev: enabled=false, transport=vercel, judgeModel=claude-haiku-4-5, semanticJudge=false, budget.mode=unlimited, budget.usdPerDay=—, budget.usdPerWeek=—, weeklyNotice=true, budget.minCreditUsd=— | keyFile, timeoutMs, confidenceThreshold, triage, triageUrgentThreshold, audit.snippets, prices, priceUsdPerMInput, priceUsdPerMOutput
 - jevIntegrations: speculation=on, triage=on, newRequest=shadow, claimLedger=shadow, outputVerifyGuard=shadow, gitGuardSelfCredit=shadow, modelRouting=shadow, tasklistTrivial=shadow, codexNudgeSubstantial=shadow, mergeGateHedge=shadow, parentGateQuestion=shadow, supervisorBlockerLabel=shadow, findingDedup=on, postHandoverGate=off
