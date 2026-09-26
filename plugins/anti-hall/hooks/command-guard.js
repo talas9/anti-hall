@@ -2028,26 +2028,44 @@ function hasDisallowedWriteRedirect(segment, ctx) {
 // command line only; anything obfuscated through those never qualifies.
 function isBoundedVerificationCommand(command, ctx) {
   if (typeof command !== 'string' || !command.trim()) return false;
+  // An unquoted `#` starts a shell comment, which can hide the sink the
+  // splitter thinks it saw (`x --check #| tail -5` runs unbounded). Refuse it.
+  if (/#/.test(neutralizeQuotedContents(command))) return false;
   const { segments, delims } = splitSegmentsDetailed(command);
   if (!segments.length) return false;
 
+  // Every PIPELINE (segments joined by `|`) that runs a qualifying check must
+  // END in a bounded sink — `x --check && x --check | tail` leaves the first
+  // check unbounded. A pipeline may only end at `;`, `&&`, `||`, a newline or
+  // the end of the line; `&` (background) or any other delimiter disqualifies.
+  const PIPELINE_ENDS = new Set([';', '&&', '||', '\n', 'end']);
   let sawQualifying = false;
-  let sawPipedBoundedSink = false;
+  let pipelineHasCheck = false;
   for (let idx = 0; idx < segments.length; idx++) {
     const seg = segments[idx].trim();
     if (!seg) continue;
     if (hasDisallowedWriteRedirect(seg, ctx)) return false;
-    if (isQualifyingSingleTargetCheck(seg, ctx)) { sawQualifying = true; continue; }
-    if (isBoundedSinkSegment(seg)) {
+    let kind;
+    if (isQualifyingSingleTargetCheck(seg, ctx)) {
+      kind = 'check';
+      sawQualifying = true;
+      pipelineHasCheck = true;
+    } else if (isBoundedSinkSegment(seg)) {
       const precedingDelim = idx > 0 ? delims[idx - 1] : null;
       if (precedingDelim !== '|') return false; // sequential (;/&&), not piped: not bounded
-      sawPipedBoundedSink = true;
-      continue;
+      kind = 'sink';
+    } else if (isTriviallySafeSegment(seg)) {
+      kind = 'trivial';
+    } else {
+      return false;
     }
-    if (isTriviallySafeSegment(seg)) continue;
-    return false;
+    const d = delims[idx];
+    if (d === '|') continue;
+    if (!PIPELINE_ENDS.has(d)) return false;
+    if (pipelineHasCheck && kind !== 'sink') return false; // this pipeline's output is unbounded
+    pipelineHasCheck = false;
   }
-  return sawQualifying && sawPipedBoundedSink;
+  return sawQualifying;
 }
 
 // ---------------------------------------------------------------------------

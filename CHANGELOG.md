@@ -61,6 +61,11 @@ the update.
   generic 3-step check (`git status --short --branch`, `pwd`, CLAUDE.md/AGENTS.md
   re-read) when the checklist section is absent — still requiring the
   `resume-verified:` line either way.
+- **command-guard read-only verify: a comment or an unbounded check no longer passes.**
+  `x --check #| tail -5` passed as bounded, because the comment hides the sink from the
+  shell, and so did `x --check && x --check | tail`, where the first check is unbounded.
+  An unquoted `#` now disqualifies the line, as does a background `&`. Every pipeline that
+  runs a check must end in a bounded sink.
 - **model-routing-guard: deploys, migrations and secret work are never pushed to haiku.**
   An opus spawn that ran a production deploy (`wrangler … cors set`, `deploy_webui.sh prod`)
   was blocked with "respawn with haiku", which is the wrong advice for deploys, migrations,

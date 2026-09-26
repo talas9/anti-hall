@@ -229,6 +229,42 @@ test('verify-allow (script): guards.allowReadOnlyVerifyScripts=false turns the s
   });
 });
 
+// ---- F3: every check pipeline must end in a bounded sink; no comments ------
+
+const F3_BLOCK = [
+  // (a bare `./script --check` or `node --test x` is not heavy at all, so it never
+  //  reaches this carve-out; these cases all classify heavy first)
+  'python3 tools/gen_contract.py --check #| tail -5',
+  'python3 tools/gen_contract.py --check # tail',
+  'python3 tools/gen_contract.py --check ; # | tail -5',
+  'python3 tools/gen_contract.py --check && python3 tools/gen_contract.py --check | tail -5',
+  'node tools/gen.js --check | tail -5 && node tools/gen.js --check',
+  'python3 tools/gen_contract.py --check | tail -5 &',
+  'git clone --depth 1 https://example.invalid/r.git /tmp/cgsec-a | tail ; git clone --depth 1 https://example.invalid/r.git /tmp/cgsec-b',
+  'cd tools && node gen.js --check | tail -5', // script resolves against the payload cwd, not the cd target
+];
+for (const cmd of F3_BLOCK) {
+  test('verify-allow: an unbounded check pipeline or a comment disqualifies: ' + JSON.stringify(cmd), () => {
+    withScripts((repo) => {
+      const r = run(cmd, { cwd: repo });
+      assert.strictEqual(r.status, 2, 'expected BLOCK for ' + cmd + '\n' + r.stdout);
+    });
+  });
+}
+
+const F3_ALLOW = [
+  'python3 tools/gen_contract.py --check | tail -5 && node tools/gen.js --check | head -3',
+  'python3 tools/gen_contract.py --check "#not-a-comment" | tail -5',
+];
+for (const cmd of F3_ALLOW) {
+  test('verify-allow: control — every check pipeline bounded is still allowed: ' + JSON.stringify(cmd), () => {
+    withScripts((repo) => {
+      const r = run(cmd, { cwd: repo });
+      assert.strictEqual(r.status, 0, 'expected ALLOW for ' + cmd + '\n' + r.stdout);
+    });
+  });
+}
+
 // ---- per-project allowlist fixtures -----------------------------------------
 
 function writeAllow(repo, patterns) {
