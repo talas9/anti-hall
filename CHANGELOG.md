@@ -6,6 +6,14 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.115.1 (2026-09-26)
+
+### Fixes
+
+- **devswarm-wake-watch: orphaned watchers never exited when their starting parent (Monitor shell, or the stable-launcher wrapper `~/.anti-hall/bin/wake-watch.js`) died.** Field evidence: a watcher started by a test's intermediate parent 19 hours earlier was still running with PPID 1, holding its per-child watch lock — the same shape can leave a live session's next watcher refusing to arm (`REFUSED TO ARM: lock-held`) or reporting `watcherArmed` from a dead process. `devswarm-wake-watch.js` now captures its startup `process.ppid` and checks every poll tick (`parentGone()`): it exits cleanly (releasing its lock) the moment it is reparented (ppid changed / became `1`) or `process.kill(startPpid, 0)` throws `ESRCH`.
+- **stable-launcher: the generated `~/.anti-hall/bin/` wrapper forwards `SIGTERM`/`SIGINT`/`SIGHUP` to its target and spawns asynchronously**, instead of blocking synchronously with no way to react to a graceful shutdown signal; stdio and exit code passthrough are unchanged.
+- **A fleet test (`devswarm-fleet-8143ced316d3.test.js`) no longer leaks a live watcher process on assertion failure** — the spawned watcher child is now cleaned up unconditionally, not only on the success path.
+
 ## 0.115.0 (2026-09-26)
 
 ### Changed
