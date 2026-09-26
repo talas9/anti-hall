@@ -107,3 +107,50 @@ test('verify-allow: a plain script with --check piped to tail is still allowed (
   const r = run('./scripts/verify.sh --check | tail');
   assert.strictEqual(r.status, 0, r.stdout);
 });
+
+// ---- per-project allowlist fixtures -----------------------------------------
+
+function writeAllow(repo, patterns) {
+  fs.mkdirSync(path.join(repo, '.anti-hall'), { recursive: true });
+  fs.writeFileSync(path.join(repo, '.anti-hall', 'command-allow.json'), JSON.stringify({ patterns }));
+}
+
+// allowRun(repo, command, patterns) -> spawn result with a fresh home.
+function allowRun(repo, command, patterns) {
+  writeAllow(repo, patterns);
+  const h = makeHome();
+  try {
+    return run(command, { cwd: repo, home: h.home });
+  } finally {
+    h.cleanup();
+  }
+}
+
+// ---- #2 allowlist: no shell expansion may reach the pattern match -----------
+
+const DEPLOY_ARG = '^npm run deploy -- \\S+$';
+const EXPANSION_BLOCK = [
+  'npm run deploy -- "$(npm${IFS}test|sh)"',
+  'npm run deploy -- "`npm test`"',
+  'npm run deploy -- "${X:-y}"',
+  'npm run deploy -- "$HOME"',
+  'npm run deploy -- $HOME',
+  'npm run deploy -- \\$x',
+  "npm run deploy -- '$(id)'",
+];
+
+for (const cmd of EXPANSION_BLOCK) {
+  test('project-allow: expansion/escape anywhere is never matched: ' + cmd, () => {
+    withRepo((repo) => {
+      const r = allowRun(repo, cmd, [DEPLOY_ARG]);
+      assert.strictEqual(r.status, 2, 'expected BLOCK for ' + cmd + '\n' + r.stdout);
+    });
+  });
+}
+
+test('project-allow: control — a plain literal argument still matches', () => {
+  withRepo((repo) => {
+    const r = allowRun(repo, 'npm run deploy -- prod', [DEPLOY_ARG]);
+    assert.strictEqual(r.status, 0, r.stdout);
+  });
+});

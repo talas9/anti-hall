@@ -2071,13 +2071,17 @@ function isSingleUnbrokenSegment(command) {
 //   2. the WHOLE command is exactly one segment (no chaining/pipes/subshells/
 //      command substitution — see isSingleUnbrokenSegment);
 //   3. no unquoted redirect character anywhere in the command;
-//   4. the WHOLE (trimmed) command line matches one whole pattern exactly.
+//   4. no `$`, backtick, backslash or `<(`/`>(` anywhere, quoted or not
+//      (hasShellExpansionAnywhere) — the shell would rewrite the text the
+//      pattern matched;
+//   5. the WHOLE (trimmed) command line matches one whole pattern exactly.
 function matchedProjectCommandAllowPattern(command, cwd) {
   if (typeof command !== 'string' || !command.trim()) return null;
   const patterns = loadProjectCommandAllowPatterns(cwd);
   if (!patterns.length) return null;
   if (!isSingleUnbrokenSegment(command)) return null;
   if (hasUnquotedRedirectChar(command)) return null;
+  if (hasShellExpansionAnywhere(command)) return null;
   const trimmed = command.trim();
   for (const p of patterns) {
     let re;
@@ -2163,6 +2167,18 @@ function hasSubstitutionOutsideSingleQuotes(segment) {
     if (c === '$' && c2 === '(') return true;
   }
   return false;
+}
+
+// hasShellExpansionAnywhere(command) -> true if the command carries ANY
+// expansion/escape character, quoted or not: `$` (covers $( ), ${ }, $VAR,
+// $IFS), a backtick, a backslash, or a process substitution `<(`/`>(`. The
+// per-project allowlist matches command TEXT against a regex, so anything the
+// shell would rewrite before running it (inside double quotes too —
+// `"$(npm${IFS}test|sh)"` satisfied `\S+`) must never reach the match.
+// Extends hasSubstitutionOutsideSingleQuotes' coverage to every quote context.
+function hasShellExpansionAnywhere(command) {
+  if (hasSubstitutionOutsideSingleQuotes(command)) return true;
+  return /[$`\\]|[<>]\(/.test(command);
 }
 
 // classifyPlainGitChainSegment(segment) -> {kind:'add'|'commit'} |
