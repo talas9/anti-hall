@@ -31,6 +31,9 @@ function makeGitRepo() {
   fs.writeFileSync(path.join(dir, 'f.txt'), 'x\n');
   cp.spawnSync('git', ['-C', dir, 'add', 'f.txt']);
   cp.spawnSync('git', ['-C', dir, 'commit', '-q', '-m', 'init']);
+  // A configured `origin` (never contacted — the guard only lists remote
+  // names; a push remote must be one of them).
+  cp.spawnSync('git', ['-C', dir, 'remote', 'add', 'origin', 'https://example.invalid/repo.git']);
   return dir;
 }
 

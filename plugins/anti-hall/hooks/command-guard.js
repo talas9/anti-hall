@@ -2108,7 +2108,9 @@ function appendProjectCommandAllowAudit(entry) {
 // `src:dst` (a `:` or leading `+`/`-` token disqualifies the whole chain,
 // which then falls through to the ordinary heavy-command block, i.e. no
 // behavior CHANGE for --force/--mirror/--delete/-d/--all/--tags/a foreign
-// dst — they are exactly as blocked as before). A given `ref` must be `HEAD`
+// dst — they are exactly as blocked as before). A given `remote` must be a
+// configured remote NAME (`git -C <cwd> remote`; a path or URL-ish token
+// never qualifies, unresolvable fails closed). A given `ref` must be `HEAD`
 // or the CURRENT branch (`git -C <cwd> symbolic-ref --short HEAD`) — a push
 // to any other branch never qualifies; the resolver failing (detached HEAD,
 // not a repo, spawn error) fails CLOSED (does not qualify).
@@ -2161,8 +2163,8 @@ function hasShellExpansionAnywhere(command) {
 }
 
 // classifyPlainGitChainSegment(segment) -> {kind:'add'|'commit'} |
-// {kind:'push', ref} | null. `ref` is the second bare token of a plain push
-// (null when omitted/only a remote was given).
+// {kind:'push', remote, ref} | null. `remote`/`ref` are the first/second bare
+// tokens of a plain push (null when omitted).
 function classifyPlainGitChainSegment(segment) {
   const trimmed = segment.trim();
   if (hasUnquotedRedirectChar(trimmed)) return null;
@@ -2170,7 +2172,7 @@ function classifyPlainGitChainSegment(segment) {
   if (/^git\s+add\b/i.test(trimmed)) return { kind: 'add' };
   if (/^git\s+commit\b/i.test(trimmed)) return { kind: 'commit' };
   const m = trimmed.match(PLAIN_PUSH_SEGMENT_RE);
-  if (m) return { kind: 'push', ref: m[2] || null };
+  if (m) return { kind: 'push', remote: m[1] || null, ref: m[2] || null };
   return null;
 }
 
@@ -2189,6 +2191,31 @@ function currentBranchName(cwd) {
   } catch (_) {
     return null;
   }
+}
+
+// configuredRemotes(cwd) -> array of `git -C <cwd> remote` names, or null
+// on any failure (not a repo, spawn error/timeout) — the caller treats null
+// as FAIL CLOSED.
+function configuredRemotes(cwd) {
+  try {
+    const { spawnSync } = require('child_process');
+    const res = spawnSync('git', ['-C', cwd || process.cwd(), 'remote'], { encoding: 'utf8', timeout: 5000 });
+    if (!res || res.status !== 0) return null;
+    return String(res.stdout || '').split('\n').map((l) => l.trim()).filter(Boolean);
+  } catch (_) {
+    return null;
+  }
+}
+
+// isPlainPushRemoteAllowed(remote, cwd) -> bool. The remote token must be a
+// CONFIGURED remote name — a path (`../other-repo`) or URL-ish token
+// (`host/evil`) is a push destination git accepts directly and never
+// qualifies. Unresolvable remotes fail closed.
+function isPlainPushRemoteAllowed(remote, cwd) {
+  if (!remote) return true;
+  const remotes = configuredRemotes(cwd);
+  if (!remotes) return false;
+  return remotes.includes(remote);
 }
 
 // isPlainPushRefAllowed(ref, cwd) -> bool. No ref given, or `HEAD`, always
@@ -2224,6 +2251,7 @@ function isAllowedPlainPushChain(command, cwd) {
     if (!trimmed) continue;
     const cls = classifyPlainGitChainSegment(trimmed);
     if (!cls) return false; // any other segment disqualifies the whole chain
+    if (cls.kind === 'push' && !isPlainPushRemoteAllowed(cls.remote, cwd)) return false;
     if (cls.kind === 'push' && !isPlainPushRefAllowed(cls.ref, cwd)) return false;
   }
   return true;

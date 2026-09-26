@@ -311,3 +311,30 @@ test('doctor: reports an untrusted allowlist with the trust command', () => {
     }
   });
 });
+
+// ---- #6 plain push: the remote must be a configured remote name ------------
+
+for (const cmd of ['git push ../other-repo main', 'git push remote.example.com/evil main', 'git push /tmp/x', 'git push nosuchremote main']) {
+  test('plain-push: non-remote destination does not qualify: ' + cmd, () => {
+    withRepo((repo) => {
+      cp.spawnSync('git', ['-C', repo, 'remote', 'add', 'origin', 'https://example.invalid/repo.git']);
+      const r = run(cmd, { cwd: repo });
+      assert.strictEqual(r.status, 2, 'expected BLOCK for ' + cmd + '\n' + r.stdout);
+    });
+  });
+}
+
+test('plain-push: a named remote in a repo with NO remotes fails closed', () => {
+  withRepo((repo) => {
+    const r = run('git push origin main', { cwd: repo });
+    assert.strictEqual(r.status, 2, r.stdout);
+  });
+});
+
+test('plain-push: control — the configured remote still qualifies', () => {
+  withRepo((repo) => {
+    cp.spawnSync('git', ['-C', repo, 'remote', 'add', 'origin', 'https://example.invalid/repo.git']);
+    const r = run('git push origin main', { cwd: repo });
+    assert.strictEqual(r.status, 0, r.stdout);
+  });
+});
