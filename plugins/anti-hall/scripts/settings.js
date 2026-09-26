@@ -12,6 +12,11 @@
 //   node scripts/settings.js set <section.key> <value> [--confirmed] [--json]
 //   node scripts/settings.js reset <section.key> [--confirmed] [--json]
 //   node scripts/settings.js trust-command-allow [<repo>] [--confirmed] [--json]
+//   node scripts/settings.js trust-edit-allow [<repo>] [--confirmed] [--json]
+//
+// `trust-edit-allow` is the same flow for edit-guard's per-project doc-edit
+// allowlist .anti-hall/edit-allow.json ({"paths":[repo-relative globs]}),
+// recorded in ~/.anti-hall/trusted-edit-allow.json (0.112).
 //
 // `trust-command-allow` prints the repo's .anti-hall/command-allow.json
 // patterns (valid / ignored) and, with --confirmed, records the sha256 of the
@@ -234,9 +239,15 @@ function cmdReset(args, opts) {
   else process.stdout.write(section + '.' + key + ' reset -> ' + fmtValue(value) + '\n');
 }
 
-function cmdTrustCommandAllow(args, opts) {
+// cmdTrustAllow(kind, args, opts) — shared by trust-command-allow (kind
+// 'command': .anti-hall/command-allow.json, anchored regex patterns) and
+// trust-edit-allow (kind 'edit': .anti-hall/edit-allow.json, repo-relative
+// globs). One flow so the two can never disagree about consent or hashing.
+function cmdTrustAllow(kind, args, opts) {
   const allowLib = require('../hooks/lib/command-allow.js');
   const testHomeGuard = require('../companion/lib/test-home-guard.js');
+  const rel = kind === 'edit' ? '.anti-hall/edit-allow.json' : '.anti-hall/command-allow.json';
+  const validate = kind === 'edit' ? allowLib.validateEditPath : allowLib.validatePattern;
   const target = args._[0] ? path.resolve(args._[0]) : process.cwd();
   const top = allowLib.repoToplevel(target);
   const fail = (error) => {
@@ -245,23 +256,26 @@ function cmdTrustCommandAllow(args, opts) {
     process.exitCode = 1;
   };
   if (!top) return fail('not inside a git repository: ' + target);
-  const f = allowLib.readAllowFile(top);
-  if (f.state === 'missing') return fail('no .anti-hall/command-allow.json in ' + top);
-  if (f.state === 'symlink') return fail('refusing a symlinked .anti-hall/command-allow.json (or .anti-hall dir) in ' + top);
-  if (f.state !== 'ok') return fail('.anti-hall/command-allow.json in ' + top + ' is ' + (f.state === 'invalid-json' ? 'not valid JSON' : 'unreadable'));
+  const f = allowLib.readAllowFile(top, kind);
+  if (f.state === 'missing') return fail('no ' + rel + ' in ' + top);
+  if (f.state === 'symlink') return fail('refusing a symlinked ' + rel + ' (or .anti-hall dir) in ' + top);
+  if (f.state !== 'ok') return fail(rel + ' in ' + top + ' is ' + (f.state === 'invalid-json' ? 'not valid JSON' : 'unreadable'));
   const rows = f.patterns.map((p) => {
-    const v = allowLib.validatePattern(p);
+    const v = validate(p);
     return { pattern: p, valid: v.ok, reason: v.ok ? null : v.reason };
   });
   const home = testHomeGuard.resolveHome(opts.home, process.env);
   const repo = allowLib.repoKey(top);
   if (!args.confirmed) {
-    const warning = 'Trusting lets the main thread run these commands in ' + repo +
+    const what = kind === 'edit'
+      ? 'Trusting lets the main thread edit files matching these paths in '
+      : 'Trusting lets the main thread run these commands in ';
+    const warning = what + repo +
       ' without delegating them. Re-run with --confirmed to trust this exact file content (sha256 ' + f.hash + ').';
     if (args.json) {
       process.stdout.write(JSON.stringify({ ok: false, needsConfirmation: true, repo, sha256: f.hash, patterns: rows, warning }) + '\n');
     } else {
-      process.stdout.write(repo + '/.anti-hall/command-allow.json:\n');
+      process.stdout.write(repo + '/' + rel + ':\n');
       for (const r of rows) process.stdout.write('  ' + (r.valid ? '  ' : '! ') + r.pattern + (r.valid ? '' : '   (ignored: ' + r.reason + ')') + '\n');
       process.stdout.write(warning + '\n');
     }
@@ -269,17 +283,20 @@ function cmdTrustCommandAllow(args, opts) {
     return;
   }
   try {
-    allowLib.recordTrust(home, top, f.hash);
+    allowLib.recordTrust(home, top, f.hash, kind);
   } catch (e) {
-    return fail('could not write ' + allowLib.trustFilePath(home) + ': ' + (e && e.message));
+    return fail('could not write ' + allowLib.trustFilePath(home, kind) + ': ' + (e && e.message));
   }
   if (args.json) {
     process.stdout.write(JSON.stringify({ ok: true, repo, sha256: f.hash, patterns: rows }) + '\n');
   } else {
-    process.stdout.write('trusted ' + repo + '/.anti-hall/command-allow.json (sha256 ' + f.hash + '):\n');
+    process.stdout.write('trusted ' + repo + '/' + rel + ' (sha256 ' + f.hash + '):\n');
     for (const r of rows) process.stdout.write('  ' + (r.valid ? '  ' : '! ') + r.pattern + (r.valid ? '' : '   (ignored: ' + r.reason + ')') + '\n');
   }
 }
+
+function cmdTrustCommandAllow(args, opts) { return cmdTrustAllow('command', args, opts); }
+function cmdTrustEditAllow(args, opts) { return cmdTrustAllow('edit', args, opts); }
 
 function main() {
   const argv = process.argv.slice(2);
@@ -293,12 +310,13 @@ function main() {
     case 'set': return cmdSet(args, opts);
     case 'reset': return cmdReset(args, opts);
     case 'trust-command-allow': return cmdTrustCommandAllow(args, opts);
+    case 'trust-edit-allow': return cmdTrustEditAllow(args, opts);
     default:
-      process.stderr.write('usage: settings.js <show|get|set|reset|trust-command-allow> [args] [--json]\n');
+      process.stderr.write('usage: settings.js <show|get|set|reset|trust-command-allow|trust-edit-allow> [args] [--json]\n');
       process.exitCode = 1;
   }
 }
 
 if (require.main === module) main();
 
-module.exports = { parseArgs, splitKey, cmdShow, cmdGet, cmdSet, cmdReset, cmdTrustCommandAllow };
+module.exports = { parseArgs, splitKey, cmdShow, cmdGet, cmdSet, cmdReset, cmdTrustCommandAllow, cmdTrustEditAllow };

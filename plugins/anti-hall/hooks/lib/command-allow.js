@@ -12,13 +12,29 @@
 // Any edit to the file changes the hash -> untrusted until re-trusted. The
 // file is opened with O_NOFOLLOW after an lstat of its directory: a symlinked
 // `.anti-hall` dir or allowlist file is refused outright.
+//
+// TWO KINDS share this one trust machinery (0.112): 'command' (above, the
+// command-guard allowlist, list key `patterns`) and 'edit' — the edit-guard
+// per-project doc-edit allowlist `<repo>/.anti-hall/edit-allow.json`
+// = { "paths": ["docs/**", "PLAN.md", "*.md"] } trusted in
+// ~/.anti-hall/trusted-edit-allow.json. Every trust/read helper takes an
+// optional `kind` (default 'command', so 0.111 callers are unchanged); the
+// entries always come back as `patterns` whatever the file's list key is.
 
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 
-const ALLOW_REL = path.join('.anti-hall', 'command-allow.json');
-const TRUST_FILE = 'trusted-command-allow.json';
+const KINDS = {
+  command: { rel: path.join('.anti-hall', 'command-allow.json'), trustFile: 'trusted-command-allow.json', listKey: 'patterns' },
+  edit: { rel: path.join('.anti-hall', 'edit-allow.json'), trustFile: 'trusted-edit-allow.json', listKey: 'paths' },
+};
+function kindSpec(kind) {
+  const k = KINDS[kind || 'command'];
+  if (!k) throw new Error('unknown allowlist kind: ' + kind);
+  return k;
+}
+const EDIT_ALLOW_REL = KINDS.edit.rel;
 
 // validatePattern(p) -> { ok: true } | { ok: false, reason }.
 //
@@ -113,8 +129,9 @@ function repoKey(top) {
 
 // readAllowFile(top) -> { cfgPath, state, bytes?, hash?, patterns?, error? }.
 // state: 'missing' | 'symlink' | 'unreadable' | 'invalid-json' | 'ok'.
-function readAllowFile(top) {
-  const cfgPath = path.join(top, ALLOW_REL);
+function readAllowFile(top, kind) {
+  const spec = kindSpec(kind);
+  const cfgPath = path.join(top, spec.rel);
   const dir = path.dirname(cfgPath);
   let dst;
   try { dst = fs.lstatSync(dir); } catch (_) { return { cfgPath, state: 'missing' }; }
@@ -140,17 +157,17 @@ function readAllowFile(top) {
   try { parsed = JSON.parse(bytes.toString('utf8')); } catch (_) {
     return { cfgPath, state: 'invalid-json', bytes, hash };
   }
-  const patterns = parsed && Array.isArray(parsed.patterns) ? parsed.patterns : [];
+  const patterns = parsed && Array.isArray(parsed[spec.listKey]) ? parsed[spec.listKey] : [];
   return { cfgPath, state: 'ok', bytes, hash, patterns };
 }
 
-function trustFilePath(home) {
-  return path.join(home, '.anti-hall', TRUST_FILE);
+function trustFilePath(home, kind) {
+  return path.join(home, '.anti-hall', kindSpec(kind).trustFile);
 }
 
-function readTrustRecords(home) {
+function readTrustRecords(home, kind) {
   try {
-    const obj = JSON.parse(fs.readFileSync(trustFilePath(home), 'utf8'));
+    const obj = JSON.parse(fs.readFileSync(trustFilePath(home, kind), 'utf8'));
     return obj && typeof obj === 'object' && !Array.isArray(obj) ? obj : {};
   } catch (_) {
     return {};
@@ -158,8 +175,8 @@ function readTrustRecords(home) {
 }
 
 // trustState(home, top, hash) -> 'trusted' | 'untrusted' | 'mismatch'.
-function trustState(home, top, hash) {
-  const rec = readTrustRecords(home)[repoKey(top)];
+function trustState(home, top, hash, kind) {
+  const rec = readTrustRecords(home, kind)[repoKey(top)];
   if (typeof rec !== 'string' || !rec) return 'untrusted';
   return rec === hash ? 'trusted' : 'mismatch';
 }
@@ -177,17 +194,50 @@ function loadTrustedPatterns(cwd, home) {
 
 // recordTrust(home, top, hash) -> writes the trust record (atomic rename,
 // mode 600). Throws on failure — the CLI reports it.
-function recordTrust(home, top, hash) {
-  const p = trustFilePath(home);
+function recordTrust(home, top, hash, kind) {
+  const p = trustFilePath(home, kind);
   fs.mkdirSync(path.dirname(p), { recursive: true });
-  const records = readTrustRecords(home);
+  const records = readTrustRecords(home, kind);
   records[repoKey(top)] = hash;
   const tmp = p + '.' + process.pid + '.tmp';
   fs.writeFileSync(tmp, JSON.stringify(records, null, 2) + '\n', { mode: 0o600 });
   fs.renameSync(tmp, p);
 }
 
+// validateEditPath(glob) -> { ok: true } | { ok: false, reason } for one
+// edit-allow.json entry: a REPO-RELATIVE glob ('**' spans '/', '*' does not).
+// Rejected: non-strings, empty, absolute (/x, C:\x, \\x), home (~), any
+// backslash, any '..' segment, and a pattern made only of '*' and '/'
+// ('*', '**', '**/*', '*/**', …) — those match (nearly) every file.
+function validateEditPath(p) {
+  if (typeof p !== 'string') return { ok: false, reason: 'not a string' };
+  const t = p.trim();
+  if (!t || t !== p) return { ok: false, reason: 'empty or padded with whitespace' };
+  if (t.startsWith('/') || /^[A-Za-z]:/.test(t)) return { ok: false, reason: 'absolute path' };
+  if (t.startsWith('~')) return { ok: false, reason: 'home-relative path' };
+  if (t.includes('\\')) return { ok: false, reason: 'backslash (use / separators)' };
+  if (t.split('/').some((seg) => seg === '..')) return { ok: false, reason: '.. path segment' };
+  if (/^[*/]+$/.test(t)) return { ok: false, reason: 'matches every file' };
+  return { ok: true };
+}
+
+// loadTrustedEditPaths(cwd, home) -> { top, paths } with the VALID globs of a
+// TRUSTED edit-allow.json, or { top, paths: [] }. Fails closed exactly like
+// loadTrustedPatterns.
+function loadTrustedEditPaths(cwd, home) {
+  const top = repoToplevel(cwd);
+  if (!top || !home) return { top, paths: [] };
+  const f = readAllowFile(top, 'edit');
+  if (f.state !== 'ok') return { top, paths: [] };
+  if (trustState(home, top, f.hash, 'edit') !== 'trusted') return { top, paths: [] };
+  return { top, paths: f.patterns.filter((p) => validateEditPath(p).ok) };
+}
+
 module.exports = {
+  KINDS,
+  EDIT_ALLOW_REL,
+  validateEditPath,
+  loadTrustedEditPaths,
   validatePattern,
   repoToplevel,
   repoKey,

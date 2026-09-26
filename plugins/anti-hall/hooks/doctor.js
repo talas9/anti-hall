@@ -322,6 +322,43 @@ try {
   // fail-open: this is a diagnostic, never a hard failure.
 }
 
+// Per-project doc-edit allowlist (0.112): same report for edit-guard's
+// .anti-hall/edit-allow.json — refused symlink/unreadable file, untrusted or
+// changed-since-trusted content (with the trust command), and ignored globs
+// (lib/command-allow.js validateEditPath: absolute, `..`, match-everything).
+try {
+  const allowLib = require('./lib/command-allow.js');
+  const allowTop = allowLib.repoToplevel(process.cwd());
+  const f = allowTop ? allowLib.readAllowFile(allowTop, 'edit') : { state: 'missing' };
+  const trustCmd = 'node ' + JSON.stringify(path.join(__dirname, '..', 'scripts', 'settings.js')) +
+    ' trust-edit-allow ' + JSON.stringify(allowTop || '.');
+  if (f.state === 'symlink') {
+    warnl('edit-allow.json (or its .anti-hall dir) is a symlink — refused, edit-guard applies nothing');
+  } else if (f.state === 'unreadable' || f.state === 'invalid-json') {
+    warnl('edit-allow.json is ' + (f.state === 'invalid-json' ? 'not valid JSON' : 'unreadable') + ' — edit-guard applies nothing');
+  } else if (f.state === 'ok') {
+    const home = require('../companion/lib/test-home-guard.js').resolveHome(undefined, process.env);
+    const trust = allowLib.trustState(home, allowTop, f.hash, 'edit');
+    const bad_ = [];
+    for (const p of f.patterns) {
+      const v = allowLib.validateEditPath(p);
+      if (!v.ok) bad_.push(JSON.stringify(p) + ' (' + v.reason + ')');
+    }
+    if (trust === 'untrusted') {
+      warnl('edit-allow.json is NOT trusted — edit-guard applies none of its ' + f.patterns.length + ' path(s). Review it, then trust it: ' + trustCmd);
+    } else if (trust === 'mismatch') {
+      warnl('edit-allow.json CHANGED since you trusted it — edit-guard applies nothing until re-trusted. Review it, then: ' + trustCmd);
+    }
+    if (bad_.length) {
+      warnl('edit-allow.json has ' + bad_.length + ' ignored path(s) (edit-guard never matches them): ' + bad_.join(', '));
+    } else if (f.patterns.length && trust === 'trusted') {
+      ok('edit-allow.json: trusted, ' + f.patterns.length + ' valid repo-relative path glob(s)');
+    }
+  }
+} catch (_) {
+  // fail-open: this is a diagnostic, never a hard failure.
+}
+
 // edit-guard: blocks direct Edit-family tool use in COORDINATOR; allows in SUBAGENT (payload agent_id)
 function eg(extra) { return runHook('edit-guard.js', Object.assign({ tool_name: 'Edit', tool_input: { file_path: 'src/x.js', old_string: 'a', new_string: 'b' } }, extra), { CLAUDE_CODE_ENTRYPOINT: 'cli' }); }
 BLOCKED(eg()) ? ok('edit-guard blocks coordinator edit') : bad('edit-guard did NOT block coordinator edit');

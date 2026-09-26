@@ -512,6 +512,76 @@ function isHarnessPlanFile(filePath, cwd) {
 // harness-controlled field — NOT part of tool_input and not model/tool-settable,
 // so it is the same trust class as tool_name / agent_id. Case-insensitive for
 // safety; any non-string is not plan mode.
+// PER-PROJECT DOC-EDIT ALLOWLIST (owner-approved 2026-09-26, 0.112). A repo
+// may list repo-relative globs in `<repo>/.anti-hall/edit-allow.json`
+// ({"paths":["docs/**","PLAN.md","*.md"]}) that the MAIN THREAD may Edit/Write
+// directly instead of delegating. Same trust model as command-guard's
+// command-allow.json, via the SAME lib/command-allow.js machinery (kind
+// 'edit'): it applies ONLY while ~/.anti-hall/trusted-edit-allow.json holds the
+// sha256 of the file's exact bytes for this repo's realpath (a cloned repo
+// cannot authorize itself; any edit to the file revokes trust; a symlinked
+// file or .anti-hall dir is refused). Globs that are absolute, contain `..`,
+// or match every file are ignored (validateEditPath). A match NEVER covers:
+// a path outside the repo (checked on realpaths), any `.git`, `.anti-hall`,
+// `.claude`, `.codex`, `.husky` or `.githooks` segment (so the allowlist can
+// never authorize itself or hook config), a `hooks.json`, anything under
+// ~/.claude, or a symlinked/hard-linked target (allowlistIsHonest). Subagents
+// never reach this code (edit-guard exits for them above). Gated by
+// guards.projectEditAllow (default true); false restores 0.111 behaviour.
+const PROJECT_EDIT_DENY_SEGMENTS = new Set(['.git', '.anti-hall', '.claude', '.codex', '.husky', '.githooks']);
+
+function projectEditAllowOn() {
+  try { return require('./lib/settings.js').get('guards', 'projectEditAllow') !== false; } catch (_) { return true; }
+}
+
+// projectEditTarget(filePath, cwd) -> { top, rel } with rel the '/'-joined
+// path of the REALPATH'd target relative to the REALPATH'd repo toplevel, or
+// null when there is no repo or the target is not strictly inside it.
+function projectEditTarget(filePath, cwd) {
+  if (!filePath) return null;
+  const base = cwd ? String(cwd) : process.cwd();
+  const allowLib = require('./lib/command-allow.js');
+  const top = allowLib.repoToplevel(base);
+  if (!top) return null;
+  const realTop = realpathOrSelf(top);
+  const realAbs = realpathOrSelf(path.resolve(base, String(filePath)));
+  const rel = path.relative(realTop, realAbs);
+  if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) return null;
+  return { top, rel: rel.split(path.sep).join('/'), realAbs };
+}
+
+// isEditAllowFileTarget -> true when the edit targets this repo's own
+// .anti-hall/edit-allow.json (case-folded: macOS/Windows filesystems are
+// case-insensitive, so .anti-hall/EDIT-ALLOW.json is the same file).
+function isEditAllowFileTarget(filePath, cwd) {
+  try {
+    const t = projectEditTarget(filePath, cwd);
+    return !!t && t.rel.toLowerCase() === '.anti-hall/edit-allow.json';
+  } catch (_) {
+    return false;
+  }
+}
+
+function isProjectEditAllowed(filePath, cwd) {
+  try {
+    const t = projectEditTarget(filePath, cwd);
+    if (!t) return false;
+    const segs = t.rel.split('/');
+    if (segs.some((seg) => PROJECT_EDIT_DENY_SEGMENTS.has(seg.toLowerCase()))) return false;
+    if (segs[segs.length - 1].toLowerCase() === 'hooks.json') return false;
+    const home = require('../companion/lib/test-home-guard.js').resolveHome(undefined, process.env);
+    const claudeHome = realpathOrSelf(path.join(home, '.claude'));
+    const inClaudeHome = path.relative(claudeHome, t.realAbs);
+    if (inClaudeHome === '' || (!inClaudeHome.startsWith('..') && !path.isAbsolute(inClaudeHome))) return false;
+    const { paths } = require('./lib/command-allow.js').loadTrustedEditPaths(cwd || process.cwd(), home);
+    if (!paths.length) return false;
+    if (!paths.some((glob) => globToRegExp(glob).test(t.rel))) return false;
+    return allowlistIsHonest(filePath, cwd);
+  } catch (_) {
+    return false; // fail CLOSED: never widen the allowance on an error
+  }
+}
+
 function isPlanMode(payload) {
   const m = payload && payload.permission_mode;
   return typeof m === 'string' && m.toLowerCase() === 'plan';
@@ -554,7 +624,26 @@ function main() {
 
   // An allowlist match is honored ONLY when the path is honest (not a symlink /
   // reparse point, and not reached through one) — see allowlistIsHonest().
+  // The project doc-edit allowlist file itself is never edited in the main
+  // thread (it must not be able to authorize itself — and DEFAULT_ALLOW's
+  // '.anti-hall/**' would otherwise let it through). Only while the feature is on.
+  const projectEditAllow = projectEditAllowOn();
+  if (projectEditAllow && isEditAllowFileTarget(filePath, cwd)) {
+    process.stdout.write(JSON.stringify({
+      decision: 'block',
+      reason:
+        'EDIT-ALLOW SELF-EDIT: .anti-hall/edit-allow.json decides which files the main thread ' +
+        'may edit directly, so the main thread never edits it. Ask the user to change it (or ' +
+        'delegate the change to a subagent), then the user re-trusts it with `node ' +
+        '<plugin-root>/scripts/settings.js trust-edit-allow <repo> --confirmed`. (tool: ' + toolName + ')',
+    }) + '\n');
+    process.exit(2);
+  }
+
   if (isAllowed(filePath, cwd) && allowlistIsHonest(filePath, cwd)) process.exit(0);
+
+  // Per-project doc-edit allowlist (trusted .anti-hall/edit-allow.json).
+  if (projectEditAllow && isProjectEditAllowed(filePath, cwd)) process.exit(0);
 
   // HARNESS PLAN FILE (~/.claude/plans/*.md) — see isHarnessPlanFile() above.
   // Unconditional (not gated on permission_mode): the reported false positive

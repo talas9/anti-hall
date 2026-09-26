@@ -10,6 +10,21 @@ the update.
 
 ### Features
 
+- **edit-guard: a per-project doc-edit allowlist (owner-approved).** A repo may list
+  repo-relative globs in `.anti-hall/edit-allow.json`
+  (`{"paths":["docs/**","PLAN.md","*.md"]}`). The main thread (a DevSwarm Primary or
+  coordinator) may then Edit/Write matching files directly instead of delegating them.
+  It uses the 0.111 command-allowlist trust model and the same `lib/command-allow.js`
+  machinery. It applies only after `settings.js trust-edit-allow <repo> --confirmed`
+  records the sha256 of the exact file bytes in `~/.anti-hall/trusted-edit-allow.json`.
+  Any edit to the file revokes trust, and a symlinked file is refused. Absolute, `..` and
+  match-everything globs are ignored. A match never covers a path outside the repo
+  (checked on real paths), `.git`, `.anti-hall`, `.claude`, `.codex`, hook config,
+  `~/.claude`, or a symlinked or hard-linked target. The main thread can never edit
+  `.anti-hall/edit-allow.json` itself. Subagents are unaffected. Doctor reports untrusted,
+  changed or ignored entries. New setting `guards.projectEditAllow` (default `true`).
+  Codex registers no Edit-family hooks, so this is Claude-only. The Codex settings skill
+  documents the trust command.
 - **`inbox tick --quiet`** (peer ask, SkyCrew/tf3 Primaries 2026-09-26). `inbox tick`'s
   JSON carries duplicate legacy+new field names (`unread`/`unreadTotal`,
   `cursor`/`cursorNdjson`, `storeCursor`/`cursorStore`), which made a cron-prompt

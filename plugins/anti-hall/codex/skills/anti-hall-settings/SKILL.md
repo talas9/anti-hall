@@ -93,6 +93,26 @@ reports untrusted/changed allowlists and ignored patterns. Same consent rule as 
 safety keys above: `--confirmed` only on the user's direct request or a yes after
 showing them the printed patterns — never on your own initiative.
 
+## Trusting a project doc-edit allowlist
+
+A repo can list repo-relative globs in `<repo>/.anti-hall/edit-allow.json`
+(`{"paths":["docs/**","PLAN.md","*.md"]}`). edit-guard then lets the main thread
+(a DevSwarm Primary or coordinator) Edit/Write matching files directly instead of
+delegating them. It uses the same trust model as the command allowlist and applies
+only after the user trusts that exact file content with `trust-edit-allow`:
+
+```
+node <plugin-root>/scripts/settings.js trust-edit-allow [<repo>]              # print paths, record nothing
+node <plugin-root>/scripts/settings.js trust-edit-allow [<repo>] --confirmed  # record the trust
+```
+
+Trust lives in `~/.anti-hall/trusted-edit-allow.json`, and any edit to the file revokes
+it. A symlinked file is refused. Absolute paths, `..` and match-everything globs (`**`,
+`*`, `**/*`) are ignored. A match never covers a path outside the repo, `.git`,
+`.anti-hall` (so the file cannot authorize itself; the main thread may not edit it at
+all), `.claude`, `.codex`, hook config, or `~/.claude`. Subagents are unaffected.
+Kill-switch: `guards.projectEditAllow=false`.
+
 ## Turning a hook off
 
 Every hook the Codex port registers reads the same switch as on Claude Code, so "turn
