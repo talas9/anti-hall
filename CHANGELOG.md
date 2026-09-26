@@ -6,6 +6,19 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## Unreleased
+
+### Fixes
+
+- **devswarm: app-archive retry regex missed a reworded DevSwarm error text.**
+  `attemptAppArchive`'s single retry only fired on the exact phrase "could not
+  confirm terminal process boundary"; a later DevSwarm build rewords the same
+  transient failure as "Could not confirm terminal <id> stopped", so every
+  first archive attempt failed and the built-in retry never triggered.
+  `APP_ARCHIVE_RETRYABLE_RE` now matches the stable "could not confirm
+  terminal" prefix, covering both wordings while still excluding unrelated
+  hivecontrol errors from the retry.
+
 ## 0.113.0 (2026-09-26)
 
 ### Features

@@ -170,6 +170,70 @@ test('APP ARCHIVE: retries ONCE on "Could not confirm terminal process boundary"
   } finally { rm(W); rm(home); }
 });
 
+test('APP ARCHIVE: retries ONCE on the reworded "Could not confirm terminal <id> stopped", then succeeds', () => {
+  const home = tmpHome();
+  const W = makeGitRepo('retry-reworded');
+  try {
+    seedOne(home, W, ID_A);
+    // Same flaky app-side check, a later DevSwarm build's wording (no
+    // "process boundary" substring) — proves the widened regex still
+    // retries exactly once and does not require the old exact phrase.
+    const bin = path.join(home, 'bin2b');
+    fs.mkdirSync(bin, { recursive: true });
+    const stateFile = path.join(bin, 'calls.json');
+    fs.writeFileSync(stateFile, '0');
+    const src = '#!' + process.execPath + '\n'
+      + "'use strict';\nconst fs=require('fs');const a=process.argv.slice(2);\n"
+      + "if(a[0]==='--version'){console.log('2.5.3');process.exit(0);}\n"
+      + "if(a[0]==='workspace'&&a[1]==='--help'){process.stdout.write(fs.readFileSync(" + JSON.stringify(HELP_253) + ",'utf8'));process.exit(0);}\n"
+      + "if(a[0]==='workspace'&&a[1]==='archive'&&a[2]==='--help'){process.stdout.write(fs.readFileSync(" + JSON.stringify(ARCHIVE_253) + ",'utf8'));process.exit(0);}\n"
+      + "if(a[0]==='workspace'&&a[1]==='archive'){let n=parseInt(fs.readFileSync(" + JSON.stringify(stateFile) + ",'utf8'),10)||0;n++;fs.writeFileSync(" + JSON.stringify(stateFile) + ",String(n));\n"
+      + "  if(n===1){process.stderr.write('Error: Could not confirm terminal " + ID_A + " stopped\\n');process.exit(1);}\n"
+      + "  console.log(JSON.stringify({ok:true}));process.exit(0);}\n"
+      + 'process.exit(2);\n';
+    fs.writeFileSync(path.join(bin, 'hivecontrol'), src, { mode: 0o755 });
+    capsLib.resetCache();
+    const dbPath = writeAppDb(home, [{ id: ID_A, builderType: 'standard' }]);
+    const ctx = { home, cwd: W, env: { HOME: home, PATH: bin, ANTIHALL_DEVSWARM_APP_DB: dbPath }, backend: BACKEND };
+    const r = cli.run(['archive', ID_A], ctx);
+    assert.strictEqual(r.result.ok, true, JSON.stringify(r.result));
+    assert.strictEqual(r.result.appArchive.attempted, true, JSON.stringify(r.result));
+    assert.strictEqual(r.result.appArchive.ok, true, JSON.stringify(r.result));
+    assert.strictEqual(r.result.appArchive.retried, true, JSON.stringify(r.result));
+    assert.strictEqual(fs.readFileSync(stateFile, 'utf8'), '2', 'exactly two attempts (one retry)');
+  } finally { rm(W); rm(home); }
+});
+
+test('APP ARCHIVE: an unrelated error text (not "could not confirm terminal") is not retried', () => {
+  const home = tmpHome();
+  const W = makeGitRepo('retry-unrelated');
+  try {
+    seedOne(home, W, ID_A);
+    const bin = path.join(home, 'bin2c');
+    fs.mkdirSync(bin, { recursive: true });
+    const stateFile = path.join(bin, 'calls.json');
+    fs.writeFileSync(stateFile, '0');
+    const src = '#!' + process.execPath + '\n'
+      + "'use strict';\nconst fs=require('fs');const a=process.argv.slice(2);\n"
+      + "if(a[0]==='--version'){console.log('2.5.3');process.exit(0);}\n"
+      + "if(a[0]==='workspace'&&a[1]==='--help'){process.stdout.write(fs.readFileSync(" + JSON.stringify(HELP_253) + ",'utf8'));process.exit(0);}\n"
+      + "if(a[0]==='workspace'&&a[1]==='archive'&&a[2]==='--help'){process.stdout.write(fs.readFileSync(" + JSON.stringify(ARCHIVE_253) + ",'utf8'));process.exit(0);}\n"
+      + "if(a[0]==='workspace'&&a[1]==='archive'){let n=parseInt(fs.readFileSync(" + JSON.stringify(stateFile) + ",'utf8'),10)||0;n++;fs.writeFileSync(" + JSON.stringify(stateFile) + ",String(n));\n"
+      + "  process.stderr.write('Error: some unrelated hivecontrol failure\\n');process.exit(1);}\n"
+      + 'process.exit(2);\n';
+    fs.writeFileSync(path.join(bin, 'hivecontrol'), src, { mode: 0o755 });
+    capsLib.resetCache();
+    const dbPath = writeAppDb(home, [{ id: ID_A, builderType: 'standard' }]);
+    const ctx = { home, cwd: W, env: { HOME: home, PATH: bin, ANTIHALL_DEVSWARM_APP_DB: dbPath }, backend: BACKEND };
+    const r = cli.run(['archive', ID_A], ctx);
+    assert.strictEqual(r.result.ok, true, JSON.stringify(r.result));
+    assert.strictEqual(r.result.appArchive.attempted, true, JSON.stringify(r.result));
+    assert.strictEqual(r.result.appArchive.ok, false, JSON.stringify(r.result));
+    assert.ok(!r.result.appArchive.retried, JSON.stringify(r.result));
+    assert.strictEqual(fs.readFileSync(stateFile, 'utf8'), '1', 'no retry for an unrelated error');
+  } finally { rm(W); rm(home); }
+});
+
 test('APP ARCHIVE: a genuinely FAILED archive (not the retryable error) is reported once, no retry loop', () => {
   const home = tmpHome();
   const W = makeGitRepo('hardfail');

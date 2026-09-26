@@ -12817,7 +12817,15 @@ function retireIdentityFamilyDescriptors(home, archivedId, desc, opts) {
 // changed between attempts — verified live). Retrying once on exactly this
 // text is a targeted workaround for a known-flaky app-side check, not a
 // general retry-on-any-failure policy.
-const APP_ARCHIVE_RETRYABLE_RE = /could not confirm terminal process boundary/i;
+// Widened 2026-09-26: a later DevSwarm build rewords this to "Could not
+// confirm terminal <id> stopped" — same flaky check, different phrasing.
+// Live evidence (peer report): the built-in single retry never fired against
+// this wording (regex required "process boundary" verbatim), so EVERY first
+// archive call failed and only the CLI's outer caller-level retry saved it.
+// Matching just the stable "could not confirm terminal" prefix (word
+// boundary after "terminal") covers both wordings while still requiring the
+// specific phrase, so unrelated hivecontrol errors are never retried.
+const APP_ARCHIVE_RETRYABLE_RE = /could not confirm terminal\b/i;
 // Same bound devswarm-lifecycle.js's own auto-archive hivecontrol call uses
 // (its HC_TIMEOUT_MS) — kept as its own constant here since this file may not
 // import that module's private const.
