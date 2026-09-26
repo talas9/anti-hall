@@ -6,7 +6,7 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
-## Unreleased
+## 0.113.0 (2026-09-26)
 
 ### Features
 
@@ -63,9 +63,8 @@ the update.
   encrypt/sign/print-*/attach-*/detach-*/add-*/set-*/remove-*/delete/create/update/
   deploy/ssh/scp/run, nor a hyphenated form of a mutating action (`delete-access-config`,
   `reset-windows-password`, …). `run` is allowed only as the product group, and `read`
-  only as `logging read`. Behavior change for
-  the older exemption: `gcloud … describe foo --region r` must now be written
-  `--region=r` to run inline.
+  only as `logging read`. This also closes a pre-existing hole in the older read-only
+  cloud-inspect list exemption, which took the same separated-flag-value bypass.
 
 - **command-guard gcloud token curl: closed set of token variable names (P2).** The token
   may only be assigned to `T`, `TOKEN`, `ACCESS_TOKEN` or `GCLOUD_TOKEN`. Any other name
@@ -94,6 +93,14 @@ the update.
 - **command-guard gcloud token curl: canonical ASCII host only.** The raw URL host must be
   plain ASCII and equal to the parsed host, with no curl URL globbing (`{…}`, `[…]`).
   This refuses percent-encoded and full-width lookalike hosts.
+
+### Changed
+
+- **command-guard gcloud reads: separated flag values are no longer read-only.**
+  `gcloud … describe foo --region r` (a value in its own argv word) is no longer treated
+  as read-only inline; write it `--region=r` to keep running inline. This closes the
+  separated-flag-value gap the P1 fix above found in both the new gcloud read carve-out
+  and the older read-only cloud-inspect exemption.
 
 ## 0.112.0 (2026-09-26)
 
