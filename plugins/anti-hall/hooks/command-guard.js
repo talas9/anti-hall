@@ -1453,7 +1453,9 @@ function isSafeSqliteReadonly(segment, wholeCommand) {
 //   - path words are lowercase gcloud words and none may be a mutating/
 //     secret-returning action (GCLOUD_REFUSED_PATH_RE), except `run` as the
 //     product group in position 0 (`gcloud run services describe`).
-const GCLOUD_REFUSED_PATH_RE = /^(?:access|reset|suspend|resume|publish|call|execute|decrypt|encrypt|sign|print-.*|attach-.*|detach-.*|add-.*|set-.*|remove-.*|delete|create|update|deploy|ssh|scp|run)$/;
+// Hyphenated forms of the mutating actions (delete-access-config,
+// create-token, update-container, reset-windows-password, …) are refused too.
+const GCLOUD_REFUSED_PATH_RE = /^(?:access|ssh|scp|run|sign|print-.*|attach-.*|detach-.*|add-.*|set-.*|remove-.*|(?:reset|suspend|resume|publish|call|execute|decrypt|encrypt|delete|create|update|deploy)(?:-.*)?)$/;
 const GCLOUD_BOOLEAN_FLAGS = new Set(['--quiet', '--uri']);
 function gcloudReadGrammar(rest, verbs) {
   let i = 0;
@@ -1488,7 +1490,7 @@ function gcloudReadGrammar(rest, verbs) {
     if (GCLOUD_BOOLEAN_FLAGS.has(t)) { flags.push(t); continue; }
     return null;
   }
-  return { verb, positional, flags };
+  return { path, verb, positional, flags };
 }
 
 const CLOUD_BINARIES = new Set(['gcloud', 'gh', 'kubectl']);
@@ -1510,7 +1512,7 @@ function isReadOnlyCloudInspect(segment) {
     // `gcloud compute instances reset vm --zone list`) no longer qualifies.
     const g = gcloudReadGrammar(rest, GCLOUD_INSPECT_VERBS);
     if (!g) return false;
-    if (g.verb === 'read' && !(rest[0] === 'logging')) return false;
+    if (g.verb === 'read' && g.path[g.path.length - 1] !== 'logging') return false;
     return true;
   }
   // gh / kubectl: the verb is exactly the first token after the binary.
@@ -2507,6 +2509,9 @@ function isGcloudReadSegment(segment) {
   if (rest.length === 2 && rest[0] === 'auth' && rest[1] === 'print-access-token') return 'token';
   const g = gcloudReadGrammar(rest, GCLOUD_READ_VERBS);
   if (!g) return false;
+  // `read` is a gcloud verb only under `logging` (`gcloud [beta] logging read`);
+  // anywhere else the word is a resource name posing as the verb.
+  if (g.verb === 'read' && g.path[g.path.length - 1] !== 'logging') return false;
   const formats = g.flags.filter((f) => f.startsWith('--format='));
   if (formats.length !== 1 || !GCLOUD_FORMAT_RE.test(formats[0].slice(9))) return false;
   return 'read';

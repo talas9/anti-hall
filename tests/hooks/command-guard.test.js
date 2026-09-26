@@ -83,6 +83,7 @@ const BLOCK = [
   // and so is a separated flag value in general.
   'gcloud compute instances reset vm1 --zone list',
   'gcloud compute instances reset vm1 list',
+  'gcloud compute instances delete-access-config vm list',
   'gcloud secrets versions access latest --secret list',
   'gcloud run services describe foo --project p --region r',
   'gcloud logging read "severity>=ERROR" --limit 5',

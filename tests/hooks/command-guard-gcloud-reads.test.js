@@ -113,6 +113,10 @@ const BLOCK = [
   'gcloud sql users set-password u --password=p read --format=json',
   'gcloud compute instances attach-disk vm read --format=json',
   'gcloud compute instances add-metadata vm --metadata=startup-script=x read --format=json',
+  'gcloud compute instances delete-access-config vm read --format=json',
+  'gcloud compute instances reset-windows-password vm read --format=json',
+  'gcloud container clusters update-foo c list --format=json',
+  'gcloud compute instances vm read --format=json',                     // read outside logging
   'gcloud projects get-iam-policy p q --format=json',                  // two positionals
   'gcloud projects get-iam-policy p --format json',                    // separated value
   'gcloud projects get-iam-policy --format=json p',                    // positional after a flag

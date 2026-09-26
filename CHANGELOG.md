@@ -61,7 +61,9 @@ the update.
   Every flag is `--k=v` or a known boolean (`--quiet`, `--uri`); a separated value is
   refused. No path word may be access/reset/suspend/resume/publish/call/execute/decrypt/
   encrypt/sign/print-*/attach-*/detach-*/add-*/set-*/remove-*/delete/create/update/
-  deploy/ssh/scp/run (`run` is allowed only as the product group). Behavior change for
+  deploy/ssh/scp/run, nor a hyphenated form of a mutating action (`delete-access-config`,
+  `reset-windows-password`, …). `run` is allowed only as the product group, and `read`
+  only as `logging read`. Behavior change for
   the older exemption: `gcloud … describe foo --region r` must now be written
   `--region=r` to run inline.
 
