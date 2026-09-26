@@ -2407,6 +2407,164 @@ function isAllowedPlainPushChain(command, cwd) {
   return true;
 }
 
+// ---------------------------------------------------------------------------
+// Narrow read-only gcloud (owner-approved 2026-09-26). In the MAIN THREAD
+// ONLY (checked after the isCoordinator gate in main()), three shapes run
+// inline even though `gcloud` is a HEAVY_VERB:
+//   A. `gcloud auth print-access-token` — the whole command, nothing else.
+//   B. `gcloud <group…> <describe|list|get-iam-policy|read> … --format=
+//      json|yaml|value(...)`, optionally piped into a bounded sink or jq.
+//   C. `T=$(gcloud auth print-access-token); curl -s|-sS [-H "Authorization:
+//      Bearer $T"] <https URL>` (`;` or `&&`), GET only, output piped into a
+//      bounded sink / jq or capped with --max-filesize.
+// Everything else stays blocked: other gcloud verbs, curl with -X other than
+// GET, -d/--data*/-F/-T/--upload-file/-o/-O/--output (every flag outside a
+// short allowlist is refused), `@file`, and any extra chained segment.
+// Reuses splitSegmentsDetailed/tokenizeQuoted/effectiveVerb/
+// isBoundedSinkSegment/hasUnquotedRedirectChar/hasShellExpansionAnywhere —
+// no new parser. Gated by guards.allowGcloudReads (default true).
+// ---------------------------------------------------------------------------
+
+const GCLOUD_READ_VERBS = new Set(['describe', 'list', 'get-iam-policy', 'read']);
+const GCLOUD_REFUSED_VERBS = new Set([
+  'create', 'delete', 'deploy', 'set', 'update', 'add-iam-policy-binding', 'patch',
+  'import', 'export', 'rollback', 'start', 'stop', 'ssh', 'scp', 'submit', 'run', 'apply',
+]);
+const GCLOUD_FORMAT_RE = /^(?:json|yaml|value\(.+\))$/;
+const JQ_SAFE_FLAGS = new Set(['-r', '-c', '-e', '-S', '-M', '--raw-output', '--compact-output', '--sort-keys', '--monochrome-output']);
+
+function isRefusedGcloudWord(word) {
+  const w = word.toLowerCase();
+  return GCLOUD_REFUSED_VERBS.has(w) || w.startsWith('remove-');
+}
+
+// A pipe-fed tail segment for shapes B and C: a bounded sink (tail/head/wc/
+// grep -c/grep -m N) or `jq` with only formatting flags and one filter. No
+// redirect or expansion of any kind.
+function isGcloudReadSinkSegment(segment) {
+  if (hasUnquotedRedirectChar(segment) || hasShellExpansionAnywhere(segment)) return false;
+  const tokens = tokenizeQuoted(segment);
+  if (!tokens.length) return false;
+  if (tokens[0] === 'jq') {
+    let filters = 0;
+    for (const t of tokens.slice(1)) {
+      if (t.startsWith('-')) { if (!JQ_SAFE_FLAGS.has(t)) return false; continue; }
+      filters++;
+    }
+    return filters <= 1;
+  }
+  if (!['tail', 'head', 'wc', 'grep'].includes(tokens[0])) return false;
+  return isBoundedSinkSegment(segment);
+}
+
+// Shape B (and the literal shape A): one `gcloud` segment.
+function isGcloudReadSegment(segment) {
+  if (hasUnquotedRedirectChar(segment) || hasShellExpansionAnywhere(segment)) return false;
+  const tokens = tokenizeQuoted(segment);
+  if (tokens[0] !== 'gcloud') return false; // no env prefix, no wrapper
+  const rest = tokens.slice(1);
+  if (rest.length === 2 && rest[0] === 'auth' && rest[1] === 'print-access-token') return 'token';
+  let verbIdx = -1;
+  let format = null;
+  const words = [];
+  for (let i = 0; i < rest.length; i++) {
+    const t = rest[i];
+    if (t.startsWith('-')) {
+      if (t === '--flags-file' || t.startsWith('--flags-file=')) return false;
+      if (t.startsWith('--format=')) { if (format !== null) return false; format = t.slice(9); continue; }
+      if (t === '--format') { if (format !== null) return false; format = rest[i + 1] || ''; i++; continue; }
+      continue;
+    }
+    words.push(t);
+    if (verbIdx === -1 && GCLOUD_READ_VERBS.has(t.toLowerCase())) verbIdx = words.length - 1;
+  }
+  if (verbIdx < 1) return false; // need at least one group word before the verb
+  if (format === null || !GCLOUD_FORMAT_RE.test(format)) return false;
+  for (let i = 0; i < verbIdx; i++) {
+    if (!/^[a-z][a-z0-9-]*$/.test(words[i])) return false;
+  }
+  // The first word is the product group (`gcloud run services describe`):
+  // it names a product, not a verb, so only the words after it are checked.
+  for (let i = 1; i < words.length; i++) {
+    if (isRefusedGcloudWord(words[i])) return false;
+  }
+  return 'read';
+}
+
+// Shape C's curl segment. `tokenVar` is the variable the token was assigned
+// to; `$T`/`${T}` may appear ONLY as `Authorization: Bearer $T`.
+const CURL_SHORT_FLAG_RE = /^-[sSf]+$/;
+const CURL_BARE_FLAGS = new Set(['--silent', '--show-error', '--fail']);
+function curlSegmentShape(segment, tokenVar) {
+  if (hasUnquotedRedirectChar(segment)) return null;
+  if (hasSubstitutionOutsideSingleQuotes(segment) || /[`\\]|[<>]\(/.test(segment)) return null;
+  const tv = tokenVar.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const tokenRefRe = new RegExp('\\$(?:\\{' + tv + '\\}|' + tv + '(?![A-Za-z0-9_]))', 'g');
+  const tokens = tokenizeQuoted(segment);
+  if (tokens[0] !== 'curl') return null;
+  let silent = false;
+  let url = null;
+  let maxFilesize = false;
+  for (let i = 1; i < tokens.length; i++) {
+    const t = tokens[i];
+    if (CURL_SHORT_FLAG_RE.test(t)) { if (t.includes('s')) silent = true; continue; }
+    if (CURL_BARE_FLAGS.has(t)) { if (t === '--silent') silent = true; continue; }
+    if (t === '-X' || t === '--request') { if (tokens[i + 1] !== 'GET') return null; i++; continue; }
+    if (t === '-XGET' || t === '--request=GET') continue;
+    if (t === '--max-filesize' || t === '--max-time' || t === '-m') {
+      if (!/^\d+$/.test(tokens[i + 1] || '')) return null;
+      if (t === '--max-filesize') maxFilesize = true;
+      i++; continue;
+    }
+    if (t === '-H' || t === '--header') {
+      const h = tokens[i + 1];
+      if (typeof h !== 'string' || !h || h.startsWith('@')) return null;
+      const stripped = h.replace(tokenRefRe, '');
+      if (/[$`\\]/.test(stripped)) return null;
+      if (stripped !== h && !new RegExp('^Authorization:\\s*Bearer\\s+\\$(?:\\{' + tv + '\\}|' + tv + ')$', 'i').test(h)) return null;
+      i++; continue;
+    }
+    if (t.startsWith('-')) return null; // every other flag (-d/-F/-T/-o/-O/-K/--data*…) is refused
+    if (url !== null) return null;
+    if (!/^https:\/\/[^\s$`\\@]+$/.test(t)) return null;
+    url = t;
+  }
+  if (!silent || !url) return null;
+  // `$` anywhere outside the allowed header reference is refused.
+  if (/\$/.test(segment.replace(tokenRefRe, ''))) return null;
+  return { maxFilesize };
+}
+
+const GCLOUD_TOKEN_PREFIX_RE = /^\s*([A-Za-z_][A-Za-z0-9_]*)=\$\(\s*gcloud\s+auth\s+print-access-token\s*\)\s*(?:;|&&)\s*/;
+const GCLOUD_TOKEN_VAR_REFUSED_RE = /^(?:PATH|IFS|HOME|CURL_HOME|BASH_ENV|ENV|PS4|SHELLOPTS|BASHOPTS|LD_.*|DYLD_.*)$/;
+
+// isAllowedGcloudReadCommand(command) -> bool. See the header block above.
+function isAllowedGcloudReadCommand(command) {
+  if (typeof command !== 'string' || !command.trim()) return false;
+  if (/#/.test(neutralizeQuotedContents(command))) return false; // a comment can hide a segment
+  const prefix = command.match(GCLOUD_TOKEN_PREFIX_RE);
+  if (prefix) {
+    const tokenVar = prefix[1];
+    if (GCLOUD_TOKEN_VAR_REFUSED_RE.test(tokenVar)) return false;
+    const rest = command.slice(prefix[0].length);
+    const { segments, delims } = splitSegmentsDetailed(rest);
+    if (!segments.length || delims[delims.length - 1] !== 'end') return false;
+    const shape = curlSegmentShape(segments[0], tokenVar);
+    if (!shape) return false;
+    for (let i = 0; i < delims.length - 1; i++) if (delims[i] !== '|') return false;
+    for (let i = 1; i < segments.length; i++) if (!isGcloudReadSinkSegment(segments[i])) return false;
+    return segments.length > 1 || shape.maxFilesize; // output piped or bounded
+  }
+  const { segments, delims } = splitSegmentsDetailed(command);
+  if (!segments.length || delims[delims.length - 1] !== 'end') return false;
+  const kind = isGcloudReadSegment(segments[0]);
+  if (!kind) return false;
+  if (kind === 'token') return segments.length === 1;
+  for (let i = 0; i < delims.length - 1; i++) if (delims[i] !== '|') return false;
+  for (let i = 1; i < segments.length; i++) if (!isGcloudReadSinkSegment(segments[i])) return false;
+  return true;
+}
+
 function main() {
   // Read + parse the payload FIRST — coordinator/subagent detection needs the
   // payload's agent_id/agent_type markers (the only reliable signal under cmux).
@@ -2623,6 +2781,17 @@ function main() {
       if (isAllowedPlainPushChain(command, cwd)) {
         process.exit(0);
       }
+    }
+  } catch (_) {
+    // fail-closed: never let a bug in this carve-out bypass the heavy-command gate.
+  }
+
+  // Narrow read-only gcloud (owner-approved 2026-09-26): MAIN THREAD ONLY —
+  // already past the isCoordinator(payload) gate. See
+  // isAllowedGcloudReadCommand's header. Fail-closed on any error.
+  try {
+    if (settingsGet('guards', 'allowGcloudReads') !== false && isAllowedGcloudReadCommand(command)) {
+      process.exit(0);
     }
   } catch (_) {
     // fail-closed: never let a bug in this carve-out bypass the heavy-command gate.

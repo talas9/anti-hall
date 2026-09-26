@@ -6,6 +6,25 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## Unreleased
+
+### Features
+
+- **command-guard: narrow read-only gcloud in the main thread (owner-approved).**
+  Three shapes now run inline instead of being delegated:
+  `gcloud auth print-access-token` on its own;
+  `gcloud <group…> <describe|list|get-iam-policy|read> … --format=json|yaml|value(...)`,
+  optionally piped into `tail`/`head`/`wc`/`grep -c`/`grep -m N`/`jq`; and
+  `T=$(gcloud auth print-access-token); curl -s|-sS [-H "Authorization: Bearer $T"] <https URL>`
+  (`;` or `&&`). The curl must be a GET, and its output must be piped into a bounded
+  sink or `jq`, or capped with `--max-filesize`. Everything else stays blocked:
+  create/delete/deploy/set/update/add-iam-policy-binding/remove-*/patch/import/export/
+  rollback/start/stop/ssh/scp/submit/run/apply, `curl -X` other than GET,
+  `-d`/`--data*`/`-F`/`-T`/`--upload-file`/`-o`/`-O`/`--output`, `@file`, any other
+  curl flag, redirects, and any chained segment. `$T` may appear only in the
+  Authorization header. Subagents are unaffected. New setting
+  `guards.allowGcloudReads` (default `true`).
+
 ## 0.112.0 (2026-09-26)
 
 ### Features

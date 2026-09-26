@@ -221,6 +221,14 @@ const CG_INTENTIONAL_ALLOW_CHANGES = [
   'git push origin',
   'git push origin main',
   'git add . && git commit -m "wip" && git push origin main',
+  // Narrow read-only gcloud (owner-approved 2026-09-26, guards.allowGcloudReads):
+  // blocked at BASE_REV (gcloud is a HEAVY_VERB), allowed by
+  // isAllowedGcloudReadCommand(). command-guard-gcloud-reads.test.js covers
+  // the full allow/block matrix, including every refused verb and curl flag.
+  'gcloud auth print-access-token',
+  'gcloud projects get-iam-policy my-proj --format=json',
+  'T=$(gcloud auth print-access-token); curl -s -H "Authorization: Bearer $T" https://run.googleapis.com/v2/projects/p/locations/l/services | jq .',
+  'T=$(gcloud auth print-access-token); curl -sS -H "Authorization: Bearer $T" https://example.googleapis.com/v1/x | head -40',
 ];
 
 // -----------------------------------------------------------------------
@@ -342,7 +350,7 @@ test(`shell-scan differential corpus (base=${BASE_REV})`, (t) => {
     for (const f of summary.flips) process.stderr.write(`  [${f.guard}] ${JSON.stringify(f.cmd)}\n`);
   }
   if (summary.intentionalAllowChanges && summary.intentionalAllowChanges.length) {
-    process.stderr.write('\nBLOCK(base) -> ALLOW(new) INTENTIONAL changes ("allow plain push", 2026-09-26) (' + summary.intentionalAllowChanges.length + '):\n');
+    process.stderr.write('\nBLOCK(base) -> ALLOW(new) INTENTIONAL changes ("allow plain push" + "read-only gcloud", 2026-09-26) (' + summary.intentionalAllowChanges.length + '):\n');
     for (const f of summary.intentionalAllowChanges) process.stderr.write(`  [${f.guard}] ${JSON.stringify(f.cmd)}\n`);
   }
 });
