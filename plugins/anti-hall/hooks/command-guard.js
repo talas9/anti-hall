@@ -2070,28 +2070,59 @@ function matchedProjectCommandAllowPattern(command, cwd) {
   return null;
 }
 
+// redactAuditCommand(command) -> the command with secret-looking values
+// masked before it is logged: a value after a secret-named flag
+// (`--token X`, `--password=X`, `-p` is NOT matched — too generic), then
+// jev-assist's scrubSecrets (key=/token= assignments, known key prefixes,
+// Bearer/JWT/PEM/URL credentials, long base64/hex runs).
+function redactAuditCommand(command) {
+  let s = String(command || '');
+  s = s.replace(/(^|\s)(--?[A-Za-z0-9_-]*(?:token|password|passwd|secret|apikey|auth|credential|key)[A-Za-z0-9_-]*)(\s+|=)(\S+)/gi, '$1$2$3[REDACTED]');
+  try {
+    s = require('./lib/jev-assist.js').scrubSecrets(s);
+  } catch (_) {
+    // scrubber unavailable: the flag masking above still applied.
+  }
+  return s;
+}
+
 // appendProjectCommandAllowAudit({cwd, repo, pattern, command}) -> best-effort,
 // ONE ndjson line per allowed run, to ~/.anti-hall/logs/command-allow.ndjson.
 // Uses the canonical resolveHome() helper (see test-home-guard.js and
 // tests/hygiene/homedir-call-site-ratchet.test.js) so a test with an isolated
-// HOME never touches the real developer machine. Fully fail-open: a write
-// failure never blocks or un-allows the command that already passed.
+// HOME never touches the real developer machine. The ~/.anti-hall and logs
+// dirs must not be symlinks (lstat) and the file is opened O_NOFOLLOW, so a
+// planted symlink can never redirect the write; the logged command is
+// redacted (redactAuditCommand). Fully fail-open: a write failure never
+// blocks or un-allows the command that already passed.
 function appendProjectCommandAllowAudit(entry) {
+  let fd = null;
   try {
     const testHomeGuard = require('../companion/lib/test-home-guard.js');
     const home = testHomeGuard.resolveHome(undefined, process.env);
-    const logDir = path.join(home, '.anti-hall', 'logs');
-    fs.mkdirSync(logDir, { recursive: true });
+    const ahDir = path.join(home, '.anti-hall');
+    const logDir = path.join(ahDir, 'logs');
+    fs.mkdirSync(logDir, { recursive: true, mode: 0o700 });
+    for (const d of [ahDir, logDir]) {
+      const st = fs.lstatSync(d);
+      if (st.isSymbolicLink() || !st.isDirectory()) return;
+    }
     const line = JSON.stringify({
       ts: new Date().toISOString(),
       cwd: entry.cwd || '',
       repo: entry.repo || '',
       pattern: entry.pattern || '',
-      command: entry.command || '',
+      command: redactAuditCommand(entry.command || ''),
     }) + '\n';
-    fs.appendFileSync(path.join(logDir, 'command-allow.ndjson'), line);
+    const c = fs.constants;
+    fd = fs.openSync(path.join(logDir, 'command-allow.ndjson'),
+      c.O_WRONLY | c.O_APPEND | c.O_CREAT | (c.O_NOFOLLOW || 0), 0o600);
+    if (!fs.fstatSync(fd).isFile()) return;
+    fs.writeSync(fd, line);
   } catch (_) {
     // fail-open: audit logging never blocks or un-allows an already-allowed command.
+  } finally {
+    if (fd !== null) { try { fs.closeSync(fd); } catch (_) { /* ignore */ } }
   }
 }
 

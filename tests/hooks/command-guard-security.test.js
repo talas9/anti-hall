@@ -184,7 +184,7 @@ test('validatePattern: wildcard / non-literal / alternation patterns are rejecte
     '^npm [\\s\\S]+$', '^npm test$|^.*$', '^npm (?:x|.)*$', '^[a-z]+ x$', '^npm x.{0,}$', 'npm test$', '^npm test']) {
     assert.strictEqual(validatePattern(p).ok, false, 'must reject ' + p);
   }
-  for (const p of ['^npm run deploy -- \\S+$', '^bin/deploy\\.sh$', '^npm run (prod|staging)$',
+  for (const p of ['^npm run deploy -- \\S+$', '^npm run deploy -- [^ ]+$', '^bin/deploy\\.sh$', '^npm run (prod|staging)$',
     '^firebase deploy --only functions:[a-z0-9,:]+ --project [a-z0-9-]+$']) {
     assert.strictEqual(validatePattern(p).ok, true, 'must accept ' + p);
   }
@@ -336,5 +336,66 @@ test('plain-push: control — the configured remote still qualifies', () => {
     cp.spawnSync('git', ['-C', repo, 'remote', 'add', 'origin', 'https://example.invalid/repo.git']);
     const r = run('git push origin main', { cwd: repo });
     assert.strictEqual(r.status, 0, r.stdout);
+  });
+});
+
+// ---- #7 audit log: no symlink follow, secrets redacted ---------------------
+
+const DEPLOY_ANY = '^npm run deploy -- [^ ]+ --token [^ ]+$';
+
+test('audit log: secret values in the logged command are redacted', () => {
+  withRepo((repo) => {
+    writeAllow(repo, [DEPLOY_ANY]);
+    const h = makeHome();
+    try {
+      trustAllow(h.home, repo);
+      const secret = 'ghp_' + 'A'.repeat(36);
+      const r = run('npm run deploy -- prod --token ' + secret, { cwd: repo, home: h.home });
+      assert.strictEqual(r.status, 0, r.stdout);
+      const log = fs.readFileSync(path.join(h.home, '.anti-hall', 'logs', 'command-allow.ndjson'), 'utf8');
+      assert.ok(!log.includes(secret), 'secret must not be logged: ' + log);
+      assert.match(JSON.parse(log.trim()).command, /^npm run deploy -- prod --token \[REDACTED/);
+    } finally {
+      h.cleanup();
+    }
+  });
+});
+
+test('audit log: a symlinked log file is never written through', () => {
+  withRepo((repo) => {
+    writeAllow(repo, [DEPLOY_ARG]);
+    const h = makeHome();
+    const victimDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cgsec-victim-'));
+    try {
+      trustAllow(h.home, repo);
+      const victim = path.join(victimDir, 'victim.txt');
+      fs.writeFileSync(victim, 'original\n');
+      fs.mkdirSync(path.join(h.home, '.anti-hall', 'logs'), { recursive: true });
+      fs.symlinkSync(victim, path.join(h.home, '.anti-hall', 'logs', 'command-allow.ndjson'));
+      const r = run(TRUSTED_ARG, { cwd: repo, home: h.home });
+      assert.strictEqual(r.status, 0, 'the allowed command still runs (audit is fail-open): ' + r.stdout);
+      assert.strictEqual(fs.readFileSync(victim, 'utf8'), 'original\n', 'symlink target must be untouched');
+    } finally {
+      h.cleanup();
+      fs.rmSync(victimDir, { recursive: true, force: true });
+    }
+  });
+});
+
+test('audit log: a symlinked logs dir is never written through', () => {
+  withRepo((repo) => {
+    writeAllow(repo, [DEPLOY_ARG]);
+    const h = makeHome();
+    const victimDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cgsec-victimdir-'));
+    try {
+      trustAllow(h.home, repo);
+      fs.symlinkSync(victimDir, path.join(h.home, '.anti-hall', 'logs'));
+      const r = run(TRUSTED_ARG, { cwd: repo, home: h.home });
+      assert.strictEqual(r.status, 0, r.stdout);
+      assert.deepStrictEqual(fs.readdirSync(victimDir), [], 'nothing written into the symlinked dir');
+    } finally {
+      h.cleanup();
+      fs.rmSync(victimDir, { recursive: true, force: true });
+    }
   });
 });
