@@ -20,7 +20,9 @@ the update.
   Any edit to the file revokes trust, and a symlinked file is refused. Absolute, `..` and
   match-everything globs are ignored. A match never covers a path outside the repo
   (checked on real paths), `.git`, `.anti-hall`, `.claude`, `.codex`, hook config,
-  `~/.claude`, or a symlinked or hard-linked target. The main thread can never edit
+  `~/.claude`, or a symlinked or hard-linked target. Each path segment is folded with
+  NFKC plus lowercase before these checks, so `hookſ.json` (long s) and `.huſky` are
+  denied like the plain spellings the filesystem treats them as. The main thread can never edit
   `.anti-hall/edit-allow.json` itself. Subagents are unaffected. Doctor reports untrusted,
   changed or ignored entries. New setting `guards.projectEditAllow` (default `true`).
   Codex registers no Edit-family hooks, so this is Claude-only. The Codex settings skill

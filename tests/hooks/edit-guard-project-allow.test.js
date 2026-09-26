@@ -144,6 +144,16 @@ test('never matches .git, hook config or tool config, whatever the glob says', (
   });
 });
 
+test('F2: unicode-folded spellings of denied names are denied too (NFKC + lowercase)', () => {
+  withTrusted(['**/*.json', '**/*.md', 'sub/**', '.huſky/**', '.anti-hall/**'], (repo, home) => {
+    // U+017F LATIN SMALL LETTER LONG S folds to "s" under NFKC; U+FF41 fullwidth a -> "a".
+    for (const p of ['sub/hook\u017f.json', 'sub/HOOK\u017f.JSON', '.hu\u017fky/pre-commit.md', '.GIT/x.md', '.\uff41nti-hall/edit-allow.json']) {
+      assert.strictEqual(edit(repo, home, p).status, 2, JSON.stringify(p));
+    }
+    assert.strictEqual(edit(repo, home, 'sub/ok.json').status, 0, 'control');
+  });
+});
+
 test('a symlinked edit-allow.json is refused even when its bytes are trusted', () => {
   withTrusted(DOCS, (repo, home) => {
     const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'egallow-link-'));

@@ -550,13 +550,22 @@ function projectEditTarget(filePath, cwd) {
   return { top, rel: rel.split(path.sep).join('/'), realAbs };
 }
 
+// foldSegment(seg) -> the form every deny-list comparison uses: NFKC then
+// lowercase, because macOS/Windows filesystems fold more than ASCII case
+// (`hookſ.json` with a long s, or `.huſky`, IS `hooks.json` / `.husky` on APFS).
+function foldSegment(seg) {
+  let t = String(seg);
+  try { t = t.normalize('NFKC'); } catch (_) { /* keep raw */ }
+  return t.toLowerCase();
+}
+
 // isEditAllowFileTarget -> true when the edit targets this repo's own
-// .anti-hall/edit-allow.json (case-folded: macOS/Windows filesystems are
-// case-insensitive, so .anti-hall/EDIT-ALLOW.json is the same file).
+// .anti-hall/edit-allow.json (folded with foldSegment: .anti-hall/EDIT-ALLOW.json
+// or a compatibility-character spelling is the same file on macOS/Windows).
 function isEditAllowFileTarget(filePath, cwd) {
   try {
     const t = projectEditTarget(filePath, cwd);
-    return !!t && t.rel.toLowerCase() === '.anti-hall/edit-allow.json';
+    return !!t && t.rel.split('/').map(foldSegment).join('/') === '.anti-hall/edit-allow.json';
   } catch (_) {
     return false;
   }
@@ -566,9 +575,9 @@ function isProjectEditAllowed(filePath, cwd) {
   try {
     const t = projectEditTarget(filePath, cwd);
     if (!t) return false;
-    const segs = t.rel.split('/');
-    if (segs.some((seg) => PROJECT_EDIT_DENY_SEGMENTS.has(seg.toLowerCase()))) return false;
-    if (segs[segs.length - 1].toLowerCase() === 'hooks.json') return false;
+    const segs = t.rel.split('/').map(foldSegment);
+    if (segs.some((seg) => PROJECT_EDIT_DENY_SEGMENTS.has(seg))) return false;
+    if (segs[segs.length - 1] === 'hooks.json') return false;
     const home = require('../companion/lib/test-home-guard.js').resolveHome(undefined, process.env);
     const claudeHome = realpathOrSelf(path.join(home, '.claude'));
     const inClaudeHome = path.relative(claudeHome, t.realAbs);
