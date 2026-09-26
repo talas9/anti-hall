@@ -2565,7 +2565,10 @@ function curlSegmentShape(segment, tokenVar) {
 }
 
 const GCLOUD_TOKEN_PREFIX_RE = /^\s*([A-Za-z_][A-Za-z0-9_]*)=\$\(\s*gcloud\s+auth\s+print-access-token\s*\)\s*(?:;|&&)\s*/;
-const GCLOUD_TOKEN_VAR_REFUSED_RE = /^(?:PATH|IFS|HOME|CURL_HOME|BASH_ENV|ENV|PS4|SHELLOPTS|BASHOPTS|LD_.*|DYLD_.*)$/;
+// The token variable is one of a closed set of names (0.113 P2): any other
+// name could be an env var curl itself reads (HTTPS_PROXY, http_proxy,
+// CURL_CA_BUNDLE, SSLKEYLOGFILE, …) and hand the token to a proxy or a file.
+const GCLOUD_TOKEN_VAR_ALLOWED_RE = /^(T|TOKEN|ACCESS_TOKEN|GCLOUD_TOKEN)$/;
 
 // isAllowedGcloudReadCommand(command) -> bool. See the header block above.
 function isAllowedGcloudReadCommand(command) {
@@ -2574,7 +2577,7 @@ function isAllowedGcloudReadCommand(command) {
   const prefix = command.match(GCLOUD_TOKEN_PREFIX_RE);
   if (prefix) {
     const tokenVar = prefix[1];
-    if (GCLOUD_TOKEN_VAR_REFUSED_RE.test(tokenVar)) return false;
+    if (!GCLOUD_TOKEN_VAR_ALLOWED_RE.test(tokenVar)) return false;
     const rest = command.slice(prefix[0].length);
     const { segments, delims } = splitSegmentsDetailed(rest);
     if (!segments.length || delims[delims.length - 1] !== 'end') return false;

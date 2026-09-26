@@ -51,6 +51,8 @@ const ALLOW = [
   TOKEN + 'curl -sS ' + AUTH + ' https://example.googleapis.com/v1/x | head -40',
   'T=$(gcloud auth print-access-token) && curl -s -X GET ' + AUTH + ' https://example.googleapis.com/v1/x | jq -c .',
   TOKEN + 'curl -s --max-filesize 100000 ' + AUTH + ' https://example.googleapis.com/v1/x',
+  'ACCESS_TOKEN=$(gcloud auth print-access-token); curl -s -H "Authorization: Bearer $ACCESS_TOKEN" https://x.googleapis.com/v1/y | jq .',
+  'GCLOUD_TOKEN=$(gcloud auth print-access-token); curl -s -H "Authorization: Bearer ${GCLOUD_TOKEN}" https://x.googleapis.com/v1/y | jq .',
   TOKEN + 'curl -s https://example.googleapis.com/v1/x | tail -5',
   TOKEN + 'curl -s ' + AUTH + ' https://googleapis.com/v1/x | jq .',
   TOKEN + 'curl -s ' + AUTH + ' https://Storage.GoogleAPIs.com:443/v1/x | jq .',
@@ -160,6 +162,12 @@ const BLOCK = [
   TOKEN + 'curl -s --config cfg ' + AUTH + ' https://x.googleapis.com/v1/y | jq .',
   TOKEN + 'npm test',
   'PATH=$(gcloud auth print-access-token); curl -s https://x.googleapis.com/v1/y | jq .',
+  // 0.113 P2: only T/TOKEN/ACCESS_TOKEN/GCLOUD_TOKEN may hold the token.
+  'HTTPS_PROXY=$(gcloud auth print-access-token); curl -s --max-filesize 1 https://x.googleapis.com/v1/y',
+  'http_proxy=$(gcloud auth print-access-token); curl -s --max-filesize 1 https://x.googleapis.com/v1/y',
+  'CURL_CA_BUNDLE=$(gcloud auth print-access-token); curl -s --max-filesize 1 https://x.googleapis.com/v1/y',
+  'SSLKEYLOGFILE=$(gcloud auth print-access-token); curl -s --max-filesize 1 https://x.googleapis.com/v1/y',
+  'TOK=$(gcloud auth print-access-token); curl -s -H "Authorization: Bearer $TOK" https://x.googleapis.com/v1/y | jq .',
   'T=$(gcloud auth print-access-token --impersonate-service-account=x); curl -s https://x.googleapis.com/v1/y | jq .',
 ];
 

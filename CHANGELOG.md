@@ -65,6 +65,11 @@ the update.
   the older exemption: `gcloud … describe foo --region r` must now be written
   `--region=r` to run inline.
 
+- **command-guard gcloud token curl: closed set of token variable names (P2).** The token
+  may only be assigned to `T`, `TOKEN`, `ACCESS_TOKEN` or `GCLOUD_TOKEN`. Any other name
+  (`HTTPS_PROXY`, `http_proxy`, `CURL_CA_BUNDLE`, `SSLKEYLOGFILE`, …) could be an env var
+  curl itself reads, and is refused.
+
 ## 0.112.0 (2026-09-26)
 
 ### Features
