@@ -80,6 +80,11 @@ the update.
   by a path boundary, whatever the prefix (`/tmp` vs `/private/tmp`, a symlinked home).
   `<ver>.bak` never matches.
 
+- **command-guard gcloud read sinks: no env/input/file access (P3).** A `jq` filter
+  after a gcloud read or the token curl may not use `env`, `$ENV`, `input`, `inputs`,
+  `input_filename`, `import`, `include` or `$__loc__`. `grep -f`/`--file`, including in a
+  short-flag cluster, is refused.
+
 ## 0.112.0 (2026-09-26)
 
 ### Features

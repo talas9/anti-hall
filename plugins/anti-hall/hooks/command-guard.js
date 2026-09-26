@@ -2468,6 +2468,11 @@ function isAllowedPlainPushChain(command, cwd) {
 
 const GCLOUD_READ_VERBS = new Set(['describe', 'list', 'get-iam-policy', 'read']);
 const GCLOUD_FORMAT_RE = /^(?:json|yaml|value\(.+\))$/;
+// jq builtins that read the environment, other inputs/files or source
+// locations (0.113 P3): `env`/`$ENV` expose every env var, `input(s)` and
+// `input_filename` reach beyond the piped JSON, `import`/`include` load
+// modules from disk.
+const JQ_REFUSED_FILTER_RE = /\$ENV|\$__loc__|(^|[^A-Za-z0-9_$])(?:env|input|inputs|input_filename|import|include)(?![A-Za-z0-9_])/;
 const JQ_SAFE_FLAGS = new Set(['-r', '-c', '-e', '-S', '-M', '--raw-output', '--compact-output', '--sort-keys', '--monochrome-output']);
 
 // A pipe-fed tail segment for shapes B and C: a bounded sink (tail/head/wc/
@@ -2481,11 +2486,15 @@ function isGcloudReadSinkSegment(segment) {
     let filters = 0;
     for (const t of tokens.slice(1)) {
       if (t.startsWith('-')) { if (!JQ_SAFE_FLAGS.has(t)) return false; continue; }
+      if (JQ_REFUSED_FILTER_RE.test(t)) return false;
       filters++;
     }
     return filters <= 1;
   }
   if (!['tail', 'head', 'wc', 'grep'].includes(tokens[0])) return false;
+  // grep -f/--file reads its patterns from a FILE, and its match output then
+  // echoes that file's content — refuse it (and any short cluster with f).
+  if (tokens[0] === 'grep' && tokens.some((t) => /^-[A-Za-z]*f/.test(t) || /^--file(?:=|$)/.test(t))) return false;
   return isBoundedSinkSegment(segment);
 }
 
