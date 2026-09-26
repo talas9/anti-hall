@@ -275,11 +275,22 @@ test('mcp-reaper e2e: ANTIHALL_REAPER_EXCLUDE makes a real orphan SURVIVE the ki
 
 // --------------------------------------------------------------------------
 // Unix: MCP_REAP_GRACE=0 must be HONORED (not swallowed to the default 3s).
-// We assert the run completes promptly (well under the 3s default grace) AND
-// that the orphan is actually reaped — proving 0 was used as the grace.
-// Covers run-section gap: grace `0` not coerced by `|| 3`.
+//
+// The "0 not coerced to the `|| 3` default" SEMANTIC is proven deterministically
+// and exactly by the parseGrace() unit tests in mcp-reaper.test.js (no subprocess,
+// no wall-clock) — that is the actual regression guard. This e2e test's job is
+// narrower: prove the REAL kill path (spawn -> SIGTERM -> grace -> SIGKILL, all as
+// a real subprocess against real `ps`) still reaps the orphan when GRACE=0.
+//
+// Earlier this asserted `elapsed < 2500ms` for "prompt completion", which flaked
+// under heavy local CPU load — real `ps` scans and subprocess scheduling are
+// wall-clock-dependent and not bounded by the reaper's own logic, only by OS
+// contention (repros in an untouched clone under a busy machine, per commit
+// c785646's precedent of moving off measured wall-clock in favor of a
+// deterministic/generous-deadline check). We keep only the generous-deadline
+// poll for the end state, per that same precedent.
 // --------------------------------------------------------------------------
-test('mcp-reaper e2e: MCP_REAP_GRACE=0 is honored (prompt completion, orphan reaped)',
+test('mcp-reaper e2e: MCP_REAP_GRACE=0 is honored (orphan reaped via the real kill path)',
   { skip: process.platform === 'win32' }, async (t) => {
     const marker = newMarker();
     const childCode = 'setInterval(()=>{},1e9)';
@@ -289,16 +300,12 @@ test('mcp-reaper e2e: MCP_REAP_GRACE=0 is honored (prompt completion, orphan rea
       if (made.skip) return t.skip(made.skip);
       orphanPid = made.orphanPid;
 
-      const t0 = Date.now();
       const r = runReaper({ MCP_REAP_GRACE: '0', ANTIHALL_REAPER_MATCH: marker });
-      const elapsed = Date.now() - t0;
       assert.strictEqual(r.status, 0, 'reaper must exit 0');
-      // With grace=0 the sleepSync is ~0ms; the whole run is dominated by two `ps`
-      // scans (sub-second). If 0 were wrongly coerced to 3, this would exceed 3000ms.
-      assert.ok(elapsed < 2500,
-        `grace=0 must complete promptly; took ${elapsed}ms (default 3s grace not used)`);
 
-      // And the orphan is genuinely reaped.
+      // Generous deadline poll for the end state (not a tight elapsed-time bound —
+      // see comment above). The exact "0 honored, not coerced to 3" claim is proven
+      // by the parseGrace() unit tests, deterministically.
       const killDeadline = Date.now() + 5000;
       while (Date.now() < killDeadline && pidAlive(orphanPid)) await sleep(100);
       assert.ok(!pidAlive(orphanPid), `orphan pid ${orphanPid} must be reaped with grace=0`);

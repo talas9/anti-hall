@@ -477,6 +477,15 @@ function formatAbandonedBrokerLogLine(b) {
   return `abandoned codex broker (report-only): pid=${b.pid} age=${ageStr} cwd=${b.cwd} reason=${b.reason}`;
 }
 
+// parseGrace(envVal) -> the SIGTERM->SIGKILL grace period in seconds, from the raw
+// MCP_REAP_GRACE env string. Pure and exported so the "explicit 0 must be honored, not
+// swallowed by `|| 3`" contract is unit-testable with exact equality — no subprocess, no
+// wall-clock measurement. (A `0 || 3` gotcha would silently triple every reap's latency.)
+function parseGrace(envVal) {
+  const n = Number(envVal);
+  return Number.isFinite(n) && n >= 0 ? n : 3;
+}
+
 module.exports = {
   parsePs,
   isReaperParent,
@@ -494,6 +503,7 @@ module.exports = {
   formatAbandonedBrokerLogLine,
   defaultCwdOf,
   DEFAULT_CODEX_BROKER_MIN_AGE_S,
+  parseGrace,
 };
 
 // ---------------------------------------------------------------------------
@@ -553,9 +563,10 @@ function main() {
     }
 
     const dryRun = process.env.MCP_REAP_DRYRUN === '1';
-    // Parse grace; honor an explicit 0 (don't let `|| 3` swallow it). Finite & >= 0 wins.
-    const graceParsed = Number(process.env.MCP_REAP_GRACE);
-    const grace = Number.isFinite(graceParsed) && graceParsed >= 0 ? graceParsed : 3;
+    // Parse grace via the exported pure parseGrace() — honors an explicit 0 (see its
+    // doc comment) and is unit-tested there with exact equality, independent of this
+    // subprocess's real wall-clock behavior.
+    const grace = parseGrace(process.env.MCP_REAP_GRACE);
     let reaperMatch, reaperExclude, reaperCodexBroker, reaperCodexBrokerMinAgeS;
     try {
       const settingsLib = require('../hooks/lib/settings.js');

@@ -728,6 +728,35 @@ test('formatAbandonedBrokerLogLine: an unknown age renders as "unknown", not NaN
   assert.match(line, /age=unknown/);
 });
 
+test('parseGrace: an explicit "0" is honored exactly, never swallowed to the default 3', () => {
+  // The bug this guards against: `Number('0') || 3` evaluates to 3 (0 is falsy), which
+  // would silently triple every reap's SIGTERM->SIGKILL latency. parseGrace uses an
+  // explicit Number.isFinite/>=0 check instead, so this must be exact, not "truthy".
+  assert.strictEqual(m.parseGrace('0'), 0);
+  assert.strictEqual(m.parseGrace(0), 0);
+});
+
+test('parseGrace: finite non-negative values pass through unchanged', () => {
+  assert.strictEqual(m.parseGrace('5'), 5);
+  assert.strictEqual(m.parseGrace('1.5'), 1.5);
+  assert.strictEqual(m.parseGrace(7), 7);
+});
+
+test('parseGrace: missing/invalid/negative input falls back to the default of 3', () => {
+  // process.env.MCP_REAP_GRACE is `undefined` when the var is unset (Number(undefined)
+  // is NaN) — the real unset-var case.
+  assert.strictEqual(m.parseGrace(undefined), 3);
+  assert.strictEqual(m.parseGrace('abc'), 3);
+  assert.strictEqual(m.parseGrace('-1'), 3);
+  assert.strictEqual(m.parseGrace(NaN), 3);
+});
+
+test('parseGrace: an empty string coerces to Number("") === 0, per JS semantics, not the default', () => {
+  // Not a real-world case (process.env gives undefined, not '', for an unset var) but
+  // documents the actual Number() coercion this function relies on.
+  assert.strictEqual(m.parseGrace(''), 0);
+});
+
 test('exports include the codex-broker report-only class', () => {
   assert.strictEqual(typeof m.matchesCodexBroker, 'function');
   assert.strictEqual(typeof m.extractBrokerCwd, 'function');
