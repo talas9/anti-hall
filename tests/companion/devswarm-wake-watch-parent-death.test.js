@@ -70,7 +70,7 @@ test('a watcher spawned by an intermediate parent exits and releases its lock on
     // so it can be killed independently of the watcher.
     const intermediateSrc =
       'const { spawn } = require("child_process");' +
-      'const c = spawn(process.execPath, [process.env.WAKE_WATCH_TARGET], { env: process.env, stdio: ["ignore", "ignore", "ignore"] });' +
+      'const c = spawn(process.execPath, [process.env.WAKE_WATCH_TARGET], { env: { ...process.env, HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE }, stdio: ["ignore", "ignore", "ignore"] });' +
       'process.stdout.write("CHILD_PID:" + c.pid + "\\n");' +
       'setInterval(() => {}, 1000);';
     intermediate = spawn(process.execPath, ['-e', intermediateSrc], { env });
