@@ -2289,30 +2289,61 @@ function appendProjectCommandAllowAudit(entry) {
 }
 
 // ---------------------------------------------------------------------------
-// "Allow plain push" carve-out (owner-approved 2026-09-26). Lets the MAIN
-// THREAD run `git add …`, `git commit …`, and a plain `git push [remote]
-// [ref]` — plus `&&`/`;` chains made up ONLY of those three — inline, even
-// though a `git push` segment is classified heavy above (HEAVY_PATTERNS).
-// git-guard.js keeps its own independent force-push and AI-credit checks;
-// this carve-out never touches or duplicates those.
+// "Allow plain push" carve-out (owner-approved 2026-09-26, widened
+// 2026-09-26 on a field repro). Lets the MAIN THREAD run `git add …`, `git
+// commit …`, and a plain `git push [remote] [ref]` — plus `&&`/`;` chains
+// made up ONLY of those three — inline, even though a `git push` segment is
+// classified heavy above (HEAVY_PATTERNS). git-guard.js keeps its own
+// independent force-push and AI-credit checks; this carve-out never touches
+// or duplicates those.
 //
-// A push segment qualifies ONLY as the bare shape `git push`, `git push
-// <remote>`, or `git push <remote> <ref>` — no flags, no `+refspec`, no
-// `src:dst` (a `:` or leading `+`/`-` token disqualifies the whole chain,
-// which then falls through to the ordinary heavy-command block, i.e. no
-// behavior CHANGE for --force/--mirror/--delete/-d/--all/--tags/a foreign
-// dst — they are exactly as blocked as before). A given `remote` must be a
+// A push segment qualifies ONLY as the bare shape `git push [-q|--quiet]
+// [remote] [ref]` — no other flags, no `+refspec`, no `src:dst` (a `:` or
+// leading `+`/`-` token — other than the one recognized `-q`/`--quiet` slot
+// — disqualifies the whole chain, which then falls through to the ordinary
+// heavy-command block, i.e. no behavior CHANGE for --force/--mirror/
+// --delete/-d/--all/--tags/a foreign dst — they are exactly as blocked as
+// before, including `-q` combined with any of them: the quiet slot is
+// exactly one token, in exactly that position). A given `remote` must be a
 // configured remote NAME (`git -C <cwd> remote`; a path or URL-ish token
 // never qualifies, unresolvable fails closed). A given `ref` must be `HEAD`
 // or the CURRENT branch (`git -C <cwd> symbolic-ref --short HEAD`) — a push
 // to any other branch never qualifies; the resolver failing (detached HEAD,
 // not a repo, spawn error) fails CLOSED (does not qualify).
+//
+// Widened shapes (field repro: `cd <repo> && git add a b && git commit -q -m
+// "fix: x" && git push -q origin main && git log --oneline -1` was blocked
+// as heavy-pattern — none of the three gaps below existed yet):
+//   (a) `-q`/`--quiet` on push (add/commit already accepted any flags via a
+//       prefix match, so they needed no change).
+//   (b) ONE optional LEADING `cd <path>` segment — allowed only when
+//       `path.resolve(payload cwd, path)` REALPATHs to the payload cwd's own
+//       repo toplevel, or a directory inside it (never a different repo, a
+//       symlink escape, or an unresolvable path — fails CLOSED). All branch/
+//       remote resolution for the rest of the chain then uses that resolved
+//       directory, not the payload cwd.
+//   (c) Optional TRAILING read-only segments, and ONLY after at least one
+//       push segment has already appeared in the chain: `git log --oneline
+//       [-N]`, `git status [--short|-s]`, `git show --stat [-N|HEAD]`. No
+//       other git subcommand, no flags outside this exact shape.
 // ---------------------------------------------------------------------------
 
 // A bare remote/ref token: no leading '-' or '+' (rules out every flag and
 // force-refspec form), and no ':' anywhere (rules out `src:dst`/delete
 // refspecs) — enforced by the character class simply never including ':'.
-const PLAIN_PUSH_SEGMENT_RE = /^git\s+push(?:\s+((?![-+])[A-Za-z0-9_.\/-]+))?(?:\s+((?![-+])[A-Za-z0-9_.\/-]+))?\s*$/;
+// The one optional flag slot right after `push` matches ONLY `-q`/`--quiet`
+// verbatim (not a character class), so `--force`/`-f`/anything else there
+// still fails the whole regex, same as before this carve-out was widened.
+const PLAIN_PUSH_SEGMENT_RE = /^git\s+push(?:\s+(-q|--quiet))?(?:\s+((?![-+])[A-Za-z0-9_.\/-]+))?(?:\s+((?![-+])[A-Za-z0-9_.\/-]+))?\s*$/;
+
+// Trailing read-only segments (c) — only ever consulted AFTER a push segment
+// has already appeared in the chain (enforced in isAllowedPlainPushChain,
+// not here). Each is an exact, narrow shape: no other flags, no redirects
+// (redirect/substitution characters are already rejected by
+// classifyPlainGitChainSegment before these run).
+const PLAIN_LOG_SEGMENT_RE = /^git\s+log\s+--oneline(?:\s+-\d+)?\s*$/;
+const PLAIN_STATUS_SEGMENT_RE = /^git\s+status(?:\s+(?:--short|-s))?\s*$/;
+const PLAIN_SHOW_SEGMENT_RE = /^git\s+show\s+--stat(?:\s+(?:-\d+|HEAD))?\s*$/;
 
 // hasSubstitutionOutsideSingleQuotes(segment) -> true if a `` ` `` or `$(`
 // appears anywhere the shell would actually EXPAND it — i.e. outside single
@@ -2356,8 +2387,9 @@ function hasShellExpansionAnywhere(command) {
 }
 
 // classifyPlainGitChainSegment(segment) -> {kind:'add'|'commit'} |
-// {kind:'push', remote, ref} | null. `remote`/`ref` are the first/second bare
-// tokens of a plain push (null when omitted).
+// {kind:'push', remote, ref} | {kind:'log'|'status'|'show'} | null.
+// `remote`/`ref` are the (post-quiet-flag) first/second bare tokens of a
+// plain push (null when omitted).
 function classifyPlainGitChainSegment(segment) {
   const trimmed = segment.trim();
   if (hasUnquotedRedirectChar(trimmed)) return null;
@@ -2365,8 +2397,46 @@ function classifyPlainGitChainSegment(segment) {
   if (/^git\s+add\b/i.test(trimmed)) return { kind: 'add' };
   if (/^git\s+commit\b/i.test(trimmed)) return { kind: 'commit' };
   const m = trimmed.match(PLAIN_PUSH_SEGMENT_RE);
-  if (m) return { kind: 'push', remote: m[1] || null, ref: m[2] || null };
+  if (m) return { kind: 'push', remote: m[2] || null, ref: m[3] || null };
+  if (PLAIN_LOG_SEGMENT_RE.test(trimmed)) return { kind: 'log' };
+  if (PLAIN_STATUS_SEGMENT_RE.test(trimmed)) return { kind: 'status' };
+  if (PLAIN_SHOW_SEGMENT_RE.test(trimmed)) return { kind: 'show' };
   return null;
+}
+
+// classifyLeadingCdSegment(segment) -> the raw path argument string, or null
+// if this segment is not a bare, single-argument `cd <path>` (no flags, no
+// `-`/`~` shortcuts, no quoting tricks beyond a single simple token — the
+// realpath/toplevel check below is the actual security boundary, this just
+// rules out anything that is not obviously one plain path argument).
+function classifyLeadingCdSegment(segment) {
+  const trimmed = segment.trim();
+  if (hasUnquotedRedirectChar(trimmed)) return null;
+  if (hasSubstitutionOutsideSingleQuotes(trimmed)) return null;
+  if (hasShellExpansionAnywhere(trimmed)) return null;
+  const tokens = tokenizeQuoted(trimmed);
+  if (tokens.length !== 2 || tokens[0] !== 'cd') return null;
+  const p = tokens[1];
+  if (!p || p === '-' || p.startsWith('~')) return null;
+  return p;
+}
+
+// resolvedLeadingCdTarget(rawPath, payloadCwd) -> realpath of the target
+// directory, or null (fails CLOSED) unless it realpaths to the payload cwd's
+// own repo toplevel, or a directory inside it — never a different repo, a
+// symlink escape, or an unresolvable path.
+function resolvedLeadingCdTarget(rawPath, payloadCwd) {
+  try {
+    const target = fs.realpathSync(path.resolve(payloadCwd || process.cwd(), rawPath));
+    const toplevel = fs.realpathSync(
+      require('../companion/lib/identity.js').resolveContext(payloadCwd || process.cwd(), { missingPath: 'ancestor' }).toplevel
+    );
+    if (target === toplevel) return target;
+    if (target.startsWith(toplevel.replace(/\/+$/, '') + '/')) return target;
+    return null;
+  } catch (_) {
+    return null; // fail closed: unresolvable path, not a repo, etc.
+  }
 }
 
 // currentBranchName(cwd) -> the checked-out branch name, or null (detached
@@ -2439,13 +2509,39 @@ function isAllowedPlainPushChain(command, cwd) {
       return false;
     }
   }
-  for (const seg of segments) {
+  let rest = segments;
+  // (b) ONE optional leading `cd <path>` — only the FIRST segment may be a
+  // cd, and only when it resolves (realpath) to the payload cwd's own repo
+  // toplevel or a directory inside it. All git resolution below then uses
+  // that resolved directory. Fails CLOSED (whole chain disqualified) on any
+  // other cd shape or an unresolvable/out-of-repo target.
+  let gitCwd = cwd;
+  const firstTrimmed = segments.length ? segments[0].trim() : '';
+  if (firstTrimmed && /^cd\b/i.test(firstTrimmed)) {
+    const rawPath = classifyLeadingCdSegment(firstTrimmed);
+    if (!rawPath) return false;
+    const resolved = resolvedLeadingCdTarget(rawPath, cwd);
+    if (!resolved) return false;
+    gitCwd = resolved;
+    rest = segments.slice(1);
+    if (!rest.length) return false; // a bare `cd <dir>` alone is not a push chain
+  }
+  let sawPush = false;
+  for (const seg of rest) {
     const trimmed = seg.trim();
     if (!trimmed) continue;
     const cls = classifyPlainGitChainSegment(trimmed);
     if (!cls) return false; // any other segment disqualifies the whole chain
-    if (cls.kind === 'push' && !isPlainPushRemoteAllowed(cls.remote, cwd)) return false;
-    if (cls.kind === 'push' && !isPlainPushRefAllowed(cls.ref, cwd)) return false;
+    if (cls.kind === 'push') {
+      if (!isPlainPushRemoteAllowed(cls.remote, gitCwd)) return false;
+      if (!isPlainPushRefAllowed(cls.ref, gitCwd)) return false;
+      sawPush = true;
+    }
+    // (c) trailing read-only segments (log/status/show) are only ever
+    // meaningful AFTER a push has already appeared in this chain — before
+    // that, `git status`/`git log`/`git show` were never part of the
+    // original allowance and must not silently start qualifying.
+    if ((cls.kind === 'log' || cls.kind === 'status' || cls.kind === 'show') && !sawPush) return false;
   }
   return true;
 }

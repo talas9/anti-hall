@@ -10,6 +10,23 @@ the update.
 
 ### Fixes
 
+- **command-guard: "allow plain push" missed three common shapes.**
+  Peer-reported: `cd <repo> && git add a b && git commit -q -m "fix: x" &&
+  git push -q origin main && git log --oneline -1` was blocked as
+  "heavy-pattern" even though it should have qualified for the carve-out.
+  Root-caused to three independent gaps, all reproduced first with the
+  exact command via a real PreToolUse payload: (a) `-q`/`--quiet` on push
+  was not recognized by `PLAIN_PUSH_SEGMENT_RE`; (b) a leading `cd <path>`
+  segment was not recognized at all; (c) a trailing read-only segment
+  (`git log`/`status`/`show`) was not recognized at all. `isAllowedPlainPushChain`
+  now accepts `-q`/`--quiet` on push (still refusing it combined with
+  `--force` or any other flag), ONE optional leading `cd <path>` — only when
+  it realpaths to the payload cwd's own repo toplevel or a directory inside
+  it (fails closed on another repo, a `$()` argument, or an unresolvable
+  path) — and optional trailing `git log --oneline [-N]` / `git status
+  [--short|-s]` / `git show --stat [-N|HEAD]`, only after a push segment has
+  already appeared in the chain.
+
 - **doctor: orphaned-workspace-process report gave the wrong remedy for an ARCHIVED (not gone) workspace.**
   Peer report: the claude process in an archived DevSwarm tab stays alive, and
   killing it just relaunches it from the pty shell — the only real remedy is

@@ -221,6 +221,18 @@ const CG_INTENTIONAL_ALLOW_CHANGES = [
   'git push origin',
   'git push origin main',
   'git add . && git commit -m "wip" && git push origin main',
+  // Widened 2026-09-26 (field repro): -q/--quiet on push, ONE optional
+  // leading `cd <repo toplevel-or-subdir>`, and optional trailing read-only
+  // segments (git log/status/show) ONLY after a push. command-guard-allow-
+  // plain-push.test.js covers the full allow/block matrix, including every
+  // negative (cd to another repo, cd with $(), an unlisted trailing
+  // segment, -q combined with --force). This corpus only needs to prove the
+  // differential harness itself does not choke on the new shapes.
+  'git push -q origin main',
+  'git push --quiet origin main',
+  'cd /repo && git add a b && git commit -q -m "fix: x" && git push -q origin main && git log --oneline -1',
+  'git push origin main && git status --short',
+  'git push origin main && git show --stat HEAD',
   // Narrow read-only gcloud (owner-approved 2026-09-26, guards.allowGcloudReads):
   // blocked at BASE_REV (gcloud is a HEAVY_VERB), allowed by
   // isAllowedGcloudReadCommand(). command-guard-gcloud-reads.test.js covers

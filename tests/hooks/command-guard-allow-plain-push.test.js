@@ -265,3 +265,192 @@ test('allow-plain-push: kill-switch guards.allowPlainPush=false disables the car
     fs.rmSync(repo, { recursive: true, force: true });
   }
 });
+
+// ---------------------------------------------------------------------------
+// Widened shapes (field repro, 2026-09-26): a peer on hooks reported this
+// EXACT command blocked as "heavy-pattern" in their main thread, even though
+// it should qualify for the carve-out:
+//   cd <repo> && git add a b && git commit -q -m "fix: x" && git push -q
+//   origin main && git log --oneline -1
+// Root cause (three independent gaps, all now closed):
+//   (a) -q/--quiet on push was not recognized by PLAIN_PUSH_SEGMENT_RE.
+//   (b) a leading `cd <path>` segment was not recognized at all.
+//   (c) a trailing read-only segment (git log/status/show) was not
+//       recognized at all.
+// ---------------------------------------------------------------------------
+
+test('allow-plain-push (widened): the exact peer repro command is now allowed', () => {
+  const repo = makeGitRepo();
+  try {
+    fs.writeFileSync(path.join(repo, 'a'), '1\n');
+    fs.writeFileSync(path.join(repo, 'b'), '2\n');
+    const cmd = 'cd ' + repo + ' && git add a b && git commit -q -m "fix: x" && git push -q origin main && git log --oneline -1';
+    const res = run(cmd, { cwd: repo });
+    assert.notStrictEqual(res.status, 2, res.stdout);
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('allow-plain-push (widened): `-q` on a bare push is allowed', () => {
+  const repo = makeGitRepo();
+  try {
+    const res = run('git push -q origin main', { cwd: repo });
+    assert.notStrictEqual(res.status, 2, res.stdout);
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('allow-plain-push (widened): `--quiet` (long form) on push is allowed', () => {
+  const repo = makeGitRepo();
+  try {
+    const res = run('git push --quiet origin main', { cwd: repo });
+    assert.notStrictEqual(res.status, 2, res.stdout);
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('allow-plain-push (widened): a leading `cd <repo toplevel>` is allowed', () => {
+  const repo = makeGitRepo();
+  try {
+    const res = run('cd ' + repo + ' && git push origin main', { cwd: repo });
+    assert.notStrictEqual(res.status, 2, res.stdout);
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('allow-plain-push (widened): a leading `cd <subdirectory of the repo>` is allowed, branch/remote resolved from that dir', () => {
+  const repo = makeGitRepo();
+  try {
+    const sub = path.join(repo, 'sub');
+    fs.mkdirSync(sub);
+    const res = run('cd ' + sub + ' && git push origin main', { cwd: repo });
+    assert.notStrictEqual(res.status, 2, res.stdout);
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('allow-plain-push (widened): trailing `git log --oneline -1` after a push is allowed', () => {
+  const repo = makeGitRepo();
+  try {
+    const res = run('git push origin main && git log --oneline -1', { cwd: repo });
+    assert.notStrictEqual(res.status, 2, res.stdout);
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('allow-plain-push (widened): trailing `git status --short` after a push is allowed', () => {
+  const repo = makeGitRepo();
+  try {
+    const res = run('git push origin main && git status --short', { cwd: repo });
+    assert.notStrictEqual(res.status, 2, res.stdout);
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('allow-plain-push (widened): trailing `git show --stat HEAD` after a push is allowed', () => {
+  const repo = makeGitRepo();
+  try {
+    const res = run('git push origin main && git show --stat HEAD', { cwd: repo });
+    assert.notStrictEqual(res.status, 2, res.stdout);
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+// ---- Negative: leading cd to another repo ----
+
+test('allow-plain-push (widened): a leading cd to a DIFFERENT repo is blocked (fails closed)', () => {
+  const repoA = makeGitRepo();
+  const repoB = makeGitRepo();
+  try {
+    const res = run('cd ' + repoB + ' && git push origin main', { cwd: repoA });
+    assert.strictEqual(res.status, 2, 'cd must not escape the payload cwd repo: ' + res.stdout);
+  } finally {
+    fs.rmSync(repoA, { recursive: true, force: true });
+    fs.rmSync(repoB, { recursive: true, force: true });
+  }
+});
+
+// ---- Negative: leading cd with command substitution ----
+
+test('allow-plain-push (widened): a leading cd with $() substitution is blocked', () => {
+  const repo = makeGitRepo();
+  try {
+    const res = run('cd $(echo ' + repo + ') && git push origin main', { cwd: repo });
+    assert.strictEqual(res.status, 2, 'a $() in the cd argument must never be trusted: ' + res.stdout);
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+// ---- Negative: trailing segment not in the allowed list ----
+
+test('allow-plain-push (widened): a trailing segment outside the allow-list (npm test) is blocked', () => {
+  const repo = makeGitRepo();
+  try {
+    const res = run('git push origin main && npm test', { cwd: repo });
+    assert.strictEqual(res.status, 2, res.stdout);
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+// ---- Negative: -q combined with --force (either order) ----
+
+test('allow-plain-push (widened): `-q` combined with `--force` is still blocked', () => {
+  const repo = makeGitRepo();
+  try {
+    const res = run('git push -q --force origin main', { cwd: repo });
+    assert.strictEqual(res.status, 2, 'the quiet slot must not smuggle --force past the carve-out: ' + res.stdout);
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('allow-plain-push (widened): `--force` before `-q` is still blocked', () => {
+  const repo = makeGitRepo();
+  try {
+    const res = run('git push --force -q origin main', { cwd: repo });
+    assert.strictEqual(res.status, 2, res.stdout);
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+// ---- Negative: a read-only trailing shape used BEFORE the push ----
+
+test('allow-plain-push (widened): `git log` appearing BEFORE the push does not qualify (order matters)', () => {
+  const repo = makeGitRepo();
+  try {
+    const res = run('git log --oneline && git push origin main', { cwd: repo });
+    assert.strictEqual(res.status, 2, 'log/status/show only ever qualify AFTER a push: ' + res.stdout);
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+// ---- Negative: git worktree (linked worktree, .git is a FILE) ----
+
+test('allow-plain-push (widened): a linked git worktree (.git is a file) still resolves branch/remote correctly', () => {
+  const repo = makeGitRepo();
+  const wtDir = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'allowpush-wt-')), 'wt');
+  try {
+    cp.spawnSync('git', ['-C', repo, 'worktree', 'add', '-b', 'wtbranch', wtDir]);
+    assert.ok(fs.statSync(path.join(wtDir, '.git')).isFile(), 'linked worktree .git must be a file, not a dir');
+    const res = run('git push origin wtbranch', { cwd: wtDir });
+    // Whether allowed or blocked depends only on remote/ref resolution
+    // succeeding from the worktree dir — it must not CRASH or hang, and a
+    // legitimate same-branch push from a worktree must not be blocked.
+    assert.notStrictEqual(res.status, 2, res.stdout);
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
+    fs.rmSync(path.dirname(wtDir), { recursive: true, force: true });
+  }
+});
