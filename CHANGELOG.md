@@ -6,6 +6,37 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## Unreleased
+
+### Fixes
+
+- **DevSwarm wake-cron default moved off :00/:30** (peer ask, SkyCrew/tf3 Primaries
+  2026-09-26). `WAKE_CRON_DEFAULT` was `*/30 * * * *`, which fires exactly on `:00`/`:30`
+  — every other machine's `*/N` cron piles onto the same wall-clock instant. Now
+  `7,37 * * * *`: same 30-minute cadence, off-minute offset. The MAILBOX WAKE
+  CronCreate directive also now states plainly that ANY existing job already running
+  `inbox tick` for the workspace — any schedule, id, or partition UUID — counts as
+  present; never create a second one.
+- **`handover-resume.js` GUIDED RESUME PATH is now adaptive.** It used to
+  unconditionally tell the agent to run a "section-10 resume-verification checklist"
+  and read state.md/decisions.md/trials.md — a handover written without that section
+  or those files left nothing to follow. It now detects (fail-open) what the
+  referenced HANDOVER actually has and only mentions what exists, falling back to a
+  generic 3-step check (`git status --short --branch`, `pwd`, CLAUDE.md/AGENTS.md
+  re-read) when the checklist section is absent — still requiring the
+  `resume-verified:` line either way.
+
+### Features
+
+- **`inbox tick --quiet`** (peer ask, SkyCrew/tf3 Primaries 2026-09-26). `inbox tick`'s
+  JSON carries duplicate legacy+new field names (`unread`/`unreadTotal`,
+  `cursor`/`cursorNdjson`, `storeCursor`/`cursorStore`), which made a cron-prompt
+  directive eyeballing raw JSON error-prone. `--quiet` prints one line: `tick <id>:
+  unread N, known true|false, meshGap true|false, watcherArmed true|false` on success,
+  or a loud `ok:false ...` line + non-zero exit on failure. The JSON default (no
+  `--quiet`) is unchanged. The DevSwarm wake-cron prompt now uses `--quiet` and words
+  its stop condition against that line.
+
 ## 0.111.0 (2026-09-26)
 
 ### Security
