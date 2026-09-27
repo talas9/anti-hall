@@ -732,10 +732,6 @@ function main() {
     return; // malformed stdin -> fail-open (never block on a parse error)
   }
 
-  // SHARED STOP POLICY: already continuing because of a Stop block -> allow,
-  // before any state write or probe (never re-block back to back).
-  if (stopPolicy.stopHookActive(payload)) return;
-
   const now = Date.now();
 
   // NO turn-start-heartbeat-satisfaction check (reverted — see header): the
@@ -753,6 +749,17 @@ function main() {
 
   const stateFile = stateFileFor(sessionId);
   const state = readState(stateFile);
+
+  // SHARED STOP POLICY: already continuing because of a Stop block -> allow
+  // (never re-block back to back), before any probe. The one state write here
+  // records this check as `lastCheckAt`: without it the floor below stayed at
+  // the block time, so a report sent in the continuation turn kept satisfying
+  // every LATER turn's check however long ago it was sent (R2A1-CG-1).
+  if (stopPolicy.stopHookActive(payload)) {
+    state.lastCheckAt = now;
+    writeState(stateFile, state);
+    return;
+  }
   // defect E1 fix (root cause): episodeSince used to be `now - RESET_MS`
   // (a fixed 5-minute rolling wall-clock window) whenever this session had
   // never been blocked yet. A DevSwarm child's own turn — the interval

@@ -677,6 +677,33 @@ test('ALREADY-REPORTED window: a report older than RESET_MS still satisfies when
   }
 });
 
+// R2A1-CG-1: the stop_hook_active continuation (where the child sends its
+// report right after a block) must also record `lastCheckAt`; otherwise the
+// floor stays at the block time and that one report satisfies every later
+// turn's check, however long ago it was sent.
+test('ALREADY-REPORTED window: block -> continuation report -> next turn with NO new report still blocks', () => {
+  const h = makeHome();
+  seedAllTestDescriptors(h.home);
+  try {
+    const now = Date.now();
+    const T1 = now - 20 * 60 * 1000;
+    fs.mkdirSync(path.dirname(stateFile(h.home, 's1')), { recursive: true });
+    fs.writeFileSync(stateFile(h.home, 's1'), JSON.stringify({
+      blocks: 1, lastBlockAt: T1, totalBlocks: 1, lifetimeCapLogged: false,
+      nonceFailClosedLogged: false, mismatchLogged: false, lastCheckAt: T1,
+    }));
+    seedOutboundReport(h.home, 'child-ar', T1 + 30000);
+    const cont = testHook(HOOK, stopPayload({ cwd: REPO_CWD, stop_hook_active: true }), { home: h.home, env: REPORTED_ENV });
+    assert.strictEqual(cont.stdout, '', 'the continuation Stop is never re-blocked');
+    const st = JSON.parse(fs.readFileSync(stateFile(h.home, 's1'), 'utf8'));
+    assert.ok(st.lastCheckAt > T1, 'the continuation Stop records its own check time');
+    const r = testHook(HOOK, stopPayload({ cwd: REPO_CWD }), { home: h.home, expectJson: true, env: REPORTED_ENV });
+    assert.strictEqual(r.json && r.json.decision, 'block', `the previous turn's report must not satisfy this turn; got: ${r.stdout}`);
+  } finally {
+    h.cleanup();
+  }
+});
+
 test('ALREADY-REPORTED: an outbound row from a DIFFERENT sender does not satisfy -> still blocks', () => {
   const h = makeHome();
   seedAllTestDescriptors(h.home);
