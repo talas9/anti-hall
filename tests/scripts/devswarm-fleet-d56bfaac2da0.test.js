@@ -72,8 +72,14 @@ test('resolveCallerWorktree resolves a submodule cwd to the SUPERPROJECT topleve
     );
     assert.equal(fs.realpathSync(fromSubmodule), fs.realpathSync(superRepo));
   } finally {
-    fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
-    fs.rmSync(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    // Best-effort cleanup: a submodule .git tree in TMPDIR can transiently
+    // race macOS filesystem indexing on rmdir (ENOTEMPTY) after Node's own
+    // retry budget is exhausted. Not this test's concern once assertions
+    // above have passed; same try/catch convention already used by the
+    // sibling submodule fixtures (devswarm-child-turn-submodule-worktreepath
+    // .test.js, devswarm-parent-gate-submodule-parity.test.js).
+    try { fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }); } catch (_) {}
+    try { fs.rmSync(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }); } catch (_) {}
     delete require.cache[require.resolve(MODULE_PATH)];
   }
 });
