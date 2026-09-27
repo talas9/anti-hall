@@ -440,6 +440,57 @@ for (const cmd of [...LAUNCHER_MSG_BLOCK, ...DEADLY_LOOP_PROBES]) {
   });
 }
 
+// Command-valued config/env: git runs these values as commands (pager,
+// fsmonitor, diff.external, sshCommand, `!` aliases). A force push written as
+// the VALUE must block, whether set by env, `-c`, `git config`, or a config
+// line written by a heredoc/echo/printf to any file.
+const CONFIG_VALUE_BLOCK = [
+  `cat > .git/config <<'EOF'\n[core]\n\tpager = ${FPB}\nEOF\ngit log`,
+  `cat >> .git/config <<'EOF'\n[core]\n\tpager = sh -c '${FPB}'\nEOF\ngit log`,
+  `cat >> .git/config <<'EOF'\n[core]\n\tfsmonitor = ${FPB}\nEOF\ngit status`,
+  `cat >> .git/config <<'EOF'\n[diff]\n\texternal = ${FPB}\nEOF\ngit diff`,
+  `cat >> ~/.config/git/work.inc <<'EOF'\n[alias]\n\tx = !${FPB}\nEOF\ngit x`,
+  `cat >> .git/config <<'EOF'\n[alias]\n\tx = push --force\nEOF\ngit x`,
+  `GIT_PAGER='${FPB}' git log`,
+  `GIT_EXTERNAL_DIFF='${FPB}' git diff`,
+  `GIT_SSH_COMMAND='${FPB}' git fetch`,
+  `export GIT_PAGER='${FPB}'; git log`,
+  `env GIT_PAGER='${FPB}' git log`,
+  `GIT_CONFIG_PARAMETERS="'core.pager=${FPB}'" git log`,
+  `git -c core.pager='${FPB}' log`,
+  `git -c core.sshCommand='${FPB}' fetch`,
+  `git config core.pager '${FPB}'; git log`,
+  `git config --file .git/config alias.x '!${FPB}'; git x`,
+  "git config alias.x 'push --force'; git x",
+  `echo '[core] pager = ${FPB}' >> .git/config; git log`,
+  `echo -e '[core]\\n\\tfsmonitor = ${FPB}' >> ~/.gitconfig; git status`,
+  `printf '[alias]\\n\\tx = !${FPB}\\n' >> "$GIT_CONFIG"; git x`,
+];
+const CONFIG_VALUE_ALLOW = [
+  'git config user.name "Jane Doe"',
+  "git config core.pager 'less -R'; git log",
+  'git -c core.pager=cat log',
+  'GIT_PAGER=less git log',
+  "echo '[user] name = x' >> ~/.gitconfig",
+  "cat >> .git/config <<'EOF'\n[alias]\n\tst = status\n\tlg = !git log --oneline\nEOF\ngit st",
+  `git commit -m "fix(git-guard): block the pager = ${FPB} config form"`,
+  `cat <<'EOF' > /tmp/msg\nnever run ${FPB}, pager = less\nEOF\ngit status`,
+  'git push origin main',
+];
+for (const cmd of CONFIG_VALUE_BLOCK) {
+  test(`BLOCK (command-valued config/env): ${JSON.stringify(cmd)}`, () => {
+    const r = run(cmd);
+    assert.strictEqual(r.status, 2, `expected block (exit 2) for: ${cmd}\nstderr: ${r.stderr}`);
+    assert.match(r.stderr, REASON.FORCE);
+  });
+}
+for (const cmd of CONFIG_VALUE_ALLOW) {
+  test(`ALLOW (command-valued config/env): ${JSON.stringify(cmd)}`, () => {
+    const r = run(cmd);
+    assert.strictEqual(r.status, 0, `expected allow (exit 0) for: ${cmd}\nstderr: ${r.stderr}`);
+  });
+}
+
 for (const cmd of ALLOW) {
   test(`ALLOW: ${cmd}`, () => {
     const r = run(cmd);

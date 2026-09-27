@@ -990,6 +990,42 @@ function blankLauncherMessageHeredoc(cmd, cwd) {
   return out.join('\n');
 }
 
+// Command-valued config/env. Git runs some config and env VALUES as commands:
+// core.pager / GIT_PAGER, core.fsmonitor, diff.external / GIT_EXTERNAL_DIFF,
+// core.sshCommand / GIT_SSH_COMMAND, a `!` alias. A force push written as such
+// a value never sits at a command position, so the segment scan cannot see
+// it. scanCommandValue re-scans a value as a command, and as a git alias body
+// (`git <value>`), with any leading `!` stripped. A value shaped `key=value`
+// (GIT_CONFIG_PARAMETERS) is also scanned by its inner value. Only values that
+// mention `push` are re-scanned, so ordinary values cost nothing.
+function scanCommandValue(v, d) {
+  if (d >= 3 || !/push/.test(v)) return null;
+  const s = v.trim();
+  const cands = [s];
+  const kv = /^'?[A-Za-z_][\w.-]*=([\s\S]*?)'?$/.exec(s);
+  if (kv) cands.push(kv[1].trim());
+  for (const c of cands) {
+    const cmd = c.replace(/^!/, '');
+    const hit = scanCommand(cmd, d + 1) || scanCommand('git ' + cmd, d + 1);
+    if (hit) return hit;
+  }
+  return null;
+}
+
+// `key = value` lines in text written to a file (heredoc body, echo/printf
+// args). Any target counts: a config file can be .git/config, ~/.gitconfig,
+// $GIT_CONFIG or an includeIf target, so the value is checked, not the path.
+// An optional leading `[section]` covers the one-line `[core] pager = …` form.
+const CONFIG_LINE_RE = /^[ \t]*(?:\[[^\]\n]*\][ \t]*)?[A-Za-z][\w.-]*[ \t]*=[ \t]*(.+)$/gm;
+
+function scanConfigLines(text, d) {
+  for (const m of text.matchAll(CONFIG_LINE_RE)) {
+    const hit = scanCommandValue(m[1], d);
+    if (hit) return hit;
+  }
+  return null;
+}
+
 // Run the git force/trailer detection on every segment of a command string.
 // Returns a block message string if a violation is found, else null. Recurses
 // into `eval <payload>` segments (depth-bounded) so force/trailer forms hidden
@@ -1008,12 +1044,35 @@ function scanCommand(cmd, depth) {
   const heredocBodies = extractHeredocBodies(cmd);
   let lastCdDir = null;
 
+  for (const h of heredocBodies) {
+    const hit = scanConfigLines(h.body, d);
+    if (hit) return hit;
+  }
+
   for (const seg of segments) {
     const tokens = tokenize(seg);
     if (!tokens.length) continue;
 
+    // Shell assignments (`GIT_PAGER=…`, `export X=…`, `env X=…`): the value
+    // may be run as a command by git.
+    for (const t of tokens) {
+      if (t.quotedOnly) continue;
+      const a = /^[A-Za-z_][A-Za-z0-9_]*=([\s\S]+)$/.exec(t.text);
+      if (a) {
+        const hit = scanCommandValue(a[1], d);
+        if (hit) return hit;
+      }
+    }
+
     const ev = effectiveVerb(tokens);
     if (!ev) continue;
+
+    if (ev.verb === 'echo' || ev.verb === 'printf') {
+      const text = ev.args.map((t) => t.text).join(' ').replace(/\\[nt]/g, '\n');
+      const hit = scanConfigLines(text, d);
+      if (hit) return hit;
+      continue;
+    }
 
     // Track a literal `cd <dir>` segment (read order) so a later relative
     // `-F <path>` in this same command can be resolved against it. Does not
@@ -1061,8 +1120,25 @@ function scanCommand(cmd, depth) {
 
     if (ev.verb !== 'git') continue;
 
+    // `git -c key=value`: the value may be run as a command.
+    for (let j = 0; j + 1 < ev.args.length; j++) {
+      if (ev.args[j].text !== '-c') continue;
+      const cv = /^[^=]+=([\s\S]*)$/.exec(ev.args[j + 1].text);
+      const hit = cv ? scanCommandValue(cv[1], d) : null;
+      if (hit) return hit;
+    }
+
     const { sub, rest } = gitSubcommand(ev.args);
     if (sub === null) continue;
+
+    // `git config [--file f] key value`: scan each operand as a possible value.
+    if (sub === 'config') {
+      for (const t of rest) {
+        if (t.text.startsWith('-')) continue;
+        const hit = scanCommandValue(t.text, d);
+        if (hit) return hit;
+      }
+    }
 
     // --- Rule 2: force push ---
     if (sub === 'push') {
