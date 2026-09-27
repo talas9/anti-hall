@@ -6,6 +6,49 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.116.0 (2026-09-27)
+
+### Added
+
+- **compact-advice-guard (Stop): no /compact recommendation at low context or right after a compact.** Field defect: a reply declared "SAFE TO COMPACT NOW" and repeated a `/compact focus: …` line a few turns after a manual `/compact`, at low context, with "no background agents running" as its only reason. The guard blocks once per declaration when the final reply recommends compacting and either context % is below `autoHandover.pct - guards.compactAdviceMarginPct`, or a compact boundary (Claude `compact_boundary`; Codex `compacted`/`context_compacted`) is within `guards.compactAdviceRecentTurns` turns. The threshold-fired auto-handover path stays allowed; quoted, negated and retracted phrasing is ignored. Registered for Claude and Codex.
+- **compact-declaration-guard (PreToolUse): no new work in the turn after declaring SAFE TO COMPACT.** Field defect: after the declaration the model started a background agent and a state-changing shell command in the same turn. Agent/Task spawns, Write/Edit/MultiEdit/NotebookEdit and state-changing Bash are blocked while the current turn holds an active declaration; read-only tools pass. The next user message or an explicit `RETRACT SAFE TO COMPACT — <why>` line clears it (task notifications do not). Codex: Bash only, matching the port's PreToolUse policy.
+- The shared compact-advice matcher also recognizes the Codex handover wording ("GOOD POINT FOR /compact OR /new NOW", "SAFE for a context reset") and its retractions.
+- **Handover skill (Claude + Codex):** a quiet background queue is necessary, not sufficient, to declare SAFE TO COMPACT — declare it only on the auto-handover threshold or genuinely high context, never within `guards.compactAdviceRecentTurns` turns of a compact, and retract before doing more work.
+- **Jev: daily rollups and longer log retention.** `jev-assist.ndjson` kept one 1MB backup (about a day) and `jev-triage.ndjson` truncated itself at 1MB, so no audit could see more than a day. `jev-assist.ndjson` now rotates at 2MB and `jev-triage.ndjson` at 1MB into `.1 … .N` (`jev.logRotatedFiles`, default 10, about 20 days); lowering N never removes generations already on disk. Before each rotation every retained row is folded into `~/.anti-hall/logs/jev-daily/<YYYY-MM-DD>.json` (per id × backend × mode: counts, fresh calls, changed-vs-baseline, timeouts, failures, cost, p50/p95 latency, outcomes). Rollups are never removed by default; `jev.rollupRetentionDays` is an opt-in.
+- **jev-report reads history.** It reads every rotated generation (not only live + `.1`), and summarises days the raw logs no longer cover from the daily rollups (`rollupHistory` in `--json`, an "Older history" text section). A day is never counted twice; rolled-up p50/p95 are labelled approximate.
+- **`settings show --section jev`** lists every Jev integration's effective mode (master switch and env kill switches folded in), the stored value, its source tier and the log it writes to (`jevEffectiveIntegrations` in `--json`).
+
+### Fixes
+
+From a peer workspace sweep:
+
+- **Scratchpad exemption encodes the cwd like the harness.** The harness names the per-project scratchpad dir by replacing every non-alphanumeric cwd character with `-`; the shared helper replaced only `/`, so any cwd containing `.` or `_` (e.g. dotted worktree paths) computed a dir that never exists and the own-scratchpad exemption never matched in edit-guard or command-guard. One shared encoder now mirrors the harness; the session id is still required, so sibling sessions stay blocked.
+- **command-guard: `2>&1` / `>&2` / `&>` are redirections, not background separators.** The splitter split on every lone `&`, so `x 2>&1 | tail` never reached the bounded-check allowance. An `&` after `>`/`<` (fd dup) or before `>` now stays in the word; a real background `&` still splits. Only `2>&1` is ignored when judging a check's shape; any other `>&` routes output around the sink and disqualifies it, and `&>file` targets go through the write-redirect rule.
+- **command-guard: the delegation hint names the exact inline-allowed shapes** instead of promising any "bounded single-target check": `python3 -m pytest -q <one file>`, `node --test <1-2 files>`, `ctest -R <name>`, `<cc> -fsyntax-only`, `git clone --depth 1 <https-url> <scratch/tmp dir>`, a non-heavy command with `--check`/`--dry-run`/`--list`, or an interpreter on an existing script with `--check`, each piped to `tail`/`head`/`wc`/`grep -c`/`grep -m N`; scratchpad scripts are `run_in_background` only. The `guards.allowReadOnlyVerify` descriptions (GUIDE, `/config`, settings schema) now say the same.
+- **git-guard: quoted heredoc bodies written to non-shell consumers are data.** Body lines of a quoted-delimiter, terminated heredoc are blanked before segmentation only when the owning pipeline is all known data consumers and no segment anywhere in the command is a shell/evaluator (including write-then-run). Opener and post-terminator lines, and unquoted bodies, are still scanned.
+- **tasklist-guard: progress freshness is relative to the last work, not wall-clock.** An idle turn (cron tick, status check) more than 30 min after the last progress write was blocked although no work had happened since. Freshness is now judged against the newest file-changing action when known; new work after the progress write still blocks.
+- **task-guard: tasks honestly marked blocked don't trigger the drain nudge.** The Stop nudge lists only open tasks without an open `blockedBy` or an owner-blocked marker; if every open task is blocked there is no nudge. A dangling `blockedBy` id does not hide a task. `blockedOn` also accepts `external`.
+- **model-routing-guard: file names mentioning deploy don't make a prompt deploy-shaped.** Path- and identifier-like tokens (containing `_` or `/`, or ending in `.ext`) are stripped before the deploy match, so `tools/deploy_webui.sh` or `docs/deploy.md` in a read-only prompt no longer triggers the deploy floor; plain deploy sentences still do.
+- **speculation-guard: hedge words inside quotes, inline code, fenced blocks and `>` blockquotes are not the session's own speculation.** Matching runs on a masked copy; unclosed quotes/fences mask nothing and apostrophes are never quote delimiters.
+- **devswarm send: a no-project failure explains the fix** (run from inside the repo) instead of returning a bare reason code, like `relay` and `reap-orphans`.
+
+Jev logging:
+
+- **parentGateQuestion decisions were never logged.** The triage and assist caches evict the lowest `_seq` first, but `_seq` came from a per-process counter that restarted at 1 in every hook process; once a cache reached 500 entries each new entry sorted lowest and was evicted in the same write. The triage cache froze, the question-needs-answer lookup never found a label, and parentGateQuestion never reached its decision. `_seq` is now seeded from the stored max; an already-frozen cache heals in place.
+- **`jevIntegrations.triage: off` now disables triage labelling** (it only checked `jev.triage`); `ANTIHALL_JEV_TRIAGE=0` does too.
+- modelRouting is consulted only on routing blocks, so a window with no blocks correctly logs zero rows (documented, fixture-tested).
+
+### New settings
+
+| Key | Default | `/config` |
+|---|---|---|
+| `guards.compactAdviceGuard` | `true` | `guards_compact_advice_guard` |
+| `guards.compactAdviceRecentTurns` | `10` | `guards_compact_advice_recent_turns` |
+| `guards.compactAdviceMarginPct` (advanced) | `10` | — |
+| `guards.compactDeclarationGuard` | `true` | `guards_compact_declaration_guard` |
+| `jev.logRotatedFiles` (advanced) | `10` | — |
+| `jev.rollupRetentionDays` (advanced) | `0` (keep all) | — |
+
 ## 0.115.2 (2026-09-27)
 
 ### Fixes
