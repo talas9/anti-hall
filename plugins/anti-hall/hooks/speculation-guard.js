@@ -535,8 +535,16 @@ async function main() {
   if (!lastText) {
     process.exit(0);
   }
-  // Marker matching ignores quoted material (see maskQuotedText).
-  const markerText = extractLastAssistantMarkerText(transcriptPath) || '';
+  // Marker matching ignores quoted material (see maskQuotedText). But if
+  // masking blanked EVERY non-blank character (a reply that is a single
+  // straight-quoted or inline-code hedge with nowhere else to hide), fall
+  // back to the unmasked text for marker matching -- the same rationale as
+  // the allQuotedOrFenced short-circuit for `>`/fenced replies: a hedge
+  // that has nowhere else to state itself still fires.
+  let markerText = extractLastAssistantMarkerText(transcriptPath) || '';
+  if (markerText.trim() === '') {
+    markerText = lastText;
+  }
 
   // Compute a hash of the last message text for loop-safety.
   const msgHash = crypto.createHash('sha1').update(lastText).digest('hex');

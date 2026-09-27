@@ -536,31 +536,34 @@ function unblockedOpen(openTasks, taskMap) {
     return validBlockers(t).length === 0 || isOwnerBlocked(t);
   }
 
-  const reachMemo = new Map();
-  const visiting = new Set();
-  // canReachTerminal(id) — plain forward reachability along blockedBy edges to
-  // a terminal task. The visiting set only ever turns a cycle into "no reach"
-  // (never a "yes" that flips depending on traversal order), so A->A and
-  // A<->B both correctly resolve to "does not reach" for every node involved.
-  function canReachTerminal(id) {
-    id = String(id);
-    if (reachMemo.has(id)) return reachMemo.get(id);
-    if (visiting.has(id)) return false;
+  // reachOrTerminal — a real fixpoint over the blockedBy graph, not a
+  // memoized DFS: order-independent by construction, so the same graph
+  // yields the same verdict regardless of task/TodoWrite order. Seed with
+  // every open terminal task, then repeatedly add any open task that has a
+  // valid blocker already in the set, until nothing new is added. A pure
+  // cycle (A<->B, or a self-reference A->A) never gets seeded and never
+  // gains a validBlocker already in the set, so it correctly never joins.
+  const reachOrTerminal = new Set();
+  for (const id of openIds) {
     const t = taskMap.get(id);
-    if (!t) return false;
-    visiting.add(id);
-    let reached = false;
-    for (const bid of validBlockers(t)) {
-      const bt = taskMap.get(bid);
-      if (bt && (isTerminal(bt) || canReachTerminal(bid))) { reached = true; break; }
+    if (t && isTerminal(t)) reachOrTerminal.add(id);
+  }
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const id of openIds) {
+      if (reachOrTerminal.has(id)) continue;
+      const t = taskMap.get(id);
+      if (!t) continue;
+      if (validBlockers(t).some(bid => reachOrTerminal.has(bid))) {
+        reachOrTerminal.add(id);
+        changed = true;
+      }
     }
-    visiting.delete(id);
-    reachMemo.set(id, reached);
-    return reached;
   }
 
   function honestlyBlocked(t) {
-    return validBlockers(t).length > 0 && canReachTerminal(t.id);
+    return validBlockers(t).some(id => reachOrTerminal.has(id));
   }
 
   return openTasks.filter(t => !isOwnerBlocked(t) && !honestlyBlocked(t));

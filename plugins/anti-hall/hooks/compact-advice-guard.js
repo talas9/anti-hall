@@ -18,7 +18,10 @@
 // BLOCKS the Stop (once per declaration) when the turn's FINAL assistant
 // message recommends compacting (hooks/lib/compact-advice.js findAdvice():
 // "SAFE TO COMPACT", "good point to /compact", "/compact" offered as an
-// instruction — quoted/negated/retracted text excluded) AND either:
+// instruction — double-quoted spans, fenced code blocks, and phrasing
+// immediately preceded by "not"/"n't"/"never"/"no need"/"no reason"/
+// "retract(ed/ing)" are excluded; single-quoted/backticked mentions and
+// other negated or questioning phrasing are NOT excluded) AND either:
 //   - LOW CONTEXT: context % < autoHandover.pct − guards.compactAdviceMarginPct
 //     (context % from hooks/lib/context-pct.js: statusline → Codex rollout →
 //     transcript estimate; unknown → this rule is skipped), or

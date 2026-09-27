@@ -610,6 +610,13 @@ const OWN_HEDGE_BLOCK_R1_3 = [
   // S7: a 100% fenced reply (fence-only, no other content) containing a
   // hedge -- must not escape entirely.
   '```\nit is probably fine\n```',
+  // R5R1-P2-3: a reply that is a single straight-quoted hedge span (not a
+  // `>` blockquote or fence, so allQuotedOrFenced does not short-circuit)
+  // masks to nothing; masking must fall back to the unmasked text so the
+  // hedge still fires.
+  '"This is probably the cache issue; it should work now."',
+  // R5R1-P2-3: same, but a single inline-code hedge span.
+  '`This is probably the cache issue; it should work now.`',
 ];
 for (const text of OWN_HEDGE_BLOCK_R1_3) {
   test(`BLOCK (R1-3 quote/fence escape): ${JSON.stringify(text).slice(0, 70)}`, () => {

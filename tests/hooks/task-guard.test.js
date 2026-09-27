@@ -616,6 +616,48 @@ test('GENERIC: cyclic blockedBy (A<->B) does not silence the nudge for either ta
   }
 });
 
+// ---- R5R1-P2-2: canReachTerminal used to be a memoized DFS whose memoized
+// `false` depended on which node was "visiting" first, so the same graph
+// gave a different verdict depending on TodoWrite order. A real fixpoint
+// (seed terminal tasks, then repeatedly add any open task with a valid
+// blocker already in the set) must give the SAME verdict regardless of
+// order: A blockedBy [B,T], B blockedBy [A], T is owner-blocked (terminal,
+// so T reaches nothing further and is itself filtered as owner-blocked). ----
+
+test('GENERIC: order-independent verdict — A blockedBy [B,T], B blockedBy [A], T owner-blocked (order A,B,T)', () => {
+  const h = makeHome();
+  try {
+    const tp = h.writeTranscript([
+      todoWrite([
+        { id: '1', content: 'cross-blocked task A', status: 'pending', blockedBy: ['2', '3'] },
+        { id: '2', content: 'cross-blocked task B', status: 'in_progress', blockedBy: ['1'] },
+        { id: '3', content: 'owner picks the terminal', status: 'in_progress', metadata: { blockedOn: 'owner' } },
+      ]),
+    ]);
+    const r = testHook(HOOK, stopPayload(tp), { home: h.home });
+    assert.ok(!isBlock(r), `A and B both honestly reach the owner-blocked terminal; reason: ${r.json && r.json.reason}`);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('GENERIC: order-independent verdict — same graph, TodoWrite order B,A,T', () => {
+  const h = makeHome();
+  try {
+    const tp = h.writeTranscript([
+      todoWrite([
+        { id: '2', content: 'cross-blocked task B', status: 'in_progress', blockedBy: ['1'] },
+        { id: '1', content: 'cross-blocked task A', status: 'pending', blockedBy: ['2', '3'] },
+        { id: '3', content: 'owner picks the terminal', status: 'in_progress', metadata: { blockedOn: 'owner' } },
+      ]),
+    ]);
+    const r = testHook(HOOK, stopPayload(tp), { home: h.home });
+    assert.ok(!isBlock(r), `same graph, different TodoWrite order, must give the same verdict; reason: ${r.json && r.json.reason}`);
+  } finally {
+    h.cleanup();
+  }
+});
+
 test('GENERIC: A blockedBy an unblocked open B -> A excluded, B listed', () => {
   const h = makeHome();
   try {
