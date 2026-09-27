@@ -247,6 +247,20 @@ test('Stop: a tokens-latch (firedVia:"tokens") fired below the pct threshold may
   assert.strictEqual(blocked(r), null, r.stdout);
 }));
 
+// R2-RV1-6: the Stop-time pause-nag writer records firedVia:'stop-tokens'.
+test('Stop: a Stop-time tokens-latch (firedVia:"stop-tokens") fired below the pct threshold may still declare SAFE', () => withHome((h) => {
+  const firedAt = T0 - 100000;
+  writeLatch(h.home, sessionTag({ session_id: SESSION }), {
+    fired: true, firedAt, firedPct: 20, firedVia: 'stop-tokens', lastNagPct: 20, lastNagAt: firedAt,
+  });
+  const tp = h.writeTranscript([
+    user('keep going'), say('working', 20), toolUse('Write'), toolResult(),
+    say('✅ SAFE TO COMPACT NOW', 20),
+  ]);
+  const r = testHook(STOP, stopPayload(tp), { home: h.home, env: ENV });
+  assert.strictEqual(blocked(r), null, r.stdout);
+}));
+
 test('Stop: the tokens-latch exception does not apply once a compact happened after the latch fired', () => withHome((h) => {
   const firedAt = T0 - 100000;
   writeLatch(h.home, sessionTag({ session_id: SESSION }), {

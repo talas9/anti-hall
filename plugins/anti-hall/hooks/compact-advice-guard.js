@@ -104,7 +104,9 @@ function main() {
   // below the pct threshold — `low` may still be true even though the
   // directive legitimately fired. Its SAFE declaration is allowed on the
   // same terms (no compact since the fire), without requiring !low.
-  const tokensFired = latch.fired === true && latch.firedVia === 'tokens';
+  // Both writers: auto-handover.js writes 'tokens', the Stop-time
+  // auto-handover-pause-nag.js writes 'stop-tokens'.
+  const tokensFired = latch.fired === true && (latch.firedVia === 'tokens' || latch.firedVia === 'stop-tokens');
   if (latch.fired === true && (!low || tokensFired) && !compactAfterFire) return;
 
   const hash = crypto.createHash('sha1').update(finalText).digest('hex');
