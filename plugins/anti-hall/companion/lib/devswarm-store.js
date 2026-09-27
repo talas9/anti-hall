@@ -2867,6 +2867,26 @@ function computeSummary(store, opts) {
     // broadcastUrgencyMax (v0.58 P1 fix) — reuses maxUrgencyOf, same helper
     // urgencyMax uses, just scoped to this workspace's unread broadcast rows.
     const broadcastUrgencyMax = maxUrgencyOf(unreadBroadcastRows);
+    // broadcastUnreadFromOthers (field report: wake-watch woke a Primary on
+    // its OWN `send --broadcast` — "new mesh mail for child primary-63f9261d:
+    // broadcast direct total 189 -> 190 (+1)"). `broadcastUnread` above is
+    // DELIBERATELY inclusive of a workspace's own sends (D3 full-visibility
+    // contract, `devswarm-store-mesh.test.js` "w1 sees the unread broadcast
+    // (own send included)") — roster/diagnose/the broadcast-ack flow all
+    // depend on that meaning, so it must not change. wake-watch's edge-
+    // trigger needs a DIFFERENT question — "did somebody ELSE broadcast" —
+    // so this is an ADDITIVE sibling field, never a redefinition of
+    // `broadcastUnread` itself. `ownFamily` is the SAME identity-family set
+    // (`recipientFamilyIds`) `resolveSenderRegistryId` above and
+    // `devswarm-reply-state.js`'s familyAwareUnanswered already use for "is
+    // this sender really someone else" — reused here so a UUID/hash alias
+    // pair for the SAME physical workspace is excluded too, not just an
+    // exact `d.id` match.
+    let ownFamily = null;
+    try { ownFamily = identityFamily.recipientFamilyIds(d.id, registry); } catch (_) { ownFamily = null; }
+    const broadcastUnreadFromOthers = unreadBroadcastRows.filter((r) => (
+      !(ownFamily && ownFamily.size && r && r.sender != null && ownFamily.has(String(r.sender)))
+    )).length;
 
     let working_on = null;
     for (const r of broadcastAll) {
@@ -2885,6 +2905,7 @@ function computeSummary(store, opts) {
       oldestDirectUnreadTs,
       oldestDirectUnreadSender,
       broadcastUnread,
+      broadcastUnreadFromOthers,
       urgencyMax,
       broadcastUrgencyMax,
       working_on,

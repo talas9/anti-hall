@@ -57,7 +57,14 @@ function walk(dir, base) {
 // additively emits `oldestDirectUnreadSender` right after
 // `oldestDirectUnreadTs` — the fixture's sole unread row is `from: 'z'`, so
 // that is the expected value here.
-const GOLDEN = '{"generatedAt":1234567890,"requiredGates":["done","merged","tests_passed"],"workspaces":{"a":{"id":"a","worktreePath":"<HOME>/wt-a","sessionId":"sess-a","inboxPath":"/inbox/a","cursorPath":"/cursor/a","nudgeCommand":null,"total":1,"cursor":0,"unread":1,"directUnread":1,"oldestDirectUnreadTs":1000,"oldestDirectUnreadSender":"z","broadcastUnread":0,"urgencyMax":"normal","broadcastUrgencyMax":null,"working_on":null,"gates":{},"archive_ready":false,"archive_requested":false,"archive_request_only_unread":false,"pendingQuestions":[]}},"recent":[],"archivedRegistryRows":[]}';
+// Updated for the wake-watch own-broadcast fix (SkyCrew Primary field report,
+// 2026-09-27): computeSummary now additively emits
+// `broadcastUnreadFromOthers` right after `broadcastUnread` — a sender-
+// excluded sibling of `broadcastUnread` (which stays own-send-inclusive by
+// design, see devswarm-store-mesh.test.js's "own send included" contract)
+// that wake-watch reads instead so it never wakes a workspace on its own
+// broadcast. The fixture has no broadcast rows at all, so both fields are 0.
+const GOLDEN = '{"generatedAt":1234567890,"requiredGates":["done","merged","tests_passed"],"workspaces":{"a":{"id":"a","worktreePath":"<HOME>/wt-a","sessionId":"sess-a","inboxPath":"/inbox/a","cursorPath":"/cursor/a","nudgeCommand":null,"total":1,"cursor":0,"unread":1,"directUnread":1,"oldestDirectUnreadTs":1000,"oldestDirectUnreadSender":"z","broadcastUnread":0,"broadcastUnreadFromOthers":0,"urgencyMax":"normal","broadcastUrgencyMax":null,"working_on":null,"gates":{},"archive_ready":false,"archive_requested":false,"archive_request_only_unread":false,"pendingQuestions":[]}},"recent":[],"archivedRegistryRows":[]}';
 
 // normalizeHomeForGolden(raw, home) -> `raw` with every occurrence of `home`
 // collapsed to `<HOME>`, comparable cross-platform against the forward-slash

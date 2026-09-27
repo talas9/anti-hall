@@ -20,6 +20,7 @@ const {
   ERROR_TOLERANCE, ERROR_BACKOFF_MS,
   pollMsFromEnv, realFormsOf, resolveIdentity, resolveOwnSessionId, resolvePrimaryHashes, resolveChildHashes,
   readChildSnapshot, readPrimarySnapshot, readChildCombinedSnapshot,
+  attachBroadcastChannel,
   lockPathFor, POLL_ENV_VAR, DEFAULT_POLL_MS,
 } = wakeWatch;
 
@@ -714,6 +715,61 @@ test('readPrimarySnapshot (real store, not mocked): 50 broadcast/heartbeat rows 
     const snap = readPrimarySnapshot(home, hashes, workspaceId, { fs });
     assert.strictEqual(snap.ok, true);
     assert.strictEqual(snap.total, 3); // NOT 53 — broadcast/heartbeat volume must never leak into a direct total
+  } finally { rm(home); }
+});
+
+// ---------------------------------------------------------------------------
+// attachBroadcastChannel / readBroadcastSnapshot — END-TO-END through the
+// REAL store, closing a SkyCrew Primary field report: after `send
+// --broadcast`, wake-watch woke the SENDER on its own broadcast ("new mesh
+// mail for child primary-63f9261d: broadcast direct total 189 -> 190 (+1)").
+// Root cause: `workspaces[<id>].broadcastUnread` (devswarm-store.js
+// computeSummary) counted every non-heartbeat broadcast row past a
+// workspace's own cursor with no check on WHO sent it — a workspace's own
+// just-sent broadcast is past its own cursor exactly like anyone else's.
+// ---------------------------------------------------------------------------
+
+test('attachBroadcastChannel (real store, not mocked): a workspace\'s OWN broadcast never inflates ITS OWN broadcastUnread/total3', () => {
+  const home = tmpHome();
+  try {
+    const workspaceId = 'primary-ownbcast';
+    const store = storeMod.openStore({ home, workspaceId, backend: 'journal', fsi: fs });
+    store.upsertRegistry({ id: workspaceId, worktreePath: path.join(home, 'fake-worktree') });
+
+    // The workspace broadcasts to the mesh itself.
+    storeMod.appendMeshMessage(store, {
+      from: workspaceId, type: 'broadcast', message: 'status update', timestamp: Date.now(),
+    });
+    storeMod.deriveSummary(store, { home, workspaceId });
+    store.close();
+
+    const hash = storeMod.hashFromWorkspaceId(workspaceId);
+    const hashes = { repoKey: hash, fallbackHash: null, primaryId: workspaceId };
+    const snap = attachBroadcastChannel({ ok: true, total: 0 }, home, hashes, workspaceId, { fs });
+    assert.strictEqual(snap.ok, true);
+    assert.strictEqual(snap.total3, 0,
+      `PRE-FIX BUG: the sender's own broadcast counted as its own unread mail (got total3=${snap.total3}), which is exactly what woke it on its own send`);
+  } finally { rm(home); }
+});
+
+test('attachBroadcastChannel (real store, not mocked): a broadcast from a DIFFERENT sender still counts and still wakes', () => {
+  const home = tmpHome();
+  try {
+    const workspaceId = 'primary-otherbcast';
+    const store = storeMod.openStore({ home, workspaceId, backend: 'journal', fsi: fs });
+    store.upsertRegistry({ id: workspaceId, worktreePath: path.join(home, 'fake-worktree') });
+
+    storeMod.appendMeshMessage(store, {
+      from: 'someone-else', type: 'broadcast', message: 'status update', timestamp: Date.now(),
+    });
+    storeMod.deriveSummary(store, { home, workspaceId });
+    store.close();
+
+    const hash = storeMod.hashFromWorkspaceId(workspaceId);
+    const hashes = { repoKey: hash, fallbackHash: null, primaryId: workspaceId };
+    const snap = attachBroadcastChannel({ ok: true, total: 0 }, home, hashes, workspaceId, { fs });
+    assert.strictEqual(snap.ok, true);
+    assert.strictEqual(snap.total3, 1, 'a genuine OTHER sender\'s broadcast must still be visible as unread — the exclusion is sender-scoped, not blanket');
   } finally { rm(home); }
 });
 

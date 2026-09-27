@@ -1010,15 +1010,24 @@ function readPrimarySnapshot(home, hashes, primaryId, io) {
 
 // readBroadcastSnapshot(home, hashes, id, io) -> { ok, error, broadcastUnread }.
 // THE broadcast channel: reads the SAME already-derived
-// `workspaces[<id>].broadcastUnread` field readPrimarySnapshot reads `.total`
-// from (same two-probe fold: repoKey bucket first, legacy hash-bucket
-// fallback). `broadcastUnread` is computeSummary/deriveSummary's own
-// heartbeat-EXCLUDED (D22) unread-broadcast count — exactly the "heartbeat-
+// `workspaces[<id>].broadcastUnreadFromOthers` field readPrimarySnapshot
+// reads `.total` from (same two-probe fold: repoKey bucket first, legacy
+// hash-bucket fallback). `broadcastUnreadFromOthers` is
+// computeSummary/deriveSummary's own heartbeat-EXCLUDED (D22) AND
+// own-sender-EXCLUDED unread-broadcast count — exactly the "heartbeat-
 // excluding store projection change" this file's v1-scope header comment said
 // covering broadcasts correctly would need; it already existed for
-// `roster`/`diagnose`, this file simply had to start reading it too. A
-// missing summary/row reads as "no data yet" (null), never a fabricated zero,
-// same rule as every other read helper in this file.
+// `roster`/`diagnose`, this file simply had to start reading it too.
+// SENDER EXCLUSION (field report, defect: wake-watch woke a Primary on its
+// OWN `send --broadcast`): the sibling field `broadcastUnread` (used by
+// roster/diagnose/the broadcast-ack flow) is DELIBERATELY inclusive of a
+// workspace's own sends — that contract must not change. This watcher reads
+// the `...FromOthers` variant instead, which excludes rows sent by the
+// workspace's own identity family (devswarm-identity-family.js's
+// recipientFamilyIds — same helper resolveSenderRegistryId uses), so it can
+// only ever edge-trigger on SOMEONE ELSE's broadcast. A missing summary/row
+// reads as "no data yet" (null), never a fabricated zero, same rule as every
+// other read helper in this file.
 function readBroadcastSnapshot(home, hashes, id, io) {
   const ioo = io || {};
   const readSummaryForHash = ioo.readSummaryForHash || store.readSummaryForHash;
@@ -1028,11 +1037,11 @@ function readBroadcastSnapshot(home, hashes, id, io) {
     }
     const a = hashes.repoKey ? readSummaryForHash(home, hashes.repoKey, ioo.fs) : null;
     const wa = a && a.workspaces && a.workspaces[id];
-    if (wa && Number.isFinite(wa.broadcastUnread)) return { ok: true, error: null, broadcastUnread: wa.broadcastUnread };
+    if (wa && Number.isFinite(wa.broadcastUnreadFromOthers)) return { ok: true, error: null, broadcastUnread: wa.broadcastUnreadFromOthers };
 
     const b = hashes.fallbackHash ? readSummaryForHash(home, hashes.fallbackHash, ioo.fs) : null;
     const wb = b && b.workspaces && b.workspaces[id];
-    if (wb && Number.isFinite(wb.broadcastUnread)) return { ok: true, error: null, broadcastUnread: wb.broadcastUnread };
+    if (wb && Number.isFinite(wb.broadcastUnreadFromOthers)) return { ok: true, error: null, broadcastUnread: wb.broadcastUnreadFromOthers };
 
     return { ok: true, error: null, broadcastUnread: null }; // no data yet, never zero
   } catch (e) {
