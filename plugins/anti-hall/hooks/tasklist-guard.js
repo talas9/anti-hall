@@ -36,12 +36,19 @@ const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
 const { appendIndexLineIfAbsent } = require('./session-history-index.js');
-// repoRoot(cwd) -- the canonical resolver (companion/lib/identity.js via
-// hooks/lib/handover-find.js): every .anti-hall/progress|history|handovers
-// path below is joined onto the RESOLVED repo root, never the raw session
-// cwd -- a cwd already inside .anti-hall/handovers/... must not double onto
-// itself (2026-09-25 PreCompact doubled-path bug; same root cause here).
-const { repoRoot } = require('./lib/handover-find.js');
+// sessionProjectRoot(cwd) -- the canonical resolver (companion/lib/identity.js
+// via hooks/lib/handover-find.js): every .anti-hall/progress|history|handovers
+// path below is joined onto the RESOLVED session project root, never the raw
+// session cwd -- a cwd already inside .anti-hall/handovers/... must not double
+// onto itself (2026-09-25 PreCompact doubled-path bug; same root cause here).
+// Unlike handover-find's own repoRoot() (which keys on the LITERAL checkout at
+// cwd, submodule included), sessionProjectRoot() climbs a submodule cwd to its
+// git SUPERPROJECT toplevel -- a peer report (0.115.2) showed tasklist-guard
+// demanding a progress file inside a submodule (`cd skyfb` in skycrew) even
+// though the superproject's own current progress file already existed; the
+// session's progress/history belong to the project, not to whichever checkout
+// the shell happens to be cd'd into at Stop time.
+const { sessionProjectRoot } = require('./lib/handover-find.js');
 
 // DEFERRED (accepted): (a) cumulative work counters vs the 512 KB tail clip — work
 // before the window is unseen, which can only SUPPRESS a block (fail-open, the safe
@@ -149,7 +156,7 @@ function main() {
   const progressRelPath = path.join('.anti-hall', 'progress', progressDate, sessionIdForPath + '.md');
   const historyRelPath = path.join('.anti-hall', 'history', progressDate, sessionIdForPath + '.md');
   const cwd = payload && payload.cwd;
-  const root = (cwd && typeof cwd === 'string') ? repoRoot(cwd) : cwd;
+  const root = (cwd && typeof cwd === 'string') ? sessionProjectRoot(cwd) : cwd;
   const progressAbsPath = (root && typeof root === 'string') ? path.join(root, progressRelPath) : null;
   // historyAbsPath (P1 fix, coordinator safety-review 2026-09-25): the block
   // message must name the path the guard itself reads/writes (root-joined),

@@ -1460,3 +1460,103 @@ test('SETTING OFF: guards.stopAck=false ignores an existing ack and blocks again
     assert.ok(isBlock(r2), `ANTIHALL_STOP_ACK=off must ignore the existing ack: ${r2.stdout}`);
   } finally { h.cleanup(); }
 });
+
+// SUBMODULE CWD (0.115.2 peer report): the Stop hook must key progress/history
+// on the SESSION's project root (the git SUPERPROJECT toplevel of cwd), never
+// on a submodule's own toplevel -- a real `git submodule add` fixture (same
+// shape as tests/hooks/devswarm-child-turn-submodule-worktreepath.test.js's
+// own builder: the submodule's `.git` is a FILE, not a directory), cwd inside
+// the submodule, progress already fresh at the SUPERPROJECT root.
+const GIT_AVAILABLE = (() => {
+  try {
+    const r = require('node:child_process').spawnSync('git', ['--version']);
+    return !r.error && r.status === 0;
+  } catch (_) { return false; }
+})();
+
+function git(args, cwd) {
+  return execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
+}
+
+// mkSuperprojectWithSubmodule() -> { superRepo, submodulePath, scratchDir }.
+// Same fixture shape as devswarm-child-turn-submodule-worktreepath.test.js.
+function mkSuperprojectWithSubmodule() {
+  const scratchDir = fs.realpathSync(fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'antihall-tlg-submod-')));
+  const subRepo = path.join(scratchDir, 'sub-origin');
+  const superRepo = path.join(scratchDir, 'super');
+
+  fs.mkdirSync(subRepo, { recursive: true });
+  git(['init', '-q', '-b', 'main'], subRepo);
+  git(['config', 'user.email', 'a@b.c'], subRepo);
+  git(['config', 'user.name', 'a'], subRepo);
+  fs.writeFileSync(path.join(subRepo, 'f.txt'), 'x');
+  git(['add', '.'], subRepo);
+  git(['commit', '-q', '-m', 'init'], subRepo);
+
+  fs.mkdirSync(superRepo, { recursive: true });
+  git(['init', '-q', '-b', 'main'], superRepo);
+  git(['config', 'user.email', 'a@b.c'], superRepo);
+  git(['config', 'user.name', 'a'], superRepo);
+  fs.writeFileSync(path.join(superRepo, 'root.txt'), 'x');
+  git(['add', '.'], superRepo);
+  git(['commit', '-q', '-m', 'init'], superRepo);
+  git(['-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', subRepo, 'skyfb'], superRepo);
+  git(['commit', '-q', '-m', 'add submodule'], superRepo);
+
+  const submodulePath = path.join(superRepo, 'skyfb');
+  const st = fs.lstatSync(path.join(submodulePath, '.git'));
+  assert.ok(st.isFile(), 'fixture sanity: submodule .git must be a FILE, not a directory');
+
+  return { superRepo, submodulePath, scratchDir };
+}
+
+test('SUBMODULE: cwd inside a submodule -> progress/history key on the SUPERPROJECT root, not the submodule toplevel', { skip: !GIT_AVAILABLE }, () => {
+  const h = makeHome();
+  let fixture;
+  try {
+    fixture = mkSuperprojectWithSubmodule();
+    const session = 'submod-session';
+    // The superproject's OWN progress file already exists and is fresh.
+    writeProgress(fixture.superRepo, undefined, session);
+    writeHistory(fixture.superRepo, session);
+
+    const tp = h.writeTranscript([
+      ...edits(4),
+      ...taskCreate(1, 'do the work', 'completed'),
+    ]);
+    // cwd = the submodule checkout (as if the shell had `cd skyfb`).
+    const r = testHook(HOOK, stopPayload(tp, fixture.submodulePath, session), { home: h.home });
+    assert.ok(!isBlock(r), `expected allow (superproject progress is fresh); stdout: ${r.stdout}; reason: ${r.json && r.json.reason}`);
+
+    // Sanity: the submodule's OWN toplevel must NOT have received a progress dir.
+    const wrongDir = path.join(fixture.submodulePath, '.anti-hall', 'progress');
+    assert.ok(!fs.existsSync(wrongDir), `must not create a progress dir inside the submodule toplevel: ${wrongDir}`);
+  } finally {
+    h.cleanup();
+    if (fixture) fs.rmSync(fixture.scratchDir, { recursive: true, force: true });
+  }
+});
+
+test('SUBMODULE: cwd inside a submodule with NO superproject progress -> block names the SUPERPROJECT-rooted path', { skip: !GIT_AVAILABLE }, () => {
+  const h = makeHome();
+  let fixture;
+  try {
+    fixture = mkSuperprojectWithSubmodule();
+    const session = 'submod-session-2';
+    const date = todayUtc();
+    const correctPath = path.join(fixture.superRepo, '.anti-hall', 'progress', date, safeSession(session) + '.md');
+    const wrongPath = path.join(fixture.submodulePath, '.anti-hall', 'progress', date, safeSession(session) + '.md');
+
+    const tp = h.writeTranscript([
+      ...edits(4),
+      ...taskCreate(1, 'do the work', 'completed'),
+    ]);
+    const r = testHook(HOOK, stopPayload(tp, fixture.submodulePath, session), { home: h.home });
+    assert.ok(isBlock(r), `expected block; stdout: ${r.stdout}`);
+    assert.ok(r.json.reason.includes(correctPath), `reason must name the SUPERPROJECT-rooted path ${correctPath}; got ${r.json.reason}`);
+    assert.ok(!r.json.reason.includes(wrongPath), `reason must NOT point at the submodule-toplevel path ${wrongPath}; got ${r.json.reason}`);
+  } finally {
+    h.cleanup();
+    if (fixture) fs.rmSync(fixture.scratchDir, { recursive: true, force: true });
+  }
+});

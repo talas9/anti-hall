@@ -86,6 +86,38 @@ function repoRoot(cwd) {
   return cwd;
 }
 
+// sessionProjectRoot(cwd) -> the SESSION's project root: the git superproject
+// toplevel of cwd when cwd is inside a submodule, else the same value as
+// repoRoot(cwd). Reuses the ONE canonical resolver (companion/lib/identity.js
+// resolveContext) that repoRoot() already calls, but reads `ctx.worktreeRoot`
+// (the decided-rule OUTERMOST-superproject-folded root — same field
+// repoKey/meshId key off, see identity.js's header) instead of `ctx.toplevel`
+// (the literal nearest .git, which for a submodule cwd is the submodule's OWN
+// checkout).
+//
+// tasklist-guard bug (0.115.2, reported by a peer): after `cd skyfb` inside a
+// superproject that embeds skyfb as a submodule, the Stop hook's progress path
+// followed the shell cwd's raw toplevel INTO the submodule
+// (skycrew/skyfb/.anti-hall/progress/...), demanding a file there even though
+// the superproject's own, current progress file already existed at
+// skycrew/.anti-hall/progress/.... A session's progress/history are a
+// property of the PROJECT the session is working in, not of whichever git
+// checkout the shell happens to be cd'd into at Stop time — so this resolver
+// climbs submodules to the superproject the same way repoKey/meshId already
+// do, while repoRoot() itself is left untouched for its other callers
+// (handover-find's own handoversRoot, PreCompact, handover-resume), which
+// deliberately key state on the LITERAL checkout at cwd (see repoRoot's own
+// header comment).
+function sessionProjectRoot(cwd) {
+  if (typeof cwd !== 'string' || !cwd) return cwd;
+  try {
+    const identity = require('../../companion/lib/identity.js');
+    const ctx = identity.resolveContext(cwd);
+    if (ctx && ctx.worktreeRoot && ctx.worktreeRoot !== realHome()) return ctx.worktreeRoot;
+  } catch (_) { /* fall through to raw cwd */ }
+  return cwd;
+}
+
 function handoversRoot(cwd) {
   return path.join(repoRoot(cwd), '.anti-hall', 'handovers');
 }
@@ -229,6 +261,7 @@ module.exports = {
   sanitizeSessionId,
   localDate,
   repoRoot,
+  sessionProjectRoot,
   handoversRoot,
   findNewestHandover,
   findNewestHandoverForSession,
