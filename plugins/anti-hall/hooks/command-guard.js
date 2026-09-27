@@ -1059,6 +1059,16 @@ function splitSegmentsDetailed(cmd) {
       if (c === '\\' && c2) { cur += c + c2; i += 2; continue; }
       cur += c; if (c === '"') inDouble = false; i++; continue;
     }
+    // ANSI-C `$'…'`: unlike plain '…', a backslash escapes the next char, so
+    // `\'` does NOT close it. Reading it as plain '…' closed early at `\'`
+    // and re-opened at the real closer, hiding `; go build` inside a fake
+    // quoted span (`$'a\' # '; go build`).
+    if (c === '$' && c2 === "'") {
+      let j = i + 2;
+      while (j < n && cmd[j] !== "'") j += cmd[j] === '\\' ? 2 : 1;
+      j = Math.min(j + 1, n);
+      cur += cmd.slice(i, j); i = j; continue;
+    }
     if (c === "'") { inSingle = true; cur += c; i++; continue; }
     if (c === '"') { inDouble = true; cur += c; i++; continue; }
 

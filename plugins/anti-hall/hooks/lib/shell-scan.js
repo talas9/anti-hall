@@ -75,13 +75,49 @@ const SHELL_VERBS = new Set(['bash', 'sh', 'zsh', 'dash', 'ksh', 'ash']);
 function parseHeredocAt(cmd, i) {
   const n = cmd.length;
   if (cmd[i] !== '<' || cmd[i + 1] !== '<') return null;
+  // `<<<` is a here-STRING (no body): neither its first nor its second `<`
+  // opens a heredoc. Without this, `<<< "#"` parsed as a heredoc on word `#`
+  // and swallowed every following line as "body".
+  if (cmd[i + 2] === '<' || (i > 0 && cmd[i - 1] === '<')) return null;
   const m = HEREDOC_RE.exec(cmd.slice(i));
   if (!m) return null;
-  const word = m[3] !== undefined ? m[3] : (m[4] !== undefined ? m[4] : m[5]);
-  if (!word) return null;
   const dashStrip = !!m[1];
-  const quoted = m[3] !== undefined || m[4] !== undefined;
-  const openerEnd = i + m[0].length;
+  // HEREDOC_RE only gates WHERE a delimiter may start (a letter/_ or a quote —
+  // keeps `$((1<<2))` out). The delimiter itself is the FULL shell word with
+  // quote removal, as bash reads it: `<<EOF#x` terminates on `EOF#x`, not
+  // `EOF` (the old regex stopped at `#` and the unmatched body swallowed the
+  // rest of the command). A word we cannot model exactly (unquoted `$` or
+  // backtick, unterminated quote, `\`-newline) returns null — no body is
+  // skipped, the strict fallback.
+  let j = i + m[0].length - m[2].length;
+  let word = '';
+  let quoted = false;
+  while (j < n && !/[ \t\r\n;&|<>()]/.test(cmd[j])) {
+    const ch = cmd[j];
+    if (ch === '$' || ch === '`') return null;
+    if (ch === "'") {
+      const close = cmd.indexOf("'", j + 1);
+      if (close === -1) return null;
+      word += cmd.slice(j + 1, close); quoted = true; j = close + 1; continue;
+    }
+    if (ch === '"') {
+      let k = j + 1;
+      while (k < n && cmd[k] !== '"') {
+        if (cmd[k] === '$' || cmd[k] === '`') return null;
+        if (cmd[k] === '\\' && k + 1 < n && '\\"'.includes(cmd[k + 1])) { word += cmd[k + 1]; k += 2; continue; }
+        word += cmd[k]; k++;
+      }
+      if (k >= n) return null;
+      quoted = true; j = k + 1; continue;
+    }
+    if (ch === '\\') {
+      if (j + 1 >= n || cmd[j + 1] === '\n' || cmd[j + 1] === '\r') return null;
+      word += cmd[j + 1]; quoted = true; j += 2; continue;
+    }
+    word += ch; j++;
+  }
+  if (!word) return null;
+  const openerEnd = j;
   const lineEnd = cmd.indexOf('\n', openerEnd);
   if (lineEnd === -1) {
     // Opener runs to EOF: no body at all.
@@ -167,6 +203,12 @@ function extractSubstitutions(s) {
       }
     }
     if (inSingle) { if (c === "'") inSingle = false; i++; continue; }
+    // ANSI-C `$'…'`: `\'` inside it is an escaped quote, not the closer.
+    if (!inDouble && c === '$' && c2 === "'") {
+      i += 2;
+      while (i < n && s[i] !== "'") i += s[i] === '\\' ? 2 : 1;
+      i++; continue;
+    }
     if (!inDouble && c === "'") { inSingle = true; i++; continue; }
     if (c === '"') { inDouble = !inDouble; i++; continue; }
     if (c === '$' && c2 === '(') {

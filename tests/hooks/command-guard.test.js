@@ -1427,3 +1427,35 @@ for (const cmd of COMMENT_BLOCK) {
     assert.strictEqual(r.status, 2, `expected block for: ${cmd}\nstdout: ${r.stdout}`);
   });
 }
+
+// Splitter quoting/heredoc accuracy: each BLOCK case was a real bypass (bash
+// runs `go build`, the guard allowed it) — ANSI-C $'…' read as plain '…', a
+// `<<<` here-string read as a heredoc, and a heredoc delimiter cut at `#`.
+const SPLITTER_BLOCK = [
+  "$'a\\' # '; go build",
+  "echo $'\\'' \"$(go build)\"",
+  'read x <<< "#"; go build',
+  'cat <<< x\ngo build\nx',
+  'cat <<EOF#x\nbody\nEOF#x\ngo build',
+  'cat <<E"O"F\nbody\nEOF\ngo build',
+];
+for (const cmd of SPLITTER_BLOCK) {
+  test(`SPLITTER BLOCK ($'…' / <<< / full heredoc word): ${JSON.stringify(cmd)}`, () => {
+    const r = runCoord(cmd);
+    assert.strictEqual(r.status, 2, `expected block for: ${cmd}\nstdout: ${r.stdout}`);
+  });
+}
+
+const SPLITTER_ALLOW = [
+  "echo $'\\n'",
+  "printf $'a\\'b\\n'",
+  'cat <<< "x"',
+  "cat > /tmp/m.md <<'EOF'\nok, go ahead\nEOF\nnode ~/.anti-hall/bin/devswarm.js send --to abc --message-file /tmp/m.md",
+  'cat <<EOF#x\ngo build\nEOF#x',
+];
+for (const cmd of SPLITTER_ALLOW) {
+  test(`SPLITTER ALLOW (sanity): ${JSON.stringify(cmd)}`, () => {
+    const r = runCoord(cmd);
+    assert.strictEqual(r.status, 0, `expected allow for: ${cmd}\nstdout: ${r.stdout}`);
+  });
+}
