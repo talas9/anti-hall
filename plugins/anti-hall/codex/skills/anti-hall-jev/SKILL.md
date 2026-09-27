@@ -153,7 +153,9 @@ itself.
   would-change rate in place of changed-decision rate, since that stays 0).
 - `jev-report.js --since <iso> --until <iso>` / `--exclude-window <iso>..<iso>`
   (repeatable) exclude rows by `ts` before anything else, from both the live
-  `jev-assist.ndjson`/`jev-triage.ndjson` AND their one rotated `.1` backup —
+  `jev-assist.ndjson`/`jev-triage.ndjson` AND every rotated generation `.1` ..
+  `.N` (`jev.logRotatedFiles`, default 10; older days come from the daily
+  rollups in `~/.anti-hall/logs/jev-daily/`, reported as `rollupHistory`) —
   use this to drop a known-accidental run from the numbers, e.g.
   `--exclude-window 2026-09-24T19:56:00Z..2026-09-24T22:23:00Z`. **v0.108.5:**
   every report now prints a `window: <since> .. <until> exclude: <…> rows: N in

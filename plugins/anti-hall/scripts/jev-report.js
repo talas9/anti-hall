@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 'use strict';
-// anti-hall :: jev report — read-only summary of ~/.anti-hall/logs/jev-assist.ndjson.
+// anti-hall :: jev report — read-only summary of ~/.anti-hall/logs/jev-assist.ndjson
+// (every rotated generation) plus, for days the raw logs no longer cover, the
+// daily rollups in ~/.anti-hall/logs/jev-daily/ (see buildRollupHistory).
 //
 // USAGE
 //   node plugins/anti-hall/scripts/jev-report.js [--days 7] [--json] [--window 24h|7d]
@@ -475,43 +477,96 @@ function maybeWarnLowCredit({ home, budget, creditResult }) {
 }
 
 // readLines(home) -> array of parsed rows (decision rows + outcome rows),
-// reading BOTH the live file and its one rotated backup (.1) so a report run
-// right after a rotation doesn't silently lose the older half.
+// oldest first, reading EVERY rotated generation on disk (.N .. .1) plus the
+// live file (jev.logRotatedFiles, see hooks/lib/jev-assist.js), so `--days 14`
+// sees all retained history rather than only the newest two files.
 function readLines(home) {
-  const rows = [];
-  for (const suffix of ['.1', '']) {
-    try {
-      const raw = fs.readFileSync(logPath(home) + suffix, 'utf8');
-      for (const line of raw.split('\n')) {
-        const t = line.trim();
-        if (!t) continue;
-        try { rows.push(JSON.parse(t)); } catch (_) { /* skip a corrupt line */ }
-      }
-    } catch (_) {
-      // file doesn't exist — fine, nothing to add
-    }
-  }
-  return rows;
+  const lib = require('../hooks/lib/jev-assist.js');
+  return lib.readNdjsonFiles(lib.retainedLogFiles(logPath(home)));
 }
 
 // readTriageLines(home) -> array of parsed jev-triage.ndjson rows (both the
 // per-message classification lines and the recordAnswered() 'answered'
-// lines), same live+.1-backup read as readLines() above.
+// lines), every rotated generation, same as readLines() above.
 function readTriageLines(home) {
-  const rows = [];
-  for (const suffix of ['.1', '']) {
+  const lib = require('../hooks/lib/jev-assist.js');
+  return lib.readNdjsonFiles(lib.retainedLogFiles(triageLogPath(home)));
+}
+
+// readDailyRollups(home) -> [rollup, ...] from ~/.anti-hall/logs/jev-daily/
+// (written by hooks/lib/jev-assist.js writeDailyRollups before each rotation),
+// sorted by day. A corrupt file is skipped.
+function readDailyRollups(home) {
+  const dir = path.join((home || os.homedir()), '.anti-hall', 'logs', 'jev-daily');
+  let names = [];
+  try { names = fs.readdirSync(dir); } catch (_) { return []; }
+  const out = [];
+  for (const n of names.filter((x) => /^\d{4}-\d{2}-\d{2}\.json$/.test(x)).sort()) {
     try {
-      const raw = fs.readFileSync(triageLogPath(home) + suffix, 'utf8');
-      for (const line of raw.split('\n')) {
-        const t = line.trim();
-        if (!t) continue;
-        try { rows.push(JSON.parse(t)); } catch (_) { /* skip a corrupt line */ }
-      }
-    } catch (_) {
-      // file doesn't exist — fine, nothing to add
+      const r = JSON.parse(fs.readFileSync(path.join(dir, n), 'utf8'));
+      if (r && typeof r.day === 'string' && Array.isArray(r.groups)) out.push(r);
+    } catch (_) { /* skip */ }
+  }
+  return out;
+}
+
+// buildRollupHistory(rollups, {days, oldestRawTs, now}) -> {days, integrations}
+// for the days the raw logs no longer cover: only a UTC day that ENDS at or
+// before the oldest retained raw row is used, so no day is counted twice
+// (raw rows feed the main table; the part of the boundary day before the
+// oldest raw row is in neither). `days` limits to days ending after
+// now - days. Per id: rows, fresh calls, changed (sum of per-day distinct
+// fresh hashes), timeouts, failures, cost (null when none reported), p50 =
+// median of the daily p50s, p95 = max of the daily p95s (daily percentiles
+// cannot be merged exactly; labelled as such in the text output).
+function buildRollupHistory(rollups, opts = {}) {
+  const now = Number.isFinite(opts.now) ? opts.now : Date.now();
+  const cutoff = Number.isFinite(opts.days) ? now - opts.days * 86400000 : null;
+  const oldest = Number.isFinite(opts.oldestRawTs) ? opts.oldestRawTs : Infinity;
+  const used = [];
+  const byId = new Map();
+  for (const r of rollups || []) {
+    const start = Date.parse(r.day + 'T00:00:00Z');
+    if (!Number.isFinite(start)) continue;
+    const end = start + 86400000;
+    if (end > oldest) continue;
+    if (cutoff !== null && end <= cutoff) continue;
+    used.push(r.day);
+    for (const g of r.groups) {
+      if (!g || !g.id) continue;
+      if (!byId.has(g.id)) byId.set(g.id, { id: g.id, days: new Set(), calls: 0, fresh: 0, changed: 0, timeouts: 0, failures: 0, costUsd: null, p50s: [], p95Ms: null });
+      const b = byId.get(g.id);
+      b.days.add(r.day);
+      b.calls += g.n || 0;
+      b.fresh += g.fresh || 0;
+      b.changed += g.changed || 0;
+      b.timeouts += g.timeouts || 0;
+      b.failures += g.failures || 0;
+      if (Number.isFinite(g.costUsd)) b.costUsd = (b.costUsd || 0) + g.costUsd;
+      if (Number.isFinite(g.p50Ms)) b.p50s.push(g.p50Ms);
+      if (Number.isFinite(g.p95Ms)) b.p95Ms = Math.max(b.p95Ms || 0, g.p95Ms);
     }
   }
-  return rows;
+  const integrations = [...byId.values()].map((b) => ({
+    id: b.id, days: b.days.size, calls: b.calls, fresh: b.fresh, changed: b.changed,
+    timeouts: b.timeouts, failures: b.failures,
+    costUsd: b.costUsd === null ? null : Math.round(b.costUsd * 1e6) / 1e6,
+    p50Ms: percentile(b.p50s.sort((x, y) => x - y), 0.5), p95Ms: b.p95Ms,
+  })).sort((a, b) => b.calls - a.calls);
+  return { days: used, integrations };
+}
+
+function printRollupHistory(h) {
+  if (!h || !h.days.length) return;
+  console.log(`\nOlder history from daily rollups (${h.days[0]} .. ${h.days[h.days.length - 1]}, ${h.days.length} day(s) no longer in the raw logs):`);
+  console.log('  id                      days   calls   fresh  changed  timeouts      cost  p50*   p95*');
+  for (const r of h.integrations) {
+    const cost = r.costUsd === null ? 'n/a' : '$' + r.costUsd.toFixed(4);
+    console.log('  ' + r.id.padEnd(22) + String(r.days).padStart(6) + String(r.calls).padStart(8) +
+      String(r.fresh).padStart(8) + String(r.changed).padStart(9) + String(r.timeouts).padStart(10) +
+      cost.padStart(10) + String(r.p50Ms == null ? '-' : r.p50Ms).padStart(6) + String(r.p95Ms == null ? '-' : r.p95Ms).padStart(7));
+  }
+  console.log('  * p50 = median of daily p50s, p95 = max of daily p95s (daily percentiles do not merge exactly).');
 }
 
 // buildTriageAnswerReport(triageRows) -> {urgent:{n,p50,p95}, normal:{n,p50,p95}}
@@ -1353,6 +1408,12 @@ async function main() {
   const opts = parseArgs(argv);
   const home = opts.home;
   let rows = readLines(home);
+  let oldestRawTs = Infinity;
+  for (const r of rows) {
+    const t = r && typeof r.ts === 'string' ? Date.parse(r.ts) : NaN;
+    if (Number.isFinite(t) && t < oldestRawTs) oldestRawTs = t;
+  }
+  const rollupHistory = buildRollupHistory(readDailyRollups(home), { days: opts.days, oldestRawTs });
   let triageRows = readTriageLines(home);
   const costPerCall = readCostPerCall(home);
   const humanLabelByHash = latestHumanLabelByHash(readLabels(home));
@@ -1455,11 +1516,12 @@ async function main() {
   }
 
   if (opts.json) {
-    process.stdout.write(JSON.stringify(Object.assign({}, report, { window: windowInfo, costWindows, budget, budgetStatus, credit, lowCredit }), null, 2) + '\n');
+    process.stdout.write(JSON.stringify(Object.assign({}, report, { window: windowInfo, costWindows, budget, budgetStatus, credit, lowCredit, rollupHistory }), null, 2) + '\n');
   } else {
     printWindow(windowInfo);
     printTable(report);
     printHeadlines(report);
+    printRollupHistory(rollupHistory);
     printCostWindows(costWindows);
     printBudgetStatus(budgetStatus);
     printCredit(credit, lowCredit);
@@ -1473,7 +1535,7 @@ module.exports = {
   auditLogPath, readAuditSnippet, cmdPruneAudit, maybeWarnLowCredit, budgetStatePath,
   parseArgs, groupKeyOf, groupRowsBy, buildWeeklyScorecard, weeklyReason, readJevJson,
   parseIsoMs, filterByTimeWindow, MIN_LABELED_FOR_VERDICT, printRealCostSummary,
-  describeWindow, printWindow,
+  describeWindow, printWindow, readDailyRollups, buildRollupHistory,
 };
 
 if (require.main === module) {

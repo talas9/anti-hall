@@ -250,8 +250,13 @@ repaired retroactively (no source cwd to recover it from).
 `--since <iso>` / `--until <iso>` bound the report to rows with `ts` inside that
 window; `--exclude-window <iso>..<iso>` (repeatable) drops rows inside one
 closed interval instead. All three apply BEFORE `--project`/`--by`/`--weekly`,
-to both `jev-assist.ndjson` and `jev-triage.ndjson` (both live files AND their
-one rotated `.1` backup — a window spanning a rotation still sees every row).
+to both `jev-assist.ndjson` and `jev-triage.ndjson` (both live files AND every
+rotated generation `.1` .. `.N`, `jev.logRotatedFiles`, default 10 — a window
+spanning a rotation still sees every row). Days older than the oldest raw row
+come from the daily rollups in `~/.anti-hall/logs/jev-daily/` (written before
+each rotation) and print as a separate "Older history" section / `rollupHistory`
+in `--json`; rollups carry no project/session, so `--project`/`--by` and
+`--since`/`--until` do not filter them.
 Use this when the user wants a bad/accidental run out of the numbers without
 editing the log file directly:
 

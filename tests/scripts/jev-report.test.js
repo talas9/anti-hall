@@ -1331,3 +1331,49 @@ test('CLI --by project: a REAL-shape triage row (no project/session field at all
     h.cleanup();
   }
 });
+
+// ---------------------------------------------------------------------------
+// History: every rotated generation + daily rollups (seat audits, --days 14)
+// ---------------------------------------------------------------------------
+
+test('--days 14 reads EVERY rotated generation (.3 .2 .1 + live), not just .1', () => {
+  const h = makeHome();
+  try {
+    const p = path.join(h.home, '.anti-hall', 'logs', 'jev-assist.ndjson');
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    const day = (n) => new Date(Date.now() - n * 86400000).toISOString();
+    const gens = { '.3': day(9), '.2': day(6), '.1': day(3), '': day(0.1) };
+    for (const [suffix, ts] of Object.entries(gens)) {
+      fs.writeFileSync(p + suffix, JSON.stringify({ ts, id: 'speculation', h: 'h' + suffix, backend: 'jev', mode: 'on', jev: true, ms: 10 }) + '\n');
+    }
+    const out = runJevReportCli(h.home, ['--days', '14']);
+    const spec = out.integrations.find((x) => x.id === 'speculation');
+    assert.strictEqual(spec.calls, 4);
+    assert.strictEqual(out.window.rowsTotal, 4);
+  } finally { h.cleanup(); }
+});
+
+test('rollups fill days the raw logs no longer cover; a day still in raw is never double-counted', () => {
+  const h = makeHome();
+  try {
+    const now = Date.now();
+    const dayStr = (n) => new Date(now - n * 86400000).toISOString().slice(0, 10);
+    const logs = path.join(h.home, '.anti-hall', 'logs');
+    fs.mkdirSync(path.join(logs, 'jev-daily'), { recursive: true });
+    // Raw log starts 1 day ago.
+    fs.writeFileSync(path.join(logs, 'jev-assist.ndjson'),
+      JSON.stringify({ ts: new Date(now - 86400000).toISOString(), id: 'modelRouting', h: 'r', backend: 'jev', mode: 'on', ms: 5 }) + '\n');
+    const rollup = (n, calls) => ({ v: 1, day: dayStr(n), complete: true, outcomes: [],
+      groups: [{ id: 'modelRouting', backend: 'jev', mode: 'on', n: calls, fresh: calls, changed: 1, timeouts: 1, failures: 0, costUsd: 0.01, p50Ms: 100 * n, p95Ms: 200 * n }] });
+    for (const [n, calls] of [[3, 10], [5, 20], [20, 999], [0, 777]]) {
+      fs.writeFileSync(path.join(logs, 'jev-daily', dayStr(n) + '.json'), JSON.stringify(rollup(n, calls)));
+    }
+    const out = runJevReportCli(h.home, ['--days', '14']);
+    assert.deepStrictEqual(out.rollupHistory.days, [dayStr(5), dayStr(3)], 'day 20 is outside --days 14; today overlaps raw');
+    const mr = out.rollupHistory.integrations.find((x) => x.id === 'modelRouting');
+    assert.deepStrictEqual(
+      { days: mr.days, calls: mr.calls, changed: mr.changed, timeouts: mr.timeouts, costUsd: mr.costUsd, p95Ms: mr.p95Ms },
+      { days: 2, calls: 30, changed: 2, timeouts: 2, costUsd: 0.02, p95Ms: 1000 });
+    assert.strictEqual(out.integrations.find((x) => x.id === 'modelRouting').calls, 1, 'raw rows are still the main table');
+  } finally { h.cleanup(); }
+});
