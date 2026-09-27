@@ -169,6 +169,22 @@ function main() {
     // pre-existing (main-thread-safe) behavior rather than crash.
   }
 
+  // defect I6 fix: this hook fires on EVERY Bash call regardless of what that
+  // call was, including one that just ran `inbox read-primary` — which reads
+  // a DIFFERENT channel (Primary-originated mail) than this hook's own union
+  // signal (child's own pull/ack inbox). Injecting "Drain NOW via `inbox pull
+  // ... && inbox ack ...`" in that SAME turn contradicts the guidance
+  // everywhere else in this plugin (devswarm-child-role.js, devswarm-child-
+  // turn.js, lib/devswarm-wake.js's ACK_AFTER_READ): after `read-primary`,
+  // run the `ackCommand` IT returns — read-only, self-contained, no second
+  // competing verb pair. Skip this ONE injection when the triggering command
+  // was itself a `read-primary` call; the union backlog (if still nonzero)
+  // re-surfaces on the child's very next Bash call regardless, so nothing is
+  // silently dropped — only the confusing double-instruction is.
+  const triggerCommand = (payload && payload.tool_input && typeof payload.tool_input.command === 'string')
+    ? payload.tool_input.command : '';
+  if (/\binbox\s+(?:-\S+(?:\s+[^-\s]\S*)?\s+)*read-primary\b/i.test(triggerCommand)) return;
+
   const id = env.DEVSWARM_BUILDER_ID;
   if (typeof id !== 'string' || !isSafeId(id)) return;
 

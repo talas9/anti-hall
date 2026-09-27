@@ -75,6 +75,26 @@ test('CHILD, store-only mesh-direct unread (NDJSON empty) -> injects DEVSWARM IN
   } finally { h.cleanup(); }
 });
 
+// defect I6 (7-workspace sweep, 2026-09-27): this hook fires unconditionally
+// on every Bash call, so when the triggering command was itself `inbox
+// read-primary` (a DIFFERENT channel than this hook's own union unread
+// signal), it used to ALSO inject "Drain NOW via `inbox pull ... && inbox
+// ack ...`" in that same turn — contradicting the read-primary + ackCommand
+// guidance given everywhere else in this plugin. Fix: skip the injection
+// when the triggering command is a read-primary call.
+test('CHILD, triggering command is `inbox read-primary` -> no Drain-NOW nudge injected this turn (even with store-only unread pending)', () => {
+  const h = makeHome();
+  try {
+    seedDescriptor(h.home, 'child-1');
+    seedStoreOnlyDirect(h.home, 'child-1', 'parent ruling: use approach B');
+    const p = postToolUseBashPayload('node /path/to/devswarm.js inbox read-primary child-1', {});
+    p.cwd = REPO_CWD;
+    const r = testHook(HOOK, p, { home: h.home, env: CHILD_ENV });
+    assert.strictEqual(r.status, 0);
+    assert.strictEqual(r.stdout.trim(), '', `must not inject right after read-primary; got: ${r.stdout}`);
+  } finally { h.cleanup(); }
+});
+
 test('PRIMARY payload (same env otherwise) -> silent no-op even with store-only unread', () => {
   const h = makeHome();
   try {
