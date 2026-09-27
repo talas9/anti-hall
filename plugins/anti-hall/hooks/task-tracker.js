@@ -269,7 +269,14 @@ function freshnessNote(payload) {
     // FIX 7: control-char strip (oneLine) THEN JSON.stringify so the task-supplied
     // subject is rendered as an inert quoted string and can never inject
     // instruction-shaped content into the UserPromptSubmit additionalContext.
-    const subj = inProg ? oneLine(inProg.content || inProg.id, 50) : '';
+    // SUBJECT UNKNOWN (mirror task-guard.js renderList): a task whose subject
+    // was never learned (its TaskCreate sits outside the scan window, or is
+    // from a PRIOR epoch and only a bare TaskUpdate{taskId} was seen)
+    // reconstructs with content === id. Printing that bare id as if it were
+    // the subject (`oldest in_progress subject: "3"`) is exactly the phantom
+    // this field report named — say "(subject unknown)" instead, never the id.
+    const inProgHasSubject = inProg && inProg.content != null && String(inProg.content) !== String(inProg.id);
+    const subj = inProg ? oneLine(inProgHasSubject ? inProg.content : '(subject unknown)', 50) : '';
     const tail2 = inProg && subj ? ' (oldest in_progress subject: ' + JSON.stringify(subj) + ')' : '';
     const freshLine = 'open tasks: ' + open.length + tail2 + ' — update or close them.';
 

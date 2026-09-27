@@ -392,6 +392,21 @@ test('DEVSWARM PRIMARY: directive appends the workspace-tier dispatch rule', () 
   }
 });
 
+test('SUBJECT UNKNOWN (0.117 field report): a TaskUpdate-only in_progress task (no TaskCreate in window) reports "(subject unknown)", never the bare id', () => {
+  const h = makeHome();
+  try {
+    const tp = h.writeTranscript([{
+      type: 'assistant',
+      message: { role: 'assistant', content: [{ type: 'tool_use', name: 'TaskUpdate', id: 'toolu_u3', input: { taskId: '3', status: 'in_progress' } }] },
+    }]);
+    const r = testHook(HOOK, { hook_event_name: 'UserPromptSubmit', session_id: 't', prompt: 'hi', cwd: process.cwd(), transcript_path: tp }, { home: h.home });
+    assert.match(ctx(r), /oldest in_progress subject: "\(subject unknown\)"/, `expected "(subject unknown)"; got: ${ctx(r)}`);
+    assert.doesNotMatch(ctx(r), /oldest in_progress subject: "3"/, `must never print the bare id as the subject; got: ${ctx(r)}`);
+  } finally {
+    h.cleanup();
+  }
+});
+
 test('DEVSWARM CHILD + NON-DEVSWARM: directive is BYTE-FOR-BYTE unchanged (regression guard)', () => {
   const hp = makeHome();
   const hc = makeHome();

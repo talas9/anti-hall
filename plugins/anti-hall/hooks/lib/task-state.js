@@ -32,6 +32,15 @@ function reconstructTasks(tail) {
       for (const it of c) {
         if (it && it.type === 'tool_result' && typeof it.tool_use_id === 'string') {
           const txt = typeof it.content === 'string' ? it.content : '';
+          // TASK-LIST EPOCH — mirror task-guard.js: "No tasks found" (TaskList)
+          // or "Task not found" (TaskGet/TaskUpdate) is direct proof the
+          // harness's task store no longer matches this reconstruction.
+          if (DD.isEpochResetText(txt)) {
+            taskMap.clear();
+            provisional.clear();
+            resultIds.clear();
+            maxCreated = 0;
+          }
           const m = txt.match(/^Task\s+#(\d+)\s+created\s+successfully/i);
           if (m && !resultIds.has(it.tool_use_id)) {
             // TASK-LIST EPOCH: the harness restarts numbering at #1 when its

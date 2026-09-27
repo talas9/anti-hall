@@ -268,11 +268,20 @@ function main() {
   //  - GENERIC (gentle): work is in flight or the only open tasks are
   //    blocked/owned/in_progress — nudge to drain but don't accuse of neglect.
   const renderList = (arr) => arr.slice(0, 5).map(t => {
-    const rawSubject = t.content || t.subject || t.id || '(unknown)';
+    // A task whose subject was never actually learned (its TaskCreate sits
+    // outside the scan window, or belonged to a PRIOR epoch and only a bare
+    // TaskUpdate{taskId} was seen) falls back to content === id during
+    // reconstruction — printing that bare id AS the subject (e.g. `"3"`) is
+    // indistinguishable from a real one-word subject and actively misleads.
+    // Say "(subject unknown)" instead of ever presenting the id as if it were
+    // the task's text — never the bare id.
+    const learnedSubject = t.content || t.subject;
+    const hasSubject = learnedSubject != null && String(learnedSubject) !== String(t.id);
+    const rawSubject = hasSubject ? learnedSubject : '(subject unknown)';
     // Sanitize: strip control chars/newlines and truncate to ~60 chars so a
     // TodoWrite item's text cannot inject instruction-like content into the Stop
     // reason. Does not change which tasks are listed, only how the subject reads.
-    const subject = sanitizeSubject(rawSubject) || '(unknown)';
+    const subject = sanitizeSubject(rawSubject) || '(subject unknown)';
     const status = sanitizeSubject(t.status || 'open', 24) || 'open';
     // JSON.stringify the subject (and status) so a subject containing a literal
     // " renders cleanly and matches task-tracker.js's approach (symmetry). The
@@ -638,6 +647,18 @@ function parseTasksFromFile(filePath) {
       for (const item of content) {
         if (item && item.type === 'tool_result' && typeof item.tool_use_id === 'string') {
           const resultText = typeof item.content === 'string' ? item.content : '';
+          // TASK-LIST EPOCH (restart / usage-limit resume): "No tasks found"
+          // (TaskList on the now-empty store) or "Task not found" (TaskGet/
+          // TaskUpdate referencing an id from a PRIOR epoch) is direct proof
+          // the harness's task store no longer matches this reconstruction —
+          // drop every task seen so far so it can never be reported as still
+          // open. See dispatch-demand.js isEpochResetText for the full header.
+          if (require('./lib/dispatch-demand.js').isEpochResetText(resultText)) {
+            taskMap.clear();
+            provisionalMap.clear();
+            resultIdMap.clear();
+            maxCreatedId = 0;
+          }
           const m = resultText.match(/^Task\s+#(\d+)\s+created\s+successfully/i);
           if (m && !resultIdMap.has(item.tool_use_id)) {
             // TASK-LIST EPOCH: the harness restarts numbering at #1 when its

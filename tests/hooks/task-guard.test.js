@@ -726,3 +726,106 @@ test('GENERIC: A blockedBy an unblocked open B -> A excluded, B listed', () => {
     h.cleanup();
   }
 });
+
+// ---- TASK-LIST EPOCH (0.117 field report): a restart/usage-limit resume
+// resets the harness's native task store, but a stale id from the PREVIOUS
+// process was still sitting in the scan window with nothing to trigger the
+// pre-existing "ids restarted at #1" reset. ----
+
+function taskUpdateEntry(tuid, input) {
+  return {
+    type: 'assistant',
+    message: { role: 'assistant', content: [{ type: 'tool_use', id: tuid, name: 'TaskUpdate', input }] },
+  };
+}
+function toolResult(tuid, text) {
+  return {
+    type: 'user',
+    message: { role: 'user', content: [{ tool_use_id: tuid, type: 'tool_result', content: text }] },
+  };
+}
+function taskListCall(tuid) {
+  return {
+    type: 'assistant',
+    message: { role: 'assistant', content: [{ type: 'tool_use', id: tuid, name: 'TaskList', input: {} }] },
+  };
+}
+function taskGetCall(tuid, taskId) {
+  return {
+    type: 'assistant',
+    message: { role: 'assistant', content: [{ type: 'tool_use', id: tuid, name: 'TaskGet', input: { taskId } }] },
+  };
+}
+
+test('EPOCH RESET: a TaskList "No tasks found" result drops every task seen before it', () => {
+  const h = makeHome();
+  try {
+    const tp = h.writeTranscript([
+      // PREVIOUS process left #3 in_progress in the scan window.
+      taskUpdateEntry('toolu_u3', { taskId: '3', status: 'in_progress' }),
+      // The harness restarted / resumed: TaskList now reports the store empty.
+      taskListCall('toolu_l1'),
+      toolResult('toolu_l1', 'No tasks found'),
+    ]);
+    const r = testHook(HOOK, stopPayload(tp), { home: h.home });
+    assert.ok(!isBlock(r), `expected allow after epoch reset; stdout: ${r.stdout}`);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('EPOCH RESET: a "Task not found" result (TaskGet/TaskUpdate on a stale id) drops every task seen before it', () => {
+  const h = makeHome();
+  try {
+    const tp = h.writeTranscript([
+      taskUpdateEntry('toolu_u3', { taskId: '3', status: 'in_progress' }),
+      taskGetCall('toolu_g1', '3'),
+      toolResult('toolu_g1', 'Task #3 not found'),
+    ]);
+    const r = testHook(HOOK, stopPayload(tp), { home: h.home });
+    assert.ok(!isBlock(r), `expected allow after epoch reset; stdout: ${r.stdout}`);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('EPOCH RESET: a fresh TaskCreate after the reset is still tracked normally', () => {
+  const h = makeHome();
+  try {
+    const tp = h.writeTranscript([
+      taskUpdateEntry('toolu_u3', { taskId: '3', status: 'in_progress' }),
+      taskListCall('toolu_l1'),
+      toolResult('toolu_l1', 'No tasks found'),
+      {
+        type: 'assistant',
+        message: { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_c1', name: 'TaskCreate', input: { subject: 'fresh work after resume' } }] },
+      },
+      toolResult('toolu_c1', 'Task #1 created successfully: fresh work after resume'),
+    ]);
+    const r = testHook(HOOK, stopPayload(tp), { home: h.home });
+    assert.ok(isBlock(r), `expected block on the fresh post-reset task; stdout: ${r.stdout}`);
+    assert.match(r.json.reason, /fresh work after resume/);
+    assert.doesNotMatch(r.json.reason, /"3"\s*\[/);
+  } finally {
+    h.cleanup();
+  }
+});
+
+// ---- SUBJECT UNKNOWN (0.117 field report): the UserPromptSubmit/Stop nudge
+// printed the bare task id where the subject should be, e.g.
+// `oldest in_progress subject: "3"`. ----
+
+test('SUBJECT UNKNOWN: a TaskUpdate-only task (no TaskCreate in window) is named "(subject unknown)", never the bare id', () => {
+  const h = makeHome();
+  try {
+    const tp = h.writeTranscript([
+      taskUpdateEntry('toolu_u3', { taskId: '3', status: 'in_progress' }),
+    ]);
+    const r = testHook(HOOK, stopPayload(tp), { home: h.home });
+    assert.ok(isBlock(r), `expected the generic nudge; stdout: ${r.stdout}`);
+    assert.match(r.json.reason, /\(subject unknown\)/, r.json.reason);
+    assert.doesNotMatch(r.json.reason, /"3"\s*\[/, r.json.reason);
+  } finally {
+    h.cleanup();
+  }
+});

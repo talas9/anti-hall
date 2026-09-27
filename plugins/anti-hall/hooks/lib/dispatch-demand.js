@@ -262,3 +262,24 @@ function maxNumericKey(map) {
   return max;
 }
 module.exports.maxNumericKey = maxNumericKey;
+
+// isEpochResetText(text) -> true when a tool_result string is direct evidence
+// that the harness's OWN task store no longer matches whatever this hook
+// reconstructed from the transcript — i.e. a TASK-LIST EPOCH boundary
+// (restart, or a usage-limit resume that reset the native task list back to
+// "no tasks" / renumbered ids from 1). Two anchored shapes, mirroring the
+// "Task #N created successfully" match this file's callers already parse:
+//   - TaskList  -> "No tasks found"                (the store is empty NOW)
+//   - TaskGet / TaskUpdate -> "Task not found"      (an id we hold is stale)
+// Anchored at the start of the result text (after optional whitespace) so an
+// unrelated tool result that merely CONTAINS the phrase mid-sentence never
+// false-positives. Field: after a restart/resume the harness's task list
+// resets and ids restart at 1, but task-guard/task-tracker kept reporting
+// "Open tasks remain … id 3" from the PREVIOUS process's ids still sitting in
+// the scan window with no new "Task #N created" to trigger the existing
+// id-restart reset.
+function isEpochResetText(text) {
+  if (typeof text !== 'string') return false;
+  return /^\s*No\s+tasks\s+found\b/i.test(text) || /^\s*Task\s*(?:#\S+)?\s*not\s+found\b/i.test(text);
+}
+module.exports.isEpochResetText = isEpochResetText;
