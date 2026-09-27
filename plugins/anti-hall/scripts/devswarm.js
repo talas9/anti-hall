@@ -309,6 +309,37 @@ const gitTruth = require('../companion/lib/devswarm-git-truth.js');
 // reimplementation, so the two can never drift.
 const wakeLib = require('../hooks/lib/devswarm-wake.js');
 const { isChildWorkspace, isChildWorkspaceCorroborated } = require('../hooks/lib/devswarm-role.js');
+const stableLauncherLib = require('../hooks/lib/stable-launcher.js');
+
+// resolveStableCliPath(home, fallback) -> the version-independent
+// ~/.anti-hall/bin/devswarm.js launcher path when it EXISTS on disk, else
+// `fallback` (normally this file's own __filename). Defect (SkyCrew Primary
+// field report, 2026-09-27): `inbox read-primary`'s returned `ackCommand`
+// always embedded THIS invocation's own __filename — the version-pinned
+// plugin-cache path (…/cache/anti-hall/anti-hall/<ver>/scripts/devswarm.js)
+// — which a caller may run in a LATER turn/session, by which point an
+// anti-hall update can have pruned that exact version directory. Every
+// injected-directive-text caller elsewhere (hooks/devswarm-child-role.js,
+// devswarm-parent-gate.js, devswarm-child-gate.js, devswarm-child-drain.js)
+// already solves this the same way: prefer the stable launcher
+// hooks/lib/stable-launcher.js installs under ~/.anti-hall/bin/, which
+// re-resolves the CURRENTLY REGISTERED anti-hall version every time IT runs.
+// Unlike those hooks (which actively install/refresh the launcher at
+// SessionStart/Stop), this is a plain CLI read path — it only CHECKS whether
+// the launcher already exists (never installs it itself) and falls back to
+// `fallback` otherwise, so a fresh install with no hook having run yet still
+// gets a directly-runnable command. Fail-open: any resolution error also
+// falls back to `fallback`.
+function resolveStableLauncherPath(kind, home, fallback) {
+  try {
+    const p = stableLauncherLib.launcherPath(kind, home);
+    if (p && fs.statSync(p).isFile()) return p;
+  } catch (_) { /* fall through to fallback */ }
+  return fallback;
+}
+function resolveStableCliPath(home, fallback) {
+  return resolveStableLauncherPath('devswarm', home, fallback);
+}
 
 // warnIdMismatch(id, ctx) -> boolean (idMismatch). defect 735b179362e8: a
 // child substituted its OWN meshId (or some other id) into the `<id>` slot
@@ -10778,7 +10809,7 @@ function cmdInboxMessagesInner(id, flags, ctx, opts) {
     out.acked = false;
     if (rec.ok) {
       out.readReceiptId = rec.receiptId;
-      out.ackCommand = 'node ' + JSON.stringify(__filename) + ' inbox ack-primary ' + id + ' --receipt ' + rec.receiptId;
+      out.ackCommand = 'node ' + JSON.stringify(resolveStableCliPath(home, __filename)) + ' inbox ack-primary ' + id + ' --receipt ' + rec.receiptId;
       out.ackHint = 'read-only: nothing was acked. After you have consumed these messages run ackCommand '
         + '(advances exactly what this read returned; re-reading before the ack returns the same unread set).';
     } else {
@@ -15848,14 +15879,20 @@ function isArchivedOnlyWorkspace(home, id) {
 // hooks/lib/devswarm-role.js uses (DEVSWARM_SOURCE_BRANCH) — never
 // re-derived from `id` itself, keeping this byte-parity with the actual
 // SessionStart hook for the CURRENT process's real role. CLI/WATCHER paths
-// resolve from THIS file's own on-disk location (`__filename`/`__dirname`),
-// matching devswarm-child-role.js's __dirname-based resolution rationale
-// (a workspace's cwd is its project worktree, never the plugin root).
+// prefer the stable launcher (resolveStableCliPath — same "when it exists"
+// check the `ackCommand` fix above uses) over THIS file's own on-disk
+// location (`__filename`/`__dirname`), matching devswarm-child-role.js's
+// stable-launcher-first resolution: the SessionStart hook that emits this
+// SAME directive text already prefers the stable launcher, so an on-demand
+// reprint of it must not regress back to a version-pinned path (same defect
+// class as the `ackCommand` fix above, SkyCrew Primary field report,
+// 2026-09-27).
 function cmdWakeDirective(id, ctx) {
   if (!isSafeId(id)) return { ok: false, error: 'invalid or missing workspace id' };
   const isChild = isChildWorkspace(ctx.env);
-  const cliPath = __filename;
-  const watcherPath = path.join(__dirname, '..', 'companion', 'lib', 'devswarm-wake-watch.js');
+  const cliPath = resolveStableCliPath(ctx.home, __filename);
+  const rawWatcherPath = path.join(__dirname, '..', 'companion', 'lib', 'devswarm-wake-watch.js');
+  const watcherPath = resolveStableLauncherPath('wakeWatch', ctx.home, rawWatcherPath);
   let text = '';
   try {
     // Wave 3 P2 fix: the argv `id` this verb was CALLED WITH is the ground

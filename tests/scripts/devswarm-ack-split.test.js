@@ -9,6 +9,9 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 
 const ops = require('../harness/ops.js');
+const fs = require('node:fs');
+const path = require('node:path');
+const stableLauncherLib = require('../../plugins/anti-hall/hooks/lib/stable-launcher.js');
 
 const T0 = 1_700_000_000_000;
 const READER_A = 'h:4242:1700000000000';
@@ -57,6 +60,44 @@ test('ack-primary --receipt advances exactly what the read returned and is idemp
     assert.equal(again.ok, true);
     assert.equal(again.alreadyAcked, true);
     assert.equal(peek(fx, T0 + 8).unreadCount, 1, 're-applying a receipt never acks the late message');
+  } finally { fx.cleanup(); }
+});
+
+// -----------------------------------------------------------------------
+// SkyCrew Primary field report (2026-09-27): `ackCommand` always embedded
+// THIS invocation's own __filename — the version-pinned plugin-cache path —
+// which a caller runs in a LATER turn/session, by which point an anti-hall
+// update can have pruned that exact version directory. `ackCommand` must
+// prefer the version-independent ~/.anti-hall/bin/devswarm.js stable
+// launcher when it exists, and fall back to __filename (the pre-fix
+// behavior, still exercised by every other test in this file — none of them
+// ever create a stable launcher) when it does not.
+// -----------------------------------------------------------------------
+
+test('ackCommand embeds the stable launcher path when ~/.anti-hall/bin/devswarm.js already exists', () => {
+  const fx = setup('stable-launcher');
+  try {
+    const stablePath = stableLauncherLib.launcherPath('devswarm', fx.home);
+    fs.mkdirSync(path.dirname(stablePath), { recursive: true });
+    fs.writeFileSync(stablePath, '#!/usr/bin/env node\n// stub launcher for test\n');
+
+    ops.opSend(fx, 'r1', 'r2', 'one', T0 + 2);
+    const read = ops.cli.run(['inbox', 'read-primary', 'r2'], ctxFor(fx, T0 + 3)).result;
+    assert.equal(read.ok, true, JSON.stringify(read));
+    assert.strictEqual(read.ackCommand, 'node ' + JSON.stringify(stablePath) + ' inbox ack-primary r2 --receipt ' + read.readReceiptId,
+      `PRE-FIX BUG: ackCommand embedded the version-pinned invocation path instead of the stable launcher — got ${read.ackCommand}`);
+  } finally { fx.cleanup(); }
+});
+
+test('ackCommand falls back to the running script\'s own path when no stable launcher exists', () => {
+  const fx = setup('no-stable-launcher');
+  try {
+    const stablePath = stableLauncherLib.launcherPath('devswarm', fx.home);
+    assert.ok(!fs.existsSync(stablePath), 'fixture sanity: no stable launcher installed for this isolated HOME');
+    ops.opSend(fx, 'r1', 'r2', 'one', T0 + 2);
+    const read = ops.cli.run(['inbox', 'read-primary', 'r2'], ctxFor(fx, T0 + 3)).result;
+    assert.equal(read.ok, true, JSON.stringify(read));
+    assert.ok(read.ackCommand.includes(path.join('scripts', 'devswarm.js')), 'falls back to the real script path: ' + read.ackCommand);
   } finally { fx.cleanup(); }
 });
 

@@ -12,8 +12,12 @@
 
 const { test } = require('node:test');
 const assert = require('node:assert');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 
 const cli = require('../../plugins/anti-hall/scripts/devswarm.js');
+const stableLauncherLib = require('../../plugins/anti-hall/hooks/lib/stable-launcher.js');
 
 const ctx = (env) => ({ home: '/tmp/anti-hall-wake-directive-cli-unused', backend: 'journal', env: env || {} });
 
@@ -51,6 +55,20 @@ test('wake-directive <id>: Codex agent -> the honest no-CronCreate equivalent (m
   assert.equal(r.agent, null, 'agentNameSafe only names claude — matches wakeDirective\'s own agent-name gating');
   assert.match(r.directive, /codex-id/);
   assert.ok(!/CronCreate/.test(r.directive), 'a non-Claude agent must never be told to call CronCreate');
+});
+
+test('wake-directive <id>: embeds the stable ~/.anti-hall/bin/devswarm.js launcher when it exists, same defect class as ackCommand (SkyCrew Primary field report, 2026-09-27)', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'anti-hall-wake-directive-stable-'));
+  try {
+    const stablePath = stableLauncherLib.launcherPath('devswarm', home);
+    fs.mkdirSync(path.dirname(stablePath), { recursive: true });
+    fs.writeFileSync(stablePath, '#!/usr/bin/env node\n// stub launcher for test\n');
+
+    const r = cli.run(['wake-directive', 'primary-stable123'], { home, backend: 'journal', env: { DEVSWARM_AI_AGENT: 'claude' } }).result;
+    assert.equal(r.ok, true, JSON.stringify(r));
+    assert.ok(r.directive.includes(stablePath),
+      `PRE-FIX BUG: the reprinted directive embedded the version-pinned __filename path instead of the stable launcher — got ${r.directive}`);
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
 });
 
 test('wake-directive: missing/invalid id -> ok:false, never crashes', () => {
