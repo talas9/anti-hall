@@ -134,16 +134,20 @@ const DEVSWARM_HOUSEKEEPING_SEGMENT_RE = new RegExp(
   '^\\s*' + DEVSWARM_LAUNCHER_PREFIX_SRC + '\\s+' + DEVSWARM_FLAG_SKIP_SRC + DEVSWARM_VERB_SRC,
   'i'
 );
-const CRONTAB_SEGMENT_RE = /\bcrontab\b/i;
+// Anchored to command position (optionally inside a leading subshell paren):
+// a segment that merely MENTIONS crontab (`git commit -m "add crontab entry"`,
+// `sed -i … deploy/crontab.txt`, `npm install crontab-parser`) is real work.
+const CRONTAB_SEGMENT_RE = /^[({\s]*crontab(?![\w.-])/i;
 
 // isDevswarmHousekeepingOnly(rawCmd) -> bool. True only when EVERY segment
-// (split on &&, ||, ;, |) of the RAW (not quote-neutralized — crontab/
+// (split on &&, ||, ;, |, newline and a lone background `&` — not the `&` of
+// `2>&1` / `&>`) of the RAW (not quote-neutralized — crontab/
 // devswarm-verb detection needs no quote awareness, matching command-guard's
 // own convention for this same command shape) command line is either a
 // stable-launcher devswarm verb invocation or a crontab manipulation.
 function isDevswarmHousekeepingOnly(rawCmd) {
   if (!rawCmd) return false;
-  const segments = rawCmd.split(/&&|\|\||;|\|/);
+  const segments = rawCmd.split(/&&|\|\||;|\||\n|(?<![<>])&(?!>)/);
   if (!segments.length) return false;
   let sawAny = false;
   for (const seg of segments) {

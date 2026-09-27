@@ -63,3 +63,31 @@ test('isCountedWork: Agent/Task/CronCreate/CronDelete tool_uses never count', ()
     assert.strictEqual(wd.isCountedWork({ name, input: { prompt: 'do something' } }), false, `${name} must not count`);
   }
 });
+
+// R2A1-WD-1 / R2-RV1-9: crontab is housekeeping only at command position, and
+// a newline or a lone background `&` separates segments like `;` does, so real
+// work that merely mentions crontab, or rides after a housekeeping verb on a
+// new line / after `&`, still counts.
+for (const cmd of [
+  'node ~/.anti-hall/bin/devswarm.js heartbeat x --summary hi\nsed -i s/a/b/ src/app.js',
+  'node ~/.anti-hall/bin/devswarm.js heartbeat x & sed -i s/a/b/ src/app.js',
+  "sed -i 's/a/b/' deploy/crontab.txt",
+  'git commit -am "tidy crontab docs"',
+  'rm -rf build/crontab-cache',
+  'npm install crontab-parser',
+  'git commit -m "add crontab entry"',
+  'echo x > docs/crontab.md',
+  'sed -i s/a/b/ scripts/crontab.sh',
+]) {
+  test(`isCountedWork: real work is counted — ${JSON.stringify(cmd)}`, () => {
+    assert.strictEqual(wd.isCountedWork({ name: 'Bash', input: { command: cmd } }), true);
+  });
+}
+
+test('isDevswarmHousekeepingOnly: `2>&1` is a redirection, not a background separator', () => {
+  assert.strictEqual(wd.isDevswarmHousekeepingOnly('node ~/.anti-hall/bin/devswarm.js inbox tick x 2>&1'), true);
+});
+
+test('isDevswarmHousekeepingOnly: a crontab install in a leading subshell stays housekeeping', () => {
+  assert.strictEqual(wd.isDevswarmHousekeepingOnly('(crontab -l 2>/dev/null) | crontab -'), true);
+});
