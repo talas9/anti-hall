@@ -17038,21 +17038,23 @@ function resolveReconcileBudgetMs(flags, ctx) {
 }
 
 // reconcileRowArchived(home, d, ctx) -> bool. True iff this registry row is
-// archived — the DevSwarm app DB (builders.isActive=0/isHidden=1, ground
-// truth — see devswarm-app-db.js's appArchivedVerdict) when readable, else
-// anti-hall's own local archived/<id>.json marker (hasArchivedCounterpart).
+// archived by either source row-eligibility.js projects — the DevSwarm app DB
+// (builders.isActive=0/isHidden=1) or anti-hall's own archived/<id>.json
+// marker (hasArchivedCounterpart kept as the bare-marker fallback).
 // Never throws (both signals fail-closed to "not archived" on any error), so
 // an unreadable app DB never spuriously reports a live row as archived.
 function reconcileRowArchived(home, d, ctx) {
+  // THE one row projection (row-eligibility.js): app DB verdict when it has
+  // one, else anti-hall's own marker. No repoKey is passed, so the looser
+  // active-list-absence rule never marks a live row archived here.
+  let archived = false;
   try {
-    const appDbLib = require('../companion/lib/devswarm-app-db.js');
-    const v = appDbLib.appArchivedVerdict({
-      home, env: ctx.env, now: ctx.now, id: d.id, worktreePath: d.worktreePath || null,
-    });
-    if (v === true) return true;
-    if (v === false) return false;
-  } catch (_) { /* fall through to the local marker */ }
-  return hasArchivedCounterpart(home, d.id);
+    archived = require('../companion/lib/row-eligibility.js').rowEligibility(
+      { id: d.id, worktreePath: d.worktreePath || null, sessionId: d.sessionId || null },
+      { home, env: ctx.env, now: ctx.now },
+    ).archived === true;
+  } catch (_) { archived = false; }
+  return archived || hasArchivedCounterpart(home, d.id);
 }
 
 // cmdReconcile(flags, ctx) — PLAN.md "reconcile": drain EVERY worktree
@@ -18324,11 +18326,11 @@ function spawnSourceFreshness(rest, ctx) {
   // checkout as <meta>/.git/modules/<name>, and "local main is behind" alone
   // reads as the meta-repo. The submodule is named by its path in the
   // superproject (else by its .git/modules/<name> dir); meta-repo wording is
-  // unchanged.
+  // unchanged. Location comes from the one canonical resolver (identity.js).
   let submodule = null;
-  const superWt = out(git(['rev-parse', '--show-superproject-working-tree']));
-  const top = superWt ? out(git(['rev-parse', '--show-toplevel'])) : null;
-  if (superWt && top) submodule = path.relative(superWt, top).split(path.sep).join('/') || null;
+  let idc = null;
+  try { idc = identityContext(cwd); } catch (_) { idc = null; }
+  if (idc && idc.superproject && idc.toplevel) submodule = path.relative(idc.superproject, idc.toplevel).split(path.sep).join('/') || null;
   const staleLine = (submodule ? 'submodule ' + submodule + ': ' : '')
     + 'local ' + def + ' is ' + behind + ' commit' + (behind === 1 ? '' : 's') + ' behind ' + remoteRef
     + '; spawning from it would give the child outdated tools';
