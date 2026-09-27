@@ -115,8 +115,7 @@ function sectionRows(sectionDef, opts, advanced) {
 // that answered it (env, file = settings.json, /config, legacy = jev.json
 // "integrations" map, default = schema default).
 function effectiveIntegrations(opts) {
-  const os = require('os');
-  const home = (opts && opts.home) || os.homedir();
+  const home = require('../companion/lib/test-home-guard.js').resolveHome(opts && opts.home, process.env);
   const sec = schema.SECTIONS.find((x) => x.key === 'jevIntegrations');
   if (!sec) return [];
   let assist = null; let triage = null; let fileCfg = {};

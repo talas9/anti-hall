@@ -497,7 +497,7 @@ function readTriageLines(home) {
 // (written by hooks/lib/jev-assist.js writeDailyRollups before each rotation),
 // sorted by day. A corrupt file is skipped.
 function readDailyRollups(home) {
-  const dir = path.join((home || os.homedir()), '.anti-hall', 'logs', 'jev-daily');
+  const dir = path.join(require('../companion/lib/test-home-guard.js').resolveHome(home), '.anti-hall', 'logs', 'jev-daily');
   let names = [];
   try { names = fs.readdirSync(dir); } catch (_) { return []; }
   const out = [];
