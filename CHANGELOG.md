@@ -52,6 +52,10 @@ Wave-2 fixes (a second peer sweep):
 - **devswarm: one consistent inbox-drain instruction.** `read-primary` and the emitted `ackCommand` previously implied two different drain sequences; both paths now point at the same instruction.
 - **devswarm-comms-guard: no unresolved-advisory for in-process subagent targets.** A send addressed to an in-process subagent id was flagged as an unresolved target even though it never needed mesh resolution; subagent ids are now recognized and skipped.
 
+Deadly-loop round-2 fixes:
+
+- **git-guard: a force flag inside a `!shell` alias body is found however it is quoted.** `git -c alias.x='!sh -c "git push --force"' x`, `'!f() { git push --force; }; f'`, `'!eval "…"'`, the reversed-quote form and `'!(git push --force)'` were allowed because the body was split on whitespace only, leaving `--force"`, `--force;` or `--force)`. Alias bodies are now split on quotes, parens, braces and shell separators too, and an inner `--` of another command in a shell body no longer disarms the check. This gap predates 0.116.
+
 Jev logging:
 
 - **parentGateQuestion decisions were never logged.** The triage and assist caches evict the lowest `_seq` first, but `_seq` came from a per-process counter that restarted at 1 in every hook process; once a cache reached 500 entries each new entry sorted lowest and was evicted in the same write. The triage cache froze, the question-needs-answer lookup never found a label, and parentGateQuestion never reached its decision. `_seq` is now seeded from the stored max; an already-frozen cache heals in place.

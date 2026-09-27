@@ -59,6 +59,15 @@ const BLOCK = [
   // --config-env alias smuggling with NO call-site --force: the alias key alone
   // forces a synthetic force verdict. Confirms FORCE path, not cmd-subst.
   { cmd: 'git --config-env alias.p=push p origin main', reason: REASON.FORCE },
+  // `!shell` alias bodies whose force flag is glued to a closing quote, `;`,
+  // or `)` (R2-RV1-4): the body tokens are normalized before isForcePush.
+  { cmd: "git -c alias.x='!sh -c \"git push --force\"' x", reason: REASON.FORCE },
+  { cmd: "git -c alias.x='!f() { git push --force; }; f' x", reason: REASON.FORCE },
+  { cmd: "git -c alias.x='!eval \"git push --force\"' x", reason: REASON.FORCE },
+  { cmd: "git -c alias.x=\"!sh -c 'git push --force'\" x", reason: REASON.FORCE },
+  { cmd: "git -c alias.x='!(git push --force)' x", reason: REASON.FORCE },
+  // An inner `--` of another command in the shell body does not disarm it.
+  { cmd: "git -c alias.x='!git log -- x; git push --force' x", reason: REASON.FORCE },
   { cmd: 'sudo git push --force', reason: REASON.FORCE },
   { cmd: 'true && git push -f', reason: REASON.FORCE },
   { cmd: 'eval "git push -f"', reason: REASON.FORCE },

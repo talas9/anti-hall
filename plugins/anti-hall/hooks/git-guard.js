@@ -445,7 +445,15 @@ function gitSubcommand(args) {
           // (`-c alias.p='push --force origin main' p`) is force-checked, not just
           // flags at the call site. Tokens are shaped like the tokenizer output so
           // isForcePush can consume them.
-          const parts = val.split(/\s+/).slice(1).filter(Boolean);
+          // Normalize before splitting: quotes, parens, braces and shell
+          // separators (`;`, `&&`, `||`, `|`, `&`) are token boundaries, so a
+          // flag written as `--force"`, `--force;` or `--force)` inside
+          // `!sh -c "…"`, `!f() { …; }; f`, `!eval "…"` or `!(…)` reaches
+          // isForcePush as a clean `--force`. For a `!shell` body a `--` is a
+          // per-command option terminator of some inner command, not of the
+          // push, so it is dropped rather than disarming the flag checks.
+          let parts = val.split(/[\s;&|()"'{}`]+/).slice(1).filter(Boolean);
+          if (firstWord === '!') parts = parts.filter(p => p !== '--');
           aliasBodyTokens.set(name, parts.map(p => ({ text: p, quotedOnly: false })));
         }
       }
