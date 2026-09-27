@@ -9727,6 +9727,16 @@ function cmdInboxMessagesInner(id, flags, ctx, opts) {
   // is read again while building `out`, after the try/finally has closed `s`).
   let withheldBySource = null;
   let truncatedCount = 0;
+  // --since-before-cap bookkeeping (defect: --since used to be applied AFTER
+  // the per-source read cap, so a recent --since window could be silently
+  // emptied by a cap that had already discarded exactly the rows the window
+  // asked for). `windowSinceWithheld`/`windowUndated` are hoisted out here
+  // (same reasoning as withheldBySource/truncatedCount above) so the early
+  // since-filter inside the try{} block and the later --tail stage after it
+  // closes can both contribute to the one number reported in `out.window`.
+  let windowWithheld = 0;
+  let windowUndated = 0;
+  let windowSinceWithheld = 0;
   let meshAddedUnreadCount = 0; // count of sibling-partition rows folded into `messages` after dedup (0 unless meshUnionActive)
   let meshAddedTotal = 0; // Σ sibling partitions' own full `messageCount` (0 unless meshUnionActive) — undeduped, mirrors how `total` was never cross-source-deduped pre-fix either (only `messages`/`unreadCount` are)
   // Fix Wave 2 F3: this verb (read-primary/peek-primary, the one
@@ -10195,6 +10205,34 @@ function cmdInboxMessagesInner(id, flags, ctx, opts) {
         });
       }
     }
+    // --since APPLIED BEFORE THE CAP (defect: `inbox messages <id> --since
+    // <recent> --limit 2000` returned count:0 on a large inbox — the per-
+    // source cap below used to run FIRST and keep only the OLDEST
+    // `inboxReadLimit` rows per source; --since was then applied to that
+    // already-capped, already-oldest set, so a recent window matched nothing
+    // even though `total` proved thousands of matching rows existed. Filter
+    // by --since HERE, on the full unand-capped merged set, so the cap below
+    // sees (and caps) only the rows that are actually in the requested
+    // window. `--tail` deliberately stays out of this early filter — it is
+    // handled at its existing later stage, which refuses outright rather
+    // than silently mis-answering once truncation has occurred (see the
+    // TAIL-UNDER-TRUNCATION REFUSAL comment further down). Never runs for an
+    // ack-bearing call: `windowActive` is `!doAck && !forceUnread` (~line
+    // 9578), so this can only touch the non-mutating `inbox messages` read.
+    if (windowActive && windowSince && Array.isArray(messages)) {
+      const beforeSince = messages.length;
+      messages = messages.filter((m) => {
+        if (windowSince.kind === 'ts') {
+          const t = m && Number(m.ts);
+          if (!Number.isFinite(t)) { windowUndated += 1; return true; }
+          return t >= windowSince.value;
+        }
+        const ix = m && Number(m.index);
+        if (!Number.isFinite(ix)) { windowUndated += 1; return true; }
+        return ix > windowSince.value;
+      });
+      windowSinceWithheld = beforeSince - messages.length;
+    }
     // UNBOUNDED-READ CAP (defect 8d0a66cfc563): the merge above has no limit —
     // truncate the FINAL merged set to `inboxReadLimit`, but per-SOURCE (own
     // store / ndjson / each sibling partition) rather than a blind slice of
@@ -10208,25 +10246,45 @@ function cmdInboxMessagesInner(id, flags, ctx, opts) {
     // (defect 27cd80902435) Gated on `wantsUnion || meshUnionActive` — the
     // widened mesh case now needs the same cap `read-primary` always had.
     if ((wantsUnion || meshUnionActive) && messages.length > inboxReadLimit) {
-      const naiveKept = new Set(messages.slice(0, inboxReadLimit));
-      // For each source, find the smallest __srcIdx among that source's rows
-      // NOT in naiveKept — every row of that source AT OR AFTER that index is
-      // withheld too, even if the ts-sort happened to place it earlier in
-      // `messages` than the true gap. This makes the kept set a provable
-      // prefix by __srcIdx, independent of ts ordering.
-      const minWithheldIdxBySource = new Map();
+      // Direction depends on whether this call advances a cursor. `doAck`
+      // calls (read-primary/ack) MUST keep the OLDEST rows as a genuine
+      // structural prefix per source — the ack-cursor math below depends on
+      // a withheld row's cursor never advancing past it (see the header
+      // comment above this block). A non-acking call (`doAck` false — plain
+      // `inbox messages`) writes no cursor, so that constraint does not
+      // apply, and defaulting to the oldest rows was itself part of this
+      // defect: a caller near a large, old inbox got 1959 rows from months
+      // ago with no indication recent mail existed. Keep the NEWEST rows
+      // (a genuine structural SUFFIX per source, same provable-by-__srcIdx
+      // construction, mirrored) instead.
+      const naiveKept = new Set(doAck ? messages.slice(0, inboxReadLimit) : messages.slice(-inboxReadLimit));
+      const minWithheldIdxBySource = new Map(); // doAck: earliest withheld __srcIdx per source
+      const maxWithheldIdxBySource = new Map(); // !doAck: latest withheld __srcIdx per source
       for (const row of messages) {
         if (!row || row.__srcId === undefined) continue;
         if (naiveKept.has(row)) continue;
-        const cur = minWithheldIdxBySource.has(row.__srcId) ? minWithheldIdxBySource.get(row.__srcId) : Infinity;
-        if (row.__srcIdx < cur) minWithheldIdxBySource.set(row.__srcId, row.__srcIdx);
+        if (doAck) {
+          const cur = minWithheldIdxBySource.has(row.__srcId) ? minWithheldIdxBySource.get(row.__srcId) : Infinity;
+          if (row.__srcIdx < cur) minWithheldIdxBySource.set(row.__srcId, row.__srcIdx);
+        } else {
+          const cur = maxWithheldIdxBySource.has(row.__srcId) ? maxWithheldIdxBySource.get(row.__srcId) : -Infinity;
+          if (row.__srcIdx > cur) maxWithheldIdxBySource.set(row.__srcId, row.__srcIdx);
+        }
       }
       const kept = [];
       withheldBySource = new Map();
       for (const row of messages) {
-        const minIdx = (row && row.__srcId !== undefined && minWithheldIdxBySource.has(row.__srcId))
-          ? minWithheldIdxBySource.get(row.__srcId) : Infinity;
-        if (row && row.__srcIdx !== undefined && row.__srcIdx >= minIdx) {
+        let withhold;
+        if (doAck) {
+          const minIdx = (row && row.__srcId !== undefined && minWithheldIdxBySource.has(row.__srcId))
+            ? minWithheldIdxBySource.get(row.__srcId) : Infinity;
+          withhold = !!(row && row.__srcIdx !== undefined && row.__srcIdx >= minIdx);
+        } else {
+          const maxIdx = (row && row.__srcId !== undefined && maxWithheldIdxBySource.has(row.__srcId))
+            ? maxWithheldIdxBySource.get(row.__srcId) : -Infinity;
+          withhold = !!(row && row.__srcIdx !== undefined && row.__srcIdx <= maxIdx);
+        }
+        if (withhold) {
           withheldBySource.set(row.__srcId, (withheldBySource.get(row.__srcId) || 0) + 1);
         } else {
           kept.push(row);
@@ -10495,38 +10553,29 @@ function cmdInboxMessagesInner(id, flags, ctx, opts) {
   // `count` may exceed `inboxReadLimit` when `truncated:true` is also set;
   // use `truncatedCount`/`truncated` (below) to detect withholding, not a
   // `count` vs `inboxReadLimit` comparison.
-  // WINDOW PROJECTION (--since / --tail, defect 3f6027ee462a). Applied LAST, to
-  // the already-delivered row set, and ONLY on the non-acking `inbox messages`
-  // verb (windowActive is false everywhere else — the ack-bearing verbs already
-  // returned a rejection above). Nothing here touches a cursor, a total, or an
-  // ack: `total`/`unreadCount` below keep reporting the REAL untruncated
-  // figures, and the withheld rows are still exactly where they were.
+  // WINDOW PROJECTION (--since / --tail, defect 3f6027ee462a), ONLY on the
+  // non-acking `inbox messages` verb (windowActive is false everywhere else —
+  // the ack-bearing verbs already returned a rejection above). Nothing here
+  // touches a cursor, a total, or an ack: `total`/`unreadCount` below keep
+  // reporting the REAL untruncated figures, and the withheld rows are still
+  // exactly where they were. --since itself is now applied EARLY, before the
+  // per-source cap (see the "--since APPLIED BEFORE THE CAP" block above) —
+  // `windowSinceWithheld`/part of `windowUndated` were already accumulated
+  // there; only --tail's slice (which must run after the cap; it refuses
+  // outright rather than risk a wrong answer, below) still happens here.
   // Rows with no comparable field (`ts`/`index` null — a legacy row) are KEPT
   // by --since rather than dropped: hiding mail because its metadata is missing
   // is the one failure mode a "show me recent mail" flag must never have. They
   // are counted in `windowUndated` so the caller can see it happened.
-  let windowWithheld = 0;
-  let windowUndated = 0;
+  windowWithheld = windowSinceWithheld;
   if (windowActive && Array.isArray(messages)) {
     // TAIL-UNDER-TRUNCATION REFUSAL (R11-A3, P2). `--tail N` promises "the
-    // NEWEST N". It cannot keep that promise once the per-source read cap
-    // above (the `(wantsUnion || meshUnionActive) && messages.length >
-    // inboxReadLimit` block) has fired: that cap deliberately keeps an
-    // EARLIEST structural PREFIX of every source, so `messages` here is the
-    // OLDEST `inboxReadLimit` rows and `slice(-N)` returns the last N of the
-    // EARLIEST batch — mail that is arbitrarily far from the newest, silently
-    // presented as if it were the tail. Nothing about the ordering can be
-    // reversed to fix this: the prefix direction is exactly what the ack
-    // arithmetic below (and the sibling `deliveredCount` invariant) depends
-    // on — a withheld row's cursor must never advance past it — so keeping a
-    // LATEST suffix instead would break cursor safety on every acking caller
-    // that shares this function.
-    // REFUSING is therefore the only honest option, and it is safe: this verb
-    // is non-acking (windowActive is false whenever doAck is set), so nothing
-    // has been consumed and re-running with `--since` returns the mail. The
-    // hint names `--since` because a since-bounded read narrows the set
-    // BEFORE the cap can bite, which is the actual way to reach recent mail
-    // on an over-cap partition.
+    // NEWEST N". Once the per-source read cap above has fired (truncatedCount
+    // > 0), refuse rather than guess: this verb is non-acking (windowActive
+    // is false whenever doAck is set), so nothing has been consumed and
+    // re-running with `--since` (which now narrows the set BEFORE the cap
+    // can bite — see above) returns the mail. No mail is ever lost by
+    // refusing here.
     if (windowTail !== null && truncatedCount > 0) {
       return {
         ok: false,
@@ -10538,25 +10587,12 @@ function cmdInboxMessagesInner(id, flags, ctx, opts) {
         limit: inboxReadLimit,
         requestedTail: windowTail,
         error: '--tail ' + windowTail + ' cannot be honoured: this read was truncated by the '
-          + inboxReadLimit + '-row per-source cap (' + truncatedCount + ' row(s) withheld), and the cap keeps '
-          + 'the EARLIEST rows, so the last ' + windowTail + ' of what was read are NOT the newest messages.',
+          + inboxReadLimit + '-row per-source cap (' + truncatedCount + ' row(s) withheld).',
         hint: 'use `--since <index|ISO date>` to bound the read to recent mail before the cap applies '
           + '(or raise --limit above ' + inboxReadLimit + ' so nothing is truncated). Nothing was acked; no mail was lost.',
       };
     }
     const before = messages.length;
-    if (windowSince) {
-      messages = messages.filter((m) => {
-        if (windowSince.kind === 'ts') {
-          const t = m && Number(m.ts);
-          if (!Number.isFinite(t)) { windowUndated += 1; return true; }
-          return t >= windowSince.value;
-        }
-        const ix = m && Number(m.index);
-        if (!Number.isFinite(ix)) { windowUndated += 1; return true; }
-        return ix > windowSince.value;
-      });
-    }
     if (windowTail !== null && messages.length > windowTail) messages = messages.slice(-windowTail);
     // A7 — UNDATED ROWS ON THE TAIL PATH. The merge sort above orders by
     // `Number.isFinite(a.ts) ? a.ts : Number.POSITIVE_INFINITY`, so every row
@@ -10572,7 +10608,7 @@ function cmdInboxMessagesInner(id, flags, ctx, opts) {
     if (windowTail !== null) {
       windowUndated = messages.filter((m) => !(m && Number.isFinite(m.ts))).length;
     }
-    windowWithheld = before - messages.length;
+    windowWithheld += before - messages.length;
   }
   // FORWARDED-ROW MARKER (defect e9e7c99ec924, P2): a forward preserves the
   // ORIGINAL row's `ts` verbatim (MESH_ROW_COPY_FIELDS, ~line 1432) while
@@ -18805,7 +18841,8 @@ const VERB_HELP = {
   heartbeat: { synopsis: 'record a liveness heartbeat for a workspace', mutates: 'writes a heartbeat file; may emit a mesh broadcast' },
   inbox: { synopsis: 'inbox subcommands: count | read | ack | pull | messages | read-primary | ack-primary | peek-primary | drain-primary-legacy (drain = read-primary, consume, then the returned ack-primary --receipt command). '
     + '`read-primary <id> --format text` prints one `from/seq/body` line per message instead of the raw JSON (still two-step by default: nothing is acked). '
-    + '`read-primary <id> --ack-after-print` is opt-in: acks immediately after printing (equivalent to running the returned `ackCommand` right away) — omit it and the two-step read-then-`ack-primary --receipt` default is unchanged.',
+    + '`read-primary <id> --ack-after-print` is opt-in: acks immediately after printing (equivalent to running the returned `ackCommand` right away) — omit it and the two-step read-then-`ack-primary --receipt` default is unchanged. '
+    + '`inbox messages <id> [--limit N] [--since <index>|<ISO date>] [--tail N]` bounds a non-acking read: --since (a per-partition message index, or a parseable date such as ISO 8601) filters to rows at/after that point BEFORE the per-source --limit cap is applied, so a recent window is never emptied by an old, oversized inbox; --tail N keeps only the newest N of what --since (if given) returned, and refuses outright (rather than guess) if the --limit cap itself still truncated. --since/--tail are rejected on any ack-bearing call (read-primary/ack/pull/etc) — use the non-acking `messages` read for a bounded view.',
     mutates: '`pull`/`ack`/`ack-primary`/`drain-primary-legacy` mutate cursors; `read-primary` writes only a read receipt (or also acks, with --ack-after-print); the rest are read-only' },
   workspaces: { synopsis: 'list registered workspaces', mutates: 'read-only' },
   gate: { synopsis: 'set/clear merge gates on a workspace (--set/--clear)', mutates: 'writes gate state to the store' },

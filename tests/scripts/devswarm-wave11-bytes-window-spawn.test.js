@@ -214,6 +214,71 @@ test('window: --since and --tail compose — since filters first, then the tail 
   } finally { rm(home); rm(repo); }
 });
 
+// -----------------------------------------------------------------------
+// SkyCrew Primary field report (2026-09-27): `inbox messages <id> --since
+// <recent> --limit 2000` on a large inbox returned count:0, total:5985,
+// truncatedCount:2989 — the per-source cap ran BEFORE --since, kept only the
+// OLDEST `--limit` rows, and --since then filtered THAT already-oldest set
+// down to nothing, even though thousands of matching recent rows existed.
+// Without --since, the same call returned only the OLDEST rows of the whole
+// inbox, with truncatedHint itself recommending the very flag that didn't
+// work. Reproducing this needs the per-source cap to actually fire on a
+// PLAIN (non-ack, non --unread) `inbox messages` read, which only happens
+// when `meshUnionActive` is true (two registry rows sharing one worktree) —
+// `wantsUnion` alone (doAck||forceUnread) is false for this verb.
+// -----------------------------------------------------------------------
+function registerMeshSiblings(home, repo, idA, idB) {
+  register(home, repo, idA);
+  register(home, repo, idB);
+}
+
+test('window/cap: --since is applied BEFORE the per-source cap — a recent index window is never emptied by an oversized old inbox', () => {
+  const home = tmpHome();
+  const repo = makeGitRepo('cap-since-ix');
+  try {
+    registerMeshSiblings(home, repo, 'primary-cap-ix-a', 'primary-cap-ix-b');
+    seedPartition(home, repo, 'primary-cap-ix-a', Array.from({ length: 10 }, (_, i) => ({ body: 'm' + (i + 1), ts: 1700000000000 + (i + 1) * 60000 })));
+    const r = cli.run(['inbox', 'messages', 'primary-cap-ix-a', '--since', '7', '--limit', '4'], ctx(home, { cwd: repo }));
+    assert.equal(r.result.ok, true, JSON.stringify(r.result));
+    assert.deepStrictEqual(r.result.messages.map((m) => m.body), ['m8', 'm9', 'm10'],
+      `PRE-FIX BUG: the cap kept m1..m4 (oldest 4, --limit 4) THEN --since 7 filtered that set to nothing — got ${JSON.stringify((r.result.messages || []).map((m) => m.body))}`);
+    assert.strictEqual(r.result.count, 3);
+    assert.ok(!r.result.truncated, 'the since-narrowed set (3 rows) never needed the 4-row cap at all: ' + JSON.stringify(r.result));
+  } finally { rm(home); rm(repo); }
+});
+
+test('window/cap: --since is applied BEFORE the per-source cap — a recent ISO-date window is never emptied by an oversized old inbox', () => {
+  const home = tmpHome();
+  const repo = makeGitRepo('cap-since-iso');
+  try {
+    registerMeshSiblings(home, repo, 'primary-cap-iso-a', 'primary-cap-iso-b');
+    const rows = Array.from({ length: 10 }, (_, i) => ({ body: 'm' + (i + 1), ts: 1700000000000 + (i + 1) * 60000 }));
+    seedPartition(home, repo, 'primary-cap-iso-a', rows);
+    const cutoff = new Date(rows[7].ts).toISOString(); // m8's own ts
+    const r = cli.run(['inbox', 'messages', 'primary-cap-iso-a', '--since', cutoff, '--limit', '4'], ctx(home, { cwd: repo }));
+    assert.equal(r.result.ok, true, JSON.stringify(r.result));
+    assert.deepStrictEqual(r.result.messages.map((m) => m.body), ['m8', 'm9', 'm10'],
+      `PRE-FIX BUG: same as the index case but with an ISO date --since — got ${JSON.stringify((r.result.messages || []).map((m) => m.body))}`);
+    assert.strictEqual(r.result.count, 3);
+  } finally { rm(home); rm(repo); }
+});
+
+test('window/cap: a plain (non-acking) read truncated by the cap keeps the NEWEST rows, not the oldest', () => {
+  const home = tmpHome();
+  const repo = makeGitRepo('cap-newest');
+  try {
+    registerMeshSiblings(home, repo, 'primary-cap-newest-a', 'primary-cap-newest-b');
+    seedPartition(home, repo, 'primary-cap-newest-a', Array.from({ length: 10 }, (_, i) => ({ body: 'm' + (i + 1), ts: 1700000000000 + (i + 1) * 60000 })));
+    const r = cli.run(['inbox', 'messages', 'primary-cap-newest-a', '--limit', '4'], ctx(home, { cwd: repo }));
+    assert.equal(r.result.ok, true, JSON.stringify(r.result));
+    assert.deepStrictEqual(r.result.messages.map((m) => m.body), ['m7', 'm8', 'm9', 'm10'],
+      `PRE-FIX BUG: an over-cap, non-acking read returned m1..m4 (the oldest rows) with no hint recent mail existed — got ${JSON.stringify((r.result.messages || []).map((m) => m.body))}`);
+    assert.strictEqual(r.result.truncated, true);
+    assert.strictEqual(r.result.truncatedCount, 6);
+    assert.strictEqual(r.result.total, 10, 'total keeps reporting the REAL untruncated figure');
+  } finally { rm(home); rm(repo); }
+});
+
 test('window: it is a PURE READ — no cursor is advanced and every withheld row is still readable', () => {
   const home = tmpHome();
   const repo = makeGitRepo('window-nonacking');
