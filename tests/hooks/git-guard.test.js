@@ -40,6 +40,165 @@ const REASON = {
   FILE: /Commit message \(via `-F`\/`--file`/,
 };
 
+// --- Exact-shape exemption: heredoc message file + anti-hall launcher send ---
+// The peer's original command (absolute scratchpad path, ENDOFMSG delimiter)
+// and prose variants. All of these BLOCK on the pre-0.117 guard.
+const PEER_FILE = '/private/tmp/peer/scratchpad/landed.md';
+const LAUNCHER_MSG_ALLOW = [
+  `cat > ${PEER_FILE} <<'ENDOFMSG'\nLANDED ON MAIN. Plain fast-forward, no force - I did not run \`git push --force\` or \`git push -f\`.\nENDOFMSG\nnode ~/.anti-hall/bin/devswarm.js send --to primary --message-file ${PEER_FILE}`,
+  "cd /tmp/peer && cat > m.md <<'EOF'\nPlease hold; `git push origin +main` waits for `ci` green.\nEOF\nnode ~/.anti-hall/bin/devswarm.js send --to x --message-file m.md",
+  "cd /tmp/peer\ncat > /tmp/m.md <<'MSG'\ngit push `backtick text`\nnever git push --force-with-lease here; && git push -f is banned too\nMSG\nnode ~/.anti-hall/bin/devswarm.js send --to x --urgency high --quiet --message-file /tmp/m.md",
+  "cat > /tmp/m.txt <<'EOF'\nstep 3: $(git push --force origin main) is what NOT to do\nEOF\nnode ~/.anti-hall/bin/devswarm.js send --to peer --message 'see file' --message-file /tmp/m.txt",
+];
+
+// Near misses of that shape: each must fall back to scanning the body (which
+// carries a force push) and BLOCK.
+const FPB = 'git push --force origin main';
+const MSG_SEND = 'node ~/.anti-hall/bin/devswarm.js send --to x --message-file /tmp/m.md';
+const HD_MSG = (opener, file) => `${opener || `cat > ${file || '/tmp/m.md'} <<'EOF'`}\n${FPB}\nEOF\n`;
+const SEND_TO = (file) => `node ~/.anti-hall/bin/devswarm.js send --to x --message-file ${file}`;
+const LAUNCHER_MSG_BLOCK = [
+  // env assignments anywhere
+  HD_MSG() + 'FOO=1 ' + MSG_SEND,
+  HD_MSG() + 'NODE_OPTIONS=--require=/tmp/m.md ' + MSG_SEND,
+  HD_MSG() + 'PATH=. ' + MSG_SEND,
+  HD_MSG("X=1 cat > /tmp/m.md <<'EOF'") + MSG_SEND,
+  HD_MSG() + MSG_SEND + ' GIT_PAGER=sh',
+  HD_MSG() + 'env ' + MSG_SEND,
+  // forbidden targets
+  HD_MSG(null, '.git/config') + SEND_TO('.git/config'),
+  HD_MSG(null, '.GIT/config') + SEND_TO('.GIT/config'),
+  HD_MSG(null, 'repo/.git/info/m.md') + SEND_TO('repo/.git/info/m.md'),
+  "cd .git && cat > config <<'EOF'\n" + FPB + '\nEOF\n' + SEND_TO('config'),
+  "cd .git\ncat > config <<'EOF'\n" + FPB + '\nEOF\n' + SEND_TO('config'),
+  HD_MSG(null, '.gitconfig') + SEND_TO('.gitconfig'),
+  HD_MSG(null, '.gitmodules') + SEND_TO('.gitmodules'),
+  HD_MSG(null, '.gitattributes') + SEND_TO('.gitattributes'),
+  HD_MSG(null, 'hooks/pre-commit') + SEND_TO('hooks/pre-commit'),
+  HD_MSG(null, '/home/u/.anti-hall/bin/devswarm.js') + SEND_TO('/home/u/.anti-hall/bin/devswarm.js'),
+  HD_MSG(null, '/tmp/a/../.git/config') + SEND_TO('/tmp/a/../.git/config'),
+  HD_MSG(null, '$HOME/m.md') + SEND_TO('$HOME/m.md'),
+  HD_MSG(null, '/tmp/`id`.md') + SEND_TO('/tmp/`id`.md'),
+  HD_MSG(null, '~root/m.md') + SEND_TO('~root/m.md'),
+  HD_MSG(null, '/tmp/*.md') + SEND_TO('/tmp/*.md'),
+  // send args: substitutions, redirects, unknown flags, file mismatch
+  HD_MSG() + MSG_SEND + ' --message "$(sh /tmp/m.md)"',
+  HD_MSG() + MSG_SEND + ' --message "`sh /tmp/m.md`"',
+  HD_MSG() + MSG_SEND + ' --message $(sh /tmp/m.md)',
+  HD_MSG() + MSG_SEND + ' <(sh /tmp/m.md)',
+  HD_MSG() + MSG_SEND + ' >(sh)',
+  HD_MSG() + MSG_SEND + ' > /tmp/out',
+  HD_MSG() + MSG_SEND + ' 2>/tmp/err',
+  HD_MSG() + MSG_SEND + ' --exec /tmp/m.md',
+  HD_MSG() + MSG_SEND + ' --message-file /tmp/m.md',
+  HD_MSG() + SEND_TO('/tmp/other.md'),
+  HD_MSG() + 'node ~/.anti-hall/bin/devswarm.js send --to x',
+  // wrong launcher / subcommand
+  HD_MSG() + 'node ~/.anti-hall/bin/devswarm.js roster --message-file /tmp/m.md',
+  HD_MSG() + 'node ~/.anti-hall/bin/wake-watch.js send --to x --message-file /tmp/m.md',
+  HD_MSG() + 'node ./devswarm.js send --to x --message-file /tmp/m.md',
+  HD_MSG() + 'sh ~/.anti-hall/bin/devswarm.js send --to x --message-file /tmp/m.md',
+  HD_MSG() + 'node /tmp/m.md send --to x --message-file /tmp/m.md',
+  // any extra segment, pipe, && / ; / || chaining, or background &
+  HD_MSG() + MSG_SEND + '; sh /tmp/m.md',
+  HD_MSG() + MSG_SEND + ' && sh /tmp/m.md',
+  HD_MSG() + MSG_SEND + ' || true',
+  HD_MSG() + MSG_SEND + ' | sh',
+  HD_MSG() + MSG_SEND + ' &',
+  HD_MSG() + MSG_SEND + '\nsh /tmp/m.md',
+  HD_MSG() + MSG_SEND + '\ngit status',
+  HD_MSG() + 'git status\n' + MSG_SEND,
+  'true\n' + HD_MSG() + MSG_SEND,
+  'true && ' + HD_MSG() + MSG_SEND,
+  'cd /tmp && true && ' + HD_MSG() + MSG_SEND,
+  'cd /tmp\ncd /tmp\n' + HD_MSG() + MSG_SEND,
+  'cd $(sh /tmp/m.md)\n' + HD_MSG() + MSG_SEND,
+  HD_MSG("cat > /tmp/m.md <<'EOF' | sh") + MSG_SEND,
+  HD_MSG("cat > /tmp/m.md <<'EOF' && sh /tmp/m.md") + MSG_SEND,
+  HD_MSG("cat > /tmp/m.md <<'EOF' &") + MSG_SEND,
+  HD_MSG("cat > /tmp/m.md > /tmp/n.md <<'EOF'") + MSG_SEND,
+  HD_MSG("cat >> /tmp/m.md <<'EOF'") + MSG_SEND,
+  HD_MSG("tee /tmp/m.md <<'EOF'") + MSG_SEND,
+  HD_MSG("cat <<'EOF' > /tmp/m.md") + MSG_SEND,
+  // delimiter forms other than a single-quoted <<'DELIM'
+  HD_MSG('cat > /tmp/m.md <<EOF') + MSG_SEND,
+  HD_MSG('cat > /tmp/m.md <<"EOF"') + MSG_SEND,
+  HD_MSG("cat > /tmp/m.md <<-'EOF'") + MSG_SEND,
+  HD_MSG("cat > /tmp/m.md <<'EOF'\r") + MSG_SEND,
+  // delimiter smuggled mid-body, then a real command before the send
+  "cat > /tmp/m.md <<'EOF'\nprose\nEOF\n" + FPB + '\nEOF\n' + MSG_SEND,
+  // unterminated
+  "cat > /tmp/m.md <<'EOF'\n" + FPB + '\n' + MSG_SEND,
+];
+
+// Every deadly-loop round-1/round-2 git-guard probe (probe scripts gg-probes,
+// rv1-gg-more, aud1 c1-c3) that the pre-exemption guard blocks: the exemption
+// must not open any of them.
+const HDP = (file, body, op) => `cat <<'EOF' ${op || '>'} ${file}\n${body}\nEOF\n`;
+const HDW = `cat > x.sh <<'EOF'\n${FPB}\nEOF\n`;
+const DEADLY_LOOP_PROBES = [
+  `cat <<'EOF' > Makefile\nrun:\n\t${FPB}\nEOF\nmake run`,
+  HDP('x.sh', FPB) + 'PATH=. x.sh',
+  HDP('x.sh', FPB) + 'find . -name x.sh -exec {} \\;',
+  HDP('x.sh', FPB) + 'hash -p ./x.sh mycmd; mycmd',
+  HDP('.git/hooks/pre-commit', FPB) + 'git commit -m x',
+  HDP('x.sh', FPB) + "git -c alias.x='!sh x.sh' x",
+  `cat <<-'EOF' > Makefile\nrun:\n\t${FPB}\nEOF\nmake run`,
+  "git -c alias.x='!git push --force' x",
+  "git -c alias.x='!sh -c \"git push --force\"' x",
+  "git -c alias.x='!sh -c \"git push -f origin main\"' x",
+  "git -c alias.x='!f() { git push --force; }; f' x",
+  "git -c alias.x='!eval \"git push --force\"' x",
+  "git -c alias.x=\"!sh -c 'git push --force'\" x",
+  "git -c alias.x='!git push origin +main' x",
+  "git -c alias.x='!git fetch; git push --force' x",
+  "git -c alias.x='!(git push --force)' x",
+  HDP('~/.anti-hall/bin/devswarm.js', FPB) + 'node ~/.anti-hall/bin/devswarm.js roster',
+  HDP('x.js', FPB) + 'NODE_OPTIONS=--require=./x.js node ~/.anti-hall/bin/devswarm.js roster',
+  HDP('x.sh', FPB) + HDP('.git/config', '[core]\n\tfsmonitor = sh x.sh', '>>') + 'git status',
+  `cat <<'EOF' | tee x.sh\n${FPB}\nEOF\ncat <<'EOF' | tee -a .git/config\n[core]\n\tfsmonitor = sh x.sh\nEOF\ngit status`,
+  HDP('x.sh', FPB) + 'echo $(sh x.sh)',
+  HDP('x.sh', FPB) + 'echo `sh x.sh`',
+  HDP('x.sh', FPB) + 'cat $(sh x.sh)',
+  HDP('x.sh', FPB) + 'ls $(sh x.sh)',
+  HDP('x.sh', FPB) + 'cd $(sh x.sh)',
+  HDP('x.sh', FPB) + 'git log $(sh x.sh)',
+  HDP('x.sh', FPB) + 'git -c diff.external="sh x.sh" diff',
+  HDP('x.sh', FPB) + 'git --no-pager -c core.fsmonitor="sh x.sh" status',
+  HDP('x.sh', FPB) + 'printf x > >(sh x.sh)',
+  HDP('x.sh', FPB) + 'echo <(sh x.sh)',
+  HDP('x.sh', FPB) + 'head <(sh x.sh)',
+  HDP('x.sh', FPB) + 'true $(sh x.sh)',
+  HDP('x.sh', FPB) + 'git status --ignored=$(sh x.sh)',
+  `cat <<EOF > x\n$(${FPB})\nEOF`,
+  HDP('x.sh', FPB) + 'cat ${X:-$(sh x.sh)}',
+  HDP('node', `#!/bin/sh\n${FPB}`) + 'PATH=. node ~/.anti-hall/bin/devswarm.js roster',
+  HDP('x.sh', FPB) + "GIT_PAGER='sh x.sh' git log",
+  HDP('x.sh', FPB) + "GIT_EXTERNAL_DIFF='sh x.sh' git diff",
+  HDP('x.sh', FPB) + "GIT_CONFIG_PARAMETERS=\"'core.fsmonitor=sh x.sh'\" git status",
+  HDP('x.sh', FPB) + HDP('.git/config', '[core]\n\tpager = sh x.sh', '>>') + 'git log',
+  HDP('x.sh', FPB) + HDP('~/.gitconfig', '[core]\n\tpager = sh x.sh') + 'git show',
+  HDP('x.sh', FPB) + HDP('.git/config', '[diff]\n\texternal = sh x.sh', '>>') + 'git diff',
+  HDP('x.sh', FPB) + 'NODE_OPTIONS=--require=./x.sh node ~/.anti-hall/bin/devswarm.js roster',
+  HDP('node', `#!/bin/sh\n${FPB}`) + 'PATH=. node ~/.anti-hall/bin/wake-watch.js',
+  HDW + 'sh x.sh',
+  HDW + 'GIT_EXTERNAL_DIFF=./x.sh git diff',
+  HDW + "PAGER='sh x.sh' git log",
+  HDW + 'echo "$(sh x.sh)"',
+  HDW + 'echo "`sh x.sh`"',
+  HDW + 'cat <(sh x.sh)',
+  HDW + 'ls "$(sh x.sh)"',
+  HDW + 'node ~/.anti-hall/bin/devswarm.js send --to a "$(sh x.sh)"',
+  HDW + 'cd "$(sh x.sh)"',
+  HDW + 'git status "$(sh x.sh)"',
+  `tee x.sh <<'EOF' >/dev/null\n${FPB}\nEOF\nsh x.sh`,
+  HDW + 'true $(sh x.sh)',
+  HDW + 'head -n "$(sh x.sh)" x.sh',
+  `cat > x.sh <<'EOF'\ngit push --force origin HEAD:refs/heads/main\nEOF\necho "$(sh x.sh)"`,
+  HDW + "GIT_SSH_COMMAND='sh x.sh' git status",
+  `cat > x.txt <<'EOF'\n${FPB}\nEOF\ngit status`,
+];
+
 const BLOCK = [
   // --- Force push (Rule 2): literal force flags / +refspec ---
   { cmd: 'git push --force', reason: REASON.FORCE },
@@ -210,9 +369,7 @@ const BLOCK = [
   { cmd: "cat > x.sh <<'EOF'\ngit push --force origin main\nEOF\nprintf \"%s\" \"$(sh x.sh)\"", reason: REASON.FORCE },
   { cmd: "cat > x.sh <<'EOF'\ngit push --force origin main\nEOF\ncd \"$(sh x.sh)\"", reason: REASON.FORCE },
   { cmd: "cat > x.sh <<'EOF'\ngit push --force origin main\nEOF\ngit log \"$(sh x.sh)\"", reason: REASON.FORCE },
-  // Prose heredocs that the reverted exemption allowed: scanned again.
-  { cmd: "cat > /tmp/m.md <<'EOF'\ngit push `backtick text`\nEOF\nnode ~/.anti-hall/bin/devswarm.js send --to x --message-file /tmp/m.md", reason: REASON.CMDSUBST },
-  { cmd: "cat > /tmp/m.md <<'EOF'\nPlease hold; git push waits for `ci` green.\nEOF\nnode ~/.anti-hall/bin/devswarm.js send --to x --message-file /tmp/m.md", reason: REASON.CMDSUBST },
+  // Prose heredocs outside the exact launcher-send shape: still scanned.
   { cmd: 'cat > /tmp/m.md <<"EOF"\nstep: && git push --force `x`\nEOF', reason: REASON.FORCE },
 ];
 
@@ -240,6 +397,9 @@ const ALLOW = [
   // proves the new heredoc-body scan doesn't over-block ordinary messages.
   'git commit -q -F - <<\'EOF\'\nsubject\n\nordinary body, no trailer\nEOF',
   'git commit -F - <<EOF\nsubject\n\nordinary body, no trailer\nEOF',
+  // Exact-shape exemption: a quoted-heredoc message file sent via the anti-hall
+  // launcher. The prose body mentions `git push` and is not scanned.
+  ...LAUNCHER_MSG_ALLOW,
 ];
 
 // gh self-credit BLOCK cases. All block via ghSelfCreditMessage(), whose message
@@ -270,6 +430,13 @@ for (const { cmd, reason } of BLOCK) {
       reason,
       `blocked for the WRONG reason: ${cmd}\nexpected ${reason}\ngot: ${r.stderr}`,
     );
+  });
+}
+
+for (const cmd of [...LAUNCHER_MSG_BLOCK, ...DEADLY_LOOP_PROBES]) {
+  test(`BLOCK (launcher-message exemption does not apply): ${JSON.stringify(cmd)}`, () => {
+    const r = run(cmd);
+    assert.strictEqual(r.status, 2, `expected block (exit 2) for: ${cmd}\nstderr: ${r.stderr}`);
   });
 }
 

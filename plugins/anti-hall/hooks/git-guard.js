@@ -872,6 +872,124 @@ function extractHeredocBodies(cmd) {
   return bodies;
 }
 
+// EXACT-SHAPE exemption for one legitimate command: writing a mailbox message
+// file with a single-quoted heredoc and sending it with the anti-hall launcher.
+// Base scans heredoc body lines as commands, so PROSE in the message (e.g.
+// "I did not run `git push --force`") was blocked. Two broader "body is data"
+// exemptions failed security review (write-then-run executors, config/env
+// driven git verbs, env-prefixed launchers, "$(...)" args) and were reverted.
+// This one is an allowlist of the WHOLE command, not of segments:
+//
+//   [cd <plain path> (newline | && | ;)]
+//   cat > <FILE> <<'DELIM'
+//   <body>
+//   DELIM
+//   node ~/.anti-hall/bin/devswarm.js send <args naming --message-file FILE>
+//
+// Anything else (another segment, a pipe, `&`, an env assignment, `$`,
+// backticks, redirects, `<<-`, an unquoted/double-quoted delimiter, a FILE
+// under .git/, a hooks/ dir, .anti-hall/bin/, or a git config file) returns
+// the command unchanged, so the body is scanned exactly as before. On a match
+// only the body lines are blanked; every other line is still scanned.
+const PLAIN_PATH_RE = /^(?:~\/)?[A-Za-z0-9._\/+,@%:-]+$/;
+const PLAIN_WORD_RE = /^[A-Za-z0-9._\/+,@%:-]+$/;
+const GIT_FILE_BASENAMES = new Set(['.gitconfig', '.gitmodules', '.gitattributes']);
+
+function isPlainPath(p) {
+  if (!PLAIN_PATH_RE.test(p)) return false;
+  return !p.split('/').includes('..');
+}
+
+// Lexical check of the path the heredoc writes to: FILE, resolved against the
+// optional `cd` dir and the hook payload's cwd (both only when relative).
+function isAllowedMessageTarget(file, cdDir, cwd) {
+  const parts = [];
+  if (!file.startsWith('/') && !file.startsWith('~/')) {
+    if (cdDir && !cdDir.startsWith('/') && !cdDir.startsWith('~/') && cwd) parts.push(cwd);
+    if (cdDir) parts.push(cdDir);
+    else if (cwd) parts.push(cwd);
+  }
+  parts.push(file);
+  const segs = parts.join('/').split(/[\\/]+/).filter(Boolean).map((s) => s.toLowerCase());
+  if (!segs.length) return false;
+  for (let i = 0; i < segs.length; i++) {
+    if (segs[i] === '.git' || segs[i] === 'hooks') return false;
+    if (segs[i] === '.anti-hall' && segs[i + 1] === 'bin') return false;
+  }
+  return !GIT_FILE_BASENAMES.has(segs[segs.length - 1]);
+}
+
+// Parse the launcher line's args; true only if every token is an allowed flag
+// or a plain word and `--message-file` names exactly `file`, once.
+function isAllowedSendArgs(argStr, file) {
+  if (/[$`\\<>|&;(){}*?[\]#~!\r]/.test(argStr)) return false;
+  const tokens = [];
+  const re = /[ \t]+('[^']*'|"[^"]*"|[^ \t'"]+)(?=[ \t]|$)/g;
+  let pos = 0;
+  let m;
+  while ((m = re.exec(argStr)) !== null) {
+    if (m.index !== pos) return false;
+    tokens.push(m[1]);
+    pos = re.lastIndex;
+  }
+  if (argStr.slice(pos).trim() !== '') return false;
+  let sawFile = 0;
+  for (let i = 0; i < tokens.length; i++) {
+    const t = tokens[i];
+    if (t === '--quiet') continue;
+    if (t === '--to' || t === '--urgency' || t === '--message-file' || t === '--message') {
+      const v = tokens[++i];
+      if (v === undefined) return false;
+      if (t === '--message') {
+        if (!(PLAIN_WORD_RE.test(v) || /^'[^']*'$/.test(v) || /^"[^"]*"$/.test(v))) return false;
+        continue;
+      }
+      if (!PLAIN_WORD_RE.test(v)) return false;
+      if (t === '--message-file') {
+        if (v !== file) return false;
+        sawFile++;
+      }
+      continue;
+    }
+    if (t.startsWith('-') || !PLAIN_WORD_RE.test(t) || /^[A-Za-z_][A-Za-z0-9_]*=/.test(t)) return false;
+  }
+  return sawFile === 1;
+}
+
+function blankLauncherMessageHeredoc(cmd, cwd) {
+  const lines = cmd.split('\n');
+  let idx = 0;
+  let cdDir = null;
+  const cdOnly = /^[ \t]*cd[ \t]+(\S+)[ \t]*$/.exec(lines[0]);
+  if (cdOnly) { cdDir = cdOnly[1]; idx = 1; }
+  if (idx >= lines.length) return cmd;
+  const op = /^[ \t]*(?:cd[ \t]+(\S+)[ \t]*(?:&&|;)[ \t]*)?cat[ \t]+>[ \t]*(\S+)[ \t]+<<'([A-Za-z_][A-Za-z0-9_]*)'[ \t]*$/.exec(lines[idx]);
+  if (!op) return cmd;
+  if (op[1] !== undefined) {
+    if (cdDir !== null) return cmd;
+    cdDir = op[1];
+  }
+  const file = op[2];
+  const delim = op[3];
+  if (cdDir !== null && !isPlainPath(cdDir)) return cmd;
+  if (!isPlainPath(file)) return cmd;
+  if (!isAllowedMessageTarget(file, cdDir, typeof cwd === 'string' ? cwd : '')) return cmd;
+  // bash ends a `<<'DELIM'` body at the first line exactly equal to DELIM.
+  let end = -1;
+  for (let j = idx + 1; j < lines.length; j++) {
+    if (lines[j] === delim) { end = j; break; }
+  }
+  if (end < 0) return cmd;
+  const rest = lines.slice(end + 1).filter((l) => !/^[ \t]*$/.test(l));
+  if (rest.length !== 1) return cmd;
+  const send = /^[ \t]*node[ \t]+~\/\.anti-hall\/bin\/devswarm\.js[ \t]+send((?:[ \t].*)?)$/.exec(rest[0]);
+  if (!send) return cmd;
+  if (!isAllowedSendArgs(send[1], file)) return cmd;
+  const out = lines.slice();
+  for (let j = idx + 1; j < end; j++) out[j] = '';
+  return out.join('\n');
+}
+
 // Run the git force/trailer detection on every segment of a command string.
 // Returns a block message string if a violation is found, else null. Recurses
 // into `eval <payload>` segments (depth-bounded) so force/trailer forms hidden
@@ -1076,12 +1194,14 @@ function main() {
   if (isSkipped('git-guard')) process.exit(0);
 
   let cmd = '';
+  let cwd = '';
   try {
     const payload = JSON.parse(raw);
     const ti = payload && payload.tool_input;
     if (ti && typeof ti.command === 'string') {
       cmd = ti.command;
     }
+    if (payload && typeof payload.cwd === 'string') cwd = payload.cwd;
     // currentSessionId (module-scoped, set once per process here): a single
     // git-guard invocation is one short-lived process handling ONE PreToolUse
     // call, so a module-level value is safe (no concurrency within it) and
@@ -1093,7 +1213,7 @@ function main() {
   }
   if (!cmd) return fail_open();
 
-  const msg = scanCommand(cmd, 0);
+  const msg = scanCommand(blankLauncherMessageHeredoc(cmd, cwd), 0);
   if (msg) return block(msg);
 
   process.exit(0);
