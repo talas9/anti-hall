@@ -9,8 +9,7 @@
 //     scope_globs: [], extras: [{ glob, note, ts }],
 //     step_ts, current, warned_at, warned_step, summaries: [{ ts, text, stepped }] }
 //
-// KEY: the worktree-derived mesh id (install-devswarm-ingest.js's
-// primaryWorkspaceId), because `spawn` knows the new worktree path but not
+// KEY: the worktree-derived mesh id (identity.js resolveContext meshId), because `spawn` knows the new worktree path but not
 // the child's own builder id (the child registers under that id later). The
 // child, the supervisor and the Primary's hooks all know the worktree path,
 // so they all resolve the SAME file. `plan set <id>` without a resolvable
@@ -44,12 +43,12 @@ function strayPath(home, key) {
   return path.join(strayDir(home), String(key) + '.json');
 }
 
-// planKeyForWorktree(wt) -> the worktree's mesh id, or null. Lazy require: the
-// ingest installer module is only needed when a worktree path is in hand.
+// planKeyForWorktree(wt) -> the worktree's mesh id (identity.js, the one
+// location resolver), or null (a path that does not exist has no mesh id).
 function planKeyForWorktree(wt) {
   if (typeof wt !== 'string' || !wt) return null;
   try {
-    const k = require('../install-devswarm-ingest.js').primaryWorkspaceId(wt);
+    const k = require('./identity.js').resolveContext(wt).meshId;
     return isSafeId(k) ? k : null;
   } catch (_) { return null; }
 }

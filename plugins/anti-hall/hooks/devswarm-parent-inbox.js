@@ -369,8 +369,10 @@ function normalizeTableAges(t) {
   // The step-plan finish label (Meeseeks P1: 'step 3/7 · 42m · progress 18m ago')
   // carries ages too — dropped here so a ticking clock never re-sends the table.
   // A row without a plan never contains this text, so its line is unchanged.
+  // The P2 token figure (' · 1.8M tok') rises every sweep and is dropped too.
   return String(t).split('\n').map((l) => (/^\|.*\|\s*$/.test(l)
     ? l.replace(/\|[^|]*\|\s*$/, '| |').replace(/ · \d+[mhd](?= · (?:progress|no progress))/g, '').replace(/ · progress \d+[mhd] ago/g, '')
+      .replace(/ · [\d.]+[kM]? tok\b/g, '')
     : l)).join('\n');
 }
 
@@ -2001,8 +2003,24 @@ function main() {
       try {
         if (planLib && /^working\b/.test(finishCell) && planLib.planTrackingEnabled({ env: process.env, home })) {
           const found = planLib.findPlan(home, { id, worktreePath: entry && entry.worktreePath });
-          const planLabel = found ? planLib.finishLabel(found.plan, now) : null;
-          if (planLabel) finishCell = planLabel;
+          let planLabel = found ? planLib.finishLabel(found.plan, now) : null;
+          if (planLabel) {
+            // Meeseeks P2: the child's token burn (once the supervisor has read
+            // its transcript), self-tagged extras and any active
+            // straying warning ride on the same cell, so the Primary sees
+            // them every turn and can challenge an extra.
+            try {
+              const tu = require('../companion/lib/devswarm-token-usage.js');
+              const tok = tu.readState(home, found.key);
+              if (tok && Number.isFinite(tok.total) && tok.total > 0) planLabel += ' · ' + tu.fmt(tok.total) + ' tok';
+            } catch (_) { /* no token figure */ }
+            const extras = Array.isArray(found.plan.extras) ? found.plan.extras.length : 0;
+            if (extras) planLabel += ' · +' + extras + ' extra' + (extras === 1 ? '' : 's');
+            const stray = planLib.readStray(home, found.key);
+            const active = stray && Array.isArray(stray.active) ? stray.active : [];
+            if (active.length) planLabel += ' · STRAYING: ' + Array.from(new Set(active.map((a) => a.signal))).join('+');
+            finishCell = planLabel;
+          }
         }
       } catch (_) { /* fail-open: keep the plain finish cell */ }
       let appMarks = '';

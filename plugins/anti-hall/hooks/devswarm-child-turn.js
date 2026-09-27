@@ -221,7 +221,9 @@ function buildPlanSegment(id, home, worktree, env) {
       ? 'DEVSWARM PLAN: step ' + cur.n + '/' + plan.steps.length + (cur.status === 'blocked' ? ' (blocked)' : '') + ' — "' + cur.text + '".'
       : 'DEVSWARM PLAN: all ' + plan.steps.length + ' steps are done — report it with `node ' + CLI + ' done`.';
     return head + ' Report step progress as it happens: `node ' + CLI + ' heartbeat ' + id
-      + ' --step N --status doing|done|blocked` (it is what the Primary\'s roster shows).';
+      + ' --step N --status doing|done|blocked` (it is what the Primary\'s roster shows).'
+      + ' If a user prompt asks you for work outside this plan, record it first: `node ' + CLI + ' scope add ' + id
+      + ' --glob \'<paths>\' --note \'<what the user asked>\'` — the Primary sees the note and may challenge it.';
   } catch (_) { return null; }
 }
 

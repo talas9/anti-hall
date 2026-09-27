@@ -969,6 +969,13 @@ function devswarmHookSelfTests() {
     }
   }
 
+  // Meeseeks supervision effectiveness (0.117.0): one report-only line when
+  // the supervision metrics log exists. Fail-open.
+  try {
+    const sl = require(path.join(libDir, 'devswarm-supervision-metrics.js')).doctorLine(null); // null -> test-home-guard resolveHome
+    if (sl) infol(sl);
+  } catch (_) { /* never breaks doctor */ }
+
   // RUNTIME health checks 1-4 (companion/lib/doctor-runtime.js): store/journal
   // health + summary parity, data staleness, daemons RUNNING (not just
   // installed), and no-second-consumer. Same require-and-call pattern, same

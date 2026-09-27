@@ -455,6 +455,24 @@ function jevBlockerLabel(childId, home, opts) {
   }
 }
 
+// superviseStraying(d, verdict, opts) -> { signals, issued } | null. Meeseeks
+// P2: see companion/lib/devswarm-supervision.js. Skips the Primary's own row
+// and any child without a step plan (null). Fail-open: any error -> null.
+function superviseStraying(d, verdict, opts) {
+  try {
+    const o = opts || {};
+    const deps = o.deps || {};
+    if (d.worktreePath) {
+      const pid = (deps.primaryWorkspaceId || require('./install-devswarm-ingest.js').primaryWorkspaceId)(d.worktreePath);
+      if (String(d.id) === String(pid)) return null;
+    }
+    const sup = require('./lib/devswarm-supervision.js');
+    const r = sup.evaluateChild(d, verdict, { home: o.home, env: o.env, now: o.now, deps: deps.supervision || {} });
+    if (!r || (!r.signals.length && !r.issued.length)) return null;
+    return { signals: r.signals.map((s) => s.signal), issued: r.issued.map((s) => s.signal) };
+  } catch (_) { return null; }
+}
+
 // readDescriptors(home, fsi) -> [{id, worktreePath, inboxPath, cursorPath, sessionId}].
 // Skips unreadable/malformed files (fail-open: one bad descriptor never stops the
 // sweep). Requires id + worktreePath + sessionId, AND a path-safe id (P1-7) so a
@@ -672,7 +690,13 @@ function sweepOnce(opts) {
         }
       }
       const blockerLabel = jevBlockerLabel(d.id, home, { now: o.now, env });
-      results.push(blockerLabel ? { id: d.id, verdict, poke, blocker: blockerLabel } : { id: d.id, verdict, poke });
+      const row = blockerLabel ? { id: d.id, verdict, poke, blocker: blockerLabel } : { id: d.id, verdict, poke };
+      // Meeseeks P2 straying signals (plan rows only; advisory, never kills).
+      // A child without a step plan is untouched and its result row keeps
+      // its old shape.
+      const straying = superviseStraying(d, verdict, { home, env, now: o.now, deps });
+      if (straying) row.straying = straying;
+      results.push(row);
     } catch (e) {
       results.push({ id: d && d.id, error: String(e && e.message) });
     }
@@ -1647,6 +1671,7 @@ module.exports = {
   rotateSupervisorLogIfNeeded, supervisorLogPath, resolveSupervisorLogRotateBytes,
   SUPERVISOR_LOG_ROTATE_BYTES_DEFAULT,
   // supervisorBlockerLabel re-ask dedupe (382-rows-in-24h fix):
+  superviseStraying,
   jevBlockerLabel, blockerLabelAskStatePath, readBlockerLabelAskState, writeBlockerLabelAskState,
   resolveBlockerLabelReaskMs, DEFAULT_BLOCKER_LABEL_REASK_MS,
 };

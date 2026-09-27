@@ -763,6 +763,53 @@ function readOwnUnread(home, cwd, repoKey) {
 // lookup (names/<id>.json) without widening buildReason's signature.
 let reasonHome = null;
 
+// emitStrayingAdvisory(home, sessionId, repoKeyOf, selfKey) — see the MEESEEKS
+// P2 call site in main(). Each warning (stray key + episode count) is shown
+// once per Primary session: the shown set lives in
+// ~/.anti-hall/devswarm/stray-seen/<sha1(session)>.json (bounded). Children of
+// another project are skipped (selfKey vs the child's worktree repoKey, when
+// that resolves).
+function emitStrayingAdvisory(home, sessionId, repoKeyOf, selfKey) {
+  const planLib = require('../companion/lib/devswarm-plan.js');
+  if (!planLib.planTrackingEnabled({ env: process.env, home })) return;
+  const all = planLib.listStray(home);
+  if (!all.length) return;
+  const entries = [];
+  for (const { state } of all) {
+    if (!state || !Array.isArray(state.active) || !state.active.length) continue;
+    // Another project's child is skipped; an unresolvable worktree (null key) is
+    // kept — an advisory line is cheaper than a silently hidden warning.
+    const childKey = state.worktreePath ? repoKeyOf(state.worktreePath) : null;
+    if (selfKey && childKey && childKey !== selfKey) continue;
+    // A Jev recommendation arriving on a later sweep re-shows the warning once, with it.
+    for (const a of state.active) {
+      entries.push({ id: state.id, seenKey: a.key + '#' + a.n + (Array.isArray(a.jev) && a.jev.length ? '#jev' : ''), step: a.step, reason: a.reason, jev: a.jev });
+    }
+  }
+  if (!entries.length) return;
+  const seenPath = path.join(devswarmRoot(home), 'stray-seen',
+    crypto.createHash('sha1').update(String(sessionId || 'no-session')).digest('hex').slice(0, 16) + '.json');
+  let seen = {};
+  try { seen = JSON.parse(fs.readFileSync(seenPath, 'utf8')) || {}; } catch (_) { seen = {}; }
+  const fresh = entries.filter((e) => !seen[e.seenKey]);
+  if (!fresh.length) return;
+  const sup = require('../companion/lib/devswarm-supervision.js');
+  fs.writeSync(2, 'anti-hall: ' + sup.strayingLine(fresh, (id) => devswarmNames.readName(home, id)) + '\n');
+  const now = Date.now();
+  for (const e of fresh) seen[e.seenKey] = now;
+  const keys = Object.keys(seen);
+  if (keys.length > 200) {
+    keys.sort((a, b) => seen[a] - seen[b]);
+    for (const k of keys.slice(0, keys.length - 200)) delete seen[k];
+  }
+  try {
+    fs.mkdirSync(path.dirname(seenPath), { recursive: true });
+    const tmp = seenPath + '.' + process.pid + '.tmp';
+    fs.writeFileSync(tmp, JSON.stringify(seen));
+    fs.renameSync(tmp, seenPath);
+  } catch (_) { /* best-effort: worst case the line shows again next Stop */ }
+}
+
 function main() {
   // Settings switch devswarm.parentGate (0.108.4): off -> no-op. Fail-open: any error runs the hook.
   try { if (!require('./lib/settings.js').enabled('devswarm', 'parentGate')) return; } catch (_) { /* run */ }
@@ -2044,6 +2091,13 @@ function main() {
   if (archivedUnreadFamilies > 0) {
     try { fs.writeSync(2, 'anti-hall: ' + archivedUnreadFamilies + ' archived workspace(s) still have unread mail (ignored)\n'); } catch (_) {}
   }
+
+  // MEESEEKS P2 — DEVSWARM STRAYING (advisory, never a block). The supervisor
+  // sweep records straying warnings for children with a step plan
+  // (companion/lib/devswarm-supervision.js). Print ONE capped line naming the
+  // warnings this Primary session has not been shown yet, scoped to this
+  // project. No stray files (no plan anywhere) -> nothing, as before.
+  try { emitStrayingAdvisory(home, payload && payload.session_id, repoKeyOfWorktree, selfKey); } catch (_) { /* fail-open */ }
 
   const stateFile = stateFileFor(payload.session_id, home);
 

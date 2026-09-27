@@ -303,6 +303,7 @@ const { isForwardableRow } = require('../companion/lib/devswarm-noise.js');
 const names = require('../companion/lib/devswarm-names.js');
 // Meeseeks supervision (plan tracking + straying): the per-workspace step plan.
 const planLib = require('../companion/lib/devswarm-plan.js');
+const supervisionMetrics = require('../companion/lib/devswarm-supervision-metrics.js');
 const gitTruth = require('../companion/lib/devswarm-git-truth.js');
 // wakeLib/isChildWorkspace: `wake-directive <id>` (C, trimmed Stop-gate
 // reassert follow-up) reuses the SAME wakeDirective() text
@@ -8489,7 +8490,81 @@ function cmdPlan(sub, id, flags, ctx) {
   const key = planLib.planKeyForWorktree(ref.worktreePath) || id;
   const plan = planLib.newPlan({ key, id, worktreePath: ref.worktreePath, steps, scope: scope || [], base: null, source: 'plan-set', now });
   planLib.savePlan(home, key, plan);
+  supervisionMetrics.record(home, 'plan', { now, id, key, source: 'plan-set', steps: plan.steps.length });
   return { ok: true, action: 'plan', sub, id, key, created: true, changed: true, steps: plan.steps.length, scope: plan.scope_globs };
+}
+
+// cmdScope(sub, id, flags, ctx) — Meeseeks P2: `scope add <id> --glob G
+// [--glob G2] --note TEXT`. The CHILD tags extra work the user asked for, so
+// the supervisor's off-scope signal treats those paths as sanctioned and the
+// Primary sees the note (roster `plan.extras`, table) and can challenge it.
+// Idempotent (same glob + note = no change). A child without a plan gets a
+// plan with no steps, which only carries the extras.
+function cmdScope(sub, id, flags, ctx) {
+  if (sub !== 'add') return { ok: false, action: 'scope', error: 'usage: devswarm.js scope add <id> --glob <glob> [--glob …] --note "<what the user asked for>"' };
+  const home = ctx.home;
+  const now = Number.isFinite(ctx.now) ? ctx.now : Date.now();
+  const globs = planLib.splitGlobs(csvList(flags, 'glob').join(','));
+  const note = one(flags, 'note');
+  if (!globs.length) return { ok: false, action: 'scope', sub, id, error: '--glob is required' };
+  if (note === undefined || !String(note).trim()) return { ok: false, action: 'scope', sub, id, error: '--note is required: say what the user asked for, so the Primary can check it' };
+  const ref = planRefFor(home, id, ctx);
+  let found = planLib.findPlan(home, ref);
+  let created = false;
+  if (!found) {
+    const key = planLib.planKeyForWorktree(ref.worktreePath) || id;
+    found = { key, plan: planLib.newPlan({ key, id, worktreePath: ref.worktreePath, steps: [], scope: [], base: null, source: 'scope-add', now }) };
+    created = true;
+  }
+  let changed = false;
+  for (const g of globs) if (planLib.addExtra(found.plan, g, note, now)) changed = true;
+  if (changed || created) planLib.savePlan(home, found.key, found.plan);
+  if (changed) supervisionMetrics.record(home, 'extra', { now, id, key: found.key, globs: globs.length });
+  return { ok: true, action: 'scope', sub, id, key: found.key, changed, extras: found.plan.extras };
+}
+
+// cmdCorrect(id, flags, ctx) — Meeseeks P2: the Primary's correction for a
+// straying child. Builds "step N '<text>': <reasons>. Return to step N or
+// reply BLOCKED <why>" from the plan and the supervisor's straying state,
+// sends it as a mesh direct (`send --to <id> --message-file`), and records
+// `warned_at` on the plan (the stall clock restarts from it). `--dry-run`
+// prints the text and changes nothing. Never automatic: only this verb sends.
+function cmdCorrect(id, flags, ctx) {
+  const home = ctx.home;
+  const now = Number.isFinite(ctx.now) ? ctx.now : Date.now();
+  const found = planLib.findPlan(home, planRefFor(home, id, ctx));
+  if (!found || !found.plan.steps.length) return { ok: false, action: 'correct', id, reason: 'no-plan', error: 'no step plan for ' + id + ' — a correction needs a step to return to' };
+  const sup = require('../companion/lib/devswarm-supervision.js');
+  const stray = planLib.readStray(home, found.key);
+  const message = sup.correctionText(id, found.plan, stray, now);
+  if (hasFlag(flags, 'dry-run')) return { ok: true, action: 'correct', id, dryRun: true, message };
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ah-correct-'));
+  const msgFile = path.join(tmpDir, 'message.txt');
+  let sent;
+  try {
+    fs.writeFileSync(msgFile, message);
+    const argv = ['send', '--to', id, '--message-file', msgFile];
+    sent = (ctx.io && typeof ctx.io.send === 'function') ? ctx.io.send(argv) : run(argv, ctx);
+  } finally {
+    try { fs.unlinkSync(msgFile); } catch (_) {}
+    try { fs.rmdirSync(tmpDir); } catch (_) {}
+  }
+  const sendOk = !!(sent && sent.code === 0);
+  if (!sendOk) return { ok: false, action: 'correct', id, message, sent: sent && sent.result, error: 'send failed — warned_at not recorded' };
+  const cur = planLib.currentStep(found.plan);
+  found.plan.warned_at = now;
+  found.plan.warned_step = cur ? cur.n : null;
+  found.plan.warned_signals = stray && Array.isArray(stray.active) ? Array.from(new Set(stray.active.map((a) => a.signal))) : [];
+  // Jev recommendations the Primary saw when it decided to correct (follow /
+  // override measure in supervision-report).
+  found.plan.warned_jev = [];
+  for (const a of (stray && Array.isArray(stray.active) ? stray.active : [])) {
+    for (const n of (Array.isArray(a.jev) ? a.jev : [])) found.plan.warned_jev.push({ integration: n.integration, supports: n.supports === true });
+  }
+  planLib.savePlan(home, found.key, found.plan);
+  supervisionMetrics.record(home, 'correction', { now, id, key: found.key, step: found.plan.warned_step,
+    signals: stray && Array.isArray(stray.active) ? stray.active.map((a) => a.signal) : [], jev: found.plan.warned_jev });
+  return { ok: true, action: 'correct', id, message, warned_at: now, step: found.plan.warned_step, sent: sent.result };
 }
 
 // applyHeartbeatPlan(id, flags, ctx, now) -> the heartbeat result's `plan`
@@ -8512,7 +8587,20 @@ function applyHeartbeatPlan(id, flags, ctx, now) {
     const r = planLib.applyStep(found.plan, stepRaw, status, now);
     if (r.error) return { ok: false, reason: 'bad-step', error: r.error, key: found.key };
     out.step = Number(stepRaw); out.status = status; out.changed = r.changed;
-    if (r.changed) dirty = true;
+    if (r.changed) {
+      dirty = true;
+      supervisionMetrics.record(home, 'step', { now, id, key: found.key, step: Number(stepRaw), status });
+      // The correction-worked measure: step progress within stepStallMin
+      // of the Primary's last correction, counted once per correction.
+      const w = found.plan.warned_at;
+      if (Number.isFinite(w) && now >= w && found.plan.correction_followed_for !== w
+          && now - w <= planLib.stepStallMs({ env: ctx.env, home })) {
+        found.plan.correction_followed_for = w;
+        supervisionMetrics.record(home, 'correction-followed', { now, id, key: found.key, step: Number(stepRaw), latencyMs: now - w,
+          signals: Array.isArray(found.plan.warned_signals) ? found.plan.warned_signals : [],
+          jev: Array.isArray(found.plan.warned_jev) ? found.plan.warned_jev : [] });
+      }
+    }
   }
   if (summary !== undefined) { planLib.recordSummary(found.plan, summary, stepRaw !== undefined, now); dirty = true; }
   if (dirty) planLib.savePlan(home, found.key, found.plan);
@@ -14020,6 +14108,20 @@ function cmdDone(idArg, flags, ctx) {
     + (summaryText ? ': ' + String(summaryText) : '')
     + ' — auto-archive retires it once the merge is proven and it is clean, read and idle.';
   const out = { ok: true, action: 'done', id, gateSet: true, gates: g.gates, messaged: false, head };
+  // Supervision metrics: time-to-done and steps done vs planned, for a
+  // workspace that had a step plan (once per plan; best-effort).
+  try {
+    const found = planLib.findPlan(home, { id, worktreePath: callerIc.worktreeRoot || null });
+    if (found && found.plan.steps.length && !Number.isFinite(found.plan.done_at)) {
+      const doneNow = Number.isFinite(ctx.now) ? ctx.now : Date.now();
+      found.plan.done_at = doneNow;
+      planLib.savePlan(home, found.key, found.plan);
+      supervisionMetrics.record(home, 'done', { now: doneNow, id, key: found.key,
+        durationMs: Number.isFinite(found.plan.created_at) ? doneNow - found.plan.created_at : null,
+        stepsDone: planLib.stepsDone(found.plan), stepsPlanned: found.plan.steps.length,
+        tokensTotal: (() => { const t = require('../companion/lib/devswarm-token-usage.js').readState(home, found.key); return t && Number.isFinite(t.total) ? Math.round(t.total) : null; })() });
+    }
+  } catch (_) { /* metrics never affect done */ }
   try {
     // THE identity resolver: the Primary's mesh id is the main worktree's.
     const primaryMeshId = callerIc.primaryMeshId || null;
@@ -16264,6 +16366,20 @@ function cmdRoster(flags, ctx) {
           stepText: cur ? cur.text : null,
           extras: (found.plan.extras || []).map((e) => ({ glob: e.glob, note: e.note })),
         };
+        // Token burn (Meeseeks P2): only once the supervisor has read the
+        // child's transcript; otherwise the P1 shape is unchanged.
+        const tu = require('../companion/lib/devswarm-token-usage.js');
+        const tok = tu.readState(home, found.key);
+        if (tok && Number.isFinite(tok.total) && tok.total > 0) {
+          w.plan.tokens = { total: Math.round(tok.total), sinceStep: Math.round(tok.sinceStep || 0) };
+          if (w.plan.label) w.plan.label += ' · ' + tu.fmt(tok.total) + ' tok';
+        }
+        // Straying warnings with any Jev recommendation (the Primary decides).
+        const stray = planLib.readStray(home, found.key);
+        if (stray && Array.isArray(stray.active) && stray.active.length) {
+          w.plan.straying = stray.active.map((a) => ({ signal: a.signal, step: a.step, reason: a.reason,
+            jev: Array.isArray(a.jev) ? a.jev.map((n) => ({ integration: n.integration, verdict: n.verdict, confidence: n.confidence })) : [] }));
+        }
       }
     }
   } catch (_) { /* fail-open: the roster without plan fields */ }
@@ -18777,6 +18893,7 @@ function cmdSpawn(rest, ctx) {
           now: Number.isFinite(ctx.now) ? ctx.now : Date.now(),
         });
         planLib.savePlan(ctx.home, key, plan);
+        supervisionMetrics.record(ctx.home, 'plan', { now: plan.created_at, id: meshId, key, source: 'spawn', steps: steps.length });
         planInfo = { written: true, key, steps: steps.length, scope: plan.scope_globs };
       } else {
         planInfo = {
@@ -19039,6 +19156,9 @@ const VERB_HELP = {
   register: { synopsis: 'register a new workspace descriptor', mutates: 'writes the descriptor file + store registry + summary' },
   ensure: { synopsis: 'like register, but requires the workspace to be new', mutates: 'writes the descriptor file + store registry + summary' },
   heartbeat: { synopsis: 'record a liveness heartbeat for a workspace [--summary TEXT] [--step N --status doing|done|blocked] (--step records progress on the workspace\'s step plan)', mutates: 'writes a heartbeat file; may emit a mesh broadcast; --step updates the plan file' },
+  scope: { synopsis: 'scope add <id> --glob <glob> [--glob …] --note TEXT — child: record extra work the user asked for, so the off-scope straying signal treats it as sanctioned and the Primary sees the note (idempotent)', mutates: 'writes the plan file\'s extras' },
+  'supervision-report': { synopsis: 'supervision-report [--days N] [--json] — how DevSwarm supervision performed: straying warnings by signal, repeats, corrections followed by step progress, extras tagged, time-to-done and steps done vs planned, Jev shadow agreement (default 7 days)', mutates: 'nothing (read-only)' },
+  correct: { synopsis: 'correct <id> [--dry-run] — Primary: send a straying child the correction "step N \'<text>\': <reasons>. Return to step N or reply BLOCKED <why>" and record warned_at (--dry-run prints it only)', mutates: 'one mesh-direct send + the plan file\'s warned_at' },
   plan: { synopsis: 'plan set <id> --steps "1. …\\n2. …"|--steps-file <path> [--scope glob,glob] — write the workspace\'s numbered step plan (idempotent); plan show <id> — print it with its step label', mutates: '`set` writes ~/.anti-hall/devswarm/plans/<key>.json; `show` is read-only' },
   inbox: { synopsis: 'inbox subcommands: count | read | ack | pull | messages | read-primary | ack-primary | peek-primary | drain-primary-legacy (drain = read-primary, consume, then the returned ack-primary --receipt command). '
     + '`read-primary <id> --format text` prints one `from/seq/body` line per message instead of the raw JSON (still two-step by default: nothing is acked). '
@@ -19244,7 +19364,7 @@ function run(argv, ctx0) {
 function runArmed(cmd, positionals, flags, ctx, argv) {
   // v0.108.0 Primary seat: a session that does not hold a LIVE-held seat may
   // not send, ack, spawn or merge-broadcast as the Primary.
-  if (cmd === 'send' || cmd === 'relay' || cmd === 'spawn' || cmd === 'merge'
+  if (cmd === 'send' || cmd === 'relay' || cmd === 'spawn' || cmd === 'merge' || cmd === 'correct'
       || (cmd === 'inbox' && (positionals[1] === 'ack' || positionals[1] === 'ack-primary'))) {
     const refusal = seatRefusal(ctx);
     if (refusal) return { code: 2, result: Object.assign({ action: cmd }, refusal) };
@@ -19512,6 +19632,28 @@ function runArmed(cmd, positionals, flags, ctx, argv) {
         const id = positionals[2];
         if (!isSafeId(id)) return { code: 2, result: { ok: false, action: 'plan', error: 'usage: devswarm.js plan set|show <id> …' } };
         const r = cmdPlan(sub, id, flags, ctx);
+        return { code: r.ok ? 0 : 2, result: r };
+      }
+      case 'scope': {
+        // Meeseeks P2: the child tags user-requested extra work.
+        const id = positionals[2];
+        if (!isSafeId(id)) return { code: 2, result: { ok: false, action: 'scope', error: 'usage: devswarm.js scope add <id> --glob <glob> --note TEXT' } };
+        const r = cmdScope(positionals[1], id, flags, ctx);
+        return { code: r.ok ? 0 : 2, result: r };
+      }
+      case 'supervision-report': {
+        // Meeseeks P2: read-only effectiveness report over the supervision
+        // metrics log + daily rollups (companion/lib/devswarm-supervision-metrics.js).
+        const daysRaw = one(flags, 'days');
+        const days = daysRaw === undefined ? 7 : Number(daysRaw);
+        if (!Number.isFinite(days) || days < 1) return { code: 2, result: { ok: false, action: 'supervision-report', error: 'usage: devswarm.js supervision-report [--days N] [--json]' } };
+        return { code: 0, result: supervisionMetrics.report(ctx.home, { days, now: Number.isFinite(ctx.now) ? ctx.now : undefined }) };
+      }
+      case 'correct': {
+        // Meeseeks P2: the Primary's correction for a straying child.
+        const id = positionals[1];
+        if (!isSafeId(id)) return { code: 2, result: { ok: false, action: 'correct', error: 'usage: devswarm.js correct <id> [--dry-run]' } };
+        const r = cmdCorrect(id, flags, ctx);
         return { code: r.ok ? 0 : 2, result: r };
       }
       case 'healthcheck': {
@@ -19826,11 +19968,13 @@ function main() {
     && (argv.includes('--format=text') || (argv.includes('--format') && argv[argv.indexOf('--format') + 1] === 'text'));
   const isSendQuiet = argv[0] === 'send' && argv.includes('--quiet');
   const isInboxTickQuiet = argv[0] === 'inbox' && argv[1] === 'tick' && argv.includes('--quiet');
-  const wantHuman = (argv[0] === 'healthcheck' || argv[0] === 'diagnose' || argv[0] === 'app-state' || isHelpResult
+  const isSupervisionReport = argv[0] === 'supervision-report' && result && result.ok === true;
+  const wantHuman = (argv[0] === 'healthcheck' || argv[0] === 'diagnose' || argv[0] === 'app-state' || isHelpResult || isSupervisionReport
     || isInboxReadPrimaryText || isSendQuiet || isInboxTickQuiet) && !argv.includes('--json');
   const out = wantHuman
     ? (argv[0] === 'healthcheck' ? healthcheckHumanLine(result) : (argv[0] === 'diagnose' ? diagnoseHumanLine(result)
       : (argv[0] === 'app-state' ? (result.text || JSON.stringify(result))
+        : isSupervisionReport ? supervisionMetrics.formatReport(result)
         : (isInboxReadPrimaryText ? inboxReadPrimaryTextLines(result) : (isSendQuiet ? sendQuietLine(result)
           : (isInboxTickQuiet ? inboxTickQuietLine(result) : result.usage))))))
     : JSON.stringify(result);
@@ -19866,6 +20010,8 @@ module.exports = {
   resolveArchiveId,
   applyRecoveryIntents, recoveryIntentPath, rehomeStrandedProjectDescriptors,
   cmdWorkspacesList, cmdGate, cmdReconcile, cmdRegister,
+  // Meeseeks supervision: the off-scope signal reuses ready-check (companion/lib/devswarm-supervision.js).
+  cmdReadyCheck, cmdPlan, cmdScope, cmdCorrect,
   cmdLogs, cmdInboxMessages, parseSinceDuration,
   descriptorFreshRepoKey, descriptorStructuralRepoKey,
   siblingAckGate, cmdInbox,
