@@ -1144,7 +1144,7 @@ function reconcilePostUpdate(opts) {
     // (cmdReconcile's `skipped`/`skipReason`, additive fields), not a
     // failure — surfaced in `detail` separately from real reconcile work so
     // a healthy sweep over a project with many archived workspaces doesn't
-    // read as reconcile noise (SkyCrew Primary report: 17 archived/pruned
+    // read as reconcile noise (a DevSwarm Primary report: 17 archived/pruned
     // rows read as failures on 0.115.2).
     const resultsForSkipCount = (result && Array.isArray(result.results)) ? result.results : [];
     const skippedCount = resultsForSkipCount.filter((x) => x && x.skipped).length;

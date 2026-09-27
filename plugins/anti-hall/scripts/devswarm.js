@@ -313,7 +313,7 @@ const stableLauncherLib = require('../hooks/lib/stable-launcher.js');
 
 // resolveStableCliPath(home, fallback) -> the version-independent
 // ~/.anti-hall/bin/devswarm.js launcher path when it EXISTS on disk, else
-// `fallback` (normally this file's own __filename). Defect (SkyCrew Primary
+// `fallback` (normally this file's own __filename). Defect (a DevSwarm Primary
 // field report, 2026-09-27): `inbox read-primary`'s returned `ackCommand`
 // always embedded THIS invocation's own __filename — the version-pinned
 // plugin-cache path (…/cache/anti-hall/anti-hall/<ver>/scripts/devswarm.js)
@@ -15889,7 +15889,7 @@ function isArchivedOnlyWorkspace(home, id) {
 // stable-launcher-first resolution: the SessionStart hook that emits this
 // SAME directive text already prefers the stable launcher, so an on-demand
 // reprint of it must not regress back to a version-pinned path (same defect
-// class as the `ackCommand` fix above, SkyCrew Primary field report,
+// class as the `ackCommand` fix above, a DevSwarm Primary field report,
 // 2026-09-27).
 function cmdWakeDirective(id, ctx) {
   if (!isSafeId(id)) return { ok: false, error: 'invalid or missing workspace id' };
@@ -17154,7 +17154,7 @@ function cmdReconcile(flags, ctx) {
         // state of an archived workspace whose worktree was later pruned.
         // Classify it as skipped with a reason instead of a bare failure so
         // a normal archive+prune cycle stops reading as reconcile noise
-        // (report: SkyCrew Primary saw 9 of these as "worktree not found on
+        // (report: a DevSwarm Primary saw 9 of these as "worktree not found on
         // disk" failures on an entirely healthy sweep). A LIVE row whose
         // worktree vanished stays a genuine failure below, unchanged.
         const archived = archivedCounterpart || reconcileRowArchived(home, d, ctx);
@@ -17169,7 +17169,7 @@ function cmdReconcile(flags, ctx) {
         });
         continue;
       }
-      // ARCHIVED-BUT-STILL-ON-DISK SKIP (SkyCrew Primary report, 0.115.2):
+      // ARCHIVED-BUT-STILL-ON-DISK SKIP (a DevSwarm Primary report, 0.115.2):
       // a workspace archived in the DevSwarm app (or already carrying
       // anti-hall's own archived/<id>.json marker) whose worktree has not
       // yet been pruned still reached `inbox pull` here — which hits
@@ -17311,7 +17311,7 @@ function cmdReconcile(flags, ctx) {
       archivedDuplicate: !!(r && r.worktreeMissing && hasArchivedCounterpart(home, d.id)),
       skipped: false,
       skipReason: null,
-      // "unknown error" root cause (SkyCrew Primary report, 0.115.2): a
+      // "unknown error" root cause (a DevSwarm Primary report, 0.115.2): a
       // subprocess that returns a recognized non-ok shape with no `.error`
       // field (e.g. cmdRegister's APP-DB ARCHIVE GUARD refusing an ensure
       // with `{ok:false, reason:'...'}`, no `.error`) fell all the way
