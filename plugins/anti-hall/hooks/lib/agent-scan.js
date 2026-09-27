@@ -36,6 +36,12 @@ function extractTexts(node) {
 
 const AGENT_ID_RE = /agentId:\s*([0-9a-fA-F]{6,40})/;
 const OUTPUT_FILE_RE = /output_file:\s*(\S+)/;
+// SendMessage-resumed agent (field report, 0.117): a background subagent that
+// stopped for a usage limit and was resumed via SendMessage counts as RUNNING
+// again, until its NEXT completion notification — not as still-terminal from
+// whatever ended it before the resume. The harness's own SendMessage
+// tool_result reads "Resuming agent <id> ...".
+const RESUME_RE = /Resuming\s+agent\s+([0-9a-fA-F]{6,40})/i;
 // A single transcript text leaf can hold SEVERAL <task-notification> blocks
 // (several agents can finish in the same turn) — TASK_NOTIFICATION_BLOCK_RE
 // (global) splits the leaf into each individual block first, and TASK_ID_RE/
@@ -78,8 +84,19 @@ function scanTranscript(transcriptPath, preLines) {
   // TaskOutput result the coordinator triggered once it had already acted on
   // the agent's output), that counts as the result having been delivered.
   const otherToolResultTexts = [];
+  // SendMessage-resumed agent (field report, 0.117): a background subagent
+  // resumed via SendMessage after a usage-limit stop counts as RUNNING again
+  // — until its NEXT completion notification, not whatever marked it terminal
+  // BEFORE the resume (e.g. a "stopped" notification from the usage limit
+  // itself). terminalSeq/resumeSeq track the transcript ORDER (line index) of
+  // the newest evidence of each kind per agent id so the final reconciliation
+  // pass below can tell which happened last.
+  const terminalSeq = new Map();
+  const resumeSeq = new Map();
+  let seq = 0;
 
   for (const raw of lines) {
+    seq++;
     const line = raw.trim();
     if (!line) continue;
     // Cheap pre-filter before JSON.parse: skip lines that can't possibly matter.
@@ -87,7 +104,8 @@ function scanTranscript(transcriptPath, preLines) {
     const hasNotif = line.indexOf('<task-notification>') !== -1;
     const hasAgentToolUse = line.indexOf('"name":"Agent"') !== -1 || line.indexOf('"name": "Agent"') !== -1;
     const hasToolResult = line.indexOf('tool_result') !== -1;
-    if (!hasLaunch && !hasNotif && !hasAgentToolUse && !hasToolResult) continue;
+    const hasResume = line.indexOf('Resuming agent') !== -1;
+    if (!hasLaunch && !hasNotif && !hasAgentToolUse && !hasToolResult && !hasResume) continue;
 
     let entry;
     try { entry = JSON.parse(line); } catch (_) { continue; }
@@ -120,6 +138,7 @@ function scanTranscript(transcriptPath, preLines) {
           const statm = STATUS_RE.exec(body);
           if (tidm && tidm[1] && statm && TERMINAL_NOTIFICATION_STATUS.test(statm[1])) {
             terminal.add(tidm[1]);
+            terminalSeq.set(tidm[1], seq);
           }
         }
       }
@@ -148,7 +167,18 @@ function scanTranscript(transcriptPath, preLines) {
             });
           }
         }
-        if (isToolResult) otherToolResultTexts.push({ toolUseId, text });
+        // A "Resuming agent <id>" tool_result (SendMessage to a background
+        // agent) is evidence the COORDINATOR is continuing it, not evidence
+        // the agent's output was delivered — it must NOT feed the generic
+        // safety-net match below (which would otherwise immediately
+        // re-mark a just-resumed agent terminal merely because this text
+        // quotes its own id). Record it separately instead.
+        const resumeMatch = RESUME_RE.exec(text);
+        if (resumeMatch) {
+          resumeSeq.set(resumeMatch[1], seq);
+          continue;
+        }
+        if (isToolResult) otherToolResultTexts.push({ toolUseId, text, seq });
       }
     }
   }
@@ -170,10 +200,22 @@ function scanTranscript(transcriptPath, preLines) {
   // has not happened yet.
   for (const [id, rec] of launched) {
     if (terminal.has(id)) continue;
-    for (const { toolUseId, text } of otherToolResultTexts) {
+    for (const { toolUseId, text, seq: evidenceSeq } of otherToolResultTexts) {
       if (toolUseId !== undefined && toolUseId === rec.toolUseId) continue; // the launch's own result already named it — not "later" evidence
-      if (text.indexOf(id) !== -1) { terminal.add(id); break; }
+      if (text.indexOf(id) !== -1) { terminal.add(id); terminalSeq.set(id, evidenceSeq); break; }
     }
+  }
+
+  // RESUME RECONCILIATION: an id resumed via SendMessage AFTER the newest
+  // terminal evidence seen for it (or with no terminal evidence recorded at
+  // all — the resume itself is proof it is not done) is treated as running
+  // again. A terminal notification/evidence that arrives LATER than the
+  // resume (the agent's actual next completion) still correctly marks it
+  // terminal — this only reverses an ordering where the resume is newer.
+  for (const [id, rSeq] of resumeSeq) {
+    if (!terminal.has(id)) continue;
+    const tSeq = terminalSeq.has(id) ? terminalSeq.get(id) : -1;
+    if (rSeq > tSeq) terminal.delete(id);
   }
 
   return { launched, terminal };

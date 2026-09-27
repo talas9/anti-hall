@@ -39,6 +39,21 @@ function defaultCap() {
   return Math.max(1, Math.min(16, cores - 2));
 }
 
+// configuredCap() — guards.maxParallelDispatch (0 = unset -> the dynamic
+// defaultCap() above). Some owners deliberately run ONE implementation agent
+// per workspace at a time; setting this to 1 makes the dispatch demand (and
+// task-guard IDLE NEGLECT, which shares this same evaluate()) ask for the
+// NEXT task only once nothing is running — running.length < cap already
+// implements that once cap itself is 1, with no fake blockedBy needed.
+function configuredCap() {
+  try {
+    const v = require('./settings.js').get('guards', 'maxParallelDispatch', 0);
+    const n = Number(v);
+    if (Number.isFinite(n) && n > 0) return Math.floor(n);
+  } catch (_) { /* fall through */ }
+  return defaultCap();
+}
+
 function enabled() {
   try { return require('./settings.js').get('guards', 'dispatchDemand', true) !== false; } catch (_) { return true; }
 }
@@ -57,7 +72,7 @@ function taskRefs(text) {
 function evaluate(opts) {
   const actionable = (opts && opts.actionable) || [];
   const running = (opts && Array.isArray(opts.running)) ? opts.running : [];
-  const cap = (opts && Number.isFinite(opts.cap) && opts.cap > 0) ? opts.cap : defaultCap();
+  const cap = (opts && Number.isFinite(opts.cap) && opts.cap > 0) ? opts.cap : configuredCap();
   const known = new Set(((opts && opts.knownIds) || actionable.map((t) => t.id)).map(String));
   const covered = new Set();
   let unmapped = 0;
@@ -216,7 +231,7 @@ function summary(home) {
 }
 
 module.exports = {
-  evaluate, demandLine, label, taskRefs, defaultCap, enabled,
+  evaluate, demandLine, label, taskRefs, defaultCap, configuredCap, enabled,
   resolvePending, recordDemand, recordIdleNeglect, summary, readMetrics, metricsPath, spawnedSince,
 };
 

@@ -53,6 +53,16 @@ function agentLaunch(tuid, agentId, description, ts) {
     { type: 'user', timestamp: ts || iso(10), message: { role: 'user', content: [{ tool_use_id: tuid, type: 'tool_result', content: [{ type: 'text', text }] }] } },
   ];
 }
+// A SendMessage to a background agent that carries a "Resuming agent <id>"
+// tool_result — the real shape when the harness resumes a subagent stopped by
+// a usage limit.
+function sendMessageResume(tuid, agentId, ts) {
+  const text = 'Resuming agent ' + agentId + ' (internal ID - do not mention to user).\n';
+  return [
+    { type: 'assistant', timestamp: ts || iso(4), message: { role: 'assistant', content: [{ type: 'tool_use', id: tuid, name: 'SendMessage', input: { to: agentId, summary: 'continue' } }] } },
+    { type: 'user', timestamp: ts || iso(4), message: { role: 'user', content: [{ tool_use_id: tuid, type: 'tool_result', content: [{ type: 'text', text }] }] } },
+  ];
+}
 function agentDone(agentId, ts) {
   return {
     type: 'queue-operation', operation: 'enqueue', timestamp: ts || iso(5),
@@ -250,5 +260,70 @@ test('SETTING guards.dispatchDemand off -> no DISPATCH NOW line; task-guard fall
     const env = { ANTIHALL_DISPATCH_DEMAND: 'off' };
     assert.doesNotMatch(ctx(testHook(TRACKER, trackerPayload(tp), { home: h.home, env })), /DISPATCH NOW/);
     assert.ok(!isIdleNeglect(testHook(GUARD, stopPayload(tp), { home: h.home, env })));
+  } finally { h.cleanup(); }
+});
+
+// ---- SENDMESSAGE-RESUMED AGENTS (0.117 field report): a background agent
+// resumed via SendMessage after a usage-limit stop must count as RUNNING
+// again, not terminal from whatever ended it before the resume. ----
+
+function agentStopped(agentId, ts) {
+  return {
+    type: 'queue-operation', operation: 'enqueue', timestamp: ts || iso(5),
+    content: '<task-notification>\n<task-id>' + agentId + '</task-id>\n<status>stopped</status>\n<summary>usage limit</summary>\n</task-notification>',
+  };
+}
+
+test('RESUME (real): a "stopped" notification then a later SendMessage resume with NO further notification -> agent still covers its task, no demand for it', () => {
+  const h = makeHome();
+  try {
+    const tp = h.writeTranscript([
+      ...createTasks(['alpha work'], 1),
+      ...agentLaunch('toolu_a1', 'ffffffffffffffff1', 'Lane #1 alpha', iso(20)),
+      agentStopped('ffffffffffffffff1', iso(15)),
+      ...sendMessageResume('toolu_r1', 'ffffffffffffffff1', iso(4)),
+    ]);
+    assert.doesNotMatch(ctx(testHook(TRACKER, trackerPayload(tp), { home: h.home })), /DISPATCH NOW/,
+      'resumed agent must still cover #1 -> no demand');
+    assert.ok(!isIdleNeglect(testHook(GUARD, stopPayload(tp), { home: h.home })), 'resumed agent must not IDLE NEGLECT #1');
+  } finally { h.cleanup(); }
+});
+
+test('RESUME (real): a genuine completion notification AFTER the resume still marks the agent terminal', () => {
+  const h = makeHome();
+  try {
+    const tp = h.writeTranscript([
+      ...createTasks(['alpha work'], 1),
+      ...agentLaunch('toolu_a1', 'ffffffffffffffff2', 'Lane #1 alpha', iso(20)),
+      agentStopped('ffffffffffffffff2', iso(15)),
+      ...sendMessageResume('toolu_r1', 'ffffffffffffffff2', iso(10)),
+      agentDone('ffffffffffffffff2', iso(2)),
+    ]);
+    assert.match(demandLine(ctx(testHook(TRACKER, trackerPayload(tp), { home: h.home }))), /#1 "alpha work"/,
+      'a real completion AFTER the resume must still free up #1 for redispatch');
+  } finally { h.cleanup(); }
+});
+
+// ---- guards.maxParallelDispatch (0.117): a one-implementation-agent-per-
+// workspace owner sets this to 1 so the demand only asks for the NEXT task
+// once nothing is running, instead of piling on parallel-dispatch pressure. ----
+
+test('SETTING guards.maxParallelDispatch=1: one running (unmapped) agent -> no demand for the remaining pending task', () => {
+  const h = makeHome();
+  try {
+    const tp = h.writeTranscript([
+      ...createTasks(['alpha work', 'beta work'], 1),
+      ...agentLaunch('toolu_a1', '1111111111111111a', 'working on something'),
+    ]);
+    // Baseline (default dynamic cap): one unmapped running agent absorbs ONE
+    // pending task, the other is still demanded. NO_DEDUPE on both calls —
+    // otherwise the second (byte-identical, pre-fix) emission would be
+    // silently collapsed by the burst-collapse dedupe and the assertion
+    // would pass for the wrong reason.
+    assert.match(ctx(testHook(TRACKER, trackerPayload(tp), { home: h.home, env: NO_DEDUPE })), /DISPATCH NOW/,
+      'baseline: default cap still demands the second task');
+    const env = Object.assign({ ANTIHALL_MAX_PARALLEL_DISPATCH: '1' }, NO_DEDUPE);
+    assert.doesNotMatch(ctx(testHook(TRACKER, trackerPayload(tp), { home: h.home, env })), /DISPATCH NOW/,
+      'cap=1 with one already running -> no demand for the next task');
   } finally { h.cleanup(); }
 });
