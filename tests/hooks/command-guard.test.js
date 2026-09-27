@@ -1382,3 +1382,48 @@ test('P2 fp b183a9f1bbd5 NEGATIVE CONTROL: grep verb itself unaffected when a HE
   assert.strictEqual(r.status, 2, `a real 'make' invocation must still block; stdout: ${r.stdout}`);
   assert.ok(r.json && r.json.decision === 'block');
 });
+
+// Shell comments: an unquoted word-start `#` runs to end of line and never
+// executes, so its text must not be split into segments (a `)` in `# 1) go to x`
+// used to split off a bogus `go` segment -> false heavy-verb block). A `#` that
+// is NOT a comment stays code and must not hide a following heavy segment.
+const COMMENT_ALLOW = [
+  'cd /tmp\n# 1) GO to odin-re\nnode ~/.anti-hall/bin/devswarm.js send --to abc --message-file /tmp/m.md',
+  '# 1) go to x\ntrue',
+  '# a; go build | make && npm test\ntrue',
+  'true # 1) go build; npm test',
+];
+for (const cmd of COMMENT_ALLOW) {
+  test(`COMMENT ALLOW (comment text is not a segment): ${JSON.stringify(cmd)}`, () => {
+    const r = runCoord(cmd);
+    assert.strictEqual(r.status, 0, `expected allow for: ${cmd}\nstdout: ${r.stdout}`);
+  });
+}
+
+const COMMENT_BLOCK = [
+  '# x\ngo build ./...',              // newline ends the comment
+  '# 1) ok\nnpm test',
+  'go build # 1) ok',                  // real heavy command before the comment
+  'echo a#b; go build',                // mid-word # is not a comment
+  'echo $#; go build',
+  'echo ${#x}) go build',
+  'echo ${x#y}; go build',
+  'echo ${x##y}; go build',
+  'echo ${x:- #}; go build',           // # inside ${...} is not a comment past the }
+  '(( 2 #)); go build',                // # inside (( )) is not a comment
+  'echo `true #`; go build',           // # inside backticks ends at the closing tick
+  'echo $(echo a)#b; go build',        // `)#` is mid-word
+  'echo "#"; go build',
+  "echo '#'; go build",
+  'echo \\#; go build',
+  'echo \\ #; go build',               // escaped space: # is mid-word
+  'echo a\\\n#; go build',             // line continuation: # is mid-word
+  'echo $(( 1#2 )); go build',
+  'cat <<EOF\n# 1) go\nEOF\ngo build',
+];
+for (const cmd of COMMENT_BLOCK) {
+  test(`COMMENT BLOCK (non-comment # or post-comment line stays code): ${JSON.stringify(cmd)}`, () => {
+    const r = runCoord(cmd);
+    assert.strictEqual(r.status, 2, `expected block for: ${cmd}\nstdout: ${r.stdout}`);
+  });
+}

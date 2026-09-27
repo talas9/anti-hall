@@ -1037,6 +1037,13 @@ function splitSegmentsDetailed(cmd) {
   const n = cmd.length;
   let inSingle = false;
   let inDouble = false;
+  // Shell-comment tracking. `nest` holds the open `(`/`{` (incl. `$(`, `$((`,
+  // `${`) and `inTick` backtick state; `escEnd` is the index just past the
+  // last backslash escape / line continuation (so `\ #` or `a\<nl>#` is
+  // mid-word, not a comment).
+  const nest = [];
+  let inTick = false;
+  let escEnd = -1;
 
   function flush(delim) {
     if (cur.trim().length) { segments.push(cur); delims.push(delim); }
@@ -1057,14 +1064,31 @@ function splitSegmentsDetailed(cmd) {
 
     // Line continuation: backslash-newline joins lines.
     if (c === '\\' && (c2 === '\n' || (c2 === '\r' && cmd[i + 2] === '\n'))) {
-      cur += ' '; i += (c2 === '\r') ? 3 : 2; continue;
+      cur += ' '; i += (c2 === '\r') ? 3 : 2; escEnd = i; continue;
     }
     // Outside quotes a backslash escapes the NEXT character: `\"`/`\'` are
     // literal quote chars (no quote state change) and `\;`/`\|`/`\&` are
     // literal, not operators — exactly as bash reads them. Without this,
     // `git commit -m \" ; npm test ; echo \"` looked like ONE quoted arg to
     // the splitter while bash runs `npm test` as its own command.
-    if (c === '\\' && c2) { cur += c + c2; i += 2; continue; }
+    if (c === '\\' && c2) { cur += c + c2; i += 2; escEnd = i; continue; }
+
+    // Shell comment: an unquoted `#` that STARTS A WORD (start of input, or
+    // right after unescaped whitespace or `;` `&` `|`) runs to the next newline
+    // and is never executed — drop it so its text (`# 1) go to x`) is not
+    // split into bogus segments. Recognized ONLY at nesting depth 0 and outside
+    // backticks: inside `${x:- #}`, `(( 2 #))` and backticks bash does NOT
+    // treat `#` as a comment past the closer (verified), so stripping there
+    // could hide a real command; staying literal is the strict fallback. `)`
+    // is deliberately not a word start (`$(echo a)#b` is the word `a#b`).
+    // Mid-word `#` (`a#b`, `$#`, `${#x}`, `x=#`) stays code. The newline that
+    // ends the comment is left for the normal `\n` split below.
+    if (c === '#' && !nest.length && !inTick && escEnd !== i &&
+        (i === 0 || /[ \t\n;&|]/.test(cmd[i - 1]))) {
+      const nl = cmd.indexOf('\n', i);
+      i = nl === -1 ? n : nl;
+      continue;
+    }
 
     // Heredoc: consume the opener on the current segment, then skip the BODY
     // (up to and including the terminator line) without emitting it as
@@ -1087,9 +1111,13 @@ function splitSegmentsDetailed(cmd) {
     if (c === '&') { flush('&'); i++; continue; }
     if (c === '\n') { flush('\n'); i++; continue; }
     // Subshell / grouping / command-substitution boundaries -> segment splits.
-    if (c === ')' || c === '(' || c === '{' || c === '}') { flush('group'); i++; continue; }
-    if (c === '$' && c2 === '(') { flush('subst'); i += 2; continue; }
-    if (c === '`') { flush('subst'); i++; continue; }
+    if (c === ')' || c === '(' || c === '{' || c === '}') {
+      if (c === '(' || c === '{') nest.push(c);
+      else if (nest.length && nest[nest.length - 1] === (c === ')' ? '(' : '{')) nest.pop();
+      flush('group'); i++; continue;
+    }
+    if (c === '$' && c2 === '(') { nest.push('('); flush('subst'); i += 2; continue; }
+    if (c === '`') { inTick = !inTick; flush('subst'); i++; continue; }
 
     cur += c;
     i++;
