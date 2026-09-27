@@ -64,7 +64,7 @@ test('ack-primary --receipt advances exactly what the read returned and is idemp
 });
 
 // -----------------------------------------------------------------------
-// SkyCrew Primary field report (2026-09-27): `ackCommand` always embedded
+// A DevSwarm Primary field report (2026-09-27): `ackCommand` always embedded
 // THIS invocation's own __filename — the version-pinned plugin-cache path —
 // which a caller runs in a LATER turn/session, by which point an anti-hall
 // update can have pruned that exact version directory. `ackCommand` must

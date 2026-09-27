@@ -57,7 +57,7 @@ test('wake-directive <id>: Codex agent -> the honest no-CronCreate equivalent (m
   assert.ok(!/CronCreate/.test(r.directive), 'a non-Claude agent must never be told to call CronCreate');
 });
 
-test('wake-directive <id>: embeds the stable ~/.anti-hall/bin/devswarm.js launcher when it exists, same defect class as ackCommand (SkyCrew Primary field report, 2026-09-27)', () => {
+test('wake-directive <id>: embeds the stable ~/.anti-hall/bin/devswarm.js launcher when it exists, same defect class as ackCommand (a DevSwarm Primary field report, 2026-09-27)', () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'anti-hall-wake-directive-stable-'));
   try {
     const stablePath = stableLauncherLib.launcherPath('devswarm', home);

@@ -720,7 +720,7 @@ test('readPrimarySnapshot (real store, not mocked): 50 broadcast/heartbeat rows 
 
 // ---------------------------------------------------------------------------
 // attachBroadcastChannel / readBroadcastSnapshot — END-TO-END through the
-// REAL store, closing a SkyCrew Primary field report: after `send
+// REAL store, closing a DevSwarm Primary field report: after `send
 // --broadcast`, wake-watch woke the SENDER on its own broadcast ("new mesh
 // mail for child primary-63f9261d: broadcast direct total 189 -> 190 (+1)").
 // Root cause: `workspaces[<id>].broadcastUnread` (devswarm-store.js

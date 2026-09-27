@@ -215,7 +215,7 @@ test('window: --since and --tail compose — since filters first, then the tail 
 });
 
 // -----------------------------------------------------------------------
-// SkyCrew Primary field report (2026-09-27): `inbox messages <id> --since
+// A DevSwarm Primary field report (2026-09-27): `inbox messages <id> --since
 // <recent> --limit 2000` on a large inbox returned count:0, total:5985,
 // truncatedCount:2989 — the per-source cap ran BEFORE --since, kept only the
 // OLDEST `--limit` rows, and --since then filtered THAT already-oldest set

@@ -1,5 +1,5 @@
 'use strict';
-// SkyCrew Primary report (0.115.2): update.js's post-pull `reconcile` step
+// A DevSwarm Primary's report (0.115.2): update.js's post-pull `reconcile` step
 // reported 17 worktree records as FAILURES — 14 "unknown error" and 9
 // "worktree not found on disk" (overlapping) — when every one of them was an
 // ARCHIVED workspace (isActive=0/isHidden=1 in the DevSwarm app, or already

@@ -57,7 +57,7 @@ function walk(dir, base) {
 // additively emits `oldestDirectUnreadSender` right after
 // `oldestDirectUnreadTs` — the fixture's sole unread row is `from: 'z'`, so
 // that is the expected value here.
-// Updated for the wake-watch own-broadcast fix (SkyCrew Primary field report,
+// Updated for the wake-watch own-broadcast fix (a DevSwarm Primary field report,
 // 2026-09-27): computeSummary now additively emits
 // `broadcastUnreadFromOthers` right after `broadcastUnread` — a sender-
 // excluded sibling of `broadcastUnread` (which stays own-send-inclusive by
