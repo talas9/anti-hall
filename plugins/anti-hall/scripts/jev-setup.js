@@ -48,6 +48,7 @@ const KNOWN_INTEGRATIONS = [
   'newRequest', 'outputVerifyGuard', 'gitGuardSelfCredit', 'parentGateQuestion',
   'tasklistTrivial', 'supervisorBlockerLabel', 'codexNudgeSubstantial',
   'findingDedup', 'postHandoverGate', 'dispatchTier',
+  'devswarmOnBrief', 'devswarmExtraSanctioned', 'devswarmWaitKind', 'devswarmLoop', 'devswarmStepMap',
 ];
 const LEGACY_ON_DEFAULT = new Set(['speculation', 'triage']);
 
