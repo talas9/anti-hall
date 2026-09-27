@@ -1004,125 +1004,28 @@ test('DEPLOY FLOOR (F4): a deploy-shaped opus spawn no longer skips the other ro
   } finally { h.cleanup(); }
 });
 
-// F2: DEPLOY_STRONG_RE (`\bdeploy\w*`) used to match the filename token
-// `deploy_webui.sh` even when the prompt is only doc/read work that MENTIONS
-// the script — not an actual deploy. isDeployShaped now strips path- and
-// identifier-like tokens (contain `_`/`/`, or end in a `.ext`) before
-// matching, so a filename mention no longer masquerades as deploy-shaped
-// work, while a genuine deploy sentence (plain words) still does.
-test('DEPLOY FLOOR (F2): a doc/read-only prompt that merely mentions a script filename containing "deploy" is NOT deploy-shaped (ordinary misroute BLOCK still applies)', () => {
-  const h = makeHome();
-  try {
-    const r = testHook(HOOK, payload({
-      model: 'opus', subagent_type: 'general-purpose', description: 'grep the script',
-      prompt: 'grep tools/deploy_webui.sh for the CORS header value and tail the output',
-    }), { home: h.home });
-    assertBlock(r, /haiku/);
-  } finally { h.cleanup(); }
-});
-
-test('DEPLOY FLOOR (F2): a path token containing "deploy" inside docs/deploy.md is NOT deploy-shaped', () => {
-  const h = makeHome();
-  try {
-    const r = testHook(HOOK, payload({
-      model: 'opus', subagent_type: 'general-purpose', description: 'grep the docs',
-      prompt: 'grep docs/deploy.md for the release date and tail the output',
-    }), { home: h.home });
-    assertBlock(r, /haiku/);
-  } finally { h.cleanup(); }
-});
-
+// fix-wave-3 (R3-RV1-2, reverting F2/cc0568a/efbb9de/4379d31): stripPathLikeTokens
+// kept breaking the deploy floor — a deploy-execution prompt with the exec
+// verb positioned after the path (e.g. "open scripts/deploy.sh and run it in
+// production") still lost the deploy shape and BLOCKED an opus deploy. The
+// owner-accepted tradeoff is the pre-F2 baseline: a filename merely mentioning
+// "deploy" (e.g. `grep tools/deploy_webui.sh`) is a false-positive advisory,
+// which is fine — blocking a genuine opus deploy is not. isDeployShaped is
+// back to matching the raw corpus with no path-token stripping. A genuine
+// deploy sentence (plain words, no path tokens at all) still needs no
+// stripping either way and stays deploy-shaped:
 for (const prompt of [
   'deploy the webui to production',
   'run the deploy',
   'firebase deploy --only functions',
 ]) {
-  test(`DEPLOY FLOOR (F2): a genuine deploy sentence ("${prompt}") is still deploy-shaped`, () => {
+  test(`DEPLOY FLOOR: a genuine deploy sentence ("${prompt}") is still deploy-shaped`, () => {
     const h = makeHome();
     try {
       const r = testHook(HOOK, payload({
         model: 'opus', subagent_type: 'general-purpose', description: 'deploy', prompt,
       }), { home: h.home });
       assertSilentAllow(r);
-    } finally { h.cleanup(); }
-  });
-}
-
-// R1-4: an executed path-like deploy script token (follows an execution verb,
-// or is itself `./x`) must KEEP the deploy floor advisory -- previously
-// stripPathLikeTokens dropped it unconditionally, same as a merely-mentioned
-// filename, losing the advisory for a real executed deploy.
-test('DEPLOY FLOOR (R1-4): "run scripts/deploy.sh to production" (haiku) still gets the advisory', () => {
-  const h = makeHome();
-  try {
-    const r = testHook(HOOK, payload({
-      model: 'haiku', subagent_type: 'general-purpose', description: 'run script',
-      prompt: 'run scripts/deploy.sh to production',
-    }), { home: h.home });
-    assertAdvisory(r, /at least model:'sonnet'/);
-  } finally { h.cleanup(); }
-});
-
-test('DEPLOY FLOOR (R1-4): "execute ./deploy-prod.sh now" (haiku) still gets the advisory', () => {
-  const h = makeHome();
-  try {
-    const r = testHook(HOOK, payload({
-      model: 'haiku', subagent_type: 'general-purpose', description: 'run script',
-      prompt: 'execute ./deploy-prod.sh now',
-    }), { home: h.home });
-    assertAdvisory(r, /at least model:'sonnet'/);
-  } finally { h.cleanup(); }
-});
-
-test('DEPLOY FLOOR (R1-4): read-only "grep tools/deploy_webui.sh …" stays silent (not deploy-shaped)', () => {
-  const h = makeHome();
-  try {
-    const r = testHook(HOOK, payload({
-      model: 'opus', subagent_type: 'general-purpose', description: 'grep the script',
-      prompt: 'grep tools/deploy_webui.sh for the CORS header value and tail the output',
-    }), { home: h.home });
-    assertBlock(r, /haiku/);
-  } finally { h.cleanup(); }
-});
-
-test('DEPLOY FLOOR (R1-4): an executed deploy script does not wrongly BLOCK an opus spawn', () => {
-  const h = makeHome();
-  try {
-    const r = testHook(HOOK, payload({
-      model: 'opus', subagent_type: 'general-purpose', description: 'run script',
-      prompt: 'run scripts/deploy.sh to production',
-    }), { home: h.home });
-    assertSilentAllow(r);
-  } finally { h.cleanup(); }
-});
-
-// R2A1-MR-1 / R2-RV1-11: a deploy script run bare, by an interpreter, or with
-// an article between verb and path stays deploy-shaped. Only a path that is a
-// read-only verb's argument is dropped (default is keep).
-for (const prompt of [
-  'tools/deploy_webui.sh prod',
-  'node scripts/deploy.js --env prod',
-  'python3 tools/deploy_prod.py',
-  'run the scripts/deploy.sh script',
-]) {
-  test(`DEPLOY FLOOR (R2A1-MR-1): "${prompt}" does not BLOCK an opus spawn`, () => {
-    const h = makeHome();
-    try {
-      const r = testHook(HOOK, payload({
-        model: 'opus', subagent_type: 'general-purpose', description: 'run script', prompt,
-      }), { home: h.home });
-      assertSilentAllow(r);
-    } finally { h.cleanup(); }
-  });
-}
-for (const prompt of ['node scripts/deploy.js --env prod', 'python3 tools/deploy_prod.py', 'please run the scripts/deploy.sh']) {
-  test(`DEPLOY FLOOR (R2A1-MR-1): "${prompt}" (haiku) gets the floor advisory`, () => {
-    const h = makeHome();
-    try {
-      const r = testHook(HOOK, payload({
-        model: 'haiku', subagent_type: 'general-purpose', description: 'run script', prompt,
-      }), { home: h.home });
-      assertAdvisory(r, /at least model:'sonnet'/);
     } finally { h.cleanup(); }
   });
 }
