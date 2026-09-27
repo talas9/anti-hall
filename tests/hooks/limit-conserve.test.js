@@ -257,6 +257,37 @@ test('STALE CACHE (>15 min old) with high weekly -> active AND stale:true', () =
   } finally { h.cleanup(); }
 });
 
+test('STALENESS BOUND: weekly 90% with NO resetsAt field + snapshot 7h old -> inactive', () => {
+  const h = makeHome();
+  try {
+    // No weeklyResetsAt at all (unlike makeCache's default), so the only
+    // signal against trusting a stale last-known-high percent forever is the
+    // snapshot's own age exceeding MAX_STALE_MS (6h).
+    const tsOffset = 7 * 60 * 60 * 1000; // 7h > MAX_STALE_MS
+    writeCacheFile(h.home, {
+      timestamp: Date.now() - tsOffset,
+      data: { fiveHourPercent: 0, weeklyPercent: 90, sonnetWeeklyPercent: 0 },
+      rateLimited: false,
+    });
+    const { json: r } = runWrapper(h.home);
+    assert.ok(r && r.active === false, 'inactive: snapshot too old to trust a percent with no resetsAt');
+  } finally { h.cleanup(); }
+});
+
+test('STALENESS BOUND: weekly 90% with NO resetsAt field + snapshot 1h old -> still active', () => {
+  const h = makeHome();
+  try {
+    const tsOffset = 60 * 60 * 1000; // 1h < MAX_STALE_MS (6h)
+    writeCacheFile(h.home, {
+      timestamp: Date.now() - tsOffset,
+      data: { fiveHourPercent: 0, weeklyPercent: 90, sonnetWeeklyPercent: 0 },
+      rateLimited: false,
+    });
+    const { json: r } = runWrapper(h.home);
+    assert.ok(r && r.active === true, 'still active: snapshot well within MAX_STALE_MS');
+  } finally { h.cleanup(); }
+});
+
 test('MALFORMED JSON cache -> fail-open inactive, source:manual-only', () => {
   const h = makeHome();
   try {

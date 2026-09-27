@@ -21,6 +21,13 @@
 // RESET-AWARE: if a bucket's resetsAt is a parseable ISO date in the PAST,
 // treat its percent as 0 (the reset already happened — no longer tripped).
 //
+// STALENESS BOUND: a bucket with NO usable resetsAt (missing/unparseable) has
+// no self-correcting signal, so a snapshot that stops refreshing (companion
+// dead, machine asleep) would otherwise stay "active" forever off a last-known
+// high percent. Once the whole snapshot's age exceeds MAX_STALE_MS, such a
+// bucket's percent is treated as 0 too — the underlying 5h/weekly window has
+// certainly rolled over by then even without a parseable reset time.
+//
 // FAIL-OPEN direction = inactive: a detection failure must never erroneously
 // force conservation mode. An unreadable / malformed cache is source:'manual-only'.
 //
@@ -54,6 +61,11 @@ const CLAUDE_JSON = path.join(os.homedir(), '.claude.json');
 const ACCOUNT_STATE_FILE = path.join(os.homedir(), '.anti-hall', 'limit-conserve-account.json');
 
 const STALE_MS = 15 * 60 * 1000;
+
+// MAX_STALE_MS: snapshot-age bound backstopping buckets with no usable
+// resetsAt (see STALENESS BOUND above). Longer than the 5h window itself, so
+// a snapshot this old means any window it describes has definitely reset.
+const MAX_STALE_MS = 6 * 60 * 60 * 1000;
 
 // Compute THRESHOLD at load time via the unified settings store (v0.108.0):
 // env override > ~/.anti-hall/settings.json > default 85. Same effective
@@ -241,6 +253,10 @@ function isConserving() {
       if (resetsAt && typeof resetsAt === 'string') {
         const resetTs = new Date(resetsAt).getTime();
         if (Number.isFinite(resetTs) && resetTs < now) return 0;
+      } else if (ts > 0 && (now - ts) > MAX_STALE_MS) {
+        // No usable resetsAt AND the snapshot itself is well past MAX_STALE_MS
+        // -> don't trust a last-known-high percent indefinitely.
+        return 0;
       }
       return typeof pct === 'number' ? pct : 0;
     }
@@ -290,4 +306,4 @@ function isConserving() {
   }
 }
 
-module.exports = { isConserving, CACHE_FILE, THRESHOLD, STALE_MS, CLAUDE_JSON, ACCOUNT_STATE_FILE };
+module.exports = { isConserving, CACHE_FILE, THRESHOLD, STALE_MS, MAX_STALE_MS, CLAUDE_JSON, ACCOUNT_STATE_FILE };
