@@ -675,3 +675,44 @@ for (const cmd of F5_AFTER_SCRIPT_ALLOW) {
     });
   });
 }
+
+// ---- v0.116 B1: a redirection `&` is not a background separator ----------
+// Root cause: the splitter flushed on EVERY lone `&`, so `x 2>&1 | tail`
+// became `x 2>` / `1 | tail` and the bounded-check carve-out never applied.
+// Fix: `&` right after an unescaped `>`/`<` (fd dup) or followed by `>`
+// (`&>`, `&>>`) stays in the word. Only `2>&1` (stderr INTO the pipe) is
+// ignored when judging the check shape; `>&2` routes output around the sink.
+function withScriptProject(fn) {
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'cgsec-b1-')));
+  fs.mkdirSync(path.join(dir, 'tools'));
+  fs.writeFileSync(path.join(dir, 'tools', 'x.py'), 'print(1)\n');
+  try { return fn(dir); } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+}
+
+const B1_ALLOW = [
+  'node --test a.test.js 2>&1 | tail -5',
+  'python3 tools/x.py --check 2>&1 | tail -1',
+];
+const B1_BLOCK = [
+  'go build 2>&1 | tail -3',
+  'true & go build',
+  'echo x >&2; go build',
+  'cmd &>/dev/null; npm test',
+  'go build & tail x',
+  'echo \\>& go build',
+  'python3 tools/x.py --check >&2 | tail -1',
+  'python3 tools/x.py --check 1>&2 | tail -1',
+  'node --test a.test.js &>/etc/cgsec-b1 | tail -1',
+];
+for (const c of B1_ALLOW) {
+  test(`v0.116 B1 ALLOW: ${c}`, () => withScriptProject((cwd) => {
+    const r = run(c, { cwd });
+    assert.strictEqual(r.status, 0, r.stdout);
+  }));
+}
+for (const c of B1_BLOCK) {
+  test(`v0.116 B1 BLOCK: ${c}`, () => withScriptProject((cwd) => {
+    const r = run(c, { cwd });
+    assert.strictEqual(r.status, 2, r.stdout);
+  }));
+}

@@ -1118,6 +1118,13 @@ function splitSegmentsDetailed(cmd) {
     if (c === '|' && c2 === '|') { flush('||'); i += 2; continue; }
     if (c === '|') { flush('|'); i++; continue; }
     if (c === ';') { flush(';'); i++; continue; }
+    // A redirection `&` is NOT a background separator: fd-dup `2>&1` / `>&2` /
+    // `<&3` (unescaped `>`/`<` right before) and `&>file` / `&>>file`. Treating
+    // it as `&` split `x 2>&1 | tail` into `x 2>` / `1 | tail`, losing the pipe.
+    // `escEnd !== i` keeps `\>&` (literal `>` then a real `&`) a separator.
+    if (c === '&' && ((escEnd !== i && (cmd[i - 1] === '>' || cmd[i - 1] === '<')) || c2 === '>')) {
+      cur += c; i++; continue;
+    }
     if (c === '&') { flush('&'); i++; continue; }
     if (c === '\n') { flush('\n'); i++; continue; }
     // Subshell / grouping / command-substitution boundaries -> segment splits.
@@ -2197,10 +2204,10 @@ function isTriviallySafeSegment(segment) {
 }
 
 // Any write redirect (`>`, `>>`) or `tee` target that resolves outside the
-// scratchpad/tmp disqualifies the whole command. `2>&1`/`&>`-style fd-dup
-// targets (no real path) are ignored.
+// scratchpad/tmp disqualifies the whole command, `&>file`/`&>>file` included.
+// `2>&1`/`>&2` fd-dup targets (no real path) are ignored.
 function hasDisallowedWriteRedirect(segment, ctx) {
-  const re = /(^|[^<>&])(>>?)\s*(\S+)/g;
+  const re = /(^|[^<>&])(&?>>?)\s*(\S+)/g;
   let m;
   while ((m = re.exec(segment))) {
     const target = m[3];
@@ -2243,7 +2250,11 @@ function isBoundedVerificationCommand(command, ctx) {
     if (!seg) continue;
     if (hasDisallowedWriteRedirect(seg, ctx)) return false;
     let kind;
-    if (isQualifyingSingleTargetCheck(seg, ctx)) {
+    // `2>&1` only merges stderr INTO the pipe (still bounded by the sink), so
+    // the check shape is judged without it. Any other `>&` fd-dup (`>&2`,
+    // `1>&2`) routes output AROUND the sink, so that segment never qualifies.
+    const checkSeg = seg.replace(/(^|\s)2>&1(?=\s|$)/g, ' ').trim();
+    if (!/>&/.test(neutralizeQuotedContents(checkSeg)) && isQualifyingSingleTargetCheck(checkSeg, ctx)) {
       kind = 'check';
       sawQualifying = true;
       pipelineHasCheck = true;
