@@ -73,6 +73,17 @@ and `TaskGet` read back. Designed for long, multi-session, multi-subagent work.
   blocker. The generic "open tasks remain" nudge also leaves out marked tasks
   and tasks whose `blockedBy` names a still-open task; if every open task is
   blocked, there is no nudge. Toggle: `guards.taskGuardOwnerBlockedMarker` (default on).
+- **Parallel-dispatch demand:** every turn with a pending, unblocked, unowned,
+  not-owner-blocked task that no in-flight agent covers, `task-tracker` injects
+  `DISPATCH NOW in parallel — …: #7 "subject", #11 "subject", …`; at Stop the same
+  set drives `task-guard`'s IDLE NEGLECT block (capped). Coverage is per task from
+  THIS session's transcript: a running background agent whose description names
+  `#<id>` covers that task; an agent naming none is assumed to be on an in_progress
+  task first, else on one pending task. The machine-global `~/.anti-hall/agents`
+  heartbeat no longer suppresses it (any session's spawn refreshed it). Toggle:
+  `guards.dispatchDemand` (default on). Metrics (`demandsShown`, `demandsFollowed`,
+  `demandsIgnored`, compliance rate, `idleNeglectBlocks`):
+  `node plugins/anti-hall/scripts/dispatch-report.js` and one `doctor` line.
 - **Persistence:** written to disk immediately under
   `~/.claude/tasks/<TASK_LIST_ID>/` (`index.json` + `task-*.json`). Survives
   compaction, restart, and multi-day gaps. `CLAUDE_CODE_TASK_LIST_ID` selects

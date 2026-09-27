@@ -232,10 +232,9 @@ test('ACTIONABLE-NOW: pending unowned unblocked tasks -> review line NAMES them 
     ]);
     const r = testHook(HOOK, turnPayload(tp), { home: h.home });
     const c = ctx(r);
-    assert.match(c, /TASK REVIEW \(every turn\): 2 non-blocked, unassigned pending task/, c);
-    assert.match(c, /parallel/, c);
-    assert.match(c, /dispatch a background agent/, c);
-    assert.match(c, /"build the parser"/, c);
+    assert.match(c, /DISPATCH NOW in parallel/, c);
+    assert.match(c, /one background agent EACH/, c);
+    assert.match(c, /#1 "build the parser"/, c);
     assert.match(c, /"write the docs"/, c);
   } finally {
     h.cleanup();
@@ -250,7 +249,7 @@ test('ACTIONABLE-NOW: 0 actionable (all completed) -> generic only, no review li
     ]);
     const r = testHook(HOOK, turnPayload(tp), { home: h.home });
     const c = ctx(r);
-    assert.doesNotMatch(c, /TASK REVIEW/, c);
+    assert.doesNotMatch(c, /DISPATCH NOW/, c);
     // Generic discipline text still present (FIRST turn -> FULL).
     assert.ok(c.startsWith(FULL_MARKER), c);
   } finally {
@@ -271,7 +270,7 @@ test('ACTIONABLE-NOW: owned + blocked tasks are NOT listed as actionable', () =>
     const r = testHook(HOOK, turnPayload(tp), { home: h.home });
     const c = ctx(r);
     // Only task 1 is actionable; 2 (owned) and 3 (blocked by open 1) are not.
-    assert.match(c, /TASK REVIEW \(every turn\): 1 non-blocked/, c);
+    assert.match(c, /DISPATCH NOW in parallel/, c);
     assert.match(c, /"blocker still open"/, c);
     assert.doesNotMatch(c, /"owned by worker"/, c);
     assert.doesNotMatch(c, /"depends on 1"/, c);
@@ -291,7 +290,7 @@ test('ACTIONABLE-NOW: blocker FREED on completion -> dependent task IS listed', 
     ]);
     const r = testHook(HOOK, turnPayload(tp), { home: h.home });
     const c = ctx(r);
-    assert.match(c, /TASK REVIEW \(every turn\): 1 non-blocked/, c);
+    assert.match(c, /DISPATCH NOW in parallel/, c);
     assert.match(c, /"dependent task"/, c);
   } finally {
     h.cleanup();
@@ -308,13 +307,13 @@ test('ACTIONABLE-NOW: DANGLING blocker id (unknown) -> task NOT listed (safer de
     ]);
     const r = testHook(HOOK, turnPayload(tp), { home: h.home });
     const c = ctx(r);
-    assert.doesNotMatch(c, /TASK REVIEW/, `dangling blocker -> not actionable; got: ${c}`);
+    assert.doesNotMatch(c, /DISPATCH NOW/, `dangling blocker -> not actionable; got: ${c}`);
   } finally {
     h.cleanup();
   }
 });
 
-test('ACTIONABLE-NOW: fresh agent heartbeat -> no review line (work in flight)', () => {
+test('ACTIONABLE-NOW: a fresh GLOBAL heartbeat alone does NOT silence the line (not this session\'s agent)', () => {
   const h = makeHome();
   try {
     const fsm = require('node:fs'); const pth = require('node:path');
@@ -325,7 +324,7 @@ test('ACTIONABLE-NOW: fresh agent heartbeat -> no review line (work in flight)',
       todoWrite([{ id: '1', content: 'pending work', status: 'pending' }]),
     ]);
     const r = testHook(HOOK, turnPayload(tp), { home: h.home });
-    assert.doesNotMatch(ctx(r), /TASK REVIEW/, ctx(r));
+    assert.match(ctx(r), /DISPATCH NOW in parallel/, ctx(r));
   } finally {
     h.cleanup();
   }
@@ -340,7 +339,7 @@ test('FAIL-OPEN: malformed transcript JSON lines -> no throw, generic context', 
     const r = testHook(HOOK, turnPayload(tp), { home: h.home });
     assert.strictEqual(r.status, 0);
     assert.ok(ctx(r).startsWith(FULL_MARKER), ctx(r));
-    assert.doesNotMatch(ctx(r), /TASK REVIEW/, ctx(r));
+    assert.doesNotMatch(ctx(r), /DISPATCH NOW/, ctx(r));
   } finally {
     h.cleanup();
   }

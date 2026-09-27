@@ -60,6 +60,12 @@ const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
 
+// metricsHome() — metrics home or null; never throws (the test-home guard
+// refuses the real HOME under a test runner).
+function metricsHome() {
+  try { return require('../companion/lib/test-home-guard.js').resolveHome(); } catch (_) { return null; }
+}
+
 function main() {
   // Settings switch guards.taskGuard (0.108.4): off -> no-op. Fail-open: any error runs the hook.
   try { if (!require('./lib/settings.js').enabled('guards', 'taskGuard')) return; } catch (_) { /* run */ }
@@ -125,10 +131,25 @@ function main() {
   // block vs the gentler generic nudge.
   const actionable = classifyOpen(openTasks, taskMap);
   const haveAgents = agentsRunning();
-  // IDLE NEGLECT = there is dispatchable work AND nothing is running. If agents
-  // are in flight, or the only open tasks are blocked/owned/in_progress, this is
-  // false (don't nag genuine parallel work or genuine waiting on blockers).
-  const idleNeglect = actionable.length >= 1 && !haveAgents;
+  // IDLE NEGLECT = there is dispatchable work that no in-flight agent of THIS
+  // session covers (lib/dispatch-demand.js evaluate: per-task coverage from the
+  // transcript; unmapped agents cover at most one task each; running < cap).
+  // It used to be "actionable && !haveAgents", where haveAgents is the
+  // machine-global recent-spawn.json heartbeat — refreshed for 20 min by ANY
+  // spawn in ANY session — so one agent anywhere silenced it for every task.
+  const DD = require('./lib/dispatch-demand.js');
+  let demand = { fire: false, dispatch: [] };
+  if (actionable.length >= 1) {
+    if (DD.enabled()) {
+      let running = null;
+      try { running = require('./lib/agent-scan.js').runningAgents(transcriptPath); } catch (_) { running = null; }
+      demand = DD.evaluate({ actionable, knownIds: [...taskMap.keys()], inProgressIds: openTasks.filter((t) => /in[-_]?progress/i.test(t.status || '')).map((t) => t.id), running: running || [] });
+    } else {
+      // Setting off: legacy blanket rule.
+      demand = { fire: !haveAgents, dispatch: actionable };
+    }
+  }
+  const idleNeglect = demand.fire;
   // The generic nudge lists only tasks NOT honestly marked blocked (an open
   // blockedBy task, or an owner/external blockedOn marker). All blocked -> no
   // nudge: the session is genuinely waiting, not neglecting work.
@@ -143,7 +164,7 @@ function main() {
   //  - generic: hash of the full open-task set (legacy behavior).
   let hash;
   if (idleNeglect) {
-    const aids = actionable.map(t => String(t.id || t.content || t.subject || '')).sort();
+    const aids = demand.dispatch.map(t => String(t.id || t.content || t.subject || '')).sort();
     hash = crypto.createHash('sha1')
       .update('idle\x00no-agents\x00' + aids.join('\x00')).digest('hex');
   } else {
@@ -261,12 +282,13 @@ function main() {
 
   let reason;
   if (idleNeglect) {
-    const list = renderList(actionable);
-    const more = actionable.length > 5 ? ' (and ' + (actionable.length - 5) + ' more)' : '';
+    DD.recordIdleNeglect({ home: metricsHome() });
+    const list = demand.dispatch.slice(0, 12).map((t) => DD.label(t)).join(', ');
+    const more = demand.dispatch.length > 12 ? ' (and ' + (demand.dispatch.length - 12) + ' more)' : '';
     reason =
-      'IDLE NEGLECT: ' + actionable.length + ' non-blocked, unassigned task(s) and ' +
-      'NO agents running — dispatch them in PARALLEL NOW (one background agent ' +
-      'each, cap ~min(16, cores-2)): ' + list + more + '. ' +
+      'IDLE NEGLECT: ' + demand.dispatch.length + ' non-blocked, unassigned task(s) with ' +
+      'NO in-flight agent on them — DISPATCH NOW in PARALLEL (one background agent ' +
+      'each, cap ' + (demand.cap || '~min(16, cores-2)') + '): ' + list + more + '. ' +
       'Do not end the turn idle; only stop if a task truly needs the user (then ' +
       'say which + why). If a task is genuinely blocked on the OWNER (hardware, a ' +
       'decision only a human can make), mark it non-dispatchable honestly — ' +
@@ -325,7 +347,9 @@ function main() {
 // stall this hook. If the file is smaller than the window we read it all. Any
 // error -> null (caller returns an empty task map -> no block, fail-open).
 function readTranscriptTail(transcriptPath, windowBytes) {
-  const WINDOW = windowBytes || 512 * 1024;
+  // Shared transcript-tail cap (1.5MB): the old 512KB window could drop a
+  // task created only minutes earlier on a chatty session.
+  const WINDOW = windowBytes || require('./lib/transcript-tail.js').MAX_TAIL_BYTES;
   let fd = null;
   try {
     const size = fs.statSync(transcriptPath).size;
@@ -426,12 +450,6 @@ function isActionablePriority(p) {
   return s !== 'p2' && s !== 'low' && s !== 'deferred';
 }
 
-// normBlockedOn — normalize a raw blockedOn value to a lowercased trimmed
-// string or ''. Non-string/blank collapses to ''.
-function normBlockedOn(v) {
-  return typeof v === 'string' ? v.trim().toLowerCase() : '';
-}
-
 // OWNER-BLOCKED MARKER (field report — a Primary faked a `blockedBy` pointing
 // at a nonexistent task id to silence IDLE NEGLECT when every pending task
 // was genuinely blocked on the OWNER, e.g. hardware or a decision only the
@@ -446,19 +464,9 @@ function normBlockedOn(v) {
 // A task matching either is treated as non-dispatchable — excluded from the
 // ACTIONABLE-NOW set (never nagged) — WITHOUT needing a fake blockedBy
 // dependency. It is also left out of the generic nudge (unblockedOpen).
-const OWNER_BLOCKED_VALUES = new Set(['owner', 'user', 'human', 'external']);
-const OWNER_SUBJECT_RE = /^\s*owner(:|\s+decision\b)/i;
+// Implementation shared with task-tracker: lib/dispatch-demand.js isOwnerBlocked.
 function isOwnerBlocked(t) {
-  // Settings switch guards.taskGuardOwnerBlockedMarker (default on): fail-open
-  // to true (marker honored) on any read error, matching this hook's existing
-  // fail-open posture — a settings-read failure must never silently start
-  // re-nagging an honestly-marked owner-blocked task.
-  try {
-    if (!require('./lib/settings.js').enabled('guards', 'taskGuardOwnerBlockedMarker')) return false;
-  } catch (_) { /* fail open -> marker still honored */ }
-  if (t && OWNER_BLOCKED_VALUES.has(normBlockedOn(t.blockedOn))) return true;
-  const subject = (t && (t.content || t.subject)) || '';
-  return typeof subject === 'string' && OWNER_SUBJECT_RE.test(subject);
+  return require('./lib/dispatch-demand.js').isOwnerBlocked(t);
 }
 
 // classifyOpen(openTasks) — split open tasks into ACTIONABLE-NOW vs the rest.
@@ -587,6 +595,7 @@ function parseTasksFromFile(filePath) {
   const taskMap = new Map();
   // result map: tool_use_id -> numeric string id ("1", "2", ...)
   const resultIdMap = new Map(); // tool_use_id -> "N"
+  let maxCreatedId = 0; // highest "Task #N created" in the current list epoch
 
   for (const line of lines) {
     const trimmed = line.trim();
@@ -608,7 +617,22 @@ function parseTasksFromFile(filePath) {
         if (item && item.type === 'tool_result' && typeof item.tool_use_id === 'string') {
           const resultText = typeof item.content === 'string' ? item.content : '';
           const m = resultText.match(/^Task\s+#(\d+)\s+created\s+successfully/i);
-          if (m) {
+          if (m && !resultIdMap.has(item.tool_use_id)) {
+            // TASK-LIST EPOCH: the harness restarts numbering at #1 when its
+            // list resets (restart/resume). A created id <= the highest one
+            // already seen means every older task is gone — drop them so a
+            // stale pre-reset task (or a reused id) never shadows the live
+            // list. Field: a session reset 50 -> 1 and the old "#50
+            // in_progress" stayed "open" inside the scan window.
+            const n = Number(m[1]);
+            // Max over created ids AND ids known only from a TaskUpdate (their
+            // create can sit before the scan window).
+            if (n <= Math.max(maxCreatedId, require('./lib/dispatch-demand.js').maxNumericKey(taskMap))) {
+              taskMap.clear();
+              for (const tid of [...provisionalMap.keys()]) if (resultIdMap.has(tid)) provisionalMap.delete(tid);
+              resultIdMap.clear();
+            }
+            maxCreatedId = n;
             resultIdMap.set(item.tool_use_id, m[1]);
           }
         }
@@ -715,8 +739,9 @@ function parseTasksFromFile(filePath) {
             // Only overwrite owner/blockedBy when the update actually carries the
             // field; an unrelated status-only update must not clear them.
             owner: inp.owner !== undefined ? normOwner(inp.owner) : (existing.owner || ''),
-            blockedBy: inp.blockedBy !== undefined ? normBlockedBy(inp.blockedBy)
-                                                    : (existing.blockedBy || []),
+            // Full blockedBy replacement OR the harness's incremental
+            // addBlockedBy ({"taskId":"5","addBlockedBy":["4"]}).
+            blockedBy: require('./lib/dispatch-demand.js').blockedByAfterUpdate(existing.blockedBy, inp, normBlockedBy),
             priority: updatedPriority,
             blockedOn: updatedBlockedOn,
           });

@@ -3,7 +3,7 @@
 // enforcement. Unlike the per-hook suites (task-guard.test.js / task-tracker.test.js)
 // this exercises BOTH real hooks TOGETHER as a system against SHARED, REAL fs state:
 //
-//   - task-tracker.js  (UserPromptSubmit) — per-turn "TASK REVIEW" review line
+//   - task-tracker.js  (UserPromptSubmit) — per-turn "DISPATCH NOW" demand line
 //   - task-guard.js    (Stop)             — idle-neglect Stop block + loop-safety
 //
 // Every step spawns the REAL hook PROCESS (via testHook -> spawnSync of the actual
@@ -86,12 +86,11 @@ test('E2E step 1 — NO heartbeats: task-tracker NAMES only the actionable task 
     const c = trackerCtx(r);
     assert.strictEqual(r.status, 0);
     // Exactly 1 actionable task; review line emitted, names it, demands parallel dispatch.
-    assert.match(c, /TASK REVIEW \(every turn\): 1 non-blocked, unassigned pending task/, c);
-    assert.match(c, /parallel/, c);
-    assert.match(c, /dispatch a background agent/, c);
-    // Isolate the TASK REVIEW dispatch line (ends before the trailing "open tasks:"
+    assert.match(c, /DISPATCH NOW in parallel/, c);
+    assert.match(c, /one background agent EACH/, c);
+    // Isolate the DISPATCH NOW line (ends before the trailing "open tasks:"
     // freshness note, which legitimately reports the oldest in_progress subject).
-    const reviewLine = c.slice(c.indexOf('TASK REVIEW'), c.indexOf(' open tasks:'));
+    const reviewLine = c.slice(c.indexOf('DISPATCH NOW'), c.indexOf(' open tasks:'));
     assert.match(reviewLine, /"refactor the parser"/, reviewLine);
     // The blocked + owned + in_progress tasks must NOT be named as dispatch targets.
     assert.doesNotMatch(reviewLine, /wire the cache layer/, reviewLine);
@@ -120,22 +119,20 @@ test('E2E step 2 — same state: task-guard BLOCKS with idle-neglect reason nami
   }
 });
 
-test('E2E step 3 — FRESH heartbeat planted: BOTH hooks back off (agents in flight)', () => {
+test('E2E step 3 — FRESH GLOBAL heartbeat only: NEITHER hook backs off (not this session\'s agent)', () => {
   const h = makeHome();
   try {
     // Plant a REAL fresh heartbeat in the temp HOME's agents dir (ts=now).
     plantFreshAgent(h, 'worker-a');
     const tp = h.writeTranscript([todoWrite(baseTodos())]);
 
-    // task-tracker: no per-turn review line while work is in flight.
+    // The global heartbeat is machine-wide (any session writes it) — it no
+    // longer counts as an in-flight agent for THIS session's tasks.
     const rt = testHook(TRACKER, trackerPayload(tp), { home: h.home });
-    assert.doesNotMatch(trackerCtx(rt), /TASK REVIEW/, `agents running -> no review line; got: ${trackerCtx(rt)}`);
+    assert.match(trackerCtx(rt), /DISPATCH NOW/, `global heartbeat only -> demand still shown; got: ${trackerCtx(rt)}`);
 
-    // task-guard: not an idle-neglect block (it may still GENERIC-nudge on the
-    // in_progress/blocked/owned open tasks — that is correct; only idle-neglect
-    // must be suppressed while agents run).
     const rg = testHook(GUARD, stopPayload(tp), { home: h.home });
-    assert.ok(!isIdleNeglect(rg), `agents running -> must NOT idle-neglect-block; reason: ${rg.json && rg.json.reason}`);
+    assert.ok(isIdleNeglect(rg), `global heartbeat only -> IDLE NEGLECT still fires; reason: ${rg.json && rg.json.reason}`);
   } finally {
     h.cleanup();
   }
@@ -152,7 +149,7 @@ test('E2E step 4 — actionable task in_progress: neither hook flags it', () => 
     // task-tracker: #1 is in_progress (not pending) -> not actionable; #2 blocked,
     // #3 owned -> 0 actionable -> no review line.
     const rt = testHook(TRACKER, trackerPayload(tp), { home: h.home });
-    assert.doesNotMatch(trackerCtx(rt), /TASK REVIEW/, `no actionable -> no review line; got: ${trackerCtx(rt)}`);
+    assert.doesNotMatch(trackerCtx(rt), /DISPATCH NOW/, `no actionable -> no review line; got: ${trackerCtx(rt)}`);
 
     // task-guard: 0 actionable -> NOT idle-neglect (open tasks still -> generic nudge ok).
     const rg = testHook(GUARD, stopPayload(tp), { home: h.home });

@@ -37,11 +37,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
-
-// Bounded tail-scan budget for the per-turn freshness check. Kept small so the
-// UserPromptSubmit sweep stays well under its 30s timeout and adds no meaningful
-// per-turn cost when there are no open tasks (the note is emitted only then).
-const FRESH_SCAN_WINDOW = 256 * 1024;
+const DD = require('./lib/dispatch-demand.js');
 
 const FULL =
   'TASK-LIST DISCIPLINE: capture EVERY user request as a task (TaskCreate) ' +
@@ -202,42 +198,52 @@ function pickMessage(payload) {
 // freshnessNote(payload) — cheap, bounded transcript tail-scan that returns a
 // per-turn note built from the reconstructed task state. Two layers:
 //   (a) ACTIONABLE-NOW (every turn): when >=1 pending+unowned+unblocked task
-//       exists AND no subagent is in flight, emit a SPECIFIC review line that
-//       NAMES up to 4 tasks and demands one parallel background agent per task.
+//       exists that no in-flight agent of THIS session covers (and running <
+//       cap — lib/dispatch-demand.js evaluate), emit "DISPATCH NOW in parallel:"
+//       naming each task id + subject, one background agent per task.
 //       This is the per-turn complement to the Stop-hook idle-neglect block — it
 //       nudges BEFORE the turn instead of only at Stop.
 //   (b) open-tasks freshness note: when there are open (pending/in_progress)
 //       tasks, append the legacy "open tasks: N (oldest in_progress …)" line.
 // Returns '' when there are no open tasks at all (baseline stays lean).
 // Fail-open: any error → ''.
+// metricsHome() — the metrics home, or null (never throws; the test-home guard
+// refuses the real HOME under a test runner).
+function metricsHome() {
+  try { return require('../companion/lib/test-home-guard.js').resolveHome(); } catch (_) { return null; }
+}
+
+// Set by freshnessNote when the DISPATCH NOW line is included (metrics).
+let demandShown = 0;
 function freshnessNote(payload) {
   try {
     const tp = payload && payload.transcript_path;
     if (!tp || typeof tp !== 'string') return '';
-    const tail = readTail(tp, FRESH_SCAN_WINDOW);
-    if (!tail) return '';
-    const state = reconstructTasks(tail);
+    // ONE shared bounded read (lib/transcript-tail.js, 1.5MB) feeds both the
+    // task reconstruction and the running-agent scan. The old private 256KB
+    // window dropped tasks created only minutes earlier on a busy session
+    // (field: #1/#2 sat 320-385KB back and were invisible to this line).
+    const lines = require('./lib/transcript-tail.js').readTail(tp);
+    if (!lines) return '';
+    const state = reconstructTasks({ data: lines.join('\n'), truncated: false });
     const open = state.open;
     if (open.length === 0) return '';
 
     let out = '';
 
-    // (a) ACTIONABLE-NOW per-turn review line. agentsRunning() is reused from
-    // task-guard (fail-open to "no agents"); if work is genuinely in flight we
-    // skip the dispatch nudge (don't nag real parallel work). Cheap: one small
-    // readdir of ~/.anti-hall/agents.
+    // (a) ACTIONABLE-NOW per-turn DISPATCH NOW line. Coverage is PER TASK from THIS session's transcript (lib/dispatch-demand.js
+    // header) — no longer the machine-global recent-spawn.json heartbeat, which
+    // any spawn in any session refreshed for 20 min and which blanket-silenced
+    // this line for every pending task.
     const actionable = classifyOpen(open, state.taskMap);
-    if (actionable.length >= 1 && !agentsRunning()) {
-      // Name up to 4 actionable tasks. Sanitize via oneLine + JSON.stringify so a
-      // task-supplied subject is an inert quoted string (no prompt injection).
-      const names = actionable.slice(0, 4)
-        .map((t) => JSON.stringify(oneLine(t.content || t.id, 50)))
-        .join(', ');
-      out += 'TASK REVIEW (every turn): ' + actionable.length +
-        ' non-blocked, unassigned pending task(s) — dispatch a background agent ' +
-        'for EACH now, in parallel (cap ~min(16, cores-2)), unless already ' +
-        'in-flight: ' + names + '. Do not leave them idle; only hold one if it ' +
-        'truly needs the user.';
+    if (actionable.length >= 1 && DD.enabled()) {
+      let running = null;
+      try { running = require('./lib/agent-scan.js').runningAgents(tp, lines); } catch (_) { running = null; }
+      const res = DD.evaluate({ actionable, knownIds: [...state.taskMap.keys()], inProgressIds: open.filter((t) => /in[-_]?progress/i.test(t.status || '')).map((t) => t.id), running: running || [] });
+      if (res.fire) {
+        out += DD.demandLine(res);
+        demandShown = res.dispatch.length;
+      }
     }
 
     // (b) freshness note about open tasks (in_progress subject if any).
@@ -255,50 +261,6 @@ function freshnessNote(payload) {
   }
 }
 
-// agentsRunning() — true if ~/.anti-hall/agents/ holds a FRESH heartbeat (mirror
-// task-guard). Absent/unreadable dir => false. Fail-open toward "not running",
-// which can only permit the per-turn review nudge, never falsely silence it.
-function agentsRunning(freshMs) {
-  const FRESH = freshMs || 20 * 60 * 1000;
-  const dir = path.join(os.homedir(), '.anti-hall', 'agents');
-  let files;
-  try {
-    files = fs.readdirSync(dir).filter((f) => f.endsWith('.json'));
-  } catch (_) {
-    return false;
-  }
-  const now = Date.now();
-  for (const f of files) {
-    const full = path.join(dir, f);
-    let ts = 0;
-    try {
-      const data = JSON.parse(fs.readFileSync(full, 'utf8'));
-      if (data && typeof data.ts === 'number') ts = data.ts;
-    } catch (_) { /* fall back to mtime */ }
-    if (!ts) { try { ts = fs.statSync(full).mtimeMs; } catch (_) { ts = 0; } }
-    if (ts && (now - ts) < FRESH) return true;
-  }
-  return false;
-}
-
-function readTail(transcriptPath, windowBytes) {
-  let fd = null;
-  try {
-    const size = fs.statSync(transcriptPath).size;
-    if (size <= windowBytes) {
-      return { data: fs.readFileSync(transcriptPath, 'utf8'), truncated: false };
-    }
-    const buf = Buffer.alloc(windowBytes);
-    fd = fs.openSync(transcriptPath, 'r');
-    const n = fs.readSync(fd, buf, 0, windowBytes, size - windowBytes);
-    return { data: buf.toString('utf8', 0, n), truncated: true };
-  } catch (_) {
-    return null;
-  } finally {
-    if (fd !== null) { try { fs.closeSync(fd); } catch (_) {} }
-  }
-}
-
 // Mode-agnostic task reconstruction (mirrors task-guard / tasklist-guard) → the
 // set of OPEN tasks (pending | in_progress) PLUS the full taskMap (so blocker
 // resolution can see completed tasks). Each task carries owner + blockedBy so the
@@ -310,9 +272,13 @@ function reconstructTasks(tail) {
   const provisional = new Map();
   const taskMap = new Map();
   const resultIds = new Map();
+  let maxCreated = 0;
   for (const line of lines) {
     const t = line.trim();
     if (!t) continue;
+    // Cheap pre-filter: only task-tool lines (and their "Task #N created"
+    // results) matter here.
+    if (t.indexOf('Task') === -1 && t.indexOf('TodoWrite') === -1) continue;
     let entry;
     try { entry = JSON.parse(t); } catch (_) { continue; }
     if (entry.type === 'user') {
@@ -321,7 +287,21 @@ function reconstructTasks(tail) {
         if (it && it.type === 'tool_result' && typeof it.tool_use_id === 'string') {
           const txt = typeof it.content === 'string' ? it.content : '';
           const m = txt.match(/^Task\s+#(\d+)\s+created\s+successfully/i);
-          if (m) resultIds.set(it.tool_use_id, m[1]);
+          if (m && !resultIds.has(it.tool_use_id)) {
+            // TASK-LIST EPOCH: the harness restarts numbering at #1 when its
+            // list resets (restart/resume). A created id <= the highest one
+            // already seen means the older tasks are gone — drop them so a
+            // stale pre-reset "#50 in_progress" (or a reused #13) never
+            // shadows the live list. Mirror task-guard.
+            const n = Number(m[1]);
+            if (n <= Math.max(maxCreated, DD.maxNumericKey(taskMap))) {
+              taskMap.clear();
+              for (const tid of [...provisional.keys()]) if (resultIds.has(tid)) provisional.delete(tid);
+              resultIds.clear();
+            }
+            maxCreated = n;
+            resultIds.set(it.tool_use_id, m[1]);
+          }
         }
       }
     }
@@ -350,6 +330,7 @@ function reconstructTasks(tail) {
           status: inp.status || 'pending',
           owner: normOwner(inp.owner),
           blockedBy: normBlockedBy(inp.blockedBy),
+          blockedOn: (inp.metadata != null && inp.metadata.blockedOn != null) ? inp.metadata.blockedOn : inp.blockedOn,
         });
       } else if (name === 'TaskUpdate') {
         const inp = tu.input || {};
@@ -363,7 +344,11 @@ function reconstructTasks(tail) {
             // Only overwrite owner/blockedBy when the update carries the field; a
             // status-only update must not clear them (mirror task-guard).
             owner: inp.owner !== undefined ? normOwner(inp.owner) : (ex.owner || ''),
-            blockedBy: inp.blockedBy !== undefined ? normBlockedBy(inp.blockedBy) : (ex.blockedBy || []),
+            // blockedBy replacement OR the harness's incremental addBlockedBy.
+            blockedBy: DD.blockedByAfterUpdate(ex.blockedBy, inp, normBlockedBy),
+            blockedOn: (inp.blockedOn !== undefined || (inp.metadata != null && inp.metadata.blockedOn !== undefined))
+              ? ((inp.metadata != null && inp.metadata.blockedOn != null) ? inp.metadata.blockedOn : inp.blockedOn)
+              : ex.blockedOn,
           });
         }
       }
@@ -372,11 +357,12 @@ function reconstructTasks(tail) {
   for (const [tid, rec] of provisional) {
     const key = String(resultIds.get(tid) || tid);
     const ex = taskMap.get(key);
-    if (!ex) taskMap.set(key, { id: key, content: rec.content, status: rec.status, owner: rec.owner || '', blockedBy: rec.blockedBy || [] });
+    if (!ex) taskMap.set(key, { id: key, content: rec.content, status: rec.status, owner: rec.owner || '', blockedBy: rec.blockedBy || [], blockedOn: rec.blockedOn });
     else if (!ex.content || ex.content === key) taskMap.set(key, {
       id: key, content: rec.content, status: ex.status,
       owner: ex.owner || rec.owner || '',
       blockedBy: (ex.blockedBy && ex.blockedBy.length) ? ex.blockedBy : (rec.blockedBy || []),
+      blockedOn: ex.blockedOn !== undefined ? ex.blockedOn : rec.blockedOn,
     });
   }
   const open = [];
@@ -419,6 +405,8 @@ function classifyOpen(open, taskMap) {
     if (s !== 'pending') continue;
     const owner = normOwner(t.owner);
     if (owner && !/^(main|orchestrator|coordinator)$/i.test(owner)) continue;
+    // Explicit owner/user/external marker => not dispatchable (mirror task-guard).
+    if (DD.isOwnerBlocked(t)) continue;
     const blockers = normBlockedBy(t.blockedBy);
     if (blockers.some(id => { const k = String(id); return notDone.has(k) || !known.has(k); })) continue;
     actionable.push(t);
@@ -496,6 +484,10 @@ try {
     text = pickMessage(payload);
     // Append a SHORT freshness note ONLY when open/stale tasks exist (keeps the
     // per-turn baseline lean when there is nothing to nudge about).
+    // Score the PREVIOUS turn's dispatch demand (followed by a spawn or not)
+    // before emitting this turn's. Metrics only; fail-open.
+    const mHome = metricsHome();
+    if (mHome) DD.resolvePending({ home: mHome, sessionId: payload && payload.session_id, transcriptPath: payload && payload.transcript_path });
     const note = freshnessNote(payload);
     if (note) text = text + ' ' + note;
     // DevSwarm PRIMARY only: name the workspace tier at the dispatch point.
@@ -551,6 +543,8 @@ try {
     },
   };
   if (emit) process.stdout.write(JSON.stringify(out) + '\n');
+  const mHome2 = emit && demandShown > 0 ? metricsHome() : null;
+  if (mHome2) DD.recordDemand({ home: mHome2, sessionId: payload && payload.session_id, count: demandShown });
 } catch (_) {
   // Fail-open.
 }

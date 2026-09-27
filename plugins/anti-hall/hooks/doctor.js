@@ -1556,5 +1556,18 @@ if (REPAIR_RESURRECTED) {
   infol(result.message);
 })();
 
+// --- 5o. dispatch demand effectiveness (REPORT-ONLY, one line) ---------------
+// Counters from hooks/lib/dispatch-demand.js; full view: scripts/dispatch-report.js.
+(function dispatchDemandSection() {
+  let d = null;
+  try { d = require('./lib/dispatch-demand.js').summary(os.homedir()); } catch (_) { d = null; }
+  if (!d) return;
+  head('dispatch demand');
+  const rate = d.complianceRate == null ? 'n/a' : (Math.round(d.complianceRate * 1000) / 10) + '%';
+  infol('shown ' + d.demandsShown + ' · followed ' + d.demandsFollowed + ' · ignored ' + d.demandsIgnored +
+    ' (compliance ' + rate + ') · idle-neglect blocks ' + d.idleNeglectBlocks +
+    ' — node scripts/dispatch-report.js');
+})();
+
 // --- 6. Summary --------------------------------------------------------------
 emitVerdictAndExit();

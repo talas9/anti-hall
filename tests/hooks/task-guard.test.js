@@ -125,10 +125,10 @@ test('IDLE NEGLECT: actionable-now pending + no agents -> idle-neglect block nam
   }
 });
 
-test('GENERIC SUPPRESSED: agents running (pending tasks) -> NO block at all (FIX 2)', () => {
-  // With FIX 2: agentsRunning() true + !idleNeglect -> suppress the generic block
-  // entirely (soft advisory only). Previously this was a generic (non-idle-neglect)
-  // block; now it is suppressed because live orchestration is picking up those tasks.
+test('GLOBAL HEARTBEAT ALONE does not silence IDLE NEGLECT (it is not this session\'s agent)', () => {
+  // ~/.anti-hall/agents/*.json is machine-global (any session/project writes it).
+  // It used to blanket-suppress IDLE NEGLECT for every pending task; coverage is
+  // now per task from THIS transcript (lib/dispatch-demand.js).
   const h = makeHome();
   try {
     writeFreshAgent(h, 'worker-a');
@@ -139,7 +139,7 @@ test('GENERIC SUPPRESSED: agents running (pending tasks) -> NO block at all (FIX
       ]),
     ]);
     const r = testHook(HOOK, stopPayload(tp), { home: h.home });
-    assert.ok(!isBlock(r), `agents running -> generic block must be suppressed; stdout: ${r.stdout}`);
+    assert.ok(isIdleNeglect(r), `global heartbeat only -> IDLE NEGLECT still fires; stdout: ${r.stdout}`);
   } finally {
     h.cleanup();
   }
