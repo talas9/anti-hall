@@ -562,26 +562,35 @@ function wakeReassert(env, cli, isChild, watcher, explicitId) {
     // run as a shell variable — every later reference is the short `"$CLI"`
     // token instead of the long literal path.
     //
-    // fl-wave4 fix (item 1): `watcher` (the WATCHER const both callers derive
-    // via __dirname — hooks/devswarm-parent-gate.js and
-    // hooks/devswarm-child-gate.js's own header comments) was STILL
-    // interpolated here VERBATIM, undoing the exact same budget fix the `cli`
-    // literal got above for any real (deeply-nested plugin-cache) install
-    // path. Both consts resolve from the SAME plugin root — CLI is
-    // `<root>/scripts/devswarm.js`, WATCHER is
-    // `<root>/companion/lib/devswarm-wake-watch.js` — so WATCHER's absolute
-    // path is always exactly `$(dirname "$CLI")/../companion/lib/devswarm-wake-watch.js`.
-    // Emitting that DERIVATION (relative to the already-emitted `$CLI`)
-    // instead of a second long literal keeps this pointer well under the
-    // 400-char cap regardless of `watcher`'s own literal length. `watcher`
-    // itself is used ONLY as a presence gate now (non-null/non-empty ->
-    // include the Monitor clause; falsy -> omit it entirely, unchanged
-    // fail-open contract for a caller not yet passing it).
-    const tickCmd = '`node "$CLI" inbox tick ' + id + (child ? ' --child' : '') + '`';
+    // fl-wave4 fix (item 1, REVERTED by defect 7 — peer sweep, 0.116
+    // candidate): this used to DERIVE $WATCH as
+    // `$(dirname "$CLI")/../companion/lib/devswarm-wake-watch.js` instead of
+    // re-embedding the `watcher` literal, on the assumption that CLI/WATCHER
+    // always resolve from the SAME plugin root (`<root>/scripts/devswarm.js`
+    // + `<root>/companion/lib/devswarm-wake-watch.js`). That assumption
+    // silently broke the moment devswarm.stableLauncher (default ON —
+    // hooks/lib/stable-launcher.js) is in play: the stable CLI/WATCHER are
+    // SIBLING files under ~/.anti-hall/bin/ (devswarm.js + wake-watch.js),
+    // not `<root>/scripts/..` + `<root>/companion/lib/..` — so the derived
+    // path pointed at a file that does not exist
+    // (~/.anti-hall/companion/lib/devswarm-wake-watch.js) while the real
+    // caller-resolved `watcher` value
+    // (~/.anti-hall/bin/wake-watch.js) sat right there in the parameter,
+    // unused. There is no single relative-path formula that covers both the
+    // raw plugin-root layout AND the stable-launcher sibling layout, so this
+    // now embeds the caller's OWN resolved `watcher` value directly — the
+    // same one wakeDirective's drainCmd rearmClause already embeds verbatim
+    // (SessionStart and this Stop-gate re-verify must name the SAME watcher
+    // path, not two different derivations of it). This costs the same
+    // caller-controlled-length budget tradeoff `cli` already has (see the
+    // FIXED TEXT LENGTH CAP test, which now excludes `watcher`'s length too).
+    const tickCmd = '`node "$CLI" inbox tick ' + id + (child ? ' --child' : '') + ' --quiet`';
     let w = '';
     try {
       if (watcher) {
-        w = '; `WATCH="$(dirname "$CLI")/../companion/lib/devswarm-wake-watch.js"`, `Monitor` on `node "$WATCH"` armed (never two)';
+        const watcherStr = String(watcher);
+        const watcherQuoted = '"' + watcherStr.replace(/(["\\$`])/g, '\\$1') + '"';
+        w = '; WATCH=' + watcherQuoted + ', `Monitor` on `node "$WATCH"` armed (never two)';
       }
     } catch (_) { w = ''; }
     const cliStr = cli ? String(cli) : '<unset>';

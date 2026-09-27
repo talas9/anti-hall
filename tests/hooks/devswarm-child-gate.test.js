@@ -1265,13 +1265,15 @@ test('MONITOR: Claude child forced-ack reason names Monitor ALONGSIDE the CronLi
     const reason = r.json.reason;
     assert.ok(/`Monitor`/.test(reason), `must arm Monitor; reason=${reason}`);
     assert.ok(/CronList/.test(reason), `CronList condition must still be present alongside Monitor; reason=${reason}`);
-    // fl-wave4 fix (item 1): wakeReassert no longer embeds the literal
-    // watcher path a second time — it derives $WATCH from the already-
-    // emitted $CLI (same plugin root), so this test checks for the
-    // DERIVATION rather than a literal watcher-path substring.
-    assert.ok(reason.includes('$(dirname "$CLI")/../companion/lib/devswarm-wake-watch.js'),
-      `must derive the watcher path from $CLI; reason=${reason}`);
-    assert.ok(/node "\$WATCH"/.test(reason), `must run the watcher via the derived $WATCH token; reason=${reason}`);
+    // defect 7 (peer sweep, 0.116 candidate): the old fl-wave4 DERIVATION
+    // ($WATCH from $(dirname "$CLI")/../companion/lib/devswarm-wake-watch.js)
+    // assumed CLI/WATCHER always share the raw plugin-root layout — false
+    // once devswarm.stableLauncher (default on) makes them SIBLING files
+    // under ~/.anti-hall/bin/. wakeReassert now embeds the real resolved
+    // watcher path directly instead.
+    assert.ok(!reason.includes('$(dirname "$CLI")/../companion/lib/devswarm-wake-watch.js'),
+      `must NOT use the stale plugin-root-only derivation; reason=${reason}`);
+    assert.ok(/node "\$WATCH"/.test(reason), `must run the watcher via the $WATCH token; reason=${reason}`);
   } finally {
     h.cleanup();
   }

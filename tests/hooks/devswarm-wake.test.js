@@ -186,13 +186,19 @@ for (const isChild of [true, false]) {
     const withWatcher = wakeReassert({ DEVSWARM_AI_AGENT: 'claude' }, CLI, isChild, WATCHER);
     const withoutWatcher = wakeReassert({ DEVSWARM_AI_AGENT: 'claude' }, CLI, isChild, undefined);
     assert.ok(/`Monitor`/.test(withWatcher), `watcher present -> must arm Monitor; out=${withWatcher}`);
-    // fl-wave4 fix (item 1): wakeReassert no longer embeds the literal
-    // `watcher` path a second time — it derives $WATCH from the already-
-    // emitted $CLI (same root, see the WATCHER fixture comment above), so
-    // this checks for the DERIVATION, not a literal watcher-path substring.
-    assert.ok(withWatcher.includes('$(dirname "$CLI")/../companion/lib/devswarm-wake-watch.js'),
-      `must derive the watcher path from $CLI rather than re-embed the literal path; out=${withWatcher}`);
-    assert.ok(!withWatcher.includes(WATCHER), `must NOT re-embed the long literal watcher path a second time (budget fix); out=${withWatcher}`);
+    // defect 7 (peer sweep, 0.116 candidate): the old fl-wave4 DERIVATION
+    // ($WATCH from $(dirname "$CLI")/../companion/lib/devswarm-wake-watch.js)
+    // assumed CLI/WATCHER always share the raw plugin-root layout — false
+    // once devswarm.stableLauncher (default on) makes them SIBLING files
+    // under ~/.anti-hall/bin/ (devswarm.js + wake-watch.js), where that
+    // derivation points at a file that does not exist. wakeReassert now
+    // embeds the caller's own resolved `watcher` value directly, exactly
+    // like wakeDirective's drainCmd rearmClause already does — the two
+    // texts must name the SAME watcher path, not two different derivations.
+    assert.ok(withWatcher.includes('node "$WATCH"'), `must run the watcher via the $WATCH token; out=${withWatcher}`);
+    assert.ok(withWatcher.includes(WATCHER), `must embed the exact resolved watcher path; out=${withWatcher}`);
+    assert.ok(!withWatcher.includes('$(dirname "$CLI")/../companion/lib/devswarm-wake-watch.js'),
+      `must NOT use the stale plugin-root-only derivation (breaks under stableLauncher); out=${withWatcher}`);
     assert.ok(!/`Monitor`/.test(withoutWatcher), `watcher absent -> Monitor text must be ABSENT; out=${withoutWatcher}`);
   });
 }
@@ -398,12 +404,57 @@ for (const isChild of [true, false]) {
         const fixtureCli = cliOfLength(cliLen);
         assert.equal(fixtureCli.length, cliLen, 'test fixture setup sanity check');
         const out = wakeReassert({ DEVSWARM_AI_AGENT: 'claude' }, fixtureCli, isChild, wCase.watcher);
-        const fixedLen = out.length - fixtureCli.length;
+        // defect 7 (peer sweep, 0.116 candidate): `watcher`, like `cli`, is
+        // now a caller-controlled path embedded directly (the correctness
+        // fix — see wakeReassert's own header comment for why the old
+        // $CLI-relative DERIVATION had to go), so it is excluded from the
+        // FIXED-text measurement the same way `cli` already is.
+        const watcherLen = wCase.watcher ? String(wCase.watcher).length : 0;
+        const fixedLen = out.length - fixtureCli.length - watcherLen;
         assert.ok(fixedLen <= FIXED_TEXT_CAP,
-          `wakeReassert fixed text (excluding the embedded cli path) must stay <= ${FIXED_TEXT_CAP} chars, got ${fixedLen}; out=${out}`);
+          `wakeReassert fixed text (excluding the embedded cli/watcher paths) must stay <= ${FIXED_TEXT_CAP} chars, got ${fixedLen}; out=${out}`);
       });
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// defect 7 (peer sweep, 0.116 candidate): the Stop-gate wake re-verify text
+// (wakeReassert) and the SessionStart cron-create prompt text (wakeDirective,
+// via drainCmd) must describe the SAME actual `inbox tick` command and the
+// SAME actual watcher path — they are two different renderings of the SAME
+// live cron job / Monitor arm, not two independently-worded texts that can
+// silently drift.
+// ---------------------------------------------------------------------------
+
+for (const isChild of [true, false]) {
+  test(`defect 7: wakeReassert's tick command matches the ACTUAL --quiet cron job wakeDirective tells the agent to CronCreate (isChild=${isChild})`, () => {
+    const env = { DEVSWARM_AI_AGENT: 'claude' };
+    const directiveOut = wakeDirective(env, isChild, CLI, undefined);
+    const reassertOut = wakeReassert(env, CLI, isChild, undefined);
+    // wakeDirective's CronCreate prompt body is drainCmd(..., useTick:true, ...),
+    // which always appends --quiet (see drainCmd's own header comment).
+    assert.match(directiveOut, /inbox tick <DEVSWARM_BUILDER_ID>(?: --child)? --quiet/,
+      `sanity: wakeDirective's cron prompt must run --quiet; out=${directiveOut}`);
+    // wakeReassert's re-verify pointer must name that SAME command shape,
+    // not a different one lacking --quiet (pre-fix: the two texts disagreed).
+    assert.match(reassertOut, /inbox tick <DEVSWARM_BUILDER_ID>(?: --child)? --quiet/,
+      `wakeReassert must point at the same --quiet tick command wakeDirective creates; out=${reassertOut}`);
+  });
+
+  test(`defect 7: wakeReassert names the REAL stable-launcher watcher path, not a broken $CLI-relative derivation (isChild=${isChild})`, () => {
+    // Simulates devswarm.stableLauncher's (default-on) actual resolved
+    // shape: CLI and WATCHER are SIBLING files under ~/.anti-hall/bin/, not
+    // the raw plugin-root layout (<root>/scripts/.. + <root>/companion/lib/..)
+    // the old $(dirname "$CLI")/../companion/lib/devswarm-wake-watch.js
+    // derivation assumed.
+    const stableCli = '/Users/someone/.anti-hall/bin/devswarm.js';
+    const stableWatcher = '/Users/someone/.anti-hall/bin/wake-watch.js';
+    const out = wakeReassert({ DEVSWARM_AI_AGENT: 'claude' }, stableCli, isChild, stableWatcher);
+    assert.ok(out.includes(stableWatcher), `must name the real stable watcher path; out=${out}`);
+    const derived = '/Users/someone/.anti-hall/companion/lib/devswarm-wake-watch.js';
+    assert.ok(!out.includes(derived), `must NOT point at the non-existent derived path; out=${out}`);
+  });
 }
 
 test('wakeReassert points at the on-demand wake-directive CLI verb for the full SessionStart text', () => {
