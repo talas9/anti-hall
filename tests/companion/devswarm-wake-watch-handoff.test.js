@@ -52,10 +52,23 @@ function layoutPlugins(home, { installedVersion, cacheVersions, marketplaceVersi
 // waitForStdoutMatch — same pattern as the stale-version test file's own
 // helper: waits for `pattern` in the child's accumulated stdout (or a hard
 // cap), always terminates the child before resolving.
+// `detached: true` makes the spawned process (the wake-watch instance under
+// test) its OWN process-group leader. That way any handoff grandchild it
+// spawns (never itself detached — see attemptHandoff) inherits THAT group,
+// not this test runner's, so a `process.kill(-pid, ...)` reaps the whole
+// parent+grandchild tree without touching the test process itself. This
+// closes the leak where a bare `child.kill()` only ever killed the immediate
+// spawned process and left an orphaned handoff grandchild running forever
+// (field incident: a `handoff-fwd-SIGINT`-shaped process, 5h under PPID 1).
+function killGroup(pid, sig) {
+  if (!Number.isFinite(pid) || pid <= 0) return;
+  try { process.kill(-pid, sig || 'SIGKILL'); } catch (_) {}
+}
+
 function waitForStdoutMatch(args, spawnOpts, pattern, hardCapMs) {
   hardCapMs = hardCapMs || 8000;
   return new Promise((resolve) => {
-    const child = spawn(process.execPath, args, spawnOpts);
+    const child = spawn(process.execPath, args, Object.assign({}, spawnOpts, { detached: true }));
     if (child.stdout) child.stdout.setEncoding('utf8');
     if (child.stderr) child.stderr.setEncoding('utf8');
     let stdout = '';
@@ -67,8 +80,12 @@ function waitForStdoutMatch(args, spawnOpts, pattern, hardCapMs) {
       if (settled) return;
       settled = true;
       clearTimeout(hardTimer);
-      try { child.kill('SIGTERM'); } catch (_) {}
-      resolve({ stdout, stderr, exited });
+      // SIGTERM the group first (lets a real handoff forward cleanly), then
+      // a short-lived SIGKILL backstop in case forwarding didn't happen —
+      // never rely on cooperative exit alone for reaping.
+      killGroup(child.pid, 'SIGTERM');
+      setTimeout(() => killGroup(child.pid, 'SIGKILL'), 300);
+      resolve({ stdout, stderr, exited, pid: child.pid });
     }
     if (child.stdout) child.stdout.on('data', (chunk) => { stdout += chunk; if (pattern.test(stdout)) finish(); });
     if (child.stderr) child.stderr.on('data', (chunk) => { stderr += chunk; });
@@ -259,16 +276,24 @@ function handoffEnv(home, id, extra) {
   }, extra || {});
 }
 
-// runToExit — spawn, collect stdout, resolve on exit with {code, signal}.
+// runToExit — spawn, collect stdout, resolve on exit with {code, signal,
+// pid}. Detached (own process group, see killGroup's header comment) so a
+// caller can always reap the parent + any handoff grandchild it spawned,
+// regardless of whether the test's own assertions pass.
 function runToExit(args, spawnOpts, hardCapMs, onStdout) {
   return new Promise((resolve) => {
-    const child = spawn(process.execPath, args, spawnOpts);
+    const child = spawn(process.execPath, args, Object.assign({}, spawnOpts, { detached: true }));
     let stdout = '';
     let done = false;
     child.stdout.setEncoding('utf8');
     child.stdout.on('data', (c) => { stdout += c; if (onStdout) onStdout(stdout, child); });
-    const timer = setTimeout(() => { if (!done) { done = true; try { child.kill('SIGKILL'); } catch (_) {} resolve({ code: null, signal: 'TIMEOUT', stdout }); } }, hardCapMs || 8000);
-    child.on('exit', (code, signal) => { if (done) return; done = true; clearTimeout(timer); resolve({ code, signal, stdout }); });
+    // On the hard-cap timeout, kill the WHOLE process group, not just the
+    // immediate child — a plain child.kill('SIGKILL') here is exactly what
+    // orphaned a handoff grandchild in the field: SIGKILL can never be
+    // forwarded, so if forwarding hadn't happened yet the grandchild lived
+    // on indefinitely under PID 1 once its parent was gone.
+    const timer = setTimeout(() => { if (!done) { done = true; killGroup(child.pid, 'SIGKILL'); resolve({ code: null, signal: 'TIMEOUT', stdout, pid: child.pid }); } }, hardCapMs || 8000);
+    child.on('exit', (code, signal) => { if (done) return; done = true; clearTimeout(timer); resolve({ code, signal, stdout, pid: child.pid }); });
   });
 }
 
@@ -285,6 +310,7 @@ test('handoffExitCode: plain code passes through; signal -> 128+signo', () => {
 
 test('handoff: the parent NEVER writes its stale seen-state at exit (skipSave)', async () => {
   const home = tmpHome();
+  let res;
   try {
     const id = 'handoff-skipsave-1';
     const seen = seenPath(home, id);
@@ -292,28 +318,31 @@ test('handoff: the parent NEVER writes its stale seen-state at exit (skipSave)',
       cacheVersions: ['9.999.0'], marketplaceVersion: '9.999.0',
       cacheContent: 'const fs=require("fs");const p=process.env.STUB_SEEN_PATH;fs.mkdirSync(require("path").dirname(p),{recursive:true});fs.writeFileSync(p,"CHILD-OWNED");process.exit(0);\n',
     });
-    const res = await runToExit([MODULE_PATH], { env: handoffEnv(home, id, { STUB_SEEN_PATH: seen }) }, 8000);
+    res = await runToExit([MODULE_PATH], { env: handoffEnv(home, id, { STUB_SEEN_PATH: seen }) }, 8000);
     assert.strictEqual(res.code, 0, 'parent exits with the child code; got ' + JSON.stringify(res));
     assert.strictEqual(fs.readFileSync(seen, 'utf8'), 'CHILD-OWNED', 'the parent must not overwrite the child-owned seen-state');
-  } finally { rm(home); }
+  } finally { killGroup(res && res.pid, 'SIGKILL'); rm(home); }
 });
 
 test('handoff: child killed by a signal -> parent exits 128+signo (not re-raised into its own handlers)', async () => {
   const home = tmpHome();
+  let res;
   try {
     layoutPlugins(home, {
       cacheVersions: ['9.999.0'], marketplaceVersion: '9.999.0',
       cacheContent: 'setTimeout(() => process.kill(process.pid, "SIGTERM"), 50); setInterval(() => {}, 1000);\n',
     });
-    const res = await runToExit([MODULE_PATH], { env: handoffEnv(home, 'handoff-sig-1') }, 8000);
+    res = await runToExit([MODULE_PATH], { env: handoffEnv(home, 'handoff-sig-1') }, 8000);
     assert.strictEqual(res.signal, null, 'parent must exit normally, not by a re-raised signal; got ' + JSON.stringify(res));
     assert.strictEqual(res.code, 128 + os.constants.signals.SIGTERM);
-  } finally { rm(home); }
+  } finally { killGroup(res && res.pid, 'SIGKILL'); rm(home); }
 });
 
 for (const sig of ['SIGTERM', 'SIGINT']) {
   test(`handoff: parent receiving ${sig} forwards it to the child (child never orphaned)`, async () => {
     const home = tmpHome();
+    let res;
+    let childPid = null;
     try {
       const pidFile = path.join(home, 'child.pid');
       layoutPlugins(home, {
@@ -321,13 +350,22 @@ for (const sig of ['SIGTERM', 'SIGINT']) {
         cacheContent: 'require("fs").writeFileSync(process.env.STUB_PID_FILE, String(process.pid)); process.stdout.write("[stub-child] alive\\n"); setInterval(() => {}, 1000);\n',
       });
       let sent = false;
-      const res = await runToExit([MODULE_PATH], { env: handoffEnv(home, 'handoff-fwd-' + sig, { STUB_PID_FILE: pidFile }) }, 8000, (out, parent) => {
+      res = await runToExit([MODULE_PATH], { env: handoffEnv(home, 'handoff-fwd-' + sig, { STUB_PID_FILE: pidFile }) }, 8000, (out, parent) => {
         if (!sent && /\[stub-child\] alive/.test(out)) { sent = true; parent.kill(sig); }
       });
       assert.ok(sent, 'child must have started; got ' + JSON.stringify(res));
-      const childPid = Number(fs.readFileSync(pidFile, 'utf8'));
+      childPid = Number(fs.readFileSync(pidFile, 'utf8'));
       assert.strictEqual(isAlive(childPid), false, 'child must not be orphaned after the parent got ' + sig);
       assert.strictEqual(res.code, 128 + os.constants.signals[sig], 'parent exits 128+signo; got ' + JSON.stringify(res));
-    } finally { rm(home); }
+    } finally {
+      // Guaranteed reap regardless of assertion outcome above: the parent's
+      // own group (killGroup) AND, belt-and-suspenders, the grandchild pid
+      // read straight from its own pidfile — this is the exact process shape
+      // (a `handoff-fwd-SIGINT`-launched stub) that leaked for ~5h in the
+      // field when nothing forced a kill after a failed/slow forward.
+      killGroup(res && res.pid, 'SIGKILL');
+      if (Number.isFinite(childPid) && childPid > 0 && isAlive(childPid)) { try { process.kill(childPid, 'SIGKILL'); } catch (_) {} }
+      rm(home);
+    }
   });
 }
