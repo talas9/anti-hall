@@ -1140,6 +1140,14 @@ function reconcilePostUpdate(opts) {
     const reconcileCtx = { cwd, env, home };
     if (o.reconcileBudgetMs !== undefined) reconcileCtx.reconcileBudgetMs = o.reconcileBudgetMs;
     const { result } = devswarm.run(['reconcile'], reconcileCtx);
+    // 0.115.2 fix: an archived/pruned worktree is a recognized skip
+    // (cmdReconcile's `skipped`/`skipReason`, additive fields), not a
+    // failure — surfaced in `detail` separately from real reconcile work so
+    // a healthy sweep over a project with many archived workspaces doesn't
+    // read as reconcile noise (SkyCrew Primary report: 17 archived/pruned
+    // rows read as failures on 0.115.2).
+    const resultsForSkipCount = (result && Array.isArray(result.results)) ? result.results : [];
+    const skippedCount = resultsForSkipCount.filter((x) => x && x.skipped).length;
     if (!result || !result.ok) {
       // P1 fix: a reconcile that LOST messages (real shortfall — distinct
       // from a benign `locked` contention skip) must surface the loss count
@@ -1166,24 +1174,32 @@ function reconcilePostUpdate(opts) {
         const MAX_LISTED = 5;
         detail = (result && result.reason) || null;
         if (!detail && result && Array.isArray(result.results)) {
-          const real = result.results.filter((x) => x && !x.ok && !x.locked && !x.hivecontrolMissing && !x.worktreeMissing);
+          // `skipped` (archived/pruned worktree, additive field) is a SIXTH
+          // recognized benign classification, same posture as the existing
+          // locked/hivecontrolMissing/worktreeMissing exclusions — an
+          // archived row was never a genuine reconcile failure.
+          const real = result.results.filter((x) => x && !x.ok && !x.locked && !x.hivecontrolMissing && !x.worktreeMissing && !x.skipped);
           if (real.length) {
             const shown = real.slice(0, MAX_LISTED).map((x) => x.id + ': ' + (x.error || 'unknown error'));
             const more = real.length > MAX_LISTED ? ' (+' + (real.length - MAX_LISTED) + ' more)' : '';
             detail = shown.join('; ') + more;
           }
         }
-        detail = 'reconcile failed: ' + (detail || 'unknown error');
+        detail = 'reconcile failed: ' + (detail || 'unknown error')
+          + (skippedCount ? ' (also skipped ' + skippedCount + ' archived worktree(s))' : '');
       }
-      return { attempted: true, count: result && result.count, lost: result && result.lost, results: result && result.results, detail };
+      return { attempted: true, count: result && result.count, lost: result && result.lost, skipped: skippedCount, results: result && result.results, detail };
     }
     return {
       attempted: true,
       count: result.count,
       imported: result.imported,
       lost: result.lost || 0,
+      skipped: skippedCount,
       results: result.results,
-      detail: 'reconciled ' + result.count + ' worktree(s) — imported ' + result.imported + ' message(s) into the shared store',
+      detail: 'reconciled ' + (result.count - skippedCount) + ' worktree(s)'
+        + (skippedCount ? ', skipped ' + skippedCount + ' (archived)' : '')
+        + ' — imported ' + result.imported + ' message(s) into the shared store',
     };
   } catch (e) {
     return { attempted: false, detail: 'reconcile raised: ' + (e && e.message ? e.message : String(e)) };
@@ -3552,7 +3568,10 @@ function renderHuman(status, changelog) {
         const bits = ['imported ' + (r.imported || 0), 'duplicate ' + (r.duplicate || 0)];
         if (r.locked) bits.push('locked — another pull in progress, skipped');
         if (r.lost) bits.push('LOST ' + r.lost);
-        if (r.error) bits.push('ERROR: ' + r.error);
+        // skipped (archived/pruned worktree) reads as "skipped: <reason>",
+        // never "ERROR:" — it is a recognized, expected state, not a failure.
+        if (r.skipped) bits.push('skipped: ' + (r.skipReason || 'archived'));
+        else if (r.error) bits.push('ERROR: ' + r.error);
         lines.push('    - ' + r.id + ': ' + bits.join(', '));
       }
     }

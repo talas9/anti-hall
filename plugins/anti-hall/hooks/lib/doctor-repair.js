@@ -1813,8 +1813,12 @@ function runRepairs(opts) {
     try {
       const devswarm = require(DEVSWARM_SCRIPT);
       const { result } = devswarm.run(['reconcile'], { cwd, env, home });
+      const skippedCount = (result && Array.isArray(result.results))
+        ? result.results.filter((x) => x && x.skipped).length : 0;
       if (result && result.ok) {
-        push('reconcile', 'reconcile', 'fixed', 'reconciled ' + result.count + ' worktree(s) — imported ' + result.imported + ' message(s) into the shared store');
+        push('reconcile', 'reconcile', 'fixed', 'reconciled ' + (result.count - skippedCount) + ' worktree(s)'
+          + (skippedCount ? ', skipped ' + skippedCount + ' (archived)' : '')
+          + ' — imported ' + result.imported + ' message(s) into the shared store');
       } else if (result && result.lost) {
         // P1 fix: a reconcile that LOST messages (real shortfall, distinct
         // from a benign `locked` contention skip) must never be reported as
@@ -1836,14 +1840,18 @@ function runRepairs(opts) {
         const MAX_LISTED = 5;
         let detail = (result && result.reason) || null;
         if (!detail && result && Array.isArray(result.results)) {
-          const real = result.results.filter((x) => x && !x.ok && !x.locked && !x.hivecontrolMissing && !x.worktreeMissing);
+          // skipped (archived/pruned worktree, additive field) is a SIXTH
+          // recognized benign classification — same posture as the other
+          // exclusions here, never a genuine reconcile failure.
+          const real = result.results.filter((x) => x && !x.ok && !x.locked && !x.hivecontrolMissing && !x.worktreeMissing && !x.skipped);
           if (real.length) {
             const shown = real.slice(0, MAX_LISTED).map((x) => x.id + ': ' + (x.error || 'unknown error'));
             const more = real.length > MAX_LISTED ? ' (+' + (real.length - MAX_LISTED) + ' more)' : '';
             detail = shown.join('; ') + more;
           }
         }
-        push('reconcile', 'reconcile', 'failed', 'reconcile failed: ' + (detail || 'unknown error'));
+        push('reconcile', 'reconcile', 'failed', 'reconcile failed: ' + (detail || 'unknown error')
+          + (skippedCount ? ' (also skipped ' + skippedCount + ' archived worktree(s))' : ''));
       }
     } catch (e) {
       push('reconcile', 'reconcile', 'failed', 'reconcile raised: ' + errMsg(e));

@@ -16964,6 +16964,24 @@ function resolveReconcileBudgetMs(flags, ctx) {
   return DEFAULT_RECONCILE_BUDGET_MS;
 }
 
+// reconcileRowArchived(home, d, ctx) -> bool. True iff this registry row is
+// archived — the DevSwarm app DB (builders.isActive=0/isHidden=1, ground
+// truth — see devswarm-app-db.js's appArchivedVerdict) when readable, else
+// anti-hall's own local archived/<id>.json marker (hasArchivedCounterpart).
+// Never throws (both signals fail-closed to "not archived" on any error), so
+// an unreadable app DB never spuriously reports a live row as archived.
+function reconcileRowArchived(home, d, ctx) {
+  try {
+    const appDbLib = require('../companion/lib/devswarm-app-db.js');
+    const v = appDbLib.appArchivedVerdict({
+      home, env: ctx.env, now: ctx.now, id: d.id, worktreePath: d.worktreePath || null,
+    });
+    if (v === true) return true;
+    if (v === false) return false;
+  } catch (_) { /* fall through to the local marker */ }
+  return hasArchivedCounterpart(home, d.id);
+}
+
 // cmdReconcile(flags, ctx) — PLAN.md "reconcile": drain EVERY worktree
 // registered in THIS project's shared store once. Each `inbox pull` MUST run
 // with that worktree as its OWN process cwd (never in-process) — inbox pull's
@@ -17050,13 +17068,46 @@ function cmdReconcile(flags, ctx) {
       try { exists = fs.existsSync(d.worktreePath); } catch (_) { exists = true; }
       if (!exists) {
         skippedMissingWorktree++;
+        // deliberate: under-detect only (a report field), never a removal decision — bare marker check is fine here.
+        const archivedCounterpart = hasArchivedCounterpart(home, d.id);
+        // A row missing on disk AND archived (app-DB ground truth, or the
+        // local marker) is not a reconcile FAILURE — it is the expected end
+        // state of an archived workspace whose worktree was later pruned.
+        // Classify it as skipped with a reason instead of a bare failure so
+        // a normal archive+prune cycle stops reading as reconcile noise
+        // (report: SkyCrew Primary saw 9 of these as "worktree not found on
+        // disk" failures on an entirely healthy sweep). A LIVE row whose
+        // worktree vanished stays a genuine failure below, unchanged.
+        const archived = archivedCounterpart || reconcileRowArchived(home, d, ctx);
         results.push({
           id: d.id, worktreePath: d.worktreePath, ok: false, imported: 0, duplicate: 0,
           nativeCount: 0, lost: 0, locked: false, hivecontrolMissing: false,
           worktreeMissing: true,
-          // deliberate: under-detect only (a report field), never a removal decision — bare marker check is fine here.
-          archivedDuplicate: hasArchivedCounterpart(home, d.id),
+          archivedDuplicate: archivedCounterpart,
+          skipped: archived,
+          skipReason: archived ? 'archived workspace, worktree pruned from disk' : null,
           error: 'worktree not found on disk: ' + d.worktreePath,
+        });
+        continue;
+      }
+      // ARCHIVED-BUT-STILL-ON-DISK SKIP (SkyCrew Primary report, 0.115.2):
+      // a workspace archived in the DevSwarm app (or already carrying
+      // anti-hall's own archived/<id>.json marker) whose worktree has not
+      // yet been pruned still reached `inbox pull` here — which hits
+      // cmdRegister's APP-DB ARCHIVE GUARD and refuses the ensure with
+      // `{ok:false, reason:...}` (no `.error` field), surfacing as an
+      // unexplained "unknown error" per-target failure. Skip it BEFORE the
+      // git-root probe / spawn — an archived workspace's queue is not this
+      // sweep's job to drain, and refusing it noiselessly costs zero budget.
+      if (reconcileRowArchived(home, d, ctx)) {
+        results.push({
+          id: d.id, worktreePath: d.worktreePath, ok: false, imported: 0, duplicate: 0,
+          nativeCount: 0, lost: 0, locked: false, hivecontrolMissing: false,
+          worktreeMissing: false,
+          archivedDuplicate: hasArchivedCounterpart(home, d.id),
+          skipped: true,
+          skipReason: 'archived workspace (DevSwarm app or local marker)',
+          error: null,
         });
         continue;
       }
@@ -17108,6 +17159,7 @@ function cmdReconcile(flags, ctx) {
           worktreeMissing: false, notGitRoot: true,
           // deliberate: under-detect only (a report field), never a removal decision — bare marker check is fine here.
           archivedDuplicate: hasArchivedCounterpart(home, d.id),
+          skipped: false, skipReason: null,
           error: 'worktree is not a resolvable git root (git rev-parse --show-toplevel failed): ' + d.worktreePath,
         });
         continue;
@@ -17178,8 +17230,26 @@ function cmdReconcile(flags, ctx) {
       worktreeMissing: !!(r && r.worktreeMissing),
       // deliberate: under-detect only (a report field), never a removal decision — bare marker check is fine here.
       archivedDuplicate: !!(r && r.worktreeMissing && hasArchivedCounterpart(home, d.id)),
+      skipped: false,
+      skipReason: null,
+      // "unknown error" root cause (SkyCrew Primary report, 0.115.2): a
+      // subprocess that returns a recognized non-ok shape with no `.error`
+      // field (e.g. cmdRegister's APP-DB ARCHIVE GUARD refusing an ensure
+      // with `{ok:false, reason:'...'}`, no `.error`) fell all the way
+      // through to the generic "could not parse" fallback even though
+      // `parsed` was a real, parsed object — discarding the actual cause.
+      // Also surface the hivecontrol exit code/signal/stderr when the
+      // subprocess produced no parseable JSON at all, instead of a bare
+      // "could not parse" with no diagnostic detail.
       error: (parsed && parsed.error)
+        || (parsed && parsed.reason)
         || (r && r.error ? String((r.error && r.error.message) || r.error) : null)
+        || (r && !parsed && (r.status != null || r.signal || (r.stderr && String(r.stderr).trim()))
+          ? 'inbox-pull subprocess exited'
+            + (r.status != null ? ' with code ' + r.status : '')
+            + (r.signal ? ' (signal ' + r.signal + ')' : '')
+            + (r.stderr && String(r.stderr).trim() ? ': ' + String(r.stderr).trim() : '')
+          : null)
         || (parsed ? null : 'reconcile: could not parse inbox-pull subprocess output'),
     });
   }
@@ -17212,7 +17282,12 @@ function cmdReconcile(flags, ctx) {
   // as worktreeMissing: set only by the pre-spawn git-root check above, never
   // by parsing a subprocess error string, so it cannot be spoofed and never
   // fails the aggregate the way a genuine spawn/parse failure does.
-  const allRowsOkOrBenign = results.every((r) => r.ok === true || r.locked === true || r.hivecontrolMissing === true || r.worktreeMissing === true || r.notGitRoot === true);
+  // skipped:true (0.115.2 fix) is a SIXTH recognized benign skip — an
+  // archived-workspace row deliberately never spawned (app-DB or local
+  // marker, set only by the pre-spawn archived checks above, never by
+  // parsing a subprocess error string) is not a reconcile failure.
+  const allRowsOkOrBenign = results.every((r) => r.ok === true || r.locked === true || r.hivecontrolMissing === true || r.worktreeMissing === true || r.notGitRoot === true || r.skipped === true);
+  const skipped = results.filter((r) => r.skipped === true).length;
 
   // Task #6 name backfill (off the hot path — reconcile is a gated/manual
   // sweep, NEVER the every-turn hook, so a `hivecontrol` spawn here is fine).
