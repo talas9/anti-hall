@@ -513,12 +513,16 @@ function readState(stateFile) {
         // Wave 3 addendum item 6: dedup flag for the "attempt record exists
         // but did not authenticate" stderr diagnostic — same convention.
         mismatchLogged: parsed.mismatchLogged === true,
+        // defect E1 fix: the wall-clock timestamp of the PREVIOUS Stop check
+        // for this session (see episodeSince below) — 0 when this is the
+        // first Stop check this session has ever made.
+        lastCheckAt: Number.isFinite(parsed.lastCheckAt) ? parsed.lastCheckAt : 0,
       };
     }
   } catch (_) { /* first time / unreadable -> fresh state */ }
   return {
     blocks: 0, lastBlockAt: 0, totalBlocks: 0,
-    lifetimeCapLogged: false, nonceFailClosedLogged: false, mismatchLogged: false,
+    lifetimeCapLogged: false, nonceFailClosedLogged: false, mismatchLogged: false, lastCheckAt: 0,
   };
 }
 
@@ -749,18 +753,38 @@ function main() {
 
   const stateFile = stateFileFor(sessionId);
   const state = readState(stateFile);
+  // defect E1 fix (root cause): episodeSince used to be `now - RESET_MS`
+  // (a fixed 5-minute rolling wall-clock window) whenever this session had
+  // never been blocked yet. A DevSwarm child's own turn — the interval
+  // between it sending `heartbeat --summary` mid-turn and this Stop hook
+  // firing at the turn's end — routinely runs longer than 5 minutes for real
+  // coding work, so that report's `ts` fell BEFORE `now - RESET_MS` and
+  // alreadyReportedThisEpisode/findRecentDropAttempt below treated a report
+  // sent moments ago (in turn-sequence terms) as if it never happened,
+  // forcing a spurious re-block right after a summary heartbeat was sent.
+  // Fix: anchor the floor to `prevCheckAt` — the wall-clock time of THIS
+  // session's own PREVIOUS Stop check (persisted below as `lastCheckAt`) —
+  // instead of a fixed window. Any report sent during the turn that just
+  // ended is, by construction, after the previous Stop check, so it is
+  // never pruned regardless of how long that turn ran. RESET_MS remains the
+  // fallback floor only for this session's very FIRST Stop check (no prior
+  // checkpoint exists yet), preserving the original "a stale/ancient report
+  // does not count forever" guard for that one case.
+  const prevCheckAt = state.lastCheckAt;
+  state.lastCheckAt = now; // persisted by every writeState call below (state is passed through)
 
   // Already-reported satisfaction (v0.58, projection-only): "this stop episode"
   // is bounded to the more recent of (a) the last time this gate actually forced
-  // a block, or (b) RESET_MS ago — the same episode window the cap-reset logic
-  // below already uses, so a stale lastBlockAt from long ago never makes an
-  // ancient report count. If satisfied, skip the block UNLESS a KNOWN (durable,
-  // pure-fs, cheap) unread backlog is still pending — the INBOUND half of this
-  // gate (#29) stays intact; deliberately checks ONLY the cheap durable read
-  // here (never the STRICT native probe) so a healthy/reported child never pays
-  // the native spawn cost just to evaluate this satisfaction path.
+  // a block, or (b) the previous Stop check for this session (or RESET_MS ago
+  // on the first check) — so a stale/ancient report never counts forever, while
+  // a report sent anywhere in the turn since the last check always does. If
+  // satisfied, skip the block UNLESS a KNOWN (durable, pure-fs, cheap) unread
+  // backlog is still pending — the INBOUND half of this gate (#29) stays
+  // intact; deliberately checks ONLY the cheap durable read here (never the
+  // STRICT native probe) so a healthy/reported child never pays the native
+  // spawn cost just to evaluate this satisfaction path.
   const cwd = (payload && typeof payload.cwd === 'string' && payload.cwd) ? payload.cwd : process.cwd();
-  const episodeSince = Math.max(state.lastBlockAt, now - RESET_MS);
+  const episodeSince = Math.max(state.lastBlockAt, prevCheckAt || (now - RESET_MS));
   const reported = alreadyReportedThisEpisode(process.env, os.homedir(), cwd, episodeSince);
   // defect a55d6b71a76f fix (root cause A): a benignly-dropped broadcast never
   // reaches recent[] (reported above stays false forever for it), so also
@@ -792,6 +816,7 @@ function main() {
       blocks: state.blocks, lastBlockAt: state.lastBlockAt,
       totalBlocks: state.totalBlocks, lifetimeCapLogged: state.lifetimeCapLogged,
       nonceFailClosedLogged: true, mismatchLogged: state.mismatchLogged,
+      lastCheckAt: state.lastCheckAt,
     });
   }
   // Wave 3 addendum item 6: same ONE-per-session dedup convention, for the
@@ -813,6 +838,7 @@ function main() {
       blocks: state.blocks, lastBlockAt: state.lastBlockAt,
       totalBlocks: state.totalBlocks, lifetimeCapLogged: state.lifetimeCapLogged,
       nonceFailClosedLogged: state.nonceFailClosedLogged, mismatchLogged: true,
+      lastCheckAt: state.lastCheckAt,
     });
   }
   if (reported || dropAttempt) {
@@ -823,6 +849,10 @@ function main() {
     // is cleared — never-pulled mail must not be waved through.
     if (!durable.unknown && hasUnreadParentMessages(process.env, os.homedir()) === false) {
       stopPolicy.clear(os.homedir(), sessionId, 'child-gate'); // condition CLEARED -> fresh budget next time
+      // Persist lastCheckAt even on the allow path — episodeSince on the
+      // NEXT Stop check must be able to anchor to THIS check's wall time,
+      // not fall back to a stale/absent one.
+      writeState(stateFile, state);
       return;
     }
   }
@@ -839,6 +869,7 @@ function main() {
     const durable = readDurableUnread(process.env, os.homedir());
     if (!durable.unknown && hasUnreadParentMessages(process.env, os.homedir()) === false) {
       stopPolicy.clear(os.homedir(), sessionId, 'child-gate');
+      writeState(stateFile, state); // persist lastCheckAt on this allow path too
       return;
     }
   }
@@ -863,6 +894,8 @@ function main() {
           + ' per kind) reached for session ' + JSON.stringify(sessionId)
           + ' — no further Stop blocks until the condition clears (a report lands / inbox drained).\n');
       } catch (_) { /* best-effort diagnostic only */ }
+    } else {
+      writeState(stateFile, state); // still persist lastCheckAt on this allow path
     }
     return; // cap exhausted, or cap state unpersistable -> fail open
   }

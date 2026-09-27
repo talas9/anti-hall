@@ -636,6 +636,47 @@ test('ALREADY-REPORTED window: an outbound row OLDER than this stop episode does
   }
 });
 
+// defect E1 (7-workspace sweep, 2026-09-27): episodeSince used to be a fixed
+// `now - RESET_MS` (5 min) rolling window whenever this session had no prior
+// forced block, REGARDLESS of when the gate last actually checked this
+// session. A real DevSwarm child turn — heartbeat --summary sent mid-turn,
+// Stop firing only once the turn ends — routinely runs longer than 5
+// minutes, so a genuine, freshly-sent report aged out of that window before
+// Stop ever saw it, and the gate re-demanded "another" heartbeat right after
+// one was already sent with --summary. Root cause: the floor should anchor
+// to THIS SESSION's own previous Stop check (persisted as `lastCheckAt`),
+// not to a fixed wall-clock window — any report sent since the last check is
+// necessarily from the turn that just ended, no matter how long it ran.
+// RESET_MS remains the fallback floor ONLY for a session's first-ever check
+// (covered by the "OLDER than this stop episode" test above, which is
+// unaffected by this fix since it has no prior checkpoint).
+test('ALREADY-REPORTED window: a report older than RESET_MS still satisfies when it postdates this SESSION\'s own prior Stop check', () => {
+  const h = makeHome();
+  seedAllTestDescriptors(h.home);
+  try {
+    const now = Date.now();
+    const eightMinAgo = now - 8 * 60 * 1000;
+    const sixMinAgo = now - 6 * 60 * 1000; // older than RESET_MS (5 min), but after the checkpoint below
+    // Seed a prior checkpoint (this session's own earlier Stop check) 8
+    // minutes ago — e.g. the gate checked/blocked at the start of a long turn.
+    fs.mkdirSync(path.dirname(stateFile(h.home, 's1')), { recursive: true });
+    fs.writeFileSync(stateFile(h.home, 's1'), JSON.stringify({
+      blocks: 0, lastBlockAt: eightMinAgo, totalBlocks: 1, lifetimeCapLogged: false,
+      nonceFailClosedLogged: false, mismatchLogged: false, lastCheckAt: eightMinAgo,
+    }));
+    // Pre-fix repro (temp-file diff against the pre-fix source, verified
+    // manually): with the SAME seed, episodeSince = now - RESET_MS (5 min
+    // ago) excludes the 6-min-old report -> BLOCK. This assertion pins the
+    // fixed behavior: BLOCK (bug) is not what should happen here.
+    seedOutboundReport(h.home, 'child-ar', sixMinAgo);
+    const r = testHook(HOOK, stopPayload({ cwd: REPO_CWD }), { home: h.home, env: REPORTED_ENV });
+    assert.strictEqual(r.status, 0, 'must exit 0');
+    assert.strictEqual(r.stdout, '', `a report sent since this session's own prior check must satisfy the gate; got: ${r.stdout}`);
+  } finally {
+    h.cleanup();
+  }
+});
+
 test('ALREADY-REPORTED: an outbound row from a DIFFERENT sender does not satisfy -> still blocks', () => {
   const h = makeHome();
   seedAllTestDescriptors(h.home);
