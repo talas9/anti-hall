@@ -231,6 +231,60 @@ function installLaunchers(opts) {
   return { cli, watcher };
 }
 
+// anchoredAntiHallStableLauncher(scriptFile) -> RegExp for one of the two
+// version-independent ~/.anti-hall/bin/ stable launchers (devswarm.js,
+// wake-watch.js — see TARGETS above). Shared by hooks/git-guard.js and
+// hooks/command-guard.js (was a byte-for-byte duplicate in each, since
+// command-guard.js has no module.exports of its own — its main() runs
+// unconditionally at require-time, so neither guard could `require()` the
+// other; this file already sits below both and has none of that problem).
+//
+// A `node` invocation of the launcher must be exempted from the heavy-
+// command gate with the SAME whole-invocation scope regardless of which
+// guard checks it, but anchored to the user's home directory so a
+// look-alike prefix is never exempt (`evil/.anti-hall/bin/...`,
+// `/tmp/x/.anti-hall/bin/...`). Four home-anchor forms are accepted, since
+// installLaunchers() bakes the OS-resolved absolute home path into directive
+// text (an os.homedir call, resolved), while a human typing the command at a
+// shell commonly uses `~` or `$HOME`:
+//   - literal `~`
+//   - `$HOME` / `${HOME}` (optionally wrapped in one pair of double quotes,
+//     e.g. `"${HOME}"/.anti-hall/bin/devswarm.js`)
+//   - the actual resolved absolute home directory: test-home-guard.js's
+//     resolveHome() (the HOME-env-aware value this module's own binDir()
+//     resolves to in production, and the exact string real directive text
+//     embeds) plus os.userInfo().homedir() (the OS passwd-DB value, immune
+//     to a HOME override) when it differs
+// immediately followed by `/.anti-hall/bin/<scriptFile>` with NOTHING else
+// between the home anchor and `.anti-hall` (so `~/evil/.anti-hall/bin/...`
+// or `~x/.anti-hall/bin/...` do NOT match) — anchored at segment start
+// (optional leading env assignments only), so a heavy command merely
+// carrying the launcher path as trailing args is never exempted, and
+// chaining (`node ~/.anti-hall/bin/devswarm.js x && npm test`) still blocks
+// on the npm segment exactly as it does for the plugin-relative form.
+function anchoredAntiHallStableLauncher(scriptFile) {
+  const scriptSrc = scriptFile.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const rawHomes = [];
+  try {
+    const homedir = require('../../companion/lib/test-home-guard.js').resolveHome();
+    if (typeof homedir === 'string' && homedir) rawHomes.push(homedir);
+  } catch (_) { /* fail-open: home-anchor alternation just skips this form */ }
+  try {
+    const passwdHome = os.userInfo().homedir;
+    if (typeof passwdHome === 'string' && passwdHome && !rawHomes.includes(passwdHome)) {
+      rawHomes.push(passwdHome);
+    }
+  } catch (_) { /* fail-open: home-anchor alternation just skips this form */ }
+  const homeAbsSrcs = rawHomes.map((h) => h.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  const homeAlt = '(?:~|"?\\$\\{HOME\\}"?|\\$HOME'
+    + (homeAbsSrcs.length ? '|' + homeAbsSrcs.join('|') : '') + ')';
+  return new RegExp(
+    '^\\s*(?:[A-Za-z_][A-Za-z0-9_]*=\\S*\\s+)*node\\s+' +
+      homeAlt + '[\\\\/]\\.anti-hall[\\\\/]bin[\\\\/]' + scriptSrc + '\\b',
+    'i'
+  );
+}
+
 module.exports = {
   BIN_DIR_SEGMENTS,
   TARGETS,
@@ -240,4 +294,5 @@ module.exports = {
   writeIfDifferent,
   installLauncher,
   installLaunchers,
+  anchoredAntiHallStableLauncher,
 };

@@ -132,63 +132,11 @@ function anchoredAntiHallCli(dir, script, tailSrc) {
 // HEAVY_PATTERN and every Primary's cron tick / inline mesh command using
 // the launcher was wrongly blocked.
 //
-// FIX: exempt `node` invocations of the stable launcher with the SAME
-// whole-invocation scope as anchoredAntiHallCli('scripts', 'devswarm', ...),
-// but anchored to the user's home directory instead of a plugin-relative
-// path — a look-alike prefix must NOT be exempt (`evil/.anti-hall/bin/...`,
-// `/tmp/x/.anti-hall/bin/...`). Four home-anchor forms are accepted, since
-// stable-launcher.js's installLaunchers() bakes the OS-resolved absolute
-// home path into directive text (an os.homedir call, resolved), while a human typing
-// the command at a shell commonly uses `~` or `$HOME`:
-//   - literal `~`
-//   - `$HOME` / `${HOME}` (optionally wrapped in one pair of double quotes,
-//     e.g. `"${HOME}"/.anti-hall/bin/devswarm.js`)
-//   - the actual resolved absolute home directory: an os.homedir call (the
-//     HOME-env-aware value stable-launcher.js's resolveHome() actually
-//     bakes into directive text) plus os.userInfo().homedir() (the OS
-//     passwd-DB value, immune to a HOME override) when it differs
-// immediately followed by `/.anti-hall/bin/<scriptFile>` with NOTHING else
-// between the home anchor and `.anti-hall` (so `~/evil/.anti-hall/bin/...`
-// or `~x/.anti-hall/bin/...` do NOT match) — same `^\s*` segment-start +
-// optional-leading-env-assignment anchoring discipline as
-// anchoredAntiHallCli, so a heavy command merely carrying the launcher path
-// as trailing args is never exempted, and chaining
-// (`node ~/.anti-hall/bin/devswarm.js x && npm test`) still blocks on the
-// npm segment exactly as it does for the plugin-relative form.
-//
-// test-home-guard.js's resolveHome() (NOT a bare direct os.homedir call — see
-// tests/hygiene/homedir-call-site-ratchet.test.js: resolveHome() is the
-// canonical replacement every new call site is expected to use) is the
-// PRIMARY absolute-path source: it is what stable-launcher.js's binDir()
-// itself resolves to in production (`explicitHome` or an os.homedir call,
-// HOME-env-aware on POSIX), so it is the exact string the real directive
-// text embeds — and it is what makes this exemption testable against an
-// isolated fixture HOME. os.userInfo().homedir (queried straight from the OS
-// user DB, immune to a HOME override) is added as a SECOND alternative only
-// when it differs, so an operator whose shell profile doesn't export $HOME
-// identically to the passwd entry is still covered.
-function anchoredAntiHallStableLauncher(scriptFile) {
-  const scriptSrc = scriptFile.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const rawHomes = [];
-  try {
-    const homedir = require('../companion/lib/test-home-guard.js').resolveHome();
-    if (typeof homedir === 'string' && homedir) rawHomes.push(homedir);
-  } catch (_) { /* fail-open: home-anchor alternation just skips this form */ }
-  try {
-    const passwdHome = os.userInfo().homedir;
-    if (typeof passwdHome === 'string' && passwdHome && !rawHomes.includes(passwdHome)) {
-      rawHomes.push(passwdHome);
-    }
-  } catch (_) { /* fail-open: home-anchor alternation just skips this form */ }
-  const homeAbsSrcs = rawHomes.map((h) => h.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
-  const homeAlt = '(?:~|"?\\$\\{HOME\\}"?|\\$HOME'
-    + (homeAbsSrcs.length ? '|' + homeAbsSrcs.join('|') : '') + ')';
-  return new RegExp(
-    '^\\s*(?:[A-Za-z_][A-Za-z0-9_]*=\\S*\\s+)*node\\s+' +
-      homeAlt + '[\\\\/]\\.anti-hall[\\\\/]bin[\\\\/]' + scriptSrc + '\\b',
-    'i'
-  );
-}
+// Now shared with git-guard.js via hooks/lib/stable-launcher.js (was a
+// byte-for-byte duplicate in each file — see that module's own doc comment
+// for the full anchoring rationale: which home-anchor forms are accepted,
+// and why the anchoring stays as narrow as anchoredAntiHallCli above).
+const { anchoredAntiHallStableLauncher } = require('./lib/stable-launcher.js');
 
 // Commands that look heavy by verb but are actually lightweight inspection commands.
 // We allow these even if the verb matches HEAVY_VERBS.
