@@ -94,7 +94,15 @@ function loadTriageConfig(home) {
 
   // triage defaults to true once Jev itself is enabled; an explicit
   // `"triage": false` opts a jev.json-enabled user out of THIS feature only.
-  const triageEnabled = jevEnabled && cfg.triage !== false;
+  // jevIntegrations.triage "off" (or ANTIHALL_JEV_TRIAGE=0) does the same:
+  // the schema documents that key as read here, and before this it was only
+  // read by jev-assist's getMode, which triage labelling never calls.
+  // ("shadow" has no meaning for advisory labels and behaves like "on".)
+  let integrationOff = process.env.ANTIHALL_JEV_TRIAGE === '0';
+  try {
+    if (require('./settings.js').get('jevIntegrations', 'triage', undefined, { home }) === 'off') integrationOff = true;
+  } catch (_) { /* settings unavailable -> jev.triage alone decides */ }
+  const triageEnabled = jevEnabled && cfg.triage !== false && !integrationOff;
 
   const confidenceThreshold = (Number.isFinite(cfg.confidenceThreshold) &&
     cfg.confidenceThreshold >= 0 && cfg.confidenceThreshold <= 1)

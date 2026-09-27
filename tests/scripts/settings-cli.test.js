@@ -232,3 +232,41 @@ test('jev.json legacy value still wins over /config BEFORE the settings migratio
     home.cleanup();
   }
 });
+
+// show --section jev lists every Jev integration id with the mode the runtime
+// applies. speculation/triage have no jev.json "integrations" entry on a
+// typical install: their mode is the schema default ("on", source default).
+function runClean(args, home) {
+  const env = { PATH: process.env.PATH, HOME: home, USERPROFILE: home, ANTIHALL_TEST_ISOLATION: '1' };
+  return JSON.parse(execFileSync(process.execPath, [CLI, ...args], { env, encoding: 'utf8' }));
+}
+
+test('show --section jev --json: effective mode for EVERY integration id, with its config source', () => {
+  const h = makeHome();
+  try {
+    h.writeState('jev.json', { enabled: true, integrations: { modelRouting: 'on', newRequest: 'off' } });
+    const out = runClean(['show', '--section', 'jev', '--json'], h.home);
+    const rows = out.jevEffectiveIntegrations;
+    const schema = require('../../plugins/anti-hall/hooks/lib/settings-schema.js');
+    const ids = schema.SECTIONS.find((s) => s.key === 'jevIntegrations').settings.map((s) => s.key);
+    assert.deepStrictEqual(rows.map((r) => r.id), ids);
+    const by = Object.fromEntries(rows.map((r) => [r.id, r]));
+    assert.deepStrictEqual([by.speculation.effective, by.speculation.source], ['on', 'default']);
+    assert.deepStrictEqual([by.triage.effective, by.triage.source], ['on', 'default']);
+    assert.deepStrictEqual([by.modelRouting.effective, by.modelRouting.source], ['on', 'legacy']);
+    assert.strictEqual(by.newRequest.effective, 'off');
+    assert.strictEqual(by.claimLedger.effective, 'shadow');
+    assert.match(by.triage.logs, /jev-triage\.ndjson/);
+  } finally { h.cleanup(); }
+});
+
+test('show --section jev: master switch off -> every integration is effectively off even when configured on', () => {
+  const h = makeHome();
+  try {
+    h.writeState('jev.json', { enabled: false, integrations: { modelRouting: 'on' } });
+    const rows = runClean(['show', '--section', 'jev', '--json'], h.home).jevEffectiveIntegrations;
+    const mr = rows.find((r) => r.id === 'modelRouting');
+    assert.deepStrictEqual([mr.configured, mr.effective], ['on', 'off']);
+    assert.ok(rows.every((r) => r.effective === 'off'));
+  } finally { h.cleanup(); }
+});

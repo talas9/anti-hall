@@ -235,6 +235,13 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/settings.js" get jev.enabled --json
 node "${CLAUDE_PLUGIN_ROOT}/scripts/settings.js" set limitConserve.threshold 90 --json
 ```
 
+`show --section jev` (and `--section jevIntegrations`) also prints **Jev integrations —
+effective mode**: every integration id, the mode the runtime actually applies (master
+switch and `ANTIHALL_JEV_<ID>=0` folded in), the stored value, its source tier, and the
+log it writes to (`jevEffectiveIntegrations` in `--json`). `speculation`, `triage` and
+`findingDedup` usually show source `default`: no install writes them, so they run on the
+schema default `on`.
+
 ## What this skill never does
 
 - Never edits `~/.anti-hall/settings.json` (or any legacy config file) by hand —

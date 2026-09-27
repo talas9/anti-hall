@@ -423,6 +423,15 @@ explicitly promotes it. The legacy `{"triage": false}` switch (§9) still works 
 `ANTIHALL_JEV_<ID>=0` (e.g. `ANTIHALL_JEV_MODEL_ROUTING=0`) force-disables one
 integration only.
 
+Where a mode comes from: every id resolves through `jevIntegrations.<id>` (env >
+`settings.json` > `/config` > jev.json `integrations.<id>` > schema default). An id
+absent from jev.json's `integrations` map, as `speculation` and `triage` usually are,
+runs on its schema default (`on` for both). `triage` labelling is gated by
+`jev.triage` (default `true`) AND `jevIntegrations.triage` not `off`; its labels land in
+`jev-triage.ndjson` (jev-report shows them as mode `on`), and only its reply outcomes
+land in `jev-assist.ndjson`. `settings.js show --section jev` lists every id with its
+effective mode and source.
+
 **Trust rules** — the only three shapes any integration needs:
 
 | Trust | Effect | Used by |

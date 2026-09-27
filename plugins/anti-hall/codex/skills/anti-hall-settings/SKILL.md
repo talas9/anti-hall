@@ -139,6 +139,10 @@ have no switch on purpose, and why.
      jevIntegrations, limitConserve, devswarm, statusline, codexNudge, versionAlerts,
      updates, defects); ask for one.
    - Show just that section (`show --section <key>`), number its settings, ask again.
+     For `jev`/`jevIntegrations` it also prints the effective mode of every Jev
+     integration (master switch + env kill switches folded in), its source tier and
+     the log it writes to; `speculation`/`triage`/`findingDedup` usually run on the
+     schema default `on` (source `default`).
    - For a `boolean` or `enum` setting, number its allowed values (enum `values`
      from the schema; boolean is 1) true / 2) false). For a `number` or
      `string`/`csv` setting, ask for a free value (respecting any `min`/`max`).

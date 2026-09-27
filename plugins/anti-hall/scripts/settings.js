@@ -103,6 +103,41 @@ function sectionRows(sectionDef, opts, advanced) {
   });
 }
 
+// effectiveIntegrations(opts) -> one entry per jevIntegrations id with the
+// mode the runtime actually applies (not just the stored value):
+//   - every id except triage: jev-assist.js getMode(), which also folds in the
+//     master switch (jev.json "enabled" / ANTIHALL_JEV) and the per-id env
+//     kill switch ANTIHALL_JEV_<ID>=0.
+//   - triage: jev-triage.js loadTriageConfig().enabled ("on"/"off"); its
+//     labels go to jev-triage.ndjson and only its reply outcomes go to
+//     jev-assist.ndjson.
+// `configured`/`source` are the stored jevIntegrations value and the tier
+// that answered it (env, file = settings.json, /config, legacy = jev.json
+// "integrations" map, default = schema default).
+function effectiveIntegrations(opts) {
+  const os = require('os');
+  const home = (opts && opts.home) || os.homedir();
+  const sec = schema.SECTIONS.find((x) => x.key === 'jevIntegrations');
+  if (!sec) return [];
+  let assist = null; let triage = null; let fileCfg = {};
+  try { assist = require('../hooks/lib/jev-assist.js'); fileCfg = assist.readJevJson(home); } catch (_) { assist = null; }
+  try { triage = require('../hooks/lib/jev-triage.js'); } catch (_) { triage = null; }
+  return sec.settings.map((s) => {
+    let effective = 'unknown';
+    try {
+      if (s.key === 'triage') effective = triage && triage.loadTriageConfig(home).enabled ? 'on' : 'off';
+      else if (assist) effective = assist.getMode(s.key, fileCfg, home);
+    } catch (_) { effective = 'unknown'; }
+    return {
+      id: s.key,
+      effective,
+      configured: settings.get('jevIntegrations', s.key, undefined, { home }),
+      source: settings.source('jevIntegrations', s.key, { home }),
+      logs: s.key === 'triage' ? 'jev-triage.ndjson (+ outcome rows in jev-assist.ndjson)' : 'jev-assist.ndjson',
+    };
+  });
+}
+
 function cmdShow(args, opts) {
   const target = args.section ? schema.SECTIONS.filter((s) => s.key === args.section) : schema.SECTIONS;
   if (args.section && target.length === 0) {
@@ -125,6 +160,9 @@ function cmdShow(args, opts) {
           locked: !!s.locked,
         };
       }
+    }
+    if (target.some((sec) => sec.key === 'jev' || sec.key === 'jevIntegrations')) {
+      out.jevEffectiveIntegrations = effectiveIntegrations(opts);
     }
     process.stdout.write(JSON.stringify(out, null, 2) + '\n');
     return;
@@ -151,6 +189,14 @@ function cmdShow(args, opts) {
         out.push('_' + advancedCount + ' advanced setting(s) hidden — rerun with `--all` to show them._');
         out.push('');
       }
+    }
+    if (sec.key === 'jev' || (sec.key === 'jevIntegrations' && args.section)) {
+      out.push('**Jev integrations — effective mode** (what the runtime applies, including the master switch and env kill switches):');
+      out.push('');
+      out.push(renderTable(effectiveIntegrations(opts).map((r) => [
+        r.id, r.effective, fmtValue(r.configured), sourceLabel(r.source), r.logs,
+      ]), ['Integration', 'Effective', 'Configured', 'Source', 'Logs to']));
+      out.push('');
     }
   }
   if (!args.section) {
@@ -319,4 +365,4 @@ function main() {
 
 if (require.main === module) main();
 
-module.exports = { parseArgs, splitKey, cmdShow, cmdGet, cmdSet, cmdReset, cmdTrustCommandAllow, cmdTrustEditAllow };
+module.exports = { parseArgs, splitKey, effectiveIntegrations, cmdShow, cmdGet, cmdSet, cmdReset, cmdTrustCommandAllow, cmdTrustEditAllow };

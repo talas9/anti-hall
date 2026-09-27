@@ -387,3 +387,13 @@ test('triage log over 1MB ROTATES to .1 (was truncated to empty, wiping triage h
     assert.strictEqual(rows[0].type, 'answered');
   } finally { rm(home); }
 });
+
+test('loadTriageConfig: jevIntegrations.triage "off" disables triage (schema says jev-triage reads it)', () => {
+  const home = tmpHome();
+  try {
+    writeJevConfig(home, { enabled: true });
+    assert.strictEqual(loadTriageConfig(home).enabled, true);
+    fs.writeFileSync(path.join(home, '.anti-hall', 'settings.json'), JSON.stringify({ jevIntegrations: { triage: 'off' } }));
+    assert.strictEqual(loadTriageConfig(home).enabled, false);
+  } finally { rm(home); }
+});

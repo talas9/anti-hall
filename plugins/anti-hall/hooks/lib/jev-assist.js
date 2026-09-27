@@ -1075,6 +1075,7 @@ module.exports = {
   // getMode()/contentHash()/confidenceThreshold resolution itself.
   prepare,
   recordOutcome,
+  readJevJson,
   getMode,
   envNameFor,
   computeFinal,
