@@ -45,6 +45,12 @@ const PATTERNS = {
   heldPartitionIdsFrom: call('heldPartitionIdsFrom'),
   // a hand-built archive-ignore/<id>.json path (the marker row-eligibility reads)
   'archive-ignore-path': /join\(.*['"]archive-ignore['"]/g,
+  // the bare, non-discriminated archived/<id>.json existsSync check (ignores
+  // worktreePath/sessionId — never a decision site; report-fields and
+  // worktree-already-gone detect-only skips only, per the fix-wave-3 P1 fix
+  // for reconcileRowArchived, which now returns row-eligibility.js's verdict
+  // alone).
+  hasArchivedCounterpart: call('hasArchivedCounterpart'),
 };
 
 // ALLOWLIST: 'relative/file.js': { pattern: count } — every entry carries its reason.
@@ -72,6 +78,20 @@ const ALLOWLIST = {
     heldPartitionIdsFrom: 1,
     // archiveIgnoreDir: the `archive-ignore` verb's own writer/remover of the marker.
     'archive-ignore-path': 1,
+    // hasArchivedCounterpart: EXACT allowlist, report-only / worktree-already-
+    // gone detect-only sites — NEVER the reconcile live-row skip decision
+    // (that decision is row-eligibility.js's verdict alone, fix-wave-3 P1).
+    //   - rehomeStrandedProjectDescriptors's heal-pass skip (worktree already
+    //     gone on disk AND archived; detect-only, never removes the row)
+    //   - cmdEnsure's auto-ensure resurrection refusal (requireNew path only;
+    //     explicit `register` re-registration is deliberately left able to
+    //     revive an id)
+    //   - healStrandedDescriptors's stranded-descriptor skip (worktree already
+    //     gone on disk; detect-only)
+    //   - cmdReconcile's 4 report-only `archivedDuplicate` fields (missing-
+    //     worktree report, archived-but-on-disk report, not-git-root report,
+    //     spawn-failure worktreeMissing report) — never the skip decision.
+    hasArchivedCounterpart: 7,
   },
 };
 

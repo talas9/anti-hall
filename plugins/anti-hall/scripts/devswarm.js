@@ -17042,15 +17042,21 @@ function resolveReconcileBudgetMs(flags, ctx) {
 }
 
 // reconcileRowArchived(home, d, ctx) -> bool. True iff this registry row is
-// archived by either source row-eligibility.js projects — the DevSwarm app DB
-// (builders.isActive=0/isHidden=1) or anti-hall's own archived/<id>.json
-// marker (hasArchivedCounterpart kept as the bare-marker fallback).
-// Never throws (both signals fail-closed to "not archived" on any error), so
-// an unreadable app DB never spuriously reports a live row as archived.
+// archived per THE canonical row projection (row-eligibility.js), which
+// itself ORs the DevSwarm app DB verdict (builders.isActive=0/isHidden=1)
+// with anti-hall's own worktree/session-discriminated archived/<id>.json
+// marker (row-state.js -> isArchivedWorkspace). No bare hasArchivedCounterpart
+// fallback here: a bare marker existsSync check ignores worktreePath and
+// sessionId, so it would re-admit the documented id-reuse false positive
+// (a live workspace that reuses an archived id's id) as "archived" and skip
+// it. hasArchivedCounterpart stays available for report-only fields
+// (archivedDuplicate) elsewhere — never for this skip decision.
+// Never throws (fails closed to "not archived" on any error), so an
+// unreadable app DB never spuriously reports a live row as archived.
 function reconcileRowArchived(home, d, ctx) {
   // THE one row projection (row-eligibility.js): app DB verdict when it has
-  // one, else anti-hall's own marker. No repoKey is passed, so the looser
-  // active-list-absence rule never marks a live row archived here.
+  // one, else anti-hall's own discriminated marker. No repoKey is passed, so
+  // the looser active-list-absence rule never marks a live row archived here.
   let archived = false;
   try {
     archived = require('../companion/lib/row-eligibility.js').rowEligibility(
@@ -17058,7 +17064,7 @@ function reconcileRowArchived(home, d, ctx) {
       { home, env: ctx.env, now: ctx.now },
     ).archived === true;
   } catch (_) { archived = false; }
-  return archived || hasArchivedCounterpart(home, d.id);
+  return archived;
 }
 
 // cmdReconcile(flags, ctx) — PLAN.md "reconcile": drain EVERY worktree
