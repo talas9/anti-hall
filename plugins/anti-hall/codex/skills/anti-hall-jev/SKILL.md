@@ -97,10 +97,16 @@ itself.
   `auto-handover.js` while the post-handover gate is armed) defaults `off` —
   an offline benchmark (n=299) found park-recall 17.6% vs 28.8% for the
   agent's own size judgment plus the measured budget backstop, no gain over
-  that baseline
+  that baseline;
   `dispatchTier` (advisory: workspace / workflow / subagent recommendation on
   Claude's DISPATCH NOW line) is Claude-only — Codex has no TaskCreate/Agent
-  task tools, so the integration has nothing to classify there
+  task tools, so the integration has nothing to classify there;
+  the five DevSwarm supervision integrations (v0.117.0) `devswarmOnBrief`,
+  `devswarmExtraSanctioned`, `devswarmWaitKind`, `devswarmLoop` and
+  `devswarmStepMap` default `on` as RECOMMENDATIONS: asked detached from the
+  supervisor sweep, their verdict + confidence ride on the Primary's
+  DEVSWARM STRAYING line and roster; they never suppress a warning, block or
+  kill (`shadow` = logged only)
   (settings `jevIntegrations.<id>`, e.g. `jevIntegrations.modelRouting`
   — v0.108.4 gave every one of the 13 its own settings-schema row (`postHandoverGate` has one since v0.109.0); a pre-existing
   `jev.json integrations.<id>` or pre-0.108.4 `jev.integrations.<id>` value keeps
