@@ -537,6 +537,14 @@ function normalizeState(state) {
     // so a later genuine new broadcast is still detected relative to wherever
     // the count actually sits now, not a stale pre-ack high-water mark.
     lastBroadcastUnread: Number.isFinite(s.lastBroadcastUnread) ? s.lastBroadcastUnread : 0,
+    // *Missing — true when loadSeenState found NO recorded history for that
+    // counter (older seen-file predating it, or no seen-file at all). Consumed
+    // ONLY by tickInner's firstTick path, which seeds the counter from its own
+    // first live observation instead of diffing it — see loadSeenState's own
+    // header comment for the false-wake this closes. Never persisted.
+    lastTotalMissing: !!s.lastTotalMissing,
+    lastTotal2Missing: !!s.lastTotal2Missing,
+    lastBroadcastUnreadMissing: !!s.lastBroadcastUnreadMissing,
     consecErrors: Number.isFinite(s.consecErrors) ? s.consecErrors : 0,
     errorBackoffIdx: Number.isFinite(s.errorBackoffIdx) ? s.errorBackoffIdx : 0,
     lastErrorEmitMs: Number.isFinite(s.lastErrorEmitMs) ? s.lastErrorEmitMs : null,
@@ -707,6 +715,24 @@ function tickInner(state, snapshot) {
   }
 
   const ok = !!(snapshot && snapshot.ok !== false);
+
+  // SEED MISSING BASELINES (arm/handoff false-wake fix): a counter with no
+  // recorded history (loadSeenState's *Missing flags — older seen-file
+  // predating it, or no seen-file at all) has never been diffed against a
+  // real observation. Seed it from the first SUCCESSFUL live read instead of
+  // the fabricated-0 default normalizeState gives it, so the moved1/moved2/
+  // moved3 checks below see a zero delta rather than a false "+N new mail"
+  // for history the watcher never actually had a baseline for. Gated on `ok`
+  // (not just `firstTick`) so an error on the very first tick does not skip
+  // seeding forever — the flag stays set (never cleared here) until a read
+  // actually succeeds, on this tick or a later one. A missing baseline is a
+  // migration, not new mail; a GENUINE new message that lands after this
+  // point still advances past whatever gets seeded here and wakes normally.
+  if (ok) {
+    if (st.lastTotalMissing && Number.isFinite(snapshot.total)) { st.lastTotal = snapshot.total; st.lastTotalMissing = false; }
+    if (st.lastTotal2Missing && Number.isFinite(snapshot.total2)) { st.lastTotal2 = snapshot.total2; st.lastTotal2Missing = false; }
+    if (st.lastBroadcastUnreadMissing && Number.isFinite(snapshot.total3)) { st.lastBroadcastUnread = snapshot.total3; st.lastBroadcastUnreadMissing = false; }
+  }
 
   if (!ok) {
     st.consecErrors += 1;
@@ -1146,6 +1172,23 @@ function seenCountersFromLegacy(obj, role) {
   return { meshTotal: lt2, ndjsonTotal: lt };
 }
 
+// MISSING-BASELINE FLAGS (post-2e34633 false-wake fix): a counter absent from
+// a seen-file (an older build that predates it, e.g. lastBroadcastUnread
+// before the broadcast channel existed) is NOT the same fact as "baseline
+// 0" — it means "never observed, no baseline recorded." Diffing the CURRENT
+// live value against a fabricated 0 baseline on the very next arm/handoff
+// produces exactly the "armed" -> immediate "+N new mail" false wake this
+// fix closes (0.116.0 field report: an old lastTotal/lastTotal2-only file,
+// no lastBroadcastUnread key, re-armed against a live broadcast total and
+// fired +189 with unread 0). So each `*Missing` flag below marks a counter
+// this file has NO recorded history for; tickInner's firstTick path (below)
+// seeds that counter from its own first live observation instead of diffing
+// it, and only then starts comparing — a missing baseline is a migration,
+// never new mail. A counter this branch always derives a real number for
+// (mesh total from at least the legacy positional field) is never "missing"
+// — only lastBroadcastUnread and, in the child role's documented
+// unknown-ndjson-cursor case (a primary-role-written file being read back
+// under 'child'), lastTotal can be.
 function loadSeenState(home, id, fsi, role) {
   const F = fsi || fs;
   try {
@@ -1160,6 +1203,7 @@ function loadSeenState(home, id, fsi, role) {
       // lastBroadcastUnread (broadcast channel) persists alongside the other
       // two for the SAME restart-fabricated-delta reason.
       const lastBroadcastUnread = Number.isFinite(obj.lastBroadcastUnread) ? obj.lastBroadcastUnread : 0;
+      const lastBroadcastUnreadMissing = !Number.isFinite(obj.lastBroadcastUnread);
       if (role !== 'primary' && role !== 'child') {
         return {
           lastTotal: obj.lastTotal,
@@ -1169,17 +1213,31 @@ function loadSeenState(home, id, fsi, role) {
       }
       const legacy = seenCountersFromLegacy(obj, role);
       const mesh = Number.isFinite(obj.meshTotal) ? obj.meshTotal : legacy.meshTotal;
-      if (role === 'primary') return { lastTotal: mesh, lastTotal2: mesh, lastBroadcastUnread };
+      if (role === 'primary') {
+        return {
+          lastTotal: mesh, lastTotal2: mesh, lastBroadcastUnread,
+          lastTotalMissing: false, lastTotal2Missing: false, lastBroadcastUnreadMissing,
+        };
+      }
       // A counter-keyed file WITHOUT ndjsonTotal was last written by a
       // primary-role watcher, whose positional lastTotal is the MESH total —
       // never an NDJSON cursor. The NDJSON cursor is then simply unknown, which
-      // is exactly the fresh-file case (baseline 0), not the mesh number.
+      // is exactly the fresh-file case (baseline 0), not the mesh number — so
+      // that case ALSO gets its lastTotalMissing flag set, same as the
+      // broadcast counter, so tickInner seeds it instead of diffing against 0.
+      const ndUnknown = !Number.isFinite(obj.ndjsonTotal) && Number.isFinite(obj.meshTotal);
       const nd = Number.isFinite(obj.ndjsonTotal) ? obj.ndjsonTotal
         : (Number.isFinite(obj.meshTotal) ? 0 : legacy.ndjsonTotal);
-      return { lastTotal: nd, lastTotal2: mesh, lastBroadcastUnread };
+      return {
+        lastTotal: nd, lastTotal2: mesh, lastBroadcastUnread,
+        lastTotalMissing: ndUnknown, lastTotal2Missing: false, lastBroadcastUnreadMissing,
+      };
     }
   } catch (_) { /* absent/corrupt -> fresh baseline below */ }
-  return { lastTotal: 0, lastTotal2: 0, lastBroadcastUnread: 0 };
+  return {
+    lastTotal: 0, lastTotal2: 0, lastBroadcastUnread: 0,
+    lastTotalMissing: true, lastTotal2Missing: true, lastBroadcastUnreadMissing: true,
+  };
 }
 
 function saveSeenState(home, id, state, fsi, role) {
