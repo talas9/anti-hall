@@ -252,6 +252,45 @@ test('findAdvice: A1-CA-1 — explicit declaration forms still match after tight
   assert.ok(advice.findAdvice('run /compact').length);
 });
 
+// ------------------------------------------------------------- R3A1 / #29
+// The reviewer's false-positive probe (dl116/r4/c1/cdg-fp.js): 6 texts, only
+// the last (an unambiguous ALL-CAPS declaration) is a real recommendation.
+test('findAdvice: R3A1/#29 — a backtick-quoted mention of the declaration phrase does not count', () => {
+  assert.strictEqual(
+    advice.findAdvice('Reviewing: compact-declaration-guard blocks work after `SAFE TO COMPACT` is declared. Let me edit the test.').length,
+    0
+  );
+});
+
+test('findAdvice: R3A1/#29 — a single-quoted mention of the declaration phrase does not count', () => {
+  assert.strictEqual(
+    advice.findAdvice("The handover skill says 'SAFE TO COMPACT' must be last. Editing now.").length,
+    0
+  );
+});
+
+test('findAdvice: R3A1/#29 — a question sentence does not count', () => {
+  assert.strictEqual(
+    advice.findAdvice('Is it safe to compact now? No — two agents are still running, so I will keep going.').length,
+    0
+  );
+});
+
+test('findAdvice: R3A1/#29 — "far from safe to compact" is negated', () => {
+  assert.strictEqual(advice.findAdvice('Context is at 20%, far from safe to compact. Continuing.').length, 0);
+});
+
+test('findAdvice: R3A1/#29 — a conditional "once ... it will be safe to compact; first ..." does not count', () => {
+  assert.strictEqual(
+    advice.findAdvice('Once this lands it will be safe to compact; first I need to write the progress file.').length,
+    0
+  );
+});
+
+test('findAdvice: R3A1/#29 — the real ALL-CAPS declaration still matches', () => {
+  assert.ok(advice.findAdvice('SAFE TO COMPACT NOW.').length);
+});
+
 // --------------------------------------------------------------- A1-CA-2
 test('Stop: a tokens-latch (firedVia:"tokens") fired below the pct threshold may still declare SAFE', () => withHome((h) => {
   const firedAt = T0 - 100000; // safely before every transcript timestamp

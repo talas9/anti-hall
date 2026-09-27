@@ -36,8 +36,15 @@ const COMPACT_CMD_RE = /^\s*<command-name>\s*\/compact\s*<\/command-name>/;
 
 // ---------------------------------------------------------------- phrasing
 // Negation just before a match ("NOT SAFE to compact", "no need to /compact",
-// "RETRACT SAFE TO COMPACT") means it is not a recommendation.
-const NEGATION_BEFORE_RE = /(?:\bnot\b|n['’]t\b|\bnever\b|\bno need\b|\bno reason\b|\bretract(?:ed|ing)?\b)[^.!?\n]{0,20}$/i;
+// "RETRACT SAFE TO COMPACT", "far from safe to compact", "once this lands it
+// will be safe to compact") means it is not a recommendation — it is either
+// negated outright or made conditional on something not yet done.
+const NEGATION_BEFORE_RE = /(?:\bnot\s+yet\b|\bnot\b|n['’]t\b|\bnever\b|\bno\s+need\b|\bno\s+reason\b|\bfar\s+from\b|\bonce\b[\s\S]{0,60}\bit\s+will\s+be\b|\bretract(?:ed|ing)?\b)[^.!?\n]{0,20}$/i;
+
+// Negation just AFTER a match ("safe to compact; first I need to write the
+// progress file") — a future/conditional declaration gated on something not
+// yet done, not a present-tense recommendation.
+const NEGATION_AFTER_RE = /^[^.!?\n]{0,30};\s*first\b/i;
 
 // A1-CA-1: explicit declaration forms only. Free text that merely mentions
 // /compact or "clear" in passing ("safe to clear the cache", a bullet
@@ -68,35 +75,77 @@ const ADVICE_RES = [
 const RETRACT_RE = /\bretract(?:ed|ing)?\b[\s:,\-—–*_`"'“”]*(?:the\s+)?(?:[*_`✅🟢]\s*)*(?:safe[\s-]+(?:to|for)[\s-]+(?:compact|clear|reset|a\s+(?:context\s+)?reset)|good\s+point\s+(?:to|for)\s+\/?compact|\/compact)/gi;
 
 // stripQuoted(text) -> text with fenced code blocks, blockquote lines, and
-// "…" / “…” quoted spans blanked to spaces (same length, so indices stay
-// comparable). A /compact line the assistant merely QUOTES from the user, or
-// shows inside a ```fenced``` example block (illustrating syntax, not
-// recommending it now), is not its own recommendation. Single-backtick
-// inline code is left intact — "`run /compact`"-style instructions still
-// match; only a whole fenced block (used for multi-line examples/docs) is
-// blanked.
+// “…” / “…” / '…' / `…` quoted spans blanked to spaces (same length, so
+// indices stay comparable). A /compact line the assistant merely QUOTES from
+// the user, or shows inside a ```fenced``` example block (illustrating
+// syntax, not recommending it now), is not its own recommendation — the same
+// is true of a phrase like `SAFE TO COMPACT` or 'SAFE TO COMPACT' quoted
+// while describing what some OTHER guard/skill does (R3A1/#29). A
+// single-quoted or backtick-quoted span that itself names an actual
+// /compact|/clear|/new invocation is left intact — “`run /compact`”-style
+// instructions still match; it is only a quoted MENTION of the declaration
+// phrase (no slash command inside the quotes) that gets blanked.
 function stripQuoted(text) {
   let t = String(text || '');
   t = t.replace(/```[\s\S]*?```/g, (m) => m.replace(/[^\n]/g, ' '));
   t = t.replace(/^[ \t]*>.*$/gm, (m) => ' '.repeat(m.length));
-  t = t.replace(/"[^"\n]{0,400}"|“[^”\n]{0,400}”/g, (m) => ' '.repeat(m.length));
+  t = t.replace(/”[^”\n]{0,400}”|“[^”\n]{0,400}”/g, (m) => ' '.repeat(m.length));
+  t = t.replace(/`[^`\n]{0,400}`/g, (m) => (/\/(?:compact|clear|new)\b/i.test(m) ? m : ' '.repeat(m.length)));
+  // Boundary-aware so a contraction's apostrophe (“don't”, “it's”) is never
+  // mistaken for an opening quote: the opening quote must be preceded by
+  // start-of-string/whitespace/an opening bracket, and the closing quote
+  // must be followed by whitespace/punctuation/end-of-string.
+  t = t.replace(/(^|[\s([{])'([^'\n]{0,400})'(?=[\s.,;:!?)\]}]|$)/g, (m, pre, inner) =>
+    /\/(?:compact|clear|new)\b/i.test(inner) ? m : pre + ' '.repeat(inner.length + 2)
+  );
   return t;
 }
 
+// isAtSentenceOrLineStart(t, index) -> bool. Walks back over whitespace and
+// decorative markdown/emoji/bullet characters; true when what remains before
+// the match is the start of the string, a newline, or a sentence-terminal
+// punctuation mark (. ! ? :).
+function isAtSentenceOrLineStart(t, index) {
+  let i = index;
+  while (i > 0 && /[\s*_`"'“”✅🟢⏳❌⚠️\-•>]/.test(t[i - 1])) i--;
+  if (i === 0) return true;
+  return /[.!?:]/.test(t[i - 1]);
+}
+
+// isQuestionSentence(t, index) -> bool. True when the sentence containing
+// this match ENDS in "?" — "Is it safe to compact now?" is asking, not
+// declaring ("R3A1/#29").
+function isQuestionSentence(t, index) {
+  const m = /[.!?]/.exec(t.slice(index));
+  return !!m && m[0] === '?';
+}
+
 // findAdvice(text) -> [{ index, phrase }] sorted by index — the assistant's
-// own compact recommendations, negated/quoted ones excluded.
+// own compact recommendations, negated/quoted/questioned ones excluded. The
+// bare "safe to compact/clear" wording (ADVICE_RES[0]) only counts at a line
+// or sentence start, or when it is the unambiguous ALL-CAPS "SAFE TO
+// COMPACT" form wherever it sits — the more specific forms below it (good
+// point to/for, safe for a context reset, run/then/now /compact, a standalone
+// /compact line) are already anchored enough on their own and need no extra
+// position gate (R3A1/#29).
 function findAdvice(text) {
   const t = stripQuoted(text);
   const out = [];
-  for (const re of ADVICE_RES) {
+  ADVICE_RES.forEach((re, reIndex) => {
     re.lastIndex = 0;
     let m;
     while ((m = re.exec(t)) !== null) {
-      const before = t.slice(Math.max(0, m.index - 40), m.index);
-      if (!NEGATION_BEFORE_RE.test(before)) out.push({ index: m.index, phrase: m[0].trim() });
+      const before = t.slice(Math.max(0, m.index - 60), m.index);
+      const after = t.slice(m.index + m[0].length, m.index + m[0].length + 40);
+      const negated = NEGATION_BEFORE_RE.test(before) || NEGATION_AFTER_RE.test(after);
+      const questioned = isQuestionSentence(t, m.index);
+      const isBareSafePhrase = reIndex === 0;
+      const isAllCapsSafeToCompact = /^SAFE\s+TO\s+(?:\/?COMPACT|\/CLEAR)$/.test(m[0].trim());
+      const positioned = !isBareSafePhrase || isAllCapsSafeToCompact || isAtSentenceOrLineStart(t, m.index);
+      if (!negated && !questioned && positioned) out.push({ index: m.index, phrase: m[0].trim() });
       if (m[0].length === 0) re.lastIndex++;
     }
-  }
+  });
   return out.sort((a, b) => a.index - b.index);
 }
 
