@@ -235,6 +235,12 @@ function extractLastAssistantTextLegacy(transcriptPath) {
   return extractLastAssistantTextWith(transcriptPath, collectTextFromEntryLegacy);
 }
 
+// Same text and offsets as the legacy extraction, with each text block's
+// quoted material blanked (maskQuotedText). Input for findSpeculationMarker.
+function extractLastAssistantMarkerText(transcriptPath) {
+  return extractLastAssistantTextWith(transcriptPath, (n) => collectTextFromEntryLegacy(n, maskQuotedText));
+}
+
 function extractLastAssistantTextDedup(transcriptPath) {
   return extractLastAssistantTextWith(transcriptPath, collectTextFromEntryDedup);
 }
@@ -242,33 +248,36 @@ function extractLastAssistantTextDedup(transcriptPath) {
 // Recursively collect concatenated text from content blocks in an entry.
 // LEGACY (pre-3e72bf3, restored as-is): always recurses into node.message
 // when present, which can duplicate text already picked up via node.content.
-function collectTextFromEntryLegacy(node) {
+// `mapText` (optional) transforms each collected string; omitted, the output
+// is byte-identical to the legacy collector.
+function collectTextFromEntryLegacy(node, mapText) {
   if (!node || typeof node !== 'object') return '';
   const parts = [];
+  const f = typeof mapText === 'function' ? mapText : (s) => s;
 
   // Direct text field
   if (typeof node.text === 'string') {
-    parts.push(node.text);
+    parts.push(f(node.text));
   }
 
   // content array (Claude message format)
   const content = node.content || (node.message && node.message.content);
   if (typeof content === 'string') {
-    parts.push(content);
+    parts.push(f(content));
   } else if (Array.isArray(content)) {
     for (const block of content) {
       if (!block || typeof block !== 'object') continue;
       if (block.type === 'text' && typeof block.text === 'string') {
-        parts.push(block.text);
+        parts.push(f(block.text));
       } else if (typeof block.text === 'string') {
-        parts.push(block.text);
+        parts.push(f(block.text));
       }
     }
   }
 
   // Recurse into message field if not already handled above
   if (node.message && typeof node.message === 'object' && node.message !== node) {
-    const sub = collectTextFromEntryLegacy(node.message);
+    const sub = collectTextFromEntryLegacy(node.message, mapText);
     if (sub) parts.push(sub);
   }
 
@@ -345,6 +354,44 @@ function isObligationPhrasing(text, matchText, matchIndex) {
 const MODAL_OBLIGATION_MARKERS = new Set(['must be', 'should be']);
 
 // --------------------------------------------------------------------------
+// QUOTED-TEXT MASK — a hedge inside quoted material (a "…must be…" quoted from
+// another agent, a `> …` blockquote, inline code, a fenced code block) is not
+// the session's own speculation. Blank those spans (same length, newlines
+// kept, so every offset is unchanged) before matching. Applied per text block
+// at extraction (extractLastAssistantMarkerText), never to the joined legacy
+// text, whose ' '-joined duplicate copy would pull a leading `> ` mid-line
+// and pair quotes across blocks. Only CLOSED spans are
+// masked: an unclosed `"`, backtick or fence masks nothing. A straight single
+// quote is never a quote delimiter (apostrophes: don't, it's).
+// --------------------------------------------------------------------------
+function blank(s) {
+  return s.replace(/[^\n]/g, ' ');
+}
+
+function maskQuotedText(text) {
+  const lines = text.split('\n');
+  let fenceStart = -1;
+  let fenceChar = '';
+  for (let i = 0; i < lines.length; i++) {
+    const f = /^[ \t]{0,3}(`{3,}|~{3,})/.exec(lines[i]);
+    if (fenceStart === -1) {
+      if (f) { fenceStart = i; fenceChar = f[1][0]; }
+    } else if (f && f[1][0] === fenceChar) {
+      for (let k = fenceStart; k <= i; k++) lines[k] = blank(lines[k]);
+      fenceStart = -1;
+    }
+  }
+  for (let i = 0; i < lines.length; i++) {
+    if (/^[ \t]{0,3}>/.test(lines[i])) lines[i] = blank(lines[i]);
+  }
+  return lines.join('\n')
+    .replace(/`[^`\n]+`/g, blank)
+    .replace(/"[^"\n]*"/g, blank)
+    .replace(/\u201C[^\u201C\u201D\n]*\u201D/g, blank)
+    .replace(/\u2018[^\u2018\u2019\n]*\u2019/g, blank);
+}
+
+// --------------------------------------------------------------------------
 // Find the first matching speculation marker label (for the block reason).
 // --------------------------------------------------------------------------
 function findSpeculationMarker(text) {
@@ -414,6 +461,8 @@ async function main() {
   if (!lastText) {
     process.exit(0);
   }
+  // Marker matching ignores quoted material (see maskQuotedText).
+  const markerText = extractLastAssistantMarkerText(transcriptPath) || '';
 
   // Compute a hash of the last message text for loop-safety.
   const msgHash = crypto.createHash('sha1').update(lastText).digest('hex');
@@ -463,7 +512,7 @@ async function main() {
         outcome = 'user-override';
       } else if (hasAcknowledgment(lastText)) {
         outcome = 'evidence-added';
-      } else if (findSpeculationMarker(lastText)) {
+      } else if (findSpeculationMarker(markerText)) {
         outcome = 'repeat-speculation';
       }
       if (outcome) {
@@ -501,7 +550,7 @@ async function main() {
   // asymmetric-trust contract: Jev only ever ADDS a block via jev-assist's
   // 'add-block' trust (baseline false), the regex/acknowledgment check below
   // still runs on its own and is what actually blocks when Jev doesn't.
-  const regexMarkerPreview = findSpeculationMarker(lastText);
+  const regexMarkerPreview = findSpeculationMarker(markerText);
   const regexWouldBlock = !!regexMarkerPreview &&
     !(regexMarkerPreview && hasAcknowledgment(lastText));
 
@@ -581,7 +630,7 @@ async function main() {
   let marker = null;
   if (!jevBlock) {
     // Check for speculation markers.
-    marker = findSpeculationMarker(lastText);
+    marker = findSpeculationMarker(markerText);
     if (!marker) finish('allow');
 
     // Check for acknowledgment — if present, hedging is honest; allow.

@@ -544,3 +544,52 @@ for (const text of REVIEW_ALLOW) {
     }
   });
 }
+
+// ---- Quoted material is not the session's own speculation (F3) ----
+function verdict(text) {
+  const h = makeHome();
+  try {
+    const tp = h.writeTranscript([assistantMessage(text)]);
+    return testHook(HOOK, stopPayload(tp), { home: h.home });
+  } finally {
+    h.cleanup();
+  }
+}
+
+const QUOTED_ALLOW = [
+  'The peer wrote: "the cache must be stale". I checked: cache mtime is 2 min old, so that claim is false.',
+  '> the cache must be stale\n\nI checked the mtime: 2 min old, claim is false.',
+  'Intro line.\n  > it is probably the cache\nChecked the mtime: fresh.',
+  'The reviewer said “this is probably a race”; the trace shows a null deref at line 40.',
+  'The log line reads `value must be positive` and the input was -1.',
+  'Output:\n```\nthe cache must be stale\n```\nExit code 0.',
+  'Output:\n~~~\nit is probably fine\n~~~\nExit code 0.',
+];
+
+const OWN_HEDGE_BLOCK = [
+  "It's probably the cache.",
+  'This must be the cause.',
+  // apostrophes are not quote delimiters
+  "Don't worry, it's probably the cache and it's likely stale.",
+  // unclosed double quote / backtick / fence masks nothing
+  'The peer wrote: "the cache must be stale. I did not look.',
+  'Run `make then it is probably fine.',
+  'Output:\n```\nit is probably fine',
+  // own hedge outside a closed quote still fires
+  'The peer wrote "ok"; this must be the cause.',
+  '> quoted line\nThis must be the cause.',
+];
+
+for (const text of QUOTED_ALLOW) {
+  test(`ALLOW (quoted hedge): ${JSON.stringify(text).slice(0, 70)}`, () => {
+    const r = verdict(text);
+    assert.ok(!isBlock(r), `quoted hedge must not block; stdout: ${r.stdout}`);
+  });
+}
+
+for (const text of OWN_HEDGE_BLOCK) {
+  test(`BLOCK (own hedge): ${JSON.stringify(text).slice(0, 70)}`, () => {
+    const r = verdict(text);
+    assert.ok(isBlock(r), `own hedge must block; stdout: ${r.stdout}`);
+  });
+}
