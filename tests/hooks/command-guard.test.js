@@ -1181,7 +1181,10 @@ const BASELINE_REASON =
   'spawn a subagent, pass the command, let it run and return only a tight ' +
   'summary. The coordinator synthesizes the summary; raw output never reaches ' +
   'the main thread. Heavy command detected (verb: npm) — delegate to a subagent. ' +
-  'Verifying delegated work with a bounded single-target check is allowed: pipe it to tail/head/grep -c.';
+  'Inline-allowed ONLY when piped to tail/head/wc/grep -c/grep -m N: `python3 -m pytest -q <one file>`, ' +
+  '`node --test <1-2 files>`, `ctest -R <name>`, `<cc> -fsyntax-only`, `git clone --depth 1 <https-url> <scratch/tmp dir>`, ' +
+  'a non-heavy command with --check/--dry-run/--list, or `<python3|node|ruby|perl|php> <existing script> --check`. ' +
+  'Scratchpad scripts: run_in_background only. Everything else goes to a subagent.';
 
 test('DEVSWARM PRIMARY heavy command: still BLOCKED, reason names `devswarm.js spawn` as the primary exit', () => {
   const r = runHeavy('npm run build', PRIMARY_ENV);

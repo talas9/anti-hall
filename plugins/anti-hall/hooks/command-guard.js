@@ -3209,6 +3209,13 @@ function main() {
     devswarmPrimary = false;
   }
 
+  // Names EXACTLY the shapes isQualifyingSingleTargetCheck accepts (plus the
+  // run_in_background scratch-script rule) — keep in sync with those.
+  const INLINE_ALLOWED_HINT =
+    'Inline-allowed ONLY when piped to tail/head/wc/grep -c/grep -m N: `python3 -m pytest -q <one file>`, ' +
+    '`node --test <1-2 files>`, `ctest -R <name>`, `<cc> -fsyntax-only`, `git clone --depth 1 <https-url> <scratch/tmp dir>`, ' +
+    'a non-heavy command with --check/--dry-run/--list, or `<python3|node|ruby|perl|php> <existing script> --check`. ' +
+    'Scratchpad scripts: run_in_background only. Everything else goes to a subagent.';
   const reason = devswarmPrimary
     ? ('DEVSWARM COMMAND-DELEGATION RULE: the primary/main orchestrator never runs ' +
        'heavy/long/state-changing commands inline — raw output floods the main thread. ' +
@@ -3220,7 +3227,7 @@ function main() {
        '(cheap model: Haiku or similar) that runs it and returns only a tight summary. Do ' +
        'NOT hand a workspace-scale matter to a subagent. Heavy command detected ' + detail +
        ' — spin a workspace, or delegate to a subagent if it is genuinely small. ' +
-       'Verifying delegated work with a bounded single-target check is allowed: pipe it to tail/head/grep -c.')
+       INLINE_ALLOWED_HINT)
     : ('COMMAND-DELEGATION RULE: heavy/long/state-changing commands must NEVER run ' +
        'inline in the main coordinator context — they fill the main thread with raw ' +
        'output and the most counterproductive thing a coordinator can do. ' +
@@ -3229,7 +3236,7 @@ function main() {
        'summary. The coordinator synthesizes the summary; raw output never reaches ' +
        'the main thread. Heavy command detected ' + detail +
        ' — delegate to a subagent. ' +
-       'Verifying delegated work with a bounded single-target check is allowed: pipe it to tail/head/grep -c.');
+       INLINE_ALLOWED_HINT);
 
   process.stdout.write(JSON.stringify({ decision: 'block', reason }) + '\n');
   process.exit(2);
