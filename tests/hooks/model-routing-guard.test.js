@@ -1003,3 +1003,47 @@ test('DEPLOY FLOOR (F4): a deploy-shaped opus spawn no longer skips the other ro
     assertAdvisory(r, /AGENT-ROUTING/);
   } finally { h.cleanup(); }
 });
+
+// F2: DEPLOY_STRONG_RE (`\bdeploy\w*`) used to match the filename token
+// `deploy_webui.sh` even when the prompt is only doc/read work that MENTIONS
+// the script — not an actual deploy. isDeployShaped now strips path- and
+// identifier-like tokens (contain `_`/`/`, or end in a `.ext`) before
+// matching, so a filename mention no longer masquerades as deploy-shaped
+// work, while a genuine deploy sentence (plain words) still does.
+test('DEPLOY FLOOR (F2): a doc/read-only prompt that merely mentions a script filename containing "deploy" is NOT deploy-shaped (ordinary misroute BLOCK still applies)', () => {
+  const h = makeHome();
+  try {
+    const r = testHook(HOOK, payload({
+      model: 'opus', subagent_type: 'general-purpose', description: 'grep the script',
+      prompt: 'grep tools/deploy_webui.sh for the CORS header value and tail the output',
+    }), { home: h.home });
+    assertBlock(r, /haiku/);
+  } finally { h.cleanup(); }
+});
+
+test('DEPLOY FLOOR (F2): a path token containing "deploy" inside docs/deploy.md is NOT deploy-shaped', () => {
+  const h = makeHome();
+  try {
+    const r = testHook(HOOK, payload({
+      model: 'opus', subagent_type: 'general-purpose', description: 'grep the docs',
+      prompt: 'grep docs/deploy.md for the release date and tail the output',
+    }), { home: h.home });
+    assertBlock(r, /haiku/);
+  } finally { h.cleanup(); }
+});
+
+for (const prompt of [
+  'deploy the webui to production',
+  'run the deploy',
+  'firebase deploy --only functions',
+]) {
+  test(`DEPLOY FLOOR (F2): a genuine deploy sentence ("${prompt}") is still deploy-shaped`, () => {
+    const h = makeHome();
+    try {
+      const r = testHook(HOOK, payload({
+        model: 'opus', subagent_type: 'general-purpose', description: 'deploy', prompt,
+      }), { home: h.home });
+      assertSilentAllow(r);
+    } finally { h.cleanup(); }
+  });
+}

@@ -110,10 +110,26 @@ const HARD_EXECUTION = ['run script', 'install', 'build', 'run tests', 'git push
 const DEPLOY_STRONG_RE =
   /\b(deploy\w*|redeploy\w*|migrat\w*|rollbacks?|roll\s+back|token\s+rotation|rotat\w*\s+(?:the\s+|a\s+)?(?:api\s+)?(?:tokens?|keys?|secrets?|credentials?)|wrangler|terraform|kubectl\s+apply|helm\s+(?:install|upgrade)|firebase\s+deploy|db\s+migrate)\b/i;
 const DEPLOY_WEAK_RE = /\b(prod|production|secrets?|credentials?)\b/gi;
+
+// Strip path- and identifier-like tokens before deploy-shape matching: a
+// filename/script token (e.g. `deploy_webui.sh`, `docs/deploy.md`) merely
+// MENTIONS a name that contains "deploy" — it is not deploy-shaped WORK. A
+// token counts as path/identifier-like (and is dropped) when it contains `_`
+// or `/`, or ends in a file extension (`.` followed by 1-10 alnum chars). A
+// real deploy PROMPT ("deploy the webui to production", "run the deploy",
+// "firebase deploy --only functions") uses plain words, so it is untouched.
+function stripPathLikeTokens(s) {
+  return s.replace(/\S+/g, (tok) => {
+    if (tok.includes('_') || tok.includes('/')) return ' ';
+    if (/\.[A-Za-z0-9]{1,10}$/.test(tok)) return ' ';
+    return tok;
+  });
+}
 function isDeployShaped(corpus) {
-  if (DEPLOY_STRONG_RE.test(corpus)) return true;
+  const scanCorpus = stripPathLikeTokens(corpus);
+  if (DEPLOY_STRONG_RE.test(scanCorpus)) return true;
   const kinds = new Set();
-  for (const m of corpus.matchAll(DEPLOY_WEAK_RE)) {
+  for (const m of scanCorpus.matchAll(DEPLOY_WEAK_RE)) {
     kinds.add(m[1].toLowerCase().replace(/s$/, '').replace(/^production$/, 'prod'));
   }
   return kinds.size >= 2;
