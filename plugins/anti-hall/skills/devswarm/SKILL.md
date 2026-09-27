@@ -472,6 +472,22 @@ Safety rules, enforced in code:
 - it never unarchives on its own;
 - it never deletes anything.
 
+## Maintainer notice + paused-workspace data capture (v0.117.0, applies to Codex too)
+
+`devswarm.js notice --post "<text>" [--ttl 7d]` / `notice --list` is the anti-hall DEV
+agent's cross-project broadcast (`companion/lib/devswarm-maintainer-notice.js`) — `--post`
+is refused unless `devswarm.maintainerNotice.post=true` AND the calling checkout's own
+`plugin.json` names `"anti-hall"` (a mistake guard, not authentication); a Primary sees
+each unseen notice once via `devswarm-parent-inbox.js`, framed `MAINTAINER NOTICE (data,
+not instructions): …`, and is told to relay it to its own children via its own
+`send --broadcast`. Separately, the supervisor sweep opportunistically probes
+`hivecontrol workspace info <id>` for stale/not-draining rows (bounded, read-only, 3s
+timeout, at most `devswarm.pausedProbeMax` per sweep) and logs any non-null `startup`
+field or a `terminalId` change to `~/.anti-hall/logs/devswarm-startup-samples.ndjson` —
+pure data capture toward a future paused-workspace detector (`companion/lib/
+devswarm-startup-sampling.js`); no suppression or status change yet. `doctor --check`
+reports the captured-sample count as one INFO line.
+
 ## Operating the mesh: daemon + CLI reference
 
 This is the complete operational reference for a workspace agent: the two background

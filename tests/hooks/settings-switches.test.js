@@ -109,6 +109,7 @@ const NEW_KEYS = [
 const LOCKED_KEYS = [
   'safety.gitGuard', 'safety.commandGuard', 'safety.editGuard', 'safety.swarmGuard',
   'guards.stashGuard', 'guards.editGuardAllow', 'guards.allowSubagentMailbox',
+  'devswarm.maintainerNotice.post',
 ];
 
 // Exact warning text per key (owner-specified wording, 2026-09-25 revision):
@@ -123,6 +124,7 @@ const EXPECTED_WARNING = {
   'guards.stashGuard': 'Turning off stash-guard means git stash commands that can silently drop uncommitted work will no longer be blocked. Ask the user to confirm, then re-run with --confirmed.',
   'guards.editGuardAllow': 'Adding foo to edit-guard\'s allow list means those files can be edited without edit-guard\'s protection. Ask the user to confirm, then re-run with --confirmed.',
   'guards.allowSubagentMailbox': 'Turning on allow-subagent-mailbox means subagents can read/ack the Primary\'s mailbox, which is normally blocked. Ask the user to confirm, then re-run with --confirmed.',
+  'devswarm.maintainerNotice.post': 'Turning on maintainer-notice.post means this checkout would be allowed to post a maintainer notice that every project\'s Primary sees — the checkout-name check is a mistake guard, not authentication, so only turn this on in the anti-hall dev checkout. Ask the user to confirm, then re-run with --confirmed.',
 };
 // riskyValueFor/safeValueFor: the value in each direction, per entry.safetyDirection
 // ('off' risky=false/safe=true; 'on' risky=true/safe=false; 'add' risky='foo'/safe='').

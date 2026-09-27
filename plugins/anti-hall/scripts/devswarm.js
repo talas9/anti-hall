@@ -19453,6 +19453,7 @@ const VERB_HELP = {
   'auto-archive': { synopsis: 'show the auto-archive plan (done+merged+clean+no-unread+idle workspaces)', mutates: 'read-only' },
   'prune-archived': { synopsis: 'prune-archived --older-than <days> (dry run) | --confirm-ids <ids> --plan <nonce>', mutates: 'dry run writes a plan file; --confirm-ids DELETES the listed archived workspaces via hivecontrol (owner-approved only)' },
   retention: { synopsis: 'message retention: status | run [--dry-run] [--store X] | restore --store X --month yyyy-mm', mutates: '`run` archives then prunes old message bodies (rows, positions and hashes stay) and VACUUMs; `restore` re-imports an archive month; `status`/`run --dry-run` are read-only' },
+  notice: { synopsis: 'notice --post "<text>" [--ttl 7d] | notice --list — the anti-hall dev agent\'s cross-project maintainer broadcast', mutates: '`--post` appends one entry to ~/.anti-hall/devswarm/maintainer-notices.jsonl (refused unless devswarm.maintainerNotice.post=true AND this checkout is anti-hall itself); `--list` is read-only' },
 };
 // verbListFromSwitch() — the verb names actually dispatched by run()'s own
 // switch statement, extracted from run's own source text. Deliberately NOT
@@ -20007,9 +20008,27 @@ function runArmed(cmd, positionals, flags, ctx, argv) {
         else r = { ok: false, error: 'usage: retention status | run [--dry-run] [--store X] | restore --store X --month yyyy-mm' };
         return { code: r && r.ok ? 0 : 2, result: r };
       }
+      case 'notice': {
+        // `notice --post "<text>" [--ttl 7d]` | `notice --list` — the
+        // maintainer-notice broadcast (companion/lib/devswarm-maintainer-notice.js).
+        // --post is refused unless devswarm.maintainerNotice.post=true AND this
+        // checkout's own plugin.json names "anti-hall" (mistake guard, not
+        // authentication — see that module's header). No `--list`/`--post` ->
+        // usage error (this verb has no implicit default action).
+        const notice = require('../companion/lib/devswarm-maintainer-notice.js');
+        let r;
+        if (hasFlag(flags, 'post')) {
+          r = notice.post({ home: ctx.home, env: ctx.env, cwd: ctx.cwd || process.cwd(), now: ctx.now, text: one(flags, 'post'), ttl: one(flags, 'ttl') });
+        } else if (hasFlag(flags, 'list')) {
+          r = notice.list({ home: ctx.home, now: ctx.now });
+        } else {
+          r = { ok: false, error: 'usage: notice --post "<text>" [--ttl 7d] | notice --list' };
+        }
+        return { code: r && r.ok ? 0 : 2, result: r };
+      }
       default:
         return { code: 2, result: { ok: false, error: 'unknown command: ' + JSON.stringify(cmd || '') +
-          ' (register|register-primary|ensure|heartbeat|inbox|workspaces|gate|gate-intent|nudge|archive|unarchive|archive-ignore|archive-unignore|archive-request|migrate|migrate-owner-keys|logs|send|roster|app-state|app-sync|sync-ui|diagnose|healthcheck|mesh|reconcile|reap-stale|reconcile-active|spawn|merge|skip|auto-archive|prune-archived|retention)' } };
+          ' (register|register-primary|ensure|heartbeat|inbox|workspaces|gate|gate-intent|nudge|archive|unarchive|archive-ignore|archive-unignore|archive-request|migrate|migrate-owner-keys|logs|send|roster|app-state|app-sync|sync-ui|diagnose|healthcheck|mesh|reconcile|reap-stale|reconcile-active|spawn|merge|skip|auto-archive|prune-archived|retention|notice)' } };
     }
   } catch (e) {
     if (e && e.seatRefusal) throw e; // run() reports it as primary-seat-conflict

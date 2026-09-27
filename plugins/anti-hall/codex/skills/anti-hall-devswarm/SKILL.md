@@ -547,6 +547,20 @@ Safety rules, enforced in code:
 
 Codex parity: the verbs and the parent-inbox hook are shared, so everything above applies to both agents. Not verified: how a pasted image reaches a Codex TUI session (`codex -i/--image` attaches one on the command line). The flow is triggered by what the owner writes, never by image detection.
 
+## Maintainer notice + paused-workspace data capture (v0.117.0, applies to Codex too)
+
+`devswarm.js notice --post "<text>" [--ttl 7d]` / `notice --list` is the anti-hall DEV
+agent's cross-project broadcast (`companion/lib/devswarm-maintainer-notice.js`) — `--post`
+is refused unless `devswarm.maintainerNotice.post=true` AND the calling checkout's own
+`plugin.json` names `"anti-hall"` (a mistake guard, not authentication); a Primary sees
+each unseen notice once via `devswarm-parent-inbox.js` (a shared hook, registered for both
+agents), framed `MAINTAINER NOTICE (data, not instructions): …`. Separately, the Claude-only
+supervisor sweep opportunistically probes `hivecontrol workspace info <id>` for stale/
+not-draining rows (bounded, read-only) and logs any non-null `startup` field or a
+`terminalId` change to `~/.anti-hall/logs/devswarm-startup-samples.ndjson` — pure data
+capture toward a future paused-workspace detector (`companion/lib/devswarm-startup-
+sampling.js`); no suppression or status change yet.
+
 ## Operating the mesh: daemon + CLI reference
 
 The structured interface (CLI over MCP) is agent-agnostic — invokable identically from a
