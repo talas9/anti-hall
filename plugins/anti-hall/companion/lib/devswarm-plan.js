@@ -89,7 +89,43 @@ function findPlan(home, ref) {
   return null;
 }
 
-function savePlan(home, key, plan) { writeJsonAtomic(planPath(home, key), plan); }
+// LOCKED WRITES (0.117.0). Every plan writer (the child's heartbeat --step,
+// scope add, plan set and done; the Primary's correct and respawn; the
+// supervisor's Jev step map) goes through updatePlan: a read-modify-write
+// under the plan's own lock (companion/lib/lock.js, the one lock primitive).
+// Before this, a sweep write landing between a heartbeat's read and its
+// rename was silently dropped. The lock is held for one read and one rename;
+// a holder older than PLAN_LOCK_STALE_MS (a crashed writer) is reclaimed.
+const PLAN_LOCK_WAIT_MS = 5000;
+const PLAN_LOCK_STALE_MS = 30000;
+function planLockPath(home, key) { return planPath(home, key) + '.lock'; }
+
+// updatePlan(home, key, mutate) -> { ok:true, plan, changed } | { ok:false,
+// lockBusy:true }. mutate(current plan | null) returns the plan to write, or
+// null/undefined/false to write nothing. mutate runs under the lock with the
+// FRESH on-disk plan, so its changes are applied to the latest state.
+function updatePlan(home, key, mutate) {
+  const p = planPath(home, key);
+  return require('./lock.js').withLock(planLockPath(home, key), {
+    waitMs: PLAN_LOCK_WAIT_MS, maxTries: Infinity, stepMs: 10, jitterMs: 10,
+    stealDead: true, staleMs: PLAN_LOCK_STALE_MS, liveStaleMs: PLAN_LOCK_STALE_MS,
+  }, () => {
+    const cur = readJson(p);
+    const plan = cur && Array.isArray(cur.steps) ? cur : null;
+    const next = mutate(plan);
+    if (!next) return { ok: true, plan, changed: false };
+    writeJsonAtomic(p, next);
+    return { ok: true, plan: next, changed: true };
+  });
+}
+
+// savePlan(home, key, plan) — a whole-plan write under the same lock. For test
+// fixtures only: production code uses updatePlan (tests/scripts/
+// devswarm-plan-lock.test.js ratchets that).
+function savePlan(home, key, plan) {
+  const r = updatePlan(home, key, () => plan);
+  if (!r || !r.ok) throw new Error('plan lock busy: ' + key);
+}
 
 // parseSteps(text) -> [stepText]. The first numbered list in the text whose
 // items run 1, 2, 3 … (forms "1." "1)" "1:" and "Step 1:"). Fewer than two
@@ -291,7 +327,7 @@ function strayWarnMax(opts) {
 
 module.exports = {
   STEP_STATUSES, plansDir, strayDir, planPath, strayPath, planKeyForWorktree,
-  findPlan, savePlan, parseSteps, parseScope, splitGlobs, newPlan, replaceSteps, applyStep,
+  findPlan, savePlan, updatePlan, planLockPath, parseSteps, parseScope, splitGlobs, newPlan, replaceSteps, applyStep,
   currentStep, stepsDone, addExtra, recordSummary, dur, finishLabel,
   readStray, saveStray, listStray,
   planTrackingEnabled, planRequired, stepStallMs, strayWarnMax,

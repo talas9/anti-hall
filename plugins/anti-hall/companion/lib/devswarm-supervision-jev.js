@@ -274,9 +274,13 @@ function jevAdjust(ctx) {
       const n = map && Number(map.answer);
       if (effective(map, STEPMAP_THRESHOLD) && Number.isInteger(n) && n >= 1 && n <= plan.steps.length && plan.inferred_step !== n) {
         // Never overrides the child's own report: finishLabel shows ~N only
-        // while no step was ever reported. Re-read right before the write.
-        const fresh = planLib.findPlan(ctx.home, { id: ctx.d.id, worktreePath: ctx.d.worktreePath });
-        if (fresh && fresh.key === ctx.key) { fresh.plan.inferred_step = n; planLib.savePlan(ctx.home, ctx.key, fresh.plan); }
+        // while no step was ever reported. Written under the plan lock on the
+        // fresh plan, so a concurrent heartbeat --step is never lost.
+        planLib.updatePlan(ctx.home, ctx.key, (fresh) => {
+          if (!fresh || fresh.inferred_step === n) return null;
+          fresh.inferred_step = n;
+          return fresh;
+        });
       }
     }
 

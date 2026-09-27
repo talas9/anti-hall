@@ -8482,16 +8482,17 @@ function cmdPlan(sub, id, flags, ctx) {
   }
   const scope = flags.scope ? planLib.splitGlobs(csvList(flags, 'scope').join(',')) : null;
   const found = planLib.findPlan(home, ref);
-  if (found) {
-    const changed = planLib.replaceSteps(found.plan, steps, scope, now);
-    if (changed) planLib.savePlan(home, found.key, found.plan);
-    return { ok: true, action: 'plan', sub, id, key: found.key, created: false, changed, steps: found.plan.steps.length, scope: found.plan.scope_globs };
-  }
-  const key = planLib.planKeyForWorktree(ref.worktreePath) || id;
-  const plan = planLib.newPlan({ key, id, worktreePath: ref.worktreePath, steps, scope: scope || [], base: null, source: 'plan-set', now });
-  planLib.savePlan(home, key, plan);
-  supervisionMetrics.record(home, 'plan', { now, id, key, source: 'plan-set', steps: plan.steps.length });
-  return { ok: true, action: 'plan', sub, id, key, created: true, changed: true, steps: plan.steps.length, scope: plan.scope_globs };
+  const key = found ? found.key : (planLib.planKeyForWorktree(ref.worktreePath) || id);
+  let created = false;
+  let changed = false;
+  const w = planLib.updatePlan(home, key, (cur) => {
+    if (cur) { created = false; changed = planLib.replaceSteps(cur, steps, scope, now); return changed ? cur : null; }
+    created = true; changed = true;
+    return planLib.newPlan({ key, id, worktreePath: ref.worktreePath, steps, scope: scope || [], base: null, source: 'plan-set', now });
+  });
+  if (!w || !w.ok) return { ok: false, action: 'plan', sub, id, key, reason: 'lock-busy', error: 'the plan file is locked by another writer — retry' };
+  if (created) supervisionMetrics.record(home, 'plan', { now, id, key, source: 'plan-set', steps: w.plan.steps.length });
+  return { ok: true, action: 'plan', sub, id, key, created, changed, steps: w.plan.steps.length, scope: w.plan.scope_globs };
 }
 
 // cmdScope(sub, id, flags, ctx) — Meeseeks P2: `scope add <id> --glob G
@@ -8509,18 +8510,19 @@ function cmdScope(sub, id, flags, ctx) {
   if (!globs.length) return { ok: false, action: 'scope', sub, id, error: '--glob is required' };
   if (note === undefined || !String(note).trim()) return { ok: false, action: 'scope', sub, id, error: '--note is required: say what the user asked for, so the Primary can check it' };
   const ref = planRefFor(home, id, ctx);
-  let found = planLib.findPlan(home, ref);
-  let created = false;
-  if (!found) {
-    const key = planLib.planKeyForWorktree(ref.worktreePath) || id;
-    found = { key, plan: planLib.newPlan({ key, id, worktreePath: ref.worktreePath, steps: [], scope: [], base: null, source: 'scope-add', now }) };
-    created = true;
-  }
+  const found = planLib.findPlan(home, ref);
+  const key = found ? found.key : (planLib.planKeyForWorktree(ref.worktreePath) || id);
   let changed = false;
-  for (const g of globs) if (planLib.addExtra(found.plan, g, note, now)) changed = true;
-  if (changed || created) planLib.savePlan(home, found.key, found.plan);
-  if (changed) supervisionMetrics.record(home, 'extra', { now, id, key: found.key, globs: globs.length });
-  return { ok: true, action: 'scope', sub, id, key: found.key, changed, extras: found.plan.extras };
+  const w = planLib.updatePlan(home, key, (cur) => {
+    const created = !cur;
+    const plan = cur || planLib.newPlan({ key, id, worktreePath: ref.worktreePath, steps: [], scope: [], base: null, source: 'scope-add', now });
+    changed = false;
+    for (const g of globs) if (planLib.addExtra(plan, g, note, now)) changed = true;
+    return changed || created ? plan : null;
+  });
+  if (!w || !w.ok) return { ok: false, action: 'scope', sub, id, key, reason: 'lock-busy', error: 'the plan file is locked by another writer — retry' };
+  if (changed) supervisionMetrics.record(home, 'extra', { now, id, key, globs: globs.length });
+  return { ok: true, action: 'scope', sub, id, key, changed, extras: w.plan.extras };
 }
 
 // cmdCorrect(id, flags, ctx) — Meeseeks P2: the Primary's correction for a
@@ -8551,17 +8553,22 @@ function cmdCorrect(id, flags, ctx) {
   }
   const sendOk = !!(sent && sent.code === 0);
   if (!sendOk) return { ok: false, action: 'correct', id, message, sent: sent && sent.result, error: 'send failed — warned_at not recorded' };
-  const cur = planLib.currentStep(found.plan);
-  found.plan.warned_at = now;
-  found.plan.warned_step = cur ? cur.n : null;
-  found.plan.warned_signals = stray && Array.isArray(stray.active) ? Array.from(new Set(stray.active.map((a) => a.signal))) : [];
-  // Jev recommendations the Primary saw when it decided to correct (follow /
-  // override measure in supervision-report).
-  found.plan.warned_jev = [];
-  for (const a of (stray && Array.isArray(stray.active) ? stray.active : [])) {
-    for (const n of (Array.isArray(a.jev) ? a.jev : [])) found.plan.warned_jev.push({ integration: n.integration, supports: n.supports === true });
-  }
-  planLib.savePlan(home, found.key, found.plan);
+  const w = planLib.updatePlan(home, found.key, (plan) => {
+    if (!plan) return null;
+    const cur = planLib.currentStep(plan);
+    plan.warned_at = now;
+    plan.warned_step = cur ? cur.n : null;
+    plan.warned_signals = stray && Array.isArray(stray.active) ? Array.from(new Set(stray.active.map((a) => a.signal))) : [];
+    // Jev recommendations the Primary saw when it decided to correct (follow /
+    // override measure in supervision-report).
+    plan.warned_jev = [];
+    for (const a of (stray && Array.isArray(stray.active) ? stray.active : [])) {
+      for (const n of (Array.isArray(a.jev) ? a.jev : [])) plan.warned_jev.push({ integration: n.integration, supports: n.supports === true });
+    }
+    return plan;
+  });
+  if (!w || !w.ok || !w.changed) return { ok: false, action: 'correct', id, message, sent: sent.result, error: 'the correction was sent, but warned_at could not be recorded (plan file locked or gone) — retry' };
+  found.plan = w.plan;
   supervisionMetrics.record(home, 'correction', { now, id, key: found.key, step: found.plan.warned_step,
     signals: stray && Array.isArray(stray.active) ? stray.active.map((a) => a.signal) : [], jev: found.plan.warned_jev });
   return { ok: true, action: 'correct', id, message, warned_at: now, step: found.plan.warned_step, sent: sent.result };
@@ -8580,31 +8587,41 @@ function applyHeartbeatPlan(id, flags, ctx, now) {
     if (stepRaw === undefined) return undefined;
     return { ok: false, reason: 'no-plan', hint: 'no step plan for ' + id + ' — run `devswarm.js plan set ' + id + ' --steps "1. …\\n2. …"` first; the heartbeat itself was recorded' };
   }
-  const out = { ok: true, key: found.key };
-  let dirty = false;
-  if (stepRaw !== undefined) {
-    const status = one(flags, 'status') !== undefined ? String(one(flags, 'status')) : 'doing';
-    const r = planLib.applyStep(found.plan, stepRaw, status, now);
-    if (r.error) return { ok: false, reason: 'bad-step', error: r.error, key: found.key };
-    out.step = Number(stepRaw); out.status = status; out.changed = r.changed;
-    if (r.changed) {
-      dirty = true;
-      supervisionMetrics.record(home, 'step', { now, id, key: found.key, step: Number(stepRaw), status });
-      // The correction-worked measure: step progress within stepStallMin
-      // of the Primary's last correction, counted once per correction.
-      const w = found.plan.warned_at;
-      if (Number.isFinite(w) && now >= w && found.plan.correction_followed_for !== w
-          && now - w <= planLib.stepStallMs({ env: ctx.env, home })) {
-        found.plan.correction_followed_for = w;
-        supervisionMetrics.record(home, 'correction-followed', { now, id, key: found.key, step: Number(stepRaw), latencyMs: now - w,
-          signals: Array.isArray(found.plan.warned_signals) ? found.plan.warned_signals : [],
-          jev: Array.isArray(found.plan.warned_jev) ? found.plan.warned_jev : [] });
+  const status = one(flags, 'status') !== undefined ? String(one(flags, 'status')) : 'doing';
+  let out = null;
+  const events = [];
+  // Read-modify-write under the plan lock: the mutation runs on the FRESH
+  // on-disk plan, so a concurrent sweep or verb write is never overwritten.
+  const w = planLib.updatePlan(home, found.key, (plan) => {
+    events.length = 0;
+    if (!plan) { out = { ok: false, reason: 'no-plan', key: found.key }; return null; }
+    out = { ok: true, key: found.key };
+    let dirty = false;
+    if (stepRaw !== undefined) {
+      const r = planLib.applyStep(plan, stepRaw, status, now);
+      if (r.error) { out = { ok: false, reason: 'bad-step', error: r.error, key: found.key }; return null; }
+      out.step = Number(stepRaw); out.status = status; out.changed = r.changed;
+      if (r.changed) {
+        dirty = true;
+        events.push(['step', { now, id, key: found.key, step: Number(stepRaw), status }]);
+        // The correction-worked measure: step progress within stepStallMin
+        // of the Primary's last correction, counted once per correction.
+        const wa = plan.warned_at;
+        if (Number.isFinite(wa) && now >= wa && plan.correction_followed_for !== wa
+            && now - wa <= planLib.stepStallMs({ env: ctx.env, home })) {
+          plan.correction_followed_for = wa;
+          events.push(['correction-followed', { now, id, key: found.key, step: Number(stepRaw), latencyMs: now - wa,
+            signals: Array.isArray(plan.warned_signals) ? plan.warned_signals : [],
+            jev: Array.isArray(plan.warned_jev) ? plan.warned_jev : [] }]);
+        }
       }
     }
-  }
-  if (summary !== undefined) { planLib.recordSummary(found.plan, summary, stepRaw !== undefined, now); dirty = true; }
-  if (dirty) planLib.savePlan(home, found.key, found.plan);
-  out.label = planLib.finishLabel(found.plan, now);
+    if (summary !== undefined) { planLib.recordSummary(plan, summary, stepRaw !== undefined, now); dirty = true; }
+    out.label = planLib.finishLabel(plan, now);
+    return dirty ? plan : null;
+  });
+  if (!w || !w.ok) return { ok: false, reason: 'lock-busy', key: found.key, hint: 'the plan file is locked by another writer — the heartbeat itself was recorded; re-send the step' };
+  for (const [type, fields] of events) supervisionMetrics.record(home, type, fields);
   return out;
 }
 
@@ -14112,13 +14129,17 @@ function cmdDone(idArg, flags, ctx) {
   // workspace that had a step plan (once per plan; best-effort).
   try {
     const found = planLib.findPlan(home, { id, worktreePath: callerIc.worktreeRoot || null });
-    if (found && found.plan.steps.length && !Number.isFinite(found.plan.done_at)) {
-      const doneNow = Number.isFinite(ctx.now) ? ctx.now : Date.now();
-      found.plan.done_at = doneNow;
-      planLib.savePlan(home, found.key, found.plan);
+    const doneNow = Number.isFinite(ctx.now) ? ctx.now : Date.now();
+    const w = found ? planLib.updatePlan(home, found.key, (plan) => {
+      if (!plan || !plan.steps.length || Number.isFinite(plan.done_at)) return null;
+      plan.done_at = doneNow;
+      return plan;
+    }) : null;
+    if (w && w.ok && w.changed) {
+      const plan = w.plan;
       supervisionMetrics.record(home, 'done', { now: doneNow, id, key: found.key,
-        durationMs: Number.isFinite(found.plan.created_at) ? doneNow - found.plan.created_at : null,
-        stepsDone: planLib.stepsDone(found.plan), stepsPlanned: found.plan.steps.length,
+        durationMs: Number.isFinite(plan.created_at) ? doneNow - plan.created_at : null,
+        stepsDone: planLib.stepsDone(plan), stepsPlanned: plan.steps.length,
         tokensTotal: (() => { const t = require('../companion/lib/devswarm-token-usage.js').readState(home, found.key); return t && Number.isFinite(t.total) ? Math.round(t.total) : null; })() });
     }
   } catch (_) { /* metrics never affect done */ }
@@ -18892,7 +18913,8 @@ function cmdSpawn(rest, ctx) {
           key, id: meshId, worktreePath, steps, scope: planLib.parseScope(brief), base, source: 'spawn',
           now: Number.isFinite(ctx.now) ? ctx.now : Date.now(),
         });
-        planLib.savePlan(ctx.home, key, plan);
+        const pw = planLib.updatePlan(ctx.home, key, () => plan);
+        if (!pw || !pw.ok) throw new Error('the plan file is locked by another writer');
         supervisionMetrics.record(ctx.home, 'plan', { now: plan.created_at, id: meshId, key, source: 'spawn', steps: steps.length });
         planInfo = { written: true, key, steps: steps.length, scope: plan.scope_globs };
       } else {
