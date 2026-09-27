@@ -1048,6 +1048,54 @@ for (const prompt of [
   });
 }
 
+// R1-4: an executed path-like deploy script token (follows an execution verb,
+// or is itself `./x`) must KEEP the deploy floor advisory -- previously
+// stripPathLikeTokens dropped it unconditionally, same as a merely-mentioned
+// filename, losing the advisory for a real executed deploy.
+test('DEPLOY FLOOR (R1-4): "run scripts/deploy.sh to production" (haiku) still gets the advisory', () => {
+  const h = makeHome();
+  try {
+    const r = testHook(HOOK, payload({
+      model: 'haiku', subagent_type: 'general-purpose', description: 'run script',
+      prompt: 'run scripts/deploy.sh to production',
+    }), { home: h.home });
+    assertAdvisory(r, /at least model:'sonnet'/);
+  } finally { h.cleanup(); }
+});
+
+test('DEPLOY FLOOR (R1-4): "execute ./deploy-prod.sh now" (haiku) still gets the advisory', () => {
+  const h = makeHome();
+  try {
+    const r = testHook(HOOK, payload({
+      model: 'haiku', subagent_type: 'general-purpose', description: 'run script',
+      prompt: 'execute ./deploy-prod.sh now',
+    }), { home: h.home });
+    assertAdvisory(r, /at least model:'sonnet'/);
+  } finally { h.cleanup(); }
+});
+
+test('DEPLOY FLOOR (R1-4): read-only "grep tools/deploy_webui.sh …" stays silent (not deploy-shaped)', () => {
+  const h = makeHome();
+  try {
+    const r = testHook(HOOK, payload({
+      model: 'opus', subagent_type: 'general-purpose', description: 'grep the script',
+      prompt: 'grep tools/deploy_webui.sh for the CORS header value and tail the output',
+    }), { home: h.home });
+    assertBlock(r, /haiku/);
+  } finally { h.cleanup(); }
+});
+
+test('DEPLOY FLOOR (R1-4): an executed deploy script does not wrongly BLOCK an opus spawn', () => {
+  const h = makeHome();
+  try {
+    const r = testHook(HOOK, payload({
+      model: 'opus', subagent_type: 'general-purpose', description: 'run script',
+      prompt: 'run scripts/deploy.sh to production',
+    }), { home: h.home });
+    assertSilentAllow(r);
+  } finally { h.cleanup(); }
+});
+
 // ---------------------------------------------------------------- Jev modelRouting
 // The modelRouting Jev integration is consulted ONLY on the two block paths
 // (Row 1 non-exempt, Row 2 strict) under the 'relax-block' trust rule. A spawn
