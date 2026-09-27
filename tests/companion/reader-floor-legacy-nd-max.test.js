@@ -34,8 +34,13 @@ const LEGACY_LINES = 40;
 
 function rm(p) { try { fs.rmSync(p, { recursive: true, force: true }); } catch (_) {} }
 function withHome(home, backend, fn) {
-  const prev = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE, ANTIHALL_DEVSWARM_STORE_BACKEND: process.env.ANTIHALL_DEVSWARM_STORE_BACKEND };
+  const prev = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE, ANTIHALL_DEVSWARM_STORE_BACKEND: process.env.ANTIHALL_DEVSWARM_STORE_BACKEND, ANTIHALL_INGEST_DRY_RUN: process.env.ANTIHALL_INGEST_DRY_RUN };
   process.env.HOME = home; process.env.USERPROFILE = home; process.env.ANTIHALL_DEVSWARM_STORE_BACKEND = backend;
+  // Hermetic: an ambient ANTIHALL_INGEST_DRY_RUN=1 (the local isolated-HOME
+  // convention) turns repairReaderFloorsAllStores into a dry run and fails
+  // every repair assertion; this fixture home is a temp dir, so real writes
+  // are safe here. Restored below.
+  delete process.env.ANTIHALL_INGEST_DRY_RUN;
   try { return fn(); } finally {
     for (const k of Object.keys(prev)) { if (prev[k] === undefined) delete process.env[k]; else process.env[k] = prev[k]; }
   }
