@@ -1772,3 +1772,111 @@ test('SWITCH devswarm.childTurn=false: no reminder and no heartbeat', () => {
     assert.ok(!fs.existsSync(path.join(heartbeatDir(h.home), 'b-1.json')), 'no heartbeat written when off');
   } finally { h.cleanup(); }
 });
+
+// ----- design B: "archive tells the live child to stop" -----
+// An archived workspace's descriptor must never be rewritten by
+// registerChildDescriptor (it has no archive check of its own — that is the
+// bug), and the child must instead see one ARCHIVED banner segment telling it
+// to write a handover and stop taking new work. archived/<id>.json is anti-
+// hall's own archive marker (row-state.js's contract — see
+// tests/companion/row-state.test.js): matching worktreePath + sessionId.
+
+function archivedMarkerPath(home, id) {
+  return path.join(home, '.anti-hall', 'devswarm', 'archived', id + '.json');
+}
+function writeArchivedMarker(home, id, worktreePath, sessionId) {
+  const dir = path.dirname(archivedMarkerPath(home, id));
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(archivedMarkerPath(home, id), JSON.stringify({ id, worktreePath, sessionId }));
+}
+
+test('ARCHIVED CHILD: descriptor is never rewritten, and the ARCHIVED banner is surfaced', () => {
+  const h = makeHome();
+  try {
+    const id = 'archived-child-1';
+    const sessId = 'sess-archived-1';
+    const env = { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main', DEVSWARM_BUILDER_ID: id };
+
+    // Turn 1: normal registration, NOT yet archived.
+    const r1 = testHook(HOOK, promptPayload(sessId, REPO_CWD), { home: h.home, env });
+    assert.strictEqual(r1.status, 0);
+    const descPath = workspaceDescPath(h.home, id);
+    const beforeRaw = fs.readFileSync(descPath, 'utf8');
+    const before = JSON.parse(beforeRaw);
+    assert.strictEqual(before.worktreePath, path.resolve(REPO_CWD));
+    assert.ok(!ctx(r1).includes('DEVSWARM CHILD ARCHIVED'), 'not yet archived on turn 1 -> no banner');
+
+    // Archive it: SAME worktreePath + SAME live sessionId (row-state.js does
+    // not treat this as superseded — the still-running session continues).
+    writeArchivedMarker(h.home, id, before.worktreePath, sessId);
+
+    // Turn 2: same session continues after the archive.
+    const r2 = testHook(HOOK, promptPayload(sessId, REPO_CWD), { home: h.home, env });
+    assert.strictEqual(r2.status, 0);
+    const afterRaw = fs.readFileSync(descPath, 'utf8');
+    assert.strictEqual(afterRaw, beforeRaw, 'an archived child\'s descriptor must never be rewritten');
+    assert.ok(ctx(r2).includes('DEVSWARM CHILD ARCHIVED'), `must surface the ARCHIVED banner; ctx=${ctx(r2)}`);
+    assert.ok(ctx(r2).includes('/anti-hall:handover'), 'must direct the child to write a handover');
+    assert.ok(ctx(r2).includes('stop'), 'must direct the child to stop');
+  } finally { h.cleanup(); }
+});
+
+test('ARCHIVED CHILD: metrics record the refused re-registration and the turn-after-archive', () => {
+  const h = makeHome();
+  try {
+    const id = 'archived-child-metrics';
+    const sessId = 'sess-archived-metrics';
+    const env = { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main', DEVSWARM_BUILDER_ID: id };
+    const r1 = testHook(HOOK, promptPayload(sessId, REPO_CWD), { home: h.home, env });
+    assert.strictEqual(r1.status, 0);
+    const before = JSON.parse(fs.readFileSync(workspaceDescPath(h.home, id), 'utf8'));
+    writeArchivedMarker(h.home, id, before.worktreePath, sessId);
+
+    testHook(HOOK, promptPayload(sessId, REPO_CWD), { home: h.home, env });
+
+    const metricsLib = require('../../plugins/anti-hall/companion/lib/archived-child-metrics.js');
+    const m = metricsLib.readMetrics(h.home);
+    assert.strictEqual(m.totals['reregistration-refused'], 1);
+    assert.strictEqual(m.totals['turn-after-archive'], 1);
+    assert.strictEqual(m.byId[id]['reregistration-refused'], 1);
+  } finally { h.cleanup(); }
+});
+
+test('NON-ARCHIVED CHILD: unaffected — descriptor keeps refreshing turn over turn, no banner', () => {
+  const h = makeHome();
+  try {
+    const id = 'plain-child-1';
+    const env = { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main', DEVSWARM_BUILDER_ID: id };
+    testHook(HOOK, promptPayload('sess-plain-1', REPO_CWD), { home: h.home, env });
+    const descPath = workspaceDescPath(h.home, id);
+    const firstRaw = fs.readFileSync(descPath, 'utf8');
+    assert.strictEqual(JSON.parse(firstRaw).sessionId, 'sess-plain-1');
+
+    const r2 = testHook(HOOK, promptPayload('sess-plain-2', REPO_CWD), { home: h.home, env });
+    assert.strictEqual(r2.status, 0);
+    const second = JSON.parse(fs.readFileSync(descPath, 'utf8'));
+    assert.strictEqual(second.sessionId, 'sess-plain-2', 'a non-archived child must keep refreshing its descriptor every turn');
+    assert.ok(!ctx(r2).includes('DEVSWARM CHILD ARCHIVED'), 'no archive -> no banner');
+  } finally { h.cleanup(); }
+});
+
+test('SWITCH devswarm.archivedChildStop=false: an archived child reverts to the old behaviour (descriptor rewritten, no banner)', () => {
+  const { switchOff } = require('../helpers/settings-switch.js');
+  const h = makeHome();
+  try {
+    const id = 'archived-child-off';
+    const sessId = 'sess-archived-off';
+    const env = { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main', DEVSWARM_BUILDER_ID: id };
+    testHook(HOOK, promptPayload(sessId, REPO_CWD), { home: h.home, env });
+    const descPath = workspaceDescPath(h.home, id);
+    const before = JSON.parse(fs.readFileSync(descPath, 'utf8'));
+    writeArchivedMarker(h.home, id, before.worktreePath, sessId);
+
+    switchOff(h.home, 'devswarm', 'archivedChildStop');
+    const r2 = testHook(HOOK, promptPayload(sessId, REPO_CWD), { home: h.home, env });
+    assert.strictEqual(r2.status, 0);
+    assert.ok(!ctx(r2).includes('DEVSWARM CHILD ARCHIVED'), 'setting off -> no banner, pre-fix behaviour');
+    const after = JSON.parse(fs.readFileSync(descPath, 'utf8'));
+    assert.strictEqual(after.sessionId, sessId, 'setting off -> descriptor still refreshed (old behaviour)');
+  } finally { h.cleanup(); }
+});

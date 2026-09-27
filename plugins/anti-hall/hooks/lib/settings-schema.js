@@ -361,6 +361,8 @@ const SECTIONS = [
       // ---- 0.117.0: Meeseeks P3 (Primary-run respawn) ----
       { key: 'respawnGraceMin', type: 'number', min: 0, default: 20, env: 'ANTIHALL_DEVSWARM_RESPAWN_GRACE_MIN', pluginOption: 'devswarm_respawn_grace_min', advanced: true, description: 'Minutes after a `correct` warning (the plan\'s warned_at) before the Primary may run `devswarm.js respawn <id>`. Respawn is never automatic and refuses without a warning. [read by: scripts/devswarm.js cmdRespawn]' },
       { key: 'respawnWipWaitSec', type: 'number', min: 0, default: 120, env: 'ANTIHALL_DEVSWARM_RESPAWN_WIP_WAIT_SEC', pluginOption: 'devswarm_respawn_wip_wait_sec', advanced: true, description: 'Seconds `respawn` waits for the child to commit and push its WIP after being asked; whatever is still dirty or unpushed is then parked on a new pushed park/<branch>-<ts> branch. [read by: scripts/devswarm.js cmdRespawn]' },
+      // ---- archived-child-stop (design B) ----
+      { key: 'archivedChildStop', type: 'boolean', default: true, env: 'ANTIHALL_DEVSWARM_ARCHIVED_CHILD_STOP', pluginOption: 'devswarm_archived_child_stop', description: 'An archived child workspace can never re-register its descriptor and is told once to save a handover and stop, instead of being nagged to heartbeat forever. false reverts to pre-fix behaviour (descriptor rewritten every turn, normal heartbeat-report forcing). [verified: hooks/devswarm-child-turn.js / hooks/devswarm-child-gate.js]' },
     ],
   },
   {

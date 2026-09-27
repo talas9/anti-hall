@@ -1500,3 +1500,94 @@ test('SWITCH devswarm.childGate=false: a child Stop is no longer blocked', () =>
     assert.ok(!fs.existsSync(stateFile(h.home, 's1')), 'no gate state written when off');
   } finally { h.cleanup(); }
 });
+
+// ----- design B: "archive tells the live child to stop" -----
+// An archived child must never be forced through the normal heartbeat-report
+// forcing below — it gets ONE distinct "save a handover and stop" block, then
+// is allowed to stop freely. archived/<id>.json is anti-hall's own archive
+// marker (row-state.js's contract — see tests/companion/row-state.test.js):
+// matching worktreePath + sessionId. Descriptor worktreePath is a fake path
+// (row-state only string-compares it, mirroring seedDurableUnread's own
+// fake-path convention above).
+
+function seedArchivedGateWorkspace(home, id, worktreePath, sessionId) {
+  const wdir = path.join(home, '.anti-hall', 'devswarm', 'workspaces');
+  fs.mkdirSync(wdir, { recursive: true });
+  fs.writeFileSync(path.join(wdir, id + '.json'), JSON.stringify({ id, worktreePath, sessionId }));
+}
+function writeGateArchivedMarker(home, id, worktreePath, sessionId) {
+  const adir = path.join(home, '.anti-hall', 'devswarm', 'archived');
+  fs.mkdirSync(adir, { recursive: true });
+  fs.writeFileSync(path.join(adir, id + '.json'), JSON.stringify({ id, worktreePath, sessionId }));
+}
+
+test('ARCHIVED CHILD-GATE: blocks an archived child ONCE with the handover reason, then allows it to stop freely', () => {
+  const h = makeHome();
+  try {
+    const id = 'gate-archived-1';
+    const wt = '/x/gate-archived-1';
+    seedArchivedGateWorkspace(h.home, id, wt, 's1');
+    writeGateArchivedMarker(h.home, id, wt, 's1');
+    const env = Object.assign({}, CHILD_ENV, { DEVSWARM_BUILDER_ID: id });
+
+    const r1 = testHook(HOOK, stopPayload(), { home: h.home, expectJson: true, env });
+    assert.strictEqual(r1.json && r1.json.decision, 'block', `first Stop must be blocked; got: ${r1.stdout}`);
+    assert.match(r1.json.reason, /ARCHIVED/);
+    assert.match(r1.json.reason, /handover/);
+    assert.match(r1.json.reason, /stop/);
+
+    // Budget cap is 1 for this kind — the SECOND Stop must be allowed
+    // through, silently (no forced-ack, no inbox-report nagging either —
+    // an archived child is never forced to heartbeat).
+    const r2 = testHook(HOOK, stopPayload(), { home: h.home, env });
+    assert.strictEqual(r2.status, 0);
+    assert.strictEqual(r2.stdout.trim(), '', `second Stop must be allowed through silently; got: ${r2.stdout}`);
+  } finally { h.cleanup(); }
+});
+
+test('ARCHIVED CHILD-GATE: metrics record the block and (on the next Stop) the clear', () => {
+  const h = makeHome();
+  try {
+    const id = 'gate-archived-metrics';
+    const wt = '/x/gate-archived-metrics';
+    seedArchivedGateWorkspace(h.home, id, wt, 's1');
+    writeGateArchivedMarker(h.home, id, wt, 's1');
+    const env = Object.assign({}, CHILD_ENV, { DEVSWARM_BUILDER_ID: id });
+
+    testHook(HOOK, stopPayload(), { home: h.home, expectJson: true, env });
+    testHook(HOOK, stopPayload(), { home: h.home, env });
+
+    const metricsLib = require('../../plugins/anti-hall/companion/lib/archived-child-metrics.js');
+    const m = metricsLib.readMetrics(h.home);
+    assert.strictEqual(m.totals['stop-blocked'], 1);
+    assert.strictEqual(m.totals['stop-cleared'], 1);
+    assert.strictEqual(m.byId[id]['stop-blocked'], 1);
+  } finally { h.cleanup(); }
+});
+
+test('NON-ARCHIVED CHILD-GATE: unaffected — normal heartbeat-report forcing still applies', () => {
+  const h = makeHome();
+  seedAllTestDescriptors(h.home);
+  try {
+    const r = testHook(HOOK, stopPayload(), { home: h.home, expectJson: true, env: CHILD_ENV });
+    assert.strictEqual(r.json && r.json.decision, 'block');
+    assert.doesNotMatch(r.json.reason, /ARCHIVED/);
+  } finally { h.cleanup(); }
+});
+
+test('SWITCH devswarm.archivedChildStop=false: an archived child reverts to the old forced-heartbeat behaviour', () => {
+  const { switchOff } = require('../helpers/settings-switch.js');
+  const h = makeHome();
+  try {
+    const id = 'gate-archived-off';
+    const wt = '/x/gate-archived-off';
+    seedArchivedGateWorkspace(h.home, id, wt, 's1');
+    writeGateArchivedMarker(h.home, id, wt, 's1');
+    switchOff(h.home, 'devswarm', 'archivedChildStop');
+    const env = Object.assign({}, CHILD_ENV, { DEVSWARM_BUILDER_ID: id });
+
+    const r = testHook(HOOK, stopPayload(), { home: h.home, expectJson: true, env });
+    assert.strictEqual(r.json && r.json.decision, 'block', `setting off -> old forced-heartbeat block; got: ${r.stdout}`);
+    assert.doesNotMatch(r.json.reason, /ARCHIVED/, 'setting off -> the archived-specific reason must not appear');
+  } finally { h.cleanup(); }
+});

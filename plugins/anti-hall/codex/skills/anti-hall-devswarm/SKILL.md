@@ -60,6 +60,21 @@ automatic path handles this in three escalating layers and **never kills anythin
 3. **Escalate-to-parent** — once the poke budget is exhausted, the sweep persists verdict
    `escalated` (terminal — never re-targeted) and fires an optional `escalateCommand`.
 
+**Archived child can't re-register (design B, both agents)** — `devswarm-child-turn.js`
+(per-turn descriptor register/refresh) and `devswarm-child-gate.js` (Stop-hook forced
+report) are the SAME files registered in `codex/hooks/hooks.json` as in the Claude
+hooks.json, so this applies identically to a Codex child workspace. Before either hook
+rewrites/forces anything, it asks `companion/lib/row-state.js` (the one read-side
+archive-truth answer) whether the workspace is already archived. If so: the per-turn
+descriptor write and phantom retirement are skipped entirely (an archived workspace can
+never re-register and reappear as "active"), the turn instead injects one ARCHIVED
+banner telling the child to finish/abandon its step, write a handover, and stop taking
+new work; the Stop gate blocks ONCE with the same "save a handover and stop" reason
+(never the normal forced-heartbeat nagging) then lets the session stop freely. Settings-
+gated (`devswarm.archivedChildStop`, default on) — off reverts both hooks to the pre-fix
+behavior. Nothing is ever killed or deleted; this only injects messages and refuses
+writes.
+
 If your DevSwarm setup mixes Claude and Codex workspaces (`DEVSWARM_AI_AGENT` differs per
 workspace), all of the above only ever touches the `claude` ones — it identity-binds to a
 `claude` process's argv session id and cwd. A Codex workspace is simply outside its

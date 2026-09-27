@@ -1445,6 +1445,38 @@ if (REPAIR_INGEST_ORPHANS) {
   for (const line of result.lines) infol(line);
 })();
 
+// --- 5n. archived-child-stop metrics (REPORT-ONLY, CONDITIONAL) ---------------
+// Design B ("archive tells the live child to stop" — devswarm-child-turn.js
+// skips the descriptor rewrite + phantom retirement on an archived workspace,
+// devswarm-child-gate.js blocks the Stop ONCE with a "save a handover and
+// stop" reason instead of the normal forced-heartbeat nagging). Counts are
+// persisted by companion/lib/archived-child-metrics.js (best-effort, never
+// load-bearing). "time since last event" doubles as the "time until the
+// session stops beating" signal a re-run of doctor will show growing once a
+// child actually goes idle. Silent when nothing has ever fired; never
+// touches pass/fail EXCEPT the one actionable case (a child was blocked but
+// still has no handover on file).
+(function archivedChildStopMetricsSection() {
+  let m = null;
+  try { m = require('../companion/lib/archived-child-metrics.js').readMetrics(os.homedir()); } catch (_) { m = null; }
+  if (!m || !m.totals || !Object.keys(m.totals).length) return;
+  head('archived-child-stop metrics (design B — report-only)');
+  infol('re-registrations refused: ' + (m.totals['reregistration-refused'] || 0)
+    + ', turns after archive: ' + (m.totals['turn-after-archive'] || 0)
+    + ', Stop blocks: ' + (m.totals['stop-blocked'] || 0)
+    + ', Stop clears: ' + (m.totals['stop-cleared'] || 0));
+  const byId = m.byId || {};
+  const now = Date.now();
+  for (const id of Object.keys(byId).sort()) {
+    const row = byId[id] || {};
+    const sinceArchived = Number.isFinite(row.firstArchivedTurnTs) ? Math.round((now - row.firstArchivedTurnTs) / 60000) + 'min since first archived turn' : 'archived-turn age unknown';
+    const quietFor = Number.isFinite(row.lastEventTs) ? Math.round((now - row.lastEventTs) / 60000) + 'min since last event (this is the "time until it stops beating" signal — re-run to watch it grow)' : 'last-event time unknown';
+    const line = id + ': ' + sinceArchived + ', ' + quietFor + ', handover ' + (row.handoverWritten ? 'written' : 'NOT written yet');
+    if (row['stop-blocked'] && !row.handoverWritten) warnl(line);
+    else infol(line);
+  }
+})();
+
 // --- 5l-repair. --repair-test-stores [--apply] (EXPLICIT, OPT-IN ONLY;
 // be2c6c9e81a1). Default (flag present, no --apply) is DRY-RUN: prints the
 // exact removal plan, deletes nothing. --apply executes it, re-verifying

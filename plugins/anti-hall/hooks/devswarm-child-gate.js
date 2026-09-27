@@ -697,6 +697,54 @@ function tickMarkerFreshZero(env, home, now) {
   }
 }
 
+// ARCHIVED_STOP_KIND — the stable per-kind budget key (shared stop-policy.js,
+// same mechanism as 'heartbeat-report'/'inbox' below) that bounds the
+// archived-child block to ONCE per session; the budget re-opens only if the
+// condition is ever observed cleared (never on a timer).
+const ARCHIVED_STOP_KIND = 'archived-stop';
+const ARCHIVED_STOP_CAP = 1;
+
+// resolveArchivedGateContext(env, home, cwd) -> { id, worktreePath } | null.
+// A read-only twin of the id/worktree resolution devswarm-child-turn.js uses,
+// scoped to what this Stop hook needs: this child's own id, and its worktree —
+// preferring the ALREADY-REGISTERED descriptor's own worktreePath (the literal
+// on-disk location row-state.js's archived-marker match needs), falling back
+// to resolving cwd's git toplevel when no descriptor exists yet (mirrors
+// devswarm-child-turn.js's registerChildDescriptor resolution).
+function resolveArchivedGateContext(env, home, cwd) {
+  const id = env.DEVSWARM_BUILDER_ID;
+  if (typeof id !== 'string' || !isSafeId(id)) return null;
+  let worktreePath = null;
+  try {
+    const desc = JSON.parse(fs.readFileSync(path.join(devswarmRoot(home), 'workspaces', id + '.json'), 'utf8'));
+    if (desc && typeof desc.worktreePath === 'string' && desc.worktreePath) worktreePath = desc.worktreePath;
+  } catch (_) { worktreePath = null; }
+  if (!worktreePath) {
+    try { worktreePath = require('../companion/lib/identity.js').resolveContext(cwd, { home, missingPath: 'ancestor' }).toplevel || null; } catch (_) { worktreePath = null; }
+  }
+  if (!worktreePath) return null;
+  return { id, worktreePath };
+}
+
+// isArchivedChildStop(env, home, cwd, sessionId) -> { archived, id,
+// worktreePath } | null. Settings-gated (devswarm.archivedChildStop, default
+// on) — a pure no-op revert to the old forced-heartbeat behaviour when off.
+// Fail-open: any resolution/read error -> not archived.
+function isArchivedChildStop(env, home, cwd, sessionId) {
+  try {
+    if (!require('./lib/settings.js').enabled('devswarm', 'archivedChildStop')) return null;
+  } catch (_) { return null; }
+  const ctx = resolveArchivedGateContext(env, home, cwd);
+  if (!ctx) return null;
+  let archived = false;
+  try {
+    archived = require('../companion/lib/row-state.js').isRowArchived({
+      home, id: ctx.id, worktreePath: ctx.worktreePath, sessionId,
+    });
+  } catch (_) { archived = false; }
+  return { archived, id: ctx.id, worktreePath: ctx.worktreePath };
+}
+
 function main() {
   // Settings switch devswarm.childGate (0.108.4): off -> no-op. Fail-open: any error runs the hook.
   try { if (!require('./lib/settings.js').enabled('devswarm', 'childGate')) return; } catch (_) { /* run */ }
@@ -746,6 +794,35 @@ function main() {
     (payload && payload.transcript_path
       ? crypto.createHash('sha1').update(String(payload.transcript_path)).digest('hex').slice(0, 16)
       : 'unknown');
+
+  // ARCHIVED CHILD CHECK (design B — "archive tells the live child to
+  // stop"): an archived workspace is NEVER forced through the normal
+  // heartbeat-report/inbox forcing below. It is blocked ONCE (a SEPARATE
+  // stopPolicy kind/budget, cap 1 — never shares a bucket with
+  // 'heartbeat-report'/'inbox') with a distinct "save a handover and stop"
+  // reason, then allowed to stop freely thereafter. Checked before the
+  // heartbeat-report cap state is even read.
+  {
+    const archivedGateHome = os.homedir();
+    const archivedGateCwd = (payload && typeof payload.cwd === 'string' && payload.cwd) ? payload.cwd : process.cwd();
+    let archivedStop = null;
+    try { archivedStop = isArchivedChildStop(process.env, archivedGateHome, archivedGateCwd, sessionId); } catch (_) { archivedStop = null; }
+    if (archivedStop && archivedStop.archived) {
+      const decision = stopPolicy.consume(archivedGateHome, sessionId, 'child-gate', [ARCHIVED_STOP_KIND], ARCHIVED_STOP_CAP, now);
+      let handoverWritten = false;
+      try { handoverWritten = !!require('../companion/lib/primary-seat.js').newestWorktreeHandover(archivedStop.worktreePath); } catch (_) { handoverWritten = false; }
+      try {
+        const metrics = require('../companion/lib/archived-child-metrics.js');
+        metrics.recordEvent(archivedGateHome, archivedStop.id, decision.block ? 'stop-blocked' : 'stop-cleared', { now, handoverWritten });
+      } catch (_) { /* metrics only, never blocks */ }
+      if (decision.block) {
+        emitBlock('DEVSWARM CHILD ARCHIVED: this workspace was archived. Save a handover '
+          + '(`/anti-hall:handover`) if you have not already, THEN stop — this workspace is '
+          + 'no longer tracked and you will not be asked again.');
+      }
+      return;
+    }
+  }
 
   const stateFile = stateFileFor(sessionId);
   const state = readState(stateFile);

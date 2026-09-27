@@ -425,6 +425,63 @@ function buildArchiveRequestSegment(id) {
   );
 }
 
+// ARCHIVED_BANNER — design B ("archive tells the live child to stop"). Pushed
+// as ONE segment when this turn's own workspace is already archived (row-
+// state.js's isRowArchived — anti-hall's own archived/<id>.json marker, or the
+// DevSwarm app DB verdict). Never a directive to kill/delete anything — this
+// only injects a message and refuses the descriptor rewrite below.
+const ARCHIVED_BANNER =
+  'DEVSWARM CHILD ARCHIVED: this workspace was archived. Finish or abandon the '
+  + 'current step, write a handover (`/anti-hall:handover`), then stop — take no '
+  + 'new work.';
+
+// resolveArchivedChildContext(env, sessionId, cwd, home) -> { id, worktreePath } |
+// null. A READ-ONLY twin of registerChildDescriptor's own id/worktreePath
+// resolution (id extraction + the F3 truncated-id recovery + toplevel
+// resolution via identity.resolveContext), used ONLY to answer "is this
+// workspace archived?" BEFORE any write happens this turn. Deliberately NOT
+// refactored into a shared helper with registerChildDescriptor: that function's
+// resolution step is interleaved with stderr diagnostics and this call must
+// stay a pure, side-effect-free probe (this can run even when the settings
+// switch below later decides not to act on the answer). Mirrors the exact
+// same rules so the two never disagree about which id/worktree a turn is for.
+function resolveArchivedChildContext(env, sessionId, cwd, home) {
+  let id = env.DEVSWARM_BUILDER_ID;
+  if (typeof id !== 'string' || !isSafeId(id)) return null;
+  if (typeof sessionId !== 'string' || sessionId === '') return null;
+  if (TRUNCATED_UUID_RE.test(id) && !FULL_UUID_RE.test(id)) {
+    if (FULL_UUID_RE.test(sessionId) && sessionId !== id && sessionId.indexOf(id) === 0) {
+      id = sessionId;
+    } else {
+      return null;
+    }
+  }
+  let worktreePath = null;
+  try { worktreePath = require('../companion/lib/identity.js').resolveContext(cwd, { home, missingPath: 'ancestor' }).toplevel || null; } catch (_) { worktreePath = null; }
+  if (!worktreePath) return null;
+  return { id, worktreePath };
+}
+
+// isArchivedChildTurn(env, sessionId, cwd, home) -> { archived, id,
+// worktreePath } | null. Settings-gated (devswarm.archivedChildStop, default
+// on) so this whole check is a pure no-op revert when off. Fail-open: any
+// resolution/read error -> not archived (never suppresses a real turn on an
+// unrelated failure).
+function isArchivedChildTurn(env, sessionId, cwd, home) {
+  try {
+    if (!require('./lib/settings.js').enabled('devswarm', 'archivedChildStop')) return null;
+  } catch (_) { return null; }
+  const ctx = resolveArchivedChildContext(env, sessionId, cwd, home);
+  if (!ctx) return null;
+  let archived = false;
+  try {
+    archived = require('../companion/lib/row-state.js').isRowArchived({
+      home, id: ctx.id, worktreePath: ctx.worktreePath, sessionId,
+    });
+  } catch (_) { archived = false; }
+  return { archived, id: ctx.id, worktreePath: ctx.worktreePath };
+}
+
 // findGitToplevel used to live here as a local pure-fs walk-up (byte-for-byte
 // mirrored across 6 hook files — Phase 2 mesh redesign, B3). Retired: both
 // call sites below now go through companion/lib/identity.js's resolveContext
@@ -867,26 +924,52 @@ function main() {
   const home = os.homedir();
 
   // Heartbeat first, isolated so a write failure still lets the reminder through.
+  // ALWAYS written, even for an archived child below — doctor's leak check
+  // (companion/lib/doctor-devswarm.js appDbChecks) needs a fresh heartbeat file
+  // to detect a still-running session in an archived workspace.
   try {
     writeHeartbeat(env, payload.session_id, payload.cwd, home);
   } catch (_) { /* fail-open: never block a turn on a heartbeat write */ }
 
-  // Mechanical descriptor registration (#31 HOTFIX), isolated the same way — a
-  // registration failure must never suppress the reminder/unread segments below.
-  try {
-    const desc = registerChildDescriptor(env, payload.session_id, payload.cwd, home);
-    // v0.57 mesh (D24, Phase 8 gap-close): ALSO mechanically upsert into the
-    // shared store's registry — see registerStoreDescriptor's own doc comment.
-    // Isolated in its OWN try (already internally fail-open) so a store-side
-    // failure can never suppress the fs descriptor write above.
-    try { registerStoreDescriptor(desc, home); } catch (_) {}
-    // F3 part 2 (see registerChildDescriptor): retire same-worktree phantom
-    // descriptors, forwarding their unread into THIS (now registered) id first.
-    if (desc && desc.id && desc.worktreePath) {
-      try { retirePhantomWorktreeDuplicates(path.join(devswarmRoot(home), 'workspaces'), desc.id, desc.worktreePath, home, env); }
-      catch (_) { /* fail-open: phantom retirement must never block a turn */ }
-    }
-  } catch (_) { /* fail-open: never block a turn on a descriptor write */ }
+  // ARCHIVED CHILD CHECK (design B — "archive tells the live child to stop").
+  // Computed BEFORE registerChildDescriptor: that function unconditionally
+  // REWRITES workspaces/<id>.json every turn with no archive check, which is
+  // exactly why an archived workspace kept reappearing as "active" to the
+  // parent gate / roster / supervisor sweep. row-state.js is the ONE read-side
+  // archive-truth answer (anti-hall's own archived/<id>.json marker, or the
+  // DevSwarm app DB verdict) — reuse it rather than a new marker.
+  let archivedTurn = null;
+  try { archivedTurn = isArchivedChildTurn(env, payload.session_id, payload.cwd, home); } catch (_) { archivedTurn = null; }
+
+  if (archivedTurn && archivedTurn.archived) {
+    // Never register/refresh the descriptor, never retire phantoms — this
+    // workspace is archived; nothing else mutates on its behalf this turn.
+    // Metrics only, best-effort, never blocks.
+    try {
+      const metrics = require('../companion/lib/archived-child-metrics.js');
+      let handoverWritten = false;
+      try { handoverWritten = !!require('../companion/lib/primary-seat.js').newestWorktreeHandover(archivedTurn.worktreePath); } catch (_) { handoverWritten = false; }
+      metrics.recordEvent(home, archivedTurn.id, 'reregistration-refused', { handoverWritten });
+      metrics.recordEvent(home, archivedTurn.id, 'turn-after-archive', {});
+    } catch (_) { /* fail-open: metrics must never block a turn */ }
+  } else {
+    // Mechanical descriptor registration (#31 HOTFIX), isolated the same way — a
+    // registration failure must never suppress the reminder/unread segments below.
+    try {
+      const desc = registerChildDescriptor(env, payload.session_id, payload.cwd, home);
+      // v0.57 mesh (D24, Phase 8 gap-close): ALSO mechanically upsert into the
+      // shared store's registry — see registerStoreDescriptor's own doc comment.
+      // Isolated in its OWN try (already internally fail-open) so a store-side
+      // failure can never suppress the fs descriptor write above.
+      try { registerStoreDescriptor(desc, home); } catch (_) {}
+      // F3 part 2 (see registerChildDescriptor): retire same-worktree phantom
+      // descriptors, forwarding their unread into THIS (now registered) id first.
+      if (desc && desc.id && desc.worktreePath) {
+        try { retirePhantomWorktreeDuplicates(path.join(devswarmRoot(home), 'workspaces'), desc.id, desc.worktreePath, home, env); }
+        catch (_) { /* fail-open: phantom retirement must never block a turn */ }
+      }
+    } catch (_) { /* fail-open: never block a turn on a descriptor write */ }
+  }
 
   // Daemon-LIVENESS staleness banner (Phase 7, PLAN-v0.57-mesh.md D25) — the
   // SAME warning devswarm-parent-inbox.js renders to the Primary, so a child
@@ -981,6 +1064,9 @@ function main() {
   // REMINDER is always present; append the unread-inbox nudge only when the child's
   // durable descriptor inbox actually has unread parent message(s) (empty-when-zero).
   const segments = [];
+  // Design B: pushed FIRST (most prominent) when this turn's own workspace is
+  // archived — see isArchivedChildTurn above.
+  if (archivedTurn && archivedTurn.archived) segments.push(ARCHIVED_BANNER);
   if (staleBanner) segments.push(staleBanner);
   // The fixed per-turn block (COMMS OVERRIDE + SELF_CONTINUE + REMINDER +
   // RECEIVE_NUDGE) is burst-collapsed (lib/emit-dedupe.js rule a): Claude Code
