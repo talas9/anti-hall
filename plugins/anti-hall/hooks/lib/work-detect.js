@@ -111,6 +111,50 @@ function allPathsUnderScratchpad(neutralized) {
   return true;
 }
 
+// defect T4(b) fix (7-workspace sweep, 2026-09-27): a Bash command that is
+// ONLY anti-hall's own DevSwarm mesh housekeeping — the stable launcher's
+// inbox/heartbeat/send/roster verbs, or a `crontab` read/install for the
+// mailbox-wake cron job (devswarm-child-role.js's wake-directive; a real
+// `crontab -l > tmp; ...; crontab tmp`-shaped install DOES match this file's
+// own `>`-redirect work signal (3), which is correct for a GENUINE file
+// write but wrong here — a crontab entry is not project work) — is not
+// PROJECT work. It must never count toward "you did real work", the same way
+// the scratchpad exclusion above keeps inter-agent message-passing traffic
+// from counting. Segment-scoped (mirrors command-guard.js's own segment
+// splitting): a command chaining a housekeeping verb with GENUINE other work
+// (e.g. `node devswarm.js inbox ack x && npm test`) still counts as work —
+// only a command whose EVERY segment is housekeeping is excluded.
+const DEVSWARM_LAUNCHER_PREFIX_SRC = '(?:node\\s+)?(?:\\S*[\\\\/])?devswarm\\.js';
+const DEVSWARM_FLAG_SKIP_SRC = '(?:-\\S+(?:\\s+[^-\\s]\\S*)?\\s+)*';
+const DEVSWARM_VERB_SRC =
+  '(?:inbox\\s+' + DEVSWARM_FLAG_SKIP_SRC
+    + '(?:pull|ack|ack-primary|read|read-primary|tick|count|peek-primary|messages)\\b'
+  + '|heartbeat\\b|send\\b|roster\\b|wake-directive\\b)';
+const DEVSWARM_HOUSEKEEPING_SEGMENT_RE = new RegExp(
+  '^\\s*' + DEVSWARM_LAUNCHER_PREFIX_SRC + '\\s+' + DEVSWARM_FLAG_SKIP_SRC + DEVSWARM_VERB_SRC,
+  'i'
+);
+const CRONTAB_SEGMENT_RE = /\bcrontab\b/i;
+
+// isDevswarmHousekeepingOnly(rawCmd) -> bool. True only when EVERY segment
+// (split on &&, ||, ;, |) of the RAW (not quote-neutralized — crontab/
+// devswarm-verb detection needs no quote awareness, matching command-guard's
+// own convention for this same command shape) command line is either a
+// stable-launcher devswarm verb invocation or a crontab manipulation.
+function isDevswarmHousekeepingOnly(rawCmd) {
+  if (!rawCmd) return false;
+  const segments = rawCmd.split(/&&|\|\||;|\|/);
+  if (!segments.length) return false;
+  let sawAny = false;
+  for (const seg of segments) {
+    const s = seg.trim();
+    if (!s) continue; // empty segment (trailing separator) never disqualifies
+    sawAny = true;
+    if (!DEVSWARM_HOUSEKEEPING_SEGMENT_RE.test(s) && !CRONTAB_SEGMENT_RE.test(s)) return false;
+  }
+  return sawAny;
+}
+
 // neutralizeQuotedContents — blank out the CONTENTS of single- and double-quoted
 // string literals (delimiters included) so BASH_WORK_RE cannot match text that is
 // merely quoted DATA rather than a real shell command. Same name/semantics as
@@ -157,9 +201,20 @@ function collectToolUses(node) {
 // scratchpad, or a Bash command matching BASH_WORK_RE (quote-neutralized)
 // that is not scratchpad-only traffic. Sidechain (subagent) entries are NOT
 // excluded — a subagent's edit is real work too.
+// NEVER_WORK_TOOLS — defect T4(b) fix: a spawn/scheduling action, not a
+// file-changing one. Agent/Task START a background worker (that worker's own
+// later Edit/Write/Bash calls are what may count, not the spawn call itself);
+// CronCreate/CronDelete schedule/unschedule a cron job, never touching a
+// project file. None of these carry a `command`/`file_path` input anyway, so
+// this was already a de-facto no-op via the checks below — made explicit so
+// it is never accidentally picked up by a future MUTATING_TOOLS/Bash-shape
+// change, and to document the T4(b) requirement directly.
+const NEVER_WORK_TOOLS = new Set(['Agent', 'Task', 'CronCreate', 'CronDelete']);
+
 function isCountedWork(tu) {
   if (!tu || typeof tu !== 'object') return false;
   const name = tu.name || '';
+  if (NEVER_WORK_TOOLS.has(name)) return false;
   if (MUTATING_TOOLS.has(name)) {
     const fp = tu.input && typeof tu.input.file_path === 'string' ? tu.input.file_path : '';
     return !SCRATCHPAD_PATH_RE.test(fp);
@@ -167,6 +222,7 @@ function isCountedWork(tu) {
   if (name === 'Bash') {
     const cmd = tu.input && typeof tu.input.command === 'string' ? tu.input.command : '';
     if (!cmd) return false;
+    if (isDevswarmHousekeepingOnly(cmd)) return false;
     const neutralized = neutralizeQuotedContents(cmd);
     if (!BASH_WORK_RE.test(neutralized)) return false;
     const isScratchOnly = SCRATCHPAD_PATH_RE.test(cmd) && !ALWAYS_WORK_RE.test(neutralized)
@@ -178,10 +234,12 @@ function isCountedWork(tu) {
 
 module.exports = {
   MUTATING_TOOLS,
+  NEVER_WORK_TOOLS,
   ALWAYS_WORK_RE,
   BASH_WORK_RE,
   SCRATCHPAD_PATH_RE,
   allPathsUnderScratchpad,
+  isDevswarmHousekeepingOnly,
   neutralizeQuotedContents,
   collectToolUses,
   isCountedWork,

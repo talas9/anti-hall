@@ -724,6 +724,41 @@ function readTranscriptTail(transcriptPath, windowBytes) {
   }
 }
 
+// TASK_ACTIVITY_FALLBACK_WINDOW — defect T4(a) fix: sawTaskActivity used to be
+// computed from the SAME 512 KB tail-clip as workCount. The tail-clip
+// undercounting workCount is an accepted, SAFE degradation (documented above
+// — it can only suppress a block). Losing sawTaskActivity to the same clip is
+// NOT safe in the same direction: a long session that declared its tasks via
+// TaskCreate early on, then generated well over 512 KB of transcript doing
+// the work, reads as "0 task activity" even though the tasks are real and
+// tracked — the guard fired "tracked NO tasks" while TaskCreate tasks exist.
+// Fix: when the standard tail scan finds no task activity AND the file was
+// truncated (there is earlier content the tail never saw), re-scan a much
+// larger bounded window before concluding no task activity exists at all.
+// Task-state RECONSTRUCTION (openTaskIds / hasStaleInProgress) intentionally
+// stays tail-scoped — this fix targets only the false "no tasks tracked"
+// claim, not the secondary staleness heuristics.
+const TASK_ACTIVITY_FALLBACK_WINDOW = 16 * 1024 * 1024; // 16 MB
+
+// hasTaskActivityInText(text) -> bool. Presence-only scan (no state
+// reconstruction) for a TaskCreate/TaskUpdate/TodoWrite tool_use anywhere in
+// the given transcript text. Early-exits on the first match.
+function hasTaskActivityInText(text) {
+  const lines = text.split(/\r?\n/);
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    let entry;
+    try { entry = JSON.parse(trimmed); } catch (_) { continue; }
+    const toolUses = collectToolUses(entry);
+    for (const tu of toolUses) {
+      const name = tu.name || '';
+      if (name === 'TaskCreate' || name === 'TaskUpdate' || name === 'TodoWrite') return true;
+    }
+  }
+  return false;
+}
+
 // Single pass over the transcript tail. Computes:
 //   - workCount         : file-mutating tool_uses (Edit/Write/MultiEdit/
 //                         NotebookEdit + git-commit/write-verb Bash)
@@ -927,6 +962,15 @@ function scanTranscript(filePath, opts) {
   // heartbeat check). When agents stop, a later Stop with no live agent still catches any
   // genuinely-dangling in_progress, so nothing is permanently masked.
   const hasStaleInProgress = inProgressCount > 1 && !agentsRunning();
+
+  // T4(a) fix: widen the search ONLY when the cheap tail scan found nothing
+  // AND there is earlier content it never saw (tail.truncated) — a healthy
+  // session (task activity already found, or the whole file already fit in
+  // the tail) never pays this extra read.
+  if (!sawTaskActivity && tail.truncated) {
+    const wider = readTranscriptTail(filePath, TASK_ACTIVITY_FALLBACK_WINDOW);
+    if (wider && hasTaskActivityInText(wider.data)) sawTaskActivity = true;
+  }
 
   return { workCount, sawTaskActivity, hasStaleInProgress, inProgressCount, openTaskIds, lastWorkTs, lastProgressWriteTs };
 }

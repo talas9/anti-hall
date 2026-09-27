@@ -210,6 +210,55 @@ test('REMINDER mentions the per-session history fix-ledger discipline when it fi
   } finally { h.cleanup(); }
 });
 
+// defect T4(a) (7-workspace sweep, 2026-09-27): sawTaskActivity used to be
+// computed from ONLY the same 512 KB tail-clip as workCount. A long session
+// that declares its tasks via TaskCreate early on, then generates well over
+// 512 KB of transcript doing the work, reads as "0 task activity" even
+// though the tasks are real — the guard fires "tracked NO tasks" wrongly.
+test('ALLOW: TaskCreate happened early in a long session, pushed outside the 512 KB tail by later transcript growth -> still recognized as tracked', () => {
+  const h = makeHome();
+  try {
+    writeProgress(h.home); // fresh progress file
+    // A single padding line > 512 KB (readTranscriptTail's window) so the
+    // TaskCreate line above it falls entirely outside the tail-clip; total
+    // file size stays well under the 16 MB fallback window so the wider
+    // re-scan still finds it.
+    const padding = { type: 'padding', big: 'x'.repeat(700 * 1024) };
+    const tp = h.writeTranscript([
+      ...taskCreate(1, 'do the work', 'completed'),
+      padding,
+      ...edits(4),
+    ]);
+    const r = testHook(HOOK, stopPayload(tp, h.home), { home: h.home });
+    assert.ok(!isBlock(r), `TaskCreate outside the tail must still count as tracked; stdout: ${r.stdout}`);
+  } finally { h.cleanup(); }
+});
+
+// defect T4(b) (7-workspace sweep, 2026-09-27): a Bash command that is ONLY
+// anti-hall's own DevSwarm mesh housekeeping (stable-launcher inbox/
+// heartbeat/send/roster verbs, or a `crontab`-based mailbox-wake cron
+// install/check) is not project work and must never count toward
+// tasklist-guard's file-changing threshold.
+test('ALLOW: 4 crontab-install Bash commands (mailbox-wake cron housekeeping) do not count as file-changing work', () => {
+  const h = makeHome();
+  try {
+    const tp = h.writeTranscript(bashes('crontab -l > /tmp/cron.txt', 4));
+    const r = testHook(HOOK, stopPayload(tp, h.home), { home: h.home });
+    assert.ok(!isBlock(r), `crontab housekeeping must not count as work; stdout: ${r.stdout}`);
+  } finally { h.cleanup(); }
+});
+
+test('BLOCK: a devswarm housekeeping command chained with GENUINE other work still counts', () => {
+  const h = makeHome();
+  try {
+    const tp = h.writeTranscript(bashes(
+      'node /x/devswarm.js heartbeat child-1 --summary "x" && rm -rf /project/some-real-file.txt', 4
+    ));
+    const r = testHook(HOOK, stopPayload(tp, h.home), { home: h.home });
+    assert.ok(isBlock(r), `real work chained with housekeeping must still count; stdout: ${r.stdout}`);
+  } finally { h.cleanup(); }
+});
+
 test('ALLOW: tracked + fresh progress (4 edits + TaskCreate completed + fresh progress)', () => {
   const h = makeHome();
   try {
