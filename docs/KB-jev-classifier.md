@@ -470,7 +470,10 @@ the stdin JSON boundary) — a caller needing custom answer normalization uses
   non-`mechanical` answer downgrades the block to an advisory. In the default `shadow`
   mode the block always proceeds unchanged but the would-have-relaxed verdict is still
   logged, so `jev report` can show whether promoting it to `"on"` is worth it before an
-  owner does so. `command-guard`, `git-guard`, and `edit-guard` are NEVER wired to Jev —
+  owner does so. Row count = routing BLOCKS, not spawns: an allowed, advisory, deploy-
+  floored, debate-role-exempt or research-exempt spawn never reaches Jev and logs no row,
+  so a window with no routing blocks correctly shows zero `modelRouting` rows (Claude
+  only; Codex has no pre-spawn hook). `command-guard`, `git-guard`, and `edit-guard` are NEVER wired to Jev —
   those stay pure, unconditional guards.
 **All wired integrations:**
 

@@ -174,7 +174,22 @@ function appendTriageLog(home, entry) {
   }
 }
 
-let cacheSeqCounter = 0;
+// nextCacheSeq(cache) -> one past the highest `_seq` already in `cache`.
+// `_seq` MUST be monotonic ACROSS processes: writeCache() evicts the lowest
+// `_seq` first, and every hook call is a fresh process. The old per-process
+// counter restarted at 1, so once the cache reached MAX_CACHE_ENTRIES every
+// new label got the LOWEST `_seq` and was evicted in the same write that added
+// it -- the cache froze, and devswarm-store's jevQuestionCandidates lookup
+// (the parentGateQuestion Jev integration's only input) never saw a label.
+// Seeding from the stored max also heals an already-frozen cache in place:
+// its stuck entries now sort below every new one and age out first.
+function nextCacheSeq(cache) {
+  let max = 0;
+  for (const v of Object.values(cache || {})) {
+    if (v && Number.isFinite(v._seq) && v._seq > max) max = v._seq;
+  }
+  return max + 1;
+}
 
 // triageMessagesSync(items, opts) -> Map<key, {urgency?, kind?}>
 //   items: [{key, text}] — `key` is the caller's own identity for the message
@@ -257,6 +272,7 @@ function triageMessagesSync(items, opts) {
 
   if (workerOut && typeof workerOut === 'object') {
     const newCacheEntries = {};
+    let seq = nextCacheSeq(cache);
     for (const it of uncached) {
       const label = workerOut[it.hash];
       if (label && (label.urgency || label.kind)) {
@@ -264,7 +280,7 @@ function triageMessagesSync(items, opts) {
         newCacheEntries[it.hash] = {
           urgency: label.urgency || undefined,
           kind: label.kind || undefined,
-          _seq: ++cacheSeqCounter,
+          _seq: seq++,
         };
         appendTriageLog(home, {
           ts: new Date().toISOString(),
@@ -277,7 +293,7 @@ function triageMessagesSync(items, opts) {
       } else {
         // no confident label from either backend -> cache the "no label"
         // verdict too, so this message isn't re-sent to Jev/Haiku every turn.
-        newCacheEntries[it.hash] = { _seq: ++cacheSeqCounter };
+        newCacheEntries[it.hash] = { _seq: seq++ };
       }
     }
     if (Object.keys(newCacheEntries).length) {

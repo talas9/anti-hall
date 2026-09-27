@@ -1047,3 +1047,57 @@ for (const prompt of [
     } finally { h.cleanup(); }
   });
 }
+
+// ---------------------------------------------------------------- Jev modelRouting
+// The modelRouting Jev integration is consulted ONLY on the two block paths
+// (Row 1 non-exempt, Row 2 strict) under the 'relax-block' trust rule. A spawn
+// that allows, advises, or is exempted never reaches jev-assist, so it logs no
+// row: zero modelRouting rows over a window with no routing blocks is correct.
+// The backend here is unreachable (closed port), so Jev fails open to the
+// baseline block — the row must still land.
+function jevRows(home) {
+  try {
+    return fs.readFileSync(path.join(home, '.anti-hall', 'logs', 'jev-assist.ndjson'), 'utf8')
+      .split('\n').filter(Boolean).map((l) => JSON.parse(l)).filter((r) => r.id === 'modelRouting');
+  } catch (_) { return []; }
+}
+function jevOn(home) {
+  fs.mkdirSync(path.join(home, '.anti-hall'), { recursive: true });
+  fs.writeFileSync(path.join(home, '.anti-hall', 'jev.json'),
+    JSON.stringify({ enabled: true, integrations: { modelRouting: 'on' } }));
+}
+const JEV_ENV = { ANTIHALL_JEV_TEST_ENDPOINT: 'http://127.0.0.1:9/unreachable', AI_GATEWAY_API_KEY: 'test-key' };
+
+test('JEV modelRouting: a Row-1 block logs one decision row (backend unreachable -> fail-open, block stands)', () => {
+  const h = makeHome();
+  try {
+    jevOn(h.home);
+    const r = testHook(HOOK, payload({
+      model: 'opus', subagent_type: 'general-purpose', description: 'fetch the data',
+      prompt: 'curl the endpoint and download the dump, then tail the logs',
+    }), { home: h.home, env: JEV_ENV });
+    assertBlock(r, /flagship model/);
+    const rows = jevRows(h.home);
+    assert.strictEqual(rows.length, 1, JSON.stringify(rows));
+    assert.strictEqual(rows[0].mode, 'on');
+    assert.strictEqual(rows[0].base, true);
+    assert.strictEqual(rows[0].final, true);
+    assert.strictEqual(rows[0].backend, 'baseline-only');
+  } finally { h.cleanup(); }
+});
+
+test('JEV modelRouting: an allowed or advisory spawn never consults Jev (no row)', () => {
+  const h = makeHome();
+  try {
+    jevOn(h.home);
+    assertSilentAllow(testHook(HOOK, payload({
+      model: 'haiku', subagent_type: 'general-purpose', description: 'fetch the data',
+      prompt: 'curl the endpoint and download the dump',
+    }), { home: h.home, env: JEV_ENV }));
+    assertAdvisory(testHook(HOOK, payload({
+      model: 'opus', subagent_type: 'executor', description: 'fetch the data',
+      prompt: 'curl the endpoint and download the dump',
+    }), { home: h.home, env: JEV_ENV }));
+    assert.deepStrictEqual(jevRows(h.home), []);
+  } finally { h.cleanup(); }
+});

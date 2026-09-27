@@ -332,3 +332,42 @@ test('noteLabeledInbound: an unlabeled message (no urgency/kind) never creates a
     assert.strictEqual(fs.existsSync(path.join(home, '.anti-hall', 'logs', 'jev-triage.ndjson')), false);
   } finally { rm(home); }
 });
+
+// Regression (parentGateQuestion logged zero rows): the cache `_seq` was a
+// per-process counter restarting at 1, so once the cache held
+// MAX_CACHE_ENTRIES a fresh hook process's new label got the LOWEST `_seq` and
+// was evicted in the same write. Seeded bad state = a full cache whose entries
+// carry higher `_seq` values than any fresh process would stamp.
+test('full cache (seeded frozen state): a new label is RETAINED and served from cache next time', async () => {
+  const home = tmpHome();
+  try {
+    writeJevConfig(home, { enabled: true, confidenceThreshold: 0.85, timeoutMs: 1000 });
+    const { MAX_CACHE_ENTRIES } = require(LIB);
+    const frozen = {};
+    for (let i = 0; i < MAX_CACHE_ENTRIES; i++) frozen['f' + String(i).padStart(31, '0')] = { _seq: 19 + i };
+    fs.mkdirSync(path.join(home, '.anti-hall', 'cache'), { recursive: true });
+    fs.writeFileSync(path.join(home, '.anti-hall', 'cache', 'jev-triage.json'), JSON.stringify(frozen));
+    let hitCount = 0;
+    await withMockServer(async (req, res) => {
+      hitCount++;
+      const body = await readJsonBody(req);
+      const out = { answers: {} };
+      if (body.questions.kind) out.answers.kind = { choice: 'question-needs-answer', confidence: 0.95 };
+      if (body.questions.urgency) out.answers.urgency = { noul: 0.05 };
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(out));
+    }, async (endpoint) => {
+      const env = { HOME: home, ANTIHALL_JEV_TEST_ENDPOINT: endpoint, AI_GATEWAY_API_KEY: 'k' };
+      const text = 'Should I merge this now or wait for review?';
+      await runTriageInSubprocess(home, env, [{ key: 'q', text }]);
+      const cache = JSON.parse(fs.readFileSync(path.join(home, '.anti-hall', 'cache', 'jev-triage.json'), 'utf8'));
+      assert.strictEqual(Object.keys(cache).length, MAX_CACHE_ENTRIES);
+      assert.ok(cache[hashMessage(text)], 'new label must survive eviction');
+      assert.strictEqual(cache[hashMessage(text)].kind, 'question-needs-answer');
+      assert.ok(!cache['f' + '0'.repeat(31)], 'the oldest frozen entry is the one evicted');
+      const r2 = await runTriageInSubprocess(home, env, [{ key: 'q', text }]);
+      assert.deepStrictEqual(r2.parsed, [['q', { urgency: 'normal', kind: 'question-needs-answer' }]]);
+      assert.strictEqual(hitCount, 1, 'second run must be a cache hit');
+    });
+  } finally { rm(home); }
+});

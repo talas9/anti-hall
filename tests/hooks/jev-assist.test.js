@@ -1205,3 +1205,27 @@ test('scrubSecrets: AWS key ids, KEY=/PASSWORD= identifiers, JWTs, URL credentia
   }
   assert.strictEqual(scrubSecrets('a plain sentence stays as it is'), 'a plain sentence stays as it is');
 });
+
+// Regression: `_seq` was a per-process counter, so with a full cache a fresh
+// process's new entry sorted LOWEST and was evicted in the same write.
+// freshLib() per call = a fresh hook process.
+test('ask(): full cache (seeded) -> a fresh process\'s new entry is retained, next process hits cache', async () => {
+  const h = makeHome();
+  try {
+    h.writeState('jev.json', { enabled: true, timeoutMs: 3000 });
+    const frozen = {};
+    for (let i = 0; i < 500; i++) frozen['f' + String(i).padStart(15, '0')] = { answer: false, confidence: 0.9, _seq: 100 + i };
+    fs.mkdirSync(path.join(h.home, '.anti-hall', 'cache'), { recursive: true });
+    fs.writeFileSync(path.join(h.home, '.anti-hall', 'cache', 'jev-assist.json'), JSON.stringify(frozen));
+    await withMockServer(noulHandler(0.95), async (endpoint) => {
+      await withEnv({ HOME: h.home, AI_GATEWAY_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
+        await freshLib().ask({ id: 'speculation', question: NOUL_Q, state: 'new text', trust: 'add-block', baseline: false });
+        await freshLib().ask({ id: 'speculation', question: NOUL_Q, state: 'new text', trust: 'add-block', baseline: false });
+        const log = readNdjson(path.join(h.home, '.anti-hall', 'logs', 'jev-assist.ndjson'));
+        assert.strictEqual(log.length, 2);
+        assert.strictEqual(log[0].backend, 'jev');
+        assert.strictEqual(log[1].backend, 'cache');
+      });
+    });
+  } finally { h.cleanup(); }
+});

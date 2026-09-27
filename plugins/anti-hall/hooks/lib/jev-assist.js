@@ -496,7 +496,18 @@ function readCache(home) {
   }
 }
 
-let cacheSeq = 0;
+// nextCacheSeq(cache) -> one past the highest `_seq` in `cache`. Eviction
+// drops the lowest `_seq` first and each hook is a fresh process, so a
+// per-process counter (the old `++cacheSeq`, restarting at 1) made new entries
+// sort among the OLDEST and pinned any higher-seq entry forever. Seeding from
+// the stored max keeps insertion order across processes.
+function nextCacheSeq(cache) {
+  let max = 0;
+  for (const v of Object.values(cache || {})) {
+    if (v && Number.isFinite(v._seq) && v._seq > max) max = v._seq;
+  }
+  return max + 1;
+}
 function writeCache(home, cache) {
   try {
     const entries = Object.entries(cache);
@@ -759,7 +770,7 @@ async function ask(opts = {}) {
     }
     if (r.ok) {
       writeCache(h, Object.assign({}, cache, {
-        [hash]: { answer: r.answer, confidence: r.confidence, _seq: ++cacheSeq },
+        [hash]: { answer: r.answer, confidence: r.confidence, _seq: nextCacheSeq(cache) },
       }));
     }
   }
@@ -790,7 +801,7 @@ function askSync(opts = {}) {
     r = jevDecideSync({ question, state, timeoutMs: budgetMs, home: h });
     if (r.ok) {
       writeCache(h, Object.assign({}, cache, {
-        [hash]: { answer: r.answer, confidence: r.confidence, _seq: ++cacheSeq },
+        [hash]: { answer: r.answer, confidence: r.confidence, _seq: nextCacheSeq(cache) },
       }));
     }
   }
