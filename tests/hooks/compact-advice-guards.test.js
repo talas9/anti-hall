@@ -42,6 +42,12 @@ function withHome(fn) {
   try { return fn(h); } finally { h.cleanup(); }
 }
 
+// compact-declaration-guard ships opt-in (default off, 0.116.0) — tests that
+// exercise its blocking behavior must explicitly turn it on.
+function enableDeclGuard(h) {
+  fs.writeFileSync(path.join(h.antiHall, 'settings.json'), JSON.stringify({ guards: { compactDeclarationGuard: true } }));
+}
+
 // ------------------------------------------------------------------ lib unit
 test('findAdvice: own recommendations match; negated / quoted / retracted do not', () => {
   assert.ok(advice.findAdvice('✅ **SAFE TO COMPACT NOW**').length);
@@ -144,46 +150,58 @@ test('Stop: recentTurns=0 disables the recent-compact rule', () => withHome((h) 
 // ---------------------------------------------------- (b) PreToolUse check
 const safeTurn = () => [user('finish up'), say('Everything is idle.\n\n✅ SAFE TO COMPACT NOW', 88)];
 
-test('PreToolUse: Agent spawn after SAFE in the same turn -> block', () => withHome((h) => {
+test('PreToolUse: default off -> silent on a fixture that would block if enabled', () => withHome((h) => {
+  const tp = h.writeTranscript(safeTurn());
+  assert.strictEqual(blocked(testHook(PRE, prePayload(tp, 'Agent', { prompt: 'x', run_in_background: true }), { home: h.home })), null);
+}));
+
+test('PreToolUse: Agent spawn after SAFE in the same turn -> block (explicit opt-in)', () => withHome((h) => {
+  enableDeclGuard(h);
   const tp = h.writeTranscript(safeTurn());
   const reason = blocked(testHook(PRE, prePayload(tp, 'Agent', { prompt: 'x', run_in_background: true }), { home: h.home }));
   assert.ok(reason);
   assert.match(reason, /you declared SAFE TO COMPACT this turn/);
 }));
 
-test('PreToolUse: state-changing Bash after SAFE -> block; read-only Bash -> allow', () => withHome((h) => {
+test('PreToolUse: state-changing Bash after SAFE -> block; read-only Bash -> allow (explicit opt-in)', () => withHome((h) => {
+  enableDeclGuard(h);
   const tp = h.writeTranscript(safeTurn());
   assert.ok(blocked(testHook(PRE, prePayload(tp, 'Bash', { command: 'git merge feature/x' }), { home: h.home })));
   assert.strictEqual(blocked(testHook(PRE, prePayload(tp, 'Bash', { command: 'git status --short' }), { home: h.home })), null);
 }));
 
-test('PreToolUse: Read after SAFE -> allow', () => withHome((h) => {
+test('PreToolUse: Read after SAFE -> allow (explicit opt-in)', () => withHome((h) => {
+  enableDeclGuard(h);
   const tp = h.writeTranscript(safeTurn());
   assert.strictEqual(blocked(testHook(PRE, prePayload(tp, 'Read', { file_path: '/x' }), { home: h.home })), null);
 }));
 
-test('PreToolUse: after the next user message -> allow', () => withHome((h) => {
+test('PreToolUse: after the next user message -> allow (explicit opt-in)', () => withHome((h) => {
+  enableDeclGuard(h);
   const tp = h.writeTranscript([...safeTurn(), user('ok, actually do one more thing first')]);
   assert.strictEqual(blocked(testHook(PRE, prePayload(tp, 'Write', { file_path: '/x' }), { home: h.home })), null);
 }));
 
-test('PreToolUse: a task-notification does NOT reset the turn', () => withHome((h) => {
+test('PreToolUse: a task-notification does NOT reset the turn (explicit opt-in)', () => withHome((h) => {
+  enableDeclGuard(h);
   const tp = h.writeTranscript([...safeTurn(), user('<task-notification><status>completed</status></task-notification>')]);
   assert.ok(blocked(testHook(PRE, prePayload(tp, 'Edit', { file_path: '/x' }), { home: h.home })));
 }));
 
-test('PreToolUse: a retraction line -> allow', () => withHome((h) => {
+test('PreToolUse: a retraction line -> allow (explicit opt-in)', () => withHome((h) => {
+  enableDeclGuard(h);
   const tp = h.writeTranscript([...safeTurn(), say('RETRACT SAFE TO COMPACT — one more fix is needed; I will refresh the handover after.')]);
   assert.strictEqual(blocked(testHook(PRE, prePayload(tp, 'Edit', { file_path: '/x' }), { home: h.home })), null);
 }));
 
-test('PreToolUse: switch off -> silent on the same blocking fixture', () => withHome((h) => {
+test('PreToolUse: switch explicitly off -> silent on the same blocking fixture', () => withHome((h) => {
   fs.writeFileSync(path.join(h.antiHall, 'settings.json'), JSON.stringify({ guards: { compactDeclarationGuard: false } }));
   const tp = h.writeTranscript(safeTurn());
   assert.strictEqual(blocked(testHook(PRE, prePayload(tp, 'Agent', {}), { home: h.home })), null);
 }));
 
-test('PreToolUse: Codex rollout shape (Bash) -> block after SAFE, allow after a new user_message', () => withHome((h) => {
+test('PreToolUse: Codex rollout shape (Bash) -> block after SAFE, allow after a new user_message (explicit opt-in)', () => withHome((h) => {
+  enableDeclGuard(h);
   const ev = (payload) => ({ timestamp: ts(), type: 'event_msg', payload });
   const msg = (text) => ({ timestamp: ts(), type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text }] } });
   const tp = h.writeTranscript([ev({ type: 'user_message', message: 'wrap up' }), msg('✅ SAFE TO COMPACT NOW')]);
@@ -193,7 +211,8 @@ test('PreToolUse: Codex rollout shape (Bash) -> block after SAFE, allow after a 
 }));
 
 // ------------------------------------------------------- R1-6: block via exit 2
-test('PreToolUse: block matches sibling PreToolUse guards -> exit 2, not 0', () => withHome((h) => {
+test('PreToolUse: block matches sibling PreToolUse guards -> exit 2, not 0 (explicit opt-in)', () => withHome((h) => {
+  enableDeclGuard(h);
   const tp = h.writeTranscript(safeTurn());
   const r = testHook(PRE, prePayload(tp, 'Agent', { prompt: 'x', run_in_background: true }), { home: h.home });
   assert.ok(blocked(r), r.stdout);

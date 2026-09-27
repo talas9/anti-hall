@@ -100,7 +100,7 @@ const NEW_KEYS = [
   'context.taskTracker', 'context.handoverResume', 'context.defectNudge',
   'maintenance.repairOnReload', 'maintenance.progressPrune', 'maintenance.precompactSnapshot', 'maintenance.taskLifecycleLog', 'maintenance.sessionEndReaper',
   'guards.apiGuard', 'guards.speculationGuard', 'guards.claimLedger', 'guards.taskGuard', 'guards.tasklistGuard', 'guards.scanThrottle',
-  'guards.compactAdviceGuard', 'guards.compactDeclarationGuard',
+  'guards.compactAdviceGuard',
   'devswarm.parentGate', 'devswarm.childGate', 'devswarm.parentInbox', 'devswarm.childTurn', 'devswarm.childRole', 'devswarm.childDrain',
   'devswarm.parentReplyTracker', 'devswarm.commsGuard', 'devswarm.inboxReadGuard', 'devswarm.wakeWatch', 'devswarm.appSync', 'devswarm.screenshotSync',
 ];

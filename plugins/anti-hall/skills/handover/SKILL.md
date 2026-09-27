@@ -381,9 +381,11 @@ final message depends on the `Trigger:` line you recorded above:
 
 The declared line is the LAST act of the turn either way; work after it makes
 the handover STALE — refresh it (same seq, or seq+1) and re-declare before
-claiming safe/saved again. `compact-declaration-guard.js` (PreToolUse)
-enforces this: after a SAFE TO COMPACT declaration it blocks agent spawns,
-file edits and state-changing shell for the rest of the turn — write
+claiming safe/saved again. `compact-declaration-guard.js` (PreToolUse,
+opt-in — `guards.compactDeclarationGuard`, default OFF) can mechanically
+enforce this: when turned on, after a SAFE TO COMPACT declaration it blocks
+agent spawns, file edits and state-changing shell for the rest of the turn —
+regardless of the switch, write
 `RETRACT SAFE TO COMPACT — <why>` first if more work is genuinely needed,
 then refresh the handover before declaring again. `tasklist-guard.js` backs this up mechanically:
 file-changing work after the newest `HANDOVER*.md`'s mtime gets a capped
