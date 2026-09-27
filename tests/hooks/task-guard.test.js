@@ -577,3 +577,59 @@ test("OWNER-BLOCKED: metadata.blockedOn 'external' suppresses idle-neglect", () 
     h.cleanup();
   }
 });
+
+// ---- R1-2: a self-referential (A->A) or cyclic (A<->B) fake blockedBy is
+// NOT an honest blocker -- it never reaches a task that can actually make
+// progress, so the generic nudge must still list the task(s) involved. ----
+
+test('GENERIC: self-referential blockedBy (A->A) does not silence the nudge', () => {
+  const h = makeHome();
+  try {
+    const tp = h.writeTranscript([
+      todoWrite([
+        { id: '1', content: 'self-blocked task', status: 'pending', blockedBy: ['1'] },
+      ]),
+    ]);
+    const r = testHook(HOOK, stopPayload(tp), { home: h.home });
+    assert.ok(isBlock(r), `self-referential blockedBy must still nudge; got ${JSON.stringify(r.json)}`);
+    assert.match(r.json.reason, /self-blocked task/);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('GENERIC: cyclic blockedBy (A<->B) does not silence the nudge for either task', () => {
+  const h = makeHome();
+  try {
+    const tp = h.writeTranscript([
+      todoWrite([
+        { id: '1', content: 'cyclic task A', status: 'pending', blockedBy: ['2'] },
+        { id: '2', content: 'cyclic task B', status: 'in_progress', blockedBy: ['1'] },
+      ]),
+    ]);
+    const r = testHook(HOOK, stopPayload(tp), { home: h.home });
+    assert.ok(isBlock(r), `cyclic blockedBy must still nudge; got ${JSON.stringify(r.json)}`);
+    assert.match(r.json.reason, /cyclic task A/);
+    assert.match(r.json.reason, /cyclic task B/);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('GENERIC: A blockedBy an unblocked open B -> A excluded, B listed', () => {
+  const h = makeHome();
+  try {
+    const tp = h.writeTranscript([
+      todoWrite([
+        { id: '1', content: 'genuinely blocked A', status: 'pending', blockedBy: ['2'] },
+        { id: '2', content: 'genuinely unblocked B', status: 'in_progress' },
+      ]),
+    ]);
+    const r = testHook(HOOK, stopPayload(tp), { home: h.home });
+    assert.ok(isBlock(r), `expected the generic nudge; got ${JSON.stringify(r.json)}`);
+    assert.match(r.json.reason, /genuinely unblocked B/);
+    assert.doesNotMatch(r.json.reason, /genuinely blocked A/);
+  } finally {
+    h.cleanup();
+  }
+});

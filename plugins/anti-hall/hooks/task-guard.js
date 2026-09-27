@@ -511,17 +511,59 @@ function classifyOpen(openTasks, taskMap) {
 
 // unblockedOpen(openTasks, taskMap) — the open tasks the GENERIC nudge lists:
 // drops a task with an owner-blocked marker (isOwnerBlocked) or a blockedBy id
-// naming a KNOWN task that is still pending/in_progress. A dangling blockedBy id
+// naming a DIFFERENT known task that is still pending/in_progress AND whose own
+// chain reaches a task that can actually make progress (or an owner/external
+// marker) -- fixpoint over the whole blockedBy graph. A dangling blockedBy id
 // does not count here (unlike classifyOpen), so a fake dependency cannot
-// silence the generic nudge.
+// silence the generic nudge. A self-reference (A blockedBy A) or a pure cycle
+// (A<->B) never reaches such a terminal, so it is NOT an honest blocker either
+// -- the base nudged in both cases, and this restores that.
 function unblockedOpen(openTasks, taskMap) {
   const openIds = new Set();
   for (const t of taskMap.values()) {
     const s = (t.status || '').toLowerCase();
     if (s === 'pending' || s === 'in_progress' || s === 'in-progress') openIds.add(String(t.id));
   }
-  return openTasks.filter(t => !isOwnerBlocked(t) &&
-    !normBlockedBy(t.blockedBy).some(id => openIds.has(String(id))));
+
+  // Only DIFFERENT, known, still-open ids count as candidate blockers.
+  function validBlockers(t) {
+    return normBlockedBy(t.blockedBy).map(String).filter(id => id !== String(t.id) && openIds.has(id));
+  }
+  // A chain can stop at t: either t has no honest blocker of its own (a leaf
+  // that can make progress right now) or t is itself owner/user/external
+  // blocked (a legitimate human dependency).
+  function isTerminal(t) {
+    return validBlockers(t).length === 0 || isOwnerBlocked(t);
+  }
+
+  const reachMemo = new Map();
+  const visiting = new Set();
+  // canReachTerminal(id) — plain forward reachability along blockedBy edges to
+  // a terminal task. The visiting set only ever turns a cycle into "no reach"
+  // (never a "yes" that flips depending on traversal order), so A->A and
+  // A<->B both correctly resolve to "does not reach" for every node involved.
+  function canReachTerminal(id) {
+    id = String(id);
+    if (reachMemo.has(id)) return reachMemo.get(id);
+    if (visiting.has(id)) return false;
+    const t = taskMap.get(id);
+    if (!t) return false;
+    visiting.add(id);
+    let reached = false;
+    for (const bid of validBlockers(t)) {
+      const bt = taskMap.get(bid);
+      if (bt && (isTerminal(bt) || canReachTerminal(bid))) { reached = true; break; }
+    }
+    visiting.delete(id);
+    reachMemo.set(id, reached);
+    return reached;
+  }
+
+  function honestlyBlocked(t) {
+    return validBlockers(t).length > 0 && canReachTerminal(t.id);
+  }
+
+  return openTasks.filter(t => !isOwnerBlocked(t) && !honestlyBlocked(t));
 }
 
 function parseTasksFromFile(filePath) {
