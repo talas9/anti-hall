@@ -13,24 +13,39 @@
 //   demandsIgnored     turns that ended with no spawn after the demand
 //   complianceRate     demandsFollowed / (demandsFollowed + demandsIgnored)
 //   idleNeglectBlocks  task-guard IDLE NEGLECT Stop blocks
+//
+// JEV dispatchTier (hooks/lib/dispatch-tier.js; same file, "tier" block)
+//   verdicts.{workspace,workflow,subagent}  distinct task texts classified
+//   followed / overridden / followRate      actual dispatch (Agent / Workflow /
+//                                           devswarm spawn) vs the recommendation
+//   subagentOneLane / subagentEscalated     accuracy proxy for subagent-tier
+//   workflowFannedOut / workflowNoFanout    accuracy proxy for workflow-tier
+// Per-decision rows + outcome labels: node scripts/jev-report.js (id dispatchTier).
 
 const os = require('os');
 const path = require('path');
 
 function build(home) {
   const dd = require(path.join(__dirname, '..', 'hooks', 'lib', 'dispatch-demand.js'));
-  return { dispatchDemand: dd.summary(home) };
+  const dt = require(path.join(__dirname, '..', 'hooks', 'lib', 'dispatch-tier.js'));
+  return { dispatchDemand: dd.summary(home), dispatchTier: dt.summary(home) };
 }
 
 function pct(x) { return x == null ? 'n/a' : (Math.round(x * 1000) / 10) + '%'; }
 
 function render(r) {
   const d = r.dispatchDemand;
+  const t = r.dispatchTier;
   return [
     'anti-hall dispatch report',
     '  dispatch demand: shown ' + d.demandsShown + ' · followed ' + d.demandsFollowed +
       ' · ignored ' + d.demandsIgnored + ' · compliance ' + pct(d.complianceRate),
     '  idle-neglect blocks: ' + d.idleNeglectBlocks,
+    '  jev dispatchTier: verdicts workspace ' + t.verdicts.workspace + ' · workflow ' + t.verdicts.workflow +
+      ' · subagent ' + t.verdicts.subagent,
+    '    followed ' + t.followed + ' · overridden ' + t.overridden + ' (follow rate ' + pct(t.followRate) + ')' +
+      ' · subagent one-lane ' + t.subagentOneLane + ' / escalated ' + t.subagentEscalated +
+      ' · workflow fanned-out ' + t.workflowFannedOut + ' / no-fanout ' + t.workflowNoFanout,
   ].join('\n');
 }
 

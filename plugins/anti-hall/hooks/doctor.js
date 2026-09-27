@@ -1567,6 +1567,12 @@ if (REPAIR_RESURRECTED) {
   infol('shown ' + d.demandsShown + ' · followed ' + d.demandsFollowed + ' · ignored ' + d.demandsIgnored +
     ' (compliance ' + rate + ') · idle-neglect blocks ' + d.idleNeglectBlocks +
     ' — node scripts/dispatch-report.js');
+  try {
+    const t = require('./lib/dispatch-tier.js').summary(os.homedir());
+    const fr = t.followRate == null ? 'n/a' : (Math.round(t.followRate * 1000) / 10) + '%';
+    infol('jev dispatchTier: verdicts ' + (t.verdicts.workspace + t.verdicts.workflow + t.verdicts.subagent) +
+      ' · followed ' + t.followed + ' · overridden ' + t.overridden + ' (follow rate ' + fr + ')');
+  } catch (_) { /* report-only */ }
 })();
 
 // --- 6. Summary --------------------------------------------------------------

@@ -147,7 +147,7 @@ test('get: every /config-exposed key set via CLAUDE_PLUGIN_OPTION_<KEY> reports 
 // jevIntegrations (v0.108.4) — the dedicated per-integration section.
 // ---------------------------------------------------------------------------
 
-test('show --section jevIntegrations: renders all 14 rows as its own table, defaults intact', () => {
+test('show --section jevIntegrations: renders all 15 rows as its own table, defaults intact', () => {
   const home = makeHome();
   try {
     const r = run(['show', '--section', 'jevIntegrations', '--json'], home.home);
@@ -157,7 +157,7 @@ test('show --section jevIntegrations: renders all 14 rows as its own table, defa
       'speculation', 'triage', 'newRequest', 'claimLedger', 'outputVerifyGuard',
       'gitGuardSelfCredit', 'modelRouting', 'tasklistTrivial',
       'codexNudgeSubstantial', 'mergeGateHedge', 'parentGateQuestion',
-      'supervisorBlockerLabel', 'findingDedup', 'postHandoverGate',
+      'supervisorBlockerLabel', 'findingDedup', 'postHandoverGate', 'dispatchTier',
     ];
     assert.strictEqual(Object.keys(parsed.jevIntegrations).length, ids.length);
     for (const id of ids) assert.ok(id in parsed.jevIntegrations, id + ' row missing');

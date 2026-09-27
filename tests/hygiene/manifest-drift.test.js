@@ -64,6 +64,9 @@ function hookFilesByEvent(hooksObj) {
 // a genuinely Claude-only hook ships — do NOT add an entry to silence a real
 // drift; that is what this test exists to catch.
 const CLAUDE_ONLY_ALLOWLIST = [
+  // PostToolUse TaskCreate|TaskUpdate: Jev dispatchTier classifies Claude Code
+  // Task-tool tasks; Codex has no TaskCreate/TaskUpdate tools to match.
+  { event: 'PostToolUse', file: 'dispatch-tier.js', reason: 'classifies Claude Code TaskCreate/TaskUpdate tasks; Codex has no Task tools to match' },
   // Task-tool / subagent lifecycle events. Codex's harness has no
   // TaskCreated/TaskCompleted/SubagentStart event hooks at all (codex/hooks/
   // hooks.json registers neither event) — these are Claude Code Task-tool

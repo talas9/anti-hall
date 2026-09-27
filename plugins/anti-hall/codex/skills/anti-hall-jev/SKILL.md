@@ -98,6 +98,9 @@ itself.
   an offline benchmark (n=299) found park-recall 17.6% vs 28.8% for the
   agent's own size judgment plus the measured budget backstop, no gain over
   that baseline
+  `dispatchTier` (advisory: workspace / workflow / subagent recommendation on
+  Claude's DISPATCH NOW line) is Claude-only — Codex has no TaskCreate/Agent
+  task tools, so the integration has nothing to classify there
   (settings `jevIntegrations.<id>`, e.g. `jevIntegrations.modelRouting`
   — v0.108.4 gave every one of the 13 its own settings-schema row (`postHandoverGate` has one since v0.109.0); a pre-existing
   `jev.json integrations.<id>` or pre-0.108.4 `jev.integrations.<id>` value keeps

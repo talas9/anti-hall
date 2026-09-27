@@ -87,6 +87,7 @@ const SWITCHES = {
   'compact-advice-guard.js': 'guards.compactAdviceGuard',
   'compact-declaration-guard.js': 'guards.compactDeclarationGuard',
   'codex-quota-detect.js': 'guards.codexQuotaDetect',
+  'dispatch-tier.js': 'jevIntegrations.dispatchTier',
 };
 // Non-hook features with a 0.108.4 switch (file -> key).
 const COMPANION_SWITCHES = {
