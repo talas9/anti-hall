@@ -1064,6 +1064,41 @@ function writesLauncherDir(tokens, ev, cdDir) {
     (cdDir && p && !/^[/~$]/.test(p) && LAUNCHER_DIR_RE.test(cdDir + '/' + p)));
 }
 
+// Code strings passed to a call: `execSync('git push --force')`,
+// `os.system("…")`, `system "…"`, or a list-form argv
+// (`execFileSync('git', ['push', '--force'])`, `run(["git","push","-f"])`), in
+// a node -e / python -c / perl -e payload or a script body written by a
+// heredoc. The literal is data to the shell, so the segment scan never sees
+// it. Every quoted string after a call opener, up to the first unquoted `)`,
+// `;` or newline, is joined with spaces and returned as a command to scan.
+// Only strings that mention `push` are returned. Prose like
+// "(see 'git push')" still matches, so this is kept to call-shaped openers:
+// `(` or `system`/`exec` directly followed by a quote or `[`.
+const CALL_LITERAL_RE = /(?:\(|\b(?:system|exec)[ \t]+)[ \t]*[['"]/g;
+
+function callLiteralCommands(cmd) {
+  const src = cmd.replace(/\\(['"])/g, '$1');
+  const out = [];
+  for (const m of src.matchAll(CALL_LITERAL_RE)) {
+    const parts = [];
+    let i = m.index + m[0].length - 1;
+    while (i < src.length && src[i] !== ')' && src[i] !== ';' && src[i] !== '\n') {
+      const q = src[i];
+      if (q === "'" || q === '"') {
+        const j = src.indexOf(q, i + 1);
+        if (j < 0) break;
+        parts.push(src.slice(i + 1, j));
+        i = j + 1;
+      } else {
+        i++;
+      }
+    }
+    const joined = parts.join(' ');
+    if (/push/.test(joined)) out.push(joined);
+  }
+  return out;
+}
+
 // Run the git force/trailer detection on every segment of a command string.
 // Returns a block message string if a violation is found, else null. Recurses
 // into `eval <payload>` segments (depth-bounded) so force/trailer forms hidden
@@ -1081,6 +1116,13 @@ function scanCommand(cmd, depth) {
   // detection, or inline -m/--trailer scanning below.
   const heredocBodies = extractHeredocBodies(cmd);
   let lastCdDir = null;
+
+  if (d < 3) {
+    for (const lit of callLiteralCommands(cmd)) {
+      const hit = scanCommand(lit, d + 1);
+      if (hit) return hit;
+    }
+  }
 
   for (const h of heredocBodies) {
     const hit = scanConfigLines(h.body, d);

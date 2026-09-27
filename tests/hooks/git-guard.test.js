@@ -494,7 +494,7 @@ for (const cmd of CONFIG_VALUE_ALLOW) {
 // Writes into ~/.anti-hall/bin/ (the stable launchers) are blocked outright:
 // an overwritten launcher runs arbitrary code under a trusted name.
 const LAUNCHER_WRITE_BLOCK = [
-  `cat > ~/.anti-hall/bin/devswarm.js <<'EOF'\nrequire('child_process').execSync('${FPB}')\nEOF\nnode ~/.anti-hall/bin/devswarm.js send`,
+  "cat > ~/.anti-hall/bin/devswarm.js <<'EOF'\nrequire('child_process').execSync(process.env.X)\nEOF\nnode ~/.anti-hall/bin/devswarm.js send",
   "echo 'x' > \"$HOME/.anti-hall/bin/wake-watch.js\"",
   'echo x >>~/.anti-hall/bin/devswarm.js',
   'echo hi | tee ~/.anti-hall/bin/devswarm.js',
@@ -523,6 +523,44 @@ for (const cmd of LAUNCHER_WRITE_BLOCK) {
 }
 for (const cmd of LAUNCHER_WRITE_ALLOW) {
   test(`ALLOW (launcher dir read): ${JSON.stringify(cmd)}`, () => {
+    const r = run(cmd);
+    assert.strictEqual(r.status, 0, `expected allow (exit 0) for: ${cmd}\nstderr: ${r.stderr}`);
+  });
+}
+
+// Code strings that call git: a quoted literal passed to a call
+// (`execSync('git push --force')`, `os.system("…")`, a list-form argv) in an
+// interpreter -e/-c payload or in a script body written by a heredoc.
+const JSX = (q) => `require(${q}child_process${q}).execSync(${q}${FPB}${q})`;
+const CODE_STRING_BLOCK = [
+  HDP('x.js', JSX("'")) + 'NODE_OPTIONS=--require=./x.js node ~/.anti-hall/bin/devswarm.js roster',
+  HDP('x.js', JSX('"')) + 'NODE_OPTIONS=--require=./x.js node ~/.anti-hall/bin/devswarm.js roster',
+  HDP('x.js', JSX("'")) + 'NODE_OPTIONS=-r./x.js node ~/.anti-hall/bin/devswarm.js roster',
+  HDP('x.js', JSX("'")),
+  `node -e "${JSX("'")}"`,
+  `node -e "require('child_process').execFileSync('git', ['push', '--force'])"`,
+  `python3 -c 'import os; os.system("${FPB}")'`,
+  `python3 -c 'import subprocess; subprocess.run(["git","push","-f","origin","main"])'`,
+  `perl -e 'system("git push -f origin main")'`,
+  `perl -e 'system "git push -f origin main"'`,
+  `node -e "require(\\"child_process\\").execSync(\\"${FPB}\\")"`,
+];
+const CODE_STRING_ALLOW = [
+  `node -e "require('child_process').execSync('git push origin main')"`,
+  `node -e "console.log('push')"`,
+  'git commit -m "docs: note (see git docs) about git push"',
+  `git commit -m "fix(git-guard): block ${FPB} in code strings"`,
+  `python3 -c 'print("hello")'`,
+];
+for (const cmd of CODE_STRING_BLOCK) {
+  test(`BLOCK (code-string literal): ${JSON.stringify(cmd)}`, () => {
+    const r = run(cmd);
+    assert.strictEqual(r.status, 2, `expected block (exit 2) for: ${cmd}\nstderr: ${r.stderr}`);
+    assert.match(r.stderr, REASON.FORCE);
+  });
+}
+for (const cmd of CODE_STRING_ALLOW) {
+  test(`ALLOW (code-string literal): ${JSON.stringify(cmd)}`, () => {
     const r = run(cmd);
     assert.strictEqual(r.status, 0, `expected allow (exit 0) for: ${cmd}\nstderr: ${r.stderr}`);
   });
