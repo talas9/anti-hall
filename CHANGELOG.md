@@ -6,6 +6,17 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.115.2 (2026-09-27)
+
+### Fixes
+
+- **command-guard: a shell comment containing `)` no longer triggers a false heavy-command block** (peer-reported). The segment splitter split on `)`, `;`, `|`, `&` even inside comment text, so `# 1) go to x` produced a bogus `go to x` segment classified as the heavy verb `go`. An unquoted `#` that starts a word (start of input, or after unescaped whitespace, `;`, `&`, `|`) at nesting depth 0 and outside backticks is now dropped to end of line, as the shell does. A `#` that is not a comment stays code (`a#b`, `$#`, `${#x}`, `${x#y}`, `${x:- #}`, `(( 2 #))`, `$[1 #]`, backticks, `$(echo a)#b`, escaped/quoted `#`, continuation lines); the newline still ends the comment; the existing `#` refusal for the allowlist/bounded-sink paths is unchanged.
+- **command-guard: four splitter bypasses closed (latent, not new regressions).** Each let a real chained command (e.g. `; go build`) reach the shell unclassified:
+  - ANSI-C `$'…'` quoting was read as plain `'…'`, so an escaped `\'` closed the quote early and hid what followed — in both the segment splitter and the `$( … )` substitution extractor.
+  - A `<<<` here-string was parsed as a heredoc on its operand (`<<< "#"`), swallowing every following line as "body".
+  - A heredoc delimiter was cut at the first non-identifier character (`<<EOF#x` read as `EOF`), so the body never terminated. The delimiter is now the full shell word with quote removal; words the parser cannot model exactly are not treated as heredocs (nothing is skipped).
+- **command-guard / git-guard: `<<` inside arithmetic (`$(( … ))`, `(( … ))`, `$[ … ]`) is a left shift, not a heredoc.** A letter-led operand (`$((1<<y))`) opened a fake heredoc whose "body" hid every following line. The shared heredoc parser now rejects `<<` whose innermost enclosing context is arithmetic, so every caller (both guards' heredoc scans and the substitution extractor) is covered.
+
 ## 0.115.1 (2026-09-26)
 
 ### Fixes
