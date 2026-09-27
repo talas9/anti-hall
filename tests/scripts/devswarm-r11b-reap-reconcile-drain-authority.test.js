@@ -4,11 +4,17 @@
 // single discriminating expression.
 //
 // 1. R11-A3 (P2): `inbox messages --tail N` ran AFTER the per-source read cap,
-//    which by design keeps an EARLIEST structural prefix (devswarm.js's
+//    which at the time by design kept an EARLIEST structural prefix (devswarm.js's
 //    "UNBOUNDED-READ CAP" block). Under `truncated:true` the tail therefore
 //    returned the last N of the OLDEST batch while presenting them as the
-//    newest. Reversing the cap's keep-direction is not available (the ack
-//    arithmetic depends on the prefix property), so the call now REFUSES with
+//    newest. Reversing the cap's keep-direction for THIS (non-acking) call kind
+//    was later done directly (2ca335aa77d0: a plain, non-acking read now keeps a
+//    NEWEST structural suffix per source, not the oldest prefix — the ack-bearing
+//    prefix invariant that the cursor arithmetic depends on is untouched). That
+//    fix does not make `--tail` safe again on its own: the per-source cap is a
+//    WIDENED soft cap (kept sets can be extended for structural contiguity), so
+//    a truncated multi-source read still cannot guarantee its suffix is a true
+//    global top-N. The call therefore still REFUSES with
 //    `reason:'tail-under-truncation'` and points at `--since`.
 //
 // 1b. A7: undated rows sort to +Infinity, i.e. straight into the slice `--tail`
@@ -99,13 +105,15 @@ function seedPartition(home, repoDir, toId, rows) {
 // 1. R11-A3 — --tail under truncation
 // ===========================================================================
 
-// The discriminating fixture: 12 rows, --limit 5 so the cap fires, then
-// --tail 2. When this was written the cap kept the EARLIEST 5 and pre-fix
-// returned rows 4 and 5 labelled as the newest. Since 0.116 a plain
-// (non-acking) `inbox messages` read keeps the NEWEST suffix per source
-// instead; --tail under truncation is still refused (the kept set is a
-// per-source suffix, not a guaranteed global newest-N), so the refusal
-// contract below is unchanged.
+// The discriminating fixture: 12 rows, --limit 5 so the cap fires, then --tail 2.
+// Pre-fix (before the tail-under-truncation refusal existed) the cap kept the
+// EARLIEST 5 for a plain read, and a naive tail on top returned rows 4 and 5
+// (the last two of the oldest five) labelled as the newest; rows 11-12 were
+// never even read. 2ca335aa77d0 later reversed the cap's own direction for this
+// non-acking call kind (it now keeps a NEWEST structural suffix per source), so
+// today the cap itself keeps rows 8-12 — but the refusal below still has to
+// fire, because the cap is a WIDENED soft cap and a truncated multi-source read
+// still cannot promise its suffix is the true global newest N.
 //
 // WHY A SIBLING PARTITION IS PART OF THE FIXTURE (verified from the source, not
 // assumed): the per-source read cap is gated on `(wantsUnion || meshUnionActive)`,
@@ -132,13 +140,14 @@ function seedTruncatable(tag) {
 test('R11-A3: `--tail` under a TRUNCATED read refuses with tail-under-truncation instead of returning the oldest rows as the newest', () => {
   const f = seedTruncatable('tail-trunc');
   try {
-    // Sanity first: the cap really does fire at this limit (it keeps the
-    // newest per-source suffix for this non-acking read). Without this the
-    // refusal below could pass for the wrong reason.
+    // Sanity first: the cap really does fire at this limit, and really does
+    // keep a NEWEST structural suffix (2ca335aa77d0) rather than the oldest
+    // prefix. Without this the refusal below could pass for the wrong reason.
     const capped = cli.run(['inbox', 'messages', f.id, '--limit', '5'], ctx(f.home, { cwd: f.repo }));
     assert.strictEqual(capped.result.truncated, true, 'precondition: the read is truncated');
-    assert.strictEqual(capped.result.messages[0].body, 'row-8',
-      'precondition: a plain read keeps the NEWEST per-source suffix under the cap');
+    assert.deepStrictEqual(capped.result.messages.map((m) => m.body), ['row-8', 'row-9', 'row-10', 'row-11', 'row-12'],
+      'precondition: the cap keeps a NEWEST structural suffix — the refusal below must be justified by the '
+      + 'widened per-source cap not guaranteeing a true global top-N, not by a wrong keep-direction');
 
     const r = cli.run(['inbox', 'messages', f.id, '--limit', '5', '--tail', '2'], ctx(f.home, { cwd: f.repo }));
     assert.strictEqual(r.result.ok, false, JSON.stringify(r.result));
@@ -163,7 +172,7 @@ test('R11-A3: `--tail` on an UNtruncated read is unaffected and still returns th
   } finally { rm(f.home); rm(f.repo); }
 });
 
-test('R11-A3 MUTATION-KILL: dropping the truncation guard restores the silent oldest-as-newest tail', () => {
+test('R11-A3 MUTATION-KILL: dropping the truncation guard lets a widened-cap tail answer unchecked', () => {
   mutantKit.withMutant(
     '    if (windowTail !== null && truncatedCount > 0) {\n',
     '    if (false) {\n',
@@ -172,10 +181,19 @@ test('R11-A3 MUTATION-KILL: dropping the truncation guard restores the silent ol
       try {
         const r = mutatedCli.run(['inbox', 'messages', f.id, '--limit', '5', '--tail', '2'],
           ctx(f.home, { cwd: f.repo }));
+        // RED (expected on the mutant): the real code refuses this exact call
+        // (see the test above — reason:'tail-under-truncation'). With the guard
+        // removed, it instead succeeds and slices the tail straight off the
+        // already-truncated, widened per-source cap. Since 2ca335aa77d0 that
+        // cap keeps a NEWEST suffix, so for this simple single-active-source
+        // fixture the mutant's answer happens to be the genuine newest two —
+        // the guard's value is refusing the general (multi-source-widened)
+        // case where that is NOT guaranteed, not this direction. If either
+        // assertion below fails, the truncation guard is not what fixes A3.
         assert.strictEqual(r.result.ok, true, 'RED (expected on the mutant): the call succeeds instead of refusing');
         assert.deepStrictEqual(r.result.messages.map((m) => m.body), ['row-11', 'row-12'],
-          'on the mutant the truncated read is answered from the capped suffix instead of refused — '
-          + 'proves the truncation guard is what produces the refusal.');
+          'RED (expected on the mutant): the tail is sliced directly off the truncated cap with no refusal, '
+          + 'skipping the check that would otherwise catch a widened cap silently answering a --tail it cannot vouch for.');
       } finally { rm(f.home); rm(f.repo); }
     },
     { prefix: 'anti-hall-r11b-tail-mutant' }
