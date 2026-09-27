@@ -128,6 +128,34 @@ test('isCountedWork: an Edit into a real repo file (NOT .anti-hall state) still 
   );
 });
 
+// R3A1-WD-1: a segment that matches the housekeeping-verb anchor at ITS START
+// can still do real project work via a trailing redirect or a nested command
+// substitution — that must not be swallowed just because the segment opens
+// with `crontab` or a devswarm verb. Judged per segment: any real work
+// anywhere in the command counts.
+test('isDevswarmHousekeepingOnly: a crontab segment redirecting to a project file is NOT housekeeping-only', () => {
+  assert.strictEqual(wd.isDevswarmHousekeepingOnly('crontab -l > src/app.js'), false);
+});
+
+test('isDevswarmHousekeepingOnly: a crontab segment with a nested command substitution doing real work is NOT housekeeping-only', () => {
+  assert.strictEqual(wd.isDevswarmHousekeepingOnly('crontab -l $(sed -i s/a/b/ src/x.js)'), false);
+});
+
+test('isDevswarmHousekeepingOnly: a devswarm-verb segment redirecting to a project file is NOT housekeeping-only', () => {
+  assert.strictEqual(wd.isDevswarmHousekeepingOnly('node ~/.anti-hall/bin/devswarm.js roster > README.md'), false);
+});
+
+test('isCountedWork: crontab chained with a redirect into a project file counts as work', () => {
+  assert.strictEqual(wd.isCountedWork({ name: 'Bash', input: { command: 'crontab -l > src/app.js' } }), true);
+});
+
+test('isCountedWork: crontab with a nested real-work command substitution counts as work', () => {
+  assert.strictEqual(
+    wd.isCountedWork({ name: 'Bash', input: { command: 'crontab -l $(sed -i s/a/b/ src/x.js)' } }),
+    true
+  );
+});
+
 test('isCountedWork: a Write into a scratch copy under os.tmpdir() outside the repo is NOT counted as work', () => {
   const os = require('os');
   const path = require('path');
@@ -156,6 +184,13 @@ test('isCountedWork: a bash cp FROM os.tmpdir() scratch TO a real repo file stil
   );
 });
 
+test('isCountedWork: devswarm roster redirected into a project file counts as work', () => {
+  assert.strictEqual(
+    wd.isCountedWork({ name: 'Bash', input: { command: 'node ~/.anti-hall/bin/devswarm.js roster > README.md' } }),
+    true
+  );
+});
+
 // Verify devswarm.js inbox ack / heartbeat exclusion already holds (no
 // regression from the fix above).
 test('isCountedWork: devswarm.js inbox ack is NOT counted as work (pre-existing T4(b) exclusion, verified)', () => {
@@ -170,4 +205,12 @@ test('isCountedWork: devswarm.js heartbeat is NOT counted as work (pre-existing 
     wd.isCountedWork({ name: 'Bash', input: { command: 'node ~/.anti-hall/bin/devswarm.js heartbeat child-1' } }),
     false
   );
+});
+
+// Regression guard: the legitimate mailbox-wake crontab install shape (redirect
+// target is an OS tmp path, not a project file) must stay housekeeping-only —
+// re-asserted alongside the escape cases so a future change can't silently
+// widen the escape check to swallow this too.
+test('isDevswarmHousekeepingOnly: crontab redirecting to an OS tmp path stays housekeeping-only', () => {
+  assert.strictEqual(wd.isDevswarmHousekeepingOnly('crontab -l > /tmp/cron.txt'), true);
 });

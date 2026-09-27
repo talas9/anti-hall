@@ -208,12 +208,45 @@ const DEVSWARM_HOUSEKEEPING_SEGMENT_RE = new RegExp(
 // `sed -i … deploy/crontab.txt`, `npm install crontab-parser`) is real work.
 const CRONTAB_SEGMENT_RE = /^[({\s]*crontab(?![\w.-])/i;
 
+// R3A1-WD-1 fix: a segment can match DEVSWARM_HOUSEKEEPING_SEGMENT_RE or
+// CRONTAB_SEGMENT_RE at ITS START and still do real project work — a trailing
+// `>`/`>>` redirect into a project file (`crontab -l > src/app.js`), or a
+// nested command substitution / backtick that hides arbitrary work
+// (`crontab -l $(sed -i s/a/b/ src/x.js)`). The start-anchored verb check
+// alone can't see that, so each housekeeping-looking segment is additionally
+// checked for an escaping write. TMP_HOUSEKEEPING_TARGET_RE allows the
+// legitimate mailbox-wake crontab install shape, whose redirect targets the
+// session scratchpad or a generic OS tmp path (`crontab -l > /tmp/cron.txt`),
+// to stay housekeeping-only — only a redirect into something else (a
+// project-looking path) disqualifies the segment.
+const TMP_HOUSEKEEPING_TARGET_RE = /\/scratchpad\/|(?:^|\/)tmp\//i;
+// Same fd-only exclusion as BASH_WORK_RE's redirect check (3): a negative
+// lookbehind rejects a preceding digit/`&` and a negative lookahead rejects a
+// following `&`, so `2>&1` / `>&2` (descriptor dup, not a file write) never
+// counts as an escaping redirect.
+const REAL_REDIRECT_RE = /(?<![0-9&])>{1,2}(?!&)\s*(\S+)/;
+
+function segmentEscapesHousekeeping(seg) {
+  const neutralized = neutralizeQuotedContents(seg);
+  // A command substitution or backtick can hide arbitrary real work (e.g. a
+  // nested `sed -i`) inside an otherwise housekeeping-looking segment.
+  if (/\$\(|`/.test(neutralized)) return true;
+  const m = REAL_REDIRECT_RE.exec(neutralized);
+  if (m) {
+    const target = m[1];
+    if (!/\/dev\/null/.test(target) && !TMP_HOUSEKEEPING_TARGET_RE.test(target)) return true;
+  }
+  return false;
+}
+
 // isDevswarmHousekeepingOnly(rawCmd) -> bool. True only when EVERY segment
 // (split on &&, ||, ;, |, newline and a lone background `&` — not the `&` of
 // `2>&1` / `&>`) of the RAW (not quote-neutralized — crontab/
 // devswarm-verb detection needs no quote awareness, matching command-guard's
 // own convention for this same command shape) command line is either a
-// stable-launcher devswarm verb invocation or a crontab manipulation.
+// stable-launcher devswarm verb invocation or a crontab manipulation, AND
+// does not also escape into real work via a redirect or command substitution
+// (segmentEscapesHousekeeping — R3A1-WD-1).
 function isDevswarmHousekeepingOnly(rawCmd) {
   if (!rawCmd) return false;
   const segments = rawCmd.split(/&&|\|\||;|\||\n|(?<![<>])&(?!>)/);
@@ -224,6 +257,7 @@ function isDevswarmHousekeepingOnly(rawCmd) {
     if (!s) continue; // empty segment (trailing separator) never disqualifies
     sawAny = true;
     if (!DEVSWARM_HOUSEKEEPING_SEGMENT_RE.test(s) && !CRONTAB_SEGMENT_RE.test(s)) return false;
+    if (segmentEscapesHousekeeping(s)) return false;
   }
   return sawAny;
 }
