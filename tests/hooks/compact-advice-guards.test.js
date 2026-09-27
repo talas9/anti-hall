@@ -14,6 +14,7 @@ const { sessionTag, writeLatch } = require('../../plugins/anti-hall/hooks/lib/au
 const advice = require('../../plugins/anti-hall/hooks/lib/compact-advice.js');
 
 const STOP = 'compact-advice-guard.js';
+const PRE = 'compact-declaration-guard.js';
 const SESSION = 'cadv-1';
 const ENV = { ANTIHALL_CONTEXT_WINDOW_TOKENS: '200000' };
 const T0 = Date.parse('2026-09-27T10:00:00.000Z');
@@ -33,6 +34,7 @@ const summary = () => ({ type: 'user', isSidechain: false, isCompactSummary: tru
 const compactCmd = () => user('<command-name>/compact</command-name>\n<command-message>compact</command-message>');
 
 function stopPayload(tp) { return { hook_event_name: 'Stop', session_id: SESSION, cwd: process.cwd(), transcript_path: tp }; }
+function prePayload(tp, tool_name, tool_input) { return { hook_event_name: 'PreToolUse', session_id: SESSION, cwd: process.cwd(), transcript_path: tp, tool_name, tool_input: tool_input || {} }; }
 const blocked = (r) => (r.json && r.json.decision === 'block' ? r.json.reason : null);
 
 function withHome(fn) {
@@ -132,4 +134,55 @@ test('Stop: recentTurns=0 disables the recent-compact rule', () => withHome((h) 
   fs.writeFileSync(path.join(h.antiHall, 'settings.json'), JSON.stringify({ guards: { compactAdviceRecentTurns: 0 } }));
   const tp = h.writeTranscript([boundary('auto'), summary(), user('go'), say('✅ SAFE TO COMPACT NOW', 88)]);
   assert.strictEqual(blocked(testHook(STOP, stopPayload(tp), { home: h.home, env: ENV })), null);
+}));
+
+// ---------------------------------------------------- (b) PreToolUse check
+const safeTurn = () => [user('finish up'), say('Everything is idle.\n\n✅ SAFE TO COMPACT NOW', 88)];
+
+test('PreToolUse: Agent spawn after SAFE in the same turn -> block', () => withHome((h) => {
+  const tp = h.writeTranscript(safeTurn());
+  const reason = blocked(testHook(PRE, prePayload(tp, 'Agent', { prompt: 'x', run_in_background: true }), { home: h.home }));
+  assert.ok(reason);
+  assert.match(reason, /you declared SAFE TO COMPACT this turn/);
+}));
+
+test('PreToolUse: state-changing Bash after SAFE -> block; read-only Bash -> allow', () => withHome((h) => {
+  const tp = h.writeTranscript(safeTurn());
+  assert.ok(blocked(testHook(PRE, prePayload(tp, 'Bash', { command: 'git merge feature/x' }), { home: h.home })));
+  assert.strictEqual(blocked(testHook(PRE, prePayload(tp, 'Bash', { command: 'git status --short' }), { home: h.home })), null);
+}));
+
+test('PreToolUse: Read after SAFE -> allow', () => withHome((h) => {
+  const tp = h.writeTranscript(safeTurn());
+  assert.strictEqual(blocked(testHook(PRE, prePayload(tp, 'Read', { file_path: '/x' }), { home: h.home })), null);
+}));
+
+test('PreToolUse: after the next user message -> allow', () => withHome((h) => {
+  const tp = h.writeTranscript([...safeTurn(), user('ok, actually do one more thing first')]);
+  assert.strictEqual(blocked(testHook(PRE, prePayload(tp, 'Write', { file_path: '/x' }), { home: h.home })), null);
+}));
+
+test('PreToolUse: a task-notification does NOT reset the turn', () => withHome((h) => {
+  const tp = h.writeTranscript([...safeTurn(), user('<task-notification><status>completed</status></task-notification>')]);
+  assert.ok(blocked(testHook(PRE, prePayload(tp, 'Edit', { file_path: '/x' }), { home: h.home })));
+}));
+
+test('PreToolUse: a retraction line -> allow', () => withHome((h) => {
+  const tp = h.writeTranscript([...safeTurn(), say('RETRACT SAFE TO COMPACT — one more fix is needed; I will refresh the handover after.')]);
+  assert.strictEqual(blocked(testHook(PRE, prePayload(tp, 'Edit', { file_path: '/x' }), { home: h.home })), null);
+}));
+
+test('PreToolUse: switch off -> silent on the same blocking fixture', () => withHome((h) => {
+  fs.writeFileSync(path.join(h.antiHall, 'settings.json'), JSON.stringify({ guards: { compactDeclarationGuard: false } }));
+  const tp = h.writeTranscript(safeTurn());
+  assert.strictEqual(blocked(testHook(PRE, prePayload(tp, 'Agent', {}), { home: h.home })), null);
+}));
+
+test('PreToolUse: Codex rollout shape (Bash) -> block after SAFE, allow after a new user_message', () => withHome((h) => {
+  const ev = (payload) => ({ timestamp: ts(), type: 'event_msg', payload });
+  const msg = (text) => ({ timestamp: ts(), type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text }] } });
+  const tp = h.writeTranscript([ev({ type: 'user_message', message: 'wrap up' }), msg('✅ SAFE TO COMPACT NOW')]);
+  assert.ok(blocked(testHook(PRE, prePayload(tp, 'Bash', { command: 'git commit -m x' }), { home: h.home })));
+  fs.appendFileSync(tp, JSON.stringify(ev({ type: 'user_message', message: 'go on' })) + '\n');
+  assert.strictEqual(blocked(testHook(PRE, prePayload(tp, 'Bash', { command: 'git commit -m x' }), { home: h.home })), null);
 }));

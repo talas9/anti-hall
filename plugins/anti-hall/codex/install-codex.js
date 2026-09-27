@@ -32,7 +32,10 @@ function group(matcher, files, timeout) {
 }
 
 // Codex hook parity is intentionally explicit:
-// - PreToolUse is registered only for Bash/shell command guards.
+// - PreToolUse is registered only for Bash/shell command guards
+//   (compact-declaration-guard.js included: on Codex it blocks state-changing
+//   shell after a SAFE TO COMPACT declaration; its Agent/Write/Edit arms are
+//   Claude-only for the same edit-time reason as below).
 // - Edit-time Claude guards (api-guard, ship-it-guard) are not registered here
 //   because current Codex hook runtime does not hard-run PreToolUse for edits.
 // - fable-availability.js is deliberately omitted: it probes ~/.claude.json for a
@@ -100,6 +103,7 @@ const ANTI_HALL_HOOKS = {
     group('Bash', ['git-guard.js'], 10),
     group('Bash', ['command-guard.js'], 10),
     group('Bash', ['merge-gate.js'], 10),
+    group('Bash', ['compact-declaration-guard.js'], 10),
   ],
   Stop: [
     group(null, ['task-guard.js'], 30),

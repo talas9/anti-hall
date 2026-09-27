@@ -85,6 +85,7 @@ const SWITCHES = {
   'jev-weekly-scorecard.js': 'jev.weeklyNotice',
   'silent-agent-nudge.js': 'guards.silentAgentNudge',
   'compact-advice-guard.js': 'guards.compactAdviceGuard',
+  'compact-declaration-guard.js': 'guards.compactDeclarationGuard',
   'codex-quota-detect.js': 'guards.codexQuotaDetect',
 };
 // Non-hook features with a 0.108.4 switch (file -> key).
@@ -99,7 +100,7 @@ const NEW_KEYS = [
   'context.taskTracker', 'context.handoverResume', 'context.defectNudge',
   'maintenance.repairOnReload', 'maintenance.progressPrune', 'maintenance.precompactSnapshot', 'maintenance.taskLifecycleLog', 'maintenance.sessionEndReaper',
   'guards.apiGuard', 'guards.speculationGuard', 'guards.claimLedger', 'guards.taskGuard', 'guards.tasklistGuard', 'guards.scanThrottle',
-  'guards.compactAdviceGuard',
+  'guards.compactAdviceGuard', 'guards.compactDeclarationGuard',
   'devswarm.parentGate', 'devswarm.childGate', 'devswarm.parentInbox', 'devswarm.childTurn', 'devswarm.childRole', 'devswarm.childDrain',
   'devswarm.parentReplyTracker', 'devswarm.commsGuard', 'devswarm.inboxReadGuard', 'devswarm.wakeWatch', 'devswarm.appSync', 'devswarm.screenshotSync',
 ];
