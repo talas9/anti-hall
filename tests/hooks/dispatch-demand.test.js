@@ -97,18 +97,21 @@ function plantGlobalHeartbeat(h) {
 }
 
 // The field shape: 3 in_progress (one with its own running agent), 2 blocked
-// via addBlockedBy, 1 OWNER:, and dispatchable P2/P3 work.
+// via addBlockedBy, 1 OWNER:, and dispatchable P1 work. (Priority kept at/above
+// the idle-neglect floor -- guards.idleNeglectMinPriority, default P1, added by
+// 362d049 -- so this fixture still exercises per-task coverage/heartbeat logic
+// rather than being filtered out as non-nagging P2/P3 backlog.)
 function fieldTranscript() {
   return [
     ...createTasks([
       'P1: Release candidate',          // #1 in_progress
       'P1: Supervision lane',           // #2 in_progress, has an agent
       'P1: Respawn verb',               // #3 addBlockedBy #2
-      'P2: mcp-reaper matcher',         // #4 dispatchable
-      'P3: scan-throttle heredoc copy', // #5 dispatchable
+      'P1: mcp-reaper matcher',         // #4 dispatchable
+      'P1: scan-throttle heredoc copy', // #5 dispatchable
       'OWNER: decisions pending',       // #6 owner-blocked
-      'P2: archive signals child',      // #7 dispatchable
-    ], 1, [null, null, null, { priority: 'P2' }, { priority: 'P3' }, null, { priority: 'P2' }]),
+      'P1: archive signals child',      // #7 dispatchable
+    ], 1, [null, null, null, { priority: 'P1' }, { priority: 'P1' }, null, { priority: 'P1' }]),
     taskUpdate('toolu_u1', { taskId: '1', status: 'in_progress' }),
     taskUpdate('toolu_u2', { taskId: '2', status: 'in_progress' }),
     taskUpdate('toolu_u3', { taskId: '3', addBlockedBy: ['2'] }),
