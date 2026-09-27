@@ -743,9 +743,14 @@ const TASK_ACTIVITY_FALLBACK_WINDOW = 16 * 1024 * 1024; // 16 MB
 // hasTaskActivityInText(text) -> bool. Presence-only scan (no state
 // reconstruction) for a TaskCreate/TaskUpdate/TodoWrite tool_use anywhere in
 // the given transcript text. Early-exits on the first match.
+// Cheap substring pre-checks skip the JSON.parse of every line that cannot
+// hold one of the three tool names (JSON never escapes these ASCII names).
+const TASK_TOOL_NAME_RE = /TaskCreate|TaskUpdate|TodoWrite/;
 function hasTaskActivityInText(text) {
+  if (!TASK_TOOL_NAME_RE.test(text)) return false;
   const lines = text.split(/\r?\n/);
   for (const line of lines) {
+    if (!TASK_TOOL_NAME_RE.test(line)) continue;
     const trimmed = line.trim();
     if (!trimmed) continue;
     let entry;
