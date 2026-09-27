@@ -1061,13 +1061,27 @@ function readBroadcastSnapshot(home, hashes, id, io) {
     if (!hashes || !id || (!hashes.repoKey && !hashes.fallbackHash)) {
       return { ok: false, error: 'unresolvable-repo-identity', broadcastUnread: null };
     }
+    // BUCKET CHOICE BY ROW, NOT BY FIELD (mixed-fleet false-wake fix). The
+    // bucket is picked exactly as readPrimarySnapshot picks it — the first
+    // bucket whose row carries a real `total` — and the count is read from
+    // THAT row only. A row that exists but lacks the field was written by an
+    // older build that predates it (a 0.115.2 hook rewrites the whole summary
+    // without `broadcastUnreadFromOthers`): that is "no data this tick"
+    // (null — tickInner neither fires nor resyncs), NEVER permission to read
+    // the other bucket's unrelated, stale count. Pre-fix, falling through per
+    // FIELD let an old writer's rewrite of the repoKey summary flip this
+    // channel onto the legacy hash-bucket row (0), tickInner resynced its
+    // cursor down to 0, and the next new-build rewrite (189) re-fired
+    // "broadcast direct total 0 -> 189 (+189)" — once per old/new write pair.
     const a = hashes.repoKey ? readSummaryForHash(home, hashes.repoKey, ioo.fs) : null;
     const wa = a && a.workspaces && a.workspaces[id];
-    if (wa && Number.isFinite(wa.broadcastUnreadFromOthers)) return { ok: true, error: null, broadcastUnread: wa.broadcastUnreadFromOthers };
-
-    const b = hashes.fallbackHash ? readSummaryForHash(home, hashes.fallbackHash, ioo.fs) : null;
-    const wb = b && b.workspaces && b.workspaces[id];
-    if (wb && Number.isFinite(wb.broadcastUnreadFromOthers)) return { ok: true, error: null, broadcastUnread: wb.broadcastUnreadFromOthers };
+    let row = wa && Number.isFinite(wa.total) ? wa : null;
+    if (!row) {
+      const b = hashes.fallbackHash ? readSummaryForHash(home, hashes.fallbackHash, ioo.fs) : null;
+      const wb = b && b.workspaces && b.workspaces[id];
+      row = wb && Number.isFinite(wb.total) ? wb : null;
+    }
+    if (row && Number.isFinite(row.broadcastUnreadFromOthers)) return { ok: true, error: null, broadcastUnread: row.broadcastUnreadFromOthers };
 
     return { ok: true, error: null, broadcastUnread: null }; // no data yet, never zero
   } catch (e) {
@@ -1240,6 +1254,8 @@ function loadSeenState(home, id, fsi, role) {
   };
 }
 
+const SEEN_OWNED_KEYS = new Set(['lastTotal', 'lastTotal2', 'lastBroadcastUnread', 'meshTotal', 'ndjsonTotal']);
+
 function saveSeenState(home, id, state, fsi, role) {
   const F = fsi || fs;
   const p = seenPath(home, id);
@@ -1247,11 +1263,21 @@ function saveSeenState(home, id, state, fsi, role) {
     F.mkdirSync(path.dirname(p), { recursive: true });
     const lastTotal = Number.isFinite(state && state.lastTotal) ? state.lastTotal : 0;
     const lastTotal2 = Number.isFinite(state && state.lastTotal2) ? state.lastTotal2 : 0;
-    const out = {
+    let prev = null;
+    try { prev = JSON.parse(String(F.readFileSync(p, 'utf8'))); } catch (_) { prev = null; }
+    // MERGE-PRESERVE: keys this build does not own (written by a NEWER build
+    // sharing this seen file in a mixed fleet) are carried through verbatim,
+    // never dropped — an older-format rewrite must not erase a newer build's
+    // cursor. Keys this build owns are always (re)derived below.
+    const out = {};
+    if (prev && typeof prev === 'object' && !Array.isArray(prev)) {
+      for (const k of Object.keys(prev)) if (!SEEN_OWNED_KEYS.has(k)) out[k] = prev[k];
+    }
+    Object.assign(out, {
       lastTotal,
       lastTotal2,
       lastBroadcastUnread: Number.isFinite(state && state.lastBroadcastUnread) ? state.lastBroadcastUnread : 0,
-    };
+    });
     if (role === 'child') {
       out.meshTotal = lastTotal2;
       out.ndjsonTotal = lastTotal;
@@ -1262,8 +1288,6 @@ function saveSeenState(home, id, state, fsi, role) {
       out.lastTotal2 = lastTotal;
       // A primary never observes the NDJSON channel: carry the child's
       // cursor through untouched rather than dropping or guessing it.
-      let prev = null;
-      try { prev = JSON.parse(String(F.readFileSync(p, 'utf8'))); } catch (_) { prev = null; }
       if (prev && Number.isFinite(prev.ndjsonTotal)) out.ndjsonTotal = prev.ndjsonTotal;
     }
     const payload = JSON.stringify(out);
