@@ -191,3 +191,28 @@ test('PreToolUse: Codex rollout shape (Bash) -> block after SAFE, allow after a 
   fs.appendFileSync(tp, JSON.stringify(ev({ type: 'user_message', message: 'go on' })) + '\n');
   assert.strictEqual(blocked(testHook(PRE, prePayload(tp, 'Bash', { command: 'git commit -m x' }), { home: h.home })), null);
 }));
+
+// ------------------------------------------------------- R1-6: block via exit 2
+test('PreToolUse: block matches sibling PreToolUse guards -> exit 2, not 0', () => withHome((h) => {
+  const tp = h.writeTranscript(safeTurn());
+  const r = testHook(PRE, prePayload(tp, 'Agent', { prompt: 'x', run_in_background: true }), { home: h.home });
+  assert.ok(blocked(r), r.stdout);
+  assert.strictEqual(r.status, 2, 'compact-declaration-guard must exit 2 to block, like command-guard/edit-guard');
+}));
+
+// --------------------------------------------- R1-5: last_assistant_message
+test('Stop: last_assistant_message (when present) is preferred over the transcript tail', () => withHome((h) => {
+  // The transcript's own final text block is benign; the Stop payload's
+  // last_assistant_message carries the actual declaration — must still block.
+  const tp = h.writeTranscript([user('wrap up'), say('Everything looks fine, continuing.', 20)]);
+  const payload = Object.assign(stopPayload(tp), { last_assistant_message: '✅ SAFE TO COMPACT NOW' });
+  const reason = blocked(testHook(STOP, payload, { home: h.home, env: ENV }));
+  assert.ok(reason, 'expected a block driven by last_assistant_message');
+  assert.match(reason, /context is 20%/);
+}));
+
+test('Stop: empty/absent last_assistant_message falls back to the transcript tail (best-effort)', () => withHome((h) => {
+  const tp = h.writeTranscript([user('wrap up'), say('✅ SAFE TO COMPACT NOW', 20)]);
+  const payload = Object.assign(stopPayload(tp), { last_assistant_message: '' });
+  assert.ok(blocked(testHook(STOP, payload, { home: h.home, env: ENV })), 'fallback to transcript must still catch the declaration');
+}));

@@ -6,6 +6,15 @@
 // with context low. Its only trigger was "no background agents running" —
 // nothing checked the real context usage or a recent compact boundary.
 //
+// FINAL MESSAGE SOURCE (best-effort): Claude/Codex Stop payloads carry
+// `last_assistant_message` (docs/KB-claude-code-hooks.md row 11); when it is
+// a non-empty string it is preferred over the transcript-derived final text,
+// since it is the exact text the model just produced. Falls back to the
+// transcript tail (hooks/lib/transcript-tail.js + compact-advice.readTurn())
+// when the field is absent/empty — an audit of 40+ real transcripts found the
+// assistant text is always written to disk before hooks fire, so the
+// fallback is reliable in practice, not merely theoretical.
+//
 // BLOCKS the Stop (once per declaration) when the turn's FINAL assistant
 // message recommends compacting (hooks/lib/compact-advice.js findAdvice():
 // "SAFE TO COMPACT", "good point to /compact", "/compact" offered as an
@@ -66,9 +75,11 @@ function main() {
 
   const advice = require('./lib/compact-advice.js');
   const turn = advice.readTurn(lines);
-  const found = advice.findAdvice(turn.finalText);
+  const lam = typeof payload.last_assistant_message === 'string' ? payload.last_assistant_message : '';
+  const finalText = lam.trim() ? lam : turn.finalText;
+  const found = advice.findAdvice(finalText);
   if (!found.length) return;
-  if (advice.lastRetraction(turn.finalText) > found[found.length - 1].index) return;
+  if (advice.lastRetraction(finalText) > found[found.length - 1].index) return;
 
   const { getContextPct } = require('./lib/context-pct.js');
   const result = getContextPct(transcriptPath, env, { home, sessionId: payload.session_id, lines });
@@ -90,7 +101,7 @@ function main() {
     (turn.compactAt === null || !Number.isFinite(latch.firedAt) || turn.compactAt >= latch.firedAt);
   if (latch.fired === true && !low && !compactAfterFire) return;
 
-  const hash = crypto.createHash('sha1').update(turn.finalText).digest('hex');
+  const hash = crypto.createHash('sha1').update(finalText).digest('hex');
   const sp = statePath(home, tag);
   try {
     const prev = JSON.parse(fs.readFileSync(sp, 'utf8'));

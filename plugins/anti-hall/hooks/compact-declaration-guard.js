@@ -22,7 +22,9 @@
 // clears it within the turn. Injected <task-notification>s do NOT reset: a
 // background result arriving after SAFE is exactly the "kept working" case.
 //
-// Contract (PreToolUse): stdout {"decision":"block","reason":…} or nothing; exit 0.
+// Contract (PreToolUse): matches sibling PreToolUse guards (command-guard.js,
+// edit-guard.js) — stdout {"decision":"block","reason":…} then exit 2 to
+// block; nothing + exit 0 to allow.
 // Switch: guards.compactDeclarationGuard. Skip: skip-guard 'compact-declaration-guard'.
 // FAIL-OPEN everywhere. Pure Node built-ins.
 
@@ -73,6 +75,7 @@ function main() {
       'new work (' + (payload.tool_name || 'this tool') + ') after it makes the handover stale. To continue working, first write a line ' +
       '"RETRACT SAFE TO COMPACT — <why>", then refresh the handover before declaring again. Read-only tools stay allowed.',
   }) + '\n');
+  process.exit(2);
 }
 
 try { main(); } catch (_) { /* fail-open */ }
