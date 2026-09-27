@@ -207,3 +207,52 @@ test('setting devswarm.spawnFromOrigin=false skips the check (child from local m
     assert.strictEqual(git(f.childWt, ['rev-parse', 'HEAD']), local);
   } finally { rm(f); }
 });
+
+// Field report: when the stale main belongs to a SUBMODULE (spawn run from
+// inside <meta>/skyfb), the refusal read "local main is 1 commit behind
+// origin/main … (main is checked out at <meta>/.git/modules/skyfb …)", which
+// sent users to the meta-repo. The refusal now names the submodule; the
+// meta-repo wording (the tests above) is unchanged.
+test('stale main in a SUBMODULE with local changes: refusal names the submodule', () => {
+  const f = fixture();
+  try {
+    const meta = path.join(f.root, 'meta');
+    cp.spawnSync('git', ['init', '-q', '-b', 'main', meta], { env: GIT_ENV });
+    commit(meta, 'meta.txt');
+    git(meta, ['-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', f.origin, 'skyfb']);
+    git(meta, ['commit', '-q', '-m', 'add skyfb']);
+    const sub = path.join(meta, 'skyfb');
+    git(sub, ['checkout', '-q', 'main']);
+    commit(f.up, 'upstream.txt');
+    git(f.up, ['push', '-q', 'origin', 'main']);
+    fs.writeFileSync(path.join(sub, 'base.txt'), 'edited');
+    const before = git(sub, ['rev-parse', 'main']);
+    const h = fakeHive(f);
+    const r = cli.run(['spawn', 'child-s'], { home: f.home, backend: 'journal', env: {}, cwd: sub, io: { run: h.run } }).result;
+    assert.strictEqual(r.ok, false, JSON.stringify(r));
+    assert.strictEqual(createCalls(h).length, 0);
+    assert.match(r.error, /^submodule skyfb: local main is 1 commit behind origin\/main; spawning from it would give the child outdated tools \(has local changes, so it was not auto-updated\)/);
+    assert.doesNotMatch(r.error, /\.git[\\/]modules/);
+    assert.strictEqual(git(sub, ['rev-parse', 'main']), before);
+  } finally { rm(f); }
+});
+
+test('stale main in a SUBMODULE (diverged): refusal names the submodule', () => {
+  const f = fixture();
+  try {
+    const meta = path.join(f.root, 'meta');
+    cp.spawnSync('git', ['init', '-q', '-b', 'main', meta], { env: GIT_ENV });
+    commit(meta, 'meta.txt');
+    git(meta, ['-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', f.origin, 'skyfb']);
+    git(meta, ['commit', '-q', '-m', 'add skyfb']);
+    const sub = path.join(meta, 'skyfb');
+    git(sub, ['checkout', '-q', 'main']);
+    commit(f.up, 'upstream.txt');
+    git(f.up, ['push', '-q', 'origin', 'main']);
+    commit(sub, 'local.txt');
+    const h = fakeHive(f);
+    const r = cli.run(['spawn', 'child-t'], { home: f.home, backend: 'journal', env: {}, cwd: sub, io: { run: h.run } }).result;
+    assert.strictEqual(r.ok, false, JSON.stringify(r));
+    assert.match(r.error, /^submodule skyfb: local main is 1 commit behind origin\/main; spawning from it would give the child outdated tools \(it also has 1 local commit/);
+  } finally { rm(f); }
+});

@@ -18172,7 +18172,17 @@ function spawnSourceFreshness(rest, ctx) {
   const refuse = (why) => fromLocal
     ? { status: 'from-local', source, fetch: fetchNote, submoduleFetch, sha: local, ahead, behind, warning: why + ' (--from-local given: spawning from it anyway)' }
     : { status: 'refused', source, fetch: fetchNote, submoduleFetch, ahead, behind, refuse: true, error: why + '. Update local ' + def + ', or pass --from-local to spawn from it anyway.' };
-  const staleLine = 'local ' + def + ' is ' + behind + ' commit' + (behind === 1 ? '' : 's') + ' behind ' + remoteRef
+  // A SUBMODULE's stale <def> must say so: `git worktree list` reports its
+  // checkout as <meta>/.git/modules/<name>, and "local main is behind" alone
+  // reads as the meta-repo. The submodule is named by its path in the
+  // superproject (else by its .git/modules/<name> dir); meta-repo wording is
+  // unchanged.
+  let submodule = null;
+  const superWt = out(git(['rev-parse', '--show-superproject-working-tree']));
+  const top = superWt ? out(git(['rev-parse', '--show-toplevel'])) : null;
+  if (superWt && top) submodule = path.relative(superWt, top).split(path.sep).join('/') || null;
+  const staleLine = (submodule ? 'submodule ' + submodule + ': ' : '')
+    + 'local ' + def + ' is ' + behind + ' commit' + (behind === 1 ? '' : 's') + ' behind ' + remoteRef
     + '; spawning from it would give the child outdated tools';
   if (ahead > 0) return refuse(staleLine + ' (it also has ' + ahead + ' local commit' + (ahead === 1 ? '' : 's') + ' not on ' + remoteRef + ', so it cannot be fast-forwarded)');
 
@@ -18189,7 +18199,14 @@ function spawnSourceFreshness(rest, ctx) {
   if (checkedOutAt) {
     const st = spawnSync('git', ['-C', checkedOutAt, 'status', '--porcelain', '--untracked-files=no'], { encoding: 'utf8', timeout: gitTruth.GIT_TIMEOUT_MS });
     const dirty = out(st);
-    if (dirty === null || dirty !== '') return refuse(staleLine + ' (' + def + ' is checked out at ' + checkedOutAt + ' with local changes, so it was not updated)');
+    if (dirty === null || dirty !== '') {
+      const modDir = /[\\/]\.git[\\/]modules[\\/](.+)$/.exec(checkedOutAt);
+      if (submodule || modDir) {
+        const line = submodule ? staleLine : 'submodule ' + modDir[1].split(/[\\/]modules[\\/]/).join('/').replace(/\\/g, '/') + ': ' + staleLine;
+        return refuse(line + ' (has local changes, so it was not auto-updated)');
+      }
+      return refuse(staleLine + ' (' + def + ' is checked out at ' + checkedOutAt + ' with local changes, so it was not updated)');
+    }
     r = spawnSync('git', ['-C', checkedOutAt, 'merge', '--ff-only', '--quiet', 'refs/remotes/' + remoteRef], { encoding: 'utf8', timeout: SPAWN_FETCH_TIMEOUT_MS });
   } else {
     r = git(['update-ref', '-m', 'anti-hall spawn: fast-forward to ' + remoteRef, 'refs/heads/' + def, remote, local]);
