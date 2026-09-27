@@ -203,6 +203,12 @@
       {
         "matcher": "Bash",
         "hooks": [
+          { "type": "command", "command": "node \"${PLUGIN_ROOT}/hooks/git-guard.js\" --audit", "timeout": 10 }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
           { "type": "command", "command": "node \"${PLUGIN_ROOT}/hooks/devswarm-parent-reply-tracker.js\"", "timeout": 10 }
         ]
       },

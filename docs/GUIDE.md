@@ -87,9 +87,18 @@ Claude...'` cannot smuggle either block past it that way.
 It scans commit messages both INLINE (`-m` / `--message` / `--trailer`) and via
 `-F -` / `--file=-` / `-F /dev/stdin` fed by a heredoc on the same command
 line, or via `-F <path>` naming a real, readable file (a relative path
-resolves against a preceding `cd` in the same command). **Documented fail-open
-scope:** an interactive EDITOR commit (no `-m`, no `-F`) is not scanned — the
-message is typed live and never appears on the command line — and `xargs` /
+resolves against a preceding `cd` in the same command). For any git verb that
+writes a commit (`commit`, `merge`, `rebase`, `cherry-pick`, `revert`, `am`,
+`pull`, `commit-tree`) it also scans the WHOLE command text for a self-credit
+trailer line, so a pipe into `-F -`, a file written earlier in the same command,
+a shell variable, or a `rebase -x` payload is caught; `gh pr merge --body /
+--subject` and `gh ... --body-file` are scanned too. A PostToolUse audit
+(`git-guard.js --audit`) then reads the commits HEAD gained in the last 15 min
+after any commit-creating command and tells the agent to reword one that
+carries a trailer added OFF the command line (a repo `commit-msg` /
+`prepare-commit-msg` hook, a template, an editor, a cherry-pick). **Documented
+fail-open scope:** the audit is advisory (PostToolUse cannot un-run a commit),
+a commit made inside a script file is not seen by the command-text scan, and `xargs` /
 an aliased `g push` can still bypass the force-push block. These are
 documented boundaries, not silent gaps.
 

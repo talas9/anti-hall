@@ -19,9 +19,11 @@
 //      simplest correct-by-construction approach, no segment/heredoc
 //      correlation to get subtly wrong) whenever ANY `git commit` segment uses
 //      the stdin spelling.
-//      LIMITATION (documented honestly): an interactive EDITOR commit (no -m,
-//      no -F) is NOT scanned - the message is typed live and never appears on
-//      the command line. A relative `-F <path>` is resolved against a leading
+//      A commit-creating verb also triggers a WHOLE-command trailer scan
+//      (COMMIT_CREATING / hasSelfCredit), and `--audit` (PostToolUse) flags
+//      recent HEAD commits whose trailer came from off the command line (repo
+//      hook, template, editor, cherry-pick) - advisory, it cannot un-commit.
+//      A relative `-F <path>` is resolved against a leading
 //      `cd <dir> &&`/`cd <dir> ;` segment if one precedes the commit segment in
 //      the SAME command (tracked in read order across `splitSegments`' own
 //      segments - not a full shell cwd emulation), else against the hook's own
@@ -51,6 +53,11 @@ const { HEREDOC_RE, basename, parseHeredocAt, SHELL_VERBS } = require('./lib/she
 // session`. Safe as a module-level value: one process handles exactly one
 // PreToolUse call, never concurrent invocations within a process.
 let currentSessionId = null;
+// currentRawCommand — the WHOLE top-level Bash command (set once by main()).
+// The whole-command self-credit scan below reads it even from a nested
+// eval / `bash -c` level, so `M="...trailer..."; bash -c 'git commit -m "$M"'`
+// is still seen.
+let currentRawCommand = '';
 
 function fail_open() {
   process.exit(0);
@@ -580,6 +587,24 @@ const SELF_CREDIT_GENERATED = /^[ \t]*[^A-Za-z0-9 \t]{0,2}[ \t]*generated with \
 // anchored — the URL/handle is itself the signature and is implausible in prose.
 const SELF_CREDIT_GH_BODY = /claude\.com\/claude-code|chatgpt\.com\/codex|<noreply@anthropic\.com>/i;
 
+// git subcommands that WRITE a commit message. For these the WHOLE raw command
+// text is scanned for a line-anchored self-credit trailer (hasSelfCredit): the
+// message can reach git by routes a per-flag parser never sees - a pipe into
+// `-F -`, a file written earlier in the SAME command, a shell variable, a
+// `rebase -x` payload, `merge -m`. A trailer line anywhere in a command that
+// creates a commit is blocked. Line-anchored regexes only (never the bare-link
+// GH_BODY marker), so a mid-line mention in prose/grep stays allowed.
+const COMMIT_CREATING = new Set(['commit', 'merge', 'rebase', 'cherry-pick', 'revert', 'am', 'pull', 'commit-tree']);
+
+function hasSelfCredit(text) {
+  if (!text) return false;
+  const normalized = text.replace(/\\n/g, '\n').replace(/\\r/g, '\r').replace(/\\t/g, '\t');
+  for (const t of [text, normalized]) {
+    if (SELF_CREDIT_COAUTHOR.test(t) || SELF_CREDIT_GENERATED.test(t)) return true;
+  }
+  return false;
+}
+
 // Self-credit signature tokens used to flag a `-c trailer.<name>.key=<value>`
 // remap. `git -c trailer.ai.key=Co-Authored-By commit --trailer "ai: Claude
 // <...>"` makes a custom `ai:` token EMIT a `Co-Authored-By` trailer, so the
@@ -652,19 +677,30 @@ function inlineCommitMessages(rest) {
 // and Co-Authored-By trailers) plus the bare-link marker. INLINE values only:
 // `--body-file` / `-F <path>` and heredoc/command-substitution bodies put the
 // literal text off the command line and are a documented fail-open limitation.
-const GH_BODY_FLAGS = new Set(['--body', '-b', '--title', '-t', '--notes', '-n']);
+const GH_BODY_FLAGS = new Set(['--body', '-b', '--title', '-t', '--notes', '-n', '--subject']);
+const GH_BODY_FILE_FLAGS = new Set(['--body-file', '-F', '--notes-file']);
 function ghSelfCreditMessage(args) {
   const words = args.map((a) => a.text);
   const guardedSub = words.includes('pr') || words.includes('issue') || words.includes('release');
-  const guardedAct = words.includes('create') || words.includes('edit') || words.includes('comment');
+  // `merge`: `gh pr merge --body/--subject` sets the merge/squash COMMIT message.
+  const guardedAct = words.includes('create') || words.includes('edit') || words.includes('comment') || words.includes('merge');
   if (!guardedSub || !guardedAct) return null;
   const vals = [];
   for (let i = 0; i < args.length; i++) {
     const w = args[i].text;
     if (GH_BODY_FLAGS.has(w)) { if (i + 1 < args.length) { vals.push(args[i + 1].text); i++; } continue; }
-    const mEq = /^(?:--body|--title|--notes)=([\s\S]*)$/.exec(w);
-    if (mEq) vals.push(mEq[1]);
+    const mEq = /^(?:--body|--title|--notes|--subject)=([\s\S]*)$/.exec(w);
+    if (mEq) { vals.push(mEq[1]); continue; }
+    // --body-file / -F / --notes-file <path>: read a real, readable file
+    // (fail-open when unreadable; `-` stdin is covered by the whole-command scan).
+    let fileSpec = null;
+    if (GH_BODY_FILE_FLAGS.has(w)) { if (i + 1 < args.length) { fileSpec = args[i + 1].text; i++; } }
+    else { const mF = /^(?:--body-file|--notes-file)=(.*)$/.exec(w); if (mF) fileSpec = mF[1]; }
+    if (fileSpec && fileSpec !== '-') {
+      try { vals.push(fs.readFileSync(fileSpec, 'utf8')); } catch (_) { /* fail-open */ }
+    }
   }
+  if (hasSelfCredit(currentRawCommand)) vals.push(currentRawCommand);
   for (const v of vals) {
     const normalized = v.replace(/\\n/g, '\n').replace(/\\r/g, '\r').replace(/\\t/g, '\t');
     for (const text of [v, normalized]) {
@@ -673,7 +709,7 @@ function ghSelfCreditMessage(args) {
           'anti-hall git-guard: BLOCKED. A gh pr/issue/release body or title carries ' +
           'AI/assistant self-credit ("Generated with Claude Code" / the 🤖 footer / ' +
           'Co-Authored-By / a claude.com/claude-code link). Remove it — PRs and issues ' +
-          'carry no AI attribution. (Note: --body-file content is not inspected.)'
+          'carry no AI attribution.'
         );
       }
     }
@@ -1249,7 +1285,9 @@ function scanCommand(cmd, depth) {
     }
 
     // --- Rule 1: self-credit in an inline commit message ---
-    if (sub === 'commit') {
+    // merge / commit-tree take the same -m / -F message flags; interpret-trailers
+    // takes --trailer and is used to stamp a message file before `commit -F`.
+    if (sub === 'commit' || sub === 'merge' || sub === 'commit-tree' || sub === 'interpret-trailers') {
       // Conservative block on a `-c trailer.<name>.key=<self-credit>` remap that
       // would emit a Co-Authored-By / Generated-with trailer from a benign-looking
       // custom token, dodging the value scan below.
@@ -1340,8 +1378,85 @@ function scanCommand(cmd, depth) {
         }
       }
     }
+
+    // --- Rule 1 (whole command): any commit-creating git verb whose command
+    // text carries a self-credit trailer line, however it reaches git ---
+    if (COMMIT_CREATING.has(sub) && hasSelfCredit(currentRawCommand)) {
+      return (
+        'anti-hall git-guard: BLOCKED. This command creates a commit (git ' + sub + ') ' +
+        'and its text contains an AI/assistant self-credit trailer line ' +
+        '(Co-Authored-By / "Generated with <AI>") - via a pipe, variable, file ' +
+        'written in the same command, or similar. Remove it - commits carry no AI ' +
+        'co-author credit.'
+      );
+    }
   }
   return null;
+}
+
+// ---------------------------------------------------------------------------
+// PostToolUse audit (`git-guard.js --audit`). The PreToolUse scan only sees
+// the command line; a trailer can still land from outside it - a repo
+// commit-msg / prepare-commit-msg hook, a commit.template, a cherry-picked or
+// rebased message, an editor. After any command that ran a commit-creating git
+// verb, read the commits HEAD now points at that were COMMITTED in the last
+// AUDIT_WINDOW_S seconds and, if one carries a self-credit trailer, tell the
+// agent to reword it before pushing. Advisory (PostToolUse cannot un-run a
+// commit); never writes, never blocks; fail-open on every error.
+const AUDIT_WINDOW_S = 900;
+
+// Collect the repo dirs of every commit-creating git segment in `cmd`
+// (honoring a preceding literal `cd <dir>` and `git -C <dir>`), recursing into
+// eval / `bash -c` payloads like scanCommand.
+function commitRepoDirs(cmd, base, depth, out) {
+  let cdDir = base;
+  for (const seg of splitSegments(cmd)) {
+    const tokens = tokenize(seg);
+    if (!tokens.length) continue;
+    const ev = effectiveVerb(tokens);
+    if (!ev) continue;
+    if (ev.verb === 'cd') {
+      const dirTok = ev.args.find((t) => !t.text.startsWith('-'));
+      if (dirTok) cdDir = path.resolve(cdDir, dirTok.text);
+      continue;
+    }
+    if (depth < 3 && (ev.verb === 'eval' || SHELL_VERBS.has(ev.verb.toLowerCase()))) {
+      const payload = ev.verb === 'eval' ? extractEvalPayload(seg) : extractShellCPayload(seg);
+      if (payload) commitRepoDirs(payload, cdDir, depth + 1, out);
+      continue;
+    }
+    if (ev.verb !== 'git') continue;
+    const { sub } = gitSubcommand(ev.args);
+    if (!COMMIT_CREATING.has(sub)) continue;
+    let dir = cdDir;
+    for (let k = 0; k < ev.args.length; k++) {
+      const t = ev.args[k].text;
+      if (t === '-C' && k + 1 < ev.args.length) { dir = path.resolve(dir, ev.args[k + 1].text); k++; continue; }
+      if (t === '-c' || t === '--git-dir' || t === '--work-tree' || t === '--namespace' || t === '--config-env') { k++; continue; }
+      if (t.startsWith('-')) continue;
+      break; // reached the subcommand
+    }
+    if (!out.includes(dir)) out.push(dir);
+  }
+  return out;
+}
+
+function auditRecentCommits(cmd, cwd) {
+  const { spawnSync } = require('child_process');
+  const dirs = commitRepoDirs(cmd, cwd, 0, []);
+  const nowS = Math.floor(Date.now() / 1000);
+  const hits = [];
+  for (const dir of dirs) {
+    const r = spawnSync('git', ['-C', dir, 'log', '-n', '20', '--format=%h%x1f%ct%x1f%B%x1e', 'HEAD'],
+      { encoding: 'utf8', timeout: 4000 });
+    if (r.status !== 0 || !r.stdout) continue;
+    for (const rec of r.stdout.split('\x1e')) {
+      const [sha, ct, body] = rec.replace(/^\n/, '').split('\x1f');
+      if (!sha || !body || Number(ct) < nowS - AUDIT_WINDOW_S) continue;
+      if (hasSelfCredit(body)) hits.push(sha.trim() + (dirs.length > 1 ? ' (' + dir + ')' : ''));
+    }
+  }
+  return hits;
 }
 
 function main() {
@@ -1377,6 +1492,23 @@ function main() {
     return fail_open(); // unparseable envelope -> allow (do not scan whole blob)
   }
   if (!cmd) return fail_open();
+  currentRawCommand = cmd;
+
+  if (process.argv.includes('--audit')) {
+    let cwd = process.cwd();
+    try { const p = JSON.parse(raw); if (p && typeof p.cwd === 'string' && p.cwd) cwd = p.cwd; } catch (_) { /* keep */ }
+    const hits = auditRecentCommits(cmd, cwd);
+    if (hits.length) {
+      const reason =
+        'anti-hall git-guard (audit): recent commit(s) on HEAD (committed in the last ' +
+        (AUDIT_WINDOW_S / 60) + ' min) ' + hits.join(', ') + ' carry an AI/assistant self-credit trailer (Co-Authored-By / ' +
+        '"Generated with <AI>") - added by a git hook, template, cherry-pick/rebase, ' +
+        'or an editor. Commits carry no AI co-author credit: reword them now ' +
+        '(`git commit --amend` for HEAD, `git rebase -i` for older ones) BEFORE pushing.';
+      fs.writeSync(1, JSON.stringify({ hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: reason } }) + '\n');
+    }
+    process.exit(0);
+  }
 
   const msg = scanCommand(blankLauncherMessageHeredoc(cmd, cwd), 0);
   if (msg) return block(msg);
