@@ -593,3 +593,36 @@ for (const text of OWN_HEDGE_BLOCK) {
     assert.ok(isBlock(r), `own hedge must block; stdout: ${r.stdout}`);
   });
 }
+
+// ---- R1-3: blockquote/quote masking can't hide the session's own hedge ----
+
+const OWN_HEDGE_BLOCK_R1_3 = [
+  // S1: a hedge appended after quoted text on the SAME `>` line, past a clear
+  // separator (em dash) -- the hedge must remain visible and block.
+  '> the reviewer said the build is green — so it is probably the cache that is stale.',
+  // A `> ... ; so ...` separator variant.
+  '> the tests passed; so it is likely the deploy step that is broken.',
+  // A `> ... , so ...` separator variant.
+  '> the peer reviewed it, so it must be the network that is flaky.',
+  // A 100% quoted reply (single `>` line, no other content) -- must not
+  // escape entirely just because the whole reply is quoted.
+  '> it is probably the cache that is stale.',
+  // S7: a 100% fenced reply (fence-only, no other content) containing a
+  // hedge -- must not escape entirely.
+  '```\nit is probably fine\n```',
+];
+for (const text of OWN_HEDGE_BLOCK_R1_3) {
+  test(`BLOCK (R1-3 quote/fence escape): ${JSON.stringify(text).slice(0, 70)}`, () => {
+    const r = verdict(text);
+    assert.ok(isBlock(r), `must block, not escape via quote/fence masking; stdout: ${r.stdout}`);
+  });
+}
+
+// All prior ALLOW cases (quoted material with no own hedge outside it) must
+// stay ALLOW under the refined masking.
+for (const text of QUOTED_ALLOW) {
+  test(`ALLOW (R1-3 regression): ${JSON.stringify(text).slice(0, 70)}`, () => {
+    const r = verdict(text);
+    assert.ok(!isBlock(r), `quoted hedge must not block; stdout: ${r.stdout}`);
+  });
+}
