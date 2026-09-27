@@ -112,6 +112,32 @@ function main() {
     process.exit(0);
   }
 
+  // TOKEN-SAVING LEVER 2 (owner-approved, 0.117.0, `guards.pruneCompletedTasksAfter`
+  // default 10): field measurement found Claude Code's own TaskCreate reminder
+  // re-prints the WHOLE list, completed tasks included, every few turns — a
+  // fixed per-turn floor cost that grows with a session's completed-task count
+  // for no benefit (completed work needs no further reminding). This is
+  // ADVISORY ONLY (never blocks, never writes/prunes anything itself — pruning
+  // is the agent's own TaskUpdate call, after it records the tasks in the
+  // history ledger per CLAUDE.md) and rides the SAME stdout advisory channel
+  // task-guard already uses for its OMC-defer/live-agent-defer lines above, so
+  // it never adds a Stop-hook block of its own.
+  let completedCount = 0;
+  for (const task of taskMap.values()) {
+    const s = (task.status || '').toLowerCase();
+    if (s === 'completed' || s === 'done' || s === 'cancelled' || s === 'canceled') completedCount++;
+  }
+  try {
+    const pruneAfter = require('./lib/settings.js').getWithEnv('guards', 'pruneCompletedTasksAfter', 10, process.env);
+    if (Number.isFinite(pruneAfter) && pruneAfter > 0 && completedCount > pruneAfter) {
+      fs.writeSync(1,
+        '[task-guard] ' + completedCount + ' completed/cancelled tasks in the list (> ' + pruneAfter +
+        ') — advisory: after recording them in the history ledger, prune them with ' +
+        'TaskUpdate status=deleted so the harness reminder stops re-printing them every turn.\n'
+      );
+    }
+  } catch (_) { /* advisory only, never blocks */ }
+
   // Compute open tasks.
   const openTasks = [];
   for (const task of taskMap.values()) {

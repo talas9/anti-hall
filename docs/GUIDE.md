@@ -881,6 +881,7 @@ Generated from `hooks/lib/settings-schema.js` (a hygiene test keeps this table a
 | `guards.reaperCodexBroker` adv | `true` | `ANTIHALL_REAPER_CODEX_BROKER` | companion/mcp-reaper.js: REPORT (never kill) abandoned openai-codex plugin `app-server-broker.mjs` helper processes — listed only via proof of abandonment (--cwd gone, or no live claude/codex process, excluding the broker's own descendants, has a realpath'd cwd equal to/an ancestor of/a descendant of it), never by PPID (spawned detached on purpose). |
 | `guards.reaperCodexBrokerMinAgeS` adv | `1800` [0..] | `ANTIHALL_REAPER_CODEX_BROKER_MIN_AGE_S` | Minimum age (seconds) before an abandoned-looking `app-server-broker.mjs` is eligible to be listed by the report-only class above (30min default; conservative since PPID gives no signal). |
 | `guards.tasklistWorkThreshold` adv | `3` [1..] | `ANTIHALL_TASKLIST_WORK_THRESHOLD` | Minimum work items before tasklist-guard fires. |
+| `guards.pruneCompletedTasksAfter` adv | `10` [1..] | `ANTIHALL_PRUNE_COMPLETED_TASKS_AFTER` | Token savings (0.117.0): once completed/cancelled tasks exceed this count, task-guard emits a one-line advisory (never a block) to prune them via TaskUpdate status=deleted after recording them in the history ledger. |
 | `guards.progressFreshMs` adv | `1800000` [0..] | `ANTIHALL_PROGRESS_FRESH_MS` | Freshness window (ms) for the progress file in tasklist-guard. |
 | `guards.apiGuardThirdparty` adv | `false` | `ANTIHALL_API_GUARD_THIRDPARTY` | Also verify installed 3rd-party package APIs, not just stdlib/builtins. |
 | `guards.modelRouting` | `strict` (strict/advisory/off) | `ANTIHALL_MODEL_ROUTING` | model-routing-guard (PreToolUse Agent/Task): strict blocks a mis-tiered spawn, advisory only warns, off disables the hook. |
@@ -1017,6 +1018,7 @@ Generated from `hooks/lib/settings-schema.js` (a hygiene test keeps this table a
 | `devswarm.sendReceiptRetentionDays` adv | `7` (>0) | `ANTIHALL_DEVSWARM_SEND_RECEIPT_RETENTION_DAYS` | Retention window (days) for send-receipt records. |
 | `devswarm.summaryRetentionDays` adv | `30` [0..] | `ANTIHALL_DEVSWARM_SUMMARY_RETENTION_DAYS` | Retention window (days) for summary records. |
 | `devswarm.wakeCron` adv | `7,37 * * * *` | `ANTIHALL_DEVSWARM_WAKE_CRON` | Wake-poll cron schedule override (treated as untrusted input). |
+| `devswarm.rearmOnTickOnly` adv | `true` | `ANTIHALL_DEVSWARM_REARM_ON_TICK_ONLY` | Token savings (0.117.0): re-arm a lapsed Monitor wake-watch only from the cron tick's `watcherArmed:false` check, never inline on the Monitor's own expiry event. Metric: `~/.anti-hall/devswarm/rearm-cues.jsonl`. |
 | `devswarm.wakeWatchPollMs` adv | `2000` [250..60000] | `ANTIHALL_DEVSWARM_WAKE_WATCH_POLL_MS` | Poll interval (ms) for the wake-watch loop, clamped [250,60000]. |
 | `devswarm.childGateRetentionDays` adv | `14` (>0) | `ANTIHALL_DEVSWARM_CHILD_GATE_RETENTION_DAYS` | Days a per-session child-gate state file is kept before the housekeeping/doctor sweep removes it. |
 | `devswarm.housekeepingSweep` adv | `auto` (auto/off) | `ANTIHALL_DEVSWARM_HOUSEKEEPING_SWEEP` | Supervisor disk-hygiene sweep (reaped logs, child-gate state); only "off" disables it. |

@@ -774,6 +774,31 @@ test('EPOCH RESET: a TaskList "No tasks found" result drops every task seen befo
   }
 });
 
+// ---------------------------------------------------------------------------
+// TOKEN-SAVING LEVER 2 (0.117.0, guards.pruneCompletedTasksAfter): advisory
+// (never a block of its own) once completed/cancelled tasks exceed the
+// threshold (default 10).
+// ---------------------------------------------------------------------------
+
+function completedTodos(n) {
+  const todos = [];
+  for (let i = 0; i < n; i++) todos.push({ id: 'c' + i, content: 'done task ' + i, status: 'completed' });
+  return todos;
+}
+
+test('PRUNE ADVISORY: > 10 completed tasks -> one-line advisory printed, no block of its own', () => {
+  const h = makeHome();
+  try {
+    const tp = h.writeTranscript([todoWrite(completedTodos(11))]);
+    const r = testHook(HOOK, stopPayload(tp), { home: h.home });
+    assert.ok(!isBlock(r), `all-completed tasks must never block; got ${JSON.stringify(r.json)}`);
+    assert.match(r.stdout, /\[task-guard\] 11 completed\/cancelled tasks/);
+    assert.match(r.stdout, /prune them with/i);
+  } finally {
+    h.cleanup();
+  }
+});
+
 test('EPOCH RESET: a "Task not found" result (TaskGet/TaskUpdate on a stale id) drops every task seen before it', () => {
   const h = makeHome();
   try {
@@ -784,6 +809,17 @@ test('EPOCH RESET: a "Task not found" result (TaskGet/TaskUpdate on a stale id) 
     ]);
     const r = testHook(HOOK, stopPayload(tp), { home: h.home });
     assert.ok(!isBlock(r), `expected allow after epoch reset; stdout: ${r.stdout}`);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('PRUNE ADVISORY: exactly 10 completed tasks (at threshold, not over) -> no advisory', () => {
+  const h = makeHome();
+  try {
+    const tp = h.writeTranscript([todoWrite(completedTodos(10))]);
+    const r = testHook(HOOK, stopPayload(tp), { home: h.home });
+    assert.doesNotMatch(r.stdout, /\[task-guard\].*completed\/cancelled/);
   } finally {
     h.cleanup();
   }
@@ -921,6 +957,17 @@ test('STILL BLOCKS: devswarm registry unreadable (no app DB) -> fail-open to the
     const env = { ANTIHALL_DEVSWARM_APP_DB: path.join(h.home, 'missing.db'), ANTIHALL_DEVSWARM_APP_DB_CACHE_MS: '0' };
     const r = testHook(HOOK, stopPayload(tp), { home: h.home, env });
     assert.ok(isBlock(r), `an unreadable registry must fail open to the current block behavior; stdout: ${r.stdout}`);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('PRUNE ADVISORY: guards.pruneCompletedTasksAfter env override lowers the threshold', () => {
+  const h = makeHome();
+  try {
+    const tp = h.writeTranscript([todoWrite(completedTodos(3))]);
+    const r = testHook(HOOK, stopPayload(tp), { home: h.home, env: { ANTIHALL_PRUNE_COMPLETED_TASKS_AFTER: '2' } });
+    assert.match(r.stdout, /\[task-guard\] 3 completed\/cancelled tasks/);
   } finally {
     h.cleanup();
   }

@@ -166,3 +166,14 @@ skip it**, and it will record your consent by writing this file.
 
 Do that and neither the Stop block nor the freshness note will ever fire — they only
 appear when the discipline has slipped.
+
+## Prune completed tasks (token savings, 0.117.0)
+
+Claude Code's own TaskCreate reminder re-prints the **whole** task list — completed
+tasks included — every few turns; that cost grows with the session's completed-task
+count for no benefit. Once completed/cancelled tasks exceed
+`guards.pruneCompletedTasksAfter` (default **10**), `task-guard.js` emits a **one-line
+advisory** at Stop (never a block): after recording them in the session's
+`.anti-hall/history/<date>/<session-id>.md` ledger (step 4 above), prune them with
+`TaskUpdate status=deleted` so the harness reminder stops re-printing them. This is
+advisory only and never gates the Stop hook on its own.

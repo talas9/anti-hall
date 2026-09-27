@@ -115,6 +115,22 @@ function wakeCron(env) {
   }
 }
 
+// rearmOnTickOnly(env) -> boolean, `devswarm.rearmOnTickOnly` (default true)
+// routed through settings.js getWithEnv exactly like wakeCron(env) above, so
+// the SAME home-derived-from-this-env / env-var / settings.json precedence
+// applies. Never throws; fails open to the new (token-saving) default true.
+function rearmOnTickOnly(env) {
+  try {
+    const e = env || process.env;
+    let raw;
+    try { raw = require('./settings.js').getWithEnv('devswarm', 'rearmOnTickOnly', true, e); }
+    catch (_) { raw = true; }
+    return raw !== false;
+  } catch (_) {
+    return true;
+  }
+}
+
 // agentName(env) -> lowercased DEVSWARM_AI_AGENT, or '' when absent/unknown.
 function agentName(env) {
   try {
@@ -351,9 +367,10 @@ function drainCmd(cli, isChild, useTick, id, watcher) {
     '`' + ACK_AFTER_READ + ' (delegate to a subagent only if the payload is large)' + storeUnavailableClause;
 }
 
-// monitorArmLine(watcher) -> the Monitor-arm addition to the Claude-branch wake
-// text, or '' when no watcher path is supplied (fail-open: a caller not yet
-// updated to pass `watcher` keeps getting exactly today's cron-only text).
+// monitorArmLine(watcher, rearmOnTickOnly) -> the Monitor-arm addition to the
+// Claude-branch wake text, or '' when no watcher path is supplied (fail-open:
+// a caller not yet updated to pass `watcher` keeps getting exactly today's
+// cron-only text).
 //
 // SANITIZATION CONCLUSION: `watcher` is NOT run through any charset/backtick
 // guard the way CRON_FIELD gates ANTIHALL_DEVSWARM_WAKE_CRON above, and that is
@@ -365,16 +382,38 @@ function drainCmd(cli, isChild, useTick, id, watcher) {
 // env var, CLI flag, or any other attacker-reachable input. There is no path by
 // which a prompt-injection payload could substitute a crafted string for this
 // parameter, so gating it would be theatre with no attacker it defends against.
-function monitorArmLine(watcher) {
+//
+// TOKEN-SAVING LEVER 1 (owner-approved, 0.117.0, `devswarm.rearmOnTickOnly`
+// default true): a 24h field measurement found idle wake turns paying a
+// ~620K-930K token bill each, and the SAME re-arm instruction was being given
+// TWICE — once here (re-arm on Monitor's own final/expired event, a turn with
+// NO other reason to exist) and once more in drainCmd's `rearmClause` (fired
+// off the cron tick's own `watcherArmed` field, a turn that is ALREADY
+// running for mailbox-drain reasons). Two re-arm triggers on overlapping
+// ~30-minute cadences double-counted the same lapse. `rearmOnTickOnly` true
+// (default) makes the cron tick the ONE re-arm trigger: this line now tells
+// the agent to reply in <=1 line to the Monitor's own expiry/final event and
+// NOT re-arm there — the next cron tick's `watcherArmed:false` check (see
+// drainCmd's rearmClause) is what re-arms it. false restores the pre-0.117.0
+// wording (re-arm inline on the expiry event too) for anyone who measures a
+// coverage gap from the tick-only cadence. The cron fallback itself is never
+// touched by this — see the NON-NEGOTIABLE header above.
+function monitorArmLine(watcher, rearmOnTickOnly) {
   if (typeof watcher !== 'string' || !watcher) return '';
+  const tickOnly = rearmOnTickOnly === undefined ? true : !!rearmOnTickOnly;
+  const expiryClause = tickOnly
+    ? 'use `persistent: true` if your Monitor tool supports it, else max `timeout_ms`. Do NOT ' +
+      're-arm inline when it emits its final/expired event — reply in one line (e.g. "Monitor ' +
+      'lapsed, next cron tick will re-arm it") and stop; the next `inbox tick` cron turn checks ' +
+      '`watcherArmed` and re-arms it then — never two watchers at once.'
+    : 'use `persistent: true` if your Monitor tool supports it, else max `timeout_ms` + re-arm ' +
+      'on its final/expired event — never two watchers at once.';
   return ' ALSO arm the `Monitor` tool as your PRIMARY wake path (Cron above is the 30-minute ' +
     'FALLBACK — it still fires independently; Monitor is IN ADDITION, never instead): first ' +
     'check whether a mailbox-wake Monitor is already armed so you never arm a second one ' +
     '(double-arming causes duplicate wakes; the watcher script also self-guards with a lock, ' +
     'but do not rely on that alone). If none is armed, call `Monitor` with command `node ' +
-    watcher + '` and a description like "devswarm mailbox wake watcher": use ' +
-    '`persistent: true` if your Monitor tool supports it, else max `timeout_ms` + re-arm on ' +
-    'its final/expired event — never two watchers at once. ' +
+    watcher + '` and a description like "devswarm mailbox wake watcher": ' + expiryClause + ' ' +
     'Every line it prints on stdout becomes a transcript event, waking this session even while ' +
     'fully idle, with far lower latency than the cron tick above. A first line starting ' +
     '`[wake-watch] REFUSED TO ARM` means you do NOT have this coverage — do not assume ' +
@@ -448,7 +487,7 @@ function wakeDirective(env, isChild, cli, watcher, explicitId) {
       'pre-D13 5-minute default), NEVER disarmed — it is the only thing that will wake you to ' +
       'drain your mailbox once you go idle; a message that lands after you stop is otherwise ' +
       'never seen.' +
-      monitorArmLine(watcher);
+      monitorArmLine(watcher, rearmOnTickOnly(env));
   } catch (_) {
     return ''; // fail-open: a broken directive must never break SessionStart
   }
@@ -564,4 +603,4 @@ function wakeReassert(env, cli, isChild, watcher, explicitId) {
   }
 }
 
-module.exports = { WAKE_CRON_DEFAULT, wakeCron, isClaudeAgent, wakeDirective, wakeReassert, drainCmd, resolvedId, ACK_AFTER_READ };
+module.exports = { WAKE_CRON_DEFAULT, wakeCron, rearmOnTickOnly, isClaudeAgent, wakeDirective, wakeReassert, drainCmd, resolvedId, ACK_AFTER_READ };

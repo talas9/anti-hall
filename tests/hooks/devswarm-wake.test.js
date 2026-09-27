@@ -222,6 +222,34 @@ test('MONITOR: instruction tells the agent to check whether one is already armed
 });
 
 // ---------------------------------------------------------------------------
+// TOKEN-SAVING LEVER 1 (0.117.0, devswarm.rearmOnTickOnly): the cron tick's
+// own watcherArmed:false check is the ONE re-arm trigger by default — the
+// Monitor's own expiry/final event must get a <=1-line reply and NO inline
+// re-arm instruction. rearmOnTickOnly:false restores the pre-0.117.0 wording.
+// ---------------------------------------------------------------------------
+test('LEVER 1: rearmOnTickOnly default (true) -> reply in <=1 line on expiry, no inline re-arm-on-expiry instruction', () => {
+  const env = { DEVSWARM_AI_AGENT: 'claude' };
+  const out = wakeDirective(env, true, CLI, WATCHER);
+  assert.ok(/persistent/i.test(out), `must still mention persistent:true; out=${out}`);
+  assert.ok(!/max `timeout_ms`\s*\+\s*re-arm on/i.test(out),
+    `default must NOT use the old positive "+ re-arm on its final/expired event" wording; out=${out}`);
+  assert.ok(/do not re-arm inline when it emits its final.?\/?expired event/i.test(out),
+    `default must tell the agent NOT to re-arm inline on the expiry event; out=${out}`);
+  assert.ok(/reply in one line/i.test(out), `must tell the agent to reply in one line on expiry; out=${out}`);
+  assert.ok(/next `inbox tick` cron turn/i.test(out), `must point at the cron tick as the re-arm trigger; out=${out}`);
+});
+
+test('LEVER 1: rearmOnTickOnly explicit false -> restores the pre-0.117.0 inline re-arm-on-expiry wording', () => {
+  const env = { DEVSWARM_AI_AGENT: 'claude', ANTIHALL_DEVSWARM_REARM_ON_TICK_ONLY: '0' };
+  const out = wakeDirective(env, true, CLI, WATCHER);
+  assert.ok(/persistent/i.test(out), `must still mention persistent:true; out=${out}`);
+  assert.ok(/max `timeout_ms`\s*\+\s*re-arm on/i.test(out),
+    `false must restore the old positive "+ re-arm on its final/expired event" wording; out=${out}`);
+  assert.ok(!/do not re-arm inline when it emits its final/i.test(out),
+    `false must NOT include the tick-only "do NOT re-arm inline" wording; out=${out}`);
+});
+
+// ---------------------------------------------------------------------------
 // Unknown agent (DEVSWARM_AI_AGENT unset) -> '' for wakeDirective. wakeReassert
 // has no agent branch of its own (callers gate via isClaudeAgent), but must
 // still never throw and must still respect fail-open on garbage env.

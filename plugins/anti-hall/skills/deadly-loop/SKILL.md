@@ -9,6 +9,21 @@ Spend 1-2 hours of agent compute to ship a clean change rather than 1-2 weeks of
 
 This skill uses a shared TRIO debate roster defined in `references/MODEL-POLICY.md` (Reviewer = Sonnet `model:"sonnet"` at effort `xhigh`; Auditor = latest Opus `model:"opus"`, divergent regression/coupling lens, effort `high`; Critic = latest OpenAI Codex at `xhigh` reasoning, with an Opus divergent-persona fallback). Read that file before dispatching any round so the model selection, the availability fallback matrix, the round governance, and the spawn mechanics are correct.
 
+## Risk-scaled effort (token savings, 0.117.0)
+
+Match the review rigor to the change's blast radius — don't reflexively spend the
+full TRIO on everything. Decide from this table FIRST, before reading further:
+
+| Change touches... | Effort |
+| --- | --- |
+| Guard/security-sensitive code (auth, signing, redaction, prompt-injection defense), a parser, a schema/production-data migration, CI/workflow YAML, or a shell script | **Full TRIO** (Reviewer + Auditor + Critic, this skill's normal flow below) |
+| Normal application/library code with no guard/security/parser/schema/CI/shell surface | **One reviewer** (a single Sonnet-tier review pass is enough — skip the Auditor/Critic seats and the multi-round convergence loop) |
+| Text-only or doc-only changes (README, comments, changelog, prose) | **None** — no review lever needed |
+
+No metric is tracked for this lever — it is guidance, not a measured/gated
+behavior. When in doubt, or when a change straddles rows (e.g. a doc change that
+also edits a shell script), use the heavier row.
+
 ## When to use this skill
 
 **Use when ANY of these are true:**

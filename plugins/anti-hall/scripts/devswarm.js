@@ -1285,6 +1285,29 @@ function wakeTickDir(home) { return path.join(devswarmRoot(home), 'wake-tick'); 
 function wakeTickPathFor(id, home) { return path.join(wakeTickDir(home), id + '.json'); }
 function cronFoundMailPath(home) { return path.join(devswarmRoot(home), 'cron-found-mail.jsonl'); }
 const CRON_FOUND_MAIL_CAP = 1000;
+// TOKEN-SAVING LEVER 1 (0.117.0, devswarm.rearmOnTickOnly): re-arm CUE
+// measurement — counts, by trigger, how often this codebase told an agent it
+// needed to re-arm a lapsed Monitor watcher. `tick` = the cron tick observed
+// `watcherArmed:false` here (the one surviving re-arm trigger once
+// rearmOnTickOnly is on); `expiry` = the pre-0.117.0 inline "re-arm on the
+// Monitor's own final/expired event" trigger, which hooks/lib/devswarm-wake.js
+// monitorArmLine() no longer emits when rearmOnTickOnly is on — this bucket is
+// EXPECTED to read 0 in that mode; a caller still on rearmOnTickOnly=false can
+// write it to prove the legacy double-trigger. Fail-open, capped, same shape
+// as cron-found-mail.jsonl above.
+function rearmMetricsPath(home) { return path.join(devswarmRoot(home), 'rearm-cues.jsonl'); }
+const REARM_METRICS_CAP = 1000;
+function recordRearmCue(home, id, trigger, extra) {
+  try {
+    const p = rearmMetricsPath(home);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    let lines = [];
+    try { lines = fs.readFileSync(p, 'utf8').split('\n').filter(Boolean); } catch (_) { lines = []; }
+    lines.push(JSON.stringify(Object.assign({ ts: Date.now(), id, trigger }, extra || {})));
+    if (lines.length > REARM_METRICS_CAP) lines = lines.slice(lines.length - REARM_METRICS_CAP);
+    fs.writeFileSync(p, lines.join('\n') + '\n');
+  } catch (_) { /* fail-open: measurement only, never breaks the caller */ }
+}
 // heartbeatCallersLogPath / appendHeartbeatCallerLog (spec item 1b, A1-INSTRUMENT):
 // field evidence showed a dead registry row's updatedAt refreshed every ~30-45s by
 // an unidentified caller invoking `heartbeat` WITHOUT --session (source:'cli-heartbeat',
@@ -11598,6 +11621,10 @@ function cmdInboxTick(id, flags, ctx) {
       watcherArmed = !!(fresh && alive !== false);
     }
   } catch (_) { watcherArmed = false; }
+  // this tick is the re-arm CUE point (see rearmMetricsPath's header above):
+  // watcherArmed:false is exactly the condition drainCmd's rearmClause fires
+  // the "re-arm it" instruction on.
+  if (!watcherArmed && isSafeId(id)) recordRearmCue(home, id, 'tick');
 
   const tickOut = Object.assign({}, counted, { action: 'tick', idMismatch, watcherArmed });
   if (anchorRefresh && anchorRefresh.refreshed) tickOut.anchorRefresh = anchorRefresh;

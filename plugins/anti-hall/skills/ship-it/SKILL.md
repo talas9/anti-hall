@@ -62,6 +62,19 @@ subset (no plan mode required, no swarm); **S** is a single edit that exits afte
 > disjoint phases that can run in parallel. S and M build inline. Even at L, a single phase
 > (or a `parallel_group` of one) is a plain inline build — never wrap one phase in a swarm.
 
+**Risk-scaled deadly-loop effort (token savings, 0.117.0).** When a tier calls for a
+deadly-loop pass (M with a hard-risk trigger, or any L), scale the ROSTER to what
+triggered it, not a reflex full trio:
+
+| Change touches... | Deadly-loop effort |
+| --- | --- |
+| Guard/security-sensitive code, a parser, a schema/production-data migration, CI/workflow YAML, or a shell script | **Full TRIO** (Reviewer + Auditor + Critic) |
+| Normal application/library code with no guard/security/parser/schema/CI/shell surface | **One reviewer** |
+| Text-only or doc-only changes | **None** |
+
+No metric is tracked for this — it is guidance. See `deadly-loop`'s own copy of this
+table for the full rationale.
+
 ---
 
 ## Step 1 — Brainstorm IN PLAN MODE (gate — hard interactively, SOFT under granted autonomy; L only)

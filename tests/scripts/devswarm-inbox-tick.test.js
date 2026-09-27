@@ -74,6 +74,7 @@ function seedDirectRow(home, repoDir, toId, body) {
 function markerFile(home, id) { return path.join(home, '.anti-hall', 'devswarm', 'wake-tick', id + '.json'); }
 function heartbeatFile(home, id) { return path.join(home, '.anti-hall', 'devswarm', 'heartbeats', id + '.json'); }
 function cronFoundMailFile(home) { return path.join(home, '.anti-hall', 'devswarm', 'cron-found-mail.jsonl'); }
+function rearmCuesFile(home) { return path.join(home, '.anti-hall', 'devswarm', 'rearm-cues.jsonl'); }
 
 test('D13: inbox tick reports the SAME shape as inbox count and adds action:"tick"', () => {
   const home = tmpHome();
@@ -227,6 +228,39 @@ test('D13 MEASUREMENT: watcher lock present but unreadTotal===0 -> nothing appen
     fs.writeFileSync(lockPath, JSON.stringify({ pid: process.pid, ts: Date.now() }));
     cli.run(['inbox', 'tick', 'w1'], ctx(home, { cwd: repo }));
     assert.ok(!fs.existsSync(cronFoundMailFile(home)), 'an empty mailbox must never append, even with an armed lock');
+  } finally { rm(home); rm(repo); }
+});
+
+// ----- LEVER 1 (0.117.0): rearm-cues.jsonl measurement -----
+
+test('LEVER 1 MEASUREMENT: no watcher lock -> watcherArmed:false -> a "tick" re-arm cue is recorded', () => {
+  const home = tmpHome();
+  const repo = makeGitRepo('a');
+  try {
+    register(home, repo, 'w1');
+    // No lock file -> watcherArmed reads false -> this IS the re-arm cue point.
+    const ticked = cli.run(['inbox', 'tick', 'w1'], ctx(home, { cwd: repo })).result;
+    assert.strictEqual(ticked.watcherArmed, false, 'sanity: no lock -> watcherArmed false');
+    const lines = fs.readFileSync(rearmCuesFile(home), 'utf8').split('\n').filter(Boolean);
+    assert.strictEqual(lines.length, 1);
+    const row = JSON.parse(lines[0]);
+    assert.strictEqual(row.id, 'w1');
+    assert.strictEqual(row.trigger, 'tick');
+    assert.ok(Number.isFinite(row.ts));
+  } finally { rm(home); rm(repo); }
+});
+
+test('LEVER 1 MEASUREMENT: a fresh, alive watcher lock -> watcherArmed:true -> no re-arm cue recorded', () => {
+  const home = tmpHome();
+  const repo = makeGitRepo('a');
+  try {
+    register(home, repo, 'w1');
+    const lockPath = lockPathFor(home, 'w1');
+    fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+    fs.writeFileSync(lockPath, JSON.stringify({ pid: process.pid, ts: Date.now() }));
+    const ticked = cli.run(['inbox', 'tick', 'w1'], ctx(home, { cwd: repo })).result;
+    assert.strictEqual(ticked.watcherArmed, true, 'sanity: fresh alive lock -> watcherArmed true');
+    assert.ok(!fs.existsSync(rearmCuesFile(home)), 'no re-arm cue expected while the watcher is armed');
   } finally { rm(home); rm(repo); }
 });
 

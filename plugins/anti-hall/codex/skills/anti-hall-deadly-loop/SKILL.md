@@ -20,7 +20,20 @@ test -f "$ANTI_HALL_ROOT/.codex-plugin/plugin.json" || { echo "anti-hall plugin 
 
 This is the Codex-native protocol. Do not run the Claude `deadly-loop.workflow.js`; Codex does not expose that Workflow runtime.
 
-Use for:
+## Risk-scaled effort (token savings, 0.117.0)
+
+Match the review rigor to the change's blast radius — decide from this table FIRST:
+
+| Change touches... | Effort |
+| --- | --- |
+| Guard/security-sensitive code (auth, signing, redaction, prompt-injection defense), a parser, a schema/production-data migration, CI/workflow YAML, or a shell script | **Full three-lens round** (the Round structure below) |
+| Normal application/library code with no guard/security/parser/schema/CI/shell surface | **One reviewer lens** (skip the Auditor/Critic lenses and the multi-round convergence loop) |
+| Text-only or doc-only changes (README, comments, changelog, prose) | **None** — no review lever needed |
+
+No metric is tracked for this lever — it is guidance, not a measured/gated behavior.
+When in doubt, or a change straddles rows, use the heavier row.
+
+Use for (full three-lens round):
 
 - security/auth/signing/redaction/prompt-injection work
 - schema/migration/production-data changes
