@@ -1107,7 +1107,37 @@ function seenPath(home, id) {
   return path.join(devswarmRoot(home), 'wake', String(id) + '.seen');
 }
 
-function loadSeenState(home, id, fsi) {
+// COUNTER-KEYED CURSORS (role-flip false-wake fix). One id can be watched
+// under BOTH roles: a Primary whose own descriptor (workspaces/<id>.json)
+// sits at the main worktree resolves as 'child' when armed from the worktree
+// root (descriptor cwd match) and as 'primary' when armed from a
+// subdirectory (no match -> Primary default). Both share this one seen file,
+// but the in-memory fields mean DIFFERENT counters per role:
+//   child   -> lastTotal = NDJSON inbox count, lastTotal2 = mesh summary total
+//   primary -> lastTotal = mesh summary total
+// Persisting them positionally let a primary re-arm compare the summary
+// total against a stale NDJSON-era/primary-era lastTotal (field: "direct
+// total 4691 -> 4883 (+192)" with unread 0), and a child re-arm compare it
+// against lastTotal2 = 0 (the reverse). So the file now also carries the two
+// COUNTERS by name — meshTotal (workspaces[id].total, same function and
+// partition set both roles poll) and ndjsonTotal (child NDJSON channel) — and
+// each role maps them back onto its own fields. The positional legacy fields
+// are still written (writer-role semantics, as before) so an older build in
+// a mixed fleet keeps reading the file it expects.
+function seenCountersFromLegacy(obj, role) {
+  const lt = Number.isFinite(obj.lastTotal) ? obj.lastTotal : 0;
+  const lt2 = Number.isFinite(obj.lastTotal2) ? obj.lastTotal2 : 0;
+  // Legacy (pre-fix) file: lastTotal2 is only ever the mesh summary total
+  // (child-written); lastTotal is the mesh total when a primary wrote last,
+  // or the NDJSON count when a child did — the writer is not recorded. A
+  // primary therefore takes the larger of the two as its mesh baseline (both
+  // are lower bounds of what was already reported, summary total is
+  // append-only); a child keeps the legacy reading unchanged.
+  if (role === 'primary') return { meshTotal: Math.max(lt, lt2), ndjsonTotal: null };
+  return { meshTotal: lt2, ndjsonTotal: lt };
+}
+
+function loadSeenState(home, id, fsi, role) {
   const F = fsi || fs;
   try {
     const raw = String(F.readFileSync(seenPath(home, id), 'utf8'));
@@ -1120,26 +1150,56 @@ function loadSeenState(home, id, fsi) {
       // "missing key ≠ zero" rule elsewhere guards against).
       // lastBroadcastUnread (broadcast channel) persists alongside the other
       // two for the SAME restart-fabricated-delta reason.
-      return {
-        lastTotal: obj.lastTotal,
-        lastTotal2: Number.isFinite(obj.lastTotal2) ? obj.lastTotal2 : 0,
-        lastBroadcastUnread: Number.isFinite(obj.lastBroadcastUnread) ? obj.lastBroadcastUnread : 0,
-      };
+      const lastBroadcastUnread = Number.isFinite(obj.lastBroadcastUnread) ? obj.lastBroadcastUnread : 0;
+      if (role !== 'primary' && role !== 'child') {
+        return {
+          lastTotal: obj.lastTotal,
+          lastTotal2: Number.isFinite(obj.lastTotal2) ? obj.lastTotal2 : 0,
+          lastBroadcastUnread,
+        };
+      }
+      const legacy = seenCountersFromLegacy(obj, role);
+      const mesh = Number.isFinite(obj.meshTotal) ? obj.meshTotal : legacy.meshTotal;
+      if (role === 'primary') return { lastTotal: mesh, lastTotal2: mesh, lastBroadcastUnread };
+      // A counter-keyed file WITHOUT ndjsonTotal was last written by a
+      // primary-role watcher, whose positional lastTotal is the MESH total —
+      // never an NDJSON cursor. The NDJSON cursor is then simply unknown, which
+      // is exactly the fresh-file case (baseline 0), not the mesh number.
+      const nd = Number.isFinite(obj.ndjsonTotal) ? obj.ndjsonTotal
+        : (Number.isFinite(obj.meshTotal) ? 0 : legacy.ndjsonTotal);
+      return { lastTotal: nd, lastTotal2: mesh, lastBroadcastUnread };
     }
   } catch (_) { /* absent/corrupt -> fresh baseline below */ }
   return { lastTotal: 0, lastTotal2: 0, lastBroadcastUnread: 0 };
 }
 
-function saveSeenState(home, id, state, fsi) {
+function saveSeenState(home, id, state, fsi, role) {
   const F = fsi || fs;
   const p = seenPath(home, id);
   try {
     F.mkdirSync(path.dirname(p), { recursive: true });
-    const payload = JSON.stringify({
-      lastTotal: Number.isFinite(state && state.lastTotal) ? state.lastTotal : 0,
-      lastTotal2: Number.isFinite(state && state.lastTotal2) ? state.lastTotal2 : 0,
+    const lastTotal = Number.isFinite(state && state.lastTotal) ? state.lastTotal : 0;
+    const lastTotal2 = Number.isFinite(state && state.lastTotal2) ? state.lastTotal2 : 0;
+    const out = {
+      lastTotal,
+      lastTotal2,
       lastBroadcastUnread: Number.isFinite(state && state.lastBroadcastUnread) ? state.lastBroadcastUnread : 0,
-    });
+    };
+    if (role === 'child') {
+      out.meshTotal = lastTotal2;
+      out.ndjsonTotal = lastTotal;
+    } else if (role === 'primary') {
+      out.meshTotal = lastTotal;
+      // Positional lastTotal2 carries the mesh total too, so an older
+      // child-role build reading this file never re-fires from a stale 0.
+      out.lastTotal2 = lastTotal;
+      // A primary never observes the NDJSON channel: carry the child's
+      // cursor through untouched rather than dropping or guessing it.
+      let prev = null;
+      try { prev = JSON.parse(String(F.readFileSync(p, 'utf8'))); } catch (_) { prev = null; }
+      if (prev && Number.isFinite(prev.ndjsonTotal)) out.ndjsonTotal = prev.ndjsonTotal;
+    }
+    const payload = JSON.stringify(out);
     const tmp = p + '.' + process.pid + '.tmp';
     F.writeFileSync(tmp, payload);
     F.renameSync(tmp, p);
@@ -1375,7 +1435,7 @@ function main() {
     hashes = resolvePrimaryHashes(cwd, {});
   }
 
-  let st = normalizeState(loadSeenState(home, id, fs));
+  let st = normalizeState(loadSeenState(home, id, fs, watchedRole));
   const pollMs = pollMsFromEnv(env);
 
   // Persisted-write dedup (P2 fix): saveSeenState only ever persists
@@ -1412,7 +1472,7 @@ function main() {
     if (cleaned) return;
     cleaned = true;
     if (!(opts && opts.skipSave)) {
-      try { saveSeenState(home, id, st, fs); } catch (_) {}
+      try { saveSeenState(home, id, st, fs, watchedRole); } catch (_) {}
     }
     try { release(); } catch (_) {}
   }
@@ -1545,7 +1605,7 @@ function main() {
     }
     if (st.lastTotal !== savedTotal || st.lastTotal2 !== savedTotal2 || st.lastBroadcastUnread !== savedBroadcast) {
       try {
-        saveSeenState(home, id, st, fs);
+        saveSeenState(home, id, st, fs, watchedRole);
         savedTotal = st.lastTotal;
         savedTotal2 = st.lastTotal2;
         savedBroadcast = st.lastBroadcastUnread;
