@@ -119,27 +119,32 @@ const DEPLOY_WEAK_RE = /\b(prod|production|secrets?|credentials?)\b/gi;
 // ("deploy the webui to production", "run the deploy", "firebase deploy
 // --only functions") uses plain words, so it is untouched either way.
 //
-// But a path-like token that is actually EXECUTED — it follows an execution
-// verb (run/execute/exec/invoke/bash/sh/source/apply) or is itself `./x` —
-// is real deploy-shaped work ("run scripts/deploy.sh to production",
-// "execute ./deploy-prod.sh now") and must be KEPT so DEPLOY_STRONG_RE can
-// see it; only a read-only-verb argument (grep/cat/read/tail/… a filename)
-// or an unmarked mention gets dropped.
-const PATH_EXEC_VERB_RE = /^(?:run|execute|exec|invoke|bash|sh|source|apply)$/i;
+// Default is KEEP (fail toward the deploy floor): a path-like token is dropped
+// only when it is clearly a read-only ARGUMENT — a read-only verb
+// (grep/cat/read/tail/…) appears within the previous 3 words with no
+// execution verb or interpreter (run/execute/bash/sh/node/python3/…) after it.
+// So "tools/deploy_webui.sh prod", "node scripts/deploy.js --env prod",
+// "python3 tools/deploy_prod.py" and "please run the scripts/deploy.sh" stay
+// deploy-shaped, while "grep tools/deploy_webui.sh for …" does not.
+const PATH_EXEC_VERB_RE = /^(?:run|execute|exec|invoke|bash|sh|zsh|source|apply|node|nodejs|npx|deno|bun|ts-node|tsx|python\d*(?:\.\d+)?|ruby|perl)$/i;
+const PATH_READ_VERB_RE = /^(?:grep|egrep|rg|ag|cat|less|more|head|tail|read|view|open|inspect|review|check|examine|look|see|find|search|diff|show|explain|summari[sz]e|describe|document|audit|analy[sz]e|sed|awk|wc|ls|mention|mentions|mentioned|reference|references|referenced)$/i;
+const PATH_READ_WINDOW = 3;
 
 function stripPathLikeTokens(s) {
-  let prevWord = '';
+  const recent = []; // last PATH_READ_WINDOW normalized words
   return s.replace(/\S+/g, (tok) => {
     const isPathLike = tok.includes('_') || tok.includes('/') || /\.[A-Za-z0-9]{1,10}$/.test(tok);
-    let result;
-    if (!isPathLike) {
-      result = tok;
-    } else if (/^\.\//.test(tok) || PATH_EXEC_VERB_RE.test(prevWord)) {
-      result = tok; // executed script: keep, this IS deploy-shaped work
-    } else {
-      result = ' '; // read-only argument or an unmarked mention: drop
+    let result = tok;
+    if (isPathLike && !/^\.\//.test(tok)) {
+      let readOnly = false;
+      for (let i = recent.length - 1; i >= 0; i--) {
+        if (PATH_EXEC_VERB_RE.test(recent[i])) break;
+        if (PATH_READ_VERB_RE.test(recent[i])) { readOnly = true; break; }
+      }
+      if (readOnly) result = ' '; // read-only argument: drop
     }
-    prevWord = tok.replace(/^[^A-Za-z0-9._/-]+|[^A-Za-z0-9._/-]+$/g, '');
+    recent.push(tok.replace(/^[^A-Za-z0-9._/-]+|[^A-Za-z0-9._/-]+$/g, ''));
+    if (recent.length > PATH_READ_WINDOW) recent.shift();
     return result;
   });
 }

@@ -1096,6 +1096,37 @@ test('DEPLOY FLOOR (R1-4): an executed deploy script does not wrongly BLOCK an o
   } finally { h.cleanup(); }
 });
 
+// R2A1-MR-1 / R2-RV1-11: a deploy script run bare, by an interpreter, or with
+// an article between verb and path stays deploy-shaped. Only a path that is a
+// read-only verb's argument is dropped (default is keep).
+for (const prompt of [
+  'tools/deploy_webui.sh prod',
+  'node scripts/deploy.js --env prod',
+  'python3 tools/deploy_prod.py',
+  'run the scripts/deploy.sh script',
+]) {
+  test(`DEPLOY FLOOR (R2A1-MR-1): "${prompt}" does not BLOCK an opus spawn`, () => {
+    const h = makeHome();
+    try {
+      const r = testHook(HOOK, payload({
+        model: 'opus', subagent_type: 'general-purpose', description: 'run script', prompt,
+      }), { home: h.home });
+      assertSilentAllow(r);
+    } finally { h.cleanup(); }
+  });
+}
+for (const prompt of ['node scripts/deploy.js --env prod', 'python3 tools/deploy_prod.py', 'please run the scripts/deploy.sh']) {
+  test(`DEPLOY FLOOR (R2A1-MR-1): "${prompt}" (haiku) gets the floor advisory`, () => {
+    const h = makeHome();
+    try {
+      const r = testHook(HOOK, payload({
+        model: 'haiku', subagent_type: 'general-purpose', description: 'run script', prompt,
+      }), { home: h.home });
+      assertAdvisory(r, /at least model:'sonnet'/);
+    } finally { h.cleanup(); }
+  });
+}
+
 // ---------------------------------------------------------------- Jev modelRouting
 // The modelRouting Jev integration is consulted ONLY on the two block paths
 // (Row 1 non-exempt, Row 2 strict) under the 'relax-block' trust rule. A spawn
