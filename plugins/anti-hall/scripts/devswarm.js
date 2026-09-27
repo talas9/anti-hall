@@ -301,6 +301,8 @@ const ingestHealth = require('../companion/lib/ingest-health.js');
 const { isDevswarmActive } = require('../hooks/lib/devswarm-detect.js');
 const { isForwardableRow } = require('../companion/lib/devswarm-noise.js');
 const names = require('../companion/lib/devswarm-names.js');
+// Meeseeks supervision (plan tracking + straying): the per-workspace step plan.
+const planLib = require('../companion/lib/devswarm-plan.js');
 const gitTruth = require('../companion/lib/devswarm-git-truth.js');
 // wakeLib/isChildWorkspace: `wake-directive <id>` (C, trimmed Stop-gate
 // reassert follow-up) reuses the SAME wakeDirective() text
@@ -8433,6 +8435,91 @@ function promoteUnclaimedRegistrySessions(home, opts) {
   return out;
 }
 
+// ---- Meeseeks supervision: plan tracking (P1) ------------------------------
+// planRefFor(home, id, ctx) -> { id, worktreePath }. The plan file is keyed by
+// the workspace's worktree (see companion/lib/devswarm-plan.js). The worktree
+// comes from the workspace's descriptor, or — only when the caller IS that
+// workspace (DEVSWARM_BUILDER_ID matches) — from the caller's own cwd. A
+// Primary naming a child with no descriptor falls back to the bare id, never
+// to the Primary's own worktree.
+function planRefFor(home, id, ctx) {
+  let worktreePath = null;
+  try {
+    const d = readDescriptorFile(home, id);
+    if (d && d.worktreePath) worktreePath = d.worktreePath;
+  } catch (_) { worktreePath = null; }
+  if (!worktreePath && (ctx.env || process.env).DEVSWARM_BUILDER_ID === id) {
+    try { worktreePath = identityContext(ctx.cwd || process.cwd(), CALLER_CWD).worktreeRoot || null; } catch (_) { worktreePath = null; }
+  }
+  return { id, worktreePath };
+}
+
+// cmdPlan(sub, id, flags, ctx) — `plan set <id> --steps TEXT|--steps-file P
+// [--scope glob,glob]` writes or replaces the numbered step list (an
+// identical list is a no-op); `plan show <id>` prints it with the finish
+// label. Explicit verbs: they work whatever devswarm.planTracking says.
+function cmdPlan(sub, id, flags, ctx) {
+  const home = ctx.home;
+  const now = Number.isFinite(ctx.now) ? ctx.now : Date.now();
+  const ref = planRefFor(home, id, ctx);
+  if (sub === 'show') {
+    const found = planLib.findPlan(home, ref);
+    if (!found) return { ok: false, action: 'plan', sub, id, reason: 'no-plan' };
+    return { ok: true, action: 'plan', sub, id, key: found.key, label: planLib.finishLabel(found.plan, now), plan: found.plan };
+  }
+  if (sub !== 'set') return { ok: false, action: 'plan', error: 'usage: devswarm.js plan set <id> --steps "1. …\\n2. …"|--steps-file <path> [--scope glob,glob] | plan show <id>' };
+  let text = one(flags, 'steps');
+  const file = one(flags, 'steps-file');
+  if (text === undefined && file !== undefined) {
+    try { text = fs.readFileSync(String(file), 'utf8'); } catch (e) {
+      return { ok: false, action: 'plan', sub, id, error: 'cannot read --steps-file: ' + String((e && e.message) || e) };
+    }
+  }
+  const steps = planLib.parseSteps(text);
+  if (!steps.length) {
+    return { ok: false, action: 'plan', sub, id, error: 'no numbered step list found — pass at least two steps as "1. …" "2. …" lines via --steps or --steps-file' };
+  }
+  const scope = flags.scope ? planLib.splitGlobs(csvList(flags, 'scope').join(',')) : null;
+  const found = planLib.findPlan(home, ref);
+  if (found) {
+    const changed = planLib.replaceSteps(found.plan, steps, scope, now);
+    if (changed) planLib.savePlan(home, found.key, found.plan);
+    return { ok: true, action: 'plan', sub, id, key: found.key, created: false, changed, steps: found.plan.steps.length, scope: found.plan.scope_globs };
+  }
+  const key = planLib.planKeyForWorktree(ref.worktreePath) || id;
+  const plan = planLib.newPlan({ key, id, worktreePath: ref.worktreePath, steps, scope: scope || [], base: null, source: 'plan-set', now });
+  planLib.savePlan(home, key, plan);
+  return { ok: true, action: 'plan', sub, id, key, created: true, changed: true, steps: plan.steps.length, scope: plan.scope_globs };
+}
+
+// applyHeartbeatPlan(id, flags, ctx, now) -> the heartbeat result's `plan`
+// field, or undefined when neither --step nor a plan-relevant --summary was
+// given (the heartbeat result then stays byte-identical to before).
+function applyHeartbeatPlan(id, flags, ctx, now) {
+  const stepRaw = one(flags, 'step');
+  const summary = one(flags, 'summary');
+  if (stepRaw === undefined && summary === undefined) return undefined;
+  const home = ctx.home;
+  const found = planLib.findPlan(home, planRefFor(home, id, ctx));
+  if (!found) {
+    if (stepRaw === undefined) return undefined;
+    return { ok: false, reason: 'no-plan', hint: 'no step plan for ' + id + ' — run `devswarm.js plan set ' + id + ' --steps "1. …\\n2. …"` first; the heartbeat itself was recorded' };
+  }
+  const out = { ok: true, key: found.key };
+  let dirty = false;
+  if (stepRaw !== undefined) {
+    const status = one(flags, 'status') !== undefined ? String(one(flags, 'status')) : 'doing';
+    const r = planLib.applyStep(found.plan, stepRaw, status, now);
+    if (r.error) return { ok: false, reason: 'bad-step', error: r.error, key: found.key };
+    out.step = Number(stepRaw); out.status = status; out.changed = r.changed;
+    if (r.changed) dirty = true;
+  }
+  if (summary !== undefined) { planLib.recordSummary(found.plan, summary, stepRaw !== undefined, now); dirty = true; }
+  if (dirty) planLib.savePlan(home, found.key, found.plan);
+  out.label = planLib.finishLabel(found.plan, now);
+  return out;
+}
+
 function cmdHeartbeat(id, flags, ctx) {
   const home = ctx.home;
   // defect 735b179362e8 (B): warn (never refuse) when a child heartbeats an
@@ -8803,6 +8890,17 @@ function cmdHeartbeat(id, flags, ctx) {
   } catch (_) { identity = null; }
   const out = { ok: !hardMeshFailure, action: 'heartbeat', id, heartbeat: beat, meshBroadcast, identity, idMismatch };
   if (appArchived) out.appArchived = true;
+  // Plan tracking (Meeseeks P1): `--step N [--status doing|done|blocked]`
+  // records step progress in the workspace's plan. Additive: absent unless
+  // --step is passed or a plan exists for a --summary. A malformed --step on
+  // an existing plan is a caller mistake (ok:false, exit 2), like a bad
+  // --urgency; a missing plan is benign (the base heartbeat still counts).
+  let planOut;
+  try { planOut = applyHeartbeatPlan(id, flags, ctx, now); } catch (e) { planOut = { ok: false, reason: 'error', error: String((e && e.message) || e) }; }
+  if (planOut !== undefined) {
+    out.plan = planOut;
+    if (planOut.reason === 'bad-step') out.ok = false;
+  }
   return out;
 }
 
@@ -16151,6 +16249,24 @@ function cmdRoster(flags, ctx) {
     workspaces.length = 0;
     for (const w of kept) workspaces.push(w);
   } catch (_) { /* fail-open: the unfolded roster */ }
+  // Plan tracking (Meeseeks P1): a row whose workspace has a step plan gains a
+  // `plan` field; a row without one is left exactly as it was.
+  try {
+    if (planLib.planTrackingEnabled({ env: ctx.env, home })) {
+      for (const w of workspaces) {
+        if (!w || w.source === 'archived') continue;
+        const found = planLib.findPlan(home, { id: w.id, worktreePath: w.worktreePath });
+        if (!found) continue;
+        const cur = planLib.currentStep(found.plan);
+        w.plan = {
+          label: planLib.finishLabel(found.plan, now),
+          step: cur ? cur.n : null, of: found.plan.steps.length, done: planLib.stepsDone(found.plan),
+          stepText: cur ? cur.text : null,
+          extras: (found.plan.extras || []).map((e) => ({ glob: e.glob, note: e.note })),
+        };
+      }
+    }
+  } catch (_) { /* fail-open: the roster without plan fields */ }
   return {
     ok: true, action: 'roster', repoKey,
     known: !storeUnavailable, storeUnavailable, storeUnavailableReason, storeUnavailableScope,
@@ -18639,6 +18755,39 @@ function cmdSpawn(rest, ctx) {
     }
   } catch (_) { registered = false; }
 
+  // PLAN TRACKING (Meeseeks P1): a numbered step list in `-p` becomes the
+  // workspace's plan file, keyed by the new worktree. Encouraged, never
+  // required: spawn is never refused for a brief without one (the result
+  // carries a hint instead). `base` is the new worktree's starting commit —
+  // the exact fork point the supervisor's off-scope diff measures from.
+  let planInfo;
+  try {
+    const brief = extractFlagValue(rest, '-p', '--prompt');
+    if (brief !== null && planLib.planTrackingEnabled({ env, home: ctx.home })) {
+      const steps = planLib.parseSteps(brief);
+      const key = planLib.planKeyForWorktree(worktreePath);
+      if (steps.length && key) {
+        let base = null;
+        try {
+          const r = spawnSync('git', ['-C', worktreePath, 'rev-parse', 'HEAD'], { encoding: 'utf8', timeout: 10000 });
+          if (r && r.status === 0) base = String(r.stdout || '').trim() || null;
+        } catch (_) { base = null; }
+        const plan = planLib.newPlan({
+          key, id: meshId, worktreePath, steps, scope: planLib.parseScope(brief), base, source: 'spawn',
+          now: Number.isFinite(ctx.now) ? ctx.now : Date.now(),
+        });
+        planLib.savePlan(ctx.home, key, plan);
+        planInfo = { written: true, key, steps: steps.length, scope: plan.scope_globs };
+      } else {
+        planInfo = {
+          written: false, reason: steps.length ? 'no-worktree' : 'no-numbered-steps',
+          hint: 'a numbered step list ("1. …" "2. …") in -p lets the roster show step progress and the supervisor spot a stalled or off-scope child; the child can still add one with `devswarm.js plan set <id> --steps …`',
+        };
+        if (planLib.planRequired({ env, home: ctx.home })) planInfo.required = true;
+      }
+    }
+  } catch (e) { planInfo = { written: false, reason: 'error', error: String((e && e.message) || e) }; }
+
   // LAUNCH VERIFICATION — see checkSpawnLaunch's header. Only meaningful once a
   // meshId resolved (no path -> nothing to poll for); best-effort in every
   // direction, and it can never fail the verb or change `created`/`registered`.
@@ -18715,6 +18864,8 @@ function cmdSpawn(rest, ctx) {
     // totalMs (the whole verb). Also appended to the shared devswarm-cli log
     // (`devswarm.js logs --component devswarm-cli`), best-effort.
     timings,
+    // Present only when `-p` was passed (see PLAN TRACKING above).
+    plan: planInfo,
     raw: res.raw,
   };
 }
@@ -18887,7 +19038,8 @@ function logVerbOutcome(op, id, r, ctx) {
 const VERB_HELP = {
   register: { synopsis: 'register a new workspace descriptor', mutates: 'writes the descriptor file + store registry + summary' },
   ensure: { synopsis: 'like register, but requires the workspace to be new', mutates: 'writes the descriptor file + store registry + summary' },
-  heartbeat: { synopsis: 'record a liveness heartbeat for a workspace', mutates: 'writes a heartbeat file; may emit a mesh broadcast' },
+  heartbeat: { synopsis: 'record a liveness heartbeat for a workspace [--summary TEXT] [--step N --status doing|done|blocked] (--step records progress on the workspace\'s step plan)', mutates: 'writes a heartbeat file; may emit a mesh broadcast; --step updates the plan file' },
+  plan: { synopsis: 'plan set <id> --steps "1. …\\n2. …"|--steps-file <path> [--scope glob,glob] — write the workspace\'s numbered step plan (idempotent); plan show <id> — print it with its step label', mutates: '`set` writes ~/.anti-hall/devswarm/plans/<key>.json; `show` is read-only' },
   inbox: { synopsis: 'inbox subcommands: count | read | ack | pull | messages | read-primary | ack-primary | peek-primary | drain-primary-legacy (drain = read-primary, consume, then the returned ack-primary --receipt command). '
     + '`read-primary <id> --format text` prints one `from/seq/body` line per message instead of the raw JSON (still two-step by default: nothing is acked). '
     + '`read-primary <id> --ack-after-print` is opt-in: acks immediately after printing (equivalent to running the returned `ackCommand` right away) — omit it and the two-step read-then-`ack-primary --receipt` default is unchanged. '
@@ -19352,6 +19504,14 @@ function runArmed(cmd, positionals, flags, ctx, argv) {
       case 'diagnose': {
         // READ-ONLY mesh-health projection (#62) — pure, never writes summary.json.
         const r = cmdDiagnose(flags, ctx);
+        return { code: r.ok ? 0 : 2, result: r };
+      }
+      case 'plan': {
+        // Meeseeks P1: `plan set <id> --steps …|--steps-file P [--scope …]` / `plan show <id>`.
+        const sub = positionals[1];
+        const id = positionals[2];
+        if (!isSafeId(id)) return { code: 2, result: { ok: false, action: 'plan', error: 'usage: devswarm.js plan set|show <id> …' } };
+        const r = cmdPlan(sub, id, flags, ctx);
         return { code: r.ok ? 0 : 2, result: r };
       }
       case 'healthcheck': {

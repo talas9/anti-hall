@@ -198,6 +198,33 @@ const RECEIVE_NUDGE =
   'Then read them via `node ' + CLI + ' inbox read-primary ' +
   '<DEVSWARM_BUILDER_ID>` (read-only; after handling, run the `ackCommand` it returns). Substitute your own DEVSWARM_BUILDER_ID for <...>.';
 
+// buildPlanSegment(id, home, worktree, env) -> string | null. Meeseeks plan
+// tracking: a child with a step plan is told its current step and the one
+// command that reports progress on it; a child without one gets nothing
+// (byte-identical to before) unless devswarm.planRequired is on, in which case
+// it is asked to write its plan once. Never throws.
+function buildPlanSegment(id, home, worktree, env) {
+  try {
+    if (typeof id !== 'string' || !isSafeId(id)) return null;
+    const planLib = require('../companion/lib/devswarm-plan.js');
+    const opts = { env, home };
+    if (!planLib.planTrackingEnabled(opts)) return null;
+    const found = planLib.findPlan(home, { id, worktreePath: worktree });
+    if (!found || !found.plan.steps.length) {
+      if (!planLib.planRequired(opts)) return null;
+      return 'DEVSWARM PLAN: you have no step plan yet. Write your brief as numbered steps once: `node ' + CLI
+        + ' plan set ' + id + ' --steps "1. …\\n2. …"` — then report each step with `heartbeat ' + id + ' --step N --status doing|done|blocked`.';
+    }
+    const plan = found.plan;
+    const cur = planLib.currentStep(plan);
+    const head = cur
+      ? 'DEVSWARM PLAN: step ' + cur.n + '/' + plan.steps.length + (cur.status === 'blocked' ? ' (blocked)' : '') + ' — "' + cur.text + '".'
+      : 'DEVSWARM PLAN: all ' + plan.steps.length + ' steps are done — report it with `node ' + CLI + ' done`.';
+    return head + ' Report step progress as it happens: `node ' + CLI + ' heartbeat ' + id
+      + ' --step N --status doing|done|blocked` (it is what the Primary\'s roster shows).';
+  } catch (_) { return null; }
+}
+
 // substituteId(text, id) -> text with the literal `<DEVSWARM_BUILDER_ID>`
 // placeholder replaced by the real workspace id, when `id` passes the SAME
 // `isSafeId` charset check every other id-shaped value in this file is
@@ -876,8 +903,10 @@ function main() {
   // marker. Read DEFENSIVELY — undefined (an older store/summary shape, or Lane
   // B not yet landed) is falsy, so this stays a pure no-op until it ships.
   let archiveRequestedId = null;
+  let childWorktree = null; // Meeseeks plan lookup (buildPlanSegment below)
   try {
     const worktree = require('../companion/lib/identity.js').resolveContext(payload.cwd, { home, missingPath: 'ancestor' }).worktreeRoot || null;
+    childWorktree = worktree;
     if (worktree) {
       let ingestHealthMod = null;
       try { ingestHealthMod = require('../companion/lib/ingest-health.js'); } catch (_) { ingestHealthMod = null; }
@@ -968,6 +997,19 @@ function main() {
   } catch (_) { emitStatic = true; }
   if (emitStatic) segments.push(...staticBlock);
   if (meshDirectSegment) segments.push(meshDirectSegment);
+  // Meeseeks plan tracking: re-sent only when its text changes (emit-dedupe),
+  // so a child is told its step once per change, not every turn.
+  const planSegment = buildPlanSegment(env.DEVSWARM_BUILDER_ID, home, childWorktree, env);
+  if (planSegment) {
+    let emitPlan = true;
+    try {
+      emitPlan = require('./lib/emit-dedupe.js').shouldEmit({
+        home, sessionId: payload.session_id, transcriptPath: payload.transcript_path,
+        key: 'child-turn-plan', content: planSegment, keepaliveTurns: 10,
+      });
+    } catch (_) { emitPlan = true; }
+    if (emitPlan) segments.push(planSegment);
+  }
   const info = unreadInfo(env, home);
   let archiveSegmentPushed = false;
   if (info) {

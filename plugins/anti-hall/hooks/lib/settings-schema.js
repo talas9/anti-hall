@@ -341,6 +341,9 @@ const SECTIONS = [
       // ---- 0.109.0: spawn speed ----
       { key: 'spawnFetchTtlSec', type: 'number', min: 0, default: 300, env: 'ANTIHALL_DEVSWARM_SPAWN_FETCH_TTL_SEC', pluginOption: 'devswarm_spawn_fetch_ttl_sec', advanced: true, description: '`devswarm.js spawn`: skip the origin fetch when the remote-tracking ref was already updated within this many seconds (0 = always fetch). [read by: scripts/devswarm.js spawnSourceFreshness]' },
       { key: 'spawnCreateTimeoutMs', type: 'number', min: 1000, default: 180000, env: 'ANTIHALL_DEVSWARM_SPAWN_CREATE_TIMEOUT_MS', pluginOption: 'devswarm_spawn_create_timeout_ms', advanced: true, description: 'Timeout (ms) for the `hivecontrol workspace create` call spawn makes; on timeout only our own child process is killed. [read by: scripts/devswarm.js cmdSpawn]' },
+      // ---- 0.117.0: Meeseeks supervision (plan tracking) ----
+      { key: 'planTracking', type: 'boolean', default: true, env: 'ANTIHALL_DEVSWARM_PLAN_TRACKING', pluginOption: 'devswarm_plan_tracking', description: 'Step-plan tracking: `spawn` turns a numbered list in -p into the child\'s plan file, the roster and workspace table show "step 3/7 · 42m · progress 18m ago", and the child is reminded to report `heartbeat --step N`. Off: no plan is written or shown (the explicit `plan` / `heartbeat --step` verbs still work). [read by: companion/lib/devswarm-plan.js planTrackingEnabled]' },
+      { key: 'planRequired', type: 'boolean', default: false, env: 'ANTIHALL_DEVSWARM_PLAN_REQUIRED', pluginOption: 'devswarm_plan_required', description: 'Ask every child without a step plan to write one (`devswarm.js plan set`) on each turn. Never refuses a spawn — numbered step lists stay encouraged, not enforced. [read by: companion/lib/devswarm-plan.js planRequired, hooks/devswarm-child-turn.js]' },
     ],
   },
   {

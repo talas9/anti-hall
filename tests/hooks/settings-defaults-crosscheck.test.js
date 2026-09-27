@@ -267,7 +267,9 @@ test('devswarm: every advanced tuning knob is marked advanced; headline knobs ar
     'parentGate', 'childGate', 'parentInbox', 'childTurn', 'childRole', 'childDrain', 'parentReplyTracker',
     'commsGuard', 'inboxReadGuard', 'wakeWatch', 'appSync', 'screenshotSync',
     // 0.108.5
-    'spawnFromOrigin'];
+    'spawnFromOrigin',
+    // 0.117.0 Meeseeks supervision feature switches
+    'planTracking', 'planRequired'];
   const sec = SCHEMA.findSection('devswarm');
   for (const s of sec.settings) {
     if (headline.includes(s.key)) assert.ok(!s.advanced, s.key + ' should be headline, not advanced');

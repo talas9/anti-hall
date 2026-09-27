@@ -88,6 +88,9 @@ const { readActiveCache } = require('../companion/lib/devswarm-archived-cache.js
 // sweep, even a 0-insert one) — see the staleness banner below.
 const installIngest = require('../companion/install-devswarm-ingest.js');
 const devswarmIngest = require('../companion/devswarm-ingest.js');
+// Meeseeks plan tracking: step labels for rows whose workspace has a plan (fail-open).
+let planLib = null;
+try { planLib = require('../companion/lib/devswarm-plan.js'); } catch (_) { planLib = null; }
 // idleThresholdMs / lastActivityTs / readHeartbeat: this view's own "is this
 // workspace idle" signal, consumed ONLY here (see that module's header) — NOT
 // shared with devswarm-parent-gate.js's Stop-hook neglect gate, which was
@@ -363,7 +366,12 @@ function logSegmentError(home, segment, err) {
 // "42s"/"3m"/"—") so a turn where only ages advanced hashes the same as the last
 // emitted table. Status/unread/finish/risk changes still change the hash.
 function normalizeTableAges(t) {
-  return String(t).split('\n').map((l) => (/^\|.*\|\s*$/.test(l) ? l.replace(/\|[^|]*\|\s*$/, '| |') : l)).join('\n');
+  // The step-plan finish label (Meeseeks P1: 'step 3/7 · 42m · progress 18m ago')
+  // carries ages too — dropped here so a ticking clock never re-sends the table.
+  // A row without a plan never contains this text, so its line is unchanged.
+  return String(t).split('\n').map((l) => (/^\|.*\|\s*$/.test(l)
+    ? l.replace(/\|[^|]*\|\s*$/, '| |').replace(/ · \d+[mhd](?= · (?:progress|no progress))/g, '').replace(/ · progress \d+[mhd] ago/g, '')
+    : l)).join('\n');
 }
 
 // Volatile-field normalizer for the PARENT INBOX nudge (burst-collapse only, rule a):
@@ -1987,6 +1995,16 @@ function main() {
       // extra finish signal (never overrides the gates), the UI title, sidebar
       // rank as a tiebreak, and pinned / on-screen / brief-delivery markers.
       let finishCell = doneStateLabel(summary, id, heartbeat);
+      // Plan tracking (Meeseeks P1): an in-progress row whose workspace has a
+      // step plan shows 'step 3/7 · 42m · progress 18m ago' in place of
+      // 'working (N%)'. A row without a plan keeps its old cell exactly.
+      try {
+        if (planLib && /^working\b/.test(finishCell) && planLib.planTrackingEnabled({ env: process.env, home })) {
+          const found = planLib.findPlan(home, { id, worktreePath: entry && entry.worktreePath });
+          const planLabel = found ? planLib.finishLabel(found.plan, now) : null;
+          if (planLabel) finishCell = planLabel;
+        }
+      } catch (_) { /* fail-open: keep the plain finish cell */ }
       let appMarks = '';
       try {
         const sig = appDbLib ? appDbLib.finishSignal(rowWs) : null;
