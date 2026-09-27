@@ -42,15 +42,17 @@ const NEGATION_BEFORE_RE = /(?:\bnot\b|n['’]t\b|\bnever\b|\bno need\b|\bno rea
 const ADVICE_RES = [
   // "✅ SAFE TO COMPACT NOW", "safe to /compact or /clear"
   /\bsafe\s+to\s+\/?(?:compact|clear)\b/gi,
-  // "GOOD POINT TO /compact NOW", "good time to compact"
-  /\bgood\s+(?:point|time|moment)\s+to\s+\/?(?:compact|clear)\b/gi,
+  // "GOOD POINT TO /compact NOW", "good time to compact", Codex "GOOD POINT FOR /compact OR /new NOW"
+  /\bgood\s+(?:point|time|moment)\s+(?:to|for)\s+(?:\/?compact|\/?clear|\/new)\b/gi,
+  // Codex skill wording: "safe for a context reset", "safe for compaction"
+  /\bsafe\s+for\s+(?:a\s+)?(?:context\s+)?(?:reset|compaction|\/?compact|\/new)\b/gi,
   // "/compact" offered as an instruction: "run `/compact focus: …`", "then /compact"
   /\b(?:run|type|use|do|then|now|recommend(?:ed)?|suggest(?:ed)?)\s*:?\s*`*\/compact\b/gi,
   // a line that IS a /compact command ("`/compact focus: …`", "- /compact")
   /^[ \t]*(?:[-*+]|\d+[.)])?[ \t]*`*\/compact\b/gim,
 ];
 
-const RETRACT_RE = /\bretract(?:ed|ing)?\b[\s:,\-—–*_`"'“”]*(?:the\s+)?(?:[*_`✅🟢]\s*)*(?:safe[\s-]+to[\s-]+(?:compact|clear)|good\s+point\s+to\s+\/?compact|\/compact)/gi;
+const RETRACT_RE = /\bretract(?:ed|ing)?\b[\s:,\-—–*_`"'“”]*(?:the\s+)?(?:[*_`✅🟢]\s*)*(?:safe[\s-]+(?:to|for)[\s-]+(?:compact|clear|reset|a\s+(?:context\s+)?reset)|good\s+point\s+(?:to|for)\s+\/?compact|\/compact)/gi;
 
 // stripQuoted(text) -> text with blockquote lines and "…" / “…” quoted spans
 // blanked to spaces (same length, so indices stay comparable). A /compact line

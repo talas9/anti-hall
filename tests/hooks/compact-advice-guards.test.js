@@ -48,6 +48,11 @@ test('findAdvice: own recommendations match; negated / quoted / retracted do not
   assert.ok(advice.findAdvice('🟢 **GOOD POINT TO /compact NOW**: handover saved').length);
   assert.ok(advice.findAdvice('Run `/compact focus: finish the release`').length);
   assert.ok(advice.findAdvice('Next:\n`/compact focus: phase 2`').length);
+  assert.ok(advice.findAdvice('🟢 **HANDOVER COMPLETE — GOOD POINT FOR /compact OR /new NOW**').length);
+  assert.ok(advice.findAdvice('✅ Safe for a context reset now.').length);
+  assert.strictEqual(advice.findAdvice('⏳ NOT SAFE for a context reset yet — waiting on: agent X').length, 0);
+  assert.strictEqual(advice.findAdvice('A good time for new tests.').length, 0);
+  assert.strictEqual(advice.activeDeclaration('Safe for a context reset now.\nRETRACT SAFE FOR A CONTEXT RESET — more work needed'), null);
   assert.strictEqual(advice.findAdvice('⏳ **NOT SAFE to compact yet** — waiting on agent X').length, 0);
   assert.strictEqual(advice.findAdvice('no need to /compact now; continue working, or /compact / restart when you choose').length, 0);
   assert.strictEqual(advice.findAdvice('You typed "/compact focus: foo" earlier — noted.').length, 0);
