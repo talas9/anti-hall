@@ -99,10 +99,17 @@ const path = require('path');
 const SESSIONS_DIR = path.join(os.homedir(), '.claude', 'sessions');
 const DEVSWARM_REPOS_ROOT = path.join(os.homedir(), '.devswarm', 'repos');
 
-// SendMessage's own tool docs: a background agent's raw agentId is format
-// `a<hex>-<hex>...`. Matching this form is an immediate, unambiguous
-// in-process-subagent signal — no session-index lookup needed.
-const AGENT_ID_RE = /^a[0-9a-f]{4,}-[0-9a-f-]+$/i;
+// SendMessage's own tool docs: a background agent's raw agentId is a lowercase
+// hex string starting with 'a' — `a<hex>` bare (the form actually observed in
+// this harness, e.g. an executor started as `a6042fcc9b2813dac` — no hyphen at
+// all), or `a<hex>-<hex>...` (hyphenated). defect N11 fix: the original regex
+// REQUIRED a trailing `-<hex>` segment, so a bare (no-hyphen) agentId — the
+// common real shape — never matched here and fell through to the session-index
+// lookup, which (correctly) finds nothing for an in-process id, landing on the
+// generic "unresolved" advisory EVERY time instead of this unambiguous,
+// immediate in-process-subagent signal. Matching this form is an immediate,
+// unambiguous in-process-subagent signal — no session-index lookup needed.
+const AGENT_ID_RE = /^a[0-9a-f]{4,}(?:-[0-9a-f-]+)?$/i;
 
 // stripRef("name [3fa9c1]") -> "name"; bare "name" is returned unchanged.
 function stripRef(to) {
@@ -199,13 +206,13 @@ function main() {
     );
   }
 
-  // Immediate in-process-subagent signal: the raw agentId form.
+  // Immediate in-process-subagent signal: the raw agentId form. defect N11
+  // fix: skip the advisory silently for this class (no output at all) — a
+  // background subagent's own address is neither a peer session nor a
+  // workspace, so there is nothing actionable to label here, and this is by
+  // far the most common SendMessage target while a Primary/child is active.
   if (AGENT_ID_RE.test(to)) {
-    allow(
-      'DEVSWARM-COMMS (in-process subagent): target "' + to + '" matches the ' +
-      'background-agentId form (a<hex>-...) — a different address space from ' +
-      'cross-session peers; allowed, never gated.'
-    );
+    allow();
   }
 
   const bareName = stripRef(to);
@@ -214,13 +221,15 @@ function main() {
 
   // No match in the local session index: cannot positively confirm this is a
   // workspace-backed peer. Fail-open toward allow (documented reliability
-  // limitation above) — treat as in-process/unknown.
+  // limitation above) — treat as in-process/unknown. defect N11 fix: this is
+  // overwhelmingly an in-process subagent/teammate NAME (the same class the
+  // AGENT_ID_RE branch above already recognizes and silences) — a Primary/
+  // child names its own subagents freely, and those names never appear in
+  // the session index at all. Skip the advisory silently here too, same as
+  // the agentId case, rather than printing "(unresolved)" on every single
+  // one of these (the common case, not a rare edge case).
   if (!session) {
-    allow(
-      'DEVSWARM-COMMS (unresolved): target "' + to + '" did not match any live ' +
-      'session in the local session index — treated as in-process/unknown and ' +
-      'allowed. (The session index can lag a just-spawned or just-exited process.)'
-    );
+    allow();
   }
 
   if (isDevswarmWorkspacePath(session.cwd)) {

@@ -114,6 +114,43 @@ test('ALLOW (a): subagent-form agentId target -> exit 0, never blocked, EVEN IF 
   }
 });
 
+// defect N11 (7-workspace sweep, 2026-09-27): the pre-fix AGENT_ID_RE
+// (`/^a[0-9a-f]{4,}-[0-9a-f-]+$/i`) REQUIRED a trailing `-<hex>` segment, but
+// a real in-process agentId is commonly a BARE hex string with no hyphen at
+// all (e.g. an executor started as `a6042fcc9b2813dac` in this very
+// harness). That shape fell through to the session-index lookup, found
+// nothing, and printed the verbose "DEVSWARM-COMMS (unresolved)" advisory on
+// EVERY SendMessage to an in-process subagent. Fix: widen the regex to match
+// the bare form too, and skip the advisory silently for both the agentId
+// match and the (equally common) unresolved-name fallback.
+test('ALLOW (N11): bare-hex (no-hyphen) agentId target -> exit 0, silent (no advisory output at all)', () => {
+  const h = makeHome();
+  try {
+    const r = testHook(HOOK, sendMessagePayload('a6042fcc9b2813dac'), {
+      home: h.home,
+      env: DEVSWARM_ENV,
+    });
+    assert.strictEqual(r.status, 0, `expected allow; stdout: ${r.stdout}`);
+    assert.strictEqual(r.stdout.trim(), '', `must be completely silent, not print an advisory; got: ${r.stdout}`);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('ALLOW (N11): unresolved target name (in-process subagent name, no session-index match) -> exit 0, silent (no advisory output at all)', () => {
+  const h = makeHome();
+  try {
+    const r = testHook(HOOK, sendMessagePayload('researcher'), {
+      home: h.home,
+      env: DEVSWARM_ENV,
+    });
+    assert.strictEqual(r.status, 0, `expected allow; stdout: ${r.stdout}`);
+    assert.strictEqual(r.stdout.trim(), '', `must be completely silent, not print an advisory; got: ${r.stdout}`);
+  } finally {
+    h.cleanup();
+  }
+});
+
 test('ALLOW (c): the anti-hall maintainer peer is exempt SOLELY because its cwd is not a workspace path', () => {
   const h = makeHome();
   try {
