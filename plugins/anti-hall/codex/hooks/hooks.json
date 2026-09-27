@@ -174,6 +174,11 @@
         "hooks": [
           { "type": "command", "command": "node \"${PLUGIN_ROOT}/hooks/silent-agent-nudge.js\"", "timeout": 30 }
         ]
+      },
+      {
+        "hooks": [
+          { "type": "command", "command": "node \"${PLUGIN_ROOT}/hooks/compact-advice-guard.js\"", "timeout": 30 }
+        ]
       }
     ],
     "PreCompact": [
