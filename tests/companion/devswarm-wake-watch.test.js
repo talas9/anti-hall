@@ -591,6 +591,73 @@ test('resolveIdentity: descriptor cwd-match fallback when env is absent, matchin
   } finally { rm(home); }
 });
 
+// REGRESSION: a Primary whose own descriptor (workspaces/primary-<hash>.json)
+// sits at the main worktree used to resolve as `child` when armed from the
+// worktree ROOT (descriptor cwd-match branch always returned `child`) and as
+// `primary` when armed from a subfolder (no cwd match -> Primary default) —
+// same id, inconsistent role label depending only on cwd. The descriptor
+// cwd-match branch must now recognize a `primary-*`-id descriptor that is
+// ALSO the registered primary for this repo (per injected
+// resolveMainWorktree/primaryWorkspaceId) and label it `primary`, not `child`.
+test('resolveIdentity: a Primary-seat descriptor at the repo root resolves as primary, not child', () => {
+  const home = tmpHome();
+  try {
+    const worktree = path.join(home, 'wt');
+    fs.mkdirSync(worktree, { recursive: true });
+    const wdir = path.join(home, '.anti-hall', 'devswarm', 'workspaces');
+    fs.mkdirSync(wdir, { recursive: true });
+    fs.writeFileSync(path.join(wdir, 'primary-deadbeef.json'), JSON.stringify({
+      id: 'primary-deadbeef', worktreePath: worktree, sessionId: 's1',
+    }));
+    const readDescriptors = (h) => {
+      const dir = path.join(h, '.anti-hall', 'devswarm', 'workspaces');
+      return fs.readdirSync(dir).map((n) => JSON.parse(fs.readFileSync(path.join(dir, n), 'utf8')));
+    };
+    const io = {
+      home, fs, readDescriptors,
+      resolveMainWorktree: () => worktree,
+      primaryWorkspaceId: (wt) => (wt === worktree ? 'primary-deadbeef' : 'primary-wrong'),
+    };
+    // Armed from the repo ROOT (the descriptor's own worktreePath) — the
+    // buggy code returned `child` here.
+    const atRoot = resolveIdentity({}, worktree, io);
+    assert.deepStrictEqual({ role: atRoot.role, id: atRoot.id }, { role: 'primary', id: 'primary-deadbeef' });
+    // Armed from a SUBFOLDER — already correctly resolved as primary via the
+    // fallback path; stays that way (consistency check, not a regression).
+    const sub = path.join(worktree, 'sub');
+    fs.mkdirSync(sub, { recursive: true });
+    const atSubfolder = resolveIdentity({}, sub, io);
+    assert.deepStrictEqual({ role: atSubfolder.role, id: atSubfolder.id }, { role: 'primary', id: 'primary-deadbeef' });
+  } finally { rm(home); }
+});
+
+// A descriptor with a Primary-shaped id that does NOT match the actually
+// registered primary for this repo (a stale/foreign record) must still fall
+// back to `child` — the confirmation check is not a blind shape match.
+test('resolveIdentity: a primary-* id descriptor that is NOT the registered primary stays child', () => {
+  const home = tmpHome();
+  try {
+    const worktree = path.join(home, 'wt');
+    fs.mkdirSync(worktree, { recursive: true });
+    const wdir = path.join(home, '.anti-hall', 'devswarm', 'workspaces');
+    fs.mkdirSync(wdir, { recursive: true });
+    fs.writeFileSync(path.join(wdir, 'primary-stale.json'), JSON.stringify({
+      id: 'primary-stale', worktreePath: worktree, sessionId: 's1',
+    }));
+    const readDescriptors = (h) => {
+      const dir = path.join(h, '.anti-hall', 'devswarm', 'workspaces');
+      return fs.readdirSync(dir).map((n) => JSON.parse(fs.readFileSync(path.join(dir, n), 'utf8')));
+    };
+    const io = {
+      home, fs, readDescriptors,
+      resolveMainWorktree: () => worktree,
+      primaryWorkspaceId: () => 'primary-deadbeef', // the REAL registered primary differs
+    };
+    const identity = resolveIdentity({}, worktree, io);
+    assert.deepStrictEqual({ role: identity.role, id: identity.id }, { role: 'child', id: 'primary-stale' });
+  } finally { rm(home); }
+});
+
 test('resolveIdentity: falls back to Primary via injected resolveMainWorktree/primaryWorkspaceId', () => {
   const home = tmpHome();
   try {

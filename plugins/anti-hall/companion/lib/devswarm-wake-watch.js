@@ -918,7 +918,32 @@ function resolveIdentity(env, cwd, io) {
       const dForms = realFormsOf(d.worktreePath, F);
       let hit = false;
       for (const f of cwdForms) { if (dForms.has(f)) { hit = true; break; } }
-      if (hit) return { role: 'child', id: d.id, home, cwd: wd, descriptor: d };
+      if (hit) {
+        // A descriptor whose id is a Primary seat (`primary-<hash>`) is the
+        // Primary's OWN tracking record, not a child — armed from the repo
+        // ROOT this cwd-match branch is the one that fires (a subfolder
+        // never descriptor-matches d.worktreePath, which is always the repo
+        // root, so it falls straight to the `primary` default below). Without
+        // this check, the SAME Primary resolved as `child` from its repo
+        // root and `primary` from a subfolder — cosmetic since ecf5c2a fixed
+        // the functional wake-cursor bug this caused, but the role label
+        // itself stayed inconsistent. Confirm it against the actually
+        // REGISTERED primary id for this repo (not just the `primary-*`
+        // shape) before relabeling, so an unrelated stale/foreign descriptor
+        // that happens to look primary-shaped is never trusted blind.
+        if (typeof d.id === 'string' && /^primary-/.test(d.id)) {
+          try {
+            const resolveMainWorktree = ioo.resolveMainWorktree || ingest.resolveMainWorktree;
+            const primaryWorkspaceId = ioo.primaryWorkspaceId || ingest.primaryWorkspaceId;
+            const main = resolveMainWorktree(wd, ioo.gitIo);
+            const registeredId = main ? primaryWorkspaceId(main) : null;
+            if (registeredId && registeredId === d.id) {
+              return { role: 'primary', id: d.id, home, cwd: wd, mainWorktree: main };
+            }
+          } catch (_) { /* fall through to the child label below */ }
+        }
+        return { role: 'child', id: d.id, home, cwd: wd, descriptor: d };
+      }
     }
   } catch (_) { /* fall through to the Primary default */ }
 
