@@ -152,20 +152,27 @@ function spill(F, file, raw, now, meta) {
 function lastResortPrefix(file) {
   return 'anti-hall-wal-lastresort-' + crypto.createHash('sha1').update(path.resolve(file)).digest('hex').slice(0, 16) + '-';
 }
-function lastResortPending(F, file, tmp) {
+// names (optional) — a pre-fetched os.tmpdir() readdirSync() result, so a
+// caller iterating many WALs against the SAME tmpdir (health(), see below)
+// lists it once instead of once per WAL. Omitted -> reads it itself, same as
+// before (backward compatible for every other caller).
+function lastResortPending(F, file, tmp, names) {
   const dir = tmp || os.tmpdir();
   const pre = lastResortPrefix(file);
   try {
-    return F.readdirSync(dir).filter((n) => n.startsWith(pre) && /\.json$/.test(n)).sort().map((n) => path.join(dir, n));
+    const list = names || F.readdirSync(dir);
+    return list.filter((n) => n.startsWith(pre) && /\.json$/.test(n)).sort().map((n) => path.join(dir, n));
   } catch (_) { return []; }
 }
-// spillPending(F, file) -> [path] of spilled (and last-resort) batches not yet absorbed.
-function spillPending(F, file) {
+// spillPending(F, file, lastResortNames?) -> [path] of spilled (and
+// last-resort) batches not yet absorbed. lastResortNames (optional) is
+// forwarded to lastResortPending — see its header comment.
+function spillPending(F, file, lastResortNames) {
   let out = [];
   try {
     out = F.readdirSync(spillDir(file)).filter((n) => /\.json$/.test(n)).sort().map((n) => path.join(spillDir(file), n));
   } catch (_) { out = []; }
-  return out.concat(lastResortPending(F, file));
+  return out.concat(lastResortPending(F, file, null, lastResortNames));
 }
 
 // preflight(F, file) -> null when BOTH the WAL and its spill destination can be
@@ -314,16 +321,21 @@ function health(F, home, now) {
   const dir = path.join(devswarmRoot(home), 'wal');
   let names = [];
   try { names = F.readdirSync(dir); } catch (_) { names = []; }
+  // List os.tmpdir() ONCE for this whole health() call (filtered to the
+  // last-resort filename prefix) instead of once per WAL — see
+  // lastResortPending's header comment. Every WAL shares this one list.
+  let tmpNames = [];
+  try { tmpNames = F.readdirSync(os.tmpdir()).filter((n) => n.startsWith('anti-hall-wal-lastresort-')); } catch (_) { tmpNames = []; }
   const out = [];
   for (const n of names.sort()) {
     if (!n.endsWith('.ndjson')) continue;
     const file = path.join(dir, n);
     let open;
     try { open = pending(F, file); } catch (e) {
-      out.push({ file, pending: null, oldestTs: null, pendingBytes: null, spilled: spillPending(F, file).length, alert: true, reason: 'unreadable (' + ((e && e.code) || e) + ')' });
+      out.push({ file, pending: null, oldestTs: null, pendingBytes: null, spilled: spillPending(F, file, tmpNames).length, alert: true, reason: 'unreadable (' + ((e && e.code) || e) + ')' });
       continue;
     }
-    const spilled = spillPending(F, file).length;
+    const spilled = spillPending(F, file, tmpNames).length;
     if (!open.length && !spilled) continue;
     const oldestTs = open.reduce((m, b) => (Number.isFinite(b.ts) && (m === null || b.ts < m) ? b.ts : m), null);
     const pendingBytes = open.reduce((m, b) => m + b.bytes, 0);
@@ -336,13 +348,13 @@ function health(F, home, now) {
   // Last-resort files (WAL AND spill failed mid-operation) for this home's WALs.
   try {
     const walDirAbs = path.resolve(dir);
-    for (const n of F.readdirSync(os.tmpdir())) {
-      if (!n.startsWith('anti-hall-wal-lastresort-') || !/\.json$/.test(n)) continue;
+    for (const n of tmpNames) {
+      if (!/\.json$/.test(n)) continue;
       let rec = null;
       try { rec = JSON.parse(String(F.readFileSync(path.join(os.tmpdir(), n), 'utf8'))); } catch (_) { continue; }
       if (!rec || typeof rec.wal !== 'string' || path.dirname(rec.wal) !== walDirAbs) continue;
       if (out.some((r) => path.resolve(r.file) === rec.wal)) continue;
-      out.push({ file: rec.wal, pending: 0, oldestTs: null, pendingBytes: 0, spilled: lastResortPending(F, rec.wal).length, alert: true,
+      out.push({ file: rec.wal, pending: 0, oldestTs: null, pendingBytes: 0, spilled: lastResortPending(F, rec.wal, null, tmpNames).length, alert: true,
         reason: 'LAST-RESORT batch in ' + os.tmpdir() + ' — WAL and spill both failed; destructive reads blocked' });
     }
   } catch (_) { /* tmpdir unreadable: nothing to report */ }
@@ -351,7 +363,7 @@ function health(F, home, now) {
     for (const n of F.readdirSync(path.join(devswarmRoot(home), 'wal-spill'))) {
       const file = path.join(dir, n + '.ndjson');
       if (out.some((r) => r.file === file)) continue;
-      const spilled = spillPending(F, file).length;
+      const spilled = spillPending(F, file, tmpNames).length;
       if (spilled) out.push({ file, pending: 0, oldestTs: null, pendingBytes: 0, spilled, alert: true, reason: spilled + ' spilled batch(es) — WAL was not writable; destructive reads blocked' });
     }
   } catch (_) { /* no spills */ }

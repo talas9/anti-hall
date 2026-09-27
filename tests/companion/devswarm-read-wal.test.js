@@ -51,6 +51,61 @@ test('health: a spilled batch alerts (reads blocked) even when the WAL file itse
   } finally { fs.rmSync(home, { recursive: true, force: true }); }
 });
 
+test('health: lists os.tmpdir() once per call, not once per WAL, and reports identical pending/spilled counts', () => {
+  const home = tmpHome();
+  const realTmpdir = os.tmpdir();
+  const fakeTmp = fs.mkdtempSync(path.join(realTmpdir, 'anti-hall-walhealth-tmp-'));
+  const origTMPDIR = process.env.TMPDIR;
+  process.env.TMPDIR = fakeTmp;
+  try {
+    assert.equal(os.tmpdir(), fakeTmp, 'os.tmpdir() must honor the fake TMPDIR for this test to be isolated');
+
+    // Seed several WALs, each with a last-resort file directly in the fake
+    // tmpdir (the WAL-and-spill-both-failed path), so health() must scan it
+    // once and attribute each last-resort file back to its own WAL.
+    const wals = ['a', 'b', 'c', 'd', 'e'].map((k) => readWal.walPath(home, 'pull', k));
+    // fs stub whose writes fail ONLY under `home` (WAL + spill dirs), so
+    // captureRaw exhausts both and falls through to the real last-resort
+    // write under (fake) os.tmpdir(), which this stub passes through to fs.
+    const failingFs = Object.assign({}, fs, {
+      mkdirSync(p, ...rest) { if (String(p).startsWith(home)) throw new Error('EACCES dir'); return fs.mkdirSync(p, ...rest); },
+      openSync(p, ...rest) { if (String(p).startsWith(home)) throw new Error('EACCES wal'); return fs.openSync(p, ...rest); },
+    });
+    for (const w of wals) {
+      readWal.captureRaw(failingFs, w, 'raw-' + w, NOW, null, () => {});
+    }
+    const lastResortFiles = fs.readdirSync(fakeTmp).filter((n) => n.startsWith('anti-hall-wal-lastresort-'));
+    assert.equal(lastResortFiles.length, wals.length, 'one last-resort file per WAL (real fs, not the failing stub)');
+
+    // Spy: count real fs.readdirSync calls against the fake tmpdir specifically.
+    const origReaddirSync = fs.readdirSync;
+    let tmpdirReaddirCalls = 0;
+    fs.readdirSync = function (p, ...rest) {
+      if (path.resolve(String(p)) === path.resolve(fakeTmp)) tmpdirReaddirCalls++;
+      return origReaddirSync.call(this, p, ...rest);
+    };
+    let h;
+    try {
+      h = readWal.health(fs, home, NOW);
+    } finally {
+      fs.readdirSync = origReaddirSync;
+    }
+
+    assert.equal(tmpdirReaddirCalls, 1, 'os.tmpdir() must be listed exactly once per health() call, not once per WAL: ' + tmpdirReaddirCalls);
+    assert.equal(h.length, wals.length, 'every WAL with a last-resort batch is reported');
+    for (const w of wals) {
+      const row = h.find((r) => path.resolve(r.file) === path.resolve(w));
+      assert.ok(row, 'missing row for ' + w);
+      assert.equal(row.spilled, 1, 'last-resort batch counted for ' + w);
+      assert.equal(row.alert, true);
+    }
+  } finally {
+    if (origTMPDIR === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = origTMPDIR;
+    fs.rmSync(fakeTmp, { recursive: true, force: true });
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
 test('inbox tick and doctor surface a WAL alert', () => {
   const home = tmpHome();
   try {
