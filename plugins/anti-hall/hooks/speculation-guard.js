@@ -33,6 +33,20 @@
 //   disabled (the default) behavior is identical to the regex-only hook and
 //   nothing is logged.
 //
+// FRAMED EXPECTATIONS (jevIntegrations.speculationFramed, default SHADOW):
+//   a deterministic regex hit whose hedge sits under a heading/line prefix
+//   framing it as an expectation/plan ("Expected", "Plan", "Should be
+//   blocked:", "Should still", "Unverified", "(unverified)", "not yet
+//   measured" — see isFramedHit) is additionally asked FRAMED_JEV_QUESTION
+//   via jev-assist's relax-block trust: Jev may only turn THAT hit's block
+//   into a non-block (never add one). shadow logs the verdict and keeps the
+//   deterministic block; on relaxes only at confidence >= the shared
+//   confidenceThreshold (default 0.85) and a "genuine expectation" answer. An
+//   UNFRAMED hedge never reaches this question — it stays deterministic and
+//   blocking in every mode. Logged via jev-assist's own ask() (id
+//   'speculationFramed', ~/.anti-hall/logs/jev-assist.ndjson + daily
+//   rollups) — a SEPARATE log/id from the JEV_QUESTION path above.
+//
 // Contract (Claude Code Stop hook):
 //   stdin  : JSON { transcript_path, session_id?, ... }
 //   stdout : JSON {"decision":"block","reason":"..."} to block, or nothing
@@ -120,6 +134,33 @@ const JEV_QUESTION = {
       'the check to run; or it makes no claim about the project at all (a question, ' +
       'a plan, code the user asked for, general technical knowledge, an explicit ' +
       'hypothetical, or small talk).',
+  },
+};
+
+// FRAMED_JEV_QUESTION (speculationFramed integration, relax-block trust): only
+// asked about a hit the DETERMINISTIC frame detector (isFramedHit) already
+// flagged as sitting under a heading/line-prefix like "Expected", "Plan",
+// "Should be <verb>:", "Should still", "Unverified", "(unverified)", "not yet
+// measured". true keeps the deterministic block (relax-block's baseline);
+// false, at confidence >= the shared jev.confidenceThreshold (default 0.85),
+// relaxes it. An unframed hedge never reaches this question at all.
+const FRAMED_JEV_QUESTION = {
+  type: 'noul',
+  instructions:
+    'This hedge sits under a heading or line labelled as a plan/expectation (e.g. ' +
+    '"Expected", "Plan", "Should be blocked:", "Unverified", "not yet measured"). Is ' +
+    'it still an unverified claim about the project\'s CURRENT/actual state presented ' +
+    'as fact, or is it a stated expectation/plan/acceptance-criterion for work not yet ' +
+    'done or measured?',
+  criteria: {
+    true:
+      'Unverified claim presented as fact: despite the label, it asserts what IS true ' +
+      'right now about the project (a cause, a fix, a done/works/passes outcome) with ' +
+      'no cited evidence — the framing is decorative, not honest.',
+    false:
+      'Genuine expectation/plan: a test-plan entry, acceptance criterion, or hypothesis ' +
+      'about future or hypothetical work ("Should be blocked: X", "Expected: Y", "not ' +
+      'yet measured") — not a claim about the project\'s actual current state.',
   },
 };
 
@@ -466,21 +507,77 @@ function maskQuotedText(text) {
 }
 
 // --------------------------------------------------------------------------
-// Find the first matching speculation marker label (for the block reason).
+// FRAMED-EXPECTATION detection (speculationFramed, shadow default) — owner
+// decision "let Jev judge it" (2026-09-27): a hedge that sits under a heading
+// or line prefix stating it is an EXPECTATION/PLAN, not a claim about the
+// project's current state (a test plan headed "Should be blocked:" /
+// "Should still work:", a "## Expected" section, "(unverified)", "not yet
+// measured"), is FRAMED. An unframed hedge is judged exactly as before
+// (deterministic, always blocking). A framed hit additionally gets consulted
+// via jevIntegrations.speculationFramed (relax-block trust: Jev may only turn
+// the framed hit's block into a non-block, never add one) — see main()'s use
+// of it below. This is a SEPARATE, additional relaxation from the
+// must-be/should-be obligation-phrasing exemption above, which fully exempts
+// independent of framing.
 // --------------------------------------------------------------------------
-function findSpeculationMarker(text) {
+const FRAME_LABEL_CORE = '(?:expected|plan|should\\s+be\\s+\\w+|should\\s+still(?:\\s+\\w+)?|unverified|not\\s+yet\\s+measured)';
+const FRAME_LINE_PREFIX_RE = new RegExp(
+  '^\\s*(?:(?:[-*+\\u2022]|\\d+[.)])\\s+)?' + FRAME_LABEL_CORE + '\\s*[:)]', 'i');
+const FRAME_HEADING_RE = /^\s*#{1,6}\s+(.+?)\s*#*\s*$/;
+const FRAME_HEADING_LABEL_RE = new RegExp('^' + FRAME_LABEL_CORE + '\\b', 'i');
+const FRAME_INLINE_RE = /\(unverified\)|\bnot yet measured\b/i;
+
+// isFramedHit(text, matchIndex) -> bool. Checked at the marker occurrence's
+// own line first (handles "Should be blocked: X probably fails" on ONE
+// line), then walks upward through the current section (stopping at a blank
+// line run >= 2, i.e. a paragraph break) looking for the nearest heading or
+// frame-label line that establishes the frame.
+function isFramedHit(text, matchIndex) {
+  const lineStart = text.lastIndexOf('\n', matchIndex) + 1;
+  const lineEndIdx = text.indexOf('\n', matchIndex);
+  const line = text.slice(lineStart, lineEndIdx === -1 ? text.length : lineEndIdx);
+  if (FRAME_LINE_PREFIX_RE.test(line) || FRAME_INLINE_RE.test(line)) return true;
+
+  const priorLines = text.slice(0, lineStart).split('\n');
+  let blankRun = 0;
+  for (let i = priorLines.length - 1; i >= 0; i--) {
+    const l = priorLines[i];
+    if (l.trim() === '') {
+      blankRun += 1;
+      if (blankRun >= 2) return false;
+      continue;
+    }
+    blankRun = 0;
+    const h = FRAME_HEADING_RE.exec(l);
+    if (h) return FRAME_HEADING_LABEL_RE.test(h[1].trim());
+    if (FRAME_LINE_PREFIX_RE.test(l)) return true;
+  }
+  return false;
+}
+
+// --------------------------------------------------------------------------
+// Find the first matching (non-exempt) speculation hit -> { marker, index } or
+// null. `index` feeds isFramedHit(); findSpeculationMarker() below is a thin
+// string-only wrapper kept for every pre-existing caller.
+// --------------------------------------------------------------------------
+function findSpeculationHit(text) {
   for (const pat of SPECULATION_PATTERNS) {
     const m = text.match(pat);
     if (!m) continue;
-    if (!MODAL_OBLIGATION_MARKERS.has(m[0].toLowerCase())) return m[0];
+    if (!MODAL_OBLIGATION_MARKERS.has(m[0].toLowerCase())) return { marker: m[0], index: m.index };
     // must-be/should-be: judge EVERY occurrence; the first non-exempt one flags.
     const g = new RegExp(pat.source, pat.flags.includes('g') ? pat.flags : pat.flags + 'g');
     let mm;
     while ((mm = g.exec(text)) !== null) {
-      if (!isObligationPhrasing(text, mm[0], mm.index)) return mm[0];
+      if (!isObligationPhrasing(text, mm[0], mm.index)) return { marker: mm[0], index: mm.index };
     }
   }
   return null;
+}
+
+function findSpeculationMarker(text) {
+  const hit = findSpeculationHit(text);
+  return hit ? hit.marker : null;
 }
 
 function hasAcknowledgment(text) {
@@ -710,16 +807,52 @@ async function main() {
   };
 
   let marker = null;
+  let hitIndex = null;
   if (!jevBlock) {
     // Check for speculation markers.
-    marker = findSpeculationMarker(markerText);
-    if (!marker) finish('allow');
+    const hit = findSpeculationHit(markerText);
+    if (!hit) finish('allow');
+    marker = hit.marker;
+    hitIndex = hit.index;
 
     // Check for acknowledgment — if present, hedging is honest; allow.
     if (hasAcknowledgment(lastText)) finish('allow');
   }
 
   if (loopSafe) finish('allow');
+
+  // FRAMED-EXPECTATION relaxation (jevIntegrations.speculationFramed, default
+  // shadow): only for a genuine deterministic regex hit (never a jevBlock
+  // verdict — that path is judged by the 'speculation' integration itself)
+  // whose hit sits under a heading/line-prefix framing it as a plan/
+  // expectation (isFramedHit). relax-block trust: Jev may only turn this
+  // block into a non-block. shadow logs the verdict but ALWAYS keeps the
+  // block (jev-assist's finalize() only applies the trust math when
+  // mode==='on'); any Jev failure/timeout/low-confidence also keeps the
+  // block (fail-safe to baseline=true). An unframed hedge never reaches here.
+  if (!jevBlock && marker !== null && isFramedHit(markerText, hitIndex)) {
+    try {
+      const { loadJevConfig } = require('./lib/jev-client.js');
+      const jevCfg = loadJevConfig();
+      if (jevCfg.enabled) {
+        const { ask, turnRefFromTranscript } = require('./lib/jev-assist.js');
+        const jevText = extractLastAssistantTextDedup(transcriptPath) || lastText;
+        const framedResult = await ask({
+          id: 'speculationFramed',
+          question: FRAMED_JEV_QUESTION,
+          state: jevText.slice(0, 8000),
+          trust: 'relax-block',
+          baseline: true,
+          sessionId,
+          turnRef: turnRefFromTranscript(transcriptPath),
+        });
+        if (framedResult.final === false) finish('allow');
+      }
+    } catch (_) {
+      // Jev path unavailable for any reason — the deterministic block stands
+      // (fail-safe to baseline).
+    }
+  }
 
   // Persist the blocked hash + incremented count + a pending outcome-capture
   // record (source + a hash to join back to later) before outputting the

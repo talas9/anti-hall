@@ -354,6 +354,88 @@ test('JEV: credential never appears in stdout, stderr, or the log', async () => 
 });
 
 // ---------------------------------------------------------------------------
+// speculationFramed (owner: "let Jev judge it", 2026-09-27). A framed hedge
+// ("Should be blocked: ..." / "Should still ..." / an "Expected"/"Plan"
+// heading / "(unverified)" / "not yet measured") is a DETERMINISTIC regex
+// hit whose hit sits under that framing. relax-block trust: Jev may only
+// relax the block, never add one; shadow (default) always keeps the block.
+// The primary 'speculation' add-block integration is switched OFF in every
+// case below so only the deterministic regex + speculationFramed path is
+// exercised (no cross-talk on the shared mock server).
+// ---------------------------------------------------------------------------
+const FRAMED_HEDGE = 'Should be blocked: the new gate probably rejects malformed input too.';
+const UNFRAMED_HEDGE = 'The new gate probably rejects malformed input too.';
+
+function readAssistLog(home) {
+  try {
+    return fs.readFileSync(path.join(home, '.anti-hall', 'logs', 'jev-assist.ndjson'), 'utf8')
+      .trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
+  } catch (_) {
+    return [];
+  }
+}
+
+test('speculationFramed SHADOW (default): still blocks even when Jev confidently says "expectation", and logs the verdict', async () => {
+  const c = await jevCase({
+    reply: FRAMED_HEDGE,
+    respond: noul(0.02), // false, high confidence -> "genuine expectation"
+    jevCfg: { enabled: true, integrations: { speculation: 'off', speculationFramed: 'shadow' } },
+  });
+  try {
+    assert.ok(isBlock(c.r), `shadow must still block; stdout: ${c.r.stdout}`);
+    assert.strictEqual(c.mock.calls, 1, 'Jev must still be consulted (and logged) in shadow mode');
+    const log = readAssistLog(c.h.home);
+    const row = log.find((l) => l.id === 'speculationFramed');
+    assert.ok(row, `expected a speculationFramed row; log: ${JSON.stringify(log)}`);
+    assert.strictEqual(row.mode, 'shadow');
+    assert.strictEqual(row.base, true);
+    assert.strictEqual(row.final, true, 'shadow never changes the outcome');
+  } finally { c.h.cleanup(); }
+});
+
+test('speculationFramed ON + Jev says "expectation" (confident) -> ALLOWED', async () => {
+  const c = await jevCase({
+    reply: FRAMED_HEDGE,
+    respond: noul(0.02), // false, high confidence -> "genuine expectation" -> relax
+    jevCfg: { enabled: true, integrations: { speculation: 'off', speculationFramed: 'on' } },
+  });
+  try {
+    assert.ok(!isBlock(c.r), `expected allow (Jev relaxed the framed hit); stdout: ${c.r.stdout}`);
+    const log = readAssistLog(c.h.home);
+    const row = log.find((l) => l.id === 'speculationFramed');
+    assert.ok(row);
+    assert.strictEqual(row.mode, 'on');
+    assert.strictEqual(row.final, false);
+    assert.strictEqual(row.changed, 'relaxed');
+  } finally { c.h.cleanup(); }
+});
+
+test('speculationFramed: an UNFRAMED "probably" always blocks and never consults Jev, even with the integration ON', async () => {
+  const c = await jevCase({
+    reply: UNFRAMED_HEDGE,
+    respond: noul(0.02),
+    jevCfg: { enabled: true, integrations: { speculation: 'off', speculationFramed: 'on' } },
+  });
+  try {
+    assert.ok(isBlock(c.r), `unframed hedge must always block; stdout: ${c.r.stdout}`);
+    assert.strictEqual(c.mock.calls, 0, 'an unframed hedge must never reach speculationFramed');
+    const log = readAssistLog(c.h.home);
+    assert.ok(!log.find((l) => l.id === 'speculationFramed'));
+  } finally { c.h.cleanup(); }
+});
+
+test('speculationFramed: a Jev error (timeout) fails safe to the deterministic block', async () => {
+  const c = await jevCase({
+    reply: FRAMED_HEDGE,
+    respond: () => {}, // never responds -> timeout
+    jevCfg: { enabled: true, integrations: { speculation: 'off', speculationFramed: 'on' }, timeoutMs: 150 },
+  });
+  try {
+    assert.ok(isBlock(c.r), `Jev failure must fail-safe to the baseline block; stdout: ${c.r.stdout}`);
+  } finally { c.h.cleanup(); }
+});
+
+// ---------------------------------------------------------------------------
 // P1-a regression: the pre-3e72bf3 hook's collectTextFromEntry recursed into
 // node.message UNCONDITIONALLY, so the real transcript shape (top-level
 // `content` absent, text only under `message.content` — exactly what
