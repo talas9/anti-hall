@@ -42,8 +42,52 @@
 'use strict';
 
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const { HEREDOC_RE, basename, parseHeredocAt, SHELL_VERBS } = require('./lib/shell-scan.js');
+
+// anchoredAntiHallStableLauncher(scriptFile) -> RegExp matching a segment
+// whose verb is `node <homeAnchor>/.anti-hall/bin/<scriptFile>`. Copied from
+// command-guard.js (same doc comment there for the full anchoring rationale):
+// command-guard.js has no module.exports (its main() runs unconditionally at
+// require-time), so it cannot be `require()`d from here without executing
+// it — this is a deliberate, byte-for-byte duplication of that one pure
+// function rather than a cross-file refactor, kept in sync by hand. Used
+// below (STABLE_LAUNCHER_RES) as part of the heredoc-body inert-segment
+// allowlist: the anti-hall mailbox/heartbeat launcher is the one common
+// "other segment" a legitimate `cat <<'EOF' ... EOF; node ~/.anti-hall/bin/
+// devswarm.js send ...` command needs exempted.
+function anchoredAntiHallStableLauncher(scriptFile) {
+  const scriptSrc = scriptFile.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const rawHomes = [];
+  try {
+    const homedir = require('../companion/lib/test-home-guard.js').resolveHome();
+    if (typeof homedir === 'string' && homedir) rawHomes.push(homedir);
+  } catch (_) { /* fail-open: home-anchor alternation just skips this form */ }
+  try {
+    const passwdHome = os.userInfo().homedir;
+    if (typeof passwdHome === 'string' && passwdHome && !rawHomes.includes(passwdHome)) {
+      rawHomes.push(passwdHome);
+    }
+  } catch (_) { /* fail-open: home-anchor alternation just skips this form */ }
+  const homeAbsSrcs = rawHomes.map((h) => h.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  const homeAlt = '(?:~|"?\\$\\{HOME\\}"?|\\$HOME'
+    + (homeAbsSrcs.length ? '|' + homeAbsSrcs.join('|') : '') + ')';
+  return new RegExp(
+    '^\\s*(?:[A-Za-z_][A-Za-z0-9_]*=\\S*\\s+)*node\\s+' +
+      homeAlt + '[\\\\/]\\.anti-hall[\\\\/]bin[\\\\/]' + scriptSrc + '\\b',
+    'i'
+  );
+}
+
+// The anti-hall stable launcher forms treated as an inert segment (see
+// isInertSegment below): devswarm.js (mailbox send/heartbeat/roster/...) and
+// wake-watch.js (the mailbox wake poller), matching command-guard.js's own
+// exemption pair.
+const STABLE_LAUNCHER_RES = [
+  anchoredAntiHallStableLauncher('devswarm.js'),
+  anchoredAntiHallStableLauncher('wake-watch.js'),
+];
 
 // currentSessionId — set once by main() from the PreToolUse payload's
 // session_id (if present), read by consultGitGuardSelfCreditJev so its
@@ -865,42 +909,68 @@ function extractHeredocBodies(cmd) {
 }
 
 // Heredoc stdin consumers that treat the body as DATA (never execute it).
-// Anything outside this list consuming a heredoc is treated as a shell.
-const HEREDOC_DATA_CONSUMERS = new Set([
-  'cat', 'tee', 'head', 'tail', 'wc', 'grep', 'egrep', 'fgrep', 'sort', 'uniq',
-  'tr', 'cut', 'fold', 'fmt', 'nl', 'column', 'base64', 'jq', 'pbcopy', 'git', 'gh',
-]);
-// Words that run text as commands wherever they appear in a segment
-// (`| bash`, `find -exec sh`, `xargs`, `ssh host`, ...).
-const EVALUATOR_WORDS = new Set([
-  ...SHELL_VERBS, 'fish', 'csh', 'tcsh', 'busybox', 'eval', 'xargs', 'ssh', 'su',
-  'doas', 'parallel', 'watch', 'script',
-]);
-// Interpreters that evaluate an inline program given with an eval flag.
-const INLINE_INTERPRETERS = /^(python[0-9.]*|node|nodejs|perl|ruby|php|deno|bun|osascript|pwsh|powershell|lua|tclsh)$/;
-const INLINE_EVAL_FLAG = /^(-[A-Za-z]*[ceEpr]|--eval|--print|--command|eval)$/;
+// DELIBERATELY NARROW (P1 fix, deadly-loop round 1 finding R1-1/A1-GG-2):
+// this used to be a broad list that included `git`/`gh` — but `git -c
+// alias.x='!sh -c "..."' x <<EOF` (or a `-F -`/`--file=-` message body fed to
+// a git hook script) treats the heredoc body as an ALIAS/HOOK PAYLOAD, not
+// inert data, so `git`/`gh` were never safe members of this set. Anything
+// outside this two-member list consuming a heredoc is treated as capable of
+// executing the body.
+const HEREDOC_DATA_CONSUMERS = new Set(['cat', 'tee']);
 
-// Does any real (non-heredoc-body) segment of `cmd` execute text as commands?
-// Unresolvable verbs (`$X`, a substitution, a path-run script) count as yes.
-function hasEvaluatorSegment(cmd) {
-  for (const seg of splitSegments(cmd)) {
-    const tokens = tokenize(seg);
-    if (!tokens.length) continue;
-    const ev = effectiveVerb(tokens);
-    if (ev) {
-      // effectiveVerb basenames the verb; check the raw verb token too.
-      const v = tokens[tokens.length - ev.args.length - 1].text;
-      if (v.startsWith('$') || v.includes(CMDSUBST_SENTINEL) || v.includes('/') ||
-          v.includes('`') || ev.verb === 'source' || ev.verb === '.') return true;
-    }
-    for (let k = 0; k < tokens.length; k++) {
-      const w = basename(tokens[k].text).toLowerCase();
-      if (EVALUATOR_WORDS.has(w)) return true;
-      if (INLINE_INTERPRETERS.test(w) &&
-          tokens.slice(k + 1).some((t) => INLINE_EVAL_FLAG.test(t.text))) return true;
-    }
+// Segment verbs/forms that are INERT no matter where they appear in the
+// command (the "every OTHER segment" allowlist below). This is the P1 fix's
+// core inversion: base (pre-fix) blanked a quoted heredoc body whenever no
+// segment matched a DENYLIST of shells/evaluators — but that denylist missed
+// real executors (`make`, `PATH=. x.sh`, `find -exec {}`, `hash -p ./x.sh x;
+// x`, a `.git/hooks/*` script fired by a later `git commit`/`git push`, `git
+// -c alias.x='!sh' x`), so a force-push written into a file by the "inert"
+// heredoc body could still run. Anything NOT on this small allowlist keeps
+// the heredoc body fully scanned (fail closed).
+const READONLY_GIT_SUBCOMMANDS = new Set(['status', 'log', 'diff', 'show', 'rev-parse']);
+
+// Is `seg` (one segment of the OUTER command, never a vetted heredoc body/
+// pipeline — see blankInertHeredocBodies) one of the small inert forms: the
+// anti-hall stable launcher, echo/printf with no output redirection, cd,
+// true, a read-only git verb, or cat/head/tail/wc/ls? An unresolvable verb
+// ($X, a substitution, a path-run script) or anything else fails closed
+// (not inert).
+function isInertSegment(seg) {
+  if (STABLE_LAUNCHER_RES.some((re) => re.test(seg))) return true;
+  const tokens = tokenize(seg);
+  if (!tokens.length) return true;
+  const ev = effectiveVerb(tokens);
+  if (!ev) return false;
+  // effectiveVerb basenames the verb; check the raw verb token too, exactly
+  // like the base denylist's unresolvable-verb guard did.
+  const v = tokens[tokens.length - ev.args.length - 1].text;
+  if (v.startsWith('$') || v.includes(CMDSUBST_SENTINEL) || v.includes('/') ||
+      v.includes('`') || ev.verb === 'source' || ev.verb === '.') return false;
+  const verb = ev.verb.toLowerCase();
+  if (verb === 'cd' || verb === 'true') return true;
+  if (verb === 'cat' || verb === 'head' || verb === 'tail' || verb === 'wc' || verb === 'ls') return true;
+  if (verb === 'git') {
+    const sub = ev.args.find((t) => !t.text.startsWith('-'));
+    return !!sub && !sub.quotedOnly && READONLY_GIT_SUBCOMMANDS.has(sub.text.toLowerCase());
+  }
+  if (verb === 'echo' || verb === 'printf') {
+    // Fail closed on ANY output redirection (not just an "exec path" target):
+    // a redirect could still write a script another segment later runs.
+    const bare = seg.replace(/'[^']*'/g, '').replace(/"(?:[^"\\]|\\.)*"/g, '');
+    return !/[><]/.test(bare);
   }
   return false;
+}
+
+// Does every segment of `cmd` (as split by splitSegments) satisfy
+// isInertSegment? Used only against a copy of the command with every vetted
+// heredoc-owner pipeline already blanked out (see blankInertHeredocBodies),
+// so this checks exactly "every OTHER segment".
+function allSegmentsInert(cmd) {
+  for (const seg of splitSegments(cmd)) {
+    if (!isInertSegment(seg)) return false;
+  }
+  return true;
 }
 
 // Is the command that owns the heredoc opener at `lt` (and every other command
@@ -936,20 +1006,49 @@ function heredocOwnerIsDataConsumer(text, lt) {
   for (const seg of pipeline) {
     const tokens = tokenize(seg);
     const ev = tokens.length ? effectiveVerb(tokens) : null;
-    if (!ev || !HEREDOC_DATA_CONSUMERS.has(ev.verb)) return false;
+    if (!ev || !HEREDOC_DATA_CONSUMERS.has(ev.verb.toLowerCase())) return false;
   }
   return true;
 }
 
+// Blank (spaces, newlines kept) every [a, b) range in `str`, preserving every
+// other offset. Shared by the body-only blank (`out`) and the wider
+// vetted-pipeline blank used to build the allowlist-check string below.
+function blankRanges(str, ranges) {
+  if (!ranges.length) return str;
+  let out = '';
+  let last = 0;
+  for (const [a, b] of ranges) {
+    out += str.slice(last, a) + str.slice(a, b).replace(/[^\n]/g, ' ');
+    last = b;
+  }
+  out += str.slice(last);
+  return out;
+}
+
 // Return `cmd` with the BODY lines of inert heredocs blanked (spaces, newlines
 // and every offset kept), so splitSegments stops parsing prose as commands. A
-// body is inert only when its delimiter is quoted (no $( )/backtick expansion),
-// it is terminated, its owning pipeline is all known data consumers, and no
-// real segment anywhere in the command is a shell/evaluator (covers `| bash`
-// and write-then-run). The opener line itself is never blanked (P0 lesson in
-// extractHeredocBodies above). Same quote tracking as extractHeredocBodies.
+// body is inert only when (a) its delimiter is quoted (no $( )/backtick
+// expansion), it is terminated, and its owning pipeline is on the narrow
+// HEREDOC_DATA_CONSUMERS allowlist (cat/tee — never git/gh, since a git alias
+// or a `-F -`/`--file=-` message can hand the body to a hook/alias that
+// EXECUTES it), AND (b) every OTHER segment anywhere in the whole command is
+// on the small isInertSegment allowlist (P1 fix, deadly-loop round 1 finding
+// R1-1/A1-GG-2: base's DENYLIST-of-evaluators gate missed real executors —
+// `make`, `PATH=. x.sh`, `find -exec {}`, `hash -p ./x.sh x; x`, a
+// `.git/hooks/*` script fired by a later `git commit`/`git push`, `git -c
+// alias.x='!sh' x` — so a force-push written into a file by the "inert"
+// heredoc body could still run). Anything else, including any `git
+// commit`/`git push` segment or a bare PATH-resolved verb, disqualifies the
+// WHOLE command from blanking (fail closed: the body is scanned as before).
+// The opener line itself is never blanked (P0 lesson in extractHeredocBodies
+// above). Same quote tracking as extractHeredocBodies.
 function blankInertHeredocBodies(cmd) {
   const spans = [];
+  // [boundary, h.end) for every heredoc that passed the (a) check above —
+  // the ENTIRE vetted pipeline (opener line through its terminator), so the
+  // (b) allowlist scan below sees exactly "every OTHER segment".
+  const vettedPipelineRanges = [];
   const n = cmd.length;
   let i = 0;
   let inSingle = false;
@@ -980,6 +1079,7 @@ function blankInertHeredocBodies(cmd) {
           if (termStart > bodyStart &&
               heredocOwnerIsDataConsumer(cmd.slice(boundary, bodyStart - 1), i - boundary)) {
             spans.push([bodyStart, termStart]);
+            vettedPipelineRanges.push([boundary, h.end]);
           }
         }
         i = h.end;
@@ -990,14 +1090,9 @@ function blankInertHeredocBodies(cmd) {
     i++;
   }
   if (!spans.length) return cmd;
-  let out = '';
-  let last = 0;
-  for (const [a, b] of spans) {
-    out += cmd.slice(last, a) + cmd.slice(a, b).replace(/[^\n]/g, ' ');
-    last = b;
-  }
-  out += cmd.slice(last);
-  return hasEvaluatorSegment(out) ? cmd : out;
+  const out = blankRanges(cmd, spans);
+  const checkStr = blankRanges(cmd, vettedPipelineRanges);
+  return allSegmentsInert(checkStr) ? out : cmd;
 }
 
 // Run the git force/trailer detection on every segment of a command string.

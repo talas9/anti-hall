@@ -171,6 +171,40 @@ const BLOCK = [
   { cmd: "cat > f <<'EOF'\nprose\nEOF\ngit push --force origin main", reason: REASON.FORCE },
   // Unterminated quoted heredoc: not blanked (strict fallback).
   { cmd: "cat > f <<'EOF'\ngit push --force origin main", reason: REASON.FORCE },
+  // --- P1 (deadly-loop round 1, R1-1/A1-GG-2): write-then-run EXECUTORS the
+  // old DENYLIST (hasEvaluatorSegment) missed. isInertSegment's ALLOWLIST
+  // must refuse to blank the heredoc body in every one of these, so the
+  // force-push line written into the file is still scanned as text. ---
+  // `make` reading a Makefile written by the heredoc.
+  { cmd: "cat > Makefile <<'EOF'\nall:\n\tgit push --force origin main\nEOF\nmake", reason: REASON.FORCE },
+  // `<<-'EOF'` (tab-stripping quoted heredoc) writing a Makefile.
+  { cmd: "cat > Makefile <<-'EOF'\n\tgit push --force origin main\nEOF\nmake", reason: REASON.FORCE },
+  // `PATH=. x.sh` / `env PATH=. x.sh` — a PATH-resolved script executor.
+  { cmd: "cat > x.sh <<'EOF'\ngit push --force origin main\nEOF\nPATH=. x.sh", reason: REASON.FORCE },
+  { cmd: "cat > x.sh <<'EOF'\ngit push --force origin main\nEOF\nenv PATH=. x.sh", reason: REASON.FORCE },
+  // `find -exec {}` running the written file.
+  { cmd: "cat > x.sh <<'EOF'\ngit push --force origin main\nEOF\nfind . -name x.sh -exec {} \\;", reason: REASON.FORCE },
+  // `hash -p ./x.sh x; x` — hash-table alias to a bare command, then run it.
+  { cmd: "cat > x.sh <<'EOF'\ngit push --force origin main\nEOF\nhash -p ./x.sh x; x", reason: REASON.FORCE },
+  // A git hook written to .git/hooks/* and fired by a later `git commit`.
+  { cmd: "cat > .git/hooks/pre-commit <<'EOF'\ngit push --force origin main\nEOF\nchmod +x .git/hooks/pre-commit\ngit commit -m x", reason: REASON.FORCE },
+  // A git hook fired by a later `git push`.
+  { cmd: "cat > .git/hooks/pre-push <<'EOF'\ngit push --force origin main\nEOF\nchmod +x .git/hooks/pre-push\ngit push origin main", reason: REASON.FORCE },
+  // `git -c alias.x='!sh' x <<EOF ... EOF` — the heredoc's OWN consumer is
+  // `git`, which is never a data consumer (an alias/hook can execute the
+  // body), so this never even reaches the isInertSegment gate.
+  { cmd: "git -c alias.x='!sh' x <<'EOF'\ngit push --force origin main\nEOF", reason: REASON.FORCE },
+  // Trade-off of the (b) allowlist gate: ANY `git push`/`git commit` segment
+  // anywhere else in the command disqualifies blanking, even a genuinely
+  // non-force trailing push, because a mutating git verb is never on the
+  // small inert allowlist. So a heredoc body containing "git push --force"
+  // as inert prose, followed by a real (non-force) `git push origin main`,
+  // now blocks — the body is scanned unblanked and its own literal
+  // "git push --force" line trips FORCE. Was ALLOW pre-fix (hasEvaluatorSegment
+  // didn't treat `git push origin main` as an evaluator); now intentionally
+  // BLOCK, since narrowing the exemption to close the executor bypasses above
+  // means "some other segment is a git push" can no longer be trusted as safe.
+  { cmd: "cat <<-'EOF' > /tmp/m.md\n\tgit push --force\n\tEOF\ngit push origin main", reason: REASON.FORCE },
 ];
 
 const ALLOW = [
@@ -198,12 +232,16 @@ const ALLOW = [
   'git commit -q -F - <<\'EOF\'\nsubject\n\nordinary body, no trailer\nEOF',
   'git commit -F - <<EOF\nsubject\n\nordinary body, no trailer\nEOF',
   // Quoted heredoc body written by a data consumer is prose, not commands.
-  "cat > /tmp/m.md <<'EOF'\nWe should not git push yet; see `backtick text` here.\nEOF\nnode x.js send --to x --message-file /tmp/m.md",
-  "cat > /tmp/m.md <<'EOF'\ngit push `backtick text`\nEOF\nnode x.js send --message-file /tmp/m.md",
-  "cat > /tmp/m.md <<'EOF'\nPlease hold; git push waits for `ci` green.\nEOF\nnode x.js send",
-  "cat > /tmp/m.md <<'EOF'\nDon't git push until `ci` is green.\nEOF\nnode x.js send",
+  // The trailing segment MUST be an actual inert form (P1 fix, deadly-loop
+  // round 1 finding R1-1/A1-GG-2): an arbitrary `node x.js send` is itself an
+  // executor, so these now use the real anti-hall stable launcher
+  // (~/.anti-hall/bin/devswarm.js — matched by STABLE_LAUNCHER_RES /
+  // isInertSegment regardless of subcommand/args).
+  "cat > /tmp/m.md <<'EOF'\nWe should not git push yet; see `backtick text` here.\nEOF\nnode ~/.anti-hall/bin/devswarm.js send --to x --message-file /tmp/m.md",
+  "cat > /tmp/m.md <<'EOF'\ngit push `backtick text`\nEOF\nnode ~/.anti-hall/bin/devswarm.js send --to x --message-file /tmp/m.md",
+  "cat > /tmp/m.md <<'EOF'\nPlease hold; git push waits for `ci` green.\nEOF\nnode ~/.anti-hall/bin/devswarm.js send --to x --message-file /tmp/m.md",
+  "cat > /tmp/m.md <<'EOF'\nDon't git push until `ci` is green.\nEOF\nnode ~/.anti-hall/bin/devswarm.js send --to x --message-file /tmp/m.md",
   'cat > /tmp/m.md <<"EOF"\nstep: && git push --force `x`\nEOF',
-  "cat <<-'EOF' > /tmp/m.md\n\tgit push --force\n\tEOF\ngit push origin main",
 ];
 
 // gh self-credit BLOCK cases. All block via ghSelfCreditMessage(), whose message
