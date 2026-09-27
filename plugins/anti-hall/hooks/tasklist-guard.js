@@ -216,8 +216,7 @@ function main() {
             progressFresh = false; // a dir or symlink named like the file ≠ real progress
           } else {
             maintainSessionIndex(root, progressDate, sessionIdForPath, 'progress');
-            const age = Date.now() - st.mtimeMs;
-            progressFresh = age <= readFreshMs();
+            progressFresh = isFreshRelativeToWork(st.mtimeMs, scan);
           }
         } catch (_) {
           // cwd EXISTS but the progress file is absent (ENOENT) → not fresh → nudge.
@@ -247,8 +246,7 @@ function main() {
   // true (never true to false), so it stays fail-open/no-loop-risk exactly
   // like every other signal in this file.
   if (!progressFresh && scan && Number.isFinite(scan.lastProgressWriteTs) && scan.lastProgressWriteTs > 0) {
-    const progressWriteAge = Date.now() - scan.lastProgressWriteTs;
-    if (progressWriteAge <= readFreshMs()) {
+    if (isFreshRelativeToWork(scan.lastProgressWriteTs, scan)) {
       progressFresh = true;
     }
   }
@@ -641,6 +639,36 @@ function readFreshMs() {
   catch (_) { /* fall through */ }
   const v = parseInt(process.env.ANTIHALL_PROGRESS_FRESH_MS || '', 10);
   return Number.isFinite(v) && v >= 0 ? v : DEFAULT_PROGRESS_FRESH_MS;
+}
+
+// isFreshRelativeToWork(tsMs, scan) -> bool
+//
+// Progress freshness is relative to the session's own work, not wall-clock:
+// a progress write (tsMs, either the progress file's mtime or the newest
+// transcript-observed write to it) is fresh as long as no file-changing work
+// happened AFTER it. An idle turn (cron tick, status check) long after the
+// last progress write must NOT block just because absolute time elapsed —
+// but new work after the progress write must still block (progress is now
+// stale relative to that work).
+//
+// scan.lastWorkTs is the newest counted file-changing action's transcript
+// timestamp (0/unknown when no work was observed in-window). When it is
+// unknown we cannot compare relatively, so fall back to the absolute
+// freshness window (the pre-existing, conservative behavior).
+//
+// MTIME_GRACE_MS mirrors the handover-freshness grace elsewhere in this file:
+// some filesystems round mtime to whole-second granularity, so a progress
+// write that landed in the same second as the last work tool_use could
+// otherwise look 1s "older" than it really is.
+const FRESH_GRACE_MS = 1000;
+function isFreshRelativeToWork(tsMs, scan) {
+  if (!Number.isFinite(tsMs) || tsMs <= 0) return false;
+  const lastWorkTs = scan && Number.isFinite(scan.lastWorkTs) ? scan.lastWorkTs : 0;
+  if (lastWorkTs > 0) {
+    return lastWorkTs <= tsMs + FRESH_GRACE_MS;
+  }
+  const age = Date.now() - tsMs;
+  return age <= readFreshMs();
 }
 
 function sanitizeSessionId(raw) {

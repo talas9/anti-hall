@@ -309,6 +309,49 @@ test('ALLOW: fresh per-session progress avoids progress-freshness block', () => 
   } finally { h.cleanup(); }
 });
 
+// Progress freshness must be relative to the session's own LAST WORK, not
+// wall-clock: an idle turn (cron tick, status check) long after the last
+// progress write must not block just because absolute time elapsed, as long
+// as no new work happened since that progress write.
+test('ALLOW: idle tick well past the absolute freshness window, but progress written AFTER the last work — freshness is relative to work, not wall-clock', () => {
+  const h = makeHome();
+  try {
+    const session = 'idle-tick-session';
+    const workTs = Date.now() - 45 * 60 * 1000; // last file-changing work: 45 min ago
+    const progressTs = Date.now() - 40 * 60 * 1000; // progress written 40 min ago (after work, but itself older than DEFAULT_PROGRESS_FRESH_MS=30min)
+    writeProgress(h.home, progressTs, session);
+    const workEntries = [0, 1, 2, 3].map((i) => edit(i, new Date(workTs + i * 1000)));
+    const tp = h.writeTranscript([
+      ...workEntries,
+      ...taskCreate(1, 'do the work', 'completed'),
+    ]);
+    const r = testHook(HOOK, stopPayload(tp, h.home, session), { home: h.home });
+    assert.ok(!isBlock(r), `progress newer than last work must allow even if absolutely stale; stdout: ${r.stdout}`);
+  } finally { h.cleanup(); }
+});
+
+// The flip side: new work AFTER the progress write must still block, even
+// though the progress file itself is well within the absolute freshness
+// window — progress is stale relative to that new work.
+test('BLOCK: new work after the progress write, even though progress mtime is absolutely fresh', () => {
+  const h = makeHome();
+  try {
+    const session = 'work-after-progress-session';
+    const progressTs = Date.now() - 5 * 60 * 1000; // progress written 5 min ago (absolutely fresh)
+    writeProgress(h.home, progressTs, session);
+    const oldWorkEntries = [0, 1, 2].map((i) => edit(i, new Date(progressTs - 60000 + i * 1000)));
+    const newWorkEntry = edit(3, new Date()); // new work AFTER the progress write
+    const tp = h.writeTranscript([
+      ...oldWorkEntries,
+      ...taskCreate(1, 'do the work', 'completed'),
+      newWorkEntry,
+    ]);
+    const r = testHook(HOOK, stopPayload(tp, h.home, session), { home: h.home });
+    assert.ok(isBlock(r), `new work after the progress write must still block; stdout: ${r.stdout}`);
+    assert.match(r.json.reason, /missing or stale/i);
+  } finally { h.cleanup(); }
+});
+
 test('INDEX: same session fresh progress appends one progress index line only', () => {
   const h = makeHome();
   try {
