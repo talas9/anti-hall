@@ -1034,6 +1034,27 @@ function devswarmHookSelfTests() {
         infol(n + ' startup samples captured (paused detection needs ≥1)');
       }
     } catch (_) { /* fail-open: measurement reporting must never break doctor */ }
+
+    // 0.117: cron-missing-warned.jsonl accumulates one line per time
+    // devswarm-child-gate.js's Stop hook warned that the mailbox-wake cron
+    // has stopped ticking (e.g. after a DevSwarm crash/session restore/Claude
+    // restart dropped the cron and nothing re-created it) — see that file's
+    // cronMissingWarning(). Report-only.
+    try {
+      const livenessModPath2 = path.join(libDir, 'liveness.js');
+      let devswarmRootFn2 = null;
+      if (fs.existsSync(livenessModPath2)) {
+        try { ({ devswarmRoot: devswarmRootFn2 } = require(livenessModPath2)); } catch (_) { devswarmRootFn2 = null; }
+      }
+      if (devswarmRootFn2) {
+        const p2 = path.join(devswarmRootFn2(os.homedir()), 'cron-missing-warned.jsonl');
+        let lineCount2 = 0;
+        try { lineCount2 = fs.readFileSync(p2, 'utf8').split('\n').filter(Boolean).length; } catch (_) { lineCount2 = 0; }
+        infol('mailbox-cron-missing warnings shown: ' + lineCount2 +
+          ' (cron-missing-warned.jsonl — a cron that keeps going missing after restores may need ' +
+          'a supervisor-level recreate instead of relying on the per-session Stop-gate nudge)');
+      }
+    } catch (_) { /* fail-open: measurement reporting must never break doctor */ }
   }
 })();
 

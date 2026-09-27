@@ -745,6 +745,89 @@ function isArchivedChildStop(env, home, cwd, sessionId) {
   return { archived, id: ctx.id, worktreePath: ctx.worktreePath };
 }
 
+// MAILBOX CRON MISSING (0.117): a session cron (the ONLY thing that fires the
+// mailbox-wake `inbox tick` while this REPL is idle — see hooks/lib/
+// devswarm-wake.js's header) does NOT survive a DevSwarm crash, a session
+// restore, or a Claude restart, yet the Monitor watcher auto-arms regardless —
+// so nothing else notices the cron itself is gone. SessionStart's own
+// directive already says "CronList; create if absent" (devswarm-child-role.js
+// wakeDirective), but an agent can skip it. This is a DIFFERENT check from
+// tickMarkerFreshZero above (which asks "did the LAST tick find nothing" —
+// it requires a RECENT marker to even answer): this asks "has `inbox tick`
+// run AT ALL recently" — i.e. is the cron still ticking. Fail-open throughout:
+// any read/settings error -> null (never warns on an unknown state).
+//
+// CRON_MISSING_METRIC_* — same report-only JSONL-counter convention as
+// devswarm.js's cron-found-mail.jsonl (cmdInboxTick effect 3): one line per
+// warning actually shown, capped, read by doctor.js as a plain INFO count.
+const CRON_MISSING_METRIC_FILE = 'cron-missing-warned.jsonl';
+const CRON_MISSING_METRIC_CAP = 500;
+
+function recordCronMissingWarn(home, now) {
+  try {
+    const p = path.join(devswarmRoot(home), CRON_MISSING_METRIC_FILE);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    let lines = [];
+    try { lines = fs.readFileSync(p, 'utf8').split('\n').filter(Boolean); } catch (_) { lines = []; }
+    lines.push(JSON.stringify({ ts: now }));
+    if (lines.length > CRON_MISSING_METRIC_CAP) lines = lines.slice(lines.length - CRON_MISSING_METRIC_CAP);
+    fs.writeFileSync(p, lines.join('\n') + '\n');
+  } catch (_) { /* fail-open: measurement only, never breaks the Stop hook */ }
+}
+
+// cronMissingWarning(env, home, now) -> the warning text, or null when
+// nothing is wrong (or it is too early to tell). A wake-tick marker that has
+// NEVER existed is ambiguous on its own — a brand-new workspace legitimately
+// has not ticked yet — so that case is judged against the EXISTING
+// heartbeats/<id>.json file's own `ts` (already written at SessionStart /
+// every turn by other paths, unrelated to the tick marker) as a proxy for
+// "how long has this workspace actually been running": only a workspace
+// whose heartbeat itself is older than the warn window, with STILL no tick
+// marker at all, counts as cron-missing. No heartbeat file either -> fail
+// open (too little signal to judge session age at all, never warn on an
+// unknown state). A marker that DID exist at some point is judged purely on
+// its own age instead — that case unambiguously means the cron stopped.
+function cronMissingWarning(env, home, now) {
+  try {
+    const wake = require('./lib/devswarm-wake.js');
+    if (!wake.isClaudeAgent(env)) return null; // CronCreate is a Claude-only tool
+    const id = env.DEVSWARM_BUILDER_ID;
+    if (typeof id !== 'string' || !isSafeId(id)) return null;
+    let warnMin;
+    try { warnMin = require('./lib/settings.js').getWithEnv('devswarm', 'cronMissingWarnMin', 60, env); }
+    catch (_) { warnMin = 60; }
+    if (!Number.isFinite(warnMin) || warnMin <= 0) warnMin = 60;
+    const warnMs = warnMin * 60 * 1000;
+    const tickPath = path.join(devswarmRoot(home), 'wake-tick', id + '.json');
+    let ageMs = null;
+    try {
+      const marker = JSON.parse(fs.readFileSync(tickPath, 'utf8'));
+      if (marker && Number.isFinite(marker.ts)) ageMs = now - marker.ts;
+    } catch (_) { ageMs = null; } // absent/unreadable/malformed -> "never ticked"
+    if (ageMs !== null) {
+      if (ageMs <= warnMs) return null; // recently ticked -> fine
+      return 'MAILBOX CRON MISSING: no inbox tick for ' + Math.round(ageMs / 60000) + 'm — run `CronList`; '
+        + 'if no tick cron exists, `CronCreate` it with the tick prompt (see SessionStart directive).'
+        + wakeReassertLine(env, true);
+    }
+    // No marker has ever been written for this id: only a fair signal (this
+    // workspace's own heartbeat, already old) makes "never ticked" mean
+    // anything — a fresh workspace with no heartbeat history yet is simply
+    // too new to judge, not missing a cron.
+    let hbAgeMs = null;
+    try {
+      const hb = JSON.parse(fs.readFileSync(path.join(devswarmRoot(home), 'heartbeats', id + '.json'), 'utf8'));
+      if (hb && Number.isFinite(hb.ts)) hbAgeMs = now - hb.ts;
+    } catch (_) { hbAgeMs = null; }
+    if (hbAgeMs === null || hbAgeMs <= warnMs) return null;
+    return 'MAILBOX CRON MISSING: no inbox tick this session (heartbeat is ' + Math.round(hbAgeMs / 60000)
+      + 'm old) — run `CronList`; if no tick cron exists, `CronCreate` it with the tick prompt '
+      + '(see SessionStart directive).' + wakeReassertLine(env, true);
+  } catch (_) {
+    return null;
+  }
+}
+
 function main() {
   // Settings switch devswarm.childGate (0.108.4): off -> no-op. Fail-open: any error runs the hook.
   try { if (!require('./lib/settings.js').enabled('devswarm', 'childGate')) return; } catch (_) { /* run */ }
@@ -837,6 +920,33 @@ function main() {
     writeState(stateFile, state);
     return;
   }
+
+  // MAILBOX CRON MISSING (0.117, see cronMissingWarning's own header):
+  // independent of the heartbeat/inbox forced-ack logic below — fires even
+  // when the mailbox is empty and everything else here would happily allow
+  // the stop, because THAT is exactly the case where a dead cron would
+  // otherwise go unnoticed. Rides the SAME shared stop-policy budget as the
+  // rest of this gate, under its own kind, so it can never itself hard-loop.
+  const cronWarn = cronMissingWarning(process.env, os.homedir(), now);
+  if (cronWarn) {
+    const cronDecision = stopPolicy.consume(os.homedir(), sessionId, 'child-gate', ['cron-missing'], MAX_BLOCKS, now);
+    if (cronDecision.block) {
+      recordCronMissingWarn(os.homedir(), now);
+      state.lastCheckAt = now;
+      writeState(stateFile, state);
+      emitBlock(cronWarn);
+      return;
+    }
+    // cap exhausted -> fall through to the rest of this gate's own logic
+    // (fail-open: never a perpetual block over a condition this gate cannot
+    // make the agent fix any faster than its own CronList/CronCreate turn).
+  } else {
+    // Condition observed CLEARED (a fresh tick landed) -> reopen the budget
+    // for the next time the cron actually goes missing, same convention as
+    // every other kind's clear() call in this gate.
+    stopPolicy.clear(os.homedir(), sessionId, 'child-gate', ['cron-missing']);
+  }
+
   // defect E1 fix (root cause): episodeSince used to be `now - RESET_MS`
   // (a fixed 5-minute rolling wall-clock window) whenever this session had
   // never been blocked yet. A DevSwarm child's own turn — the interval

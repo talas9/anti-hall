@@ -1488,6 +1488,117 @@ test('STOP POLICY: native probe FAILURE is unknown -> blocks with a warning, cap
   }
 });
 
+// ---------------------------------------------------------------------------
+// MAILBOX CRON MISSING (0.117): the wake-tick marker's own AGE (not its
+// content — that's tickMarkerFreshZero above) tells this gate whether the
+// cron itself is still ticking at all. A session/DevSwarm crash, a session
+// restore, or a Claude restart drops the cron but nothing else notices.
+// ---------------------------------------------------------------------------
+
+function writeStaleTick(home, ageMs) {
+  const p = path.join(home, '.anti-hall', 'devswarm', 'wake-tick', DEFAULT_CHILD_ID + '.json');
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+  fs.writeFileSync(p, JSON.stringify({ ts: Date.now() - ageMs, unreadTotal: 0, meshGapWithheld: false, known: true }));
+  return p;
+}
+
+function writeOldHeartbeat(home, ageMs) {
+  const p = path.join(home, '.anti-hall', 'devswarm', 'heartbeats', DEFAULT_CHILD_ID + '.json');
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+  fs.writeFileSync(p, JSON.stringify({ id: DEFAULT_CHILD_ID, ts: Date.now() - ageMs, state_ts: Date.now() - ageMs }));
+  return p;
+}
+
+test('CRON MISSING: a stale wake-tick marker (>2x cadence) triggers the warning even with an empty mailbox', () => {
+  const h = makeHome();
+  seedAllTestDescriptors(h.home);
+  try {
+    // 90 minutes old > the 60-minute default (2x the 30-min cron cadence).
+    writeStaleTick(h.home, 90 * 60 * 1000);
+    const r = testHook(HOOK, stopPayload(), { home: h.home, expectJson: true, env: CLAUDE_CHILD_ENV });
+    assert.strictEqual(r.json && r.json.decision, 'block', `stale tick must warn even with nothing else to report; got: ${r.stdout}`);
+    assert.match(r.json.reason, /MAILBOX CRON MISSING/);
+    assert.match(r.json.reason, /CronList/);
+  } finally { h.cleanup(); }
+});
+
+test('CRON MISSING: a fresh wake-tick marker produces no warning', () => {
+  const h = makeHome();
+  seedAllTestDescriptors(h.home);
+  try {
+    writeFreshZeroTick(h.home); // ts = now, well under the 60-min default
+    const r = testHook(HOOK, stopPayload(), { home: h.home, env: CLAUDE_CHILD_ENV });
+    // A fresh zero-unread tick also satisfies the heartbeat forced-ack itself
+    // (D13 path above) -> full silence, proving no cron-missing text leaked in.
+    assert.strictEqual(r.status, 0);
+    assert.strictEqual(r.stdout, '', `fresh tick must not warn; got: ${r.stdout}`);
+  } finally { h.cleanup(); }
+});
+
+test('CRON MISSING: never-ticked marker + old heartbeat still triggers the warning', () => {
+  const h = makeHome();
+  seedAllTestDescriptors(h.home);
+  try {
+    // No wake-tick marker at all, but this workspace has clearly been alive
+    // a while (heartbeat well past the warn window) -> cron-missing, not
+    // "too new to judge".
+    writeOldHeartbeat(h.home, 90 * 60 * 1000);
+    const r = testHook(HOOK, stopPayload(), { home: h.home, expectJson: true, env: CLAUDE_CHILD_ENV });
+    assert.strictEqual(r.json && r.json.decision, 'block');
+    assert.match(r.json.reason, /MAILBOX CRON MISSING/);
+  } finally { h.cleanup(); }
+});
+
+test('CRON MISSING: neither marker nor heartbeat exists -> too new to judge, no warning', () => {
+  const h = makeHome();
+  seedAllTestDescriptors(h.home);
+  try {
+    const r = testHook(HOOK, stopPayload(), { home: h.home, expectJson: true, env: CLAUDE_CHILD_ENV });
+    // The normal heartbeat/wake forced-ack still fires (unrelated to cron-missing) —
+    // this only asserts the cron-missing text itself never appears.
+    assert.ok(!r.json || !/MAILBOX CRON MISSING/.test(r.json.reason || ''), `must not judge a brand-new workspace; got: ${r.stdout}`);
+  } finally { h.cleanup(); }
+});
+
+test('CRON MISSING: capped like every other kind — a persisting stale marker stops re-warning after MAX_BLOCKS', () => {
+  const h = makeHome();
+  seedAllTestDescriptors(h.home);
+  try {
+    writeStaleTick(h.home, 90 * 60 * 1000);
+    const r1 = testHook(HOOK, stopPayload(), { home: h.home, expectJson: true, env: CLAUDE_CHILD_ENV });
+    assert.match(r1.json.reason, /MAILBOX CRON MISSING/);
+    const r2 = testHook(HOOK, stopPayload(), { home: h.home, expectJson: true, env: CLAUDE_CHILD_ENV });
+    assert.match(r2.json.reason, /MAILBOX CRON MISSING/);
+    // Cap exhausted (MAX_BLOCKS=2) for the 'cron-missing' kind specifically —
+    // it must stop re-appearing, even though this same Stop may still block
+    // for the UNRELATED, separately-budgeted heartbeat-report reason (the
+    // stale tick marker is also far too old to satisfy tickMarkerFreshZero).
+    const r3 = testHook(HOOK, stopPayload(), { home: h.home, expectJson: true, env: CLAUDE_CHILD_ENV });
+    assert.ok(!r3.json || !/MAILBOX CRON MISSING/.test(r3.json.reason || ''),
+      `cap (MAX_BLOCKS=2) must stop the cron-missing re-warn; got: ${r3.stdout}`);
+  } finally { h.cleanup(); }
+});
+
+test('CRON MISSING: honors devswarm.cronMissingWarnMin', () => {
+  const h = makeHome();
+  seedAllTestDescriptors(h.home);
+  try {
+    // 20 minutes old: below the 60-min default, but above a 10-min override.
+    writeStaleTick(h.home, 20 * 60 * 1000);
+    const rDefault = testHook(HOOK, stopPayload(), { home: h.home, env: CLAUDE_CHILD_ENV });
+    assert.ok(!rDefault.json || !/MAILBOX CRON MISSING/.test((rDefault.json && rDefault.json.reason) || ''),
+      'below the default 60-min window -> no warning');
+  } finally { h.cleanup(); }
+  const h2 = makeHome();
+  seedAllTestDescriptors(h2.home);
+  try {
+    writeStaleTick(h2.home, 20 * 60 * 1000);
+    const env = Object.assign({}, CLAUDE_CHILD_ENV, { ANTIHALL_DEVSWARM_CRON_MISSING_WARN_MIN: '10' });
+    const r = testHook(HOOK, stopPayload(), { home: h2.home, expectJson: true, env });
+    assert.match(r.json.reason, /MAILBOX CRON MISSING/, 'a 10-min override warns at 20 minutes stale');
+  } finally { h2.cleanup(); }
+});
+
 // 0.108.4: the per-hook settings switch. Same fixture as the positive test
 // above, switch off -> silent no-op (exit 0, no stdout).
 test('SWITCH devswarm.childGate=false: a child Stop is no longer blocked', () => {
