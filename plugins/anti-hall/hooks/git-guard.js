@@ -1026,6 +1026,44 @@ function scanConfigLines(text, d) {
   return null;
 }
 
+// ~/.anti-hall/bin/ holds the stable launchers anti-hall installs itself
+// (update / doctor --repair write them from Node, never via a Bash command). A
+// Bash command that writes there could replace a trusted launcher with code
+// that force-pushes, so any write into that directory is blocked outright.
+// Write targets: a `>`/`>>` redirect, tee operands, the destination of
+// cp/mv/install/ln/rsync, dd `of=`, and sed/perl `-i` operands. A relative
+// target is joined to the last literal `cd <dir>` of the same command.
+const LAUNCHER_DIR_RE = /\.anti-hall[\\/]+bin(?:[\\/]|$)/i;
+const COPY_VERBS = new Set(['cp', 'mv', 'install', 'ln', 'rsync']);
+
+function writesLauncherDir(tokens, ev, cdDir) {
+  const targets = [];
+  for (let i = 0; i < tokens.length; i++) {
+    const t = tokens[i];
+    const k = t.quotedOnly ? -1 : t.text.indexOf('>');
+    if (k < 0) continue;
+    const after = t.text.slice(k + 1).replace(/^>/, '').replace(/^\|/, '');
+    if (after.startsWith('&') || after.startsWith('(')) continue; // fd dup / process subst
+    targets.push(after || (tokens[i + 1] ? tokens[i + 1].text : ''));
+  }
+  const ops = ev.args.map((a) => a.text);
+  const operands = ops.filter((w) => !w.startsWith('-'));
+  if (ev.verb === 'tee' || ev.verb === 'truncate') targets.push(...operands);
+  if (COPY_VERBS.has(ev.verb)) {
+    if (operands.length) targets.push(operands[operands.length - 1]);
+    ops.forEach((w, j) => {
+      if (w === '-t' || w === '--target-directory') targets.push(ops[j + 1] || '');
+      else if (w.startsWith('--target-directory=')) targets.push(w.slice(19));
+    });
+  }
+  if (ev.verb === 'dd') ops.forEach((w) => { if (w.startsWith('of=')) targets.push(w.slice(3)); });
+  if ((ev.verb === 'sed' || ev.verb === 'perl') && ops.some((w) => /^-(?:[a-zA-Z]*i|-in-place)/.test(w))) {
+    targets.push(...operands);
+  }
+  return targets.some((p) => LAUNCHER_DIR_RE.test(p) ||
+    (cdDir && p && !/^[/~$]/.test(p) && LAUNCHER_DIR_RE.test(cdDir + '/' + p)));
+}
+
 // Run the git force/trailer detection on every segment of a command string.
 // Returns a block message string if a violation is found, else null. Recurses
 // into `eval <payload>` segments (depth-bounded) so force/trailer forms hidden
@@ -1066,6 +1104,15 @@ function scanCommand(cmd, depth) {
 
     const ev = effectiveVerb(tokens);
     if (!ev) continue;
+
+    if (writesLauncherDir(tokens, ev, lastCdDir)) {
+      return (
+        'anti-hall git-guard: BLOCKED. This command writes into ~/.anti-hall/bin/, ' +
+        'the stable launcher directory. anti-hall installs those files itself ' +
+        '(update / doctor --repair); overwriting one would run arbitrary code (such ' +
+        'as a force push) under a trusted launcher name. Leave that directory alone.'
+      );
+    }
 
     if (ev.verb === 'echo' || ev.verb === 'printf') {
       const text = ev.args.map((t) => t.text).join(' ').replace(/\\[nt]/g, '\n');

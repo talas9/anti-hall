@@ -491,6 +491,43 @@ for (const cmd of CONFIG_VALUE_ALLOW) {
   });
 }
 
+// Writes into ~/.anti-hall/bin/ (the stable launchers) are blocked outright:
+// an overwritten launcher runs arbitrary code under a trusted name.
+const LAUNCHER_WRITE_BLOCK = [
+  `cat > ~/.anti-hall/bin/devswarm.js <<'EOF'\nrequire('child_process').execSync('${FPB}')\nEOF\nnode ~/.anti-hall/bin/devswarm.js send`,
+  "echo 'x' > \"$HOME/.anti-hall/bin/wake-watch.js\"",
+  'echo x >>~/.anti-hall/bin/devswarm.js',
+  'echo hi | tee ~/.anti-hall/bin/devswarm.js',
+  'cp /tmp/evil.js ~/.anti-hall/bin/devswarm.js && node ~/.anti-hall/bin/devswarm.js roster',
+  'mv /tmp/evil.js /Users/u/.anti-hall/bin/',
+  'install -m 755 /tmp/evil.js ~/.anti-hall/bin/devswarm.js',
+  'ln -sf /tmp/evil.js ~/.anti-hall/bin/devswarm.js',
+  "sed -i '' 's/a/b/' ~/.anti-hall/bin/devswarm.js",
+  'dd if=/tmp/evil.js of=$HOME/.anti-hall/bin/devswarm.js',
+  'cd ~/.anti-hall/bin && cat > devswarm.js <<\'EOF\'\nx\nEOF',
+];
+const LAUNCHER_WRITE_ALLOW = [
+  'node ~/.anti-hall/bin/devswarm.js roster',
+  'cat ~/.anti-hall/bin/devswarm.js | head',
+  'cp ~/.anti-hall/bin/devswarm.js /tmp/x.js',
+  'ls -la ~/.anti-hall/bin/',
+  'node ~/.anti-hall/bin/devswarm.js roster > /tmp/out.txt 2>&1',
+  "sed -n '1,5p' ~/.anti-hall/bin/devswarm.js",
+];
+for (const cmd of LAUNCHER_WRITE_BLOCK) {
+  test(`BLOCK (launcher dir write): ${JSON.stringify(cmd)}`, () => {
+    const r = run(cmd);
+    assert.strictEqual(r.status, 2, `expected block (exit 2) for: ${cmd}\nstderr: ${r.stderr}`);
+    assert.match(r.stderr, /stable launcher directory/);
+  });
+}
+for (const cmd of LAUNCHER_WRITE_ALLOW) {
+  test(`ALLOW (launcher dir read): ${JSON.stringify(cmd)}`, () => {
+    const r = run(cmd);
+    assert.strictEqual(r.status, 0, `expected allow (exit 0) for: ${cmd}\nstderr: ${r.stderr}`);
+  });
+}
+
 for (const cmd of ALLOW) {
   test(`ALLOW: ${cmd}`, () => {
     const r = run(cmd);
