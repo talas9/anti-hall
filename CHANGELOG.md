@@ -55,6 +55,7 @@ Wave-2 fixes (a second peer sweep):
 Deadly-loop round-2 fixes:
 
 - **git-guard: a force flag inside a `!shell` alias body is found however it is quoted.** `git -c alias.x='!sh -c "git push --force"' x`, `'!f() { git push --force; }; f'`, `'!eval "…"'`, the reversed-quote form and `'!(git push --force)'` were allowed because the body was split on whitespace only, leaving `--force"`, `--force;` or `--force)`. Alias bodies are now split on quotes, parens, braces and shell separators too, and an inner `--` of another command in a shell body no longer disarms the check. This gap predates 0.116.
+- **devswarm-comms-guard: the session-index lookup runs before the agent-id silent allow.** The widened agent-id pattern (bare `a<hex>`) was tested first, so a workspace-backed peer session whose name happened to be agent-id-shaped was silently allowed. The target is now looked up first; a workspace-backed match is blocked whatever its shape, and only unresolved or non-workspace agent-id targets are silently allowed.
 
 Jev logging:
 

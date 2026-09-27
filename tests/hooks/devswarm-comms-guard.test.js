@@ -91,24 +91,47 @@ test('BLOCK: same workspace-backed target with a " [ref]" bracket suffix still r
   }
 });
 
-test('ALLOW (a): subagent-form agentId target -> exit 0, never blocked, EVEN IF that exact string also names a workspace session', () => {
+// R2-RV1-5 (deadly-loop round 2): the session-index lookup runs BEFORE the
+// agentId short-circuit. An agentId-SHAPED target that names a workspace-backed
+// session is blocked like any other workspace peer (both the hyphenated form and
+// the bare-hex form the N11 widening started matching); only an unresolved (or
+// non-workspace) agentId-shaped target gets the silent allow.
+for (const [label, name, dir] of [
+  ['hyphenated', 'a1b2c3d4-ffee-0011', 'aa1111'],
+  ['bare hex', 'a6042fcc9b2813dac', 'aa1112'],
+]) {
+  test(`BLOCK (a): agentId-shaped (${label}) target that names a workspace-backed session -> exit 2`, () => {
+    const h = makeHome();
+    try {
+      const wsCwd = path.join(h.home, '.devswarm', 'repos', '0', dir, 'coincidental-workspace');
+      fs.mkdirSync(wsCwd, { recursive: true });
+      seedSession(h.home, '666.json', { name, cwd: wsCwd });
+
+      const r = testHook(HOOK, sendMessagePayload(name), {
+        home: h.home,
+        env: DEVSWARM_ENV,
+      });
+      assert.strictEqual(r.status, 2, `expected block; stdout: ${r.stdout}`);
+      assert.ok(r.json && r.json.decision === 'block');
+    } finally {
+      h.cleanup();
+    }
+  });
+}
+
+test('ALLOW (a2): agentId-shaped target that names a NON-workspace session -> exit 0, silent', () => {
   const h = makeHome();
   try {
-    // Deliberately seed a session whose NAME collides with the agentId-form
-    // string, with a workspace-backed cwd. This makes the test actually
-    // discriminate the AGENT_ID_RE exception: if that exception were removed,
-    // the hook would fall through to the session-index lookup, find this
-    // match, see its workspace cwd, and BLOCK. The exception must win first.
-    const wsCwd = path.join(h.home, '.devswarm', 'repos', '0', 'aa1111', 'coincidental-workspace');
-    fs.mkdirSync(wsCwd, { recursive: true });
-    seedSession(h.home, '666.json', { name: 'a1b2c3d4-ffee-0011', cwd: wsCwd });
+    const plainCwd = path.join(h.home, 'Projects', 'some-other-repo');
+    fs.mkdirSync(plainCwd, { recursive: true });
+    seedSession(h.home, '667.json', { name: 'a1b2c3d4-ffee-0013', cwd: plainCwd });
 
-    const r = testHook(HOOK, sendMessagePayload('a1b2c3d4-ffee-0011'), {
+    const r = testHook(HOOK, sendMessagePayload('a1b2c3d4-ffee-0013'), {
       home: h.home,
       env: DEVSWARM_ENV,
     });
     assert.strictEqual(r.status, 0, `expected allow; stdout: ${r.stdout}`);
-    assert.ok(!(r.json && r.json.decision === 'block'));
+    assert.strictEqual(r.stdout.trim(), '', `must be silent; got: ${r.stdout}`);
   } finally {
     h.cleanup();
   }
@@ -324,27 +347,25 @@ function buildMutant(anchor, replacement) {
   return mutantPath;
 }
 
-test('MUTANT KILL 1: removing the agentId-form exception makes the subagent-steering case BLOCK (wrong)', () => {
+test('MUTANT KILL 1: removing the agentId-form exception makes a non-workspace agentId-named session print an advisory (wrong)', () => {
   const h = makeHome();
   try {
     const mutant = buildMutant(
       'if (AGENT_ID_RE.test(to)) {',
       'if (false && AGENT_ID_RE.test(to)) {'
     );
-    // Same scenario as the ALLOW (a) test above: agentId-form target whose
-    // name also happens to match a workspace-backed session.
-    const wsCwd = path.join(h.home, '.devswarm', 'repos', '0', 'aa2222', 'coincidental-workspace-2');
-    fs.mkdirSync(wsCwd, { recursive: true });
-    seedSession(h.home, '777.json', { name: 'a1b2c3d4-ffee-0022', cwd: wsCwd });
+    // Same scenario as ALLOW (a2): agentId-form target whose name also
+    // matches a NON-workspace session. Correct hook: silent allow.
+    const plainCwd = path.join(h.home, 'Projects', 'some-other-repo-2');
+    fs.mkdirSync(plainCwd, { recursive: true });
+    seedSession(h.home, '777.json', { name: 'a1b2c3d4-ffee-0022', cwd: plainCwd });
 
     const r = testHook(mutant, sendMessagePayload('a1b2c3d4-ffee-0022'), {
       home: h.home,
       env: DEVSWARM_ENV,
     });
-    // Correct hook: exit 0 (see ALLOW (a) above). Mutant: must now BLOCK,
-    // proving the AGENT_ID_RE check is what was preventing that.
-    assert.strictEqual(r.status, 2, `mutant should wrongly block a legitimate subagent send; stdout: ${r.stdout}`);
-    assert.ok(r.json && r.json.decision === 'block');
+    assert.strictEqual(r.status, 0);
+    assert.notStrictEqual(r.stdout.trim(), '', 'mutant should wrongly print the peer-session advisory');
   } finally {
     h.cleanup();
   }
@@ -354,8 +375,8 @@ test('MUTANT KILL 2: removing the cwd-under-devswarm-repos check blocks a NON-wo
   const h = makeHome();
   try {
     const mutant = buildMutant(
-      'if (isDevswarmWorkspacePath(session.cwd)) {',
-      'if (true || isDevswarmWorkspacePath(session.cwd)) {'
+      'if (session && isDevswarmWorkspacePath(session.cwd)) {',
+      'if (session && (true || isDevswarmWorkspacePath(session.cwd))) {'
     );
     // Same scenario as ALLOW (f): a resolved peer session whose cwd is a
     // plain repo checkout, not a devswarm workspace.

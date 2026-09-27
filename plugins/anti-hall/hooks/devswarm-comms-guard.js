@@ -206,6 +206,25 @@ function main() {
     );
   }
 
+  const bareName = stripRef(to);
+
+  // Look the target up BEFORE the agentId short-circuit: a workspace-backed
+  // peer session whose name happens to be agentId-shaped (bare `a<hex>`) must
+  // still be blocked below, not silently allowed as an in-process subagent.
+  const session = findSessionByName(bareName);
+
+  if (session && isDevswarmWorkspacePath(session.cwd)) {
+    block(
+      'anti-hall devswarm-comms-guard: SendMessage target "' + to + '" resolves to a ' +
+      'DevSwarm WORKSPACE-BACKED PEER SESSION (cwd: ' + session.cwd + '). Direct ' +
+      'Claude remote-agent messaging (SendMessage) between a DevSwarm Primary/child ' +
+      'and a workspace is prohibited (owner rule 2026-09-04, defect 1c74863863e5) — ' +
+      'channel this through the DevSwarm mesh instead: ' +
+      'node plugins/anti-hall/scripts/devswarm.js send --to <meshId> --message "..." ' +
+      '(resolve <meshId> from the DevSwarm workspace registry, not this session name).'
+    );
+  }
+
   // Immediate in-process-subagent signal: the raw agentId form. defect N11
   // fix: skip the advisory silently for this class (no output at all) — a
   // background subagent's own address is neither a peer session nor a
@@ -214,10 +233,6 @@ function main() {
   if (AGENT_ID_RE.test(to)) {
     allow();
   }
-
-  const bareName = stripRef(to);
-
-  const session = findSessionByName(bareName);
 
   // No match in the local session index: cannot positively confirm this is a
   // workspace-backed peer. Fail-open toward allow (documented reliability
@@ -230,18 +245,6 @@ function main() {
   // one of these (the common case, not a rare edge case).
   if (!session) {
     allow();
-  }
-
-  if (isDevswarmWorkspacePath(session.cwd)) {
-    block(
-      'anti-hall devswarm-comms-guard: SendMessage target "' + to + '" resolves to a ' +
-      'DevSwarm WORKSPACE-BACKED PEER SESSION (cwd: ' + session.cwd + '). Direct ' +
-      'Claude remote-agent messaging (SendMessage) between a DevSwarm Primary/child ' +
-      'and a workspace is prohibited (owner rule 2026-09-04, defect 1c74863863e5) — ' +
-      'channel this through the DevSwarm mesh instead: ' +
-      'node plugins/anti-hall/scripts/devswarm.js send --to <meshId> --message "..." ' +
-      '(resolve <meshId> from the DevSwarm workspace registry, not this session name).'
-    );
   }
 
   // Matched a live session, but its cwd is NOT a DevSwarm workspace path — an
