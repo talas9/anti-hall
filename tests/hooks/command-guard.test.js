@@ -1459,3 +1459,24 @@ for (const cmd of SPLITTER_ALLOW) {
     assert.strictEqual(r.status, 0, `expected allow for: ${cmd}\nstdout: ${r.stdout}`);
   });
 }
+
+// `<<` inside an open `$((`, `((` or `$[` is a left shift, not a heredoc: a
+// letter-led operand (`1<<y`) used to open a fake heredoc whose "body"
+// swallowed every following line, hiding the `go build` bash really runs.
+const ARITH_BLOCK = [
+  'echo $((1<<y))\ngo build\ny',
+  '(( x = 1<<y ))\ngo build\ny',
+  'echo $[1<<y]\ngo build\ny',
+  'echo $[1 #]; go build',          // # inside $[ ] is not a comment
+];
+for (const cmd of ARITH_BLOCK) {
+  test(`ARITH BLOCK (<< in arithmetic is a shift): ${JSON.stringify(cmd)}`, () => {
+    const r = runCoord(cmd);
+    assert.strictEqual(r.status, 2, `expected block for: ${cmd}\nstdout: ${r.stdout}`);
+  });
+}
+
+test('ARITH ALLOW (sanity): echo $((1<<2))', () => {
+  const r = runCoord('echo $((1<<2))');
+  assert.strictEqual(r.status, 0, `expected allow; stdout: ${r.stdout}`);
+});

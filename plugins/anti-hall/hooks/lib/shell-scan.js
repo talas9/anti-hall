@@ -69,10 +69,78 @@ const SHELL_VERBS = new Set(['bash', 'sh', 'zsh', 'dash', 'ksh', 'ash']);
 // real heredoc opener (e.g. `$((1<<2))` — a plain arithmetic left-shift, not
 // `<<` at token position — never matches HEREDOC_RE because a digit/`(`/space
 // does not follow the `<<(-)?` prefix the way a WORD/quote does).
+// A letter-led shift operand (`$((1<<y))`, `(( x = 1<<y ))`, `$[1<<y]`) DOES
+// match HEREDOC_RE, so `<<` inside an open arithmetic context is rejected
+// separately (inArithmeticAt below) — otherwise its "body" swallowed every
+// following line, including real commands bash runs.
 // Per real shell behavior, an UNTERMINATED heredoc's body is the REST of the
 // command (bash keeps reading looking for the terminator until EOF) — this
 // only ever makes a caller see MORE text, never less.
 function parseHeredocAt(cmd, i) {
+  if (inArithmeticAt(cmd, i)) return null;
+  return parseHeredocRaw(cmd, i);
+}
+
+// inArithmeticAt(cmd, pos) -> true when `pos` lies inside an open `$((`, `((`
+// or `$[` whose innermost enclosing context is arithmetic (a `$( … )` opened
+// inside the arithmetic is a real command context again). A left-to-right
+// scan of cmd[0, pos) tracking quotes, backslashes, ANSI-C `$'…'`, the
+// `$((`/`((`/`$[`/`$(`/`(`/`[` stack and earlier heredoc bodies. It is an
+// approximation that can only err toward "arithmetic" (the caller then skips
+// no heredoc body — stricter) or toward the pre-existing answer; it never
+// makes a caller skip more text than before.
+function inArithmeticAt(cmd, pos) {
+  const stack = [];
+  let inSingle = false;
+  let inDouble = false;
+  let skipFrom = -1;
+  let skipTo = -1;
+  let j = 0;
+  while (j < pos) {
+    if (skipFrom !== -1 && j >= skipFrom) { if (skipTo > pos) return false; j = skipTo; skipFrom = -1; continue; }
+    const c = cmd[j];
+    const c2 = cmd[j + 1];
+    const top = stack[stack.length - 1];
+    if (inSingle) { if (c === "'") inSingle = false; j++; continue; }
+    if (c === '\\') { j += 2; continue; }
+    if (!inDouble && c === '$' && c2 === "'") {
+      j += 2;
+      while (j < pos && cmd[j] !== "'") j += cmd[j] === '\\' ? 2 : 1;
+      j++; continue;
+    }
+    if (!inDouble && c === "'") { inSingle = true; j++; continue; }
+    if (c === '"') { inDouble = !inDouble; j++; continue; }
+    if (c === '$' && c2 === '(' && cmd[j + 2] === '(') { stack.push('A'); j += 3; continue; }
+    if (c === '$' && c2 === '[') { stack.push('B'); j += 2; continue; }
+    if (c === '$' && c2 === '(') { stack.push('C'); j += 2; continue; }
+    if (c === '(' && c2 === '(' && top !== 'A' && top !== 'B') { stack.push('A'); j += 2; continue; }
+    if (c === '(') { stack.push('P'); j++; continue; }
+    if (c === ')') {
+      if (top === 'A' && c2 === ')') { stack.pop(); j += 2; continue; }
+      if (top === 'C' || top === 'P') stack.pop();
+      j++; continue;
+    }
+    if (c === '[' && (top === 'B' || top === 'Q')) { stack.push('Q'); j++; continue; }
+    if (c === ']') { if (top === 'B' || top === 'Q') stack.pop(); j++; continue; }
+    if (!inDouble && c === '<' && c2 === '<' && top !== 'A' && top !== 'B') {
+      // An earlier real heredoc: keep scanning its opener line (it is code),
+      // then jump over its body (data — its parens/quotes must not count).
+      const h = parseHeredocRaw(cmd, j);
+      if (h) {
+        const bodyStart = j + h.openerText.length;
+        if (bodyStart < h.end && (skipFrom === -1 || bodyStart < skipFrom)) {
+          skipFrom = bodyStart; skipTo = h.end;
+        }
+      }
+      j += 2; continue;
+    }
+    j++;
+  }
+  const top = stack[stack.length - 1];
+  return top === 'A' || top === 'B';
+}
+
+function parseHeredocRaw(cmd, i) {
   const n = cmd.length;
   if (cmd[i] !== '<' || cmd[i + 1] !== '<') return null;
   // `<<<` is a here-STRING (no body): neither its first nor its second `<`

@@ -1128,6 +1128,11 @@ function splitSegmentsDetailed(cmd) {
     }
     if (c === '$' && c2 === '(') { nest.push('('); flush('subst'); i += 2; continue; }
     if (c === '`') { inTick = !inTick; flush('subst'); i++; continue; }
+    // `$[ … ]` (legacy arithmetic) is a nesting context too: a `#` inside it
+    // is not a comment, so it must not be stripped as one.
+    if (c === '$' && c2 === '[') { nest.push('['); cur += '$['; i += 2; continue; }
+    if (c === '[' && nest.length && nest[nest.length - 1] === '[') nest.push('[');
+    else if (c === ']' && nest.length && nest[nest.length - 1] === '[') nest.pop();
 
     cur += c;
     i++;
