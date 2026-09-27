@@ -96,6 +96,19 @@ function taskUpdate(id, status) {
     message: { role: 'assistant', content: [{ type: 'tool_use', name: 'TaskUpdate', id: 'toolu_tu' + id, input: { taskId: String(id), status } }] },
   };
 }
+// A TaskGet (or TaskUpdate) tool_use + its "Task not found" tool_result —
+// defect T4(a): evidence of a reset task store (stale id from before a
+// DevSwarm session restore).
+function taskLookupNotFound(id, toolName = 'TaskGet') {
+  const tuId = 'toolu_tl' + id;
+  return [{
+    type: 'assistant',
+    message: { role: 'assistant', content: [{ type: 'tool_use', name: toolName, id: tuId, input: { taskId: String(id) } }] },
+  }, {
+    type: 'user',
+    message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: tuId, content: 'Task not found: ' + id }] },
+  }];
+}
 
 function writeProgress(home, mtimeMs, session = 't') {
   const p = progressPath(home, session);
@@ -231,6 +244,51 @@ test('ALLOW: TaskCreate happened early in a long session, pushed outside the 512
     ]);
     const r = testHook(HOOK, stopPayload(tp, h.home), { home: h.home });
     assert.ok(!isBlock(r), `TaskCreate outside the tail must still count as tracked; stdout: ${r.stdout}`);
+  } finally { h.cleanup(); }
+});
+
+// defect T4(a) (peer sweep, 0.116 candidate): after a DevSwarm session
+// restore, the task store is gone — a TaskGet/TaskUpdate lookup on an old id
+// fails with "Task not found", and no NEW TaskCreate/TaskUpdate/TodoWrite
+// happens this session, so the guard blocks (correctly) but must explain
+// WHY with the reset-store wording, not the generic "tracked NO tasks" line.
+test('BLOCK wording: a TaskGet "Task not found" result explains a reset task store, not a plain "tracked NO tasks"', () => {
+  const h = makeHome();
+  try {
+    const tp = h.writeTranscript([
+      ...taskLookupNotFound(7, 'TaskGet'),
+      ...edits(4),
+    ]);
+    const r = testHook(HOOK, stopPayload(tp, h.home), { home: h.home });
+    assert.ok(isBlock(r), `expected block; stdout: ${r.stdout}`);
+    assert.match(r.json.reason, /task store was reset \(session restore\)/i);
+    assert.match(r.json.reason, /recreate the open tasks with TaskCreate/i);
+    assert.ok(!/tracked\s+NO\s+tasks\./i.test(r.json.reason), `must not ALSO emit the generic wording; reason: ${r.json.reason}`);
+  } finally { h.cleanup(); }
+});
+
+test('BLOCK wording: unchanged (generic "tracked NO tasks") when there is no reset-store evidence', () => {
+  const h = makeHome();
+  try {
+    const tp = h.writeTranscript(edits(4));
+    const r = testHook(HOOK, stopPayload(tp, h.home), { home: h.home });
+    assert.ok(isBlock(r), `expected block; stdout: ${r.stdout}`);
+    assert.match(r.json.reason, /tracked\s+NO\s+tasks\./i);
+    assert.ok(!/task store was reset/i.test(r.json.reason), `must not claim a reset with no evidence; reason: ${r.json.reason}`);
+  } finally { h.cleanup(); }
+});
+
+test('REGRESSION: a "Task not found" lookup does NOT trigger the reset-store wording once tasks ARE tracked (sawTaskActivity true)', () => {
+  const h = makeHome();
+  try {
+    writeProgress(h.home);
+    const tp = h.writeTranscript([
+      ...taskLookupNotFound(7, 'TaskGet'),
+      ...taskCreate(1, 'do the work', 'completed'),
+      ...edits(4),
+    ]);
+    const r = testHook(HOOK, stopPayload(tp, h.home), { home: h.home });
+    assert.ok(!isBlock(r), `tasks ARE tracked -> must not block at all; stdout: ${r.stdout}`);
   } finally { h.cleanup(); }
 });
 

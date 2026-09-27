@@ -181,6 +181,7 @@ function main() {
   const hasStaleInProgress = scan.hasStaleInProgress;
   const inProgressCount = scan.inProgressCount;
   const openTaskIds = scan.openTaskIds;
+  const taskStoreReset = scan.taskStoreReset;
 
   // Progress-file freshness — relative to the session's cwd.
   //
@@ -416,7 +417,13 @@ function main() {
 
   // Pick the MOST-SPECIFIC sub-cause for the lead sentence.
   let lead;
-  if (!sawTaskActivity) {
+  if (!sawTaskActivity && taskStoreReset) {
+    // T4(a): a reset task store (DevSwarm session restore) explains the
+    // "tracked NO tasks" reading -- old ids are gone, not un-tracked.
+    lead =
+      'The task store was reset (session restore) — recreate the open tasks ' +
+      'with TaskCreate (see the progress file / handover), then continue.';
+  } else if (!sawTaskActivity) {
     lead =
       'You made ' + workCount + ' file-changing actions this session but tracked ' +
       'NO tasks.';
@@ -789,7 +796,7 @@ function scanTranscript(filePath, opts) {
   const progressAbsPath = opts && typeof opts.progressAbsPath === 'string' ? opts.progressAbsPath : null;
   const tail = readTranscriptTail(filePath);
   if (!tail) {
-    return { workCount: 0, sawTaskActivity: false, hasStaleInProgress: false, openTaskIds: [], lastWorkTs: 0, lastProgressWriteTs: 0 };
+    return { workCount: 0, sawTaskActivity: false, hasStaleInProgress: false, openTaskIds: [], lastWorkTs: 0, lastProgressWriteTs: 0, taskStoreReset: false };
   }
   const lines = tail.data.split(/\r?\n/);
   if (tail.truncated && lines.length > 0) lines.shift();
@@ -798,6 +805,23 @@ function scanTranscript(filePath, opts) {
   let lastWorkTs = 0; // ms epoch of the NEWEST counted file-changing action (0 = unknown)
   let lastProgressWriteTs = 0; // ms epoch of the NEWEST write targeting progressAbsPath (0 = none seen)
   let sawTaskActivity = false;
+
+  // defect T4(a) fix (peer sweep, 0.116 candidate): detect a RESET task
+  // store (DevSwarm session restore) so the "tracked NO tasks" nudge can
+  // explain WHY, instead of implying the agent simply forgot to track work.
+  // Signal: a tool_result for a TaskUpdate/TaskGet call whose content
+  // contains "Task not found" -- the store no longer knows an id this
+  // session already tried to use. (A compact/resume boundary AFTER an
+  // earlier TaskCreate in the SAME transcript was considered too, but is
+  // unreachable here on purpose: TaskCreate already sets sawTaskActivity
+  // unconditionally the moment it is seen -- by design, once a transcript
+  // shows a TaskCreate, "tracked NO tasks" can never fire again for it, so
+  // that combination can only ever arise via a genuinely NEW transcript
+  // file post-restore, which by definition carries no earlier TaskCreate to
+  // key off. The reachable, real-world case is a stale TaskGet/TaskUpdate
+  // lookup against the reset store, which this signal covers directly.)
+  let taskStoreReset = false;
+  const taskLookupIds = new Set(); // tool_use_id of TaskUpdate/TaskGet calls
 
   const provisionalMap = new Map(); // tool_use_id -> { content, status }
   const taskMap = new Map();        // id -> { id, content, status }
@@ -819,9 +843,21 @@ function scanTranscript(filePath, opts) {
       const content = msg && Array.isArray(msg.content) ? msg.content : [];
       for (const item of content) {
         if (item && item.type === 'tool_result' && typeof item.tool_use_id === 'string') {
-          const resultText = typeof item.content === 'string' ? item.content : '';
+          let resultText = typeof item.content === 'string' ? item.content : '';
+          if (!resultText && Array.isArray(item.content)) {
+            resultText = item.content
+              .filter((b) => b && b.type === 'text' && typeof b.text === 'string')
+              .map((b) => b.text)
+              .join('\n');
+          }
           const m = resultText.match(/^Task\s+#(\d+)\s+created\s+successfully/i);
           if (m) resultIdMap.set(item.tool_use_id, m[1]);
+          // T4(a): a TaskUpdate/TaskGet result reporting "Task not found" is
+          // direct evidence the task store was reset out from under this
+          // session (a stale id it already knew about no longer exists).
+          if (taskLookupIds.has(item.tool_use_id) && /task\s+not\s+found/i.test(resultText)) {
+            taskStoreReset = true;
+          }
         }
       }
     }
@@ -904,6 +940,7 @@ function scanTranscript(filePath, opts) {
 
       if (name === 'TaskUpdate') {
         sawTaskActivity = true;
+        if (tu.id) taskLookupIds.add(tu.id);
         const inp = tu.input || {};
         const id =
           inp.taskId != null ? String(inp.taskId)
@@ -927,6 +964,14 @@ function scanTranscript(filePath, opts) {
             priority: updatedPriority,
           });
         }
+        continue;
+      }
+
+      if (name === 'TaskGet') {
+        // T4(a): a read-only lookup, not bookkeeping activity on its own --
+        // never sets sawTaskActivity -- but its id is tracked so a "Task not
+        // found" result against it still flags a reset task store above.
+        if (tu.id) taskLookupIds.add(tu.id);
         continue;
       }
     }
@@ -984,7 +1029,7 @@ function scanTranscript(filePath, opts) {
     if (wider && hasTaskActivityInText(wider.data)) sawTaskActivity = true;
   }
 
-  return { workCount, sawTaskActivity, hasStaleInProgress, inProgressCount, openTaskIds, lastWorkTs, lastProgressWriteTs };
+  return { workCount, sawTaskActivity, hasStaleInProgress, inProgressCount, openTaskIds, lastWorkTs, lastProgressWriteTs, taskStoreReset };
 }
 
 // agentsRunning() — true if ~/.anti-hall/agents/ holds a FRESH heartbeat, meaning
