@@ -14,6 +14,11 @@ const { makeHome } = require('../helpers/fixtures.js');
 const HOOK = 'codex-quota-detect.js';
 const quota = require('../../plugins/anti-hall/hooks/lib/codex-quota.js');
 
+// A future `until` relative to the wall clock: the spawned hook takes no
+// injectable `now`, and recordQuota replaces a past `until` with now +
+// DEFAULT_COOLDOWN_MS, so a fixed date becomes a time bomb once it passes.
+const FUTURE_ISO = new Date(Date.now() + 7 * 864e5).toISOString();
+
 function readState(home) {
   return JSON.parse(fs.readFileSync(quota.statePath(home), 'utf8'));
 }
@@ -24,7 +29,7 @@ test('POSITIVE: a quota message in an Agent result for codex:codex-rescue is rec
     const r = testHook(HOOK, {
       hook_event_name: 'PostToolUse', tool_name: 'Agent',
       tool_input: { subagent_type: 'codex:codex-rescue', prompt: 'review this diff' },
-      tool_response: { content: 'Error: out of quota until 2026-09-27T00:00:00.000Z. Try again later.' },
+      tool_response: { content: `Error: out of quota until ${FUTURE_ISO}. Try again later.` },
       session_id: 't',
     }, { home: h.home, expectJson: true });
 
@@ -35,7 +40,7 @@ test('POSITIVE: a quota message in an Agent result for codex:codex-rescue is rec
 
     const state = readState(h.home);
     assert.strictEqual(state.quota.available, false);
-    assert.strictEqual(state.quota.until, Date.parse('2026-09-27T00:00:00.000Z'));
+    assert.strictEqual(state.quota.until, Date.parse(FUTURE_ISO));
   } finally { h.cleanup(); }
 });
 
@@ -61,7 +66,7 @@ test('NEGATIVE: a quota-shaped message from a DIFFERENT agent type is ignored', 
     const r = testHook(HOOK, {
       hook_event_name: 'PostToolUse', tool_name: 'Agent',
       tool_input: { subagent_type: 'general-purpose', prompt: 'x' },
-      tool_response: { content: 'Error: out of quota until 2026-09-27T00:00:00.000Z.' },
+      tool_response: { content: `Error: out of quota until ${FUTURE_ISO}.` },
       session_id: 't',
     }, { home: h.home });
 
@@ -81,7 +86,7 @@ test('SWITCH guards.codexQuotaDetect=false: hook goes silent and records nothing
     const r = testHook(HOOK, {
       hook_event_name: 'PostToolUse', tool_name: 'Agent',
       tool_input: { subagent_type: 'codex:codex-rescue', prompt: 'x' },
-      tool_response: { content: 'Error: out of quota until 2026-09-27T00:00:00.000Z.' },
+      tool_response: { content: `Error: out of quota until ${FUTURE_ISO}.` },
       session_id: 't',
     }, { home: h.home });
 
