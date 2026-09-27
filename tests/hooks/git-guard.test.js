@@ -149,8 +149,12 @@ const BLOCK = [
   // `git push --force origin main` line is just its own `\n`-split segment
   // regardless of any (missing) terminator — must still block.
   { cmd: 'cat <<EOF\ngit push --force origin main', reason: REASON.FORCE },
-  // --- Quoted heredoc bodies are data ONLY for non-shell consumers ---
-  // A body piped to / read by a shell still runs as commands: keep scanning.
+  // --- Heredoc bodies are ALWAYS scanned (no data exemption). A 0.116
+  // candidate blanked quoted heredoc bodies written by data consumers; it
+  // failed two security review rounds (write-then-run executors, config-driven
+  // read-only git verbs, env-prefixed launchers, "$(...)" arguments) and was
+  // reverted. Every shape below must keep blocking. ---
+  // A body piped to / read by a shell.
   { cmd: "cat <<'EOF' | bash\ngit push --force origin main\nEOF", reason: REASON.FORCE },
   { cmd: "bash <<'EOF'\ngit push --force origin main\nEOF", reason: REASON.FORCE },
   { cmd: "cat <<'EOF' | sudo sh -s\ngit push --force origin main\nEOF", reason: REASON.FORCE },
@@ -161,50 +165,46 @@ const BLOCK = [
   { cmd: "cat > /tmp/x.sh <<'EOF'\ngit push --force origin main\nEOF\nbash /tmp/x.sh", reason: REASON.FORCE },
   { cmd: "cat > /tmp/x.sh <<'EOF'\ngit push --force origin main\nEOF\nsource /tmp/x.sh", reason: REASON.FORCE },
   { cmd: "cat > /tmp/x.sh <<'EOF'\ngit push --force origin main\nEOF\n/tmp/x.sh", reason: REASON.FORCE },
-  // Unclassified consumer is treated as a shell.
   { cmd: "node run.js <<'EOF'\ngit push --force origin main\nEOF", reason: REASON.FORCE },
   { cmd: "(cat <<'EOF') | cat\ngit push --force origin main\nEOF", reason: REASON.FORCE },
-  // Unquoted delimiter: the body expands $( ) at runtime, keep scanning it.
   { cmd: 'cat > f <<EOF\ngit push $(echo --force)\nEOF', reason: REASON.CMDSUBST },
-  // The opener line and lines after the terminator stay fully scanned.
   { cmd: "cat > f <<'EOF' && git push --force origin main\nprose\nEOF", reason: REASON.FORCE },
   { cmd: "cat > f <<'EOF'\nprose\nEOF\ngit push --force origin main", reason: REASON.FORCE },
-  // Unterminated quoted heredoc: not blanked (strict fallback).
   { cmd: "cat > f <<'EOF'\ngit push --force origin main", reason: REASON.FORCE },
-  // --- P1 (deadly-loop round 1, R1-1/A1-GG-2): write-then-run EXECUTORS the
-  // old DENYLIST (hasEvaluatorSegment) missed. isInertSegment's ALLOWLIST
-  // must refuse to blank the heredoc body in every one of these, so the
-  // force-push line written into the file is still scanned as text. ---
-  // `make` reading a Makefile written by the heredoc.
+  // Write-then-run executors (deadly-loop round 1).
   { cmd: "cat > Makefile <<'EOF'\nall:\n\tgit push --force origin main\nEOF\nmake", reason: REASON.FORCE },
-  // `<<-'EOF'` (tab-stripping quoted heredoc) writing a Makefile.
   { cmd: "cat > Makefile <<-'EOF'\n\tgit push --force origin main\nEOF\nmake", reason: REASON.FORCE },
-  // `PATH=. x.sh` / `env PATH=. x.sh` — a PATH-resolved script executor.
   { cmd: "cat > x.sh <<'EOF'\ngit push --force origin main\nEOF\nPATH=. x.sh", reason: REASON.FORCE },
   { cmd: "cat > x.sh <<'EOF'\ngit push --force origin main\nEOF\nenv PATH=. x.sh", reason: REASON.FORCE },
-  // `find -exec {}` running the written file.
   { cmd: "cat > x.sh <<'EOF'\ngit push --force origin main\nEOF\nfind . -name x.sh -exec {} \\;", reason: REASON.FORCE },
-  // `hash -p ./x.sh x; x` — hash-table alias to a bare command, then run it.
   { cmd: "cat > x.sh <<'EOF'\ngit push --force origin main\nEOF\nhash -p ./x.sh x; x", reason: REASON.FORCE },
-  // A git hook written to .git/hooks/* and fired by a later `git commit`.
   { cmd: "cat > .git/hooks/pre-commit <<'EOF'\ngit push --force origin main\nEOF\nchmod +x .git/hooks/pre-commit\ngit commit -m x", reason: REASON.FORCE },
-  // A git hook fired by a later `git push`.
   { cmd: "cat > .git/hooks/pre-push <<'EOF'\ngit push --force origin main\nEOF\nchmod +x .git/hooks/pre-push\ngit push origin main", reason: REASON.FORCE },
-  // `git -c alias.x='!sh' x <<EOF ... EOF` — the heredoc's OWN consumer is
-  // `git`, which is never a data consumer (an alias/hook can execute the
-  // body), so this never even reaches the isInertSegment gate.
   { cmd: "git -c alias.x='!sh' x <<'EOF'\ngit push --force origin main\nEOF", reason: REASON.FORCE },
-  // Trade-off of the (b) allowlist gate: ANY `git push`/`git commit` segment
-  // anywhere else in the command disqualifies blanking, even a genuinely
-  // non-force trailing push, because a mutating git verb is never on the
-  // small inert allowlist. So a heredoc body containing "git push --force"
-  // as inert prose, followed by a real (non-force) `git push origin main`,
-  // now blocks — the body is scanned unblanked and its own literal
-  // "git push --force" line trips FORCE. Was ALLOW pre-fix (hasEvaluatorSegment
-  // didn't treat `git push origin main` as an evaluator); now intentionally
-  // BLOCK, since narrowing the exemption to close the executor bypasses above
-  // means "some other segment is a git push" can no longer be trusted as safe.
   { cmd: "cat <<-'EOF' > /tmp/m.md\n\tgit push --force\n\tEOF\ngit push origin main", reason: REASON.FORCE },
+  // Read-only git verbs that run programs from env or config (round 2,
+  // R2-RV1-1 / R2A1-GG-1): pager, external diff, fsmonitor.
+  { cmd: "cat <<'EOF' > x.sh\ngit push --force origin main\nEOF\nGIT_PAGER='sh x.sh' git log", reason: REASON.FORCE },
+  { cmd: "cat <<'EOF' > x.sh\ngit push --force origin main\nEOF\nGIT_EXTERNAL_DIFF='sh x.sh' git diff", reason: REASON.FORCE },
+  { cmd: "cat <<'EOF' > x.sh\ngit push --force origin main\nEOF\nGIT_CONFIG_PARAMETERS=\"'core.fsmonitor=sh x.sh'\" git status", reason: REASON.FORCE },
+  { cmd: "cat <<'EOF' > x.sh\ngit push --force origin main\nEOF\ncat <<'EOF' >> .git/config\n[core]\n\tpager = sh x.sh\nEOF\ngit log", reason: REASON.FORCE },
+  { cmd: "cat <<'EOF' > x.sh\ngit push --force origin main\nEOF\ncat <<'EOF' > ~/.gitconfig\n[core]\n\tpager = sh x.sh\nEOF\ngit show", reason: REASON.FORCE },
+  { cmd: "cat <<'EOF' > x.sh\ngit push --force origin main\nEOF\ncat <<'EOF' >> .git/config\n[diff]\n\texternal = sh x.sh\nEOF\ngit diff", reason: REASON.FORCE },
+  { cmd: "cat <<'EOF' > x.sh\ngit push --force origin main\nEOF\ncat <<'EOF' >> .git/config\n[core]\n\tfsmonitor = sh x.sh\nEOF\ngit status", reason: REASON.FORCE },
+  { cmd: "cat <<'EOF' | tee x.sh\ngit push --force origin main\nEOF\ncat <<'EOF' | tee -a .git/config\n[core]\n\tfsmonitor = sh x.sh\nEOF\ngit status", reason: REASON.FORCE },
+  // Env-prefixed stable launcher (R2-RV1-3).
+  { cmd: "cat <<'EOF' > x.sh\ngit push --force origin main\nEOF\nNODE_OPTIONS=--require=./x.sh node ~/.anti-hall/bin/devswarm.js roster", reason: REASON.FORCE },
+  { cmd: "cat <<'EOF' > node\n#!/bin/sh\ngit push --force origin main\nEOF\nPATH=. node ~/.anti-hall/bin/wake-watch.js", reason: REASON.FORCE },
+  { cmd: "cat <<'EOF' > node\n#!/bin/sh\ngit push --force origin main\nEOF\nPATH=. node ~/.anti-hall/bin/devswarm.js roster", reason: REASON.FORCE },
+  // A double-quoted "$(...)" argument runs the written script (R2-RV1-2).
+  { cmd: "cat > x.sh <<'EOF'\ngit push --force origin main\nEOF\necho \"$(sh x.sh)\"", reason: REASON.FORCE },
+  { cmd: "cat > x.sh <<'EOF'\ngit push --force origin main\nEOF\nprintf \"%s\" \"$(sh x.sh)\"", reason: REASON.FORCE },
+  { cmd: "cat > x.sh <<'EOF'\ngit push --force origin main\nEOF\ncd \"$(sh x.sh)\"", reason: REASON.FORCE },
+  { cmd: "cat > x.sh <<'EOF'\ngit push --force origin main\nEOF\ngit log \"$(sh x.sh)\"", reason: REASON.FORCE },
+  // Prose heredocs that the reverted exemption allowed: scanned again.
+  { cmd: "cat > /tmp/m.md <<'EOF'\ngit push `backtick text`\nEOF\nnode ~/.anti-hall/bin/devswarm.js send --to x --message-file /tmp/m.md", reason: REASON.CMDSUBST },
+  { cmd: "cat > /tmp/m.md <<'EOF'\nPlease hold; git push waits for `ci` green.\nEOF\nnode ~/.anti-hall/bin/devswarm.js send --to x --message-file /tmp/m.md", reason: REASON.CMDSUBST },
+  { cmd: 'cat > /tmp/m.md <<"EOF"\nstep: && git push --force `x`\nEOF', reason: REASON.FORCE },
 ];
 
 const ALLOW = [
@@ -231,17 +231,6 @@ const ALLOW = [
   // proves the new heredoc-body scan doesn't over-block ordinary messages.
   'git commit -q -F - <<\'EOF\'\nsubject\n\nordinary body, no trailer\nEOF',
   'git commit -F - <<EOF\nsubject\n\nordinary body, no trailer\nEOF',
-  // Quoted heredoc body written by a data consumer is prose, not commands.
-  // The trailing segment MUST be an actual inert form (P1 fix, deadly-loop
-  // round 1 finding R1-1/A1-GG-2): an arbitrary `node x.js send` is itself an
-  // executor, so these now use the real anti-hall stable launcher
-  // (~/.anti-hall/bin/devswarm.js — matched by STABLE_LAUNCHER_RES /
-  // isInertSegment regardless of subcommand/args).
-  "cat > /tmp/m.md <<'EOF'\nWe should not git push yet; see `backtick text` here.\nEOF\nnode ~/.anti-hall/bin/devswarm.js send --to x --message-file /tmp/m.md",
-  "cat > /tmp/m.md <<'EOF'\ngit push `backtick text`\nEOF\nnode ~/.anti-hall/bin/devswarm.js send --to x --message-file /tmp/m.md",
-  "cat > /tmp/m.md <<'EOF'\nPlease hold; git push waits for `ci` green.\nEOF\nnode ~/.anti-hall/bin/devswarm.js send --to x --message-file /tmp/m.md",
-  "cat > /tmp/m.md <<'EOF'\nDon't git push until `ci` is green.\nEOF\nnode ~/.anti-hall/bin/devswarm.js send --to x --message-file /tmp/m.md",
-  'cat > /tmp/m.md <<"EOF"\nstep: && git push --force `x`\nEOF',
 ];
 
 // gh self-credit BLOCK cases. All block via ghSelfCreditMessage(), whose message
