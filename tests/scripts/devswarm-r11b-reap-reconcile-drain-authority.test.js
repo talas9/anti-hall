@@ -99,9 +99,13 @@ function seedPartition(home, repoDir, toId, rows) {
 // 1. R11-A3 — --tail under truncation
 // ===========================================================================
 
-// The discriminating fixture: 12 rows, --limit 5 so the cap fires and keeps the
-// EARLIEST 5, then --tail 2. Pre-fix this returned rows 4 and 5 (the last two of
-// the oldest five) labelled as the newest; rows 11-12 were never even read.
+// The discriminating fixture: 12 rows, --limit 5 so the cap fires, then
+// --tail 2. When this was written the cap kept the EARLIEST 5 and pre-fix
+// returned rows 4 and 5 labelled as the newest. Since 0.116 a plain
+// (non-acking) `inbox messages` read keeps the NEWEST suffix per source
+// instead; --tail under truncation is still refused (the kept set is a
+// per-source suffix, not a guaranteed global newest-N), so the refusal
+// contract below is unchanged.
 //
 // WHY A SIBLING PARTITION IS PART OF THE FIXTURE (verified from the source, not
 // assumed): the per-source read cap is gated on `(wantsUnion || meshUnionActive)`,
@@ -128,13 +132,13 @@ function seedTruncatable(tag) {
 test('R11-A3: `--tail` under a TRUNCATED read refuses with tail-under-truncation instead of returning the oldest rows as the newest', () => {
   const f = seedTruncatable('tail-trunc');
   try {
-    // Sanity first: the cap really does fire at this limit, and really does
-    // keep the EARLIEST rows. Without this the refusal below could pass for
-    // the wrong reason.
+    // Sanity first: the cap really does fire at this limit (it keeps the
+    // newest per-source suffix for this non-acking read). Without this the
+    // refusal below could pass for the wrong reason.
     const capped = cli.run(['inbox', 'messages', f.id, '--limit', '5'], ctx(f.home, { cwd: f.repo }));
     assert.strictEqual(capped.result.truncated, true, 'precondition: the read is truncated');
-    assert.strictEqual(capped.result.messages[0].body, 'row-1',
-      'precondition: the cap keeps the EARLIEST prefix — this is exactly why a tail over it is a lie');
+    assert.strictEqual(capped.result.messages[0].body, 'row-8',
+      'precondition: a plain read keeps the NEWEST per-source suffix under the cap');
 
     const r = cli.run(['inbox', 'messages', f.id, '--limit', '5', '--tail', '2'], ctx(f.home, { cwd: f.repo }));
     assert.strictEqual(r.result.ok, false, JSON.stringify(r.result));
@@ -169,9 +173,9 @@ test('R11-A3 MUTATION-KILL: dropping the truncation guard restores the silent ol
         const r = mutatedCli.run(['inbox', 'messages', f.id, '--limit', '5', '--tail', '2'],
           ctx(f.home, { cwd: f.repo }));
         assert.strictEqual(r.result.ok, true, 'RED (expected on the mutant): the call succeeds instead of refusing');
-        assert.deepStrictEqual(r.result.messages.map((m) => m.body), ['row-4', 'row-5'],
-          'RED (expected on the mutant): rows 4-5 (the tail of the OLDEST five) are returned as if they were the newest, '
-          + 'while rows 11-12 were never read. If this fails, the truncation guard is not what fixes A3.');
+        assert.deepStrictEqual(r.result.messages.map((m) => m.body), ['row-11', 'row-12'],
+          'on the mutant the truncated read is answered from the capped suffix instead of refused — '
+          + 'proves the truncation guard is what produces the refusal.');
       } finally { rm(f.home); rm(f.repo); }
     },
     { prefix: 'anti-hall-r11b-tail-mutant' }

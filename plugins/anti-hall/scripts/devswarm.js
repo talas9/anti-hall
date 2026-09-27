@@ -10288,13 +10288,17 @@ function cmdInboxMessagesInner(id, flags, ctx, opts) {
       // ago with no indication recent mail existed. Keep the NEWEST rows
       // (a genuine structural SUFFIX per source, same provable-by-__srcIdx
       // construction, mirrored) instead.
-      const naiveKept = new Set(doAck ? messages.slice(0, inboxReadLimit) : messages.slice(-inboxReadLimit));
-      const minWithheldIdxBySource = new Map(); // doAck: earliest withheld __srcIdx per source
-      const maxWithheldIdxBySource = new Map(); // !doAck: latest withheld __srcIdx per source
+      // peek-primary (forceUnread) is the non-mutating preview of what
+      // read-primary will deliver, so it keeps the same OLDEST prefix; only a
+      // plain `inbox messages` read switches to the newest suffix.
+      const keepOldest = doAck || forceUnread;
+      const naiveKept = new Set(keepOldest ? messages.slice(0, inboxReadLimit) : messages.slice(-inboxReadLimit));
+      const minWithheldIdxBySource = new Map(); // keepOldest: earliest withheld __srcIdx per source
+      const maxWithheldIdxBySource = new Map(); // !keepOldest: latest withheld __srcIdx per source
       for (const row of messages) {
         if (!row || row.__srcId === undefined) continue;
         if (naiveKept.has(row)) continue;
-        if (doAck) {
+        if (keepOldest) {
           const cur = minWithheldIdxBySource.has(row.__srcId) ? minWithheldIdxBySource.get(row.__srcId) : Infinity;
           if (row.__srcIdx < cur) minWithheldIdxBySource.set(row.__srcId, row.__srcIdx);
         } else {
@@ -10306,7 +10310,7 @@ function cmdInboxMessagesInner(id, flags, ctx, opts) {
       withheldBySource = new Map();
       for (const row of messages) {
         let withhold;
-        if (doAck) {
+        if (keepOldest) {
           const minIdx = (row && row.__srcId !== undefined && minWithheldIdxBySource.has(row.__srcId))
             ? minWithheldIdxBySource.get(row.__srcId) : Infinity;
           withhold = !!(row && row.__srcIdx !== undefined && row.__srcIdx >= minIdx);

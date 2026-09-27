@@ -279,6 +279,22 @@ test('window/cap: a plain (non-acking) read truncated by the cap keeps the NEWES
   } finally { rm(home); rm(repo); }
 });
 
+// R2A1-IB-1: peek-primary is the non-mutating preview of what read-primary
+// delivers, so under the cap it keeps the same OLDEST prefix read-primary
+// does — only plain `inbox messages` switches to the newest suffix.
+test('window/cap: peek-primary truncated by the cap keeps the OLDEST rows, matching read-primary', () => {
+  const home = tmpHome();
+  const repo = makeGitRepo('cap-peek');
+  try {
+    registerMeshSiblings(home, repo, 'primary-cap-peek-a', 'primary-cap-peek-b');
+    seedPartition(home, repo, 'primary-cap-peek-a', Array.from({ length: 10 }, (_, i) => ({ body: 'm' + (i + 1), ts: 1700000000000 + (i + 1) * 60000 })));
+    const peek = cli.run(['inbox', 'peek-primary', 'primary-cap-peek-a', '--limit', '4'], ctx(home, { cwd: repo }));
+    assert.deepStrictEqual((peek.result.messages || []).map((m) => m.body), ['m1', 'm2', 'm3', 'm4'], JSON.stringify(peek.result));
+    const read = cli.run(['inbox', 'read-primary', 'primary-cap-peek-a', '--limit', '4', '--ack-as-owner'], ctx(home, { cwd: repo }));
+    assert.deepStrictEqual((read.result.messages || []).map((m) => m.body), ['m1', 'm2', 'm3', 'm4'], JSON.stringify(read.result));
+  } finally { rm(home); rm(repo); }
+});
+
 test('window: it is a PURE READ — no cursor is advanced and every withheld row is still readable', () => {
   const home = tmpHome();
   const repo = makeGitRepo('window-nonacking');
