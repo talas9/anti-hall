@@ -334,19 +334,35 @@ RUNNING with its id and re-attach instructions. While unmet, say WAIT, not
 done: `⏳ NOT SAFE for a context reset yet — waiting on: <named items>. I'll
 tell you the moment it's safe.`
 
+**The quiesce gate is necessary, NOT sufficient.** "No background agents
+running" never by itself makes a reset safe. Declare SAFE (the 🟢 line, "safe
+to compact", or `/compact …` / `/new` offered as advice) ONLY when:
+
+- the handover was triggered by the auto-handover threshold
+  (`Trigger: auto-threshold`), OR
+- context is genuinely high — at or near `autoHandover.pct` by the REAL
+  reading (the rollout's `token_count` / the hook's figure), not a guess.
+
+Never declare it within `guards.compactAdviceRecentTurns` (default 10) turns of
+a compaction — context was just reset. Check the actual context % before
+saying it. `compact-advice-guard.js` (Stop, shared and registered in Codex's
+own `hooks.json`) blocks a violating reply once and names the real %; retract
+with one line — `RETRACT SAFE TO COMPACT — <why>` — and continue or stop.
+
 **Terminal declaration is trigger-aware.** Once the quiesce gate is met, the
 final message depends on the `Trigger:` line you recorded above:
 
-- `auto-threshold`, OR the user explicitly asked to compact/reset: `🟢
+- `auto-threshold`, OR the user explicitly asked to compact/reset AND
+  context is genuinely high (at/near the auto-handover threshold): `🟢
   **HANDOVER COMPLETE — GOOD POINT FOR /compact OR /new NOW**` + `<saved paths
   list>` + `<numbered instructions: trigger the reset; the resume hook guides
   the next session>`.
-- Any other trigger (`restart-pending`, `task-boundary`) while context is
-  still below the auto-handover threshold: `📝 **Handover saved** (proactive,
+- Any other trigger (`restart-pending`, `task-boundary`, or a user request
+  to reset) while context is still below the auto-handover threshold: `📝 **Handover saved** (proactive,
   context <pct>%): no need to reset now; continue working, or /compact / /new
   when you choose.` + `<saved paths list>`.
-- Never say "safe for a reset" (the 🟢 line) unless a reset was actually
-  requested or the threshold fired — that line reads as a stop-now signal, and
+- Never say "safe for a reset" (the 🟢 line) unless the threshold fired or
+  context is genuinely high — that line reads as a stop-now signal, and
   a proactive save below threshold is not one (field incident: a session below
   the 85% auto threshold invoked this skill because a restart was mentioned,
   and the old unconditional "✅ HANDOVER COMPLETE — SAFE FOR CONTEXT
@@ -354,7 +370,10 @@ final message depends on the `Trigger:` line you recorded above:
 
 The declared line is the LAST act of the turn either way; work after it makes
 the handover STALE — refresh (same seq, or seq+1) and re-declare before
-claiming safe/saved again. `tasklist-guard.js` (shared, and registered in
+claiming safe/saved again. `compact-declaration-guard.js` (shared; on Codex
+registered for shell commands only) blocks state-changing shell after a SAFE
+declaration in the same turn — write `RETRACT SAFE TO COMPACT — <why>` first
+if more work is genuinely needed. `tasklist-guard.js` (shared, and registered in
 Codex's own `hooks.json`) backs this up mechanically: file-changing work after
 the newest `HANDOVER*.md`'s mtime gets a capped "handover is STALE" advisory
 on its Stop output (staleness detection is by mtime + section content, not by

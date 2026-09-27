@@ -344,20 +344,36 @@ id and re-attach instructions. While unmet, say WAIT, not done: `⏳ **NOT SAFE
 to compact yet** — waiting on: <named items>. I'll tell you the moment it's
 safe.`
 
+**The quiesce gate is necessary, NOT sufficient.** "No background agents
+running" never by itself makes it safe to compact. Declare SAFE (the 🟢 line,
+"safe to compact", or `/compact …` offered as advice) ONLY when:
+
+- the handover was triggered by the auto-handover threshold
+  (`Trigger: auto-threshold`), OR
+- context is genuinely high — at or near `autoHandover.pct` by the REAL
+  reading (statusline / the hook's figure), not a guess.
+
+Never declare it within `guards.compactAdviceRecentTurns` (default 10) turns of
+a compact — context was just reset. Check the actual context % before saying
+it. `compact-advice-guard.js` (Stop) blocks a violating reply once and names
+the real %; retract with one line — `RETRACT SAFE TO COMPACT — <why>` — and
+continue or stop.
+
 **Terminal declaration is trigger-aware.** Once the quiesce gate is met, the
 final message depends on the `Trigger:` line you recorded above:
 
-- `auto-threshold`, OR the user explicitly asked to /compact or /clear:
+- `auto-threshold`, OR the user explicitly asked to /compact or /clear AND
+  context is genuinely high (at/near the auto-handover threshold):
   `🟢 **HANDOVER COMPLETE — GOOD POINT TO /compact NOW**` (swap in `/clear`
   instead of `/compact` when the task itself is done) + `<saved paths list>` +
   `<numbered instructions: /compact or /clear; the resume hook guides the
   fresh session automatically>`.
-- Any other trigger (`restart-pending`, `task-boundary`) while context is
-  still below the auto-handover threshold: `📝 **Handover saved** (proactive,
+- Any other trigger (`restart-pending`, `task-boundary`, or a user request
+  to compact) while context is still below the auto-handover threshold: `📝 **Handover saved** (proactive,
   context <pct>%): no need to compact now; continue working, or /compact /
   restart when you choose.` + `<saved paths list>`.
-- Never say "safe to compact" (the 🟢 line) unless compaction/clearing was
-  actually requested or the threshold fired — that line reads as a stop-now
+- Never say "safe to compact" (the 🟢 line) unless the threshold fired or
+  context is genuinely high — that line reads as a stop-now
   signal, and a proactive save below threshold is not one (field incident: a
   session below the 85% auto threshold invoked this skill because a restart
   was mentioned, and the old unconditional "✅ HANDOVER COMPLETE — SAFE TO
@@ -365,7 +381,11 @@ final message depends on the `Trigger:` line you recorded above:
 
 The declared line is the LAST act of the turn either way; work after it makes
 the handover STALE — refresh it (same seq, or seq+1) and re-declare before
-claiming safe/saved again. `tasklist-guard.js` backs this up mechanically:
+claiming safe/saved again. `compact-declaration-guard.js` (PreToolUse)
+enforces this: after a SAFE TO COMPACT declaration it blocks agent spawns,
+file edits and state-changing shell for the rest of the turn — write
+`RETRACT SAFE TO COMPACT — <why>` first if more work is genuinely needed,
+then refresh the handover before declaring again. `tasklist-guard.js` backs this up mechanically:
 file-changing work after the newest `HANDOVER*.md`'s mtime gets a capped
 "handover is STALE" advisory on its Stop output (staleness detection is by
 mtime + section content, not by matching either declaration string, so it
