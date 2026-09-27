@@ -19,6 +19,18 @@ function tmpRoots() {
   return roots;
 }
 
+// encodeHarnessCwd(cwd) -> the harness's per-project directory name for cwd:
+// EVERY non-alphanumeric character becomes '-' (so `/Users/me/.devswarm/x_y`
+// -> `-Users-me--devswarm-x-y`), matching Claude Code's own encoder.
+// Two distinct cwds can encode identically (`/a.b` vs `/a/b`), but then the
+// harness itself shares that parent dir between them; the exemption still
+// requires this payload's own session_id underneath, so a colliding
+// project's sessions (different ids) stay out of reach.
+function encodeHarnessCwd(cwd) {
+  if (typeof cwd !== 'string' || !cwd) return null;
+  return cwd.replace(/[^A-Za-z0-9]/g, '-');
+}
+
 function ownScratchpadDirs(payload) {
   try {
     if (process.platform === 'win32') return [];
@@ -29,7 +41,8 @@ function ownScratchpadDirs(payload) {
     let uid = null;
     try { uid = typeof process.getuid === 'function' ? process.getuid() : null; } catch (_) { uid = null; }
     if (uid === null || uid === undefined || Number.isNaN(uid)) return [];
-    const sanitizedCwd = cwd.replace(/\//g, '-');
+    const sanitizedCwd = encodeHarnessCwd(cwd);
+    if (!sanitizedCwd) return [];
     return tmpRoots().map((root) =>
       path.join(root, 'claude-' + uid, sanitizedCwd, sessionId, 'scratchpad'));
   } catch (_) {
@@ -71,4 +84,4 @@ function isInsideDir(p, dir) {
   }
 }
 
-module.exports = { tmpRoots, ownScratchpadDirs, realpathOrSelf, isInsideDir };
+module.exports = { tmpRoots, encodeHarnessCwd, ownScratchpadDirs, realpathOrSelf, isInsideDir };

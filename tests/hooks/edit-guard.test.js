@@ -822,7 +822,7 @@ test('SKIP HINT: block message names the documented override in all three branch
 // duplicating the hook's internal formula by hand at each call site.
 function computeOwnScratchpadPath(cwd, sessionId, relFile) {
   const uid = process.getuid();
-  const sanitizedCwd = cwd.replace(/\//g, '-');
+  const sanitizedCwd = cwd.replace(/[^A-Za-z0-9]/g, '-');
   return path.join('/tmp', 'claude-' + uid, sanitizedCwd, sessionId, 'scratchpad', relFile);
 }
 
@@ -872,7 +872,7 @@ test('WAVE 9 P2 FIX: harness-shaped payload whose scratchpad path is reported vi
   try {
     const sessionId = 'sess-wave9-p2-realpath';
     const uid = process.getuid();
-    const sanitizedCwd = p.dir.replace(/\//g, '-');
+    const sanitizedCwd = p.dir.replace(/[^A-Za-z0-9]/g, '-');
     const literalDir = path.join('/tmp', 'claude-' + uid, sanitizedCwd, sessionId, 'scratchpad');
     fs.mkdirSync(literalDir, { recursive: true });
     try {
@@ -953,6 +953,85 @@ test('P2 fp 385aa8beb602 NEGATIVE CONTROL: a bare /tmp/** path (not the computed
 });
 
 // ---------------------------------------------------------------------------
+// v0.116 A: the harness encodes the cwd into its per-project scratchpad dir by
+// replacing EVERY non-alphanumeric character with '-' (a real dir for a cwd
+// under ~/.devswarm/repos/... reads `-Users-<u>--devswarm-repos-0-...`). The
+// old encoder replaced only '/', so for a dotted/underscored cwd (every
+// DevSwarm child worktree) the own-scratchpad exemption never matched and the
+// child was blocked writing its own scratchpad.
+// MUTATION: revert lib/scratchpad.js encodeHarnessCwd to `cwd.replace(/\//g,
+// '-')` -> DOTTED_CHILD_OWN_ALLOW flips to block (2).
+// ---------------------------------------------------------------------------
+const CHILD = { DEVSWARM_REPO_ID: 'r1', DEVSWARM_SOURCE_BRANCH: 'main', DEVSWARM_BUILDER_ID: 'b1' };
+
+function dottedChildWorktree() {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'eg-dotted-'));
+  const dir = path.join(base, '.devswarm', 'repos', '0', 'ab_cd.x');
+  fs.mkdirSync(path.join(dir, '.git'), { recursive: true });
+  return { dir, cleanup: () => { try { fs.rmSync(base, { recursive: true, force: true }); } catch (_) {} } };
+}
+
+function runChildWrite(cwd, sessionId, filePath) {
+  const h = makeHome();
+  try {
+    return testHook(HOOK, {
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Write',
+      tool_input: { file_path: filePath, content: 'x' },
+      session_id: sessionId,
+      cwd,
+    }, { home: h.home, env: Object.assign({}, COORD, CHILD) });
+  } finally {
+    h.cleanup();
+  }
+}
+
+test('v0.116 A FIX: child worktree under a dotted path may Write its OWN scratchpad (harness encoding)', () => {
+  if (process.platform === 'win32') return;
+  const w = dottedChildWorktree();
+  const sessionId = 'sess-v116a-own';
+  const scratchFile = computeOwnScratchpadPath(w.dir, sessionId, 'note.txt');
+  try {
+    // The encoded segment must carry no '.' or '_' (independent check of the fixture).
+    assert.ok(!/[._]/.test(path.basename(path.dirname(path.dirname(path.dirname(scratchFile))))));
+    const r = runChildWrite(w.dir, sessionId, scratchFile);
+    assert.strictEqual(r.status, 0, `own scratchpad under a dotted cwd must be allowed; stdout: ${r.stdout}`);
+  } finally {
+    w.cleanup();
+  }
+});
+
+test('v0.116 A NEGATIVE: dotted child worktree Write to ANOTHER session\'s scratchpad still BLOCKS', () => {
+  if (process.platform === 'win32') return;
+  const w = dottedChildWorktree();
+  try {
+    const other = computeOwnScratchpadPath(w.dir, 'sess-v116a-OTHER', 'note.txt');
+    const r = runChildWrite(w.dir, 'sess-v116a-own', other);
+    assert.strictEqual(r.status, 2, `sibling session scratchpad must block; stdout: ${r.stdout}`);
+  } finally {
+    w.cleanup();
+  }
+});
+
+test('v0.116 A NEGATIVE: dotted child worktree Write to a repo file still BLOCKS (delegation)', () => {
+  if (process.platform === 'win32') return;
+  const w = dottedChildWorktree();
+  try {
+    const r = runChildWrite(w.dir, 'sess-v116a-own', path.join(w.dir, 'src', 'app.js'));
+    assert.strictEqual(r.status, 2, `repo file must still block; stdout: ${r.stdout}`);
+  } finally {
+    w.cleanup();
+  }
+});
+
+test('v0.116 A: encodeHarnessCwd replaces every non-alphanumeric char', () => {
+  const { encodeHarnessCwd } = require('../../plugins/anti-hall/hooks/lib/scratchpad.js');
+  assert.strictEqual(encodeHarnessCwd('/Users/u/.devswarm/repos/0-ab_c'), '-Users-u--devswarm-repos-0-ab-c');
+  assert.strictEqual(encodeHarnessCwd('/Users/u/Projects/anti-hall'), '-Users-u-Projects-anti-hall');
+  assert.strictEqual(encodeHarnessCwd(''), null);
+});
+
+// ---------------------------------------------------------------------------
 // fp 6-of-2026-09-24: in a Primary/coordinator session, Write was blocked for
 // a session scratchpad reported under a tmp root OTHER than the literal
 // '/tmp' — e.g. Node's os.tmpdir() on a platform/config where that resolves
@@ -978,7 +1057,7 @@ test('fp 6-of-2026-09-24 FIX: Write to the session\'s OWN scratchpad dir rooted 
   try {
     const sessionId = 'sess-fp6-osTmpdir';
     const uid = process.getuid();
-    const sanitizedCwd = p.dir.replace(/\//g, '-');
+    const sanitizedCwd = p.dir.replace(/[^A-Za-z0-9]/g, '-');
     // Build the scratchpad dir under os.tmpdir() directly (NOT the guard's
     // literal '/tmp' formula) — this is the exact shape the fix must cover.
     const dir = path.join(os.tmpdir(), 'claude-' + uid, sanitizedCwd, sessionId, 'scratchpad');
@@ -1013,7 +1092,7 @@ test('fp 6-of-2026-09-24: Edit tool (not just Write) to an os.tmpdir()-rooted sc
   try {
     const sessionId = 'sess-fp6-edit-tool';
     const uid = process.getuid();
-    const sanitizedCwd = p.dir.replace(/\//g, '-');
+    const sanitizedCwd = p.dir.replace(/[^A-Za-z0-9]/g, '-');
     const dir = path.join(os.tmpdir(), 'claude-' + uid, sanitizedCwd, sessionId, 'scratchpad');
     fs.mkdirSync(dir, { recursive: true });
     try {
@@ -1046,7 +1125,7 @@ test('fp 6-of-2026-09-24 NEGATIVE CONTROL: an os.tmpdir()-rooted path for a DIFF
   const p = makeProject();
   try {
     const uid = process.getuid();
-    const sanitizedCwd = p.dir.replace(/\//g, '-');
+    const sanitizedCwd = p.dir.replace(/[^A-Za-z0-9]/g, '-');
     const scratchFile = path.join(
       os.tmpdir(), 'claude-' + uid, sanitizedCwd, 'OTHER-SESSION-ID', 'scratchpad', 'msg-body.txt');
     const r = runCoord({

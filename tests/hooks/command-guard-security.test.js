@@ -616,7 +616,7 @@ test('verify-allow: control — https --depth 1 clone into os.tmpdir() still qua
 test('verify-allow: control — clone into the session scratchpad qualifies', () => {
   const cwd = fs.realpathSync(os.tmpdir());
   const uid = process.getuid();
-  const sp = path.join('/tmp', 'claude-' + uid, cwd.replace(/\//g, '-'), 't', 'scratchpad');
+  const sp = path.join('/tmp', 'claude-' + uid, cwd.replace(/[^A-Za-z0-9]/g, '-'), 't', 'scratchpad');
   const r = run(`git clone --depth 1 https://example.com/r.git ${sp}/x | tail -1`, { cwd });
   assert.strictEqual(r.status, 0, r.stdout);
 });
