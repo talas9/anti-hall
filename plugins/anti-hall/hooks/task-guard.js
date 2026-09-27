@@ -440,14 +440,36 @@ function normPriority(p) {
   return s || null;
 }
 
-// isActionablePriority — returns true when a task's priority should trigger
-// idle-neglect nagging. P0/P1 and missing/unknown = actionable (fail-open: never
-// under-nag a real high-priority task). Only an EXPLICIT P2 (or "low"/"deferred")
-// is treated as non-nagging backlog. Garbage/unrecognized values → actionable.
-function isActionablePriority(p) {
-  if (p == null || p === '') return true; // missing → treat as P1
+// priorityRank(p) -> numeric urgency rank, lower = more urgent. "P<n>" parses
+// to n; "low"/"deferred" rank alongside P2 (the pre-existing backlog synonyms);
+// missing/blank/unrecognized ranks as P1 (fail-open: never under-nag a real
+// high-priority task whose priority field is absent or malformed).
+function priorityRank(p) {
+  if (p == null || p === '') return 1;
   const s = String(p).trim().toLowerCase();
-  return s !== 'p2' && s !== 'low' && s !== 'deferred';
+  const m = /^p([0-9]+)$/.exec(s);
+  if (m) return parseInt(m[1], 10);
+  if (s === 'low' || s === 'deferred') return 2;
+  return 1; // unrecognized -> fail-open actionable (P1)
+}
+
+// idleNeglectMinPriorityRank() — guards.idleNeglectMinPriority (default 'P1')
+// as a numeric rank via the settings store (env > settings.json > default).
+function idleNeglectMinPriorityRank() {
+  let raw = 'p1';
+  try { raw = require('./lib/settings.js').get('guards', 'idleNeglectMinPriority', 'p1'); } catch (_) { /* default */ }
+  const m = /^p([0-9]+)$/.exec(String(raw || 'p1').trim().toLowerCase());
+  return m ? parseInt(m[1], 10) : 1;
+}
+
+// isActionablePriority — returns true when a task's priority should trigger
+// idle-neglect nagging: its rank is at or above the configured urgency floor
+// (guards.idleNeglectMinPriority, default P1 — i.e. P0/P1 nag, P2/P3/lower and
+// "low"/"deferred" are non-nagging backlog). Consistent across every rank: a
+// task ranked BELOW the floor is skipped the same way regardless of how far
+// below it sits, instead of special-casing only the literal string "P2".
+function isActionablePriority(p) {
+  return priorityRank(p) <= idleNeglectMinPriorityRank();
 }
 
 // OWNER-BLOCKED MARKER (field report — a Primary faked a `blockedBy` pointing

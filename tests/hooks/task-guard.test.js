@@ -500,6 +500,57 @@ test('PRIORITY: missing priority treated as P1 (fail-open) -> idle-neglect fires
   }
 });
 
+test('PRIORITY (c): only-P3 pending tasks -> NO idle-neglect (P3 is non-nagging backlog, same as P2)', () => {
+  // The filter must be consistent: guards.idleNeglectMinPriority defaults to
+  // P1, so anything below P1 (P2, P3, ...) is backlog and must NOT nag. Before
+  // the fix, isActionablePriority only special-cased the literal string 'p2'
+  // (plus 'low'/'deferred'), so an explicit P3 fell through to the fail-open
+  // "unrecognized -> actionable" branch and WRONGLY triggered idle-neglect.
+  const h = makeHome();
+  try {
+    const tp = h.writeTranscript([
+      todoWrite([
+        { id: '1', content: 'someday maybe', status: 'pending', priority: 'P3' },
+      ]),
+    ]);
+    const r = testHook(HOOK, stopPayload(tp), { home: h.home });
+    assert.ok(!isIdleNeglect(r), `P3-only tasks must not trigger idle-neglect; stdout: ${r.stdout}`);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('PRIORITY (d): guards.idleNeglectMinPriority=P2 lowers the bar -> P2 task nags, P3 still does not', () => {
+  const h = makeHome();
+  try {
+    const fs = require('node:fs');
+    const path = require('node:path');
+    fs.writeFileSync(
+      path.join(h.antiHall, 'settings.json'),
+      JSON.stringify({ guards: { idleNeglectMinPriority: 'P2' } }),
+      'utf8'
+    );
+
+    const tpP2 = h.writeTranscript([
+      todoWrite([
+        { id: '1', content: 'promoted backlog item', status: 'pending', priority: 'P2' },
+      ]),
+    ]);
+    const rP2 = testHook(HOOK, stopPayload(tpP2), { home: h.home });
+    assert.ok(isIdleNeglect(rP2), `with min priority P2, a P2 task must trigger idle-neglect; stdout: ${rP2.stdout}`);
+
+    const tpP3 = h.writeTranscript([
+      todoWrite([
+        { id: '1', content: 'still backlog', status: 'pending', priority: 'P3' },
+      ]),
+    ]);
+    const rP3 = testHook(HOOK, stopPayload(tpP3), { home: h.home });
+    assert.ok(!isIdleNeglect(rP3), `with min priority P2, a P3 task must still not trigger idle-neglect; stdout: ${rP3.stdout}`);
+  } finally {
+    h.cleanup();
+  }
+});
+
 // ---- GENERIC NUDGE honours honest blocked markers (blockedBy an OPEN task,
 // or metadata.blockedOn owner/user/human/external). ----
 
