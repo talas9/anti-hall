@@ -1628,6 +1628,15 @@ function gcloudReadGrammar(rest, verbs) {
   return { path, verb, positional, flags };
 }
 
+// stripGcloudStderrMerge(segment) -> the segment minus ONE trailing, unquoted,
+// space-separated `2>&1` (stderr merged into the stdout pipe). That exact
+// token is the ONLY redirection a gcloud read may carry: `>f`, `2>f`, `&>f`,
+// `>&2`, `<f`, other fd dups, a quoted/escaped or mid-argv `2>&1` are left in
+// place, so the unquoted-redirect check that follows still refuses them.
+function stripGcloudStderrMerge(segment) {
+  return segment.replace(/(^|[^\\])\s+2>&1\s*$/, '$1');
+}
+
 const CLOUD_BINARIES = new Set(['gcloud', 'gh', 'kubectl']);
 const CLOUD_READONLY_VERBS = new Set(['describe', 'list', 'get', 'view']);
 const GCLOUD_INSPECT_VERBS = new Set(['describe', 'list', 'get', 'view', 'read']);
@@ -1645,7 +1654,14 @@ function isReadOnlyCloudInspect(segment) {
     // Same strict grammar as the narrow gcloud-read carve-out (0.113 P1):
     // a read verb found in ANY position (e.g. as a separated flag value,
     // `gcloud compute instances reset vm --zone list`) no longer qualifies.
-    const g = gcloudReadGrammar(rest, GCLOUD_INSPECT_VERBS);
+    // Redirection: only a trailing `2>&1`; any other unquoted `>`/`<`
+    // (including one glued to a flag value, `--format=json>f`) is refused.
+    const stripped = stripGcloudStderrMerge(segment);
+    if (hasUnquotedRedirectChar(stripped)) return false;
+    const st = tokenizeQuoted(stripped);
+    const sIdx = st.findIndex((t) => basename(t).toLowerCase() === 'gcloud');
+    if (sIdx === -1) return false;
+    const g = gcloudReadGrammar(st.slice(sIdx + 1), GCLOUD_INSPECT_VERBS);
     if (!g) return false;
     if (g.verb === 'read' && g.path[g.path.length - 1] !== 'logging') return false;
     return true;
@@ -2773,7 +2789,8 @@ function isGcloudReadSinkSegment(segment) {
 }
 
 // Shape B (and the literal shape A): one `gcloud` segment.
-function isGcloudReadSegment(segment) {
+function isGcloudReadSegment(rawSegment) {
+  const segment = stripGcloudStderrMerge(rawSegment); // the one accepted redirection
   if (hasUnquotedRedirectChar(segment) || hasShellExpansionAnywhere(segment)) return false;
   const tokens = tokenizeQuoted(segment);
   if (tokens[0] !== 'gcloud') return false; // no env prefix, no wrapper

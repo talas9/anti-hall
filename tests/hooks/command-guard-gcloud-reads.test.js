@@ -211,3 +211,41 @@ test('gcloud-reads: subagent context is unaffected (still passes through)', () =
   const res = run('gcloud run deploy api --image x', { agentId: 'a1' });
   assert.notStrictEqual(res.status, 2);
 });
+
+// A trailing `2>&1` (stderr merged into the pipe) is the ONE redirection a
+// gcloud read may carry — alone or inside a chain of allowed reads. Every
+// other redirection, fd dup, and a non-read verb or heavy chained segment
+// stays blocked.
+const DESCRIBE = "gcloud run services describe svc --region=us-central1 --project=p1 --format='value(x)'";
+
+test('gcloud-reads: a trailing 2>&1 stderr merge is accepted', () => {
+  const allow = [
+    DESCRIBE + ' 2>&1 | tail -1',
+    'git diff --stat a..b; ' + DESCRIBE + ' 2>&1 | tail -1',
+    'cd /tmp && git merge-base --is-ancestor a b; git diff --stat a..b; ' + DESCRIBE + ' 2>&1 | tail -1',
+  ];
+  assert.deepStrictEqual(allow.filter((cmd) => run(cmd).status === 2), [], 'expected ALLOW');
+});
+
+test('gcloud-reads: every other redirection stays blocked', () => {
+  const block = [
+    DESCRIBE + ' 2>/tmp/x',
+    DESCRIBE + ' &>/tmp/x',
+    DESCRIBE + ' >&2',
+    DESCRIBE + ' 3>&1',
+    DESCRIBE + ' 2>&-',
+    DESCRIBE + ' < /tmp/x',
+    DESCRIBE + ' 2>&1 >/tmp/x',
+    DESCRIBE + ' >/tmp/x 2>&1',
+    DESCRIBE + ' 2>&1 2>&1',
+    DESCRIBE + ' 2>&1 --quiet',
+    DESCRIBE + " '2>&1'",
+    DESCRIBE + ' \\2>&1',
+    'gcloud run services describe svc --format=json>/tmp/x',
+    'git status; gcloud run services describe svc --format=json>/tmp/x',
+    'gcloud run deploy svc --image=x --format=json 2>&1 | tail',
+    DESCRIBE + ' 2>&1; npm test',
+    'git status; ' + DESCRIBE + ' 2>/tmp/x | tail -1',
+  ];
+  assert.deepStrictEqual(block.filter((cmd) => run(cmd).status !== 2), [], 'expected BLOCK');
+});
