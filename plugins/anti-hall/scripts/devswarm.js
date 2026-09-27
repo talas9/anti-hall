@@ -14865,7 +14865,12 @@ function cmdSend(flags, ctx) {
   const home = ctx.home;
   const cwd = ctx.cwd || process.cwd();
   const repoKey = repokey.repoKeyForWorktree(cwd);
-  if (!repoKey) return { ok: false, reason: 'no-project' };
+  if (!repoKey) {
+    return {
+      ok: false, action: 'send', reason: 'no-project',
+      error: 'send must run from inside a git worktree of a DevSwarm project (the mesh store is per-project) — cd into the repo first',
+    };
+  }
 
   // `from` is ALWAYS the hardened, cwd-derived identity (D18/D19) — never raw
   // env. An explicit --from flag is accepted ONLY as a redundant declaration

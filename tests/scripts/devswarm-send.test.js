@@ -89,6 +89,13 @@ test('send from a non-git cwd returns {ok:false,reason:"no-project"} and never e
     assert.equal(r.result.ok, false);
     assert.equal(r.result.reason, 'no-project');
     assert.equal(r.result.from, undefined, 'no-project must be returned BEFORE any identity is derived');
+    // H: send used to return a bare {ok:false,reason:'no-project'} with no
+    // human-readable explanation (unlike relay/reap-orphans, which both name
+    // the fix in their `error` string). It must now explain what to do.
+    assert.match(
+      r.result.error || '',
+      /send must run from inside a git worktree of a DevSwarm project.*cd into the repo first/
+    );
   } finally { rm(home); }
 });
 
