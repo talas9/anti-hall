@@ -864,6 +864,142 @@ function extractHeredocBodies(cmd) {
   return bodies;
 }
 
+// Heredoc stdin consumers that treat the body as DATA (never execute it).
+// Anything outside this list consuming a heredoc is treated as a shell.
+const HEREDOC_DATA_CONSUMERS = new Set([
+  'cat', 'tee', 'head', 'tail', 'wc', 'grep', 'egrep', 'fgrep', 'sort', 'uniq',
+  'tr', 'cut', 'fold', 'fmt', 'nl', 'column', 'base64', 'jq', 'pbcopy', 'git', 'gh',
+]);
+// Words that run text as commands wherever they appear in a segment
+// (`| bash`, `find -exec sh`, `xargs`, `ssh host`, ...).
+const EVALUATOR_WORDS = new Set([
+  ...SHELL_VERBS, 'fish', 'csh', 'tcsh', 'busybox', 'eval', 'xargs', 'ssh', 'su',
+  'doas', 'parallel', 'watch', 'script',
+]);
+// Interpreters that evaluate an inline program given with an eval flag.
+const INLINE_INTERPRETERS = /^(python[0-9.]*|node|nodejs|perl|ruby|php|deno|bun|osascript|pwsh|powershell|lua|tclsh)$/;
+const INLINE_EVAL_FLAG = /^(-[A-Za-z]*[ceEpr]|--eval|--print|--command|eval)$/;
+
+// Does any real (non-heredoc-body) segment of `cmd` execute text as commands?
+// Unresolvable verbs (`$X`, a substitution, a path-run script) count as yes.
+function hasEvaluatorSegment(cmd) {
+  for (const seg of splitSegments(cmd)) {
+    const tokens = tokenize(seg);
+    if (!tokens.length) continue;
+    const ev = effectiveVerb(tokens);
+    if (ev) {
+      // effectiveVerb basenames the verb; check the raw verb token too.
+      const v = tokens[tokens.length - ev.args.length - 1].text;
+      if (v.startsWith('$') || v.includes(CMDSUBST_SENTINEL) || v.includes('/') ||
+          v.includes('`') || ev.verb === 'source' || ev.verb === '.') return true;
+    }
+    for (let k = 0; k < tokens.length; k++) {
+      const w = basename(tokens[k].text).toLowerCase();
+      if (EVALUATOR_WORDS.has(w)) return true;
+      if (INLINE_INTERPRETERS.test(w) &&
+          tokens.slice(k + 1).some((t) => INLINE_EVAL_FLAG.test(t.text))) return true;
+    }
+  }
+  return false;
+}
+
+// Is the command that owns the heredoc opener at `lt` (and every other command
+// in the same pipeline on the opener line) a known data consumer? `slice` runs
+// from the last top-level command boundary before `lt` to the end of the
+// opener line; `lt` is relative to it. Grouping, substitutions or a pipeline
+// that continues past the line end are unclassifiable -> false.
+function heredocOwnerIsDataConsumer(text, lt) {
+  const pipeline = [];
+  let cur = '';
+  let q = '';
+  let atEnd = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    const c2 = text[i + 1];
+    if (q) { cur += c; if (c === q) q = ''; else if (q === '"' && c === '\\') cur += text[++i] || ''; continue; }
+    if (c === "'" || c === '"') { q = c; cur += c; continue; }
+    if (c === '\\') { cur += c + (text[i + 1] || ''); i++; continue; }
+    if ('(){}`'.includes(c) || (c === '$' && c2 === '(')) return false;
+    const inHead = i < lt;
+    if (c === '|' && c2 !== '|') { pipeline.push(cur); cur = ''; if (c2 === '&') i++; continue; }
+    const sep = (c === ';') || (c === '&' && c2 === '&') || (c === '|' && c2 === '|') ||
+      (c === '&' && c2 !== '>' && !/[<>]$/.test(cur));
+    if (sep) {
+      if (inHead) return false; // boundary tracking missed a separator
+      atEnd = true; break;
+    }
+    cur += c;
+  }
+  if (q) return false;
+  if (!atEnd && !cur.trim()) return false; // pipeline continues past the line end
+  pipeline.push(cur);
+  for (const seg of pipeline) {
+    const tokens = tokenize(seg);
+    const ev = tokens.length ? effectiveVerb(tokens) : null;
+    if (!ev || !HEREDOC_DATA_CONSUMERS.has(ev.verb)) return false;
+  }
+  return true;
+}
+
+// Return `cmd` with the BODY lines of inert heredocs blanked (spaces, newlines
+// and every offset kept), so splitSegments stops parsing prose as commands. A
+// body is inert only when its delimiter is quoted (no $( )/backtick expansion),
+// it is terminated, its owning pipeline is all known data consumers, and no
+// real segment anywhere in the command is a shell/evaluator (covers `| bash`
+// and write-then-run). The opener line itself is never blanked (P0 lesson in
+// extractHeredocBodies above). Same quote tracking as extractHeredocBodies.
+function blankInertHeredocBodies(cmd) {
+  const spans = [];
+  const n = cmd.length;
+  let i = 0;
+  let inSingle = false;
+  let inDouble = false;
+  let boundary = 0;
+  while (i < n) {
+    const c = cmd[i];
+    const c2 = i + 1 < n ? cmd[i + 1] : '';
+    if (inSingle) { if (c === "'") inSingle = false; i++; continue; }
+    if (inDouble) {
+      if (c === '\\' && c2) { i += 2; continue; }
+      if (c === '"') inDouble = false;
+      i++; continue;
+    }
+    if (c === "'") { inSingle = true; i++; continue; }
+    if (c === '"') { inDouble = true; i++; continue; }
+    if (c === '\\' && c2) { i += 2; continue; }
+    if (c === '\n' || c === ';') { boundary = i + 1; i++; continue; }
+    if ((c === '&' && c2 === '&') || (c === '|' && c2 === '|')) { boundary = i + 2; i += 2; continue; }
+    if (c === '&' && c2 !== '>' && cmd[i - 1] !== '>' && cmd[i - 1] !== '<') { boundary = i + 1; i++; continue; }
+    if (c === '<' && c2 === '<') {
+      const h = parseHeredocAt(cmd, i);
+      if (h) {
+        const bodyStart = i + h.openerText.length + 1;
+        if (h.quoted && h.terminated && bodyStart < h.end) {
+          // Body = opener's newline .. start of the terminator line.
+          const termStart = cmd.lastIndexOf('\n', cmd[h.end - 1] === '\n' ? h.end - 2 : h.end - 1) + 1;
+          if (termStart > bodyStart &&
+              heredocOwnerIsDataConsumer(cmd.slice(boundary, bodyStart - 1), i - boundary)) {
+            spans.push([bodyStart, termStart]);
+          }
+        }
+        i = h.end;
+        boundary = i;
+        continue;
+      }
+    }
+    i++;
+  }
+  if (!spans.length) return cmd;
+  let out = '';
+  let last = 0;
+  for (const [a, b] of spans) {
+    out += cmd.slice(last, a) + cmd.slice(a, b).replace(/[^\n]/g, ' ');
+    last = b;
+  }
+  out += cmd.slice(last);
+  return hasEvaluatorSegment(out) ? cmd : out;
+}
+
 // Run the git force/trailer detection on every segment of a command string.
 // Returns a block message string if a violation is found, else null. Recurses
 // into `eval <payload>` segments (depth-bounded) so force/trailer forms hidden
@@ -871,7 +1007,8 @@ function extractHeredocBodies(cmd) {
 // command/sudo/env/timeout in effectiveVerb.
 function scanCommand(cmd, depth) {
   const d = typeof depth === 'number' ? depth : 0;
-  const segments = splitSegments(cmd);
+  // Quoted heredoc bodies fed to a data consumer are prose, not commands.
+  const segments = splitSegments(blankInertHeredocBodies(cmd));
 
   // Additive side-channel data for the `-F`/`--file` commit-message scan
   // (see fileCommitMessages/extractHeredocBodies above): every heredoc body

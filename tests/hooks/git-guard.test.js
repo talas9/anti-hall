@@ -149,6 +149,28 @@ const BLOCK = [
   // `git push --force origin main` line is just its own `\n`-split segment
   // regardless of any (missing) terminator — must still block.
   { cmd: 'cat <<EOF\ngit push --force origin main', reason: REASON.FORCE },
+  // --- Quoted heredoc bodies are data ONLY for non-shell consumers ---
+  // A body piped to / read by a shell still runs as commands: keep scanning.
+  { cmd: "cat <<'EOF' | bash\ngit push --force origin main\nEOF", reason: REASON.FORCE },
+  { cmd: "bash <<'EOF'\ngit push --force origin main\nEOF", reason: REASON.FORCE },
+  { cmd: "cat <<'EOF' | sudo sh -s\ngit push --force origin main\nEOF", reason: REASON.FORCE },
+  { cmd: "cat <<'EOF' | xargs -I{} sh -c {}\ngit push --force origin main\nEOF", reason: REASON.FORCE },
+  { cmd: "cat <<'EOF' | python3 -c 'import os,sys; os.system(sys.stdin.read())'\ngit push --force origin main\nEOF", reason: REASON.FORCE },
+  { cmd: "cat <<'EOF' |\ngit push --force origin main\nEOF", reason: REASON.FORCE },
+  // Written to a file, then run in the same command.
+  { cmd: "cat > /tmp/x.sh <<'EOF'\ngit push --force origin main\nEOF\nbash /tmp/x.sh", reason: REASON.FORCE },
+  { cmd: "cat > /tmp/x.sh <<'EOF'\ngit push --force origin main\nEOF\nsource /tmp/x.sh", reason: REASON.FORCE },
+  { cmd: "cat > /tmp/x.sh <<'EOF'\ngit push --force origin main\nEOF\n/tmp/x.sh", reason: REASON.FORCE },
+  // Unclassified consumer is treated as a shell.
+  { cmd: "node run.js <<'EOF'\ngit push --force origin main\nEOF", reason: REASON.FORCE },
+  { cmd: "(cat <<'EOF') | cat\ngit push --force origin main\nEOF", reason: REASON.FORCE },
+  // Unquoted delimiter: the body expands $( ) at runtime, keep scanning it.
+  { cmd: 'cat > f <<EOF\ngit push $(echo --force)\nEOF', reason: REASON.CMDSUBST },
+  // The opener line and lines after the terminator stay fully scanned.
+  { cmd: "cat > f <<'EOF' && git push --force origin main\nprose\nEOF", reason: REASON.FORCE },
+  { cmd: "cat > f <<'EOF'\nprose\nEOF\ngit push --force origin main", reason: REASON.FORCE },
+  // Unterminated quoted heredoc: not blanked (strict fallback).
+  { cmd: "cat > f <<'EOF'\ngit push --force origin main", reason: REASON.FORCE },
 ];
 
 const ALLOW = [
@@ -175,6 +197,13 @@ const ALLOW = [
   // proves the new heredoc-body scan doesn't over-block ordinary messages.
   'git commit -q -F - <<\'EOF\'\nsubject\n\nordinary body, no trailer\nEOF',
   'git commit -F - <<EOF\nsubject\n\nordinary body, no trailer\nEOF',
+  // Quoted heredoc body written by a data consumer is prose, not commands.
+  "cat > /tmp/m.md <<'EOF'\nWe should not git push yet; see `backtick text` here.\nEOF\nnode x.js send --to x --message-file /tmp/m.md",
+  "cat > /tmp/m.md <<'EOF'\ngit push `backtick text`\nEOF\nnode x.js send --message-file /tmp/m.md",
+  "cat > /tmp/m.md <<'EOF'\nPlease hold; git push waits for `ci` green.\nEOF\nnode x.js send",
+  "cat > /tmp/m.md <<'EOF'\nDon't git push until `ci` is green.\nEOF\nnode x.js send",
+  'cat > /tmp/m.md <<"EOF"\nstep: && git push --force `x`\nEOF',
+  "cat <<-'EOF' > /tmp/m.md\n\tgit push --force\n\tEOF\ngit push origin main",
 ];
 
 // gh self-credit BLOCK cases. All block via ghSelfCreditMessage(), whose message
