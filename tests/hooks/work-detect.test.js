@@ -91,3 +91,83 @@ test('isDevswarmHousekeepingOnly: `2>&1` is a redirection, not a background sepa
 test('isDevswarmHousekeepingOnly: a crontab install in a leading subshell stays housekeeping', () => {
   assert.strictEqual(wd.isDevswarmHousekeepingOnly('(crontab -l 2>/dev/null) | crontab -'), true);
 });
+
+// defect 4b (peer sweep, 0.116 candidate): tasklist-guard's own required
+// bookkeeping (appends to .anti-hall/progress|history/*, which the guard
+// itself directs agents to write) and scratch copies outside the repo (an
+// os.tmpdir()-rooted scratch copy, not just the literal session scratchpad)
+// must not be counted as file-changing work. devswarm.js inbox ack/heartbeat
+// are already excluded via isDevswarmHousekeepingOnly (T4(b)/aefb82c —
+// verified above); this block covers the two NEW exclusions.
+
+test('isCountedWork: an Edit into the repo .anti-hall/progress dir is NOT counted as work', () => {
+  assert.strictEqual(
+    wd.isCountedWork({ name: 'Edit', input: { file_path: '/Users/x/proj/.anti-hall/progress/2026-09-27/sess1.md' } }),
+    false
+  );
+});
+
+test('isCountedWork: a Write into the repo .anti-hall/history dir is NOT counted as work', () => {
+  assert.strictEqual(
+    wd.isCountedWork({ name: 'Write', input: { file_path: '/Users/x/proj/.anti-hall/history/2026-09-27/sess1.md' } }),
+    false
+  );
+});
+
+test('isCountedWork: a bash append to .anti-hall/progress is NOT counted as work', () => {
+  assert.strictEqual(
+    wd.isCountedWork({ name: 'Bash', input: { command: 'echo "did stuff" >> /Users/x/proj/.anti-hall/progress/2026-09-27/sess1.md' } }),
+    false
+  );
+});
+
+test('isCountedWork: an Edit into a real repo file (NOT .anti-hall state) still counts (regression guard)', () => {
+  assert.strictEqual(
+    wd.isCountedWork({ name: 'Edit', input: { file_path: '/Users/x/proj/src/app.js' } }),
+    true
+  );
+});
+
+test('isCountedWork: a Write into a scratch copy under os.tmpdir() outside the repo is NOT counted as work', () => {
+  const os = require('os');
+  const path = require('path');
+  const fp = path.join(os.tmpdir(), 'ghidra-copy', 'binary.c');
+  assert.strictEqual(wd.isCountedWork({ name: 'Write', input: { file_path: fp } }), false);
+});
+
+test('isCountedWork: a bash cp into an os.tmpdir() scratch copy is NOT counted as work', () => {
+  const os = require('os');
+  const path = require('path');
+  const a = path.join(os.tmpdir(), 'ghidra-copy', 'a.c');
+  const b = path.join(os.tmpdir(), 'ghidra-copy', 'b.c');
+  assert.strictEqual(
+    wd.isCountedWork({ name: 'Bash', input: { command: 'cp ' + a + ' ' + b } }),
+    false
+  );
+});
+
+test('isCountedWork: a bash cp FROM os.tmpdir() scratch TO a real repo file still counts (regression guard)', () => {
+  const os = require('os');
+  const path = require('path');
+  const a = path.join(os.tmpdir(), 'ghidra-copy', 'a.c');
+  assert.strictEqual(
+    wd.isCountedWork({ name: 'Bash', input: { command: 'cp ' + a + ' /Users/x/proj/src/a.c' } }),
+    true
+  );
+});
+
+// Verify devswarm.js inbox ack / heartbeat exclusion already holds (no
+// regression from the fix above).
+test('isCountedWork: devswarm.js inbox ack is NOT counted as work (pre-existing T4(b) exclusion, verified)', () => {
+  assert.strictEqual(
+    wd.isCountedWork({ name: 'Bash', input: { command: 'node ~/.anti-hall/bin/devswarm.js inbox ack child-1' } }),
+    false
+  );
+});
+
+test('isCountedWork: devswarm.js heartbeat is NOT counted as work (pre-existing T4(b) exclusion, verified)', () => {
+  assert.strictEqual(
+    wd.isCountedWork({ name: 'Bash', input: { command: 'node ~/.anti-hall/bin/devswarm.js heartbeat child-1' } }),
+    false
+  );
+});

@@ -8,6 +8,9 @@
 
 'use strict';
 
+const path = require('path');
+const os = require('os');
+
 // File-mutating tool names (each tool_use = +1 to WORK_COUNT).
 const MUTATING_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
 
@@ -92,6 +95,45 @@ const BASH_WORK_RE = new RegExp(
 // the write).
 const SCRATCHPAD_PATH_RE = /\/scratchpad\//;
 
+// ANTIHALL_STATE_DIR_RE (defect 4b, peer sweep 0.116 candidate): tasklist-guard
+// itself DIRECTS agents to append to .anti-hall/progress/*.md and
+// .anti-hall/history/*.md as required bookkeeping (see tasklist-guard.js's own
+// progressRelPath/historyRelPath). Counting the guard's own mandated
+// bookkeeping as "file-changing work" is circular — it must never count,
+// the same way scratchpad message-passing traffic doesn't.
+const ANTIHALL_STATE_DIR_RE = /\/\.anti-hall\/(?:progress|history)\//;
+
+// isUnderTmpRoot(p) -> bool (defect 4b): true when p resolves under the live
+// per-process/per-user OS temp dir (os.tmpdir(), e.g. macOS's
+// /var/folders/.../T — NOT the literal '/tmp' or '/private/tmp' strings).
+// Broader than SCRATCHPAD_PATH_RE's literal "/scratchpad/" segment match:
+// covers ANY scratch copy outside the repo living under the OS temp root
+// (e.g. a Ghidra copy under /tmp), not only the session's own named
+// scratchpad directory. Deliberately narrower than hooks/lib/scratchpad.js's
+// tmpRoots() (which also enumerates the literal '/tmp'/'/private/tmp' paths
+// for a DIFFERENT purpose — resolving the session's own scratchpad dir under
+// every possible tmp-root spelling): this repo's own test fixtures and real
+// project checkouts can legitimately live under a literal /private/tmp/...
+// path that is NOT the live os.tmpdir() value, so only the live os.tmpdir()
+// is treated as "definitely outside any repo".
+function isUnderTmpRoot(p) {
+  if (typeof p !== 'string' || !p) return false;
+  let resolved;
+  try { resolved = path.resolve(p); } catch (_) { return false; }
+  let root;
+  try { root = os.tmpdir(); } catch (_) { return false; }
+  if (typeof root !== 'string' || !root) return false;
+  return resolved === root || resolved.startsWith(root + path.sep);
+}
+
+// isExcludedWritePath(fp) -> bool: fp is the session scratchpad, a repo
+// .anti-hall/progress|history state dir, or a scratch copy under any tmp
+// root — none of these count as project work.
+function isExcludedWritePath(fp) {
+  if (typeof fp !== 'string' || !fp) return false;
+  return SCRATCHPAD_PATH_RE.test(fp) || ANTIHALL_STATE_DIR_RE.test(fp) || isUnderTmpRoot(fp);
+}
+
 // allPathsUnderScratchpad(neutralized) -> bool. Conservative companion to
 // SCRATCHPAD_PATH_RE above (Codex review fix): the original check only asked
 // "does /scratchpad/ appear ANYWHERE on the line", which wrongly excluded a
@@ -109,6 +151,33 @@ function allPathsUnderScratchpad(neutralized) {
     if (!SCRATCHPAD_PATH_RE.test(tok)) return false;
   }
   return true;
+}
+
+// allPathsExcluded(neutralized) -> bool (defect 4b): same shape as
+// allPathsUnderScratchpad above, but the per-token test is the broader
+// isExcludedWritePath (scratchpad OR repo .anti-hall state dir OR any tmp
+// root), so a command whose every path-looking token is one of those three
+// is excluded, not only literal-scratchpad-only commands.
+function allPathsExcluded(neutralized) {
+  const tokens = neutralized.split(/\s+/).filter(Boolean);
+  for (const tok of tokens) {
+    if (tok.indexOf('/') === -1) continue;
+    if (!isExcludedWritePath(tok)) return false;
+  }
+  return true;
+}
+
+// hasExcludedPathHint(cmd) -> bool: cheap gate (mirrors the original
+// SCRATCHPAD_PATH_RE.test(cmd) precheck) so a command with NO path tokens at
+// all (e.g. `git commit -am "x"`) is never misclassified as "scratch-only" —
+// allPathsExcluded returns true vacuously on zero path tokens, so this hint
+// must find at least one real signal before that branch is trusted.
+function hasExcludedPathHint(cmd) {
+  if (typeof cmd !== 'string' || !cmd) return false;
+  if (SCRATCHPAD_PATH_RE.test(cmd) || ANTIHALL_STATE_DIR_RE.test(cmd)) return true;
+  let root;
+  try { root = os.tmpdir(); } catch (_) { return false; }
+  return typeof root === 'string' && !!root && cmd.indexOf(root) !== -1;
 }
 
 // defect T4(b) fix (7-workspace sweep, 2026-09-27): a Bash command that is
@@ -221,7 +290,7 @@ function isCountedWork(tu) {
   if (NEVER_WORK_TOOLS.has(name)) return false;
   if (MUTATING_TOOLS.has(name)) {
     const fp = tu.input && typeof tu.input.file_path === 'string' ? tu.input.file_path : '';
-    return !SCRATCHPAD_PATH_RE.test(fp);
+    return !isExcludedWritePath(fp);
   }
   if (name === 'Bash') {
     const cmd = tu.input && typeof tu.input.command === 'string' ? tu.input.command : '';
@@ -229,8 +298,8 @@ function isCountedWork(tu) {
     if (isDevswarmHousekeepingOnly(cmd)) return false;
     const neutralized = neutralizeQuotedContents(cmd);
     if (!BASH_WORK_RE.test(neutralized)) return false;
-    const isScratchOnly = SCRATCHPAD_PATH_RE.test(cmd) && !ALWAYS_WORK_RE.test(neutralized)
-      && allPathsUnderScratchpad(neutralized);
+    const isScratchOnly = hasExcludedPathHint(cmd) && !ALWAYS_WORK_RE.test(neutralized)
+      && allPathsExcluded(neutralized);
     return !isScratchOnly;
   }
   return false;
@@ -242,7 +311,12 @@ module.exports = {
   ALWAYS_WORK_RE,
   BASH_WORK_RE,
   SCRATCHPAD_PATH_RE,
+  ANTIHALL_STATE_DIR_RE,
+  isUnderTmpRoot,
+  isExcludedWritePath,
   allPathsUnderScratchpad,
+  allPathsExcluded,
+  hasExcludedPathHint,
   isDevswarmHousekeepingOnly,
   neutralizeQuotedContents,
   collectToolUses,
