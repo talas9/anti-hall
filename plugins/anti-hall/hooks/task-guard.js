@@ -129,6 +129,13 @@ function main() {
   // are in flight, or the only open tasks are blocked/owned/in_progress, this is
   // false (don't nag genuine parallel work or genuine waiting on blockers).
   const idleNeglect = actionable.length >= 1 && !haveAgents;
+  // The generic nudge lists only tasks NOT honestly marked blocked (an open
+  // blockedBy task, or an owner/external blockedOn marker). All blocked -> no
+  // nudge: the session is genuinely waiting, not neglecting work.
+  const nudgeTasks = unblockedOpen(openTasks, taskMap);
+  if (!idleNeglect && nudgeTasks.length === 0) {
+    process.exit(0);
+  }
 
   // Hash basis differs per mode so the two block types dedupe independently:
   //  - idle-neglect: hash of the ACTIONABLE set + a "no-agents" tag, so it
@@ -140,7 +147,7 @@ function main() {
     hash = crypto.createHash('sha1')
       .update('idle\x00no-agents\x00' + aids.join('\x00')).digest('hex');
   } else {
-    const ids = openTasks.map(t => String(t.id || t.content || t.subject || '')).sort();
+    const ids = nudgeTasks.map(t => String(t.id || t.content || t.subject || '')).sort();
     hash = crypto.createHash('sha1').update(ids.join('\x00')).digest('hex');
   }
 
@@ -263,18 +270,21 @@ function main() {
       'Do not end the turn idle; only stop if a task truly needs the user (then ' +
       'say which + why). If a task is genuinely blocked on the OWNER (hardware, a ' +
       'decision only a human can make), mark it non-dispatchable honestly — ' +
-      'metadata.blockedOn:\'owner\' (or \'user\'/\'human\'), or an "OWNER:" / ' +
+      'metadata.blockedOn:\'owner\' (or \'user\'/\'human\'/\'external\'), or an "OWNER:" / ' +
       '"OWNER DECISION" subject prefix — never a fake blockedBy dependency.';
   } else {
-    const list = renderList(openTasks);
-    const more = openTasks.length > 5 ? ' (and ' + (openTasks.length - 5) + ' more)' : '';
+    const list = renderList(nudgeTasks);
+    const more = nudgeTasks.length > 5 ? ' (and ' + (nudgeTasks.length - 5) + ' more)' : '';
     reason =
       'Open tasks remain and the session is stopping: ' + list + more + '. ' +
       'Actively drain the task list: pick up pending tasks and dispatch subagents to ' +
       'finalize them; run independent tasks in parallel (up to the concurrency cap, ' +
       '~min(16, cores-2)); do not let tasks sit neglected. ' +
       'Continue them, mark them completed or deferred via TaskUpdate, or tell the user ' +
-      'explicitly what is pending and why you are stopping.';
+      'explicitly what is pending and why you are stopping. If a task is genuinely ' +
+      'blocked, mark it honestly via TaskUpdate — blockedBy:[<open task id>] for a task ' +
+      'dependency, or metadata.blockedOn:\'owner\'/\'user\'/\'human\'/\'external\' for an ' +
+      'outside wait — and it is no longer listed here.';
   }
 
   // fs.writeSync(1): stdout.write races the async pipe flush with exit() on
@@ -430,14 +440,13 @@ function normBlockedOn(v) {
 // recognizes an EXPLICIT marker instead, so a task can honestly declare
 // "not dispatchable, and not because of another task":
 //   - metadata.blockedOn (or a top-level blockedOn) === 'owner' | 'user' |
-//     'human' (case-insensitive), OR
+//     'human' | 'external' (case-insensitive), OR
 //   - the subject/content starts with "OWNER:" or "OWNER DECISION"
 //     (case-insensitive, leading whitespace ignored).
 // A task matching either is treated as non-dispatchable — excluded from the
 // ACTIONABLE-NOW set (never nagged) — WITHOUT needing a fake blockedBy
-// dependency. It still counts as an open task for the generic nudge; it just
-// never drives the sharp IDLE NEGLECT accusation.
-const OWNER_BLOCKED_VALUES = new Set(['owner', 'user', 'human']);
+// dependency. It is also left out of the generic nudge (unblockedOpen).
+const OWNER_BLOCKED_VALUES = new Set(['owner', 'user', 'human', 'external']);
 const OWNER_SUBJECT_RE = /^\s*owner(:|\s+decision\b)/i;
 function isOwnerBlocked(t) {
   // Settings switch guards.taskGuardOwnerBlockedMarker (default on): fail-open
@@ -498,6 +507,21 @@ function classifyOpen(openTasks, taskMap) {
     actionable.push(t);
   }
   return actionable;
+}
+
+// unblockedOpen(openTasks, taskMap) — the open tasks the GENERIC nudge lists:
+// drops a task with an owner-blocked marker (isOwnerBlocked) or a blockedBy id
+// naming a KNOWN task that is still pending/in_progress. A dangling blockedBy id
+// does not count here (unlike classifyOpen), so a fake dependency cannot
+// silence the generic nudge.
+function unblockedOpen(openTasks, taskMap) {
+  const openIds = new Set();
+  for (const t of taskMap.values()) {
+    const s = (t.status || '').toLowerCase();
+    if (s === 'pending' || s === 'in_progress' || s === 'in-progress') openIds.add(String(t.id));
+  }
+  return openTasks.filter(t => !isOwnerBlocked(t) &&
+    !normBlockedBy(t.blockedBy).some(id => openIds.has(String(id))));
 }
 
 function parseTasksFromFile(filePath) {

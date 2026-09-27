@@ -499,3 +499,81 @@ test('PRIORITY: missing priority treated as P1 (fail-open) -> idle-neglect fires
     h.cleanup();
   }
 });
+
+// ---- GENERIC NUDGE honours honest blocked markers (blockedBy an OPEN task,
+// or metadata.blockedOn owner/user/human/external). ----
+
+test('GENERIC: every open task honestly blocked -> no nudge at all', () => {
+  const h = makeHome();
+  try {
+    const tp = h.writeTranscript([
+      todoWrite([
+        { id: '1', content: 'ship after review', status: 'pending', blockedBy: ['2'] },
+        { id: '2', content: 'waiting on vendor API key', status: 'in_progress', metadata: { blockedOn: 'external' } },
+        { id: '3', content: 'owner picks region', status: 'in_progress', metadata: { blockedOn: 'owner' } },
+      ]),
+    ]);
+    const r = testHook(HOOK, stopPayload(tp), { home: h.home });
+    assert.ok(!isBlock(r), `all-blocked open set must not nudge; reason: ${r.json && r.json.reason}`);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('GENERIC: an unblocked open task still nudges and lists ONLY the unblocked ones; dedup kept', () => {
+  const h = makeHome();
+  try {
+    const tp = h.writeTranscript([
+      todoWrite([
+        { id: '1', content: 'ship after review', status: 'pending', blockedBy: ['2'] },
+        { id: '2', content: 'waiting on vendor API key', status: 'in_progress', metadata: { blockedOn: 'external' } },
+        { id: '3', content: 'refactor the parser', status: 'in_progress' },
+      ]),
+    ]);
+    const r = testHook(HOOK, stopPayload(tp), { home: h.home });
+    assert.ok(isBlock(r) && !isIdleNeglect(r), `expected the generic nudge; got ${JSON.stringify(r.json)}`);
+    const reason = r.json.reason;
+    assert.match(reason, /refactor the parser/);
+    assert.doesNotMatch(reason, /ship after review|vendor API key/);
+    assert.match(reason, /blockedBy/);
+    assert.match(reason, /blockedOn/);
+    const r2 = testHook(HOOK, stopPayload(tp), { home: h.home });
+    assert.ok(!isBlock(r2), 'same unblocked set must dedupe on the next Stop');
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('GENERIC: a blockedBy naming a completed or unknown task does not hide the task', () => {
+  const h = makeHome();
+  try {
+    const tp = h.writeTranscript([
+      todoWrite([
+        { id: '1', content: 'done prerequisite', status: 'completed' },
+        { id: '2', content: 'follow-up work', status: 'in_progress', blockedBy: ['1'] },
+        { id: '3', content: 'fake-blocked work', status: 'in_progress', blockedBy: ['999'] },
+      ]),
+    ]);
+    const r = testHook(HOOK, stopPayload(tp), { home: h.home });
+    assert.ok(isBlock(r), `expected the generic nudge; got ${JSON.stringify(r.json)}`);
+    assert.match(r.json.reason, /follow-up work/);
+    assert.match(r.json.reason, /fake-blocked work/);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test("OWNER-BLOCKED: metadata.blockedOn 'external' suppresses idle-neglect", () => {
+  const h = makeHome();
+  try {
+    const tp = h.writeTranscript([
+      todoWrite([
+        { id: '1', content: 'wait for upstream release', status: 'pending', metadata: { blockedOn: 'External' } },
+      ]),
+    ]);
+    const r = testHook(HOOK, stopPayload(tp), { home: h.home });
+    assert.ok(!isBlock(r), `external-blocked task must not nudge; reason: ${r.json && r.json.reason}`);
+  } finally {
+    h.cleanup();
+  }
+});
