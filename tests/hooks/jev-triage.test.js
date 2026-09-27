@@ -371,3 +371,19 @@ test('full cache (seeded frozen state): a new label is RETAINED and served from 
     });
   } finally { rm(home); }
 });
+
+test('triage log over 1MB ROTATES to .1 (was truncated to empty, wiping triage history)', () => {
+  const home = tmpHome();
+  try {
+    const p = path.join(home, '.anti-hall', 'logs', 'jev-triage.ndjson');
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    const old = JSON.stringify({ ts: '2026-09-20T00:00:00.000Z', hash: 'old', kind: 'fyi', backend: 'jev', ms: 1 }) + '\n';
+    fs.writeFileSync(p, old.repeat(Math.ceil((1024 * 1024) / old.length) + 1));
+    noteLabeledInbound({ home, recipient: 'me', sender: 'them', label: { urgency: 'urgent' } });
+    recordAnswered({ home, from: 'me', to: 'them' });
+    assert.ok(fs.readFileSync(p + '.1', 'utf8').startsWith(old), 'previous rows kept in .1');
+    const rows = fs.readFileSync(p, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+    assert.strictEqual(rows.length, 1);
+    assert.strictEqual(rows[0].type, 'answered');
+  } finally { rm(home); }
+});

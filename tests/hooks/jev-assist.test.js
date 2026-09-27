@@ -1229,3 +1229,125 @@ test('ask(): full cache (seeded) -> a fresh process\'s new entry is retained, ne
     });
   } finally { h.cleanup(); }
 });
+
+// ---------------------------------------------------------------------------
+// Retention: N rotated generations + daily rollups (seat audits need 1-2 weeks)
+// ---------------------------------------------------------------------------
+
+function logsDir(home) { return path.join(home, '.anti-hall', 'logs'); }
+function decisionRow(ts, extra) {
+  return JSON.stringify(Object.assign({ ts, id: 'speculation', h: 'h' + ts, base: false, jev: true, conf: 0.9, ms: 100, backend: 'jev', final: true, changed: null, cached: false, mode: 'shadow', wouldChange: null, costUsd: 0.001 }, extra)) + '\n';
+}
+// fillOver(p, line) -> writes `line` repeatedly until p exceeds the rotation cap.
+function fillOver(p, lib, firstLines, padTs) {
+  const pad = decisionRow(padTs || '2026-09-20T00:00:00.000Z', { id: 'pad', backend: 'baseline-only', mode: 'off' });
+  const head = firstLines || '';
+  const body = head + pad.repeat(Math.ceil((lib.DECISION_LOG_MAX_BYTES - Buffer.byteLength(head)) / Buffer.byteLength(pad)) + 1);
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+  fs.writeFileSync(p, body);
+}
+
+test('rotation keeps jev.logRotatedFiles generations (.1 .. .N), never more', async () => {
+  const h = makeHome();
+  try {
+    h.writeState('settings.json', { jev: { logRotatedFiles: 2 } });
+    await withEnv({ HOME: h.home }, async () => {
+      const lib = freshLib();
+      const p = lib.logPath(h.home);
+      for (let i = 1; i <= 4; i++) {
+        fillOver(p, lib, decisionRow('2026-09-2' + i + 'T01:00:00.000Z', { h: 'gen' + i }));
+        lib.recordOutcome({ id: 'speculation', h: 'x', outcome: 'ok', home: h.home });
+      }
+      const names = fs.readdirSync(logsDir(h.home)).filter((n) => n.startsWith('jev-assist.ndjson')).sort();
+      assert.deepStrictEqual(names, ['jev-assist.ndjson', 'jev-assist.ndjson.1', 'jev-assist.ndjson.2']);
+      assert.match(fs.readFileSync(p + '.1', 'utf8'), /"h":"gen4"/);
+      assert.match(fs.readFileSync(p + '.2', 'utf8'), /"h":"gen3"/);
+      assert.strictEqual(readNdjson(p).length, 1, 'fresh file holds only the new row');
+    });
+  } finally { h.cleanup(); }
+});
+
+test('default retention is 10 generations; a lowered setting never removes files past N', async () => {
+  const h = makeHome();
+  try {
+    await withEnv({ HOME: h.home }, async () => {
+      const lib = freshLib();
+      assert.strictEqual(lib.rotatedFilesSetting(h.home), 10);
+      const p = lib.logPath(h.home);
+      fs.mkdirSync(logsDir(h.home), { recursive: true });
+      fs.writeFileSync(p + '.7', 'old\n');
+      h.writeState('settings.json', { jev: { logRotatedFiles: 2 } });
+      fillOver(p, lib);
+      lib.recordOutcome({ id: 'speculation', h: 'x', outcome: 'ok', home: h.home });
+      assert.ok(fs.existsSync(p + '.7'), 'a generation past N is left alone');
+      assert.ok(lib.retainedLogFiles(p).includes(p + '.7'), 'and is still read');
+    });
+  } finally { h.cleanup(); }
+});
+
+test('rotation writes a daily rollup per id x backend x mode before rows age out', async () => {
+  const h = makeHome();
+  try {
+    await withEnv({ HOME: h.home }, async () => {
+      const lib = freshLib();
+      const p = lib.logPath(h.home);
+      const day1 =
+        decisionRow('2026-09-21T01:00:00.000Z', { h: 'a', ms: 100, wouldChange: 'added' }) +
+        decisionRow('2026-09-21T02:00:00.000Z', { h: 'a', ms: 300, wouldChange: 'added' }) +
+        decisionRow('2026-09-21T03:00:00.000Z', { h: 'b', ms: 900, backend: 'baseline-only', reason: 'timeout', jev: null, costUsd: undefined }) +
+        decisionRow('2026-09-21T04:00:00.000Z', { h: 'a', ms: 0, backend: 'cache', costUsd: 0, wouldChange: 'added' }) +
+        JSON.stringify({ ts: '2026-09-21T05:00:00.000Z', type: 'outcome', id: 'speculation', h: 'a', outcome: 'evidence-added' }) + '\n';
+      fillOver(p, lib, day1);
+      lib.recordOutcome({ id: 'speculation', h: 'x', outcome: 'ok', home: h.home });
+      const f = path.join(lib.dailyDir(h.home), '2026-09-21.json');
+      const r = JSON.parse(fs.readFileSync(f, 'utf8'));
+      assert.strictEqual(r.day, '2026-09-21');
+      const jev = r.groups.find((g) => g.id === 'speculation' && g.backend === 'jev');
+      assert.deepStrictEqual(
+        { n: jev.n, fresh: jev.fresh, changed: jev.changed, timeouts: jev.timeouts, costUsd: jev.costUsd, p50Ms: jev.p50Ms, p95Ms: jev.p95Ms, mode: jev.mode },
+        { n: 2, fresh: 2, changed: 1, timeouts: 0, costUsd: 0.002, p50Ms: 300, p95Ms: 300, mode: 'shadow' });
+      const base = r.groups.find((g) => g.id === 'speculation' && g.backend === 'baseline-only');
+      assert.strictEqual(base.timeouts, 1);
+      assert.strictEqual(base.failures, 1);
+      assert.strictEqual(base.costUsd, null);
+      const cache = r.groups.find((g) => g.id === 'speculation' && g.backend === 'cache');
+      assert.strictEqual(cache.changed, 0, 'cache hits never count as a changed decision');
+      assert.deepStrictEqual(r.outcomes, [{ id: 'speculation', outcome: 'evidence-added', n: 1 }]);
+    });
+  } finally { h.cleanup(); }
+});
+
+test('a day whose early rows already rotated away keeps its earlier complete rollup', async () => {
+  const h = makeHome();
+  try {
+    await withEnv({ HOME: h.home }, async () => {
+      const lib = freshLib();
+      const dir = lib.dailyDir(h.home);
+      fs.mkdirSync(dir, { recursive: true });
+      const earlier = { v: 1, day: '2026-09-20', complete: true, groups: [{ id: 'speculation', n: 999 }], outcomes: [] };
+      fs.writeFileSync(path.join(dir, '2026-09-20.json'), JSON.stringify(earlier));
+      // Retained rows start mid-day on 09-20: that day is incomplete now.
+      fillOver(lib.logPath(h.home), lib, decisionRow('2026-09-20T12:00:00.000Z'), '2026-09-20T13:00:00.000Z');
+      lib.recordOutcome({ id: 'speculation', h: 'x', outcome: 'ok', home: h.home });
+      assert.deepStrictEqual(JSON.parse(fs.readFileSync(path.join(dir, '2026-09-20.json'), 'utf8')), earlier);
+    });
+  } finally { h.cleanup(); }
+});
+
+test('rollups are never removed by default; jev.rollupRetentionDays > 0 is an owner opt-in', async () => {
+  const h = makeHome();
+  try {
+    await withEnv({ HOME: h.home }, async () => {
+      const lib = freshLib();
+      const dir = lib.dailyDir(h.home);
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, '2020-01-01.json'), '{}');
+      fillOver(lib.logPath(h.home), lib);
+      lib.recordOutcome({ id: 'speculation', h: 'x', outcome: 'ok', home: h.home });
+      assert.ok(fs.existsSync(path.join(dir, '2020-01-01.json')), 'default keeps every rollup');
+      h.writeState('settings.json', { jev: { rollupRetentionDays: 30 } });
+      lib.writeDailyRollups(h.home);
+      assert.ok(!fs.existsSync(path.join(dir, '2020-01-01.json')), 'opt-in removes rollups older than N days');
+    });
+  } finally { h.cleanup(); }
+});

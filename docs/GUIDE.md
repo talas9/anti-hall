@@ -936,6 +936,8 @@ Generated from `hooks/lib/settings-schema.js` (a hygiene test keeps this table a
 | `jev.budget.usdPerWeek` | — (>0) | — | optional: weekly USD spend threshold, used only when budget.mode=watch. |
 | `jev.weeklyNotice` | `true` | — | Once-a-week SessionStart scorecard notice naming one integration worth promoting or turning off (Jev enabled only). |
 | `jev.audit.snippets` adv | `false` | `ANTIHALL_JEV_AUDIT_SNIPPETS` | Store a redacted ~200-char snippet for decisions Jev changed (off by default: privacy). |
+| `jev.logRotatedFiles` adv | `10` | — | Rotated generations kept for `jev-assist.ndjson` (2MB each) and `jev-triage.ndjson` (1MB each); 10 ≈ 20 days of decision rows. |
+| `jev.rollupRetentionDays` adv | `0` | — | Days of daily rollups (`~/.anti-hall/logs/jev-daily/<day>.json`) to keep; 0 keeps all, only an explicit N > 0 removes older ones. |
 | `jev.budget.minCreditUsd` | — (>0) | — | optional: warn (once a day, budget.mode=watch only) when the gateway credit balance drops below this USD amount. |
 | `jevIntegrations.speculation` | `on` (on/shadow/off) | — | Is this claim unsupported speculation (add-block trust). |
 | `jevIntegrations.triage` | `on` (on/shadow/off) | — | Mesh message urgency/kind labeling (advisory trust). |

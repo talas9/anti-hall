@@ -62,8 +62,14 @@
 //   sha256(id + questionVersion + (cacheKey ?? state)).slice(0,16), bounded to
 //   500 entries (oldest evicted by insertion order), atomic tmp+rename write.
 //
-// LOG: ~/.anti-hall/logs/jev-assist.ndjson, rotated at 1MB (keeps one .1
-// backup). One line per ask()/askSync() call:
+// LOG: ~/.anti-hall/logs/jev-assist.ndjson, rotated at 2MB into .1 .. .N
+// (N = setting jev.logRotatedFiles, default 10: about 20 days at 2026-09's
+// ~1MB/day). Just before each rotation, writeDailyRollups() folds every
+// retained row into ~/.anti-hall/logs/jev-daily/<YYYY-MM-DD>.json (per
+// id x backend x mode counts, changed, timeouts, cost, p50/p95), so a seat
+// audit outlives the raw rows. Rollups are only removed when the owner sets
+// jev.rollupRetentionDays > 0 (default 0 = keep all). One line per
+// ask()/askSync() call:
 //   {ts, id, h, base, jev, conf, ms, backend, final, changed, cached, mode,
 //    reason?, compare?, costUsd?, costSource?, tokensIn?, tokensOut?}
 //   costUsd/costSource ('cache'|'gateway'|'price-table'|null) are written
@@ -96,7 +102,9 @@ const { jevDecide, loadJevConfig } = require('./jev-client.js');
 const testHomeGuard = require('../../companion/lib/test-home-guard.js');
 
 const CACHE_MAX_ENTRIES = 500;
-const LOG_MAX_BYTES = 1024 * 1024; // 1MB, one rotated backup kept (.1)
+const LOG_MAX_BYTES = 1024 * 1024; // 1MB, jev-audit.ndjson (one .1 backup)
+const DECISION_LOG_MAX_BYTES = 2 * 1024 * 1024; // jev-assist.ndjson, see LOG above
+const DEFAULT_ROTATED_FILES = 10;
 const QUESTION_VERSION = 'v1';
 const WORKER_PATH = path.join(__dirname, 'jev-assist-worker.js');
 const DETACHED_WORKER_PATH = path.join(__dirname, 'jev-assist-detached-worker.js');
@@ -527,13 +535,178 @@ function writeCache(home, cache) {
   }
 }
 
-function rotateIfNeeded(p) {
+function dailyDir(home) {
+  return path.join(homeDir(home), '.anti-hall', 'logs', 'jev-daily');
+}
+
+// rotatedFilesSetting(home) -> jev.logRotatedFiles as an integer >= 1.
+function rotatedFilesSetting(home) {
+  const n = Number(jevSetting(home, 'logRotatedFiles', DEFAULT_ROTATED_FILES));
+  return Number.isFinite(n) && n >= 1 ? Math.floor(n) : DEFAULT_ROTATED_FILES;
+}
+
+// shiftRotated(p, keep): p.(keep-1) -> p.keep, ..., p -> p.1. The rename onto
+// p.keep replaces the oldest generation, exactly as the old single-backup
+// rotation replaced p.1. Files past `keep` (after lowering the setting) are
+// left alone. Throws on the final rename so a caller can fall back.
+function shiftRotated(p, keep) {
+  for (let i = keep - 1; i >= 1; i--) {
+    try { fs.renameSync(p + '.' + i, p + '.' + (i + 1)); } catch (_) { /* gap in the chain */ }
+  }
+  fs.renameSync(p, p + '.1');
+}
+
+// retainedLogFiles(p) -> [p.K, ..., p.1, p] that exist, oldest first. Reads
+// every numeric suffix present, not just up to the current setting, so a
+// lowered jev.logRotatedFiles never hides data still on disk.
+function retainedLogFiles(p) {
+  let names = [];
+  try { names = fs.readdirSync(path.dirname(p)); } catch (_) { return []; }
+  const base = path.basename(p);
+  const gens = [];
+  for (const n of names) {
+    if (n === base) continue;
+    const m = n.startsWith(base + '.') ? /^\d+$/.exec(n.slice(base.length + 1)) : null;
+    if (m) gens.push(Number(m[0]));
+  }
+  gens.sort((a, b) => b - a);
+  const out = gens.map((g) => p + '.' + g);
+  if (fs.existsSync(p)) out.push(p);
+  return out;
+}
+
+function readNdjsonFiles(files) {
+  const rows = [];
+  for (const f of files) {
+    let raw = '';
+    try { raw = fs.readFileSync(f, 'utf8'); } catch (_) { continue; }
+    for (const line of raw.split('\n')) {
+      const t = line.trim();
+      if (!t) continue;
+      try { rows.push(JSON.parse(t)); } catch (_) { /* corrupt line */ }
+    }
+  }
+  return rows;
+}
+
+function pctile(sorted, p) {
+  if (!sorted.length) return null;
+  return sorted[Math.min(sorted.length - 1, Math.floor(p * sorted.length))];
+}
+
+// buildDailyRollups(rows) -> Map<'YYYY-MM-DD', rollup>. Per UTC day, one group
+// per id x backend x mode: n rows, fresh (non-cache) rows, changed = distinct
+// fresh hashes whose trust rule moved the baseline (`changed` for mode on,
+// `wouldChange` otherwise; label-only string answers excluded, as in
+// jev-report), timeouts, failures (baseline-only with a reason), costUsd (sum
+// of reported cost, null when none reported), p50/p95 of `ms`. Outcome rows
+// are counted per id x outcome. Other row types are skipped.
+function buildDailyRollups(rows) {
+  const days = new Map();
+  for (const r of rows) {
+    if (!r || typeof r.ts !== 'string' || !r.id) continue;
+    const t = Date.parse(r.ts);
+    if (!Number.isFinite(t)) continue;
+    const day = new Date(t).toISOString().slice(0, 10);
+    if (!days.has(day)) days.set(day, { groups: new Map(), outcomes: new Map() });
+    const d = days.get(day);
+    if (r.type === 'outcome') {
+      const k = r.id + '\u0001' + String(r.outcome);
+      d.outcomes.set(k, (d.outcomes.get(k) || 0) + 1);
+      continue;
+    }
+    if (r.type) continue;
+    const backend = r.backend || 'unknown';
+    const mode = r.mode || 'unknown';
+    const k = r.id + '\u0001' + backend + '\u0001' + mode;
+    if (!d.groups.has(k)) {
+      d.groups.set(k, { id: r.id, backend, mode, n: 0, fresh: 0, changedHashes: new Set(), timeouts: 0, failures: 0, cost: 0, costKnown: false, ms: [] });
+    }
+    const g = d.groups.get(k);
+    g.n++;
+    if (backend !== 'cache') g.fresh++;
+    const dir = r.mode === 'on' ? r.changed : r.wouldChange;
+    if (dir && typeof r.jev !== 'string' && backend !== 'cache' && r.h) g.changedHashes.add(r.h);
+    if (r.reason === 'timeout') g.timeouts++;
+    if (backend === 'baseline-only' && r.reason) g.failures++;
+    if (Number.isFinite(r.costUsd)) { g.cost += r.costUsd; g.costKnown = true; }
+    if (Number.isFinite(r.ms)) g.ms.push(r.ms);
+  }
+  const out = new Map();
+  for (const [day, d] of days) {
+    const groups = [...d.groups.values()].map((g) => {
+      const ms = g.ms.sort((a, b) => a - b);
+      return {
+        id: g.id, backend: g.backend, mode: g.mode, n: g.n, fresh: g.fresh,
+        changed: g.changedHashes.size, timeouts: g.timeouts, failures: g.failures,
+        costUsd: g.costKnown ? Math.round(g.cost * 1e8) / 1e8 : null,
+        p50Ms: pctile(ms, 0.5), p95Ms: pctile(ms, 0.95),
+      };
+    }).sort((a, b) => (a.id + a.backend + a.mode).localeCompare(b.id + b.backend + b.mode));
+    const outcomes = [...d.outcomes.entries()].map(([k, n]) => {
+      const [id, outcome] = k.split('\u0001');
+      return { id, outcome, n };
+    });
+    out.set(day, { v: 1, day, groups, outcomes });
+  }
+  return out;
+}
+
+// writeDailyRollups(home) -> number of rollup files written. Reads every
+// retained jev-assist.ndjson generation. A day is (re)written only when all
+// of its rows are still on disk (its UTC start is at/after the oldest
+// retained row) or when it has no rollup yet; a day whose early rows already
+// rotated away keeps its earlier, complete rollup. `complete` records which
+// case produced the file. Atomic tmp+rename writes. Never throws.
+function writeDailyRollups(home) {
+  let written = 0;
+  try {
+    const rows = readNdjsonFiles(retainedLogFiles(logPath(home)));
+    let oldest = Infinity;
+    for (const r of rows) {
+      const t = r && typeof r.ts === 'string' ? Date.parse(r.ts) : NaN;
+      if (Number.isFinite(t) && t < oldest) oldest = t;
+    }
+    const dir = dailyDir(home);
+    fs.mkdirSync(dir, { recursive: true });
+    const generatedAt = new Date().toISOString();
+    for (const [day, rollup] of buildDailyRollups(rows)) {
+      const file = path.join(dir, day + '.json');
+      const complete = Date.parse(day + 'T00:00:00Z') >= oldest;
+      if (!complete && fs.existsSync(file)) continue;
+      const tmp = file + '.tmp.' + process.pid;
+      fs.writeFileSync(tmp, JSON.stringify(Object.assign({ generatedAt, complete }, rollup)), 'utf8');
+      fs.renameSync(tmp, file);
+      written++;
+    }
+    pruneDailyRollups(home);
+  } catch (_) { /* best-effort */ }
+  return written;
+}
+
+// pruneDailyRollups(home): OWNER OPT-IN ONLY. jev.rollupRetentionDays
+// defaults to 0 = never remove anything; only an explicit N > 0 removes
+// rollup files for days older than N days.
+function pruneDailyRollups(home) {
+  const days = Number(jevSetting(home, 'rollupRetentionDays', 0));
+  if (!Number.isFinite(days) || days <= 0) return;
+  const cutoff = new Date(Date.now() - days * 86400000).toISOString().slice(0, 10);
+  let names = [];
+  try { names = fs.readdirSync(dailyDir(home)); } catch (_) { return; }
+  for (const n of names) {
+    const m = /^(\d{4}-\d{2}-\d{2})\.json$/.exec(n);
+    if (m && m[1] < cutoff) {
+      try { fs.unlinkSync(path.join(dailyDir(home), n)); } catch (_) { /* best-effort */ }
+    }
+  }
+}
+
+function rotateIfNeeded(p, home) {
   try {
     const st = fs.statSync(p);
-    if (st.size > LOG_MAX_BYTES) {
-      const old = p + '.1';
-      try { fs.rmSync(old, { force: true }); } catch (_) { /* no prior backup */ }
-      fs.renameSync(p, old);
+    if (st.size > DECISION_LOG_MAX_BYTES) {
+      writeDailyRollups(home); // before the oldest generation is replaced
+      shiftRotated(p, rotatedFilesSetting(home));
     }
   } catch (_) {
     // file doesn't exist yet — nothing to rotate
@@ -544,7 +717,7 @@ function appendLog(home, entry) {
   try {
     const p = logPath(home);
     fs.mkdirSync(path.dirname(p), { recursive: true });
-    rotateIfNeeded(p);
+    rotateIfNeeded(p, home);
     fs.appendFileSync(p, JSON.stringify(entry) + '\n', 'utf8');
   } catch (_) {
     // best-effort only — logging must never affect the decision
@@ -915,5 +1088,13 @@ module.exports = {
   maybeWriteAuditSnippet,
   cachePath,
   logPath,
+  dailyDir,
+  retainedLogFiles,
+  readNdjsonFiles,
+  shiftRotated,
+  rotatedFilesSetting,
+  buildDailyRollups,
+  writeDailyRollups,
   CACHE_MAX_ENTRIES,
+  DECISION_LOG_MAX_BYTES,
 };

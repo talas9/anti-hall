@@ -164,7 +164,13 @@ function appendTriageLog(home, entry) {
     const p = logPath(home);
     try {
       const st = fs.statSync(p);
-      if (st.size > CACHE_LOG_MAX_BYTES) fs.writeFileSync(p, '', 'utf8');
+      // Rotate into .1 .. .N (jev.logRotatedFiles, shared with
+      // jev-assist.ndjson) instead of truncating, so `jev report` keeps triage
+      // history across a size rollover.
+      if (st.size > CACHE_LOG_MAX_BYTES) {
+        const assist = require('./jev-assist.js');
+        assist.shiftRotated(p, assist.rotatedFilesSetting(home));
+      }
     } catch (_) {
       // no existing file — fine, created below.
     }
