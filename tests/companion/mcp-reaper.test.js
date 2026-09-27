@@ -205,6 +205,67 @@ test('FIXB matchesMcp: uv / uvx / python -m Python MCP servers are TRUE', () => 
 });
 
 // =====================================================================
+// FIX D (0.117) — `<name>-mcp` suffix / `@scope/mcp` package names were never
+// even CANDIDATES: MCP_TOKEN_RE only matched `mcp[-_]server` /
+// `server-sequential-thinking`, so playwright-mcp, chrome-devtools-mcp,
+// @playwright/mcp etc were invisible to matchesMcp and could never be reaped
+// even as a genuine orphan. Widened matchesMcp to also recognise these forms,
+// while leaving every liveness/orphan rule (PPID, parent-claude-alive, age)
+// exactly as strict — matching only decides "is this cmd MCP-shaped"; whether
+// it is actually reaped is still entirely gated by findOrphans/isReaperParent.
+// =====================================================================
+
+test('FIXD matchesMcp: `<name>-mcp` suffix and `@scope/mcp` package names are TRUE', () => {
+  assert.ok(m.matchesMcp('npx playwright-mcp --port 1234'));
+  assert.ok(m.matchesMcp('node /opt/tools/chrome-devtools-mcp/index.js'));
+  assert.ok(m.matchesMcp('playwright-mcp --port 1234')); // token itself is argv0
+  assert.ok(m.matchesMcp('npx @playwright/mcp --stdio'));
+});
+
+test('FIXD matchesMcp: a user\'s own non-MCP process named foo-mcpx is FALSE', () => {
+  assert.ok(!m.matchesMcp('foo-mcpx --daemon'));
+  assert.ok(!m.matchesMcp('node /opt/tools/foo-mcpx/index.js'));
+});
+
+test('FIXD findOrphans: playwright-mcp with a live claude parent is NOT flagged', () => {
+  const procs = [
+    { pid: 1, ppid: 0, cmd: '/sbin/launchd' },
+    { pid: 500, ppid: 1, cmd: '/opt/homebrew/bin/claude' }, // live spawner, NOT a reaper
+    { pid: 501, ppid: 500, cmd: 'npx playwright-mcp --port 1234' },
+  ];
+  const orphans = m.findOrphans(procs);
+  assert.strictEqual(orphans.length, 0, 'live claude parent protects its playwright-mcp child');
+});
+
+test('FIXD findOrphans: a PPID-1 chrome-devtools-mcp orphan IS a candidate', () => {
+  const procs = [{ pid: 900, ppid: 1, cmd: 'node /x/chrome-devtools-mcp/cli.js' }];
+  const orphans = m.findOrphans(procs);
+  assert.strictEqual(orphans.length, 1);
+  assert.strictEqual(orphans[0].pid, 900);
+});
+
+test('FIXD metric: report counts candidates by server name', () => {
+  // Mirrors how main()'s report line could group orphan output by server name — pure
+  // aggregation over findOrphans()'s own output, no new production surface required.
+  const procs = [
+    { pid: 900, ppid: 1, cmd: 'node /x/chrome-devtools-mcp/cli.js' },
+    { pid: 901, ppid: 1, cmd: 'npx playwright-mcp --port 1' },
+    { pid: 902, ppid: 1, cmd: 'npx playwright-mcp --port 2' },
+    { pid: 903, ppid: 1, cmd: 'foo-mcpx --daemon' }, // not MCP-shaped, excluded
+  ];
+  const orphans = m.findOrphans(procs);
+  const byName = new Map();
+  for (const o of orphans) {
+    const suffixMatch = o.cmd.match(m.MCP_SUFFIX_RE) || o.cmd.match(m.SCOPED_MCP_RE);
+    const key = suffixMatch ? suffixMatch[2] || suffixMatch[0].trim() : m.argv0Basename(o.cmd);
+    byName.set(key, (byName.get(key) || 0) + 1);
+  }
+  assert.strictEqual(orphans.length, 3);
+  assert.strictEqual(byName.get('chrome-devtools-mcp'), 1);
+  assert.strictEqual(byName.get('playwright-mcp'), 2);
+});
+
+// =====================================================================
 // FIX C — ANTIHALL_REAPER_EXCLUDE opt-out: an excluded orphan is never reaped,
 // a non-excluded orphan in the same list still is.
 // =====================================================================

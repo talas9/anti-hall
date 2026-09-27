@@ -51,6 +51,15 @@ const MODELCTX_RE = /@?modelcontextprotocol\b/i;
 const MCP_TOKEN_RE = /(^|[\s/])(mcp[-_]server|server-sequential-thinking)/i;
 // `mcp start` as a discrete command token (boundary on both sides, not "start.md").
 const MCP_START_RE = /(^|\s)mcp\s+start(\s|$)/i;
+// `<name>-mcp` suffix packages (playwright-mcp, chrome-devtools-mcp, ...). Left-bounded by
+// start/whitespace/slash (so it also matches as a path segment, e.g.
+// `.../node_modules/playwright-mcp/dist/cli.js`), right-bounded by a lookahead for
+// whitespace/slash/end so `foo-mcpx` (a user's own unrelated process) never matches.
+const MCP_SUFFIX_RE = /(^|[\s/])([a-z0-9][a-z0-9._-]*-mcp)(?=[\s/]|$)/i;
+// `@scope/mcp` package names (e.g. `@playwright/mcp`). Left-bounded by start/whitespace
+// (a scoped package name is never itself a path segment after `/`), right-bounded the
+// same way as MCP_SUFFIX_RE.
+const SCOPED_MCP_RE = /(^|\s)@[a-z0-9][a-z0-9._-]*\/mcp(?=[\s/]|$)/i;
 
 // Kept for backward-compat export; not used directly by matchesMcp anymore.
 const MCP_RE = MODELCTX_RE;
@@ -116,6 +125,15 @@ function matchesMcp(cmd, extraRe) {
   // 3) `mcp start` as a discrete command, only under a known runtime argv0 (or `mcp`
   //    itself as argv0). Rejects `less ~/notes/mcp start.md`.
   if (MCP_START_RE.test(cmd) && (runtimeArgv0 || base === 'mcp')) return true;
+
+  // 4) `<name>-mcp` suffix / `@scope/mcp` package token, boundary-anchored (same
+  //    accept condition as (2): a known runtime argv0 launching it, or the matched
+  //    token itself being argv0 — e.g. a binary literally named `playwright-mcp`, or
+  //    a scoped package whose argv0 basename resolves to `mcp`).
+  if (MCP_SUFFIX_RE.test(cmd) || SCOPED_MCP_RE.test(cmd)) {
+    const tokenIsArgv0 = /-mcp$/i.test(base) || base === 'mcp';
+    if (runtimeArgv0 || tokenIsArgv0) return true;
+  }
 
   // (Intentionally NO bare `mcp ... --stdio` rule — that matched `python train.py
   //  --mcp --stdio`. --stdio is only a signal alongside a real mcp package/server,
@@ -493,6 +511,8 @@ module.exports = {
   findOrphans,
   argv0Basename,
   MCP_RE,
+  MCP_SUFFIX_RE,
+  SCOPED_MCP_RE,
   REAPER_CMD_RE,
   matchesCodexBroker,
   extractBrokerCwd,
