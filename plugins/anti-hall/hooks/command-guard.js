@@ -2429,6 +2429,15 @@ function appendProjectCommandAllowAudit(entry) {
 //       push segment has already appeared in the chain: `git log --oneline
 //       [-N]`, `git status [--short|-s]`, `git show --stat [-N|HEAD]`. No
 //       other git subcommand, no flags outside this exact shape.
+//   (d) Field repro (peer sweep, 0.115.2): `git push origin
+//       HEAD:refs/heads/<branch> 2>&1 | tail -2` was blocked by three
+//       separate checks. Now accepted, still only for the CURRENT branch:
+//       a `SRC:DST` ref whose SRC is `HEAD`/the current branch and whose DST
+//       is the current branch (optionally `refs/heads/`-qualified) - the same
+//       destination as the approved bare form; a trailing `2>&1` on any chain
+//       segment; and ONE final `| tail [-n] N` / `| head [-n] N` output filter.
+//       A foreign DST, a delete (`:dst`), `+` force and every flag stay
+//       exactly as blocked as before.
 // ---------------------------------------------------------------------------
 
 // A bare remote/ref token: no leading '-' or '+' (rules out every flag and
@@ -2437,7 +2446,11 @@ function appendProjectCommandAllowAudit(entry) {
 // The one optional flag slot right after `push` matches ONLY `-q`/`--quiet`
 // verbatim (not a character class), so `--force`/`-f`/anything else there
 // still fails the whole regex, same as before this carve-out was widened.
-const PLAIN_PUSH_SEGMENT_RE = /^git\s+push(?:\s+(-q|--quiet))?(?:\s+((?![-+])[A-Za-z0-9_.\/-]+))?(?:\s+((?![-+])[A-Za-z0-9_.\/-]+))?\s*$/;
+const PLAIN_PUSH_SEGMENT_RE = /^git\s+push(?:\s+(-q|--quiet))?(?:\s+((?![-+])[A-Za-z0-9_.\/-]+))?(?:\s+((?![-+])[A-Za-z0-9_.\/-]+(?::[A-Za-z0-9_.\/-]+)?))?\s*$/;
+// (d) The one accepted trailing output filter, piped from the last segment.
+const PLAIN_OUTPUT_FILTER_RE = /^(?:tail|head)(?:\s+(?:-n\s*)?-?\d+)?\s*$/;
+// (d) A trailing `2>&1` (stderr merged into stdout) - no other redirect.
+const TRAILING_STDERR_MERGE_RE = /\s+2>&1\s*$/;
 
 // Trailing read-only segments (c) — only ever consulted AFTER a push segment
 // has already appeared in the chain (enforced in isAllowedPlainPushChain,
@@ -2494,7 +2507,7 @@ function hasShellExpansionAnywhere(command) {
 // `remote`/`ref` are the (post-quiet-flag) first/second bare tokens of a
 // plain push (null when omitted).
 function classifyPlainGitChainSegment(segment) {
-  const trimmed = segment.trim();
+  const trimmed = segment.trim().replace(TRAILING_STDERR_MERGE_RE, '');
   if (hasUnquotedRedirectChar(trimmed)) return null;
   if (hasSubstitutionOutsideSingleQuotes(trimmed)) return null;
   if (/^git\s+add\b/i.test(trimmed)) return { kind: 'add' };
@@ -2629,14 +2642,30 @@ function isPlainPushRefAllowed(ref, cwd) {
   if (ref === 'HEAD') return true;
   const branch = currentBranchName(cwd);
   if (!branch) return false; // fail closed: could not resolve the current branch
-  return ref === branch;
+  const colon = ref.indexOf(':');
+  if (colon === -1) return ref === branch;
+  // (d) `SRC:DST`: SRC is HEAD or the current branch, DST is the current
+  // branch (bare or refs/heads/-qualified). Anything else never qualifies.
+  const src = ref.slice(0, colon);
+  const dst = ref.slice(colon + 1).replace(/^refs\/heads\//, '');
+  return (src === 'HEAD' || src === branch) && dst === branch;
 }
 
 // isAllowedPlainPushChain(command, cwd) -> bool. See the header block above.
 function isAllowedPlainPushChain(command, cwd) {
   if (typeof command !== 'string' || !command.trim()) return false;
-  const { segments, delims } = splitSegmentsDetailed(command);
+  const split = splitSegmentsDetailed(command);
+  const segments = split.segments.slice();
+  const delims = split.delims.slice();
   if (!segments.length) return false;
+  // (d) ONE final `| tail -N` / `| head -N` output filter: drop it and treat
+  // the segment it reads from as the end of the chain.
+  if (segments.length >= 2 && delims[delims.length - 1] === 'end' && delims[delims.length - 2] === '|' &&
+      PLAIN_OUTPUT_FILTER_RE.test(segments[segments.length - 1].trim())) {
+    segments.pop();
+    delims.pop();
+    delims[delims.length - 1] = 'end';
+  }
   // Every delimiter between segments must be '&&' or ';' — a pipe, '||',
   // background '&', newline, heredoc, subshell/group, or command
   // substitution boundary disqualifies the WHOLE chain. The final delimiter

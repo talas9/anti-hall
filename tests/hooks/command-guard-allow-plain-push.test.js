@@ -537,3 +537,54 @@ test('allow-plain-push (widened): a linked git worktree (.git is a file) still r
     fs.rmSync(path.dirname(wtDir), { recursive: true, force: true });
   }
 });
+
+// ---- (d) peer-sweep field repro: `git push origin HEAD:refs/heads/<branch>
+// 2>&1 | tail -2` was blocked by three separate checks (refspec `:`, the
+// `2>&1` redirect, the pipe). Allowed now ONLY for the current branch. ----
+
+const D_ALLOW = [
+  'git push origin HEAD:refs/heads/main 2>&1 | tail -2',
+  'git push origin HEAD:main',
+  'git push origin main:refs/heads/main',
+  'git push origin main 2>&1',
+  'git push origin main | tail -2',
+  'git push -q origin HEAD 2>&1 | head -n 5',
+  'git add . && git commit -m "wip" && git push origin HEAD:refs/heads/main 2>&1 | tail -2',
+];
+for (const cmd of D_ALLOW) {
+  test(`allow-plain-push (d): allowed — ${cmd}`, () => {
+    const repo = makeGitRepo();
+    try {
+      const res = run(cmd, { cwd: repo });
+      assert.notStrictEqual(res.status, 2, res.stdout);
+    } finally {
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+}
+
+const D_BLOCK = [
+  'git push origin HEAD:refs/heads/other 2>&1 | tail -2', // foreign dst
+  'git push origin HEAD:other',
+  'git push origin other:main', // src is not HEAD/current branch
+  'git push origin :main', // delete
+  'git push origin +HEAD:main', // force refspec
+  'git push origin HEAD:refs/tags/main',
+  'git push --force origin main 2>&1 | tail -2',
+  'git push origin main 2>/dev/null',
+  'git push origin main > out.txt',
+  'git push origin main 2>&1 | tail -2 | sh', // more than one pipe
+  'git push origin main | grep x', // not a tail/head filter
+  'git push origin main | tail -2 && git status', // filter not at the end
+];
+for (const cmd of D_BLOCK) {
+  test(`allow-plain-push (d): still blocked — ${cmd}`, () => {
+    const repo = makeGitRepo();
+    try {
+      const res = run(cmd, { cwd: repo });
+      assert.strictEqual(res.status, 2, `expected block for: ${cmd}\n${res.stdout}`);
+    } finally {
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+}
