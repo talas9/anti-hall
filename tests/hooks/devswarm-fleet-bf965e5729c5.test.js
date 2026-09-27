@@ -22,7 +22,7 @@
 // for this hook's actual per-turn cadence, plus two correctness bugs) — this
 // file no longer tests any caching behavior.
 
-const { test } = require('node:test');
+const { test, after } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -35,8 +35,23 @@ const repokey = require('../../plugins/anti-hall/companion/lib/devswarm-repokey.
 const HOOK = 'devswarm-parent-inbox.js';
 const PRIMARY_ENV = { DEVSWARM_REPO_ID: 'repo-1' };
 
+// Safety-net sweep: every tmp dir this file creates (makeGitRepo/makeHome) is
+// tracked here regardless of whether a given test's own fs.rmSync ran, so a
+// missed cleanup never leaks a parent-inbox-bf965-* dir into os.tmpdir().
+const _tracked = new Set();
+after(() => {
+  for (const d of _tracked) {
+    try {
+      fs.rmSync(d, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    } catch (_) {
+      /* best-effort */
+    }
+  }
+});
+
 function makeGitRepo() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'parent-inbox-bf965-repo-'));
+  _tracked.add(dir);
   cp.spawnSync('git', ['init', '-q', dir]);
   return dir;
 }
@@ -89,7 +104,9 @@ function writeHeartbeat(home, id, beat) {
   fs.writeFileSync(p, JSON.stringify(beat));
 }
 function makeHome() {
-  return fs.mkdtempSync(path.join(os.tmpdir(), 'parent-inbox-bf965-home-'));
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'parent-inbox-bf965-home-'));
+  _tracked.add(home);
+  return home;
 }
 
 test('bf965e5729c5: a non-archived row reflects the current heartbeat every turn (no stale cache)', () => {

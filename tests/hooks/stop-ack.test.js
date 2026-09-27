@@ -4,7 +4,7 @@
 // integration coverage lives in silent-agent-nudge.test.js and
 // tasklist-guard.test.js (wired call sites).
 
-const { test } = require('node:test');
+const { test, after } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -12,8 +12,23 @@ const path = require('node:path');
 
 const stopAck = require('../../plugins/anti-hall/hooks/lib/stop-ack.js');
 
+// Safety-net sweep: every makeHome() dir is tracked here regardless of
+// whether a given test's own fs.rmSync ran, so a missed cleanup never leaks
+// an antihall-stop-ack-* dir into os.tmpdir().
+const _tracked = new Set();
+after(() => {
+  for (const d of _tracked) {
+    try {
+      fs.rmSync(d, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    } catch (_) {
+      /* best-effort */
+    }
+  }
+});
 function makeHome() {
-  return fs.mkdtempSync(path.join(os.tmpdir(), 'antihall-stop-ack-'));
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'antihall-stop-ack-'));
+  _tracked.add(home);
+  return home;
 }
 
 test('signatureFor: same subject -> same signature, different subject -> different signature', () => {

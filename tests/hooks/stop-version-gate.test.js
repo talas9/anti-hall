@@ -11,7 +11,7 @@
 // its own path resolution only depends on `env`/`home`, never on where it
 // physically lives, so copying it is safe and exercises the real logic).
 
-const { test } = require('node:test');
+const { test, after } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -20,8 +20,23 @@ const path = require('node:path');
 const REAL_UPDATE_JS = path.join(__dirname, '..', '..', 'plugins', 'anti-hall', 'skills', 'update', 'scripts', 'update.js');
 const GATE = require('../../plugins/anti-hall/hooks/lib/stop-version-gate.js');
 
+// Safety-net sweep: every makeFixtureRoot()/makeHome() dir is tracked here
+// regardless of whether a given test's own fs.rmSync ran, so a missed
+// cleanup never leaks an antihall-stop-version-gate-* dir into os.tmpdir().
+const _tracked = new Set();
+after(() => {
+  for (const d of _tracked) {
+    try {
+      fs.rmSync(d, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    } catch (_) {
+      /* best-effort */
+    }
+  }
+});
+
 function makeFixtureRoot(runningVersion) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'antihall-stop-version-gate-'));
+  _tracked.add(root);
   fs.mkdirSync(path.join(root, '.claude-plugin'), { recursive: true });
   fs.writeFileSync(path.join(root, '.claude-plugin', 'plugin.json'), JSON.stringify({ version: runningVersion }));
   fs.mkdirSync(path.join(root, 'skills', 'update', 'scripts'), { recursive: true });
@@ -30,7 +45,9 @@ function makeFixtureRoot(runningVersion) {
 }
 
 function makeHome() {
-  return fs.mkdtempSync(path.join(os.tmpdir(), 'antihall-stop-version-gate-home-'));
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'antihall-stop-version-gate-home-'));
+  _tracked.add(home);
+  return home;
 }
 
 function writeInstalledJson(home, version) {

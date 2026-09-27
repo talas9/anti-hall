@@ -7,11 +7,30 @@
 //   fresh, exact plan, refuses an automated caller, re-verifies each row, logs,
 //   tombstones. The hivecontrol binary is ALWAYS a PATH-injected fake.
 
-const { test } = require('node:test');
+const { test, after } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+
+// Tracked mkdtemp: every temp dir this file creates (ah-lifecycle-*, ah-lc-*) is
+// remembered here and swept in a single after() below, so a leaking test never
+// leaves entries behind in os.tmpdir() (was leaking ~999 ah-lifecycle- dirs).
+const _tmpDirs = [];
+function mkdtemp(prefix) {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  _tmpDirs.push(d);
+  return d;
+}
+after(() => {
+  for (const d of _tmpDirs) {
+    try {
+      fs.rmSync(d, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    } catch (_) {
+      /* best-effort */
+    }
+  }
+});
 
 const ROOT = path.join(__dirname, '..', '..', 'plugins', 'anti-hall');
 const L = require(path.join(ROOT, 'companion', 'lib', 'devswarm-lifecycle.js'));
@@ -48,7 +67,7 @@ function listTree(dir) {
 // fixture: app DB with a Primary + children; per-child fact overrides.
 function fixture(fake, children, opts) {
   const o = opts || {};
-  const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ah-lifecycle-')));
+  const base = fs.realpathSync(mkdtemp('ah-lifecycle-'));
   const home = path.join(base, 'home');
   fs.mkdirSync(home);
   const bin = fakeHivecontrol(path.join(base, 'bin'), fake);
@@ -526,7 +545,7 @@ test('gate (h): an owner-unarchived workspace is never re-archived at the same H
 // ---------------------------------------------------------------------------
 
 test('DURABLE STATE: readAutoArchivedState/autoArchivedStateAppend round-trip, idempotent on a duplicate (id, doneHead)', () => {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ah-lc-durable-'));
+  const home = mkdtemp('ah-lc-durable-');
   assert.deepStrictEqual(L.readAutoArchivedState(home), {}, 'no file yet -> {}');
   L.autoArchivedStateAppend(home, 'ws-1', 'h1', 1000);
   L.autoArchivedStateAppend(home, 'ws-1', 'h2', 2000);
@@ -540,7 +559,7 @@ test('DURABLE STATE: readAutoArchivedState/autoArchivedStateAppend round-trip, i
 });
 
 test('DURABLE STATE: autoArchivedAt is provably authoritative WITHOUT the ndjson log (proves the state file alone enforces gate (h))', () => {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ah-lc-durable-nolog-'));
+  const home = mkdtemp('ah-lc-durable-nolog-');
   L.autoArchivedStateAppend(home, 'ws-1', 'deadbeef', 5000);
   // No devswarm-auto-archive.ndjson written at all -- the log is entirely absent.
   const hit = L.autoArchivedAt(home, ['ws-1', 'ws-other'], 'deadbeef');
@@ -550,7 +569,7 @@ test('DURABLE STATE: autoArchivedAt is provably authoritative WITHOUT the ndjson
 });
 
 test('DURABLE STATE: autoArchivedAt FALLS BACK to the ndjson log for a pre-migration id the durable file has never seen', () => {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ah-lc-durable-fallback-'));
+  const home = mkdtemp('ah-lc-durable-fallback-');
   const logsDir = path.join(home, '.anti-hall', 'logs');
   fs.mkdirSync(logsDir, { recursive: true });
   const rec = { ts: '2026-01-01T00:00:00.000Z', at: 1735689600000, action: 'auto-archive', id: 'legacy-ws', doneHead: 'cafebabe', ok: true };
@@ -561,7 +580,7 @@ test('DURABLE STATE: autoArchivedAt FALLS BACK to the ndjson log for a pre-migra
 });
 
 test('MIGRATION: migrateAutoArchivedState seeds the durable file from a legacy log-only state (seeded-bad-state test)', () => {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ah-lc-migrate-'));
+  const home = mkdtemp('ah-lc-migrate-');
   const logsDir = path.join(home, '.anti-hall', 'logs');
   fs.mkdirSync(logsDir, { recursive: true });
   const lines = [
@@ -607,7 +626,7 @@ test('mode off: nothing planned, nothing spawned', { skip }, () => {
 });
 
 test('settings: default ON; dry-run/off selectable; junk falls back to on', () => {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ah-lc-set-'));
+  const home = mkdtemp('ah-lc-set-');
   assert.deepStrictEqual(L.readSettings(home), { mode: 'on', idleMin: 30, maxPerSweep: 3, ignorePings: true });
   fs.mkdirSync(path.join(home, '.anti-hall'));
   fs.writeFileSync(path.join(home, '.anti-hall', 'settings.json'), JSON.stringify({ devswarm: { autoArchive: { mode: 'on', idleMin: 45, maxPerSweep: 99 } } }));
@@ -706,7 +725,7 @@ test('approved prune: re-verifies, deletes via hivecontrol, logs, tombstones, pl
 test('notifyPrimary lands ONE line in the Primary partition through the partition door (real store)', { skip }, () => {
   const store = require(path.join(ROOT, 'companion', 'lib', 'devswarm-store.js'));
   const identity = require(path.join(ROOT, 'companion', 'lib', 'identity.js'));
-  const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ah-lc-notify-')));
+  const base = fs.realpathSync(mkdtemp('ah-lc-notify-'));
   const home = path.join(base, 'home'); fs.mkdirSync(home);
   const repo = path.join(base, 'repo'); fs.mkdirSync(repo);
   const g = require('node:child_process').spawnSync('git', ['init', '-q', repo], { encoding: 'utf8' });
@@ -795,7 +814,7 @@ test('app DB unreadable -> nothing archived (fail-safe), readable -> archived', 
 
 test('no builderType column: the Primary seat (main checkout) decides, never the primary- id prefix', { skip }, () => {
   const cp = require('node:child_process');
-  const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ah-lifecycle-seat-')));
+  const base = fs.realpathSync(mkdtemp('ah-lifecycle-seat-'));
   const home = path.join(base, 'home'); fs.mkdirSync(home);
   const repo = path.join(base, 'main');
   cp.spawnSync('git', ['init', '-q', repo]);
@@ -847,7 +866,7 @@ test('no builderType column: the Primary seat (main checkout) decides, never the
 for (const [label, bt] of [['NULL', null], ['empty', ''], ['whitespace-only', '  \t ']]) {
   test('builderType column present but ' + label + ' for the row: the main-checkout rule decides', { skip }, () => {
     const cp = require('node:child_process');
-    const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ah-lifecycle-btnull-')));
+    const base = fs.realpathSync(mkdtemp('ah-lifecycle-btnull-'));
     const home = path.join(base, 'home'); fs.mkdirSync(home);
     const repo = path.join(base, 'main');
     cp.spawnSync('git', ['init', '-q', repo]);
@@ -1139,7 +1158,7 @@ test('0.109 idle: a native-drained inbound message (mtype null) resets idle; bro
 });
 
 test('0.109 idle: settings — autoArchive.ignorePings defaults on, false turns it off', () => {
-  const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ah-lifecycle-set-')));
+  const home = fs.realpathSync(mkdtemp('ah-lifecycle-set-'));
   fs.mkdirSync(path.join(home, '.anti-hall'), { recursive: true });
   assert.strictEqual(L.readSettings(home, null, {}).ignorePings, true);
   fs.writeFileSync(path.join(home, '.anti-hall', 'settings.json'), JSON.stringify({ devswarm: { autoArchive: { ignorePings: false } } }));

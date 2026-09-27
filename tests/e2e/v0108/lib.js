@@ -19,16 +19,33 @@ const { spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { after } = require('node:test');
 
 const REPO_ROOT = path.join(__dirname, '..', '..', '..');
 const PLUGIN_ROOT = path.join(REPO_ROOT, 'plugins', 'anti-hall');
 const HOOKS_DIR = path.join(PLUGIN_ROOT, 'hooks');
 const SCRIPTS_DIR = path.join(PLUGIN_ROOT, 'scripts');
 
+// Safety-net sweep: track every makeHome() dir and remove anything still
+// standing when the test file finishes, in case a caller's finally-block
+// rm() was ever missed (was leaking anti-hall-e2e-v0108-* entries). Explicit
+// rm() calls still run immediately as before; this is idempotent insurance.
+const _tracked = new Set();
+after(() => {
+  for (const d of _tracked) {
+    try {
+      fs.rmSync(d, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    } catch (_) {
+      /* best-effort */
+    }
+  }
+});
+
 // makeHome() -> fresh temp HOME with <home>/.anti-hall created. Always
 // cleaned up by the caller's finally block.
 function makeHome() {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'anti-hall-e2e-v0108-'));
+  _tracked.add(home);
   fs.mkdirSync(path.join(home, '.anti-hall'), { recursive: true });
   return home;
 }
