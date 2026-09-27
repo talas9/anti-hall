@@ -156,6 +156,8 @@
     "devswarm_step_stall_min": { "type": "number", "title": "DevSwarm · Step stall window (min)", "description": "A busy child with a step plan and no step progress for this many minutes gets one advisory stall warning.", "default": 30, "min": 5 },
     "devswarm_stray_warn_max": { "type": "number", "title": "DevSwarm · Straying warnings per step", "description": "Most straying warnings per signal per plan step (stall, off-scope, idle, Jev). 0 turns straying warnings off.", "default": 2, "min": 0, "max": 10 },
     "devswarm_burn_tokens_warn": { "type": "number", "title": "DevSwarm · Token-burn warning (weighted tokens)", "description": "A child with a step plan that spends more than this many weighted tokens since its last step progress gets one advisory burn warning. 0 turns it off.", "default": 2000000, "min": 0 },
-    "devswarm_burn_cache_read_pct": { "type": "number", "title": "DevSwarm · Token-burn cache-read weight (%)", "description": "Weight of cache-read tokens in the burn figure, in percent (0-100); 10 mirrors cache-read pricing.", "default": 10, "min": 0, "max": 100 }
+    "devswarm_burn_cache_read_pct": { "type": "number", "title": "DevSwarm · Token-burn cache-read weight (%)", "description": "Weight of cache-read tokens in the burn figure, in percent (0-100); 10 mirrors cache-read pricing.", "default": 10, "min": 0, "max": 100 },
+    "devswarm_respawn_grace_min": { "type": "number", "title": "DevSwarm · Respawn grace after a warning (min)", "description": "Minutes after a correct warning before the Primary may run devswarm.js respawn. Respawn is never automatic.", "default": 20, "min": 0 },
+    "devswarm_respawn_wip_wait_sec": { "type": "number", "title": "DevSwarm · Respawn WIP wait (s)", "description": "Seconds respawn waits for the child to commit and push; anything left is parked on a new pushed park branch.", "default": 120, "min": 0 }
   }
 }

@@ -8574,6 +8574,185 @@ function cmdCorrect(id, flags, ctx) {
   return { ok: true, action: 'correct', id, message, warned_at: now, step: found.plan.warned_step, sent: sent.result };
 }
 
+// cmdRespawn(id, flags, ctx) — Meeseeks P3: the Primary replaces a straying
+// child with a fresh workspace that keeps its progress. PRIMARY-RUN ONLY,
+// never automatic (no sweep, hook or Jev answer calls it), and only after a
+// warning: it refuses unless the caller holds the Primary seat, the plan has
+// `warned_at` (a `correct` was sent) and devswarm.respawnGraceMin minutes
+// have passed since it. Then, in order:
+//   (a) send the child "commit and push WIP now" and wait up to
+//       devswarm.respawnWipWaitSec for its worktree to be clean and pushed;
+//   (b) still dirty or unpushed -> park it on a NEW branch
+//       park/<branch>-<ts> (private temp index: the child's worktree, index
+//       and branch are untouched) and push that. Never stash, never discard.
+//       A failed park or push ABORTS the respawn (the local park branch stays);
+//   (c) write plans/<id>.handover.md from the plan;
+//   (d) spawn <branch>-r<N> with `-s <default branch>` — NOT `-s <old
+//       branch>`, which would make the old branch the merge target (see
+//       SPAWN SOURCE FRESHNESS above) — with the handover as the brief, step 1
+//       "merge the old/park branch", then the remaining steps; the plan's
+//       scope and extras carry over;
+//   (e) archive the old id and tell the owner to close its app tab.
+// `--dry-run` runs the refusal checks, prints the plan and changes nothing.
+// The only kill path stays devswarm-recover.js; respawn never kills.
+function cmdRespawn(id, flags, ctx) {
+  const home = ctx.home;
+  const env = ctx.env || process.env;
+  const now = Number.isFinite(ctx.now) ? ctx.now : Date.now();
+  const cwd = ctx.cwd || process.cwd();
+  const respawnLib = require('../companion/lib/devswarm-respawn.js');
+  const dryRun = hasFlag(flags, 'dry-run');
+  const refuse = (reason, error, extra) => Object.assign({ ok: false, action: 'respawn', id, reason, error }, extra || {});
+  const setting = (k, d) => {
+    let v;
+    try { v = Number(require('../hooks/lib/settings.js').get('devswarm', k, d, { env, home })); } catch (_) { v = d; }
+    return Number.isFinite(v) && v >= 0 ? v : d;
+  };
+
+  let seat;
+  try {
+    seat = require('../companion/lib/primary-seat.js').seatVerdict({ home, env, cwd, sessionId: seatSessionId(ctx, flags) });
+  } catch (_) { seat = { state: 'unknown' }; }
+  if (!seat || seat.state !== 'own') {
+    return refuse('not-primary', 'respawn runs only from the session that holds the Primary seat (seat: ' + ((seat && seat.state) || 'unknown') + ')', { seat: seat && seat.state });
+  }
+  const ref = planRefFor(home, id, ctx);
+  const found = planLib.findPlan(home, ref);
+  if (!found || !found.plan.steps.length) return refuse('no-plan', 'no step plan for ' + id + ' — respawn carries a plan over, so it needs one');
+  const warnedAt = found.plan.warned_at;
+  if (!Number.isFinite(warnedAt)) {
+    return refuse('not-warned', 'respawn needs a prior warning: send `devswarm.js correct ' + id + '` first, then wait devswarm.respawnGraceMin minutes');
+  }
+  const graceMin = setting('respawnGraceMin', 20);
+  const sinceMs = now - warnedAt;
+  if (sinceMs < graceMin * 60000) {
+    return refuse('grace', 'the child was warned ' + planLib.dur(sinceMs) + ' ago; respawn waits devswarm.respawnGraceMin (' + graceMin + 'm) after the warning',
+      { warned_at: warnedAt, graceMin, remainingMin: Math.ceil((graceMin * 60000 - sinceMs) / 60000) });
+  }
+  const wt = ref.worktreePath || found.plan.worktreePath;
+  const st = respawnLib.worktreeState(wt);
+  if (st.error) return refuse('no-worktree', st.error);
+  if (!st.branch) return refuse('detached', 'the child worktree has a detached HEAD — nothing names the work to carry over');
+  const defRef = gitTruth.defaultBranchRef(cwd);
+  if (!defRef) return refuse('default-branch-unknown', 'origin/HEAD is not set, so the default branch is unknown (fix: `git remote set-head origin --auto`)');
+  const def = defRef.slice('origin/'.length);
+  const next = respawnLib.nextBranch(st.branch, (n) => respawnLib.localBranchExists(cwd, n));
+  const summaries = Array.isArray(found.plan.summaries) ? found.plan.summaries : [];
+  const lastWorkingOn = summaries.length ? summaries[summaries.length - 1].text : null;
+  const handoverPath = path.join(planLib.plansDir(home), id + '.handover.md');
+  const wipWaitSec = setting('respawnWipWaitSec', 120);
+  const info = (parkBranch) => ({ id, branch: st.branch, plan: found.plan, parkBranch, mergeRef: parkBranch || st.branch,
+    newBranch: next.branch, defaultBranch: def, lastWorkingOn, now });
+
+  if (dryRun) {
+    const wouldPark = respawnLib.needsPark(st);
+    const parkName = wouldPark ? respawnLib.parkBranchName(st.branch, now) : null;
+    const handover = respawnLib.handoverText(info(parkName));
+    return {
+      ok: true, action: 'respawn', id, dryRun: true, branch: st.branch, newBranch: next.branch, defaultBranch: def,
+      worktree: { dirty: st.dirty, unpushed: st.unpushed }, wipWaitSec, wouldPark, parkBranch: parkName, handoverPath,
+      spawnArgs: [next.branch, '-s', def, '-p', respawnLib.briefText(info(parkName), handover)],
+      plan: [
+        '(a) send ' + id + ' "commit and push WIP now"; wait up to ' + wipWaitSec + 's for a clean, pushed worktree',
+        '(b) if still dirty/unpushed: commit it to a new branch ' + (parkName || 'park/' + st.branch + '-<ts>') + ' and push it (abort on failure)',
+        '(c) write ' + handoverPath,
+        '(d) spawn ' + next.branch + ' from ' + def + ' (step 1 merges the old work, then the remaining steps)',
+        '(e) archive ' + id + ' and ask the owner to close its app tab',
+      ],
+    };
+  }
+
+  // (a) ask the child to commit and push, then wait for it.
+  const message = 'RESPAWN: the Primary is replacing this workspace with ' + next.branch + '. Commit and push ALL your work now '
+    + '(`git add -A && git commit -m "wip" && git push -u origin HEAD`), then stop. Anything left uncommitted is parked on a new branch.';
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ah-respawn-'));
+  const msgFile = path.join(tmpDir, 'message.txt');
+  let sent;
+  try {
+    fs.writeFileSync(msgFile, message);
+    const argv = ['send', '--to', id, '--message-file', msgFile];
+    sent = (ctx.io && typeof ctx.io.send === 'function') ? ctx.io.send(argv) : run(argv, ctx);
+  } catch (e) { sent = { code: 2, result: { ok: false, error: String((e && e.message) || e) } }; }
+  finally {
+    try { fs.unlinkSync(msgFile); } catch (_) {}
+    try { fs.rmdirSync(tmpDir); } catch (_) {}
+  }
+  const sendOk = !!(sent && sent.code === 0);
+  const sleep = (ctx.io && typeof ctx.io.sleep === 'function') ? ctx.io.sleep
+    : (ms) => { try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); } catch (_) {} };
+  const waitStart = Date.now();
+  let cur = respawnLib.worktreeState(wt);
+  while (sendOk && !cur.error && respawnLib.needsPark(cur) && Date.now() - waitStart < wipWaitSec * 1000) {
+    sleep(Math.min(5000, wipWaitSec * 1000 - (Date.now() - waitStart)));
+    cur = respawnLib.worktreeState(wt);
+  }
+  if (cur.error) {
+    supervisionMetrics.record(home, 'respawn-aborted', { now, id, key: found.key, stage: 'worktree' });
+    return refuse('worktree-error', cur.error, { sent: sendOk });
+  }
+
+  // (b) park whatever is still dirty or unpushed.
+  let park = null;
+  if (respawnLib.needsPark(cur)) {
+    park = respawnLib.parkWip(wt, { id, branch: st.branch, parkBranch: respawnLib.parkBranchName(st.branch, now), dirty: cur.dirty });
+    if (!park.ok) {
+      supervisionMetrics.record(home, 'respawn-aborted', { now, id, key: found.key, stage: park.stage });
+      return refuse('park-failed', 'respawn aborted — the work could not be parked safely: ' + park.error, { sent: sendOk, park });
+    }
+  }
+  const parkBranch = park ? park.parkBranch : null;
+
+  // (c) the handover.
+  const handover = respawnLib.handoverText(info(parkBranch));
+  try {
+    fs.mkdirSync(path.dirname(handoverPath), { recursive: true });
+    const tmp = handoverPath + '.' + process.pid + '.tmp';
+    fs.writeFileSync(tmp, handover);
+    fs.renameSync(tmp, handoverPath);
+  } catch (e) {
+    supervisionMetrics.record(home, 'respawn-aborted', { now, id, key: found.key, stage: 'handover' });
+    return refuse('handover-failed', 'cannot write ' + handoverPath + ': ' + String((e && e.message) || e), { sent: sendOk, park });
+  }
+
+  // (d) spawn from the default branch.
+  const spawnArgs = [next.branch, '-s', def, '-p', respawnLib.briefText(info(parkBranch), handover)];
+  const sp = cmdSpawn(spawnArgs, ctx);
+  if (!sp || !sp.ok) {
+    supervisionMetrics.record(home, 'respawn-aborted', { now, id, key: found.key, stage: 'spawn' });
+    return refuse('spawn-failed', 'respawn stopped at spawn (the work is safe' + (parkBranch ? ' on ' + parkBranch : ' on ' + st.branch) + '): '
+      + ((sp && sp.error) || 'spawn failed'), { sent: sendOk, park, handoverPath, spawn: sp });
+  }
+  const newKey = sp.plan && sp.plan.written ? sp.plan.key : null;
+  if (newKey) {
+    planLib.updatePlan(home, newKey, (p) => {
+      if (!p) return null;
+      for (const e of (found.plan.extras || [])) planLib.addExtra(p, e.glob, e.note, now);
+      p.respawn = { from: id, from_branch: st.branch, park: parkBranch, at: now };
+      return p;
+    });
+  }
+  planLib.updatePlan(home, found.key, (p) => {
+    if (!p) return null;
+    p.respawned_to = sp.meshId || next.branch;
+    p.respawned_at = now;
+    return p;
+  });
+
+  // (e) archive the old workspace; the owner closes its app tab.
+  let archived;
+  try { archived = cmdArchive(id, ctx, { flags: {} }); } catch (e) { archived = { ok: false, error: String((e && e.message) || e) }; }
+  const nag = 'Close the DevSwarm app tab for ' + id + ' (' + st.branch + '): it is replaced by ' + next.branch + '.';
+  supervisionMetrics.record(home, 'respawn', { now, id, key: found.key, newId: sp.meshId || null, newKey,
+    parked: !!parkBranch, pushedByChild: !parkBranch && respawnLib.needsPark(st),
+    stepsDone: planLib.stepsDone(found.plan), stepsPlanned: found.plan.steps.length });
+  return {
+    ok: true, action: 'respawn', id, branch: st.branch, newBranch: next.branch, newId: sp.meshId || null, defaultBranch: def,
+    sent: sendOk, parked: !!parkBranch, parkBranch, handoverPath, spawn: { ok: sp.ok, worktreePath: sp.worktreePath, plan: sp.plan },
+    archived: { ok: !!(archived && archived.ok), error: archived && !archived.ok ? archived.error : undefined },
+    nag,
+  };
+}
+
 // applyHeartbeatPlan(id, flags, ctx, now) -> the heartbeat result's `plan`
 // field, or undefined when neither --step nor a plan-relevant --summary was
 // given (the heartbeat result then stays byte-identical to before).
@@ -8613,6 +8792,13 @@ function applyHeartbeatPlan(id, flags, ctx, now) {
           events.push(['correction-followed', { now, id, key: found.key, step: Number(stepRaw), latencyMs: now - wa,
             signals: Array.isArray(plan.warned_signals) ? plan.warned_signals : [],
             jev: Array.isArray(plan.warned_jev) ? plan.warned_jev : [] }]);
+        }
+        // Respawn measure (Meeseeks P3): time from the respawn to the first
+        // step progress in the new workspace, counted once.
+        if (plan.respawn && typeof plan.respawn === 'object' && !Number.isFinite(plan.respawn.first_step_at)) {
+          plan.respawn.first_step_at = now;
+          events.push(['respawn-progress', { now, id, key: found.key, from: plan.respawn.from || null,
+            latencyMs: Number.isFinite(plan.respawn.at) ? now - plan.respawn.at : null }]);
         }
       }
     }
@@ -14140,6 +14326,7 @@ function cmdDone(idArg, flags, ctx) {
       supervisionMetrics.record(home, 'done', { now: doneNow, id, key: found.key,
         durationMs: Number.isFinite(plan.created_at) ? doneNow - plan.created_at : null,
         stepsDone: planLib.stepsDone(plan), stepsPlanned: plan.steps.length,
+        respawnOf: plan.respawn && plan.respawn.from ? plan.respawn.from : undefined,
         tokensTotal: (() => { const t = require('../companion/lib/devswarm-token-usage.js').readState(home, found.key); return t && Number.isFinite(t.total) ? Math.round(t.total) : null; })() });
     }
   } catch (_) { /* metrics never affect done */ }
@@ -19180,6 +19367,7 @@ const VERB_HELP = {
   heartbeat: { synopsis: 'record a liveness heartbeat for a workspace [--summary TEXT] [--step N --status doing|done|blocked] (--step records progress on the workspace\'s step plan)', mutates: 'writes a heartbeat file; may emit a mesh broadcast; --step updates the plan file' },
   scope: { synopsis: 'scope add <id> --glob <glob> [--glob …] --note TEXT — child: record extra work the user asked for, so the off-scope straying signal treats it as sanctioned and the Primary sees the note (idempotent)', mutates: 'writes the plan file\'s extras' },
   'supervision-report': { synopsis: 'supervision-report [--days N] [--json] — how DevSwarm supervision performed: straying warnings by signal, repeats, corrections followed by step progress, extras tagged, time-to-done and steps done vs planned, Jev shadow agreement (default 7 days)', mutates: 'nothing (read-only)' },
+  respawn: { synopsis: 'respawn <id> [--dry-run] — Primary only, after a `correct` warning and devswarm.respawnGraceMin minutes: ask the child to commit+push, park anything left on a new pushed park/<branch>-<ts> branch (abort if that fails), write plans/<id>.handover.md, spawn <branch>-r<N> from the default branch with the handover + remaining steps, archive the old id (--dry-run prints the plan only)', mutates: 'one mesh send, a new park branch (pushed), the handover file, a new workspace, the old workspace archived' },
   correct: { synopsis: 'correct <id> [--dry-run] — Primary: send a straying child the correction "step N \'<text>\': <reasons>. Return to step N or reply BLOCKED <why>" and record warned_at (--dry-run prints it only)', mutates: 'one mesh-direct send + the plan file\'s warned_at' },
   plan: { synopsis: 'plan set <id> --steps "1. …\\n2. …"|--steps-file <path> [--scope glob,glob] — write the workspace\'s numbered step plan (idempotent); plan show <id> — print it with its step label', mutates: '`set` writes ~/.anti-hall/devswarm/plans/<key>.json; `show` is read-only' },
   inbox: { synopsis: 'inbox subcommands: count | read | ack | pull | messages | read-primary | ack-primary | peek-primary | drain-primary-legacy (drain = read-primary, consume, then the returned ack-primary --receipt command). '
@@ -19670,6 +19858,13 @@ function runArmed(cmd, positionals, flags, ctx, argv) {
         const days = daysRaw === undefined ? 7 : Number(daysRaw);
         if (!Number.isFinite(days) || days < 1) return { code: 2, result: { ok: false, action: 'supervision-report', error: 'usage: devswarm.js supervision-report [--days N] [--json]' } };
         return { code: 0, result: supervisionMetrics.report(ctx.home, { days, now: Number.isFinite(ctx.now) ? ctx.now : undefined }) };
+      }
+      case 'respawn': {
+        // Meeseeks P3: Primary-run respawn after a warning (never automatic).
+        const id = positionals[1];
+        if (!isSafeId(id)) return { code: 2, result: { ok: false, action: 'respawn', error: 'usage: devswarm.js respawn <id> [--dry-run]' } };
+        const r = cmdRespawn(id, flags, ctx);
+        return { code: r.ok ? 0 : 2, result: r };
       }
       case 'correct': {
         // Meeseeks P2: the Primary's correction for a straying child.

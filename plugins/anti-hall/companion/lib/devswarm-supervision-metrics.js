@@ -14,6 +14,10 @@
 //   done                 a child with a plan reported done (durationMs, stepsDone, stepsPlanned)
 //   tokens               a child's step-progress period closed (tokens = weighted
 //                        tokens spent between two step changes; stepsDone)
+//   respawn              the Primary respawned a child (parked = WIP went to a
+//                        park branch; pushedByChild = the child pushed in time)
+//   respawn-aborted      a respawn stopped before spawning (stage: park|push|…)
+//   respawn-progress     first step progress in a respawned workspace (latencyMs)
 //   jev                  a supervision Jev answer was first read from the cache
 //                        (integration, mode, agree = matches the deterministic result)
 // ROLLUPS: ~/.anti-hall/logs/devswarm-supervision-daily/<YYYY-MM-DD>.json, written
@@ -65,7 +69,8 @@ function dailyDir(home) { return path.join(homeDir(home), '.anti-hall', 'logs', 
 function emptyRollup(day) {
   return { v: 1, day, plans: 0, steps: 0, warnings: {}, repeats: 0, corrections: 0, correctionsFollowed: 0,
     extras: 0, done: 0, durationsMs: [], stepsDone: 0, stepsPlanned: 0, jev: {},
-    tokenPeriods: [], tokensByWorkspace: {}, doneTokens: [], burnCorrections: 0, burnFollowed: 0 };
+    tokenPeriods: [], tokensByWorkspace: {}, doneTokens: [], burnCorrections: 0, burnFollowed: 0,
+    respawns: 0, respawnsParked: 0, respawnsAborted: 0, respawnProgressMs: [], respawnsFinished: 0 };
 }
 
 const JEV_COUNTERS = ['n', 'agree', 'followed', 'overridden', 'progressWhenSupported', 'progressWhenNotSupported'];
@@ -115,7 +120,11 @@ function buildDailyRollups(rows) {
         if (Number.isFinite(r.stepsDone)) d.stepsDone += r.stepsDone;
         if (Number.isFinite(r.stepsPlanned)) d.stepsPlanned += r.stepsPlanned;
         if (Number.isFinite(r.tokensTotal) && Number.isFinite(r.stepsDone) && r.stepsDone > 0) d.doneTokens.push(Math.round(r.tokensTotal / r.stepsDone));
+        if (r.respawnOf) d.respawnsFinished++;
         break;
+      case 'respawn': d.respawns++; if (r.parked) d.respawnsParked++; break;
+      case 'respawn-aborted': d.respawnsAborted++; break;
+      case 'respawn-progress': if (Number.isFinite(r.latencyMs)) d.respawnProgressMs.push(r.latencyMs); break;
       case 'jev': {
         const g = jevGroup(d, r.integration);
         g.n++;
@@ -190,6 +199,9 @@ function report(home, opts) {
     if (Array.isArray(r.tokenPeriods)) t.tokenPeriods.push(...r.tokenPeriods);
     if (Array.isArray(r.doneTokens)) t.doneTokens.push(...r.doneTokens);
     t.burnCorrections += r.burnCorrections || 0; t.burnFollowed += r.burnFollowed || 0;
+    t.respawns += r.respawns || 0; t.respawnsParked += r.respawnsParked || 0; t.respawnsAborted += r.respawnsAborted || 0;
+    t.respawnsFinished += r.respawnsFinished || 0;
+    if (Array.isArray(r.respawnProgressMs)) t.respawnProgressMs.push(...r.respawnProgressMs);
     for (const [k, n] of Object.entries(r.tokensByWorkspace || {})) t.tokensByWorkspace[k] = (t.tokensByWorkspace[k] || 0) + n;
     for (const [k, n] of Object.entries(r.warnings || {})) t.warnings[k] = (t.warnings[k] || 0) + n;
     for (const [k, g] of Object.entries(r.jev || {})) {
@@ -214,6 +226,8 @@ function report(home, opts) {
         correctedRate: t.burnCorrections ? Math.round((t.burnFollowed / t.burnCorrections) * 100) / 100 : null },
     },
     done: { n: t.done, medianDurationMs: median(t.durationsMs), stepsDone: t.stepsDone, stepsPlanned: t.stepsPlanned },
+    respawns: { n: t.respawns, parked: t.respawnsParked, notParked: t.respawns - t.respawnsParked, aborted: t.respawnsAborted,
+      withProgress: t.respawnProgressMs.length, medianFirstProgressMs: median(t.respawnProgressMs), finished: t.respawnsFinished },
     jev: Object.fromEntries(Object.entries(t.jev).map(([k, g]) => [k, Object.assign({}, g, {
       agreeRate: g.n ? Math.round((g.agree / g.n) * 100) / 100 : null,
       followRate: (g.followed + g.overridden) ? Math.round((g.followed / (g.followed + g.overridden)) * 100) / 100 : null,
@@ -239,6 +253,8 @@ function formatReport(r) {
       + r.tokens.burn.followedByProgress + ' followed by progress'
       + (r.tokens.burn.correctedRate == null ? '' : ' (' + Math.round(r.tokens.burn.correctedRate * 100) + '%)'),
     '  done with a plan:     ' + r.done.n + ' (median time-to-done ' + dur(r.done.medianDurationMs) + ', steps ' + r.done.stepsDone + '/' + r.done.stepsPlanned + ')',
+    '  respawns:             ' + r.respawns.n + ' (WIP parked ' + r.respawns.parked + ', not parked ' + r.respawns.notParked + ', aborted ' + r.respawns.aborted
+      + '); first step progress in ' + r.respawns.withProgress + ' (median ' + dur(r.respawns.medianFirstProgressMs) + '), finished ' + r.respawns.finished,
   ];
   const ws = Object.entries(r.tokens.byWorkspace).sort((a, b) => b[1] - a[1]).slice(0, 5);
   if (ws.length) lines.push('  top workspaces:       ' + ws.map(([id, n]) => id + ' ' + tok(n)).join(', '));
