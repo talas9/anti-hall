@@ -85,14 +85,19 @@
 
 const fs = require('fs');
 const path = require('path');
+const { parseHeredocAt } = require('./lib/shell-scan.js');
 
 // ---------------------------------------------------------------------------
-// Segment splitter — quote-aware, heredoc-aware. Mirrors the same splitter
-// shape used elsewhere in this repo's hooks (kept standalone per repo
-// convention that hooks are self-contained scripts, not a shared module).
+// Segment splitter — quote-aware, heredoc-aware. Heredoc CONSTRUCT parsing
+// (the opener + body + terminator) is delegated to lib/shell-scan.js's
+// parseHeredocAt — shared with command-guard.js/git-guard.js — instead of
+// this file's own previously-standalone HEREDOC_RE copy, which lacked the
+// `<<<` here-string, full-delimiter-word (`<<EOF#x` terminates on `EOF#x`,
+// not `EOF`), and `$((1<<y))` arithmetic-context fixes shell-scan.js picked
+// up from repeated command-guard/git-guard patches. This hook only drives
+// background-throttle rewriting (not a security gate), but there is still
+// exactly one heredoc parser in the repo, not three.
 // ---------------------------------------------------------------------------
-const HEREDOC_RE = /^<<(-)?\s*("([^"]*)"|'([^']*)'|([A-Za-z_][A-Za-z0-9_]*))/;
-
 function splitSegments(cmd) {
   const segments = [];
   let cur = '';
@@ -112,25 +117,13 @@ function splitSegments(cmd) {
     if (c === "'") { inSingle = true; cur += c; i++; continue; }
     if (c === '"') { inDouble = true; cur += c; i++; continue; }
     if (c === '<' && c2 === '<') {
-      const m = HEREDOC_RE.exec(cmd.slice(i));
-      const word = m ? (m[3] !== undefined ? m[3] : (m[4] !== undefined ? m[4] : m[5])) : '';
-      if (m && word) {
-        const dashStrip = !!m[1];
-        cur += m[0];
-        i += m[0].length;
-        let lineEnd = cmd.indexOf('\n', i);
-        if (lineEnd === -1) lineEnd = n;
-        cur += cmd.slice(i, lineEnd);
-        i = lineEnd;
-        if (i < n && cmd[i] === '\n') i++;
-        while (i < n) {
-          const nextNl = cmd.indexOf('\n', i);
-          const lineRaw = nextNl === -1 ? cmd.slice(i) : cmd.slice(i, nextNl);
-          const line = dashStrip ? lineRaw.replace(/^\t+/, '') : lineRaw;
-          i += (nextNl === -1 ? (cmd.length - i) : (nextNl - i + 1));
-          if (line === word) break;
-          if (nextNl === -1) break; // unterminated heredoc: consumed to EOF
-        }
+      const parsed = parseHeredocAt(cmd, i);
+      if (parsed) {
+        // Keep only the opener line on the current segment (the body is
+        // opaque data, never scanned as a command) — same convention as
+        // command-guard.js's own parseHeredocAt call site.
+        cur += parsed.openerText;
+        i = parsed.end;
         flush();
         continue;
       }

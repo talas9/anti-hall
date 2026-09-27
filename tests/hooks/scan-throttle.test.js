@@ -195,6 +195,60 @@ test('scan-throttle: MUTATION-CHECK heredoc-close boundary + mid-compound match 
 });
 
 // ---------------------------------------------------------------------------
+// Heredoc parser reuse (hooks/lib/shell-scan.js's parseHeredocAt, shared with
+// command-guard.js/git-guard.js): this hook used to keep its own standalone
+// HEREDOC_RE that mis-detected a `<<<` here-string and a `<<` arithmetic
+// shift as heredoc openers, and cut a `<<DELIM#tail` terminator word short at
+// `DELIM` — each bug silently swallowed the NEXT real command as fake
+// heredoc "body" (discarded, never scanned as a segment) instead of leaving
+// it visible. Each case below proves the scan-looking line after the
+// construct is still SEEN as its own segment (a mid-compound advisory —
+// never rewritten, since it's not segment 0), not silently eaten.
+// ---------------------------------------------------------------------------
+test('scan-throttle: <<< here-string is not misparsed as a heredoc opener', () => {
+  const command = 'cat <<< x\nreindex-repo --full\nx';
+  const r = runWithPattern(command);
+  assert.strictEqual(r.status, 0);
+  assert.strictEqual(r.stdout.includes('updatedInput'), false, 'mid-compound: must not rewrite');
+  assert.ok(
+    r.json && typeof r.json.hookSpecificOutput.additionalContext === 'string' &&
+    r.json.hookSpecificOutput.additionalContext.length > 0,
+    'the scan-looking line after <<< must still be seen as a segment, not swallowed as fake heredoc body'
+  );
+});
+
+test('scan-throttle: $((1<<y)) arithmetic shift is not misparsed as a heredoc opener', () => {
+  const command = 'echo $((1<<y))\nreindex-repo --full\ny';
+  const r = runWithPattern(command);
+  assert.strictEqual(r.status, 0);
+  assert.strictEqual(r.stdout.includes('updatedInput'), false, 'mid-compound: must not rewrite');
+  assert.ok(
+    r.json && typeof r.json.hookSpecificOutput.additionalContext === 'string' &&
+    r.json.hookSpecificOutput.additionalContext.length > 0,
+    'the scan-looking line after $((1<<y)) must still be seen as a segment, not swallowed as fake heredoc body'
+  );
+});
+
+test('scan-throttle: <<EOF#x terminates on the FULL delimiter word, not just EOF', () => {
+  const command = 'cat <<EOF#x\nbody\nEOF#x\nreindex-repo --full';
+  const r = runWithPattern(command);
+  assert.strictEqual(r.status, 0);
+  assert.strictEqual(r.stdout.includes('updatedInput'), false, 'mid-compound: must not rewrite');
+  assert.ok(
+    r.json && typeof r.json.hookSpecificOutput.additionalContext === 'string' &&
+    r.json.hookSpecificOutput.additionalContext.length > 0,
+    'the command after the real EOF#x terminator must still be seen as a segment'
+  );
+});
+
+test('scan-throttle: a scan-looking line INSIDE an <<EOF#x heredoc body stays untouched', () => {
+  const command = 'cat <<EOF#x\nreindex-repo --full\nEOF#x';
+  const r = runWithPattern(command);
+  assert.strictEqual(r.status, 0);
+  assert.strictEqual(r.stdout.trim(), '', 'heredoc BODY must never be parsed as a command, even before the real terminator');
+});
+
+// ---------------------------------------------------------------------------
 // Mid-compound: match exists but is not the first simple command -> untouched,
 // advisory note only (fail-open — never guess a rewrite position).
 // ---------------------------------------------------------------------------
