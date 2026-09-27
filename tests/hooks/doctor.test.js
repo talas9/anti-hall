@@ -362,3 +362,40 @@ test('doctor: DevSwarm-active session with NO cron-found-mail.jsonl reports the 
     try { fs.rmSync(cwd, { recursive: true, force: true }); } catch (_) {}
   }
 });
+
+// 0.117.0: devswarm-startup-samples.ndjson (companion/lib/devswarm-startup-
+// sampling.js) — DATA CAPTURE ONLY toward designing paused-workspace
+// detection. doctor --check reports its line count as one INFO line (never
+// FAIL/WARN — 0 is the expected/normal count until the DevSwarm app happens
+// to pause a workspace while the supervisor is running).
+test('doctor: DevSwarm-active session with NO startup-samples log reports the count as 0, never FAILs', { skip: process.platform === 'win32' }, () => {
+  const { home, cleanup } = makeFakeHome();
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'antihall-doctor-cwd-'));
+  try {
+    const r = runDoctor({ cwd, env: { HOME: home, USERPROFILE: home, ANTIHALL_DEVSWARM_SUPERVISOR: 'on', DEVSWARM_REPO_ID: 'repo-x' } });
+    assert.strictEqual(r.code, 0, r.out);
+    assert.match(r.out, /0 startup samples captured \(paused detection needs ≥1\)/);
+  } finally {
+    cleanup();
+    try { fs.rmSync(cwd, { recursive: true, force: true }); } catch (_) {}
+  }
+});
+
+test('doctor: DevSwarm-active session reports the startup-samples line count as INFO', { skip: process.platform === 'win32' }, () => {
+  const { home, cleanup } = makeFakeHome();
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'antihall-doctor-cwd-'));
+  try {
+    const p = path.join(home, '.anti-hall', 'logs', 'devswarm-startup-samples.ndjson');
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, [
+      JSON.stringify({ id: 'w1', ts: 1, raw: { startup: 'paused' } }),
+      JSON.stringify({ id: 'w2', ts: 2, raw: { startup: null, terminalId: 't2' } }),
+    ].join('\n') + '\n');
+    const r = runDoctor({ cwd, env: { HOME: home, USERPROFILE: home, ANTIHALL_DEVSWARM_SUPERVISOR: 'on', DEVSWARM_REPO_ID: 'repo-x' } });
+    assert.strictEqual(r.code, 0, r.out);
+    assert.match(r.out, /2 startup samples captured \(paused detection needs ≥1\)/);
+  } finally {
+    cleanup();
+    try { fs.rmSync(cwd, { recursive: true, force: true }); } catch (_) {}
+  }
+});

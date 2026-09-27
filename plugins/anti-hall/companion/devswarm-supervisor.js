@@ -1133,6 +1133,29 @@ function reconcileSweepIfDue(opts) {
       } catch (_) { /* logging must never break the sweep */ }
     }
 
+    // Startup-state sampling (0.117.0) — DATA CAPTURE ONLY, see
+    // companion/lib/devswarm-startup-sampling.js's own header: paused-workspace
+    // detection cannot be designed yet (`workspace info` has only ever been
+    // observed returning `startup: null`). Riding INSIDE this same cooldown-
+    // gated, sweep-locked reconcile pass (no new scheduler/lock), it probes at
+    // most devswarm.pausedProbeMax (default 8) of THIS tick's descriptors whose
+    // persisted liveness verdict already reads stale/notDraining, 3s timeout
+    // each, and appends any non-null startup field or terminalId change to a
+    // bounded ndjson log. No suppression, no status change — see the settings
+    // switch devswarm.startupSampling (default on).
+    try {
+      let samplingEnabled = true;
+      try { samplingEnabled = require('../hooks/lib/settings.js').getWithEnv('devswarm', 'startupSampling', true, env); }
+      catch (_) { samplingEnabled = true; }
+      if (samplingEnabled) {
+        let maxProbe = 8;
+        try { maxProbe = require('../hooks/lib/settings.js').getWithEnv('devswarm', 'pausedProbeMax', 8, env); }
+        catch (_) { maxProbe = 8; }
+        const startupSampling = deps.startupSampling || require('./lib/devswarm-startup-sampling.js');
+        startupSampling.runSamplingPass(descriptors, { home, env, now, fsi: F, maxProbe, run: deps.startupSamplingRun });
+      }
+    } catch (_) { /* data capture must never break the sweep */ }
+
     // OBSERVE, DON'T ASSERT: log exactly what the (real, already-executed)
     // reconcile calls reported — never a claim of health beyond what was
     // actually returned. `warn` when any target reported a real loss

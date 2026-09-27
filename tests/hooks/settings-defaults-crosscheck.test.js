@@ -269,7 +269,9 @@ test('devswarm: every advanced tuning knob is marked advanced; headline knobs ar
     // 0.108.5
     'spawnFromOrigin',
     // 0.117.0 Meeseeks supervision feature switches
-    'planTracking', 'planRequired'];
+    'planTracking', 'planRequired',
+    // 0.117.0
+    'maintainerNotice.post', 'maintainerNotice.show', 'startupSampling'];
   const sec = SCHEMA.findSection('devswarm');
   for (const s of sec.settings) {
     if (headline.includes(s.key)) assert.ok(!s.advanced, s.key + ' should be headline, not advanced');

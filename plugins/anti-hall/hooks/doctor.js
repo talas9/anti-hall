@@ -1021,6 +1021,19 @@ function devswarmHookSelfTests() {
           'fallback is removable; see docs/KB-claude-monitor-tool.md §7)');
       }
     } catch (_) { /* fail-open: measurement reporting must never break doctor */ }
+
+    // Startup-state sampling (0.117.0) — DATA CAPTURE ONLY, report-only line
+    // (never FAIL/WARN — 0 is expected/normal for a long time; see
+    // companion/lib/devswarm-startup-sampling.js's own header for why paused
+    // detection cannot be designed yet).
+    try {
+      const startupSamplingModPath = path.join(libDir, 'devswarm-startup-sampling.js');
+      if (fs.existsSync(startupSamplingModPath)) {
+        const sampling = require(startupSamplingModPath);
+        const n = sampling.countSamples(os.homedir());
+        infol(n + ' startup samples captured (paused detection needs ≥1)');
+      }
+    } catch (_) { /* fail-open: measurement reporting must never break doctor */ }
   }
 })();
 
