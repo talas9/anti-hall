@@ -39,26 +39,45 @@ const COMPACT_CMD_RE = /^\s*<command-name>\s*\/compact\s*<\/command-name>/;
 // "RETRACT SAFE TO COMPACT") means it is not a recommendation.
 const NEGATION_BEFORE_RE = /(?:\bnot\b|n['’]t\b|\bnever\b|\bno need\b|\bno reason\b|\bretract(?:ed|ing)?\b)[^.!?\n]{0,20}$/i;
 
+// A1-CA-1: explicit declaration forms only. Free text that merely mentions
+// /compact or "clear" in passing ("safe to clear the cache", a bullet
+// explaining what /compact does) must NOT match — only an actual
+// recommendation/instruction to compact does:
+//   "SAFE TO COMPACT" (bare word ok), "safe to /compact" (slash required for
+//   "clear" — bare "clear" is too common a word), "good point to /compact",
+//   Codex "safe for a context reset/compaction", "run /compact" / "/compact
+//   now" / "then /compact" etc., and a standalone /compact invocation line
+//   (optionally bulleted/backticked) whose trailing content is only "now" or
+//   a "focus: …" argument — not prose that happens to start with /compact.
 const ADVICE_RES = [
-  // "✅ SAFE TO COMPACT NOW", "safe to /compact or /clear"
-  /\bsafe\s+to\s+\/?(?:compact|clear)\b/gi,
+  // "✅ SAFE TO COMPACT NOW", "safe to /compact", "safe to /clear"
+  /\bsafe\s+to\s+(?:\/compact|compact|\/clear)\b/gi,
   // "GOOD POINT TO /compact NOW", "good time to compact", Codex "GOOD POINT FOR /compact OR /new NOW"
   /\bgood\s+(?:point|time|moment)\s+(?:to|for)\s+(?:\/?compact|\/?clear|\/new)\b/gi,
   // Codex skill wording: "safe for a context reset", "safe for compaction"
   /\bsafe\s+for\s+(?:a\s+)?(?:context\s+)?(?:reset|compaction|\/?compact|\/new)\b/gi,
   // "/compact" offered as an instruction: "run `/compact focus: …`", "then /compact"
   /\b(?:run|type|use|do|then|now|recommend(?:ed)?|suggest(?:ed)?)\s*:?\s*`*\/compact\b/gi,
-  // a line that IS a /compact command ("`/compact focus: …`", "- /compact")
-  /^[ \t]*(?:[-*+]|\d+[.)])?[ \t]*`*\/compact\b/gim,
+  // a standalone /compact invocation line ("`/compact focus: …`", "- /compact now",
+  // bare "/compact") — the WHOLE line (after an optional bullet/backticks),
+  // not a sentence that merely starts with /compact ("- /compact clears the
+  // context automatically" does not match: trailing content isn't "now"/"focus:…").
+  /^[ \t]*(?:[-*+]|\d+[.)])?[ \t]*`*\/compact\b(?:[ \t]+(?:now|focus:\s*\S[^\n]*))?[ \t]*`*[ \t]*$/gim,
 ];
 
 const RETRACT_RE = /\bretract(?:ed|ing)?\b[\s:,\-—–*_`"'“”]*(?:the\s+)?(?:[*_`✅🟢]\s*)*(?:safe[\s-]+(?:to|for)[\s-]+(?:compact|clear|reset|a\s+(?:context\s+)?reset)|good\s+point\s+(?:to|for)\s+\/?compact|\/compact)/gi;
 
-// stripQuoted(text) -> text with blockquote lines and "…" / “…” quoted spans
-// blanked to spaces (same length, so indices stay comparable). A /compact line
-// the assistant merely QUOTES from the user is not its own recommendation.
+// stripQuoted(text) -> text with fenced code blocks, blockquote lines, and
+// "…" / “…” quoted spans blanked to spaces (same length, so indices stay
+// comparable). A /compact line the assistant merely QUOTES from the user, or
+// shows inside a ```fenced``` example block (illustrating syntax, not
+// recommending it now), is not its own recommendation. Single-backtick
+// inline code is left intact — "`run /compact`"-style instructions still
+// match; only a whole fenced block (used for multi-line examples/docs) is
+// blanked.
 function stripQuoted(text) {
   let t = String(text || '');
+  t = t.replace(/```[\s\S]*?```/g, (m) => m.replace(/[^\n]/g, ' '));
   t = t.replace(/^[ \t]*>.*$/gm, (m) => ' '.repeat(m.length));
   t = t.replace(/"[^"\n]{0,400}"|“[^”\n]{0,400}”/g, (m) => ' '.repeat(m.length));
   return t;

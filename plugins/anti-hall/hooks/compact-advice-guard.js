@@ -27,8 +27,9 @@
 //
 // ALLOWED regardless: the auto-handover threshold path — this session's
 // auto-handover latch (hooks/lib/auto-handover-state.js) has fired, no compact
-// happened since it fired (boundary timestamp vs latch.firedAt), and context
-// is not below the low-context line.
+// happened since it fired (boundary timestamp vs latch.firedAt), and either
+// context is not below the low-context line, OR the latch fired via the
+// token ceiling (firedVia:'tokens' — it can legitimately fire below pct%).
 // That is the one case the handover skill says may declare SAFE.
 //
 // Loop safety: stop_hook_active → allow; the same final message is never
@@ -99,7 +100,12 @@ function main() {
   const latch = readLatch(home, tag);
   const compactAfterFire = turn.turnsSinceCompact !== null &&
     (turn.compactAt === null || !Number.isFinite(latch.firedAt) || turn.compactAt >= latch.firedAt);
-  if (latch.fired === true && !low && !compactAfterFire) return;
+  // A latch that fired via the token ceiling (firedVia:'tokens') can fire
+  // below the pct threshold — `low` may still be true even though the
+  // directive legitimately fired. Its SAFE declaration is allowed on the
+  // same terms (no compact since the fire), without requiring !low.
+  const tokensFired = latch.fired === true && latch.firedVia === 'tokens';
+  if (latch.fired === true && (!low || tokensFired) && !compactAfterFire) return;
 
   const hash = crypto.createHash('sha1').update(finalText).digest('hex');
   const sp = statePath(home, tag);

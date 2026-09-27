@@ -216,3 +216,46 @@ test('Stop: empty/absent last_assistant_message falls back to the transcript tai
   const payload = Object.assign(stopPayload(tp), { last_assistant_message: '' });
   assert.ok(blocked(testHook(STOP, payload, { home: h.home, env: ENV })), 'fallback to transcript must still catch the declaration');
 }));
+
+// --------------------------------------------------------------- A1-CA-1
+test('findAdvice: A1-CA-1 — "safe to clear the cache" and a /compact-mentioning bullet/example do NOT count as declarations', () => {
+  assert.strictEqual(advice.findAdvice('It should now be safe to clear the cache directory before the next run.').length, 0);
+  assert.strictEqual(advice.findAdvice('- /compact clears the context automatically once triggered, for reference.').length, 0);
+  assert.strictEqual(
+    advice.findAdvice('Here is the syntax:\n```\n/compact focus: <topic>\n```\nThat is just documentation, not a recommendation.').length,
+    0,
+  );
+});
+
+test('findAdvice: A1-CA-1 — explicit declaration forms still match after tightening', () => {
+  assert.ok(advice.findAdvice('safe to /clear now').length);
+  assert.ok(advice.findAdvice('- /compact now').length);
+  assert.ok(advice.findAdvice('run /compact').length);
+});
+
+// --------------------------------------------------------------- A1-CA-2
+test('Stop: a tokens-latch (firedVia:"tokens") fired below the pct threshold may still declare SAFE', () => withHome((h) => {
+  const firedAt = T0 - 100000; // safely before every transcript timestamp
+  writeLatch(h.home, sessionTag({ session_id: SESSION }), {
+    fired: true, firedAt, firedPct: 20, firedVia: 'tokens', lastNagPct: 20, lastNagAt: firedAt,
+  });
+  const tp = h.writeTranscript([
+    user('keep going'), say('working', 20), toolUse('Write'), toolResult(),
+    say('✅ SAFE TO COMPACT NOW', 20),
+  ]);
+  const r = testHook(STOP, stopPayload(tp), { home: h.home, env: ENV });
+  assert.strictEqual(blocked(r), null, r.stdout);
+}));
+
+test('Stop: the tokens-latch exception does not apply once a compact happened after the latch fired', () => withHome((h) => {
+  const firedAt = T0 - 100000;
+  writeLatch(h.home, sessionTag({ session_id: SESSION }), {
+    fired: true, firedAt, firedPct: 20, firedVia: 'tokens', lastNagPct: 20, lastNagAt: firedAt,
+  });
+  const tp = h.writeTranscript([
+    user('keep going'), say('working', 20), boundary('manual'), summary(), compactCmd(),
+    user('more'), say('✅ SAFE TO COMPACT NOW', 20),
+  ]);
+  const r = testHook(STOP, stopPayload(tp), { home: h.home, env: ENV });
+  assert.ok(blocked(r), 'a compact after the tokens-fire must still be blocked');
+}));
