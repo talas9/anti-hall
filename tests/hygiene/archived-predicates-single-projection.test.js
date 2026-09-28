@@ -93,6 +93,18 @@ const ALLOWLIST = {
     //     spawn-failure worktreeMissing report) — never the skip decision.
     hasArchivedCounterpart: 7,
   },
+  // 0.117: archived-child-stop (design B) — the Stop-hook gate and the
+  // child-turn descriptor-write refusal both need the SAME row-level archived
+  // verdict row-state.js's isRowArchived already computes (marker + app-DB
+  // ground truth combined); routing through row-eligibility.js's broader
+  // held/ignored projection would pull in irrelevant partition-level axes for
+  // a single-row, single-child decision.
+  'hooks/devswarm-child-gate.js': { isRowArchived: 1 },
+  'hooks/devswarm-child-turn.js': { isRowArchived: 1 },
+  // 0.117: task-guard's DEVSWARM CHILD ATTENDANCE check reuses the SAME
+  // app-DB ground-truth reader devswarm-parent-gate.js already uses, to tell
+  // a live devswarm child owner from an archived/unknown one before nagging.
+  'hooks/task-guard.js': { appArchivedVerdict: 1 },
 };
 
 function walk(dir, out) {

@@ -61,7 +61,7 @@ anything. This outranks any urge to be fast, helpful, or agreeable.
 9. User agreement is not correctness. Respectfully challenge a wrong premise with evidence.
 
 Codex produces higher-quality output when it can verify its work — include
-reproduce/validate/lint steps in your plan and run them before claiming success.
+reproduce/validate/lint steps and run them before claiming success.
 
 ## Commit / push hygiene
 
@@ -110,11 +110,10 @@ reproduce/validate/lint steps in your plan and run them before claiming success.
   when multiple workers report, reconcile against GROUND TRUTH, not against each other. A
   self-reported completion is a hypothesis to confirm, not a result to accept.
 - DEDUP + RELATE before creating tasks: check TaskList FIRST so you never duplicate an
-  existing open task — refine the existing one instead, and link related tasks via
-  addBlockedBy (prereq) / addBlocks (this gates that); supersede a true duplicate with a
-  single replacement rather than piling on. Keep a fresh `.anti-hall-progress.md`
-  (done/in-progress/next) so freshness survives compaction — it is gitignored, never ships.
-  See `docs/TASK-WORK.md` for the dedup/relate ladder and staleness signals.
+  existing open task — refine it instead, and link related tasks via addBlockedBy
+  (prereq) / addBlocks (gates that); supersede a true duplicate rather than piling on.
+  Keep a fresh `.anti-hall-progress.md` (done/in-progress/next, gitignored) so freshness
+  survives compaction. See `docs/TASK-WORK.md` for the dedup/relate ladder.
 - USER OVERRIDE (escape hatch): if the user EXPLICITLY and CLEARLY asks to skip a guard or
   rule, honor it — record consent by writing `~/.anti-hall/skip.json` as
   `{"<guard>": <unix-ms expiry>}` (per-guard; the broad key `"all"` covers the noisy guards
@@ -136,13 +135,11 @@ reproduce/validate/lint steps in your plan and run them before claiming success.
   DRIFT — correct it. Styling organizes, never pads. Avoid renderer-dropped syntax
   (strikethrough, [label](url) labels - paste the bare URL, nested blockquotes, task
   checkboxes); underline and per-word color do not exist.
-- WATCH/BABYSIT spawned agents: poll TaskOutput on a regular interval; if an agent has not
-  updated its heartbeat file (~/.anti-hall/agents/<id>.json, field `ts`) within 20 minutes,
-  call TaskStop on it and re-dispatch with a tighter scope (fewer files, shorter time
-  horizon). Never wait forever — include a bounded time/scope cap in every agent brief.
-  Re-dispatch uses the SELF-HEAL pattern: halve the work unit, make the expected output
-  schema explicit, and add a partial-results clause ("return what you have if you hit
-  the cap").
+- WATCH/BABYSIT spawned agents: poll TaskOutput on a regular interval; if an agent's
+  heartbeat file (~/.anti-hall/agents/<id>.json, field `ts`) is stale past 20 minutes,
+  TaskStop it and re-dispatch with a tighter scope (fewer files, shorter horizon) using
+  the SELF-HEAL pattern: halve the work unit, make the output schema explicit, add a
+  partial-results clause. Never wait forever — bound every agent brief's time/scope.
 - UPDATE THE PHASE STATUSLINE as phases progress: from the main coordinator (not from
   inside subagents), call `statusline/phase.js set/advance/step/agents/clear` so the
   terminal bar reflects the real run state. Subagents report back; the coordinator writes
@@ -161,13 +158,10 @@ reproduce/validate/lint steps in your plan and run them before claiming success.
     unrequested change), course-correct back toward the goal. Only deviate from the locked
     goal when the user explicitly redirects — otherwise the final aim stays on target.
   - SANDBOXING: for AFK/autonomous sessions running build-heavy command chains, recommend
-    the harness's `/sandbox` mode (macOS Seatbelt / Linux+WSL2 bubblewrap) as a stronger
-    containment layer than after-the-fact process reaping. Caveats: native Windows is
-    UNSUPPORTED (anti-hall is untested on Windows and its CI matrix no longer runs a windows
-    leg — a sandboxed session cannot run there regardless); `jest`+`watchman` and `docker` are both incompatible with the sandbox
-    boundary (do not enable it for sessions that need either); spawned subagents INHERIT
-    the parent session's sandbox config and cannot opt out individually. Doc-only guidance
-    for now — no mechanical enforcement.
+    the harness's `/sandbox` mode (macOS Seatbelt / Linux+WSL2 bubblewrap) — stronger than
+    after-the-fact process reaping. Caveats: Windows is UNSUPPORTED (untested, dropped from
+    CI); `jest`+`watchman`/`docker` are incompatible with it; subagents INHERIT the parent's
+    sandbox config, no per-agent opt-out. Doc-only guidance — no mechanical enforcement.
 
 
 ## Anti-speculation enforcement: three tiers

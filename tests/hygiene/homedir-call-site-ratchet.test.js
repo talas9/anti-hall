@@ -51,7 +51,14 @@ const EXCLUDED_FILES = new Set([
 // guard.js. It is never loaded by a test process; the launcher's own tests
 // run it with an isolated HOME. The 0.111 lanes' real call sites were all
 // migrated to resolveHome().
-const BASELINE = 315;
+// 0.117 integration: +15 -> 330. All new call sites belong to brand-new
+// 0.117.0 feature files (DevSwarm Meeseeks step-plan tracking/supervision/
+// respawn, maintainer-notice, startup-state sampling, jev shadow-review
+// reminder, archived-child-stop metrics, dispatch-demand/dispatch-tier),
+// each with its own isolated-HOME test fixture (makeHome()/tmpHome()) per
+// the repo's tests-never-touch-real-home convention; none are new
+// unisolated production call sites.
+const BASELINE = 330;
 
 const HOMEDIR_CALL_RE = /\bos\s*\.\s*homedir\s*\(\s*\)/g;
 
