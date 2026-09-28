@@ -980,6 +980,9 @@ Generated from `hooks/lib/settings-schema.js` (a hygiene test keeps this table a
 | `jev.priceUsdPerMOutput` adv | `0` [0..] | `ANTIHALL_JEV_PRICE_USD_PER_M_OUTPUT` | USD per 1M output tokens for the Jev judge call (default 0 — output is free on the verified rate). |
 | `jev.dispatchTierNoWorkspaceRepos` adv | `''` | `ANTIHALL_JEV_DISPATCH_TIER_NO_WORKSPACE_REPOS` | Repos (basenames or absolute paths; `*` = all) where dispatchTier never recommends `workspace` (shown as `subagent`). |
 | `jev.dispatchTierDetectNoWorkspaces` adv | `true` | `ANTIHALL_JEV_DISPATCH_TIER_DETECT_NO_WORKSPACES` | Also treat a repo as no-workspace when its CLAUDE.md/AGENTS.md says "no workspaces for real work". |
+| `jev.reviewAfterDays` | `7` [1..365] | `ANTIHALL_JEV_REVIEW_AFTER_DAYS` | Minimum days an integration must have sat in shadow mode before its shadow numbers are due for owner review (also the re-review cadence once reviewed). |
+| `jev.reviewMinDecisions` | `30` [0..] | `ANTIHALL_JEV_REVIEW_MIN_DECISIONS` | Minimum decisions logged for a shadow integration before its review is due — avoids nagging about a barely-used integration with too little data to judge. |
+| `jev.reviewReminder` | `true` | `ANTIHALL_JEV_REVIEW_REMINDER` | Durable "time to review the Jev shadow numbers" SessionStart/doctor nudge (on by default — owner opt-out only). |
 | `devswarm.hivecontrol` | — | `ANTIHALL_DEVSWARM_HIVECONTROL` | Explicit path to the hivecontrol CLI binary (default: PATH lookup — no single default value; empty means "look it up"). |
 | `devswarm.supervisorMode` | `auto` (auto/on/off) | `ANTIHALL_DEVSWARM_SUPERVISOR` | Force the DevSwarm supervisor context on/off, or auto-detect. |
 | `devswarm.requiredGates` | `done,merged,tests_passed` | `ANTIHALL_DEVSWARM_REQUIRED_GATES` | Merge gates required for DevSwarm tasks. |

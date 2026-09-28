@@ -1582,5 +1582,26 @@ if (REPAIR_RESURRECTED) {
   } catch (_) { /* report-only */ }
 })();
 
+// --- 5p. jev shadow-review due (REPORT-ONLY, CONDITIONAL) -------------------
+// Durable "time to review the Jev shadow numbers" reminder — see
+// hooks/lib/jev-review.js and hooks/jev-review-reminder.js (the SessionStart
+// side of this same check). Stays SILENT (no section) when Jev is off, the
+// reviewReminder setting is off, or nothing is currently due.
+(function jevReviewDueSection() {
+  let cfg = null;
+  try { cfg = JSON.parse(fs.readFileSync(path.join(os.homedir(), '.anti-hall', 'jev.json'), 'utf8')); } catch (_) { cfg = null; }
+  if (!cfg || cfg.enabled !== true) return;
+  let reminderOn = true;
+  try { reminderOn = require('./lib/settings.js').get('jev', 'reviewReminder', true) !== false; } catch (_) { reminderOn = true; }
+  if (!reminderOn) return;
+  let result = null;
+  try { result = require('./lib/jev-review.js').computeReviewDue(); } catch (_) { result = null; }
+  if (!result || !result.due || !result.due.length) return;
+  head('jev shadow review');
+  for (const d of result.due) {
+    warnl(`review due: ${d.id} (${d.days}d, ${d.decisions} decisions) — run \`jev reviewed ${d.id}\` after deciding`);
+  }
+})();
+
 // --- 6. Summary --------------------------------------------------------------
 emitVerdictAndExit();

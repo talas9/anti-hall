@@ -83,6 +83,7 @@ const SWITCHES = {
   'limit-conserve-inject.js': 'limitConserve.mode',
   'speculation-judge.js': 'jev.semanticJudge',
   'jev-weekly-scorecard.js': 'jev.weeklyNotice',
+  'jev-review-reminder.js': 'jev.reviewReminder',
   'silent-agent-nudge.js': 'guards.silentAgentNudge',
   'compact-advice-guard.js': 'guards.compactAdviceGuard',
   'compact-declaration-guard.js': 'guards.compactDeclarationGuard',

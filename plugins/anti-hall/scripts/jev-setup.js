@@ -187,6 +187,7 @@ function parseArgs(argv) {
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--transport') opts.transport = argv[++i];
+    else if (a === '--days') opts.days = argv[++i];
     else opts._.push(a);
   }
   return opts;
@@ -358,6 +359,55 @@ function cmdMode(opts) {
   console.log(`${integration} mode set to ${value}`);
 }
 
+// --- shadow-review verbs ----------------------------------------------------
+// Durable "time to review the Jev shadow numbers" reminder — see
+// hooks/lib/jev-review.js for the full due-date/state contract.
+
+function cmdReviewDue(opts) {
+  const review = require('../hooks/lib/jev-review.js');
+  const result = review.computeReviewDue();
+  if (opts._.includes('--json')) {
+    console.log(JSON.stringify(result.due));
+    return;
+  }
+  if (!result.due.length) {
+    console.log('jev review-due: nothing due (reviewAfterDays=' + result.reviewAfterDays +
+      ', reviewMinDecisions=' + result.reviewMinDecisions + ')');
+    return;
+  }
+  console.log('jev review-due:');
+  for (const d of result.due) {
+    console.log(`  ${d.id} (${d.days}d, ${d.decisions} decisions)`);
+  }
+}
+
+function cmdReviewed(opts) {
+  const [id] = opts._;
+  if (!id) {
+    fail('reviewed: usage is `reviewed <integration>`');
+    return;
+  }
+  const review = require('../hooks/lib/jev-review.js');
+  const r = review.markReviewed(id);
+  console.log(`${id} marked reviewed` + (r.latencyMs != null ? ` (was due for ${Math.round(r.latencyMs / 3600000)}h)` : ''));
+}
+
+function cmdSnooze(opts) {
+  const [id] = opts._;
+  const days = Number(opts.days);
+  if (!id || !Number.isFinite(days) || days <= 0) {
+    fail('snooze: usage is `snooze <integration> --days N`');
+    return;
+  }
+  const review = require('../hooks/lib/jev-review.js');
+  const r = review.snoozeIntegration(id, undefined, days);
+  if (!r.ok) {
+    fail('snooze: ' + r.error);
+    return;
+  }
+  console.log(`${id} snoozed until ${r.snoozedUntil}`);
+}
+
 async function main() {
   const argv = process.argv.slice(2);
   const verb = argv[0];
@@ -370,8 +420,11 @@ async function main() {
     case 'set-key': return cmdSetKey(opts);
     case 'test': return cmdTest();
     case 'mode': return cmdMode(opts);
+    case 'review-due': return cmdReviewDue(opts);
+    case 'reviewed': return cmdReviewed(opts);
+    case 'snooze': return cmdSnooze(opts);
     default:
-      console.error('usage: jev-setup.js status|enable [--transport vercel|typesafe]|disable|set-key [--transport vercel|typesafe]|test|mode <integration> on|shadow|off');
+      console.error('usage: jev-setup.js status|enable [--transport vercel|typesafe]|disable|set-key [--transport vercel|typesafe]|test|mode <integration> on|shadow|off|review-due [--json]|reviewed <integration>|snooze <integration> --days N');
       process.exitCode = 1;
   }
 }

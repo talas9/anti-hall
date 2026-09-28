@@ -299,6 +299,47 @@ entirely with `"weeklyNotice": false` in `~/.anti-hall/jev.json` (default
 `true` — opt-out, not opt-in). It is also silent whenever Jev itself is not
 `enabled` at all.
 
+### Shadow-review reminder (durable — "time to review the Jev shadow numbers")
+
+Most integrations default to `shadow` (consulted + logged, never trusted).
+The owner has said they forget to come back and check those numbers, so this
+reminder is DURABLE plugin state (`~/.anti-hall/jev-review-state.json`), not a
+per-session cron — a session cron dies with the session.
+
+A review becomes DUE for a `shadow` integration once it has run in shadow for
+`jev.reviewAfterDays` (default 7) AND logged at least `jev.reviewMinDecisions`
+(default 30) decisions, unless it is currently snoozed or was already reviewed
+within that same window. A SessionStart hook (`hooks/jev-review-reminder.js`,
+main session only) and `doctor` both surface a due integration; the hook
+injects one line like:
+
+```
+🔔 JEV REVIEW DUE: modelRouting (10d, 35 decisions). Tell the owner and offer
+to run `/anti-hall:jev report` — they asked to be reminded.
+```
+
+When you see this line (or the owner otherwise brings it up), walk them
+through `jev report` for that integration exactly as in "how is Jev doing"
+above, help them decide promote (`mode <id> on`) / turn off (`mode <id> off`)
+/ keep watching, and **once the owner has decided, run**:
+
+```
+node "${CLAUDE_PLUGIN_ROOT}/scripts/jev-setup.js" reviewed <integration>
+```
+
+This clears the reminder (and re-arms it `reviewAfterDays` after the next
+review, so a shadow integration the owner keeps deferring on keeps coming
+back). If the owner wants to defer without deciding yet, snooze it instead:
+
+```
+node "${CLAUDE_PLUGIN_ROOT}/scripts/jev-setup.js" snooze <integration> --days N
+```
+
+`review-due [--json]` lists what is currently due without changing anything —
+useful to check state without waiting for the next SessionStart. Opt out of
+the reminder (not the underlying tracking) with `"reviewReminder": false` /
+`jev.reviewReminder` (default `true`).
+
 ### Two DIFFERENT "latency" numbers — do not conflate them
 
 The per-integration table's `p50ms`/`p95ms` columns are the **Jev classifier
