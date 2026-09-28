@@ -20,6 +20,15 @@ const { makeHome } = require('../helpers/fixtures.js');
 const TRACKER = 'task-tracker.js';
 const GUARD = 'task-guard.js';
 const NO_DEDUPE = { ANTIHALL_EMIT_DEDUPE: '0' };
+// HIGH_CAP: pin guards.maxParallelDispatch above every running-agent count
+// used in this file (max 2) so these tests assert per-task coverage/heartbeat
+// logic, not the host's core count. defaultCap() is min(16, cores-2), so a
+// low-core CI runner (2-4 vCPUs, common on hosted macOS/ubuntu runners) can
+// silently drop the dynamic default to 1-2, which starved these assertions
+// on CI while passing locally on higher-core dev machines (2026-09-28 CI
+// regression). Tests that specifically exercise the cap feature itself still
+// use their own explicit ANTIHALL_MAX_PARALLEL_DISPATCH value.
+const HIGH_CAP = { ANTIHALL_MAX_PARALLEL_DISPATCH: '16' };
 
 const iso = (minsAgo) => new Date(Date.now() - minsAgo * 60 * 1000).toISOString();
 
@@ -124,7 +133,7 @@ test('FIELD REGRESSION: one own agent + global heartbeat -> task-tracker still d
   try {
     plantGlobalHeartbeat(h);
     const tp = h.writeTranscript(fieldTranscript());
-    const line = demandLine(ctx(testHook(TRACKER, trackerPayload(tp), { home: h.home, env: NO_DEDUPE })));
+    const line = demandLine(ctx(testHook(TRACKER, trackerPayload(tp), { home: h.home, env: Object.assign({}, NO_DEDUPE, HIGH_CAP) })));
     assert.match(line, /^DISPATCH NOW in parallel/, line);
     assert.match(line, /#4 "mcp-reaper matcher"/, line);
     assert.match(line, /#5 "scan-throttle heredoc copy"/, line);
@@ -138,7 +147,7 @@ test('FIELD REGRESSION: same state at Stop -> task-guard IDLE NEGLECT blocks (gl
   try {
     plantGlobalHeartbeat(h);
     const tp = h.writeTranscript(fieldTranscript());
-    const r = testHook(GUARD, stopPayload(tp), { home: h.home });
+    const r = testHook(GUARD, stopPayload(tp), { home: h.home, env: HIGH_CAP });
     assert.ok(isIdleNeglect(r), 'expected IDLE NEGLECT; stdout: ' + r.stdout);
     assert.match(r.json.reason, /#5 "scan-throttle heredoc copy"/, r.json.reason);
     assert.doesNotMatch(r.json.reason, /Respawn verb/, 'addBlockedBy task is blocked: ' + r.json.reason);
@@ -153,7 +162,7 @@ test('PER-TASK COVERAGE: agents naming #1 and #2 cover them; #3 still demanded',
       ...agentLaunch('toolu_a1', 'aaaaaaaaaaaaaaaa1', 'Lane A: #1 alpha'),
       ...agentLaunch('toolu_a2', 'aaaaaaaaaaaaaaaa2', 'Lane B: #2 beta'),
     ]);
-    const line = demandLine(ctx(testHook(TRACKER, trackerPayload(tp), { home: h.home })));
+    const line = demandLine(ctx(testHook(TRACKER, trackerPayload(tp), { home: h.home, env: HIGH_CAP })));
     assert.match(line, /#3 "gamma work"/, line);
     assert.ok(!/#1 |#2 /.test(line), 'covered tasks must not be listed: ' + line);
   } finally { h.cleanup(); }
@@ -188,7 +197,7 @@ test('UNMAPPED agents count one task each: 2 unmapped agents, 2 pending -> no de
       ...agentLaunch('toolu_a1', 'cccccccccccccccc1', 'investigate thing'),
       ...agentLaunch('toolu_a2', 'cccccccccccccccc2', 'investigate other'),
     ]);
-    assert.match(ctx(testHook(TRACKER, trackerPayload(three), { home: h2.home })), /DISPATCH NOW in parallel/);
+    assert.match(ctx(testHook(TRACKER, trackerPayload(three), { home: h2.home, env: HIGH_CAP })), /DISPATCH NOW in parallel/);
   } finally { h2.cleanup(); }
 });
 
@@ -318,13 +327,16 @@ test('SETTING guards.maxParallelDispatch=1: one running (unmapped) agent -> no d
       ...createTasks(['alpha work', 'beta work'], 1),
       ...agentLaunch('toolu_a1', '1111111111111111a', 'working on something'),
     ]);
-    // Baseline (default dynamic cap): one unmapped running agent absorbs ONE
-    // pending task, the other is still demanded. NO_DEDUPE on both calls —
-    // otherwise the second (byte-identical, pre-fix) emission would be
-    // silently collapsed by the burst-collapse dedupe and the assertion
-    // would pass for the wrong reason.
-    assert.match(ctx(testHook(TRACKER, trackerPayload(tp), { home: h.home, env: NO_DEDUPE })), /DISPATCH NOW/,
-      'baseline: default cap still demands the second task');
+    // Baseline (cap well above the running count, not the host's dynamic
+    // default — defaultCap() is min(16, cores-2), which a low-core CI runner
+    // can shrink to 1-2 and starve this assertion for a reason unrelated to
+    // the feature under test): one unmapped running agent absorbs ONE pending
+    // task, the other is still demanded. NO_DEDUPE on both calls — otherwise
+    // the second (byte-identical, pre-fix) emission would be silently
+    // collapsed by the burst-collapse dedupe and the assertion would pass for
+    // the wrong reason.
+    assert.match(ctx(testHook(TRACKER, trackerPayload(tp), { home: h.home, env: Object.assign({}, NO_DEDUPE, HIGH_CAP) })), /DISPATCH NOW/,
+      'baseline: a cap above the running count still demands the second task');
     const env = Object.assign({ ANTIHALL_MAX_PARALLEL_DISPATCH: '1' }, NO_DEDUPE);
     assert.doesNotMatch(ctx(testHook(TRACKER, trackerPayload(tp), { home: h.home, env })), /DISPATCH NOW/,
       'cap=1 with one already running -> no demand for the next task');

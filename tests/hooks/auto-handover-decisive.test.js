@@ -10,6 +10,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const { testHook } = require('../helpers/spawn-hook.js');
 const { makeHome } = require('../helpers/fixtures.js');
@@ -19,7 +20,23 @@ const freshness = require('../../plugins/anti-hall/hooks/lib/handover-freshness.
 
 const HOOK = 'auto-handover-pause-nag.js';
 const SID = 'dec-s1';
-const KNOWN_WINDOW = { ANTIHALL_CONTEXT_WINDOW_TOKENS: '200000' };
+
+// CHILD_TMPDIR: a fresh, unrelated directory used as the spawned hook's
+// TMPDIR (work-detect.js's isUnderTmpRoot excludes any write under the
+// CHILD's os.tmpdir() from counting as work — deliberately, for a genuine
+// scratch copy under the OS temp root). spawn-hook.js's isolatedEnv omits
+// TMPDIR by default, so the child falls back to Node's bare '/tmp'. On a CI
+// host with no ambient $TMPDIR (common on Linux runners), the PARENT test
+// process's os.tmpdir() ALSO resolves to '/tmp', so this file's makeHome()
+// fixture (created under the parent's os.tmpdir()) collides with the
+// child's default and every Edit inside it was silently excluded as
+// "scratch", never counting as work — breaking staleness detection
+// (2026-09-28 CI-only regression; macOS dev machines have a per-user
+// $TMPDIR the child never sees, masking it locally). Pointing TMPDIR at a
+// directory that is never an ancestor of any fixture keeps this file's
+// fixtures outside the exclusion on every platform.
+const CHILD_TMPDIR = fs.mkdtempSync(path.join(os.tmpdir(), 'auto-handover-decisive-childtmp-'));
+const KNOWN_WINDOW = { ANTIHALL_CONTEXT_WINDOW_TOKENS: '200000', TMPDIR: CHILD_TMPDIR };
 
 function assistantUsageLine(usedTokens, extra) {
   return JSON.stringify(Object.assign({
