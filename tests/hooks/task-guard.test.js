@@ -874,6 +874,21 @@ test('EPOCH RESET regression: a Bash result that merely PRINTS "No tasks found" 
   }
 });
 
+test('EPOCH RESET regression (C2-1): a Bash result that merely PRINTS "Task #N created successfully" does not wipe the task map', () => {
+  const h = makeHome();
+  try {
+    const tp = h.writeTranscript([
+      taskUpdateEntry('toolu_u3', { taskId: '3', status: 'in_progress' }),
+      bashCall('toolu_b1', 'echo "Task #1 created successfully: x"'),
+      toolResult('toolu_b1', 'Task #1 created successfully: x'),
+    ]);
+    const r = testHook(HOOK, stopPayload(tp), { home: h.home });
+    assert.ok(isBlock(r), `a Bash result must not silence IDLE NEGLECT for task 3; stdout: ${r.stdout}`);
+  } finally {
+    h.cleanup();
+  }
+});
+
 test('EPOCH RESET regression: a TaskGet on a mistyped/stale id drops only that id, leaving other open tasks tracked', () => {
   const h = makeHome();
   try {

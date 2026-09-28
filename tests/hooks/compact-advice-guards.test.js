@@ -253,6 +253,26 @@ test('findAdvice: A1-CA-1 — explicit declaration forms still match after tight
   assert.ok(advice.findAdvice('run /compact').length);
 });
 
+// R2-2: a short leading interjection/adverb + comma still opens a genuine
+// declaration ("Yes, safe to compact now.") - it must be detected, not
+// silently dropped as an under-detection gap.
+test('findAdvice: R2-2 — a comma-prefixed genuine declaration still counts', () => {
+  assert.ok(advice.findAdvice('Yes, safe to compact now.').length);
+  assert.ok(advice.findAdvice('Overall, safe to compact now.').length);
+  assert.ok(advice.findAdvice('Great, safe to compact.').length);
+});
+
+// R2-2 companion: the comma allowance must NOT reintroduce round-1's false
+// blocks — a comma before a conditional/negated clause still doesn't count.
+test('findAdvice: R2-2 — the comma allowance does not reopen round-1 false-block classes', () => {
+  assert.strictEqual(
+    advice.findAdvice('Safe to compact, but first I need to write the progress file.').length,
+    0,
+  );
+  assert.strictEqual(advice.findAdvice('Wait, not safe to compact yet.').length, 0);
+  assert.strictEqual(advice.findAdvice('For instance, safe to compact examples vary in wording.').length, 0);
+});
+
 // ------------------------------------------------------------- R3A1 / #29
 // The reviewer's false-positive probe (dl116/r4/c1/cdg-fp.js): 6 texts, only
 // the last (an unambiguous ALL-CAPS declaration) is a real recommendation.

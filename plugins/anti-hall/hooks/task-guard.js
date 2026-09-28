@@ -743,7 +743,7 @@ function parseTasksFromFile(filePath) {
               }
             }
           }
-          const m = resultText.match(/^Task\s+#(\d+)\s+created\s+successfully/i);
+          const m = callName === 'TaskCreate' ? resultText.match(/^Task\s+#(\d+)\s+created\s+successfully/i) : null;
           if (m && !resultIdMap.has(item.tool_use_id)) {
             // TASK-LIST EPOCH: the harness restarts numbering at #1 when its
             // list resets (restart/resume). A created id <= the highest one

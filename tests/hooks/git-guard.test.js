@@ -40,15 +40,31 @@ const REASON = {
   FILE: /Commit message \(via `-F`\/`--file`/,
 };
 
-// --- Exact-shape exemption: heredoc message file + anti-hall launcher send ---
-// The peer's original command (absolute scratchpad path, ENDOFMSG delimiter)
-// and prose variants. All of these BLOCK on the pre-0.117 guard.
+// --- No exact-shape mailbox exemption: a heredoc message file + anti-hall
+// launcher send is scanned exactly like any other heredoc body (round-2
+// review R2-1/R2A1-1: the removed exemption's temp-path/target checks were
+// literal-string-only, with no symlink resolution, so a planted symlink into
+// ~/.anti-hall/bin defeated it). Each of these carries a real force-push
+// mention in its body and must BLOCK, with the mailbox hint attached.
 const PEER_FILE = '/private/tmp/peer/scratchpad/landed.md';
-const LAUNCHER_MSG_ALLOW = [
-  `cat > ${PEER_FILE} <<'ENDOFMSG'\nLANDED ON MAIN. Plain fast-forward, no force - I did not run \`git push --force\` or \`git push -f\`.\nENDOFMSG\nnode ~/.anti-hall/bin/devswarm.js send --to primary --message-file ${PEER_FILE}`,
-  "cd /tmp/peer && cat > m.md <<'EOF'\nPlease hold; `git push origin +main` waits for `ci` green.\nEOF\nnode ~/.anti-hall/bin/devswarm.js send --to x --message-file m.md",
-  "cd /tmp/peer\ncat > /tmp/m.md <<'MSG'\ngit push `backtick text`\nnever git push --force-with-lease here; && git push -f is banned too\nMSG\nnode ~/.anti-hall/bin/devswarm.js send --to x --urgency high --quiet --message-file /tmp/m.md",
-  "cat > /tmp/m.txt <<'EOF'\nstep 3: $(git push --force origin main) is what NOT to do\nEOF\nnode ~/.anti-hall/bin/devswarm.js send --to peer --message 'see file' --message-file /tmp/m.txt",
+const HINT_RE = /write the message file with the Write tool/;
+const LAUNCHER_MSG_BLOCK_HINTED = [
+  {
+    cmd: `cat > ${PEER_FILE} <<'ENDOFMSG'\nLANDED ON MAIN. Plain fast-forward, no force - I did not run \`git push --force\` or \`git push -f\`.\nENDOFMSG\nnode ~/.anti-hall/bin/devswarm.js send --to primary --message-file ${PEER_FILE}`,
+    reason: REASON.FORCE,
+  },
+  {
+    cmd: "cd /tmp/peer && cat > m.md <<'EOF'\nPlease hold; `git push origin +main` waits for `ci` green.\nEOF\nnode ~/.anti-hall/bin/devswarm.js send --to x --message-file m.md",
+    reason: REASON.FORCE,
+  },
+  {
+    cmd: "cd /tmp/peer\ncat > /tmp/m.md <<'MSG'\ngit push `backtick text`\nnever git push --force-with-lease here; && git push -f is banned too\nMSG\nnode ~/.anti-hall/bin/devswarm.js send --to x --urgency high --quiet --message-file /tmp/m.md",
+    reason: REASON.CMDSUBST,
+  },
+  {
+    cmd: "cat > /tmp/m.txt <<'EOF'\nstep 3: $(git push --force origin main) is what NOT to do\nEOF\nnode ~/.anti-hall/bin/devswarm.js send --to peer --message 'see file' --message-file /tmp/m.txt",
+    reason: REASON.FORCE,
+  },
 ];
 
 // Near misses of that shape: each must fall back to scanning the body (which
@@ -432,9 +448,10 @@ const ALLOW = [
   // proves the new heredoc-body scan doesn't over-block ordinary messages.
   'git commit -q -F - <<\'EOF\'\nsubject\n\nordinary body, no trailer\nEOF',
   'git commit -F - <<EOF\nsubject\n\nordinary body, no trailer\nEOF',
-  // Exact-shape exemption: a quoted-heredoc message file sent via the anti-hall
-  // launcher. The prose body mentions `git push` and is not scanned.
-  ...LAUNCHER_MSG_ALLOW,
+  // A mailbox-shaped heredoc with NO force/self-credit/cmdsubst mention in its
+  // body must still ALLOW - there is no exemption anymore, but the body is
+  // just ordinary scanned text, and ordinary text is not blocked.
+  "cat > /tmp/m.md <<'EOF'\nLanded cleanly, no issues.\nEOF\nnode ~/.anti-hall/bin/devswarm.js send --to x --message-file /tmp/m.md",
 ];
 
 // gh self-credit BLOCK cases. All block via ghSelfCreditMessage(), whose message
@@ -472,6 +489,19 @@ for (const cmd of [...LAUNCHER_MSG_BLOCK, ...DEADLY_LOOP_PROBES]) {
   test(`BLOCK (launcher-message exemption does not apply): ${JSON.stringify(cmd)}`, () => {
     const r = run(cmd);
     assert.strictEqual(r.status, 2, `expected block (exit 2) for: ${cmd}\nstderr: ${r.stderr}`);
+  });
+}
+
+// R2-1/R2A1-1: the mailbox heredoc exemption was removed entirely. Every one
+// of the peer's original "should be exempt" shapes now blocks on its real
+// content (no more exemption to bypass), and the block reason carries a
+// one-line hint pointing at the Write-tool + send --message-file workflow.
+for (const { cmd, reason } of LAUNCHER_MSG_BLOCK_HINTED) {
+  test(`BLOCK (no mailbox exemption, hinted): ${JSON.stringify(cmd)}`, () => {
+    const r = run(cmd);
+    assert.strictEqual(r.status, 2, `expected block (exit 2) for: ${cmd}\nstderr: ${r.stderr}`);
+    assert.match(r.stderr, reason, `blocked for the WRONG reason: ${cmd}\ngot: ${r.stderr}`);
+    assert.match(r.stderr, HINT_RE, `expected mailbox hint in block reason: ${cmd}\ngot: ${r.stderr}`);
   });
 }
 
@@ -568,6 +598,77 @@ for (const cmd of LAUNCHER_WRITE_ALLOW) {
     assert.strictEqual(r.status, 0, `expected allow (exit 0) for: ${cmd}\nstderr: ${r.stderr}`);
   });
 }
+
+// R2-1: the launcher-dir write block hardened with best-effort symlink
+// resolution, plus flagging `ln`'s SOURCE operand. These need a REAL symlink
+// on disk (the textual LAUNCHER_DIR_RE/hasAntiHallBinSegment checks alone
+// cannot see through one), so they build their own fixture instead of using
+// the plain `run()` helper.
+test('BLOCK (launcher dir write): through a planted symlink (echo > target)', () => {
+  const h = makeHome();
+  try {
+    const binDir = path.join(h.home, '.anti-hall', 'bin');
+    fs.mkdirSync(binDir, { recursive: true });
+    const launcher = path.join(binDir, 'devswarm.js');
+    fs.writeFileSync(launcher, 'real launcher\n', 'utf8');
+    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'anti-hall-test-symlink-'));
+    try {
+      const link = path.join(scratch, 'pwn.js');
+      fs.symlinkSync(launcher, link);
+      const r = testHook(HOOK, bashPayload(`echo PWNED > ${link}`), { home: h.home });
+      assert.strictEqual(r.status, 2, `expected block (exit 2)\nstderr: ${r.stderr}`);
+      assert.match(r.stderr, /stable launcher directory/);
+    } finally {
+      fs.rmSync(scratch, { recursive: true, force: true });
+    }
+  } finally {
+    h.cleanup();
+  }
+});
+test('BLOCK (launcher dir write): planting the symlink itself (ln source resolves into bin)', () => {
+  const h = makeHome();
+  try {
+    const binDir = path.join(h.home, '.anti-hall', 'bin');
+    fs.mkdirSync(binDir, { recursive: true });
+    const launcher = path.join(binDir, 'devswarm.js');
+    fs.writeFileSync(launcher, 'real launcher\n', 'utf8');
+    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'anti-hall-test-symlink-'));
+    try {
+      const link = path.join(scratch, 'pwn2.js');
+      const r = testHook(HOOK, bashPayload(`ln -sf ${launcher} ${link}`), { home: h.home });
+      assert.strictEqual(r.status, 2, `expected block (exit 2)\nstderr: ${r.stderr}`);
+      assert.match(r.stderr, /stable launcher directory/);
+    } finally {
+      fs.rmSync(scratch, { recursive: true, force: true });
+    }
+  } finally {
+    h.cleanup();
+  }
+});
+// `ln`'s source operand is flagged textually too - no real filesystem needed.
+test('BLOCK (launcher dir write): ln -s SOURCE (~/.anti-hall/bin/...) DEST, no pre-existing link', () => {
+  const r = run('ln -sf ~/.anti-hall/bin/devswarm.js /tmp/pwn3.js');
+  assert.strictEqual(r.status, 2, `expected block (exit 2)\nstderr: ${r.stderr}`);
+  assert.match(r.stderr, /stable launcher directory/);
+});
+test('ALLOW (launcher dir write): a symlink to an ordinary file is not mistaken for a launcher write', () => {
+  const h = makeHome();
+  try {
+    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'anti-hall-test-symlink-'));
+    try {
+      const real = path.join(scratch, 'ordinary.txt');
+      fs.writeFileSync(real, 'hi\n', 'utf8');
+      const link = path.join(scratch, 'alias.txt');
+      fs.symlinkSync(real, link);
+      const r = testHook(HOOK, bashPayload(`echo hi >> ${link}`), { home: h.home });
+      assert.strictEqual(r.status, 0, `expected allow (exit 0)\nstderr: ${r.stderr}`);
+    } finally {
+      fs.rmSync(scratch, { recursive: true, force: true });
+    }
+  } finally {
+    h.cleanup();
+  }
+});
 
 // Code strings that call git: a quoted literal passed to a call
 // (`execSync('git push --force')`, `os.system("…")`, a list-form argv) in an

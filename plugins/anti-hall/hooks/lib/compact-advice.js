@@ -111,12 +111,23 @@ function stripQuoted(text) {
   return t;
 }
 
+// A short leading interjection/adverb that can genuinely open a sentence
+// before a comma-prefixed declaration ("Yes, safe to compact now.",
+// "Overall, safe to compact now."). Deliberately small and mundane — this is
+// NOT a general "any word + comma" allowance (that would swallow "Safe to
+// compact, but first I need to write the progress file", which must stay
+// negated by NEGATION_AFTER_RE, not re-opened here as positioned-but-safe).
+const LEAD_INTERJECTION_RE = /^(?:yes|yeah|yep|no|nope|ok|okay|sure|right|correct|agreed|indeed|actually|honestly|overall|great|good|alright|well|so|also|anyway|regardless)$/i;
+
 // isAtSentenceOrLineStart(t, index) -> bool. Walks back over whitespace and
 // decorative markdown/emoji/bullet characters; true when what remains before
 // the match is the start of the string, a newline crossed during the walk
 // (the match is at the start of its own line, even if that line did not end
 // in sentence-terminal punctuation), or a sentence-terminal punctuation mark
-// (. ! ? :).
+// (. ! ? :). A single short leading interjection/adverb immediately followed
+// by a comma (itself at a real sentence/line start) also counts (R2-2) —
+// "Yes, safe to compact now." is a genuine declaration, not conditional or
+// mid-sentence prose.
 function isAtSentenceOrLineStart(t, index) {
   let i = index;
   let crossedNewline = false;
@@ -125,7 +136,23 @@ function isAtSentenceOrLineStart(t, index) {
     i--;
   }
   if (i === 0 || crossedNewline) return true;
-  return /[.!?:]/.test(t[i - 1]);
+  if (/[.!?:]/.test(t[i - 1])) return true;
+  if (t[i - 1] === ',') {
+    let j = i - 1;
+    while (j > 0 && /\s/.test(t[j - 1])) j--;
+    let k = j;
+    while (k > 0 && /[A-Za-z]/.test(t[k - 1])) k--;
+    if (k < j && LEAD_INTERJECTION_RE.test(t.slice(k, j))) {
+      let s = k;
+      let crossed2 = false;
+      while (s > 0 && /\s/.test(t[s - 1])) {
+        if (t[s - 1] === '\n') crossed2 = true;
+        s--;
+      }
+      if (s === 0 || crossed2 || /[.!?:]/.test(t[s - 1])) return true;
+    }
+  }
+  return false;
 }
 
 // isQuestionSentence(t, index) -> bool. True when the sentence containing

@@ -44,7 +44,6 @@
 'use strict';
 
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
 const { HEREDOC_RE, basename, parseHeredocAt, SHELL_VERBS } = require('./lib/shell-scan.js');
 
@@ -69,6 +68,17 @@ function block(msg) {
     process.stderr.write(msg + '\n');
   } catch (_) { /* ignore */ }
   process.exit(2);
+}
+
+// True when a blocked command LOOKS LIKE the devswarm mailbox flow (a heredoc
+// writing a message file, then `devswarm.js send --message-file <that file>`)
+// - purely to attach a more useful hint to the block reason. This is NOT an
+// exemption: the command was already blocked by the ordinary scan above the
+// call site; every heredoc body is always scanned in full (no data
+// exemption), so this only changes the wording of an already-decided block.
+function looksLikeMailboxHeredoc(cmd) {
+  return /<<-?\s*['"]?[A-Za-z_][A-Za-z0-9_]*['"]?/.test(cmd) &&
+    /devswarm\.js\b[\s\S]*\bsend\b[\s\S]*--message-file\b/.test(cmd);
 }
 
 // ---------------------------------------------------------------------------
@@ -949,38 +959,16 @@ function extractQuotedLiterals(cmd) {
   return out;
 }
 
-// EXACT-SHAPE exemption for one legitimate command: writing a mailbox message
-// file with a single-quoted heredoc and sending it with the anti-hall launcher.
-// Base scans heredoc body lines as commands, so PROSE in the message (e.g.
-// "I did not run `git push --force`") was blocked. Two broader "body is data"
-// exemptions failed security review (write-then-run executors, config/env
-// driven git verbs, env-prefixed launchers, "$(...)" args) and were reverted.
-// This one is an allowlist of the WHOLE command, not of segments:
-//
-//   [cd <plain path> (newline | && | ;)]
-//   cat > <FILE> <<'DELIM'
-//   <body>
-//   DELIM
-//   node ~/.anti-hall/bin/devswarm.js send <args naming --message-file FILE>
-//
-// Anything else (another segment, a pipe, `&`, an env assignment, `$`,
-// backticks, redirects, `<<-`, an unquoted/double-quoted delimiter, a FILE
-// under .git/, a hooks/ dir, .anti-hall/bin/, or a git config file) returns
-// the command unchanged, so the body is scanned exactly as before. On a match
-// only the body lines are blanked; every other line is still scanned.
-const PLAIN_PATH_RE = /^(?:~\/)?[A-Za-z0-9._\/+,@%:-]+$/;
-const PLAIN_WORD_RE = /^[A-Za-z0-9._\/+,@%:-]+$/;
-const GIT_FILE_BASENAMES = new Set(['.gitconfig', '.gitmodules', '.gitattributes']);
-// Path segments that make a resolved target ineligible for the mailbox
-// exemption even when it sits under a temp dir - a git config/hooks dir, a
-// git-config-named dotfile parent, or anti-hall's own trusted launcher dir.
-const FORBIDDEN_TARGET_SEGMENTS = new Set(['.git', 'hooks', '.config', 'git']);
-
-function isPlainPath(p) {
-  if (!PLAIN_PATH_RE.test(p)) return false;
-  return !p.split('/').includes('..');
-}
-
+// A devswarm mailbox message written via a Bash heredoc gets NO exemption:
+// every heredoc body is always scanned in full, exactly like any other
+// command text (an earlier "exact-shape" allowlist for this one legitimate
+// shape - writing a message file, then sending it with the anti-hall
+// launcher - was removed after review found its temp-path/target checks were
+// literal-string-only and bypassable via a planted symlink; see
+// looksLikeMailboxHeredoc() near block() for the resulting block-reason
+// hint). The correct way to send a message is to write the file with the
+// Write tool (not a Bash heredoc), then run `devswarm.js send --message-file
+// <path>` as its own, unrelated-body command.
 function safeHomedir() {
   try {
     // resolveHome() (companion/lib/test-home-guard.js) is the canonical home-
@@ -997,152 +985,6 @@ function expandTildePath(p, home) {
   if (p === '~') return home || p;
   if (p.startsWith('~/')) return home ? home.replace(/[\\/]+$/, '') + '/' + p.slice(2) : p;
   return p;
-}
-
-// Resolve `raw` to an absolute, NORMALIZED posix path: expand a leading `~`
-// via the resolved home directory, then (if still relative) join against `cdDir` (itself
-// tilde-expanded) when given, else `cwd`. path.posix.normalize collapses any
-// `.`/`..` segment so `~/.anti-hall/./bin/x`, `~/.anti-hall//bin`, and
-// `foo/../bin` tricks cannot dodge a segment check that runs on the result
-// (A1-1). Returns null when the path cannot be made absolute at all - callers
-// treat that as "not allowed" (deny by default), never a guess.
-function resolveGuardPath(raw, cdDir, cwd) {
-  if (typeof raw !== 'string' || !raw) return null;
-  const home = safeHomedir();
-  let base = expandTildePath(raw.replace(/\\/g, '/'), home);
-  if (!base.startsWith('/')) {
-    let dir = '';
-    if (cdDir) {
-      dir = expandTildePath(String(cdDir).replace(/\\/g, '/'), home);
-      if (!dir.startsWith('/') && cwd) {
-        dir = String(cwd).replace(/\\/g, '/').replace(/\/+$/, '') + '/' + dir;
-      }
-    } else if (cwd) {
-      dir = String(cwd).replace(/\\/g, '/');
-    }
-    if (!dir || !dir.startsWith('/')) return null;
-    base = dir.replace(/\/+$/, '') + '/' + base;
-  }
-  return path.posix.normalize(base);
-}
-
-// True when `absPath` (already resolved/normalized) sits under a temp/scratch
-// root: os.tmpdir() itself, or one of the well-known OS temp roots (Linux
-// /tmp, macOS's /private/tmp alias and its per-process /var/folders dirs).
-// This is the documented location the real mailbox flow writes a message file
-// to (a disposable scratch/temp path) - never the user's home config, a repo
-// dir, or anti-hall's own installed state.
-function isTempPath(absPath) {
-  if (!absPath || !absPath.startsWith('/')) return false;
-  const roots = ['/tmp/', '/private/tmp/', '/var/folders/'];
-  let tmp = '';
-  try {
-    tmp = os.tmpdir() || '';
-  } catch (_) { /* fall through */ }
-  if (tmp) {
-    const t = (tmp.endsWith('/') ? tmp : tmp + '/').replace(/\\/g, '/');
-    if (!roots.includes(t)) roots.push(t);
-  }
-  return roots.some((root) => absPath.startsWith(root));
-}
-
-// ALLOWLIST check of the path the heredoc writes to: FILE, resolved against
-// the optional `cd` dir and the hook payload's cwd (both only when relative),
-// normalized to collapse `.`/`..`. Exempt ONLY when the resolved target lives
-// under a temp/scratch dir (isTempPath) AND carries none of the forbidden
-// segments AND its basename is not a git-config filename. Anything else -
-// including a target under the user's real config/home dirs - is NOT exempt,
-// so the body is scanned exactly like ordinary heredoc text.
-function isAllowedMessageTarget(file, cdDir, cwd) {
-  const resolved = resolveGuardPath(file, cdDir, cwd);
-  if (!isTempPath(resolved)) return false;
-  const segs = resolved.split('/').filter(Boolean).map((s) => s.toLowerCase());
-  if (!segs.length) return false;
-  for (let i = 0; i < segs.length; i++) {
-    if (FORBIDDEN_TARGET_SEGMENTS.has(segs[i])) return false;
-    if (segs[i] === '.anti-hall' && segs[i + 1] === 'bin') return false;
-  }
-  return !GIT_FILE_BASENAMES.has(segs[segs.length - 1]);
-}
-
-// Parse the launcher line's args; true only if every token is an allowed flag
-// or a plain word and `--message-file` names exactly `file`, once.
-function isAllowedSendArgs(argStr, file) {
-  if (/[$`\\<>|&;(){}*?[\]#~!\r]/.test(argStr)) return false;
-  const tokens = [];
-  const re = /[ \t]+('[^']*'|"[^"]*"|[^ \t'"]+)(?=[ \t]|$)/g;
-  let pos = 0;
-  let m;
-  while ((m = re.exec(argStr)) !== null) {
-    if (m.index !== pos) return false;
-    tokens.push(m[1]);
-    pos = re.lastIndex;
-  }
-  if (argStr.slice(pos).trim() !== '') return false;
-  let sawFile = 0;
-  for (let i = 0; i < tokens.length; i++) {
-    const t = tokens[i];
-    if (t === '--quiet') continue;
-    if (t === '--to' || t === '--urgency' || t === '--message-file' || t === '--message') {
-      const v = tokens[++i];
-      if (v === undefined) return false;
-      if (t === '--message') {
-        if (!(PLAIN_WORD_RE.test(v) || /^'[^']*'$/.test(v) || /^"[^"]*"$/.test(v))) return false;
-        continue;
-      }
-      if (!PLAIN_WORD_RE.test(v)) return false;
-      if (t === '--message-file') {
-        if (v !== file) return false;
-        sawFile++;
-      }
-      continue;
-    }
-    if (t.startsWith('-') || !PLAIN_WORD_RE.test(t) || /^[A-Za-z_][A-Za-z0-9_]*=/.test(t)) return false;
-  }
-  return sawFile === 1;
-}
-
-function blankLauncherMessageHeredoc(cmd, cwd) {
-  const lines = cmd.split('\n');
-  let idx = 0;
-  let cdDir = null;
-  const cdOnly = /^[ \t]*cd[ \t]+(\S+)[ \t]*$/.exec(lines[0]);
-  if (cdOnly) { cdDir = cdOnly[1]; idx = 1; }
-  if (idx >= lines.length) return cmd;
-  const op = /^[ \t]*(?:cd[ \t]+(\S+)[ \t]*(?:&&|;)[ \t]*)?cat[ \t]+>[ \t]*(\S+)[ \t]+<<'([A-Za-z_][A-Za-z0-9_]*)'[ \t]*$/.exec(lines[idx]);
-  if (!op) return cmd;
-  if (op[1] !== undefined) {
-    if (cdDir !== null) return cmd;
-    cdDir = op[1];
-  }
-  const file = op[2];
-  const delim = op[3];
-  if (cdDir !== null && !isPlainPath(cdDir)) return cmd;
-  if (!isPlainPath(file)) return cmd;
-  if (!isAllowedMessageTarget(file, cdDir, typeof cwd === 'string' ? cwd : '')) return cmd;
-  // bash ends a `<<'DELIM'` body at the first line exactly equal to DELIM.
-  let end = -1;
-  for (let j = idx + 1; j < lines.length; j++) {
-    if (lines[j] === delim) { end = j; break; }
-  }
-  if (end < 0) return cmd;
-  const rest = lines.slice(end + 1).filter((l) => !/^[ \t]*$/.test(l));
-  if (rest.length !== 1) return cmd;
-  const send = /^[ \t]*node[ \t]+~\/\.anti-hall\/bin\/devswarm\.js[ \t]+send((?:[ \t].*)?)$/.exec(rest[0]);
-  if (!send) return cmd;
-  if (!isAllowedSendArgs(send[1], file)) return cmd;
-  // Defense in depth: a message file never legitimately contains a `key =
-  // value` config line, so even an exempt body is still run through
-  // scanConfigLines. A hit withdraws the exemption entirely (returns `cmd`
-  // unchanged) rather than blanking a body that could carry a config-value
-  // force-push/alias smuggle - scanCommand's own unconditional heredoc-body
-  // scan (extractHeredocBodies + scanConfigLines, below) then sees the intact
-  // body and blocks it normally.
-  const bodyText = lines.slice(idx + 1, end).join('\n');
-  if (scanConfigLines(bodyText, 0)) return cmd;
-  const out = lines.slice();
-  for (let j = idx + 1; j < end; j++) out[j] = '';
-  return out.join('\n');
 }
 
 // Command-valued config/env. Git runs some config and env VALUES as commands:
@@ -1192,8 +1034,8 @@ const LAUNCHER_DIR_RE = /\.anti-hall[\\/]+bin(?:[\\/]|$)/i;
 const COPY_VERBS = new Set(['cp', 'mv', 'install', 'ln', 'rsync']);
 
 // Normalize `raw` (tilde-expanded, joined to `cdDir` when relative) WITHOUT
-// requiring the result to be absolute - unlike resolveGuardPath above, this
-// stays usable for a bare relative target with no cd context. Still collapses
+// requiring the result to be absolute, so it stays usable for a bare
+// relative target with no cd context. Still collapses
 // `.`/`..` via path.posix.normalize, so `.anti-hall/./bin/x`,
 // `.anti-hall//bin`, and `foo/../.anti-hall/bin/x` all normalize to the same
 // segments a plain `.anti-hall/bin/x` would (A1-1).
@@ -1208,17 +1050,81 @@ function normalizeGuardPath(raw, cdDir) {
   return path.posix.normalize(base);
 }
 
-// True when the normalized path has a `.anti-hall/bin` segment pair anywhere
-// in it (case-insensitive) - the actual check writesLauncherDir enforces;
-// LAUNCHER_DIR_RE below stays only as a cheap first-pass filter.
-function hasAntiHallBinSegment(p, cdDir) {
-  if (!p) return false;
-  const normalized = normalizeGuardPath(p, cdDir);
+// True when the normalized (already-absolute-or-not) path has a
+// `.anti-hall/bin` segment pair anywhere in it (case-insensitive).
+function pathHasLauncherSegment(normalized) {
+  if (!normalized) return false;
   const segs = normalized.split('/').filter(Boolean).map((s) => s.toLowerCase());
   for (let i = 0; i < segs.length; i++) {
     if (segs[i] === '.anti-hall' && segs[i + 1] === 'bin') return true;
   }
   return false;
+}
+
+// True when the normalized path has a `.anti-hall/bin` segment pair anywhere
+// in it (case-insensitive) - the actual check writesLauncherDir enforces;
+// LAUNCHER_DIR_RE below stays only as a cheap first-pass filter.
+function hasAntiHallBinSegment(p, cdDir) {
+  if (!p) return false;
+  return pathHasLauncherSegment(normalizeGuardPath(p, cdDir));
+}
+
+// Best-effort symlink resolution (R2-1): the textual checks above (
+// LAUNCHER_DIR_RE / hasAntiHallBinSegment) catch a write whose LITERAL path
+// names `.anti-hall/bin`, but not a write through a symlink planted
+// elsewhere (e.g. `ln -sf ~/.anti-hall/bin/devswarm.js /tmp/pwn.js` then
+// `echo PWNED > /tmp/pwn.js`) that resolves into it. Two passes:
+//  1. If the FULL target already exists (the common planted-symlink shape -
+//     the symlink itself is the write target), fs.realpathSync resolves the
+//     whole chain in one call; re-check the resolved form. A leaf that
+//     exists as a symlink but cannot be fully resolved (broken target) fails
+//     CLOSED (treated as pointing into the launcher dir).
+//  2. Otherwise (the common case: writing a brand-new file) walk the
+//     normalized path's EXISTING components up to and including the parent
+//     directory; if any of them is a symlink, or the deepest existing
+//     prefix's realpath differs from its literal form, re-check the resolved
+//     form. An unresolvable symlink component also fails CLOSED.
+function targetResolvesIntoLauncherDir(rawPath, cdDir) {
+  const normalized = normalizeGuardPath(rawPath, cdDir);
+  if (!normalized || !normalized.startsWith('/')) return false;
+  try {
+    return pathHasLauncherSegment(fs.realpathSync(normalized));
+  } catch (_) {
+    try {
+      if (fs.lstatSync(normalized).isSymbolicLink()) return true; // broken symlink leaf
+    } catch (_) { /* leaf doesn't exist at all - the ordinary "new file" case */ }
+  }
+  const segs = normalized.split('/').filter(Boolean);
+  let existing = '';
+  let cur = '';
+  for (let i = 0; i < segs.length - 1; i++) {
+    cur += '/' + segs[i];
+    let st;
+    try {
+      st = fs.lstatSync(cur);
+    } catch (_) {
+      break; // component doesn't exist (yet) - nothing further to resolve
+    }
+    existing = cur;
+    if (st.isSymbolicLink()) {
+      try {
+        const real = fs.realpathSync(cur);
+        if (pathHasLauncherSegment(real)) return true;
+      } catch (_) {
+        return true; // unresolvable symlink in the chain - fail closed
+      }
+    }
+  }
+  if (!existing) return false;
+  let resolvedExisting;
+  try {
+    resolvedExisting = fs.realpathSync(existing);
+  } catch (_) {
+    return false;
+  }
+  if (resolvedExisting === existing) return false;
+  const rejoined = path.posix.normalize(resolvedExisting + normalized.slice(existing.length));
+  return pathHasLauncherSegment(rejoined);
 }
 
 function writesLauncherDir(tokens, ev, cdDir) {
@@ -1241,11 +1147,17 @@ function writesLauncherDir(tokens, ev, cdDir) {
       else if (w.startsWith('--target-directory=')) targets.push(w.slice(19));
     });
   }
+  // `ln`'s SOURCE operand(s) (everything but the final destination/directory
+  // operand) also count as a write target: planting `ln [-s] <source into
+  // .anti-hall/bin> /tmp/somewhere` is the first half of a symlink-through
+  // attack even though the destination itself sits outside the launcher dir.
+  if (ev.verb === 'ln' && operands.length >= 2) targets.push(...operands.slice(0, -1));
   if (ev.verb === 'dd') ops.forEach((w) => { if (w.startsWith('of=')) targets.push(w.slice(3)); });
   if ((ev.verb === 'sed' || ev.verb === 'perl') && ops.some((w) => /^-(?:[a-zA-Z]*i|-in-place)/.test(w))) {
     targets.push(...operands);
   }
-  return targets.some((p) => LAUNCHER_DIR_RE.test(p) || hasAntiHallBinSegment(p, cdDir));
+  return targets.some((p) => LAUNCHER_DIR_RE.test(p) || hasAntiHallBinSegment(p, cdDir) ||
+    targetResolvesIntoLauncherDir(p, cdDir));
 }
 
 // Code strings passed to a call: `execSync('git push --force')`,
@@ -1664,8 +1576,15 @@ function main() {
     process.exit(0);
   }
 
-  const msg = scanCommand(blankLauncherMessageHeredoc(cmd, cwd), 0);
-  if (msg) return block(msg);
+  const msg = scanCommand(cmd, 0);
+  if (msg) {
+    if (looksLikeMailboxHeredoc(cmd)) {
+      return block(msg + '\nHint: a mailbox send needs no exemption - write the ' +
+        'message file with the Write tool (not a Bash heredoc), then run ' +
+        '`devswarm.js send --message-file <path>`.');
+    }
+    return block(msg);
+  }
 
   process.exit(0);
 }
