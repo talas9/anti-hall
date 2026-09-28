@@ -1032,6 +1032,87 @@ test('v0.116 A: encodeHarnessCwd replaces every non-alphanumeric char', () => {
 });
 
 // ---------------------------------------------------------------------------
+// 0.117.1 A: ownScratchpadDirs() derived the encoded project segment from
+// payload.cwd (the LIVE cwd), but the harness names the real scratchpad dir
+// after the session's ORIGINAL project dir (the one it started in) —
+// <tmp>/claude-<uid>/<encoded-ORIGINAL-cwd>/<session-id>/scratchpad/. After a
+// `cd` inside the session (e.g. into a DevSwarm child worktree), payload.cwd
+// no longer matches the original encoding, so a legitimate Write to the
+// session's own scratchpad was wrongly blocked with the edit-delegation
+// message.
+//
+// FIX: derive the encoded segment from payload.transcript_path (of the form
+// ~/.claude/projects/<encoded-original-cwd>/<session-id>.jsonl — the parent
+// dir's basename IS the harness's own encoding of the original cwd) when
+// present, falling back to the cwd-derived encoding otherwise. A scratchpad
+// path is accepted only when its session-id segment matches payload's own
+// session_id (still no widening to other sessions).
+// ---------------------------------------------------------------------------
+
+function computeOwnScratchpadPathFromEncoded(encodedSegment, sessionId, relFile) {
+  const uid = process.getuid();
+  return path.join('/tmp', 'claude-' + uid, encodedSegment, sessionId, 'scratchpad', relFile);
+}
+
+test('0.117.1 A FIX: Write to session scratchpad AFTER a cd (transcript_path original-cwd encoding) is ALLOWED', () => {
+  if (process.platform === 'win32') return;
+  const origProject = makeProject(); // session's ORIGINAL cwd at start
+  const newProject = makeProject();  // cwd AFTER an in-session `cd`
+  try {
+    const sessionId = 'sess-0117a-cd';
+    const encodedOrig = origProject.dir.replace(/[^A-Za-z0-9]/g, '-');
+    const scratchFile = computeOwnScratchpadPathFromEncoded(encodedOrig, sessionId, 'msg-body.txt');
+    const transcriptPath = path.join(
+      os.homedir(), '.claude', 'projects', encodedOrig, sessionId + '.jsonl');
+    const h = makeHome();
+    try {
+      const payload = {
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Write',
+        tool_input: { file_path: scratchFile, content: 'x' },
+        session_id: sessionId,
+        cwd: newProject.dir, // LIVE cwd differs from the session's original cwd
+        transcript_path: transcriptPath,
+      };
+      const r = testHook(HOOK, payload, { home: h.home, env: COORD });
+      assert.strictEqual(r.status, 0, `own-session scratchpad write after cd must be allowed; stdout: ${r.stdout}`);
+    } finally {
+      h.cleanup();
+    }
+  } finally {
+    origProject.cleanup();
+    newProject.cleanup();
+  }
+});
+
+test('0.117.1 A NEGATIVE CONTROL: after a cd, ANOTHER session\'s original-cwd-encoded scratchpad still BLOCKS', () => {
+  if (process.platform === 'win32') return;
+  const origProject = makeProject();
+  const newProject = makeProject();
+  try {
+    const encodedOrig = origProject.dir.replace(/[^A-Za-z0-9]/g, '-');
+    const otherSessionId = 'sess-0117a-OTHER';
+    const scratchFile = computeOwnScratchpadPathFromEncoded(encodedOrig, otherSessionId, 'msg-body.txt');
+    const thisSessionId = 'sess-0117a-cd';
+    const transcriptPath = path.join(
+      os.homedir(), '.claude', 'projects', encodedOrig, thisSessionId + '.jsonl');
+    const r = runCoord({
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Write',
+      tool_input: { file_path: scratchFile, content: 'x' },
+      session_id: thisSessionId,
+      cwd: newProject.dir,
+      transcript_path: transcriptPath,
+    });
+    assert.strictEqual(r.status, 2, `a different session's scratchpad must still block; stdout: ${r.stdout}`);
+    assert.ok(r.json && r.json.decision === 'block');
+  } finally {
+    origProject.cleanup();
+    newProject.cleanup();
+  }
+});
+
+// ---------------------------------------------------------------------------
 // fp 6-of-2026-09-24: in a Primary/coordinator session, Write was blocked for
 // a session scratchpad reported under a tmp root OTHER than the literal
 // '/tmp' — e.g. Node's os.tmpdir() on a platform/config where that resolves

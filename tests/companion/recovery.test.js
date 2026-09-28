@@ -595,6 +595,81 @@ test('pokeOrEscalate: fail-open — a throwing nudge io -> error result, never t
   } finally { cleanup(); }
 });
 
+// ---------------------------------------------------------------------------
+// 0.117.1 item C: `pokeOrEscalate` used to return {action:'escalate',
+// reason:'poke-exhausted'} on exhaustion with NO indication of why every
+// poke failed — the field report cited `devswarm.js nudge <id>` returning
+// this bare shape with no clue the session was actually unreachable
+// (ENOTFOUND). FIX: a nudge() failure is now persisted as `lastNudgeError`
+// (carried across sweep ticks via PRESERVED_VERDICT_FIELDS), and surfaced on
+// the eventual escalate result as `lastNudgeError` + a human `message`.
+// ---------------------------------------------------------------------------
+
+test('item C FIX: a failing nudge persists lastNudgeError, and the nudged result carries it', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const d = Object.assign(descriptor(home), { nudgeCommand: ['echo', 'x'] });
+    const verdict = { status: 'stale', lastOutboundTs: 1, staleSince: 1, nudgeAttempts: 0, nudgedAt: null, pending: true };
+    const r = M.pokeOrEscalate(d, verdict, { home }, { nudge: () => { throw new Error('ENOTFOUND session unreachable'); } });
+    assert.strictEqual(r.action, 'nudged');
+    assert.strictEqual(r.nudgeError, 'ENOTFOUND session unreachable');
+    const persisted = JSON.parse(fs.readFileSync(livenessPathFor('w1', home), 'utf8'));
+    assert.strictEqual(persisted.lastNudgeError, 'ENOTFOUND session unreachable');
+  } finally { cleanup(); }
+});
+
+test('item C FIX: once attempts are exhausted, escalate carries the LAST nudge error + a human "unreachable" line', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const d = Object.assign(descriptor(home), { nudgeCommand: ['echo', 'x'] });
+    // Simulates the verdict a PRIOR sweep tick persisted after its own last
+    // (failing) nudge attempt — exactly what pokeOrEscalate's escalate branch
+    // reads `lastNudgeError` from (it attempts no nudge of its own here).
+    const verdict = {
+      status: 'nudged', lastOutboundTs: 1, staleSince: 1,
+      nudgeAttempts: 2, nudgedAt: Date.now() - 500000, pending: true,
+      lastNudgeError: 'ENOTFOUND session unreachable',
+    };
+    const r = M.pokeOrEscalate(d, verdict, { home, nudgeMaxAttempts: 2, nudgeCooldownMs: 120000 }, { nudge: () => {} });
+    assert.strictEqual(r.action, 'escalate');
+    assert.strictEqual(r.reason, 'poke-exhausted');
+    assert.strictEqual(r.lastNudgeError, 'ENOTFOUND session unreachable');
+    assert.ok(typeof r.message === 'string' && /unreachable/.test(r.message)
+      && /manual continue in the DevSwarm app/.test(r.message),
+      'human line must name the session as unreachable and point at the manual continue: ' + r.message);
+  } finally { cleanup(); }
+});
+
+test('item C NEGATIVE CONTROL: escalate with NO prior nudge error carries neither lastNudgeError nor message (unchanged shape)', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const d = Object.assign(descriptor(home), { nudgeCommand: ['echo', 'x'] });
+    const verdict = { status: 'nudged', lastOutboundTs: 1, staleSince: 1, nudgeAttempts: 2, nudgedAt: Date.now() - 500000, pending: true };
+    const r = M.pokeOrEscalate(d, verdict, { home, nudgeMaxAttempts: 2, nudgeCooldownMs: 120000 }, { nudge: () => {} });
+    assert.strictEqual(r.action, 'escalate');
+    assert.strictEqual(r.reason, 'poke-exhausted');
+    assert.strictEqual(r.lastNudgeError, undefined);
+    assert.strictEqual(r.message, undefined);
+  } finally { cleanup(); }
+});
+
+test('item C: a SUCCESSFUL nudge clears a previously-recorded lastNudgeError', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const d = Object.assign(descriptor(home), { nudgeCommand: ['echo', 'x'] });
+    const verdict = {
+      status: 'nudged', lastOutboundTs: 1, staleSince: 1,
+      nudgeAttempts: 0, nudgedAt: null, pending: true,
+      lastNudgeError: 'stale error from a prior tick',
+    };
+    const r = M.pokeOrEscalate(d, verdict, { home, nudgeMaxAttempts: 3, nudgeCooldownMs: 120000 }, { nudge: () => {} });
+    assert.strictEqual(r.action, 'nudged');
+    assert.strictEqual(r.nudgeError, null);
+    const persisted = JSON.parse(fs.readFileSync(livenessPathFor('w1', home), 'utf8'));
+    assert.strictEqual(persisted.lastNudgeError, null, 'a clean nudge must clear the stale error');
+  } finally { cleanup(); }
+});
+
 test('fail-open: a throwing spawnResume -> error result, never throws out', () => {
   const { home, cleanup } = makeHome();
   try {
@@ -807,6 +882,38 @@ test('notifyParentEscalation: appends into the PARENT repoKey store (not the leg
         try { legacyMsgs = sLegacy.listMessages(parentId, {}); } finally { sLegacy.close(); }
         assert.strictEqual(legacyMsgs.length, 0, 'the legacy hash bucket must receive NOTHING');
       }
+    } finally { rm(gitRepoDir); }
+  } finally { cleanup(); }
+});
+
+// ---------------------------------------------------------------------------
+// 0.117.1 item D: notifyParentEscalation's row literal had no `sender` at
+// all, so the escalation notice read as sender:null in the parent's store —
+// devswarm.js's own "from: " rendering (`row.sender != null ? ... : ''`)
+// showed a BLANK from-line for a system-authored notice, giving the parent
+// no clue where it came from. FIX: `sender: 'system'`.
+// ---------------------------------------------------------------------------
+
+test('item D FIX: the escalation notice carries sender:\'system\' (not null)', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const gitRepoDir = makeGitRepo('itemD');
+    try {
+      const expectedRepoKey = repokeyLib.repoKeyForWorktree(gitRepoDir);
+      const parentId = inst.primaryWorkspaceId(gitRepoDir);
+      const d = { id: 'child-itemD', worktreePath: gitRepoDir, sessionId: UUID };
+      const now = Date.now();
+      const verdict = { status: 'stale', lastOutboundTs: 1, staleSince: now - 60000, nudgeAttempts: 0, nudgedAt: null, pending: true };
+
+      registerParent(storeLib, home, parentId, expectedRepoKey);
+      M.notifyParentEscalation(d, verdict, { home, now }, undefined);
+
+      const s = storeLib.openStore({ home, workspaceId: parentId, hash: expectedRepoKey });
+      let msgs;
+      try { msgs = s.listMessages(parentId, {}); } finally { s.close(); }
+      const notice = msgs.find((m) => m.body && m.body.includes(d.id));
+      assert.ok(notice, 'the escalation notice must be present');
+      assert.strictEqual(notice.sender, 'system', 'the notice must carry sender:\'system\', not null: ' + JSON.stringify(notice));
     } finally { rm(gitRepoDir); }
   } finally { cleanup(); }
 });

@@ -34,6 +34,20 @@ function tmpHome() {
 function rm(p) { try { fs.rmSync(p, { recursive: true, force: true }); } catch (_) {} }
 const ctx = (home, over) => Object.assign({ home, backend: 'journal', env: {} }, over || {});
 
+// seedDescriptorOnly(home, id) — 0.117.1: writes a bare descriptor file (no
+// registry row) for `id`, which disqualifies cmdHeartbeat's new (a0)
+// "first-ever claim" leg (broadcastFamilyOwns requires NO descriptor for
+// that leg — see its own header comment). The attempt-record tests below
+// exercise the 'caller-not-registered' DROP path specifically and must keep
+// dropping on every call, including the first, so they seed a pre-existing
+// descriptor for their target id up front (identical drop reason/shape as
+// before 0.117.1 — nothing else about the refusal changes).
+function seedDescriptorOnly(home, id, worktreePath) {
+  const p = cli.descriptorPath(home, id);
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+  fs.writeFileSync(p, JSON.stringify({ id, worktreePath: worktreePath || null, sessionId: 'pre-existing' }));
+}
+
 // makeGitRepo(tag) -> a real, committed git repo dir (git-common-dir resolution
 // needs a real .git; a commit lets `git worktree add` branch off it below).
 function makeGitRepo(tag) {
@@ -997,6 +1011,9 @@ test('heartbeat --summary: a benignly-dropped broadcast (caller-not-registered) 
     // Deliberately register NOTHING — the caller resolves (real git identity)
     // but has no registry row of its own, so ownershipRefusalCause reports
     // 'caller-not-registered' and the broadcast is dropped (still ok:true).
+    // seedDescriptorOnly disqualifies the 0.117.1 (a0) first-claim leg so
+    // this stays a genuine ownership refusal, not a legitimate first claim.
+    seedDescriptorOnly(home, 'w-target');
     const r = cli.run(['heartbeat', 'w-target', '--summary', 'status while unregistered'], ctx(home, { cwd: repo }));
     assert.equal(r.result.ok, true, 'the base heartbeat still succeeds on a benign drop');
     assert.equal(r.result.meshBroadcast.ok, false);
@@ -1027,6 +1044,7 @@ test('heartbeat --summary: a FORGED CLAUDE_CODE_SESSION_ID (no process-tree corr
     // No session file exists anywhere under home's sessions dir, so the
     // process-tree walk (unconditionally attempted) resolves nothing —
     // there is nothing for the forged env value to corroborate against.
+    seedDescriptorOnly(home, 'w-target');
     const r = cli.run(
       ['heartbeat', 'w-target', '--summary', 'forged via env'],
       ctx(home, { cwd: repo, env: { CLAUDE_CODE_SESSION_ID: 'sess-VICTIM' } }),
@@ -1051,6 +1069,7 @@ test('heartbeat --summary: CLAUDE_CODE_SESSION_ID corroborated by the process-tr
   try {
     const repoKey = repokey.repoKeyForWorktree(repo);
     writeSessionFile(home, 9999, { pid: 9999, sessionId: 'sess-REAL', cwd: repo, status: 'running' });
+    seedDescriptorOnly(home, 'w-target');
 
     const r = cli.run(
       ['heartbeat', 'w-target', '--summary', 'legit via env+chain'],
@@ -1085,6 +1104,7 @@ test('heartbeat --summary: attempt record is NOT trimmed below the 100-line thre
   const repo = makeGitRepo('heartbeat-drop-attempt-bound');
   try {
     const repoKey = repokey.repoKeyForWorktree(repo);
+    seedDescriptorOnly(home, 'w-target');
     for (let i = 0; i < 55; i++) {
       cli.run(['heartbeat', 'w-target', '--summary', 'status ' + i], ctx(home, { cwd: repo }));
     }

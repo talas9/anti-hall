@@ -6,6 +6,45 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.117.1 (2026-09-28)
+
+Four field-reported fixes from DevSwarm child workspaces, all root-caused against a
+reproducing test before the fix.
+
+### Fixed
+
+- **edit-guard's own-scratchpad exemption broke after an in-session `cd`.** The session
+  scratchpad directory is named after the session's ORIGINAL project cwd, but the
+  exemption re-derived it from the LIVE `cwd` on every call — after a `cd` (e.g. into a
+  DevSwarm child worktree), a legitimate `Write`/`Edit` into the session's own scratchpad
+  was wrongly blocked with the edit-delegation message. `lib/scratchpad.js`'s
+  `ownScratchpadDirs()` now prefers the encoding read off `transcript_path`'s parent
+  directory (the harness's own record of the session's original cwd), falling back to
+  `cwd` when the transcript path is absent, with no change to which session a scratchpad
+  belongs to (still scoped strictly to `session_id`).
+- **A child's first-ever `heartbeat --summary` (before any `register`) was silently
+  dropped.** `cmdHeartbeat`'s mesh-broadcast ownership check required a pre-existing
+  registry row for the target id before considering any ownership leg; a workspace's very
+  first interaction is often a direct `heartbeat <id> --summary ...` with no prior
+  `register`, so the broadcast was refused `caller-not-registered` and never reached the
+  shared store — `devswarm-child-gate.js`'s Stop gate then kept re-prescribing the same
+  heartbeat forever. `broadcastFamilyOwns` gained a first-claim leg: a cwd-resolved caller
+  (never a forgeable `DEVSWARM_BUILDER_ID` declaration) may claim an id with no registry
+  row, no descriptor and no prior heartbeat. Also: a dropped `--summary` now carries a
+  plain top-level `note: 'summary NOT recorded: <reason>'` instead of only a nested
+  `dropped`/`dropReason` pair that was easy to miss.
+- **`devswarm.js nudge <id>` gave no reason for "poke-exhausted."** A failing poke (e.g.
+  the session's channel is unreachable) was silently swallowed; `pokeOrEscalate` now
+  persists the failure as `lastNudgeError` (carried across sweep ticks) and, once attempts
+  are exhausted, the escalate result carries `lastNudgeError` plus a human line: "session
+  appears dead/unreachable — needs a manual continue in the DevSwarm app."
+- **Escalation notices into the parent's inbox showed a blank sender.** The synthetic
+  escalation row had no `sender` at all (rendered as an empty "from:" line) — root cause
+  was two-fold: the row literal was missing `sender: 'system'`, and the delivery path
+  itself (`via: 'message'`) only persists `{workspaceId, ts, hash, body}` and silently
+  drops every other field including `sender`; delivery now goes through the mesh-aware
+  `via: 'row'` insert (already used elsewhere) so `sender` is actually written.
+
 ## 0.117.0 (2026-09-28)
 
 **Measured.** Every new judgment/automation surface in this release ships its own effectiveness report: DevSwarm dispatch demand (`scripts/dispatch-report.js`), Meeseeks supervision — plans, warnings, corrections, respawns, token burn (`devswarm.js supervision-report`), and Jev's own agreement-vs-deterministic-signal and follow/override counts (`jev-report.js`, folded into `supervision-report` per integration).

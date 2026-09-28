@@ -204,7 +204,11 @@ function readRecoveries(id, home, F) {
 // `prev` — not just the field(s) it owns — or an interleaved sweep silently
 // resets the OTHER path's counter (e.g. a nudge verdict wiping out the
 // recovery cap, defeating the "cap at N recoveries" invariant).
-const PRESERVED_VERDICT_FIELDS = ['recoveries', 'recoveredAt', 'nudgeAttempts', 'nudgedAt', 'staleSince', 'lastOutboundTs'];
+// item C (0.117.1): `lastNudgeError` joins the preserved set so the escalate
+// branch (a LATER sweep tick, once attempts are exhausted) can still read
+// the error a PRIOR nudge attempt recorded — see pokeOrEscalate's own
+// comment above its nudge branch.
+const PRESERVED_VERDICT_FIELDS = ['recoveries', 'recoveredAt', 'nudgeAttempts', 'nudgedAt', 'staleSince', 'lastOutboundTs', 'lastNudgeError'];
 
 // mergeVerdict(id, home, F, status, extra) -> verdict object. Reads the prior
 // verdict (if any), carries forward the full PRESERVED_VERDICT_FIELDS union,
@@ -212,7 +216,7 @@ const PRESERVED_VERDICT_FIELDS = ['recoveries', 'recoveredAt', 'nudgeAttempts', 
 // changed. Shared by persistVerdict and persistNudgeVerdict so neither can drop
 // a field the other path owns.
 function mergeVerdict(id, home, F, status, extra) {
-  const preserved = { recoveries: 0, recoveredAt: null, nudgeAttempts: 0, nudgedAt: null, staleSince: null, lastOutboundTs: null };
+  const preserved = { recoveries: 0, recoveredAt: null, nudgeAttempts: 0, nudgedAt: null, staleSince: null, lastOutboundTs: null, lastNudgeError: null };
   try {
     const prev = JSON.parse(F.readFileSync(livenessPathFor(id, home), 'utf8'));
     if (prev) {
@@ -495,7 +499,19 @@ function notifyParentEscalation(descriptor, verdict, opts, openParentStore) {
     // the derive opts, so summaries/<repoKey>.json — see devswarm-migrate.js:706-716).
     const intent = {
       childId: descriptor.id, parentId, repoKey: safeRepoKey(descriptor.worktreePath) || null,
-      row: { workspaceId: parentId, ts: now, hash: 'escalate:' + descriptor.id + ':' + (staleSince !== null ? staleSince : 'x'), body },
+      // item D (0.117.1): a null `sender` rendered this notice blank in
+      // `inbox read-primary`'s "from: " line (devswarm.js's own `row.sender
+      // != null ? String(row.sender) : ''` fallback) — the parent could not
+      // tell where the notice came from. 'system' is a synthetic sender no
+      // real workspace id can collide with (every real id/hash-derived id is
+      // non-empty and never the literal word 'system'), so it reads clearly
+      // and is still excluded from every `sender === selfId`/ownFamily
+      // self-skip check the same way null already was (those compare against
+      // a REAL workspace id, which 'system' never matches).
+      row: {
+        workspaceId: parentId, ts: now, sender: 'system',
+        hash: 'escalate:' + descriptor.id + ':' + (staleSince !== null ? staleSince : 'x'), body,
+      },
     };
     deliverEscalation(intent, { home, now, env: opts && opts.env, fsi: opts && opts.fsi }, openParentStore);
   } catch (_) { /* fail-open: a store-write error must never crash the sweep */ }
@@ -534,7 +550,17 @@ function deliverEscalation(intent, o, openParentStore) {
     const s = open({ home, workspaceId: intent.parentId, hash: intent.repoKey || undefined, env: o.env, fsi: o.fsi });
     try {
       const dw = require('../../scripts/devswarm.js');
-      status = dw.appendIntoPartition(s, home, intent.parentId, [intent.row], { via: 'message' }).status;
+      // item D (0.117.1) ROOT CAUSE: `via: 'message'` routes to
+      // appendIntoPartition -> store.appendMessage(), which persists ONLY
+      // {workspaceId, ts, hash, body} — it silently drops every other field,
+      // including `sender` (both backends: devswarm-store.js's sqlite
+      // appendMessage and its journal counterpart). Setting `row.sender`
+      // above alone could never have surfaced — the write path itself never
+      // reads it. `via: 'row'` routes to appendMeshRow() instead, the
+      // mesh-aware insert that DOES persist sender/recipient/mtype/etc.
+      // (already used by the fold path, devswarm.js:~3305) — same store,
+      // same table, richer column set.
+      status = dw.appendIntoPartition(s, home, intent.parentId, [intent.row], { via: 'row' }).status;
       if (status === 'ok') { try { devswarmStore.deriveSummary(s, { home, env: o.env, now: o.now, fsi: o.fsi }); } catch (_) {} }
     } finally { s.close(); }
   } catch (_) { status = 'error'; }
@@ -644,16 +670,30 @@ function pokeOrEscalate(descriptor, verdict, opts, io) {
     const cooldownElapsed = nudgedAt === null || (now - nudgedAt) >= cooldownMs;
 
     if (descriptor.nudgeCommand && attempts < maxAttempts && cooldownElapsed) {
-      try { nudge(descriptor.nudgeCommand); } catch (_) {}
-      appendLog(home, { id: descriptor.id, action: 'nudged', attempt: attempts + 1 }, F);
-      persistNudgeVerdict(descriptor, home, F, 'nudged', { nudgeAttempts: attempts + 1, nudgedAt: now });
-      return { action: 'nudged', attempt: attempts + 1 };
+      // 0.117.1 (item C): capture WHY a poke failed (e.g. ENOTFOUND / the
+      // session's channel is unreachable) instead of silently swallowing it —
+      // persisted as `lastNudgeError` (mergeVerdict/PRESERVED_VERDICT_FIELDS
+      // carries it across ticks) so the EVENTUAL escalate, on a LATER sweep
+      // tick once attempts are exhausted, can surface why every poke failed
+      // instead of just "poke-exhausted" with no cause. A successful fire
+      // clears any stale prior error (null = "last attempt raised nothing").
+      let nudgeError = null;
+      try { nudge(descriptor.nudgeCommand); } catch (e) { nudgeError = String((e && e.message) || e); }
+      appendLog(home, { id: descriptor.id, action: 'nudged', attempt: attempts + 1, error: nudgeError || undefined }, F);
+      persistNudgeVerdict(descriptor, home, F, 'nudged', { nudgeAttempts: attempts + 1, nudgedAt: now, lastNudgeError: nudgeError });
+      return { action: 'nudged', attempt: attempts + 1, nudgeError };
     }
 
     // Exhaustion (attempts used up / still cooling down out of budget) or no
     // nudgeCommand at all -> escalate. NEVER a kill.
     const wasEscalated = !!(verdict && verdict.status === 'escalated');
-    appendLog(home, { id: descriptor.id, action: 'escalate', reason: 'poke-exhausted' }, F);
+    // item C: `verdict` here is the CALLER's freshly-read persisted verdict
+    // (this call attempts no nudge of its own — it is the exhaustion/no-
+    // command branch), so `lastNudgeError` is whatever the LAST nudge
+    // attempt (a prior sweep tick) recorded. Surfaced on the escalate result
+    // so "poke-exhausted" is no longer a dead end with no cause attached.
+    const lastNudgeError = (verdict && verdict.lastNudgeError) || null;
+    appendLog(home, { id: descriptor.id, action: 'escalate', reason: 'poke-exhausted', lastNudgeError: lastNudgeError || undefined }, F);
     persistNudgeVerdict(descriptor, home, F, 'escalated', {});
     if (descriptor.escalateCommand) { try { escalate(descriptor.escalateCommand); } catch (_) {} }
     // Only on the TRANSITION into escalated — never re-notify an already-escalated
@@ -662,7 +702,13 @@ function pokeOrEscalate(descriptor, verdict, opts, io) {
     if (!wasEscalated) {
       notifyParentEscalation(descriptor, verdict, { home, now, env: o.env, fsi: F }, openParentStore);
     }
-    return { action: 'escalate', reason: 'poke-exhausted' };
+    const out = { action: 'escalate', reason: 'poke-exhausted' };
+    if (lastNudgeError) {
+      out.lastNudgeError = lastNudgeError;
+      out.message = 'session appears dead/unreachable — needs a manual continue in the DevSwarm app '
+        + '(last poke failed: ' + lastNudgeError + ')';
+    }
+    return out;
   } catch (e) {
     appendLog(home, { id: descriptor && descriptor.id, action: 'error', reason: String(e && e.message) }, F);
     return { action: 'error', reason: String(e && e.message) };

@@ -1106,7 +1106,7 @@ function ownershipRefusalCause(callerKind, ownEntry) {
 }
 
 // broadcastFamilyOwns(s, caller, id, home, ownEntry, cwd, callerSessionId,
-// hadPriorHeartbeat) -> bool.
+// hadPriorHeartbeat, callerKind) -> bool.
 // The IDENTITY-FAMILY leg of cmdHeartbeat's meshBroadcast ownership check (defect
 // ecd7ad60e4cc). True when `id` names a row that belongs to the SAME workspace
 // identity the caller does — never on raw-id equality alone (that is the caller's
@@ -1138,15 +1138,47 @@ function ownershipRefusalCause(callerKind, ownEntry) {
 //        call is ever asked about). Nothing to spoof: a placeholder is not a
 //        live, claimed workspace with any real state a forged broadcast
 //        could compromise (the `unclaimed:` anchor-row shape).
+//   (a0) 0.117.1 fix (field-reported "child heartbeat --summary silently
+//        dropped"): `id` has NO registry row AT ALL (a child's very first
+//        interaction is often a direct `heartbeat <id> --summary ...`, no
+//        prior `register`) — a strictly WEAKER precondition than (a3), which
+//        already requires a row to exist. Owned when `callerKind ===
+//        'resolved'` (cwd-verified ground truth, never a forgeable
+//        `DEVSWARM_BUILDER_ID` declaration) AND no descriptor AND no
+//        PRE-EXISTING heartbeat for `id` — nothing anywhere claims `id` yet,
+//        so there is nothing to impersonate.
 //
 // FAIL-CLOSED in full: any throw, an unresolvable worktree, or a target id with
-// no registry row returns false, leaving the refusal exactly as it is today.
-function broadcastFamilyOwns(s, caller, id, home, ownEntry, cwd, callerSessionId, hadPriorHeartbeat) {
+// no registry row AND no (a0) match returns false, leaving the refusal exactly
+// as it was before this leg.
+function broadcastFamilyOwns(s, caller, id, home, ownEntry, cwd, callerSessionId, hadPriorHeartbeat, callerKind) {
   try {
     const target = String(id);
     const rows = s.listRegistry() || [];
     const targetRow = rows.find((r) => r && String(r.id) === target) || null;
-    if (!targetRow || !targetRow.worktreePath) return false;
+    if (!targetRow || !targetRow.worktreePath) {
+      // (a0) FIRST-EVER CLAIM (0.117.1 fix, field defect: a child's very
+      // FIRST interaction with its own id is often a direct `heartbeat <id>
+      // --summary ...` — no prior `register` call at all). No registry row
+      // for `id` exists ANYWHERE, so there is nothing to impersonate; this
+      // is a strictly WEAKER precondition than the existing (a3) placeholder
+      // leg below (which already requires no descriptor + no prior
+      // heartbeat, just for a row that happens to exist). Scoped to a
+      // cwd-resolved caller only (`callerKind === 'resolved'` — independently
+      // verified ground truth, never a forgeable `DEVSWARM_BUILDER_ID`
+      // declaration) so a caller cannot merely CLAIM to be some id via env;
+      // it must be standing in a real git worktree. Also requires no
+      // descriptor and no PRE-EXISTING heartbeat for `id` (same
+      // hadPriorHeartbeat signal (a3) uses) so a genuinely already-claimed-
+      // but-unregistered id (heartbeat file exists, descriptor exists, just
+      // no registry row) still falls through to the fail-closed default.
+      if (callerKind === 'resolved' && !hadPriorHeartbeat) {
+        try {
+          if (!readDescriptorFile(home, target)) return true;
+        } catch (_) {}
+      }
+      return false;
+    }
     let tKey = null;
     try { tKey = canonicalMeshId(targetRow.worktreePath); } catch (_) { tKey = null; }
     if (!tKey) return false;
@@ -9034,7 +9066,7 @@ function cmdHeartbeat(id, flags, ctx) {
           const callerSessionId = realSessionIdFrom(flags, ctx, id);
           const owns = caller === id
             || (ownEntry && ownEntry.id === id)
-            || broadcastFamilyOwns(s, caller, id, home, ownEntry, cwd, callerSessionId, hadPriorHeartbeat);
+            || broadcastFamilyOwns(s, caller, id, home, ownEntry, cwd, callerSessionId, hadPriorHeartbeat, callerInfo.kind);
           if (!owns) {
             // A7: name WHICH leg failed instead of one generic message for
             // an unresolvable identity, an unregistered caller, AND a genuine
@@ -9209,6 +9241,14 @@ function cmdHeartbeat(id, flags, ctx) {
   } catch (_) { identity = null; }
   const out = { ok: !hardMeshFailure, action: 'heartbeat', id, heartbeat: beat, meshBroadcast, identity, idMismatch };
   if (appArchived) out.appArchived = true;
+  // 0.117.1 (item B): a DROPPED --summary is otherwise only visible by
+  // noticing `meshBroadcast.dropped`/`dropReason` buried inside a nested
+  // object (field report: an agent read the JSON and never noticed its
+  // summary never reached the mesh). One plain, top-level line makes a drop
+  // impossible to miss without changing the existing benign ok:true contract.
+  if (meshBroadcast && meshBroadcast.dropped) {
+    out.note = 'summary NOT recorded: ' + (meshBroadcast.dropReason || meshBroadcast.reason || 'unknown');
+  }
   // Plan tracking (Meeseeks P1): `--step N [--status doing|done|blocked]`
   // records step progress in the workspace's plan. Additive: absent unless
   // --step is passed or a plan exists for a --summary. A malformed --step on

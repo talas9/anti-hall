@@ -31,17 +31,45 @@ function encodeHarnessCwd(cwd) {
   return cwd.replace(/[^A-Za-z0-9]/g, '-');
 }
 
+// transcriptEncodedSegment(payload) -> the harness's own encoded-project-dir
+// segment, read off payload.transcript_path
+// (~/.claude/projects/<encoded-original-cwd>/<session-id>.jsonl — the parent
+// directory's basename IS that encoding), when transcript_path is present
+// and shaped as expected; else null. The transcript path names the SESSION'S
+// ORIGINAL cwd (where it started), unlike payload.cwd which tracks the LIVE
+// cwd and drifts after an in-session `cd` (e.g. into a DevSwarm child
+// worktree) — so this is preferred over re-deriving from cwd whenever it is
+// available, keeping the own-scratchpad exemption matching after a cd.
+function transcriptEncodedSegment(payload) {
+  try {
+    const tp = payload && payload.transcript_path;
+    if (typeof tp !== 'string' || !tp || !path.isAbsolute(tp)) return null;
+    const segment = path.basename(path.dirname(tp));
+    if (!segment || !/^[A-Za-z0-9-]+$/.test(segment)) return null;
+    return segment;
+  } catch (_) {
+    return null;
+  }
+}
+
 function ownScratchpadDirs(payload) {
   try {
     if (process.platform === 'win32') return [];
     const cwd = payload && payload.cwd;
     const sessionId = payload && payload.session_id;
-    if (typeof cwd !== 'string' || !cwd || !path.isAbsolute(cwd)) return [];
     if (typeof sessionId !== 'string' || !/^[A-Za-z0-9._-]+$/.test(sessionId)) return [];
     let uid = null;
     try { uid = typeof process.getuid === 'function' ? process.getuid() : null; } catch (_) { uid = null; }
     if (uid === null || uid === undefined || Number.isNaN(uid)) return [];
-    const sanitizedCwd = encodeHarnessCwd(cwd);
+    // Prefer the transcript-derived encoding (the session's ORIGINAL cwd,
+    // which is what the harness actually names the scratchpad dir after);
+    // fall back to encoding the live payload.cwd when transcript_path is
+    // absent/malformed (e.g. older harness payloads, or tests).
+    let sanitizedCwd = transcriptEncodedSegment(payload);
+    if (!sanitizedCwd) {
+      if (typeof cwd !== 'string' || !cwd || !path.isAbsolute(cwd)) return [];
+      sanitizedCwd = encodeHarnessCwd(cwd);
+    }
     if (!sanitizedCwd) return [];
     return tmpRoots().map((root) =>
       path.join(root, 'claude-' + uid, sanitizedCwd, sessionId, 'scratchpad'));
