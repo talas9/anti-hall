@@ -337,7 +337,15 @@ function splitSegments(cmd) {
     // trailing `--force` into a non-git segment and bypass the force guard (P1).
     if (c === '&') {
       const prev = cur.length ? cur[cur.length - 1] : '';
-      if (prev === '>' || prev === '<') { cur += c; i++; continue; }
+      let precedingBackslashes = 0;
+      if (prev === '>' || prev === '<') {
+        for (let k = cur.length - 2; k >= 0 && cur[k] === '\\'; k--) precedingBackslashes++;
+      }
+      // An ODD number of backslashes immediately before the `>`/`<` means THAT
+      // char is escaped (a literal `>`/`<`, not a redirect) - the `&` here is
+      // then a real background/separator control-op and must still split
+      // (mirrors the `|` branch's parity check above; R5A1-2).
+      if ((prev === '>' || prev === '<') && precedingBackslashes % 2 === 0) { cur += c; i++; continue; }
       flush(); i++; continue;
     }
     if (c === '\n') { flush(); i++; continue; }
@@ -668,13 +676,26 @@ const SELF_CREDIT_GH_BODY = /claude\.com\/claude-code|chatgpt\.com\/codex|<norep
 // GH_BODY marker), so a mid-line mention in prose/grep stays allowed.
 const COMMIT_CREATING = new Set(['commit', 'merge', 'rebase', 'cherry-pick', 'revert', 'am', 'pull', 'commit-tree', 'tag']);
 
+// Memoized per distinct raw-command string (R5A1-1): `hasSelfCredit` is
+// called with `currentRawCommand` once per commit-creating segment (Rule 1
+// below, and ghSelfCreditMessage above), and `currentRawCommand` is set once
+// per top-level scan (main()) - it only ever changes across the bounded
+// eval/`bash -c` recursion depth, never per-segment. Without this cache, a
+// command with N commit-creating segments (e.g. `git tag a;` repeated tens
+// of thousands of times) re-scans the WHOLE O(n)-length command text on
+// EVERY segment, turning an O(n) command into O(n^2) work.
+const selfCreditScanCache = new Map();
 function hasSelfCredit(text) {
   if (!text) return false;
+  const cached = selfCreditScanCache.get(text);
+  if (cached !== undefined) return cached;
   const normalized = text.replace(/\\n/g, '\n').replace(/\\r/g, '\r').replace(/\\t/g, '\t');
+  let result = false;
   for (const t of [text, normalized]) {
-    if (SELF_CREDIT_COAUTHOR.test(t) || SELF_CREDIT_GENERATED.test(t)) return true;
+    if (SELF_CREDIT_COAUTHOR.test(t) || SELF_CREDIT_GENERATED.test(t)) { result = true; break; }
   }
-  return false;
+  selfCreditScanCache.set(text, result);
+  return result;
 }
 
 // Self-credit signature tokens used to flag a `-c trailer.<name>.key=<value>`
@@ -1138,7 +1159,14 @@ function isLauncherDirRoot(normalized) {
   const home = safeHomedir();
   if (!home) return false;
   const want = path.posix.normalize(home.replace(/\\/g, '/').replace(/\/+$/, '') + '/.anti-hall');
-  return normalized.toLowerCase() === want.toLowerCase();
+  // path.posix.normalize() preserves a trailing slash (e.g. `~/.anti-hall/`
+  // normalizes to `.../.anti-hall/`, not `.../.anti-hall`), so strip any
+  // trailing slash from BOTH sides before comparing - otherwise
+  // `rm -rf ~/.anti-hall/` / `mv ~/.anti-hall/ ~/.x` (trailing slash) never
+  // equal `want` and silently bypass this check (R5A1-3).
+  const norm = normalized.replace(/\/+$/, '');
+  const wantNorm = want.replace(/\/+$/, '');
+  return norm.toLowerCase() === wantNorm.toLowerCase();
 }
 
 // True when the normalized path has a `.anti-hall/bin` segment pair anywhere
@@ -1187,7 +1215,7 @@ function resolveDanglingLinkTarget(p, hops) {
   return target;
 }
 
-function targetResolvesIntoLauncherDir(rawPath, cdDir) {
+function targetResolvesIntoLauncherDir(rawPath, cdDir, opts) {
   const normalized = normalizeGuardPath(rawPath, cdDir);
   if (!normalized || !normalized.startsWith('/')) return false;
   // Perf guard (R4A1-3): each call below does 1+ realpathSync/lstatSync
@@ -1199,6 +1227,25 @@ function targetResolvesIntoLauncherDir(rawPath, cdDir) {
   // skipped.
   if (launcherFsWalkBudget <= 0) return false;
   launcherFsWalkBudget--;
+  // `rm` DELETES the operand itself rather than writing THROUGH it, so a
+  // looping/self-referential symlink (`ln -s selfloop selfloop; rm -f
+  // selfloop`) must never be followed or fail-closed the way a write target
+  // is (R5A1-4). Check only the literal path and, if it is itself a symlink,
+  // its immediate (one-hop, non-recursive) readlink text - never chase the
+  // chain or fail closed on an unresolvable/looping one.
+  if (opts && opts.deleteOnly) {
+    try {
+      if (fs.lstatSync(normalized).isSymbolicLink()) {
+        let linkText;
+        try { linkText = fs.readlinkSync(normalized); } catch (_) { return false; }
+        let target = linkText.replace(/\\/g, '/');
+        target = target.startsWith('/') ? path.posix.normalize(target) :
+          path.posix.normalize(path.posix.dirname(normalized) + '/' + target);
+        return pathHasLauncherSegment(target);
+      }
+    } catch (_) { /* doesn't exist - nothing to resolve */ }
+    return false;
+  }
   try {
     return pathHasLauncherSegment(fs.realpathSync(normalized));
   } catch (_) {
@@ -1338,8 +1385,9 @@ function writesLauncherDir(tokens, ev, cdDir) {
     }
   }
 
+  const targetOpts = ev.verb === 'rm' ? { deleteOnly: true } : undefined;
   return targets.some((p) => LAUNCHER_DIR_RE.test(p) || hasAntiHallBinSegment(p, cdDir) ||
-    targetResolvesIntoLauncherDir(p, cdDir)) ||
+    targetResolvesIntoLauncherDir(p, cdDir, targetOpts)) ||
     rootTargets.some((p) => isLauncherDirRoot(normalizeGuardPath(p, cdDir)));
 }
 

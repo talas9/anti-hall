@@ -1311,3 +1311,108 @@ test('JEV disabled entirely (no jev.json): a paraphrase is never consulted, byte
   const r = run('git commit -m "written with help from Claude"');
   assert.strictEqual(r.status, 0);
 });
+
+// --- Round 5 fixes (R5A1-1/R5A1-2/R5A1-3/R5A1-4) ---
+
+// R5A1-1: hasSelfCredit(currentRawCommand) ran UNMEMOIZED per commit-creating
+// segment (Rule 1 / ghSelfCreditMessage), turning an O(n)-segment command
+// into O(n^2) whole-command regex work. A command with tens of thousands of
+// commit-creating segments used to take >10s (past the hook timeout, a
+// fail-OPEN by timeout on the trailing force push). Memoizing the scan per
+// distinct raw-command string must keep this well under the hook's budget.
+test('PERF (R5A1-1): 30000x-repeated `git tag a;` + trailing force push blocks in well under 3s', () => {
+  const cmd = 'git tag a;'.repeat(30000) + 'git push --force origin main';
+  const t0 = Date.now();
+  const r = run(cmd);
+  const elapsedMs = Date.now() - t0;
+  assert.strictEqual(r.status, 2, `expected block (exit 2)\nstderr: ${r.stderr}`);
+  assert.match(r.stderr, REASON.FORCE);
+  assert.ok(elapsedMs < 3000, `expected memoized O(n) hasSelfCredit scan (<3000ms), took ${elapsedMs}ms`);
+});
+
+test('PERF (R5A1-1): 20000x-repeated `git commit -m x;` + trailing force push blocks in well under 3s', () => {
+  const cmd = 'git commit -m x;'.repeat(20000) + 'git push --force origin main';
+  const t0 = Date.now();
+  const r = run(cmd);
+  const elapsedMs = Date.now() - t0;
+  assert.strictEqual(r.status, 2, `expected block (exit 2)\nstderr: ${r.stderr}`);
+  assert.match(r.stderr, REASON.FORCE);
+  assert.ok(elapsedMs < 3000, `expected memoized O(n) hasSelfCredit scan (<3000ms), took ${elapsedMs}ms`);
+});
+
+// R5A1-2: the single-`&` branch treated `&` right after `>`/`<` as an fd-dup
+// (`2>&1`) unconditionally, with no backslash-escape-parity check - unlike
+// the sibling `|` branch (R4A1-1). An ESCAPED `\>`/`\<` right before `&` is a
+// LITERAL `>`/`<` char, so the following `&` is a real background/separator
+// control-op and must still split into its own segment.
+test('BLOCK (R5A1-2): escaped `\\>` before `&` does not swallow a trailing force push into one segment', () => {
+  const r = run('echo \\>& git push --force origin main');
+  assert.strictEqual(r.status, 2, `expected block (exit 2)\nstderr: ${r.stderr}`);
+  assert.match(r.stderr, REASON.FORCE);
+});
+
+test('BLOCK (R5A1-2): escaped `\\<` before `&` does not swallow a trailing force push into one segment', () => {
+  const r = run('echo \\<& git push --force origin main');
+  assert.strictEqual(r.status, 2, `expected block (exit 2)\nstderr: ${r.stderr}`);
+  assert.match(r.stderr, REASON.FORCE);
+});
+
+test('ALLOW (R5A1-2 regression guard): a normal, UNESCAPED `2>&1` fd-dup redirect still keeps the segment together', () => {
+  const r = run('git status 2>&1');
+  assert.strictEqual(r.status, 0, `expected allow (exit 0)\nstderr: ${r.stderr}`);
+});
+
+// R5A1-3: isLauncherDirRoot compared the normalized path to `<home>/.anti-hall`
+// with a strict `===`, but path.posix.normalize() PRESERVES a trailing slash
+// (`~/.anti-hall/` normalizes to `.../.anti-hall/`, not `.../.anti-hall`), so
+// any operand with a trailing slash silently bypassed the whole-container
+// mv/rm check.
+test('BLOCK (R5A1-3): rm -rf of the whole launcher container WITH a trailing slash still blocks', () => {
+  withLauncher((h) => {
+    const r = testHook(HOOK, bashPayload(`rm -rf ${path.join(h.home, '.anti-hall')}/`), { home: h.home });
+    assert.strictEqual(r.status, 2, `expected block (exit 2)\nstderr: ${r.stderr}`);
+    assert.match(r.stderr, /stable launcher directory/);
+  });
+});
+
+test('BLOCK (R5A1-3): mv of the whole launcher container SOURCE WITH a trailing slash still blocks', () => {
+  withLauncher((h) => {
+    const target = path.join(h.home, '.anti-hall') + '/';
+    const r = testHook(HOOK, bashPayload(`mv ${target} ${path.join(h.home, '.x')}`), { home: h.home });
+    assert.strictEqual(r.status, 2, `expected block (exit 2)\nstderr: ${r.stderr}`);
+    assert.match(r.stderr, /stable launcher directory/);
+  });
+});
+
+// R5A1-4: `rm` DELETES its operand rather than writing THROUGH it. A
+// self-referential/looping symlink (`ln -s selfloop selfloop`) made
+// targetResolvesIntoLauncherDir's symlink-chain resolver hit its loop guard
+// and fail CLOSED (treated as "is the launcher dir"), false-blocking an
+// ordinary `rm -f <looping symlink>` that has nothing to do with
+// ~/.anti-hall/bin.
+test('ALLOW (R5A1-4): rm of a self-referential/looping symlink is not false-blocked', () => {
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'anti-hall-test-selfloop-'));
+  try {
+    const link = path.join(scratch, 'selfloop');
+    fs.symlinkSync('selfloop', link);
+    const r = run(`rm -f ${link}`);
+    assert.strictEqual(r.status, 0, `expected allow (exit 0)\nstderr: ${r.stderr}`);
+  } finally {
+    fs.rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
+test('BLOCK (R5A1-4 regression guard): rm of a symlink that DOES resolve into the launcher bin dir still blocks', () => {
+  withLauncher((h, binDir, launcher) => {
+    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'anti-hall-test-selfloop-'));
+    try {
+      const link = path.join(scratch, 'pwn.js');
+      fs.symlinkSync(launcher, link);
+      const r = testHook(HOOK, bashPayload(`rm -f ${link}`), { home: h.home });
+      assert.strictEqual(r.status, 2, `expected block (exit 2)\nstderr: ${r.stderr}`);
+      assert.match(r.stderr, /stable launcher directory/);
+    } finally {
+      fs.rmSync(scratch, { recursive: true, force: true });
+    }
+  });
+});
