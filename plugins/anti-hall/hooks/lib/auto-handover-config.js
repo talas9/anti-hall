@@ -64,6 +64,9 @@ const DEFAULT_MAX_TOKENS = 0;
 // command to run. ON by default -- the whole point of this feature is that
 // the compact/clear signal should be hard to miss.
 const DEFAULT_DECISIVE_PROMPT = true;
+// Extra user-configured markers (csv) that identify a scheduled/cron
+// housekeeping prompt, on top of auto-handover-gate.js's built-in defaults.
+const DEFAULT_GATE_HOUSEKEEPING_MARKERS = '';
 
 // readConfig(home) -> the RAW settings.json section (NOT the resolved
 // values) — {} when nothing has ever been written. Used by the CLI's `get`
@@ -89,6 +92,7 @@ function writeConfig(home, mutator) {
     gateNewWork: settings.get(SECTION, 'gateNewWork', DEFAULT_GATE_NEW_WORK, { home }),
     gateBudgetPct: settings.get(SECTION, 'gateBudgetPct', DEFAULT_GATE_BUDGET_PCT, { home }),
     decisivePrompt: settings.get(SECTION, 'decisivePrompt', DEFAULT_DECISIVE_PROMPT, { home }),
+    gateHousekeepingMarkers: settings.get(SECTION, 'gateHousekeepingMarkers', DEFAULT_GATE_HOUSEKEEPING_MARKERS, { home }),
   };
   const next = mutator(Object.assign({}, current)) || current;
   for (const key of Object.keys(next)) {
@@ -107,6 +111,14 @@ function isPositiveInt(n) {
 
 function isValidMaxTokens(n) {
   return Number.isInteger(n) && n >= 0;
+}
+
+// csvToMarkers(raw) -> array of trimmed, non-empty marker strings from a csv
+// setting value (comma/colon separated, matching this codebase's other csv
+// settings, e.g. editGuardAllow).
+function csvToMarkers(raw) {
+  if (typeof raw !== 'string' || !raw.trim()) return [];
+  return raw.split(/[,:]/).map((s) => s.trim()).filter(Boolean);
 }
 
 // overThreshold(result, cfg) -> 'pct' | 'tokens' | 'pct-unknown-window' | null.
@@ -142,7 +154,7 @@ function resolveEffective(opts) {
   if (envRaw !== undefined && envRaw !== null && String(envRaw).trim() !== '') {
     const envN = parseInt(envRaw, 10);
     if (envN === 0) {
-      return { enabled: false, pct: 0, maxTokens: 0, nag: false, nagStepPct: DEFAULT_NAG_STEP_PCT, nagQuietMin: DEFAULT_NAG_QUIET_MIN, gateNewWork: false, gateBudgetPct: DEFAULT_GATE_BUDGET_PCT, decisivePrompt: false, source: 'env' };
+      return { enabled: false, pct: 0, maxTokens: 0, nag: false, nagStepPct: DEFAULT_NAG_STEP_PCT, nagQuietMin: DEFAULT_NAG_QUIET_MIN, gateNewWork: false, gateBudgetPct: DEFAULT_GATE_BUDGET_PCT, decisivePrompt: false, gateHousekeepingMarkers: [], source: 'env' };
     }
     // A valid 1-99 env value flows through settings.get() below normally
     // (the schema's own `pct` entry declares this same env var), so no
@@ -157,13 +169,14 @@ function resolveEffective(opts) {
   const gateBudgetPct = settings.get(SECTION, 'gateBudgetPct', DEFAULT_GATE_BUDGET_PCT, { home, env });
 
   if (!enabled) {
-    return { enabled: false, pct: 0, maxTokens: 0, nag: false, nagStepPct, nagQuietMin, gateNewWork: false, gateBudgetPct, decisivePrompt: false, source: 'file' };
+    return { enabled: false, pct: 0, maxTokens: 0, nag: false, nagStepPct, nagQuietMin, gateNewWork: false, gateBudgetPct, decisivePrompt: false, gateHousekeepingMarkers: [], source: 'file' };
   }
 
   const pct = settings.get(SECTION, 'pct', DEFAULT_PCT, { home, env });
   const maxTokens = Math.floor(settings.get(SECTION, 'maxTokens', DEFAULT_MAX_TOKENS, { home, env }));
   const gateNewWork = settings.get(SECTION, 'gateNewWork', DEFAULT_GATE_NEW_WORK, { home, env });
   const decisivePrompt = settings.get(SECTION, 'decisivePrompt', DEFAULT_DECISIVE_PROMPT, { home, env });
+  const gateHousekeepingMarkers = csvToMarkers(settings.get(SECTION, 'gateHousekeepingMarkers', DEFAULT_GATE_HOUSEKEEPING_MARKERS, { home, env }));
 
   let source = 'default';
   if (envRaw !== undefined && envRaw !== null && String(envRaw).trim() !== '' && isValidPct(parseInt(envRaw, 10))) {
@@ -173,7 +186,7 @@ function resolveEffective(opts) {
     if (Object.prototype.hasOwnProperty.call(raw, 'pct')) source = 'file';
   }
 
-  return { enabled: true, pct, maxTokens, nag, nagStepPct, nagQuietMin, gateNewWork, gateBudgetPct, decisivePrompt, source };
+  return { enabled: true, pct, maxTokens, nag, nagStepPct, nagQuietMin, gateNewWork, gateBudgetPct, decisivePrompt, gateHousekeepingMarkers, source };
 }
 
 module.exports = {
@@ -184,6 +197,7 @@ module.exports = {
   isPositiveInt,
   isValidMaxTokens,
   overThreshold,
+  csvToMarkers,
   DEFAULT_PCT,
   DEFAULT_MAX_TOKENS,
   DEFAULT_NAG,
@@ -192,5 +206,6 @@ module.exports = {
   DEFAULT_DECISIVE_PROMPT,
   DEFAULT_GATE_NEW_WORK,
   DEFAULT_GATE_BUDGET_PCT,
+  DEFAULT_GATE_HOUSEKEEPING_MARKERS,
   SECTION,
 };

@@ -182,6 +182,68 @@ test('backstop: honors a custom gateBudgetPct', () => {
   } finally { s.h.cleanup(); }
 });
 
+// ---------------------------------------------------------------------------
+// Scheduled/cron housekeeping prompts (mailbox-wake tick, DevSwarm
+// peer-check, bug-sweep broadcast) never get the POST-HANDOVER NEW-WORK GATE
+// nudge — those prompts fire on every UserPromptSubmit and can't act on a
+// "park this work" offer.
+// ---------------------------------------------------------------------------
+
+test('gate: a scheduled mailbox-wake "inbox tick" prompt gets no nudge', () => {
+  const s = setup();
+  try {
+    s.prompt(86);
+    writeHandover(s.cwd);
+    const r = s.prompt(87, { prompt: 'node scripts/devswarm.js inbox tick abc123 --child' });
+    assert.doesNotMatch(ctx(r), GATE_RE, ctx(r));
+  } finally { s.h.cleanup(); }
+});
+
+test('gate: a scheduled DevSwarm "peer check" prompt gets no nudge', () => {
+  const s = setup();
+  try {
+    s.prompt(86);
+    writeHandover(s.cwd);
+    const r = s.prompt(87, { prompt: 'peer check due — poll the shared roster' });
+    assert.doesNotMatch(ctx(r), GATE_RE, ctx(r));
+  } finally { s.h.cleanup(); }
+});
+
+test('gate: a scheduled "BROADCAST bug sweep" prompt gets no nudge', () => {
+  const s = setup();
+  try {
+    s.prompt(86);
+    writeHandover(s.cwd);
+    const r = s.prompt(87, { prompt: 'BROADCAST bug sweep — scan open issues' });
+    assert.doesNotMatch(ctx(r), GATE_RE, ctx(r));
+  } finally { s.h.cleanup(); }
+});
+
+test('gate: a REAL user prompt still gets the nudge (housekeeping skip does not over-match)', () => {
+  const s = setup();
+  try {
+    s.prompt(86);
+    writeHandover(s.cwd);
+    const r = s.prompt(87, { prompt: 'please refactor the auth module and add tests' });
+    assert.match(ctx(r), GATE_RE, ctx(r));
+  } finally { s.h.cleanup(); }
+});
+
+test('gate: a settings-configured extra housekeeping marker also skips the nudge', () => {
+  const s = setup();
+  try {
+    fs.writeFileSync(path.join(s.h.home, '.anti-hall', 'settings.json'),
+      JSON.stringify({ autoHandover: { gateHousekeepingMarkers: 'daily standup sweep' } }), 'utf8');
+    s.prompt(86);
+    writeHandover(s.cwd);
+    const r = s.prompt(87, { prompt: 'daily standup sweep — nothing to report' });
+    assert.doesNotMatch(ctx(r), GATE_RE, ctx(r));
+    // an unrelated real prompt is unaffected by the extra marker
+    const r2 = s.prompt(88, { prompt: 'write the release notes' });
+    assert.match(ctx(r2), GATE_RE, ctx(r2));
+  } finally { s.h.cleanup(); }
+});
+
 test('gate re-arms (clears) once usage drops back below the threshold', () => {
   const s = setup();
   try {

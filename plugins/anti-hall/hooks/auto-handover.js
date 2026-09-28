@@ -34,6 +34,12 @@
 // A measured BACKSTOP fires once per handover baseline when usage grows more
 // than gateBudgetPct points past the pct recorded when the handover was first
 // seen: refresh the handover, offer to park the rest.
+// The gate (and its backstop) is SKIPPED for a scheduled/cron housekeeping
+// prompt (a mailbox-wake tick, DevSwarm peer-check tick, or bug-sweep
+// broadcast — hooks/lib/auto-handover-gate.js's isHousekeepingPrompt, plus
+// any extra markers in autoHandover.gateHousekeepingMarkers): those prompts
+// fire on every UserPromptSubmit and can't act on a "park this work" nudge,
+// so gating them was pure noise. Real user prompts are unaffected.
 //
 // Context % is ESTIMATED from the transcript's own recorded token usage
 // (hooks/lib/context-pct.js) — see that file for why this, not the
@@ -147,7 +153,8 @@ function main() {
               let dirty = false;
               const parts = [];
               let backstop = false;
-              if (settings.gateNewWork) {
+              const housekeeping = gate.isHousekeepingPrompt(payload.prompt, settings.gateHousekeepingMarkers);
+              if (settings.gateNewWork && !housekeeping) {
                 const noted = gate.noteHandover(cur, payload, result.pct, now);
                 if (noted) { cur = noted; dirty = true; }
                 if (gate.isArmed(settings, cur)) {

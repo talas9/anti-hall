@@ -80,6 +80,34 @@ function isArmed(cfg, latch) {
     Number.isFinite(latch.handoverPct));
 }
 
+// HOUSEKEEPING_MARKERS — built-in, case-insensitive substrings that identify
+// a SCHEDULED/CRON housekeeping prompt rather than a real user request: the
+// mailbox-wake polling loop's tick directive, a DevSwarm peer-check tick, and
+// a broadcast bug-sweep tick. These fire on every UserPromptSubmit just like
+// a real prompt, so without this check the POST-HANDOVER NEW-WORK GATE nudge
+// (and its Jev shadow consult) were injected on every one of them too —
+// noise a scheduled housekeeping turn can't act on. A settings-configured
+// extra marker list (autoHandover.gateHousekeepingMarkers) is unioned in by
+// the caller (hooks/auto-handover.js, via auto-handover-config.js's
+// csvToMarkers). Real user prompts are never affected: the substrings below
+// are specific tick/peer-check/bug-sweep phrasing no ordinary request uses.
+const HOUSEKEEPING_MARKERS = ['inbox tick', 'peer check', 'BROADCAST bug sweep'];
+
+// isHousekeepingPrompt(prompt, extraMarkers) -> true when `prompt` starts
+// with or contains (case-insensitively) any of HOUSEKEEPING_MARKERS or
+// extraMarkers (an array of extra strings, e.g. from settings). Fail-open:
+// a non-string/empty prompt is never treated as housekeeping.
+function isHousekeepingPrompt(prompt, extraMarkers) {
+  if (typeof prompt !== 'string' || !prompt.trim()) return false;
+  const lower = prompt.toLowerCase();
+  const markers = HOUSEKEEPING_MARKERS.concat(Array.isArray(extraMarkers) ? extraMarkers : []);
+  for (const m of markers) {
+    if (typeof m !== 'string' || !m.trim()) continue;
+    if (lower.indexOf(m.toLowerCase()) !== -1) return true;
+  }
+  return false;
+}
+
 // backstopDue(cfg, latch, pct) -> true once usage has grown more than
 // gateBudgetPct points past the handover baseline and this baseline's one
 // reminder has not gone out yet.
@@ -89,4 +117,4 @@ function backstopDue(cfg, latch, pct) {
   return pct > latch.handoverPct + cfg.gateBudgetPct;
 }
 
-module.exports = { MTIME_SLACK_MS, sessionHandover, noteHandover, isArmed, backstopDue };
+module.exports = { MTIME_SLACK_MS, sessionHandover, noteHandover, isArmed, backstopDue, isHousekeepingPrompt, HOUSEKEEPING_MARKERS };
