@@ -678,9 +678,10 @@ const COMMIT_CREATING = new Set(['commit', 'merge', 'rebase', 'cherry-pick', 're
 
 // Memoized per distinct raw-command string (R5A1-1): `hasSelfCredit` is
 // called with `currentRawCommand` once per commit-creating segment (Rule 1
-// below, and ghSelfCreditMessage above), and `currentRawCommand` is set once
-// per top-level scan (main()) - it only ever changes across the bounded
-// eval/`bash -c` recursion depth, never per-segment. Without this cache, a
+// below, and ghSelfCreditMessage above), and `currentRawCommand` is assigned
+// exactly ONCE per process (main(), before any segment/recursion scanning
+// starts) - it never changes again for the lifetime of this hook invocation,
+// including across the bounded eval/`bash -c` recursion depth. Without this cache, a
 // command with N commit-creating segments (e.g. `git tag a;` repeated tens
 // of thousands of times) re-scans the WHOLE O(n)-length command text on
 // EVERY segment, turning an O(n) command into O(n^2) work.
@@ -828,6 +829,26 @@ function ghSelfCreditMessage(args) {
   return null;
 }
 
+// consultGitGuardSelfCreditJevMemo / JEV_CONSULT_CAP (R6REV-P1-1): jev-assist's
+// own cache is keyed by content hash and lives on DISK, so within a single
+// hook invocation a repeated identical text still spawned a fresh
+// jev-assist-worker.js subprocess for every commit-creating segment (a
+// timeout/no-key miss is never written to the disk cache - see
+// jev-assist.js's `ask()`/`askSync()` doc comment - so a command with N
+// distinct-looking but identically-empty-key segments re-asked N times). A
+// command with 500 commit-creating segments each carrying a Jev consult took
+// ~12s (over PreToolUse's ~10s hook timeout). Two guards, mirroring
+// `selfCreditScanCache` above:
+//  1. an in-process memo keyed by the EXACT consulted text, so this hook
+//     process only ever asks Jev once per distinct text;
+//  2. a hard cap on the number of DISTINCT texts this invocation will ever
+//     spawn a subprocess for — past the cap, fail OPEN to the regex/baseline
+//     verdict (`false`), same as every other Jev-absent degrade path. This
+//     never blocks on Jev's absence beyond what the regex scan already
+//     decided.
+const JEV_CONSULT_CAP = 8;
+const consultGitGuardSelfCreditJevMemo = new Map();
+
 // consultGitGuardSelfCreditJev(text) -> true when Jev, running "on", confidently
 // judges `text` to contain paraphrased AI self-credit. Trust 'add-block' /
 // baseline `false`: this function's result can only ever ADD a block on top of
@@ -835,8 +856,12 @@ function ghSelfCreditMessage(args) {
 // CLAUDE.md "NEVER relax" for this guard). askSync spawns the actual network
 // call in a subprocess with its own hard timeout so this hook's fully
 // synchronous main() never blocks past its own PreToolUse budget; jev-assist's
-// own content-hash cache means a repeated identical message is never re-asked.
+// own content-hash cache means a repeated identical message is never re-asked
+// ACROSS processes, and the memo/cap above bound repeats WITHIN this one.
 function consultGitGuardSelfCreditJev(text) {
+  const key = String(text);
+  if (consultGitGuardSelfCreditJevMemo.has(key)) return consultGitGuardSelfCreditJevMemo.get(key);
+  if (consultGitGuardSelfCreditJevMemo.size >= JEV_CONSULT_CAP) return false;
   try {
     const { askSync } = require('./lib/jev-assist.js');
     const result = askSync({
@@ -860,8 +885,11 @@ function consultGitGuardSelfCreditJev(text) {
       budgetMs: 1500,
       sessionId: currentSessionId || undefined,
     });
-    return result.final === true;
+    const verdict = result.final === true;
+    consultGitGuardSelfCreditJevMemo.set(key, verdict);
+    return verdict;
   } catch (_) {
+    consultGitGuardSelfCreditJevMemo.set(key, false);
     return false;
   }
 }
@@ -1230,10 +1258,27 @@ function targetResolvesIntoLauncherDir(rawPath, cdDir, opts) {
   // `rm` DELETES the operand itself rather than writing THROUGH it, so a
   // looping/self-referential symlink (`ln -s selfloop selfloop; rm -f
   // selfloop`) must never be followed or fail-closed the way a write target
-  // is (R5A1-4). Check only the literal path and, if it is itself a symlink,
-  // its immediate (one-hop, non-recursive) readlink text - never chase the
-  // chain or fail closed on an unresolvable/looping one.
+  // is (R5A1-4). A pure leaf symlink (the operand itself IS the symlink)
+  // only gets a one-hop readlink check, never chased or fail-closed.
+  //
+  // R6A1-1 (regression in 0d90bf1): the ONLY case handled above used to be
+  // "operand itself is a symlink" - it lstat()ed just the leaf and, for
+  // anything else (a real file/dir reached through a symlinked PARENT
+  // component, e.g. `rm -f linkdir/devswarm.js` where `linkdir` ->
+  // ~/.anti-hall/bin), fell straight through to `return false` (allowed) -
+  // never walking the parent chain the way the non-deleteOnly branch below
+  // (and 51775f4 before this regression) does. `rm -f linkdir/devswarm.js`,
+  // `rm -rf linkdir/`, and `rm -rf linkroot/bin` (linkroot -> ~/.anti-hall)
+  // all bypassed the guard this way.
   if (opts && opts.deleteOnly) {
+    // A trailing-slash operand (`rm -rf linkdir/`): rm follows the operand's
+    // OWN symlink-ness the same way a write target does, so resolve the
+    // FULL path (parent AND leaf) via realpathSync, same as the non-delete
+    // branch below.
+    if (normalized.endsWith('/')) {
+      try { return pathHasLauncherSegment(fs.realpathSync(normalized)); }
+      catch (_) { return false; /* doesn't exist - nothing to delete */ }
+    }
     try {
       if (fs.lstatSync(normalized).isSymbolicLink()) {
         let linkText;
@@ -1243,8 +1288,25 @@ function targetResolvesIntoLauncherDir(rawPath, cdDir, opts) {
           path.posix.normalize(path.posix.dirname(normalized) + '/' + target);
         return pathHasLauncherSegment(target);
       }
-    } catch (_) { /* doesn't exist - nothing to resolve */ }
-    return false;
+      // A real (non-symlink) leaf that EXISTS: resolve the full path. This
+      // follows any symlink PARENT component (the fix) without following
+      // the leaf itself - there is nothing to follow, it isn't a symlink.
+      return pathHasLauncherSegment(fs.realpathSync(normalized));
+    } catch (_) {
+      // Leaf doesn't exist (or the lstat/realpath above hit an unrelated
+      // error, e.g. ELOOP in a parent component): still resolve the PARENT
+      // directory's realpath and rejoin the leaf's own basename, so a
+      // not-yet-created target under a symlinked parent (`rm -f
+      // linkdir/not-yet-created.js`) is judged the same as an existing one.
+      // Fails OPEN (allow) only when the parent itself cannot be resolved -
+      // nothing exists there to delete either way.
+      const parent = path.posix.dirname(normalized);
+      const base = path.posix.basename(normalized);
+      try {
+        const realParent = fs.realpathSync(parent);
+        return pathHasLauncherSegment(realParent.replace(/\/+$/, '') + '/' + base);
+      } catch (_) { return false; }
+    }
   }
   try {
     return pathHasLauncherSegment(fs.realpathSync(normalized));

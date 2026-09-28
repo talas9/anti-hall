@@ -1416,3 +1416,132 @@ test('BLOCK (R5A1-4 regression guard): rm of a symlink that DOES resolve into th
     }
   });
 });
+
+// --- Round 6 fix (R6A1-1, regression introduced in 0d90bf1) ---
+//
+// The R5A1-4 deleteOnly branch above only lstat()ed the LEAF of the rm
+// operand. When the leaf itself was a real file/dir reached through a
+// SYMLINKED PARENT component (e.g. `linkdir -> ~/.anti-hall/bin`), it fell
+// straight through to `return false` (allowed) without ever walking the
+// parent chain — unlike the non-deleteOnly branch (and 51775f4 before this
+// regression), which does. `rm -f linkdir/devswarm.js`, `rm -rf linkdir/`,
+// and `rm -rf linkroot/bin` (linkroot -> ~/.anti-hall) all bypassed the
+// guard this way.
+test('BLOCK (R6A1-1): rm -f through a symlinked PARENT dir that resolves into the launcher bin dir', () => {
+  withLauncher((h, binDir, launcher) => {
+    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'anti-hall-test-linkdir-'));
+    try {
+      const linkdir = path.join(scratch, 'linkdir');
+      fs.symlinkSync(binDir, linkdir);
+      const r = testHook(HOOK, bashPayload(`rm -f ${linkdir}/devswarm.js`), { home: h.home });
+      assert.strictEqual(r.status, 2, `expected block (exit 2)\nstderr: ${r.stderr}`);
+      assert.match(r.stderr, /stable launcher directory/);
+    } finally {
+      fs.rmSync(scratch, { recursive: true, force: true });
+    }
+  });
+});
+
+test('BLOCK (R6A1-1): rm -rf of a TRAILING-SLASH symlinked dir that resolves into the launcher bin dir', () => {
+  withLauncher((h, binDir, launcher) => {
+    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'anti-hall-test-linkdir2-'));
+    try {
+      const linkdir = path.join(scratch, 'linkdir');
+      fs.symlinkSync(binDir, linkdir);
+      const r = testHook(HOOK, bashPayload(`rm -rf ${linkdir}/`), { home: h.home });
+      assert.strictEqual(r.status, 2, `expected block (exit 2)\nstderr: ${r.stderr}`);
+      assert.match(r.stderr, /stable launcher directory/);
+    } finally {
+      fs.rmSync(scratch, { recursive: true, force: true });
+    }
+  });
+});
+
+test('BLOCK (R6A1-1): rm -rf <symlinked-root>/bin resolves the PARENT into ~/.anti-hall root, blocked as the launcher bin dir', () => {
+  withLauncher((h, binDir, launcher) => {
+    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'anti-hall-test-linkroot-'));
+    try {
+      const linkroot = path.join(scratch, 'linkroot');
+      fs.symlinkSync(path.join(h.home, '.anti-hall'), linkroot);
+      const r = testHook(HOOK, bashPayload(`rm -rf ${linkroot}/bin`), { home: h.home });
+      assert.strictEqual(r.status, 2, `expected block (exit 2)\nstderr: ${r.stderr}`);
+      assert.match(r.stderr, /stable launcher directory/);
+    } finally {
+      fs.rmSync(scratch, { recursive: true, force: true });
+    }
+  });
+});
+
+test('ALLOW (R6A1-1 regression guard): a plain rm -f leaf symlink (only unlinks it) is still allowed', () => {
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'anti-hall-test-plainleaf-'));
+  try {
+    const target = path.join(scratch, 'target.txt');
+    fs.writeFileSync(target, 'x', 'utf8');
+    const leaf = path.join(scratch, 'leaf');
+    fs.symlinkSync(target, leaf);
+    const r = run(`rm -f ${leaf}`);
+    assert.strictEqual(r.status, 0, `expected allow (exit 0)\nstderr: ${r.stderr}`);
+  } finally {
+    fs.rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
+// --- Round 6 fix (R6REV-P1-1): Jev-enabled commit-creating segments must not
+// re-spawn a jev-assist-worker.js subprocess PER segment. Each of these tests
+// runs with Jev enabled and NO api key configured, so every consult is a
+// guaranteed miss (never written to the disk cache — see jev-assist.js) and
+// would previously re-spawn a fresh subprocess for every single
+// commit-creating segment. The in-process memo (keyed by exact consulted
+// text, mirroring selfCreditScanCache) plus the JEV_CONSULT_CAP fail-open
+// bound this to a small, constant number of subprocess spawns regardless of
+// segment count. The trailing force-push block (baseline verdict, untouched
+// by Jev) must still fire, proving Jev's absence never changed the outcome.
+test('PERF (R6REV-P1-1): 500 commit-creating segments, Jev enabled + no key, complete well under 3s', () => {
+  const h = makeHome();
+  try {
+    h.writeState('jev.json', { enabled: true });
+    const cmd = 'git tag a -m "msg";'.repeat(500) + 'git push --force origin main';
+    const t0 = Date.now();
+    const r = testHook(HOOK, bashPayload(cmd), { home: h.home });
+    const elapsedMs = Date.now() - t0;
+    assert.strictEqual(r.status, 2, `expected block (exit 2)\nstderr: ${r.stderr}`);
+    assert.match(r.stderr, REASON.FORCE);
+    assert.ok(elapsedMs < 3000, `expected memoized/capped Jev consults (<3000ms), took ${elapsedMs}ms`);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('PERF (R6REV-P1-1): 3000 commit-creating segments, Jev enabled + no key, complete well under 3s', () => {
+  const h = makeHome();
+  try {
+    h.writeState('jev.json', { enabled: true });
+    const cmd = 'git tag a -m "msg";'.repeat(3000) + 'git push --force origin main';
+    const t0 = Date.now();
+    const r = testHook(HOOK, bashPayload(cmd), { home: h.home });
+    const elapsedMs = Date.now() - t0;
+    assert.strictEqual(r.status, 2, `expected block (exit 2)\nstderr: ${r.stderr}`);
+    assert.match(r.stderr, REASON.FORCE);
+    assert.ok(elapsedMs < 3000, `expected memoized/capped Jev consults (<3000ms), took ${elapsedMs}ms`);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('PERF (R6REV-P1-1): 500 DISTINCT-message commit-creating segments, Jev enabled + no key, still complete well under 3s (JEV_CONSULT_CAP bounds distinct-text spawns)', () => {
+  const h = makeHome();
+  try {
+    h.writeState('jev.json', { enabled: true });
+    let cmd = '';
+    for (let i = 0; i < 500; i++) cmd += `git tag a -m "msg${i}";`;
+    cmd += 'git push --force origin main';
+    const t0 = Date.now();
+    const r = testHook(HOOK, bashPayload(cmd), { home: h.home });
+    const elapsedMs = Date.now() - t0;
+    assert.strictEqual(r.status, 2, `expected block (exit 2)\nstderr: ${r.stderr}`);
+    assert.match(r.stderr, REASON.FORCE);
+    assert.ok(elapsedMs < 3000, `expected JEV_CONSULT_CAP to bound distinct-text spawns (<3000ms), took ${elapsedMs}ms`);
+  } finally {
+    h.cleanup();
+  }
+});

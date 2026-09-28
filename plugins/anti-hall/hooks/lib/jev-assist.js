@@ -766,6 +766,20 @@ function directionFor(trust, changed) {
   return 'changed';
 }
 
+// askSyncResultMemo — in-process memo of askSync()'s underlying network/
+// subprocess result (`r`), keyed by the SAME content hash prepare() computes.
+// PROCESS-LIFETIME ONLY — never persisted to disk, unlike the on-disk cache
+// in ~/.anti-hall/cache/jev-assist.json (which only ever stores an OK
+// answer). This additionally memoizes a FAILED/unavailable result (timeout,
+// no key, disabled backend, bad response) — a miss that isn't `ok:true` is
+// never written to the disk cache (see askSync below), so a caller asking
+// the identical text hundreds of times within one process (e.g.
+// git-guard.js scanning 500 commit-creating segments with Jev enabled and no
+// key configured — R6REV-P1-1) used to spawn the jevDecideSync subprocess
+// fresh on every single call, ~12s for 500 segments. Keyed by hash rather
+// than raw text/state so a caller using `cacheKey` still memoizes correctly.
+const askSyncResultMemo = new Map();
+
 function jevDecideSync({ question, state, timeoutMs, home }) {
   const budget = (Number.isFinite(timeoutMs) && timeoutMs > 0) ? timeoutMs : DEFAULT_SYNC_TIMEOUT_MS;
   try {
@@ -964,19 +978,30 @@ function askSync(opts = {}) {
     return finalize({ id, home: h, hash, mode, trust, baseline, judge, threshold, r: null, cachedFlag: false, compare, state, project, sessionId, turnRef });
   }
 
-  const cache = readCache(h);
-  const cached = cache[hash];
   let r; let cachedFlag = false;
-  if (cached) {
-    r = { ok: true, answer: cached.answer, confidence: cached.confidence, ms: 0 };
-    cachedFlag = true;
+  if (askSyncResultMemo.has(hash)) {
+    // Repeated identical ask WITHIN this process (see askSyncResultMemo's
+    // doc comment). An earlier ok:true result behaves exactly like a disk
+    // cache hit (no new inference, cost $0); a memoized FAILURE just skips
+    // re-spawning the subprocess — it is still reported as `baseline-only`,
+    // never as `cache`, since no answer was actually cached for it.
+    r = askSyncResultMemo.get(hash);
+    cachedFlag = !!(r && r.ok);
   } else {
-    r = jevDecideSync({ question, state, timeoutMs: budgetMs, home: h });
-    if (r.ok) {
-      writeCache(h, Object.assign({}, cache, {
-        [hash]: { answer: r.answer, confidence: r.confidence, _seq: nextCacheSeq(cache) },
-      }));
+    const cache = readCache(h);
+    const cached = cache[hash];
+    if (cached) {
+      r = { ok: true, answer: cached.answer, confidence: cached.confidence, ms: 0 };
+      cachedFlag = true;
+    } else {
+      r = jevDecideSync({ question, state, timeoutMs: budgetMs, home: h });
+      if (r.ok) {
+        writeCache(h, Object.assign({}, cache, {
+          [hash]: { answer: r.answer, confidence: r.confidence, _seq: nextCacheSeq(cache) },
+        }));
+      }
     }
+    askSyncResultMemo.set(hash, r);
   }
 
   return finalize({ id, home: h, hash, mode, trust, baseline, judge, threshold, r, cachedFlag, compare, state, project, sessionId, turnRef });
