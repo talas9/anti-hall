@@ -42,6 +42,10 @@ delegation-first/orchestrate-only doctrine — `edit-guard.js` lets the
 coordinator Write/Edit handover files directly under
 `.anti-hall/handovers/**` (and redirects NEW handover-named `.md` writes
 elsewhere back to that path), so self-write never needs a subagent detour.
+Use the Write/Edit tool for every file below, never a Bash heredoc
+(`cat > f <<EOF`) — a heredoc body is scanned as shell by `git-guard.js`, and
+prose that merely mentions a git command near backticks can trip a block
+Write/Edit never hit in the first place.
 
 ## Artifact layout
 

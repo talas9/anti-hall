@@ -70,15 +70,26 @@ function block(msg) {
   process.exit(2);
 }
 
-// True when a blocked command LOOKS LIKE the devswarm mailbox flow (a heredoc
-// writing a message file, then `devswarm.js send --message-file <that file>`)
-// - purely to attach a more useful hint to the block reason. This is NOT an
-// exemption: the command was already blocked by the ordinary scan above the
-// call site; every heredoc body is always scanned in full (no data
-// exemption), so this only changes the wording of an already-decided block.
-function looksLikeMailboxHeredoc(cmd) {
-  return /<<-?\s*['"]?[A-Za-z_][A-Za-z0-9_]*['"]?/.test(cmd) &&
-    /devswarm\.js\b[\s\S]*\bsend\b[\s\S]*--message-file\b/.test(cmd);
+// True when a blocked command LOOKS LIKE a heredoc/echo/printf writing FILE
+// CONTENT (a devswarm mailbox message, a handover/progress/history file, a
+// commit-message file, or any other "cat > f <<EOF ... EOF" / "tee f <<EOF"
+// / "echo ... > f" / "printf ... >> f" shape) - purely to attach a more
+// useful hint to the block reason. This is NOT an exemption: the command was
+// already blocked by the ordinary scan above the call site; every heredoc
+// body is always scanned in full (no data exemption), so this only changes
+// the wording of an already-decided block. Generalizes the narrower
+// devswarm-mailbox-only check this replaced (every mailbox shape below is
+// also a heredoc-into-a-file shape, so one hint now covers both).
+function looksLikeFileWriteShape(cmd) {
+  const hasHeredoc = /<<-?\s*['"]?[A-Za-z_][A-Za-z0-9_]*['"]?/.test(cmd);
+  // A `>`/`>>` redirect whose target is a filename, not a fd (`2>`, `>&2`)
+  // and not a comparison operator context - a plain `>`/`>>` token followed
+  // by a non-empty word.
+  const redirectsToFile = /(?:^|[\s;&|(])>{1,2}\s*[^\s&;|<>()0-9][^\s&;|<>()]*/.test(cmd);
+  const teesToFile = /\btee\b\s+(?:-a\s+)?[^\s&;|<>()-][^\s&;|<>()]*/.test(cmd);
+  if (hasHeredoc) return redirectsToFile || teesToFile;
+  // No heredoc: `echo`/`printf` output explicitly redirected into a file.
+  return /\b(?:echo|printf)\b/.test(cmd) && redirectsToFile;
 }
 
 // ---------------------------------------------------------------------------
@@ -965,7 +976,7 @@ function extractQuotedLiterals(cmd) {
 // shape - writing a message file, then sending it with the anti-hall
 // launcher - was removed after review found its temp-path/target checks were
 // literal-string-only and bypassable via a planted symlink; see
-// looksLikeMailboxHeredoc() near block() for the resulting block-reason
+// looksLikeFileWriteShape() near block() for the resulting block-reason
 // hint). The correct way to send a message is to write the file with the
 // Write tool (not a Bash heredoc), then run `devswarm.js send --message-file
 // <path>` as its own, unrelated-body command.
@@ -1578,10 +1589,11 @@ function main() {
 
   const msg = scanCommand(cmd, 0);
   if (msg) {
-    if (looksLikeMailboxHeredoc(cmd)) {
-      return block(msg + '\nHint: a mailbox send needs no exemption - write the ' +
-        'message file with the Write tool (not a Bash heredoc), then run ' +
-        '`devswarm.js send --message-file <path>`.');
+    if (looksLikeFileWriteShape(cmd)) {
+      return block(msg + '\nHint: this file\'s content was scanned as shell - write ' +
+        'the file with the Write tool or the Edit tool instead of a Bash heredoc ' +
+        '(Write/Edit are not shell-scanned), then reference that file path in a ' +
+        'plain follow-up command (e.g. `devswarm.js send --message-file <path>`).');
     }
     return block(msg);
   }

@@ -99,7 +99,8 @@ function buildFireDirective(result, via, payload, maxTokens) {
       ' — AUTO-HANDOVER REQUIRED. Without asking the user first: ' +
       '(1) immediately WRITE an anti-hall session handover YOURSELF, following the contract of ' + w.skill + ' ' +
       'exactly (self-write mandate — never delegate this to a subagent; it never lived ' +
-      'this session and would lose decision/trial fidelity)' +
+      'this session and would lose decision/trial fidelity; use the Write/Edit tool for every ' +
+      'handover file, never a Bash heredoc — its body is scanned as shell by git-guard.js)' +
       (hp ? '; by the skill\'s own date/sequence rules its main file is ' + hp : '') + '; ' +
       '(2) then TELL the user this was done, to preserve the session\'s work against auto-compact (or ' +
       'anything they might otherwise forget), and LIST every path you just saved under .anti-hall/handovers/**; ' +
@@ -124,7 +125,8 @@ function buildFireDirective(result, via, payload, maxTokens) {
     'CONTEXT AT ~' + Math.round(pct) + '%' + label + ' — AUTO-HANDOVER REQUIRED. Without asking the user first: ' +
     '(1) immediately WRITE an anti-hall session handover YOURSELF, following the contract of ' + w.skill + ' ' +
     'exactly (self-write mandate — never delegate this to a subagent; it never lived ' +
-    'this session and would lose decision/trial fidelity)' +
+    'this session and would lose decision/trial fidelity; use the Write/Edit tool for every ' +
+    'handover file, never a Bash heredoc — its body is scanned as shell by git-guard.js)' +
     (hp ? '; by the skill\'s own date/sequence rules its main file is ' + hp : '') + '; ' +
     '(2) then TELL the user this was done, to preserve the session\'s work against auto-compact (or ' +
     'anything they might otherwise forget), and LIST every path you just saved under .anti-hall/handovers/**; ' +

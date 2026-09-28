@@ -463,7 +463,8 @@ function main() {
       progressHeader + '. Gitignore it so it never ships. ' +
       'Also append each COMPLETED task to ' + (historyAbsPath || historyRelPath) + ' (append-only ' +
       'ledger, one entry per task: Cause / Fix / Verified) so the fix history ' +
-      'persists across sessions — gitignore it too.'
+      'persists across sessions — gitignore it too. Write/edit both files with the ' +
+      'Write/Edit tool, never a Bash heredoc (its body is scanned as shell by git-guard.js).'
   );
 
   // OMC-awareness: if an autonomous OMC loop (ralph, ultrawork, autopilot, etc.)

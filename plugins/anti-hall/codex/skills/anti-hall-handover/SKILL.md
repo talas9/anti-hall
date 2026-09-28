@@ -45,7 +45,11 @@ note: `edit-guard.js`'s wrong-location redirect and `model-routing-guard.js`'s
 spawn-intent advisory (shared files) carry this rule's logic, but Codex's
 `hooks.json` wires neither onto a Write/Edit or Agent-spawn matcher (it does
 register `tasklist-guard.js` and `handover-resume.js`) — treat this as YOUR
-discipline here, not yet a mechanical rail.
+discipline here, not yet a mechanical rail. Use the Write/Edit tool for
+every file below, never a Bash heredoc (`cat > f <<EOF`) — a heredoc body is
+scanned as shell by `git-guard.js` (shared with Claude Code), and prose that
+merely mentions a git command near backticks can trip a block Write/Edit
+never hit in the first place.
 
 ## Artifact layout
 

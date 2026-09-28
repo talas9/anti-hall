@@ -47,7 +47,7 @@ const REASON = {
 // ~/.anti-hall/bin defeated it). Each of these carries a real force-push
 // mention in its body and must BLOCK, with the mailbox hint attached.
 const PEER_FILE = '/private/tmp/peer/scratchpad/landed.md';
-const HINT_RE = /write the message file with the Write tool/;
+const HINT_RE = /write the file with the Write tool or the Edit tool/;
 const LAUNCHER_MSG_BLOCK_HINTED = [
   {
     cmd: `cat > ${PEER_FILE} <<'ENDOFMSG'\nLANDED ON MAIN. Plain fast-forward, no force - I did not run \`git push --force\` or \`git push -f\`.\nENDOFMSG\nnode ~/.anti-hall/bin/devswarm.js send --to primary --message-file ${PEER_FILE}`,
@@ -502,6 +502,62 @@ for (const { cmd, reason } of LAUNCHER_MSG_BLOCK_HINTED) {
     assert.strictEqual(r.status, 2, `expected block (exit 2) for: ${cmd}\nstderr: ${r.stderr}`);
     assert.match(r.stderr, reason, `blocked for the WRONG reason: ${cmd}\ngot: ${r.stderr}`);
     assert.match(r.stderr, HINT_RE, `expected mailbox hint in block reason: ${cmd}\ngot: ${r.stderr}`);
+  });
+}
+
+// Peer report (hooks 0.115.2): a NON-mailbox heredoc-into-a-file write (e.g.
+// a handover file, no devswarm.js/--message-file in sight) whose prose merely
+// MENTIONS `git push` next to backticks gets blocked on the command-subst
+// rule and must carry the SAME generalized hint (looksLikeFileWriteShape),
+// not just the old devswarm-mailbox-only shape.
+const FILE_WRITE_BLOCK_HINTED = [
+  {
+    // cat > f <<'EOF' ... EOF - the exact peer repro shape.
+    cmd: "cat > .anti-hall/handovers/2026-09-28/sess1/HANDOVER.md <<'EOF'\n## Next steps\nRun `git push` to publish.\nEOF\n",
+    reason: REASON.CMDSUBST,
+  },
+  {
+    // tee f <<EOF ... EOF (no `>`/cat at all) - the heredoc body carries a
+    // real force-push mention, so it blocks on Rule 2 directly.
+    cmd: "tee /tmp/notes.md <<'EOF'\ndo not run `git push --force` here\nEOF\n",
+    reason: REASON.FORCE,
+  },
+  {
+    // echo redirected into a file (no heredoc) - a command-valued config
+    // line (Rule "command-valued config/env") is the real block shape for a
+    // bare echo/printf-into-file (an echoed literal string alone is inert;
+    // see CONFIG_VALUE_BLOCK below for the general form of this rule).
+    cmd: 'echo "[core] pager = git push --force origin main" > /tmp/gitconfig-notes.md',
+    reason: REASON.FORCE,
+  },
+  {
+    // printf appended into a file (no heredoc), same config-value shape.
+    cmd: 'printf "%s\\n" "[core] pager = git push --force origin main" >> /tmp/gitconfig-notes.md',
+    reason: REASON.FORCE,
+  },
+];
+for (const { cmd, reason } of FILE_WRITE_BLOCK_HINTED) {
+  test(`BLOCK (heredoc/echo/printf-into-file, hinted): ${JSON.stringify(cmd)}`, () => {
+    const r = run(cmd);
+    assert.strictEqual(r.status, 2, `expected block (exit 2) for: ${cmd}\nstderr: ${r.stderr}`);
+    assert.match(r.stderr, reason, `blocked for the WRONG reason: ${cmd}\ngot: ${r.stderr}`);
+    assert.match(r.stderr, HINT_RE, `expected file-write hint in block reason: ${cmd}\ngot: ${r.stderr}`);
+  });
+}
+
+// A plain blocked command with no heredoc/echo/printf-into-file shape (just a
+// `git push` whose argument is a command substitution) must NOT get the hint
+// - it isn't writing any file content, so the hint would be a non-sequitur.
+const PLAIN_BLOCK_NO_HINT = [
+  'git push $(echo origin) main',
+  'git push origin `echo main`',
+];
+for (const cmd of PLAIN_BLOCK_NO_HINT) {
+  test(`BLOCK (no file-write shape, no hint): ${JSON.stringify(cmd)}`, () => {
+    const r = run(cmd);
+    assert.strictEqual(r.status, 2, `expected block (exit 2) for: ${cmd}\nstderr: ${r.stderr}`);
+    assert.match(r.stderr, REASON.CMDSUBST, `blocked for the WRONG reason: ${cmd}\ngot: ${r.stderr}`);
+    assert.doesNotMatch(r.stderr, HINT_RE, `unexpected file-write hint in block reason: ${cmd}\ngot: ${r.stderr}`);
   });
 }
 
