@@ -36,15 +36,25 @@ const COMPACT_CMD_RE = /^\s*<command-name>\s*\/compact\s*<\/command-name>/;
 
 // ---------------------------------------------------------------- phrasing
 // Negation just before a match ("NOT SAFE to compact", "no need to /compact",
-// "RETRACT SAFE TO COMPACT", "far from safe to compact", "once this lands it
-// will be safe to compact") means it is not a recommendation — it is either
-// negated outright or made conditional on something not yet done.
-const NEGATION_BEFORE_RE = /(?:\bnot\s+yet\b|\bnot\b|n['’]t\b|\bnever\b|\bno\s+need\b|\bno\s+reason\b|\bfar\s+from\b|\bonce\b[\s\S]{0,60}\bit\s+will\s+be\b|\bretract(?:ed|ing)?\b)[^.!?\n]{0,20}$/i;
+// "RETRACT SAFE TO COMPACT", "far from safe to compact", "nowhere near a good
+// point to /compact", "once this lands it will be safe to compact") means it
+// is not a recommendation — it is either negated outright or made
+// conditional on something not yet done.
+const NEGATION_BEFORE_RE = /(?:\bnot\s+yet\b|\bnot\b|n['’]t\b|\bnever\b|\bno\s+need\b|\bno\s+reason\b|\bfar\s+from\b|\bnowhere\s+near\b|\bonce\b[\s\S]{0,60}\bit\s+will\s+be\b|\bretract(?:ed|ing)?\b)[^.!?\n]{0,20}$/i;
 
-// Negation just AFTER a match ("safe to compact; first I need to write the
-// progress file") — a future/conditional declaration gated on something not
-// yet done, not a present-tense recommendation.
-const NEGATION_AFTER_RE = /^[^.!?\n]{0,30};\s*first\b/i;
+// Negation just AFTER a match ("safe to compact, but first I need to write
+// the progress file", "safe to compact; first ...", "SAFE TO COMPACT after
+// the handover file is written") — a future/conditional declaration gated
+// on something not yet done, not a present-tense recommendation.
+const NEGATION_AFTER_RE = /^[^.!?\n]{0,30}[,;]\s*(?:but\s+|and\s+)?first\b|^\s*(?:after|once|when|if)\b/i;
+
+// Conditional/meta LEAD-INS just BEFORE a match:
+//   "When CI is green: safe to compact." (if|when|once|after|until ... :)
+//   "I will only say SAFE TO COMPACT ..." / "The guard fires when I write
+//   SAFE TO COMPACT ..." — describing the RULE for declaring, not declaring.
+// Neither is a present-tense recommendation.
+const CONDITIONAL_BEFORE_RE = /\b(?:if|when|once|after|until)\b[^:\n]{0,60}:\s*$/i;
+const META_BEFORE_RE = /\bwill\s+(?:only\s+)?(?:say|write|declare)\s*$|\bwhen\s+I\s+(?:say|write|declare)\s*$/i;
 
 // A1-CA-1: explicit declaration forms only. Free text that merely mentions
 // /compact or "clear" in passing ("safe to clear the cache", a bullet
@@ -103,12 +113,18 @@ function stripQuoted(text) {
 
 // isAtSentenceOrLineStart(t, index) -> bool. Walks back over whitespace and
 // decorative markdown/emoji/bullet characters; true when what remains before
-// the match is the start of the string, a newline, or a sentence-terminal
-// punctuation mark (. ! ? :).
+// the match is the start of the string, a newline crossed during the walk
+// (the match is at the start of its own line, even if that line did not end
+// in sentence-terminal punctuation), or a sentence-terminal punctuation mark
+// (. ! ? :).
 function isAtSentenceOrLineStart(t, index) {
   let i = index;
-  while (i > 0 && /[\s*_`"'“”✅🟢⏳❌⚠️\-•>]/.test(t[i - 1])) i--;
-  if (i === 0) return true;
+  let crossedNewline = false;
+  while (i > 0 && /[\s*_`"'“”✅🟢⏳❌⚠️\-•>]/.test(t[i - 1])) {
+    if (t[i - 1] === '\n') crossedNewline = true;
+    i--;
+  }
+  if (i === 0 || crossedNewline) return true;
   return /[.!?:]/.test(t[i - 1]);
 }
 
@@ -122,12 +138,13 @@ function isQuestionSentence(t, index) {
 
 // findAdvice(text) -> [{ index, phrase }] sorted by index — the assistant's
 // own compact recommendations, negated/quoted/questioned ones excluded. The
-// bare "safe to compact/clear" wording (ADVICE_RES[0]) only counts at a line
-// or sentence start, or when it is the unambiguous ALL-CAPS "SAFE TO
-// COMPACT" form wherever it sits — the more specific forms below it (good
-// point to/for, safe for a context reset, run/then/now /compact, a standalone
-// /compact line) are already anchored enough on their own and need no extra
-// position gate (R3A1/#29).
+// bare "safe to compact/clear" wording (ADVICE_RES[0]) and the
+// run/type/use/do/then/now/recommend/suggest /compact form (ADVICE_RES[3])
+// only count at a line or sentence start, or (ADVICE_RES[0] only) when it is
+// the unambiguous ALL-CAPS "SAFE TO COMPACT" form wherever it sits — the
+// more specific forms in between (good point to/for, safe for a context
+// reset) and the standalone /compact line after it are already anchored
+// enough on their own and need no extra position gate (R3A1/#29).
 function findAdvice(text) {
   const t = stripQuoted(text);
   const out = [];
@@ -137,11 +154,13 @@ function findAdvice(text) {
     while ((m = re.exec(t)) !== null) {
       const before = t.slice(Math.max(0, m.index - 60), m.index);
       const after = t.slice(m.index + m[0].length, m.index + m[0].length + 40);
-      const negated = NEGATION_BEFORE_RE.test(before) || NEGATION_AFTER_RE.test(after);
+      const negated = NEGATION_BEFORE_RE.test(before) || NEGATION_AFTER_RE.test(after) ||
+        CONDITIONAL_BEFORE_RE.test(before) || META_BEFORE_RE.test(before);
       const questioned = isQuestionSentence(t, m.index);
       const isBareSafePhrase = reIndex === 0;
-      const isAllCapsSafeToCompact = /^SAFE\s+TO\s+(?:\/?COMPACT|\/CLEAR)$/.test(m[0].trim());
-      const positioned = !isBareSafePhrase || isAllCapsSafeToCompact || isAtSentenceOrLineStart(t, m.index);
+      const isCommandForm = reIndex === 3;
+      const isAllCapsSafeToCompact = isBareSafePhrase && /^SAFE\s+TO\s+(?:\/?COMPACT|\/CLEAR)$/.test(m[0].trim());
+      const positioned = (!isBareSafePhrase && !isCommandForm) || isAllCapsSafeToCompact || isAtSentenceOrLineStart(t, m.index);
       if (!negated && !questioned && positioned) out.push({ index: m.index, phrase: m[0].trim() });
       if (m[0].length === 0) re.lastIndex++;
     }

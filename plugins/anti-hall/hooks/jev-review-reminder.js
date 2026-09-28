@@ -103,7 +103,7 @@ function main() {
   const payload = readStdinPayload();
   if (isSubagentPayload(payload)) return; // main-thread only
 
-  const home = os.homedir();
+  const home = require('../companion/lib/test-home-guard.js').resolveHome(undefined, process.env);
   const cfg = readJevJson(home);
   if (cfg.enabled !== true) return; // Jev off entirely — nothing to review.
 

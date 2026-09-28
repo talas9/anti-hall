@@ -847,6 +847,50 @@ test('EPOCH RESET: a fresh TaskCreate after the reset is still tracked normally'
   }
 });
 
+// ---- deadly-loop round-1 finding (2): text content alone is not proof of
+// which tool produced it — only a REAL TaskList/TaskGet/TaskUpdate result
+// may reset the reconstructed task map, and "Task not found" drops only the
+// one stale id, never the whole map. ----
+
+function bashCall(tuid, command) {
+  return {
+    type: 'assistant',
+    message: { role: 'assistant', content: [{ type: 'tool_use', id: tuid, name: 'Bash', input: { command } }] },
+  };
+}
+
+test('EPOCH RESET regression: a Bash result that merely PRINTS "No tasks found" does not wipe the task map', () => {
+  const h = makeHome();
+  try {
+    const tp = h.writeTranscript([
+      taskUpdateEntry('toolu_u3', { taskId: '3', status: 'in_progress' }),
+      bashCall('toolu_b1', 'echo "No tasks found"'),
+      toolResult('toolu_b1', 'No tasks found'),
+    ]);
+    const r = testHook(HOOK, stopPayload(tp), { home: h.home });
+    assert.ok(isBlock(r), `a Bash result must not silence IDLE NEGLECT for task 3; stdout: ${r.stdout}`);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('EPOCH RESET regression: a TaskGet on a mistyped/stale id drops only that id, leaving other open tasks tracked', () => {
+  const h = makeHome();
+  try {
+    const tp = h.writeTranscript([
+      taskUpdateEntry('toolu_u3', { taskId: '3', status: 'in_progress' }),
+      taskUpdateEntry('toolu_u4', { taskId: '4', status: 'in_progress' }),
+      taskGetCall('toolu_g1', '3'),
+      toolResult('toolu_g1', 'Task not found'),
+    ]);
+    const r = testHook(HOOK, stopPayload(tp), { home: h.home });
+    assert.ok(isBlock(r), `task 4 must still be reported open; stdout: ${r.stdout}`);
+    assert.doesNotMatch(r.json.reason, /"3"/, 'task 3 (the stale id) must be dropped');
+  } finally {
+    h.cleanup();
+  }
+});
+
 // ---- SUBJECT UNKNOWN (0.117 field report): the UserPromptSubmit/Stop nudge
 // printed the bare task id where the subject should be, e.g.
 // `oldest in_progress subject: "3"`. ----

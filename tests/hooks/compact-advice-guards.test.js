@@ -292,6 +292,40 @@ test('findAdvice: R3A1/#29 — the real ALL-CAPS declaration still matches', () 
   assert.ok(advice.findAdvice('SAFE TO COMPACT NOW.').length);
 });
 
+// ------------------------------------------------------------- round-1 F2/F3
+// deadly-loop round-1 F2/A1-5/C1-3: activeDeclaration() false-blocked
+// conditional/meta phrasing that only DESCRIBES a future or rule-governed
+// declaration, not a present-tense recommendation.
+test('findAdvice: round-1 F2 — conditional/meta phrasing does not count as a declaration', () => {
+  assert.strictEqual(
+    advice.findAdvice('Safe to compact, but first let me write the progress file.').length, 0
+  );
+  assert.strictEqual(
+    advice.findAdvice('I will only say SAFE TO COMPACT after the handover file is written.').length, 0
+  );
+  assert.strictEqual(
+    advice.findAdvice('The guard fires when I write SAFE TO COMPACT, so I will hold it until the end.').length, 0
+  );
+  assert.strictEqual(advice.findAdvice('When CI is green: safe to compact.').length, 0);
+  assert.strictEqual(advice.findAdvice('The skill says to run /compact only after a handover.').length, 0);
+  assert.strictEqual(advice.findAdvice('We are nowhere near a good point to /compact.').length, 0);
+});
+
+test('findAdvice: round-1 F2 — genuine declarations in the same shapes still match', () => {
+  assert.ok(advice.findAdvice('✅ HANDOVER COMPLETE — SAFE TO COMPACT OR CLEAR NOW').length);
+  assert.ok(advice.findAdvice('Safe to compact now.').length);
+  assert.ok(advice.findAdvice('SAFE TO COMPACT\nsome trailer').length);
+  assert.ok(advice.findAdvice('Run /compact now.').length);
+});
+
+// deadly-loop round-1 F3: a declaration at the start of its own line, whose
+// preceding line does not end in sentence-terminal punctuation, must still
+// be treated as positioned (a line start is a line start).
+test('findAdvice: round-1 F3 — a declaration at the start of its own line (no terminal punctuation before it) matches', () => {
+  assert.ok(advice.findAdvice('All agents finished\nSafe to compact now.').length);
+  assert.ok(advice.findAdvice('All agents finished\n✅ Safe to compact now.').length);
+});
+
 // --------------------------------------------------------------- A1-CA-2
 test('Stop: a tokens-latch (firedVia:"tokens") fired below the pct threshold may still declare SAFE', () => withHome((h) => {
   const firedAt = T0 - 100000; // safely before every transcript timestamp

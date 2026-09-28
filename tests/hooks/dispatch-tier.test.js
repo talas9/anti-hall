@@ -13,6 +13,8 @@ const http = require('node:http');
 const path = require('node:path');
 const { testHook } = require('../helpers/spawn-hook.js');
 const { makeHome } = require('../helpers/fixtures.js');
+const { buildIdentityFixtures } = require('../helpers/git-fixtures.js');
+const dispatchTier = require('../../plugins/anti-hall/hooks/lib/dispatch-tier.js');
 
 const TRACKER = 'task-tracker.js';
 const HOOK = 'dispatch-tier.js';
@@ -108,6 +110,21 @@ test('REPO OVERRIDE: CLAUDE.md "no workspaces for real work" turns a workspace v
     assert.doesNotMatch(c, /→ workspace/, c);
     assert.ok(jevRows(h).some((r) => r.type === 'outcome' && r.id === 'dispatchTier' && r.outcome === 'repo-override-subagent'));
   } finally { h.cleanup(); fs.rmSync(cwd, { recursive: true, force: true }); }
+});
+
+// deadly-loop round-1 finding (4): noWorkspaceRepo's own hand-rolled `.git`
+// walk stopped at a SUBMODULE's own `.git` FILE, so it never reached the
+// superproject's CLAUDE.md doctrine. Fixed by routing through
+// companion/lib/identity.js#resolveContext's worktreeRoot (the same
+// canonical, submodule-aware resolver every other caller uses).
+test('noWorkspaceRepo: cwd inside a submodule reaches the SUPERPROJECT CLAUDE.md doctrine, not just the submodule\'s own', () => {
+  const fx = buildIdentityFixtures();
+  try {
+    fs.writeFileSync(path.join(fx.main, 'CLAUDE.md'), '- **NO WORKSPACES FOR REAL WORK** in this repo.\n');
+    assert.strictEqual(dispatchTier.noWorkspaceRepo(fx.cwds['main/libs/sub'], fx.home), true,
+      'a submodule cwd must still see the superproject doctrine');
+    assert.strictEqual(dispatchTier.noWorkspaceRepo(fx.main, fx.home), true);
+  } finally { fx.cleanup(); }
 });
 
 test('REPO OVERRIDE via setting jev.dispatchTierNoWorkspaceRepos="*"', () => {

@@ -50,7 +50,7 @@ function render(r) {
 }
 
 if (require.main === module) {
-  const home = process.env.HOME || os.homedir();
+  const home = require('../companion/lib/test-home-guard.js').resolveHome(process.env.HOME, process.env);
   const r = build(home);
   process.stdout.write((process.argv.includes('--json') ? JSON.stringify(r, null, 2) : render(r)) + '\n');
 }

@@ -19,6 +19,12 @@ function reconstructTasks(tail) {
   const taskMap = new Map();
   const resultIds = new Map();
   let maxCreated = 0;
+  // toolCallInfo: tool_use_id -> { name, taskId }, built from the assistant
+  // tool_use entries (which precede their tool_result in transcript order).
+  // Mirror task-guard.js: text content alone never proves WHICH tool
+  // produced a "No tasks found"/"Task not found" result (a Bash line, or a
+  // mistyped TaskGet id, must not wipe the whole map).
+  const toolCallInfo = new Map();
   for (const line of lines) {
     const t = line.trim();
     if (!t) continue;
@@ -32,14 +38,26 @@ function reconstructTasks(tail) {
       for (const it of c) {
         if (it && it.type === 'tool_result' && typeof it.tool_use_id === 'string') {
           const txt = typeof it.content === 'string' ? it.content : '';
-          // TASK-LIST EPOCH — mirror task-guard.js: "No tasks found" (TaskList)
-          // or "Task not found" (TaskGet/TaskUpdate) is direct proof the
-          // harness's task store no longer matches this reconstruction.
-          if (DD.isEpochResetText(txt)) {
+          // TASK-LIST EPOCH — mirror task-guard.js: "No tasks found" FROM a
+          // TaskList call (the store is empty NOW) is direct proof the
+          // harness's task store no longer matches this reconstruction. A
+          // "Task not found" FROM TaskGet/TaskUpdate only proves that ONE id
+          // is stale — drop only that id, never the whole map.
+          const call = toolCallInfo.get(it.tool_use_id);
+          const callName = call ? call.name : '';
+          if (callName === 'TaskList' && DD.isTaskListEmptyText(txt)) {
             taskMap.clear();
             provisional.clear();
             resultIds.clear();
             maxCreated = 0;
+          } else if ((callName === 'TaskGet' || callName === 'TaskUpdate') && DD.isTaskNotFoundText(txt)) {
+            const badId = call && call.taskId != null ? String(call.taskId) : null;
+            if (badId != null) {
+              taskMap.delete(badId);
+              for (const [tid, nid] of [...resultIds]) {
+                if (nid === badId) { resultIds.delete(tid); provisional.delete(tid); }
+              }
+            }
           }
           const m = txt.match(/^Task\s+#(\d+)\s+created\s+successfully/i);
           if (m && !resultIds.has(it.tool_use_id)) {
@@ -62,6 +80,14 @@ function reconstructTasks(tail) {
     }
     for (const tu of collectTU(entry)) {
       const name = tu.name || '';
+      if (tu.id) {
+        const inp0 = tu.input || {};
+        const taskId = inp0.taskId != null ? inp0.taskId
+                     : inp0.id != null ? inp0.id
+                     : inp0.task_id != null ? inp0.task_id
+                     : null;
+        toolCallInfo.set(tu.id, { name, taskId });
+      }
       if (name === 'TodoWrite') {
         const todos = tu.input && tu.input.todos;
         if (Array.isArray(todos)) {

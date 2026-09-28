@@ -128,7 +128,7 @@ function demandLine(res, opts) {
 // ---- metrics ---------------------------------------------------------------
 
 function metricsPath(home) {
-  return path.join(home || os.homedir(), '.anti-hall', METRICS_FILE);
+  return path.join(require('../../companion/lib/test-home-guard.js').resolveHome(home, process.env), '.anti-hall', METRICS_FILE);
 }
 
 function readMetrics(home) {
@@ -278,14 +278,15 @@ function maxNumericKey(map) {
 }
 module.exports.maxNumericKey = maxNumericKey;
 
-// isEpochResetText(text) -> true when a tool_result string is direct evidence
-// that the harness's OWN task store no longer matches whatever this hook
-// reconstructed from the transcript — i.e. a TASK-LIST EPOCH boundary
-// (restart, or a usage-limit resume that reset the native task list back to
-// "no tasks" / renumbered ids from 1). Two anchored shapes, mirroring the
-// "Task #N created successfully" match this file's callers already parse:
-//   - TaskList  -> "No tasks found"                (the store is empty NOW)
-//   - TaskGet / TaskUpdate -> "Task not found"      (an id we hold is stale)
+// isTaskListEmptyText(text) / isTaskNotFoundText(text) -> true when a
+// tool_result string is direct evidence that the harness's OWN task store no
+// longer matches whatever this hook reconstructed from the transcript — i.e.
+// a TASK-LIST EPOCH boundary (restart, or a usage-limit resume that reset the
+// native task list back to "no tasks" / renumbered ids from 1). Two anchored
+// shapes, mirroring the "Task #N created successfully" match this file's
+// callers already parse:
+//   - TaskList             -> "No tasks found"   (the store is empty NOW)
+//   - TaskGet / TaskUpdate -> "Task not found"    (an id we hold is stale)
 // Anchored at the start of the result text (after optional whitespace) so an
 // unrelated tool result that merely CONTAINS the phrase mid-sentence never
 // false-positives. Field: after a restart/resume the harness's task list
@@ -293,8 +294,22 @@ module.exports.maxNumericKey = maxNumericKey;
 // "Open tasks remain … id 3" from the PREVIOUS process's ids still sitting in
 // the scan window with no new "Task #N created" to trigger the existing
 // id-restart reset.
-function isEpochResetText(text) {
-  if (typeof text !== 'string') return false;
-  return /^\s*No\s+tasks\s+found\b/i.test(text) || /^\s*Task\s*(?:#\S+)?\s*not\s+found\b/i.test(text);
+//
+// deadly-loop round-1 finding (2): text content alone is NOT proof of which
+// tool produced it — a Bash command that happens to print "No tasks found",
+// or a TaskGet call for a mistyped id, must not wipe the WHOLE reconstructed
+// task map (silencing IDLE NEGLECT for every other still-open task). Callers
+// MUST pair these text checks with the tool_use_id -> tool name they
+// reconstructed from the transcript's own assistant tool_use entries:
+// isTaskListEmptyText only after confirming the result's tool_use_id names a
+// TaskList call; isTaskNotFoundText only after confirming TaskGet/TaskUpdate
+// — and even then a "Task not found" only drops that ONE id, never the
+// whole map (see task-guard.js parseTasksFromFile).
+function isTaskListEmptyText(text) {
+  return typeof text === 'string' && /^\s*No\s+tasks\s+found\b/i.test(text);
 }
-module.exports.isEpochResetText = isEpochResetText;
+function isTaskNotFoundText(text) {
+  return typeof text === 'string' && /^\s*Task\s*(?:#\S+)?\s*not\s+found\b/i.test(text);
+}
+module.exports.isTaskListEmptyText = isTaskListEmptyText;
+module.exports.isTaskNotFoundText = isTaskNotFoundText;

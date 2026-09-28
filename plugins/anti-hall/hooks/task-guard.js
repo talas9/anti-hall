@@ -691,6 +691,14 @@ function parseTasksFromFile(filePath) {
   // result map: tool_use_id -> numeric string id ("1", "2", ...)
   const resultIdMap = new Map(); // tool_use_id -> "N"
   let maxCreatedId = 0; // highest "Task #N created" in the current list epoch
+  // toolCallInfo: tool_use_id -> { name, taskId } for EVERY tool_use seen so
+  // far (built from the assistant entries, which precede their tool_result
+  // in transcript order) — lets the tool_result handling below tell a real
+  // TaskList/TaskGet/TaskUpdate result apart from an unrelated Bash result
+  // (or a mistyped TaskGet id) that merely CONTAINS "No tasks found"/"Task
+  // not found" in its own output. See dispatch-demand.js's header on
+  // isTaskListEmptyText/isTaskNotFoundText for the full rationale.
+  const toolCallInfo = new Map();
 
   for (const line of lines) {
     const trimmed = line.trim();
@@ -711,17 +719,29 @@ function parseTasksFromFile(filePath) {
       for (const item of content) {
         if (item && item.type === 'tool_result' && typeof item.tool_use_id === 'string') {
           const resultText = typeof item.content === 'string' ? item.content : '';
-          // TASK-LIST EPOCH (restart / usage-limit resume): "No tasks found"
-          // (TaskList on the now-empty store) or "Task not found" (TaskGet/
-          // TaskUpdate referencing an id from a PRIOR epoch) is direct proof
-          // the harness's task store no longer matches this reconstruction —
-          // drop every task seen so far so it can never be reported as still
-          // open. See dispatch-demand.js isEpochResetText for the full header.
-          if (require('./lib/dispatch-demand.js').isEpochResetText(resultText)) {
+          const dd = require('./lib/dispatch-demand.js');
+          const call = toolCallInfo.get(item.tool_use_id);
+          const callName = call ? call.name : '';
+          // TASK-LIST EPOCH (restart / usage-limit resume): a "No tasks
+          // found" result FROM TaskList (the store is empty NOW) is direct
+          // proof the harness's task store no longer matches this
+          // reconstruction — drop every task seen so far so it can never be
+          // reported as still open. A "Task not found" result FROM TaskGet
+          // or TaskUpdate only proves that ONE id is stale (it could be a
+          // simple typo) — drop only that id, never the whole map.
+          if (callName === 'TaskList' && dd.isTaskListEmptyText(resultText)) {
             taskMap.clear();
             provisionalMap.clear();
             resultIdMap.clear();
             maxCreatedId = 0;
+          } else if ((callName === 'TaskGet' || callName === 'TaskUpdate') && dd.isTaskNotFoundText(resultText)) {
+            const badId = call && call.taskId != null ? String(call.taskId) : null;
+            if (badId != null) {
+              taskMap.delete(badId);
+              for (const [tid, nid] of [...resultIdMap]) {
+                if (nid === badId) { resultIdMap.delete(tid); provisionalMap.delete(tid); }
+              }
+            }
           }
           const m = resultText.match(/^Task\s+#(\d+)\s+created\s+successfully/i);
           if (m && !resultIdMap.has(item.tool_use_id)) {
@@ -749,6 +769,20 @@ function parseTasksFromFile(filePath) {
     const toolUses = collectToolUses(entry);
     for (const tu of toolUses) {
       const name = tu.name || '';
+
+      // Record tool_use_id -> {name, taskId} for every call BEFORE the
+      // name-specific branches below, so the tool_result handling above
+      // (an earlier line in this same pass, since tool_use precedes its
+      // tool_result) can tell a TaskList/TaskGet/TaskUpdate result apart
+      // from an unrelated tool's result.
+      if (tu.id) {
+        const inp = tu.input || {};
+        const taskId = inp.taskId != null ? inp.taskId
+                     : inp.id != null ? inp.id
+                     : inp.task_id != null ? inp.task_id
+                     : null;
+        toolCallInfo.set(tu.id, { name, taskId });
+      }
 
       if (name === 'TodoWrite') {
         const todos = tu.input && tu.input.todos;

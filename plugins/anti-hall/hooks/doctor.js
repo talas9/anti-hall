@@ -1030,7 +1030,7 @@ function devswarmHookSelfTests() {
       const startupSamplingModPath = path.join(libDir, 'devswarm-startup-sampling.js');
       if (fs.existsSync(startupSamplingModPath)) {
         const sampling = require(startupSamplingModPath);
-        const n = sampling.countSamples(os.homedir());
+        const n = sampling.countSamples(require('../companion/lib/test-home-guard.js').resolveHome(undefined, process.env));
         infol(n + ' startup samples captured (paused detection needs ≥1)');
       }
     } catch (_) { /* fail-open: measurement reporting must never break doctor */ }
@@ -1047,7 +1047,7 @@ function devswarmHookSelfTests() {
         try { ({ devswarmRoot: devswarmRootFn2 } = require(livenessModPath2)); } catch (_) { devswarmRootFn2 = null; }
       }
       if (devswarmRootFn2) {
-        const p2 = path.join(devswarmRootFn2(os.homedir()), 'cron-missing-warned.jsonl');
+        const p2 = path.join(devswarmRootFn2(require('../companion/lib/test-home-guard.js').resolveHome(undefined, process.env)), 'cron-missing-warned.jsonl');
         let lineCount2 = 0;
         try { lineCount2 = fs.readFileSync(p2, 'utf8').split('\n').filter(Boolean).length; } catch (_) { lineCount2 = 0; }
         infol('mailbox-cron-missing warnings shown: ' + lineCount2 +
@@ -1492,7 +1492,7 @@ if (REPAIR_INGEST_ORPHANS) {
 // still has no handover on file).
 (function archivedChildStopMetricsSection() {
   let m = null;
-  try { m = require('../companion/lib/archived-child-metrics.js').readMetrics(os.homedir()); } catch (_) { m = null; }
+  try { m = require('../companion/lib/archived-child-metrics.js').readMetrics(require('../companion/lib/test-home-guard.js').resolveHome(undefined, process.env)); } catch (_) { m = null; }
   if (!m || !m.totals || !Object.keys(m.totals).length) return;
   head('archived-child-stop metrics (design B — report-only)');
   infol('re-registrations refused: ' + (m.totals['reregistration-refused'] || 0)
@@ -1633,7 +1633,7 @@ if (REPAIR_RESURRECTED) {
 // Counters from hooks/lib/dispatch-demand.js; full view: scripts/dispatch-report.js.
 (function dispatchDemandSection() {
   let d = null;
-  try { d = require('./lib/dispatch-demand.js').summary(os.homedir()); } catch (_) { d = null; }
+  try { d = require('./lib/dispatch-demand.js').summary(require('../companion/lib/test-home-guard.js').resolveHome(undefined, process.env)); } catch (_) { d = null; }
   if (!d) return;
   head('dispatch demand');
   const rate = d.complianceRate == null ? 'n/a' : (Math.round(d.complianceRate * 1000) / 10) + '%';
@@ -1641,7 +1641,7 @@ if (REPAIR_RESURRECTED) {
     ' (compliance ' + rate + ') · idle-neglect blocks ' + d.idleNeglectBlocks +
     ' — node scripts/dispatch-report.js');
   try {
-    const t = require('./lib/dispatch-tier.js').summary(os.homedir());
+    const t = require('./lib/dispatch-tier.js').summary(require('../companion/lib/test-home-guard.js').resolveHome(undefined, process.env));
     const fr = t.followRate == null ? 'n/a' : (Math.round(t.followRate * 1000) / 10) + '%';
     infol('jev dispatchTier: verdicts ' + (t.verdicts.workspace + t.verdicts.workflow + t.verdicts.subagent) +
       ' · followed ' + t.followed + ' · overridden ' + t.overridden + ' (follow rate ' + fr + ')');
@@ -1655,7 +1655,7 @@ if (REPAIR_RESURRECTED) {
 // reviewReminder setting is off, or nothing is currently due.
 (function jevReviewDueSection() {
   let cfg = null;
-  try { cfg = JSON.parse(fs.readFileSync(path.join(os.homedir(), '.anti-hall', 'jev.json'), 'utf8')); } catch (_) { cfg = null; }
+  try { cfg = JSON.parse(fs.readFileSync(path.join(require('../companion/lib/test-home-guard.js').resolveHome(undefined, process.env), '.anti-hall', 'jev.json'), 'utf8')); } catch (_) { cfg = null; }
   if (!cfg || cfg.enabled !== true) return;
   let reminderOn = true;
   try { reminderOn = require('./lib/settings.js').get('jev', 'reviewReminder', true) !== false; } catch (_) { reminderOn = true; }

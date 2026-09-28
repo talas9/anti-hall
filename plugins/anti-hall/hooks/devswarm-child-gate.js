@@ -92,6 +92,7 @@ const { readUnread } = require('../companion/lib/devswarm-inbox-cursor.js');
 const devswarmUnread = require('../companion/lib/devswarm-unread.js');
 // Shared Stop policy (Phase 5, #14) — stop_hook_active + stable-kind caps.
 const stopPolicy = require('./lib/stop-policy.js');
+const testHomeGuard = require('../companion/lib/test-home-guard.js');
 
 // RAW_CLI — the ABSOLUTE path to anti-hall's DevSwarm CLI wrapper, resolved
 // ONCE from this hook's own on-disk location (never a relative
@@ -886,7 +887,7 @@ function main() {
   // reason, then allowed to stop freely thereafter. Checked before the
   // heartbeat-report cap state is even read.
   {
-    const archivedGateHome = os.homedir();
+    const archivedGateHome = testHomeGuard.resolveHome(null, process.env);
     const archivedGateCwd = (payload && typeof payload.cwd === 'string' && payload.cwd) ? payload.cwd : process.cwd();
     let archivedStop = null;
     try { archivedStop = isArchivedChildStop(process.env, archivedGateHome, archivedGateCwd, sessionId); } catch (_) { archivedStop = null; }
@@ -927,11 +928,12 @@ function main() {
   // the stop, because THAT is exactly the case where a dead cron would
   // otherwise go unnoticed. Rides the SAME shared stop-policy budget as the
   // rest of this gate, under its own kind, so it can never itself hard-loop.
-  const cronWarn = cronMissingWarning(process.env, os.homedir(), now);
+  const cronGateHome = testHomeGuard.resolveHome(null, process.env);
+  const cronWarn = cronMissingWarning(process.env, cronGateHome, now);
   if (cronWarn) {
-    const cronDecision = stopPolicy.consume(os.homedir(), sessionId, 'child-gate', ['cron-missing'], MAX_BLOCKS, now);
+    const cronDecision = stopPolicy.consume(cronGateHome, sessionId, 'child-gate', ['cron-missing'], MAX_BLOCKS, now);
     if (cronDecision.block) {
-      recordCronMissingWarn(os.homedir(), now);
+      recordCronMissingWarn(cronGateHome, now);
       state.lastCheckAt = now;
       writeState(stateFile, state);
       emitBlock(cronWarn);
@@ -944,7 +946,7 @@ function main() {
     // Condition observed CLEARED (a fresh tick landed) -> reopen the budget
     // for the next time the cron actually goes missing, same convention as
     // every other kind's clear() call in this gate.
-    stopPolicy.clear(os.homedir(), sessionId, 'child-gate', ['cron-missing']);
+    stopPolicy.clear(cronGateHome, sessionId, 'child-gate', ['cron-missing']);
   }
 
   // defect E1 fix (root cause): episodeSince used to be `now - RESET_MS`

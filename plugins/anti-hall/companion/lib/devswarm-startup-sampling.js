@@ -36,12 +36,13 @@ const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
 const { devswarmRoot, livenessPathFor, isSafeId } = require('./liveness.js');
+const testHomeGuard = require('./test-home-guard.js');
 
 const DEFAULT_MAX_PROBE = 8;
 const PROBE_TIMEOUT_MS = 3000;
 const MAX_LOG_BYTES = 5 * 1024 * 1024; // 5MB, one rotated generation kept
 
-function homeOf(opts) { return (opts && opts.home) || os.homedir(); }
+function homeOf(opts) { return testHomeGuard.resolveHome(opts && opts.home, opts && opts.env); }
 
 function logsDir(home) { return path.join(home, '.anti-hall', 'logs'); }
 function samplesPath(home) { return path.join(logsDir(home), 'devswarm-startup-samples.ndjson'); }

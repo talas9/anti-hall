@@ -48,6 +48,7 @@ const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
 const { devswarmRoot, isSafeId } = require('./liveness.js');
+const testHomeGuard = require('./test-home-guard.js');
 
 const MAX_TEXT_BYTES = 2048;
 const MAX_POSTS_PER_DAY = 3;
@@ -55,7 +56,7 @@ const MAX_SHOWN = 5;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_TTL_MS = 7 * DAY_MS;
 
-function homeOf(opts) { return (opts && opts.home) || os.homedir(); }
+function homeOf(opts) { return testHomeGuard.resolveHome(opts && opts.home, opts && opts.env); }
 
 function noticesPath(home) { return path.join(devswarmRoot(home), 'maintainer-notices.jsonl'); }
 function cursorDir(home) { return path.join(devswarmRoot(home), 'maintainer-notice-cursor'); }

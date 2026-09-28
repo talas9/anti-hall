@@ -111,8 +111,17 @@ function noWorkspaceRepo(cwd, home) {
     }
   } catch (_) { /* fall through to detection */ }
   if (settingsGet('dispatchTierDetectNoWorkspaces', true, home) === false) return false;
-  // Walk up (bounded) to the first directory holding .git (file or dir),
-  // reading its CLAUDE.md / AGENTS.md for the doctrine exception.
+  // Walk up (bounded) to the repo root, reading CLAUDE.md / AGENTS.md at each
+  // level for the doctrine exception. The repo root is the OUTERMOST
+  // superproject (companion/lib/identity.js#resolveContext's worktreeRoot),
+  // not just the nearest `.git` entry — deadly-loop round-1 finding (4): a
+  // hand-rolled `fs.existsSync(path.join(dir, '.git'))` walk stopped at a
+  // SUBMODULE's own `.git` FILE, so it never climbed to the superproject
+  // whose CLAUDE.md actually carries the repo's "no workspaces" doctrine.
+  let root = null;
+  try {
+    root = require('../../companion/lib/identity.js').resolveContext(dir0, { home, missingPath: 'ancestor' }).worktreeRoot || null;
+  } catch (_) { root = null; }
   let dir = dir0;
   for (let i = 0; i < 8; i++) {
     for (const f of ['CLAUDE.md', 'AGENTS.md']) {
@@ -121,7 +130,7 @@ function noWorkspaceRepo(cwd, home) {
         if (NO_WS_RE.test(txt)) return true;
       } catch (_) { /* absent */ }
     }
-    if (fs.existsSync(path.join(dir, '.git'))) break;
+    if (root && dir === root) break;
     const up = path.dirname(dir);
     if (up === dir) break;
     dir = up;

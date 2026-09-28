@@ -51,14 +51,17 @@ const EXCLUDED_FILES = new Set([
 // guard.js. It is never loaded by a test process; the launcher's own tests
 // run it with an isolated HOME. The 0.111 lanes' real call sites were all
 // migrated to resolveHome().
-// 0.117 integration: +15 -> 330. All new call sites belong to brand-new
-// 0.117.0 feature files (DevSwarm Meeseeks step-plan tracking/supervision/
-// respawn, maintainer-notice, startup-state sampling, jev shadow-review
-// reminder, archived-child-stop metrics, dispatch-demand/dispatch-tier),
-// each with its own isolated-HOME test fixture (makeHome()/tmpHome()) per
-// the repo's tests-never-touch-real-home convention; none are new
-// unisolated production call sites.
-const BASELINE = 330;
+// 0.117 integration: the merge briefly added 15 new direct os.homedir() call
+// sites (DevSwarm Meeseeks maintainer-notice, startup-state sampling,
+// devswarm-child-gate's archived-child + cron-missing-warning blocks, six
+// doctor.js report-only sections, jev-review-reminder.js, dispatch-demand.js
+// metricsPath, and scripts/dispatch-report.js) and the baseline was raised to
+// 330 with no migration — a false justification (deadly-loop round-1 finding
+// 3/A1-7/C1-4): these ARE production code bypassing test-home-guard's
+// resolveHome(), same as any other unmigrated call site. All 15 were routed
+// through companion/lib/test-home-guard.js#resolveHome() in this fix, so the
+// baseline drops back to 315 (its pre-0.117-integration value).
+const BASELINE = 315;
 
 const HOMEDIR_CALL_RE = /\bos\s*\.\s*homedir\s*\(\s*\)/g;
 
