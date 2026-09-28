@@ -129,6 +129,27 @@ const LAUNCHER_MSG_BLOCK = [
   "cat > /tmp/m.md <<'EOF'\nprose\nEOF\n" + FPB + '\nEOF\n' + MSG_SEND,
   // unterminated
   "cat > /tmp/m.md <<'EOF'\n" + FPB + '\n' + MSG_SEND,
+  // F1 (P0): the exemption used a DENYLIST of forbidden targets, so a target
+  // outside the denylist but outside any temp/scratch dir too (the user's
+  // real git config dir) was wrongly exempted and its `[alias]`/`[trailer]`
+  // body written verbatim to git's real global config. Now allowlisted to
+  // temp dirs only, so this must fall back to a normal scan and block on the
+  // force-push alias body.
+  "cd ~/.config/git && cat > config <<'MSGEOF'\n[alias]\nx = !git push --force origin main\n[trailer \"ai\"]\nkey = Co-Authored-By\nMSGEOF\nnode ~/.anti-hall/bin/devswarm.js send --message-file config --to x",
+  // Same shape, no `[alias]`/`[trailer]` body — still not exempt (real home
+  // config dir, not temp), so the prose falls back to a normal scan; assert
+  // it still doesn't block for the WRONG (non-exemption) path by using a body
+  // containing a real force push instead of only prose.
+  "cd ~/.config/git && cat > config <<'MSGEOF'\n" + FPB + "\nMSGEOF\nnode ~/.anti-hall/bin/devswarm.js send --message-file config --to x",
+  // A1-1: a `.`/doubled-slash/`../` trick in the message-file TARGET must not
+  // dodge the forbidden-segment checks (.git/.anti-hall+bin) once resolved.
+  "cat > /tmp/a/./.git/config <<'EOF'\n" + FPB + "\nEOF\n" + SEND_TO('/tmp/a/./.git/config'),
+  "cat > /tmp//.git/config <<'EOF'\n" + FPB + "\nEOF\n" + SEND_TO('/tmp//.git/config'),
+  "cat > ~/.anti-hall/./bin/x <<'EOF'\n" + FPB + "\nEOF\n" + SEND_TO('~/.anti-hall/./bin/x'),
+  // Defense in depth: even when the target IS a temp path, a message body
+  // that itself looks like a config line (`[alias] x = !git push --force`)
+  // must still be scanned, not blanked away by the exemption.
+  "cat > /tmp/m.md <<'EOF'\n[alias]\nx = !git push --force origin main\nEOF\n" + SEND_TO('/tmp/m.md'),
 ];
 
 // Every deadly-loop round-1/round-2 git-guard probe (probe scripts gg-probes,
@@ -293,6 +314,20 @@ const BLOCK = [
   // `-F /dev/stdin` explicit-path spelling of stdin.
   {
     cmd: 'git commit -F /dev/stdin <<\'EOF\'\nsubject\n\nCo-Authored-By: Claude <noreply@anthropic.com>\nEOF',
+    reason: REASON.FILE,
+  },
+  // A1-4: `-F -` fed by a PIPE (no heredoc at all) from a producer whose
+  // trailer sits in its own quoted argument, with no heredoc and no real/
+  // `\n`-escaped newline directly in front of it in the raw command text —
+  // `heredocBodies` alone missed this (empty), and the whole-command scan
+  // requires a line-start anchor the printf format-string placeholder breaks.
+  {
+    cmd: "printf 'subject\\n\\n%s' \"Co-Authored-By: Claude <noreply@anthropic.com>\" | git commit -F -",
+    reason: REASON.FILE,
+  },
+  // Same shape via `--file=-`.
+  {
+    cmd: "printf '%s' \"Generated with [Claude Code](https://claude.com/claude-code)\" | git commit --file=-",
     reason: REASON.FILE,
   },
   // --- P0 REGRESSION REPROS (security review, reworked patch) ---
@@ -505,6 +540,12 @@ const LAUNCHER_WRITE_BLOCK = [
   "sed -i '' 's/a/b/' ~/.anti-hall/bin/devswarm.js",
   'dd if=/tmp/evil.js of=$HOME/.anti-hall/bin/devswarm.js',
   'cd ~/.anti-hall/bin && cat > devswarm.js <<\'EOF\'\nx\nEOF',
+  // A1-1: textual comparison was bypassable with a `.` segment or doubled
+  // slash that LAUNCHER_DIR_RE's regex did not normalize away. Both must
+  // still resolve to a `.anti-hall/bin` segment pair and block.
+  "cat > ~/.anti-hall/./bin/devswarm.js <<'EOF'\nx\nEOF",
+  "cat > ~/.anti-hall//bin/devswarm.js <<'EOF'\nx\nEOF",
+  "cat > foo/../.anti-hall/bin/devswarm.js <<'EOF'\nx\nEOF",
 ];
 const LAUNCHER_WRITE_ALLOW = [
   'node ~/.anti-hall/bin/devswarm.js roster',

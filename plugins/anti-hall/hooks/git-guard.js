@@ -44,6 +44,7 @@
 'use strict';
 
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const { HEREDOC_RE, basename, parseHeredocAt, SHELL_VERBS } = require('./lib/shell-scan.js');
 
@@ -566,7 +567,17 @@ function hasCmdSubstArg(rest) {
 // Canonical AI signatures (kept narrow to avoid false-blocking a human
 // co-author named "Assistant" or a doc that mentions "GPT-3"):
 // Anchored to the start of a line: a real `Co-authored-by:` trailer, not a
-// mid-sentence mention of the phrase in prose.
+// mid-sentence mention of the phrase in prose. (A1-4 considered widening this
+// anchor to "after a quote/=/\n" so it also matches a trailer sitting in its
+// own quoted shell argument - e.g. `printf '...%s' "Co-Authored-By: ..." |
+// git commit -F -`. That widened anchor false-blocked an UNRELATED quoted
+// mention anywhere in a commit-creating command line, e.g. `git log --grep
+// "Co-Authored-By: Claude" | wc -l && git commit -m "..."`. Instead, the
+// stdin-source extraction below (fileCommitMessages' `-F -` path) explicitly
+// pulls out the QUOTED LITERALS of the command that actually feeds that
+// stdin and tests each one on its own - which the line-start anchor already
+// matches correctly since each extracted literal starts its own string - so
+// this regex stays exactly as originally scoped.)
 // Accept BOTH the `:` and `=` separators: git's `--trailer` honors a
 // `key=value` form as well as `key: value`, so `Co-Authored-By=Claude <...>`
 // is a real self-credit trailer that must block exactly like the `:` form.
@@ -908,6 +919,36 @@ function extractHeredocBodies(cmd) {
   return bodies;
 }
 
+// A1-4: every single/double-QUOTED string literal appearing anywhere in the
+// raw command, as its own standalone candidate. Used ONLY as an additional
+// stdin-body source for `-F -`/`--file=-`/`-F /dev/stdin` below (see that
+// call site) — a producer piped into that stdin can carry the message as a
+// SEPARATE quoted argument with no heredoc and no real/`\n`-escaped newline
+// directly before it (`printf '...%s' "Co-Authored-By: Claude <...>" | git
+// commit -F -`). Each returned literal is its own string, so testing it with
+// the existing line-start-anchored SELF_CREDIT_* regexes already matches
+// correctly (its content starts a fresh string) without widening those
+// regexes' anchor globally — which would false-block an unrelated quoted
+// mention elsewhere on the same command line (e.g. `git log --grep
+// "Co-Authored-By: Claude"`). Deliberately naive (no escape handling): it can
+// only ADD more scanned text, never remove or reinterpret an existing scan.
+function extractQuotedLiterals(cmd) {
+  const out = [];
+  let i = 0;
+  while (i < cmd.length) {
+    const c = cmd[i];
+    if (c === "'" || c === '"') {
+      const j = cmd.indexOf(c, i + 1);
+      if (j < 0) break;
+      out.push(cmd.slice(i + 1, j));
+      i = j + 1;
+    } else {
+      i++;
+    }
+  }
+  return out;
+}
+
 // EXACT-SHAPE exemption for one legitimate command: writing a mailbox message
 // file with a single-quoted heredoc and sending it with the anti-hall launcher.
 // Base scans heredoc body lines as commands, so PROSE in the message (e.g.
@@ -930,26 +971,95 @@ function extractHeredocBodies(cmd) {
 const PLAIN_PATH_RE = /^(?:~\/)?[A-Za-z0-9._\/+,@%:-]+$/;
 const PLAIN_WORD_RE = /^[A-Za-z0-9._\/+,@%:-]+$/;
 const GIT_FILE_BASENAMES = new Set(['.gitconfig', '.gitmodules', '.gitattributes']);
+// Path segments that make a resolved target ineligible for the mailbox
+// exemption even when it sits under a temp dir - a git config/hooks dir, a
+// git-config-named dotfile parent, or anti-hall's own trusted launcher dir.
+const FORBIDDEN_TARGET_SEGMENTS = new Set(['.git', 'hooks', '.config', 'git']);
 
 function isPlainPath(p) {
   if (!PLAIN_PATH_RE.test(p)) return false;
   return !p.split('/').includes('..');
 }
 
-// Lexical check of the path the heredoc writes to: FILE, resolved against the
-// optional `cd` dir and the hook payload's cwd (both only when relative).
-function isAllowedMessageTarget(file, cdDir, cwd) {
-  const parts = [];
-  if (!file.startsWith('/') && !file.startsWith('~/')) {
-    if (cdDir && !cdDir.startsWith('/') && !cdDir.startsWith('~/') && cwd) parts.push(cwd);
-    if (cdDir) parts.push(cdDir);
-    else if (cwd) parts.push(cwd);
+function safeHomedir() {
+  try {
+    // resolveHome() (companion/lib/test-home-guard.js) is the canonical home-
+    // directory fallback every shared helper uses - byte-identical in
+    // production, but refuses under `node --test` if it would resolve to the
+    // REAL developer home instead of an isolated fixture.
+    return require('../companion/lib/test-home-guard.js').resolveHome() || '';
+  } catch (_) {
+    return '';
   }
-  parts.push(file);
-  const segs = parts.join('/').split(/[\\/]+/).filter(Boolean).map((s) => s.toLowerCase());
+}
+
+function expandTildePath(p, home) {
+  if (p === '~') return home || p;
+  if (p.startsWith('~/')) return home ? home.replace(/[\\/]+$/, '') + '/' + p.slice(2) : p;
+  return p;
+}
+
+// Resolve `raw` to an absolute, NORMALIZED posix path: expand a leading `~`
+// via the resolved home directory, then (if still relative) join against `cdDir` (itself
+// tilde-expanded) when given, else `cwd`. path.posix.normalize collapses any
+// `.`/`..` segment so `~/.anti-hall/./bin/x`, `~/.anti-hall//bin`, and
+// `foo/../bin` tricks cannot dodge a segment check that runs on the result
+// (A1-1). Returns null when the path cannot be made absolute at all - callers
+// treat that as "not allowed" (deny by default), never a guess.
+function resolveGuardPath(raw, cdDir, cwd) {
+  if (typeof raw !== 'string' || !raw) return null;
+  const home = safeHomedir();
+  let base = expandTildePath(raw.replace(/\\/g, '/'), home);
+  if (!base.startsWith('/')) {
+    let dir = '';
+    if (cdDir) {
+      dir = expandTildePath(String(cdDir).replace(/\\/g, '/'), home);
+      if (!dir.startsWith('/') && cwd) {
+        dir = String(cwd).replace(/\\/g, '/').replace(/\/+$/, '') + '/' + dir;
+      }
+    } else if (cwd) {
+      dir = String(cwd).replace(/\\/g, '/');
+    }
+    if (!dir || !dir.startsWith('/')) return null;
+    base = dir.replace(/\/+$/, '') + '/' + base;
+  }
+  return path.posix.normalize(base);
+}
+
+// True when `absPath` (already resolved/normalized) sits under a temp/scratch
+// root: os.tmpdir() itself, or one of the well-known OS temp roots (Linux
+// /tmp, macOS's /private/tmp alias and its per-process /var/folders dirs).
+// This is the documented location the real mailbox flow writes a message file
+// to (a disposable scratch/temp path) - never the user's home config, a repo
+// dir, or anti-hall's own installed state.
+function isTempPath(absPath) {
+  if (!absPath || !absPath.startsWith('/')) return false;
+  const roots = ['/tmp/', '/private/tmp/', '/var/folders/'];
+  let tmp = '';
+  try {
+    tmp = os.tmpdir() || '';
+  } catch (_) { /* fall through */ }
+  if (tmp) {
+    const t = (tmp.endsWith('/') ? tmp : tmp + '/').replace(/\\/g, '/');
+    if (!roots.includes(t)) roots.push(t);
+  }
+  return roots.some((root) => absPath.startsWith(root));
+}
+
+// ALLOWLIST check of the path the heredoc writes to: FILE, resolved against
+// the optional `cd` dir and the hook payload's cwd (both only when relative),
+// normalized to collapse `.`/`..`. Exempt ONLY when the resolved target lives
+// under a temp/scratch dir (isTempPath) AND carries none of the forbidden
+// segments AND its basename is not a git-config filename. Anything else -
+// including a target under the user's real config/home dirs - is NOT exempt,
+// so the body is scanned exactly like ordinary heredoc text.
+function isAllowedMessageTarget(file, cdDir, cwd) {
+  const resolved = resolveGuardPath(file, cdDir, cwd);
+  if (!isTempPath(resolved)) return false;
+  const segs = resolved.split('/').filter(Boolean).map((s) => s.toLowerCase());
   if (!segs.length) return false;
   for (let i = 0; i < segs.length; i++) {
-    if (segs[i] === '.git' || segs[i] === 'hooks') return false;
+    if (FORBIDDEN_TARGET_SEGMENTS.has(segs[i])) return false;
     if (segs[i] === '.anti-hall' && segs[i + 1] === 'bin') return false;
   }
   return !GIT_FILE_BASENAMES.has(segs[segs.length - 1]);
@@ -1021,6 +1131,15 @@ function blankLauncherMessageHeredoc(cmd, cwd) {
   const send = /^[ \t]*node[ \t]+~\/\.anti-hall\/bin\/devswarm\.js[ \t]+send((?:[ \t].*)?)$/.exec(rest[0]);
   if (!send) return cmd;
   if (!isAllowedSendArgs(send[1], file)) return cmd;
+  // Defense in depth: a message file never legitimately contains a `key =
+  // value` config line, so even an exempt body is still run through
+  // scanConfigLines. A hit withdraws the exemption entirely (returns `cmd`
+  // unchanged) rather than blanking a body that could carry a config-value
+  // force-push/alias smuggle - scanCommand's own unconditional heredoc-body
+  // scan (extractHeredocBodies + scanConfigLines, below) then sees the intact
+  // body and blocks it normally.
+  const bodyText = lines.slice(idx + 1, end).join('\n');
+  if (scanConfigLines(bodyText, 0)) return cmd;
   const out = lines.slice();
   for (let j = idx + 1; j < end; j++) out[j] = '';
   return out.join('\n');
@@ -1072,6 +1191,36 @@ function scanConfigLines(text, d) {
 const LAUNCHER_DIR_RE = /\.anti-hall[\\/]+bin(?:[\\/]|$)/i;
 const COPY_VERBS = new Set(['cp', 'mv', 'install', 'ln', 'rsync']);
 
+// Normalize `raw` (tilde-expanded, joined to `cdDir` when relative) WITHOUT
+// requiring the result to be absolute - unlike resolveGuardPath above, this
+// stays usable for a bare relative target with no cd context. Still collapses
+// `.`/`..` via path.posix.normalize, so `.anti-hall/./bin/x`,
+// `.anti-hall//bin`, and `foo/../.anti-hall/bin/x` all normalize to the same
+// segments a plain `.anti-hall/bin/x` would (A1-1).
+function normalizeGuardPath(raw, cdDir) {
+  if (typeof raw !== 'string' || !raw) return '';
+  const home = safeHomedir();
+  let base = expandTildePath(raw.replace(/\\/g, '/'), home);
+  if (!base.startsWith('/') && cdDir) {
+    const dir = expandTildePath(String(cdDir).replace(/\\/g, '/'), home);
+    base = dir.replace(/\/+$/, '') + '/' + base;
+  }
+  return path.posix.normalize(base);
+}
+
+// True when the normalized path has a `.anti-hall/bin` segment pair anywhere
+// in it (case-insensitive) - the actual check writesLauncherDir enforces;
+// LAUNCHER_DIR_RE below stays only as a cheap first-pass filter.
+function hasAntiHallBinSegment(p, cdDir) {
+  if (!p) return false;
+  const normalized = normalizeGuardPath(p, cdDir);
+  const segs = normalized.split('/').filter(Boolean).map((s) => s.toLowerCase());
+  for (let i = 0; i < segs.length; i++) {
+    if (segs[i] === '.anti-hall' && segs[i + 1] === 'bin') return true;
+  }
+  return false;
+}
+
 function writesLauncherDir(tokens, ev, cdDir) {
   const targets = [];
   for (let i = 0; i < tokens.length; i++) {
@@ -1096,8 +1245,7 @@ function writesLauncherDir(tokens, ev, cdDir) {
   if ((ev.verb === 'sed' || ev.verb === 'perl') && ops.some((w) => /^-(?:[a-zA-Z]*i|-in-place)/.test(w))) {
     targets.push(...operands);
   }
-  return targets.some((p) => LAUNCHER_DIR_RE.test(p) ||
-    (cdDir && p && !/^[/~$]/.test(p) && LAUNCHER_DIR_RE.test(cdDir + '/' + p)));
+  return targets.some((p) => LAUNCHER_DIR_RE.test(p) || hasAntiHallBinSegment(p, cdDir));
 }
 
 // Code strings passed to a call: `execSync('git push --force')`,
@@ -1345,7 +1493,10 @@ function scanCommand(cmd, depth) {
       for (const spec of fileSpecs) {
         let text = null;
         if (spec === '-' || spec === '/dev/stdin') {
-          if (heredocBodies.length) text = heredocBodies.map((h) => h.body).join('\n');
+          const candidates = [];
+          if (heredocBodies.length) candidates.push(...heredocBodies.map((h) => h.body));
+          candidates.push(...extractQuotedLiterals(cmd));
+          if (candidates.length) text = candidates.join('\n');
         } else {
           let filePath = spec;
           if (!path.isAbsolute(filePath) && lastCdDir) {
