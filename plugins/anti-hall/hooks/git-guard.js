@@ -605,7 +605,7 @@ const SELF_CREDIT_GH_BODY = /claude\.com\/claude-code|chatgpt\.com\/codex|<norep
 // `rebase -x` payload, `merge -m`. A trailer line anywhere in a command that
 // creates a commit is blocked. Line-anchored regexes only (never the bare-link
 // GH_BODY marker), so a mid-line mention in prose/grep stays allowed.
-const COMMIT_CREATING = new Set(['commit', 'merge', 'rebase', 'cherry-pick', 'revert', 'am', 'pull', 'commit-tree']);
+const COMMIT_CREATING = new Set(['commit', 'merge', 'rebase', 'cherry-pick', 'revert', 'am', 'pull', 'commit-tree', 'tag']);
 
 function hasSelfCredit(text) {
   if (!text) return false;
@@ -1434,8 +1434,11 @@ function scanCommand(cmd, depth) {
 
     // --- Rule 1: self-credit in an inline commit message ---
     // merge / commit-tree take the same -m / -F message flags; interpret-trailers
-    // takes --trailer and is used to stamp a message file before `commit -F`.
-    if (sub === 'commit' || sub === 'merge' || sub === 'commit-tree' || sub === 'interpret-trailers') {
+    // takes --trailer and is used to stamp a message file before `commit -F`;
+    // tag takes the same -m / -F flags for an annotated tag's message, which is
+    // just as much an AI self-credit vector (e.g. `git tag -a v1.0 -m "...
+    // Co-Authored-By: Claude ..."`).
+    if (sub === 'commit' || sub === 'merge' || sub === 'commit-tree' || sub === 'interpret-trailers' || sub === 'tag') {
       // Conservative block on a `-c trailer.<name>.key=<self-credit>` remap that
       // would emit a Co-Authored-By / Generated-with trailer from a benign-looking
       // custom token, dodging the value scan below.

@@ -48,6 +48,20 @@ const BLOCK = {
   'gh pr merge --subject/--body link': 'gh pr merge 5 --squash --subject "x" --body "via claude.com/claude-code"',
   'gh pr create --body-file <file>': `gh pr create --title t --body-file ${creditFile}`,
   'gh pr create --body-file - heredoc': `gh pr create --title t --body-file - <<'EOF'\nbody\n\n${CR}\nEOF`,
+  // deadly-loop round-1 finding A1-4: two separate -m flags, the second one a
+  // pure trailer (`git commit -m <subject> -m <trailer>` — the common real-
+  // world shape, since git joins multiple -m values with a blank line).
+  'two separate -m flags, second is the trailer': `git commit -m "fix: x" -m "${CR}"`,
+  // A1-4: ANSI-C `$'...'` quoting expands `\n` to a REAL newline before git
+  // ever sees the string — must still block.
+  'ANSI-C $\'...\\n...\' quoting': `git commit -m $'fix\\n\\n${CR}'`,
+  // A1-4: a shell variable assigned (with a literal `\n` escape) in the SAME
+  // command that then feeds `git commit -m "$var"`.
+  'variable assigned in the same command with \\n escape': `msg="fix\\n${CR}"; git commit -m "$msg"`,
+  // A1-4: `git tag -m` / `-F` take the same message flags as `commit`/`merge`
+  // for an annotated tag's message — just as much a self-credit vector.
+  'git tag -a -m': `git tag -a v1.0 -m "release\n\n${CR}"`,
+  'git tag -F <file>': `git tag -a v1.0 -F ${creditFile}`,
 };
 
 for (const [name, cmd] of Object.entries(BLOCK)) {
@@ -66,6 +80,11 @@ const ALLOW = {
   'rebase without credit': 'git rebase -x "npm test" HEAD~3',
   'gh pr merge clean': 'gh pr merge 5 --squash --body "Fixes #4"',
   'trailer text in a non-commit command': `printf 'x\\n\\n${CR}\\n' > notes.txt`,
+  // A1-4: a non-commit-creating command (e.g. `git log --grep`) that merely
+  // QUOTES the trailer phrase (in a grep pattern, not a message it writes)
+  // must stay allowed, even alongside an unrelated clean commit.
+  'non-commit grep quoting the trailer phrase': `git log --grep "${CR}" | wc -l`,
+  'git tag clean message': `git tag -a v1.0 -m "release 1.0"`,
 };
 
 for (const [name, cmd] of Object.entries(ALLOW)) {
