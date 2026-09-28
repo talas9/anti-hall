@@ -1591,7 +1591,14 @@ test('SUBMODULE: cwd inside a submodule -> progress/history key on the SUPERPROJ
     assert.ok(!fs.existsSync(wrongDir), `must not create a progress dir inside the submodule toplevel: ${wrongDir}`);
   } finally {
     h.cleanup();
-    if (fixture) fs.rmSync(fixture.scratchDir, { recursive: true, force: true });
+    // Best-effort cleanup: a submodule .git tree in TMPDIR can transiently
+    // race macOS filesystem indexing on rmdir (ENOTEMPTY) after Node's own
+    // retry budget is exhausted. Same try/catch + retry convention already
+    // used by the sibling submodule fixtures (devswarm-child-turn-submodule
+    // -worktreepath.test.js, devswarm-parent-gate-submodule-parity.test.js,
+    // devswarm-fleet-d56bfaac2da0.test.js) — this fixture copied their shape
+    // but not this part of the cleanup.
+    if (fixture) { try { fs.rmSync(fixture.scratchDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }); } catch (_) {} }
   }
 });
 
@@ -1615,6 +1622,8 @@ test('SUBMODULE: cwd inside a submodule with NO superproject progress -> block n
     assert.ok(!r.json.reason.includes(wrongPath), `reason must NOT point at the submodule-toplevel path ${wrongPath}; got ${r.json.reason}`);
   } finally {
     h.cleanup();
-    if (fixture) fs.rmSync(fixture.scratchDir, { recursive: true, force: true });
+    // Best-effort cleanup: same macOS rmdir(ENOTEMPTY) race as the sibling
+    // SUBMODULE test above — see its comment for the full citation.
+    if (fixture) { try { fs.rmSync(fixture.scratchDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }); } catch (_) {} }
   }
 });
