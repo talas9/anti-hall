@@ -177,11 +177,14 @@ Modes:
 1. Pick the mode from the user's words:
    - "is anti-hall up to date" / "check for an update" → `--check`
    - "update" / "upgrade anti-hall" → full update
-2. The helper is a `node` script (a state change — it pulls and may copy into the
-   cache), so **delegate it to a Haiku subagent** (`model:"haiku"`) — do not run it
-   inline in the coordinator (the command-guard blocks heavy commands on the main
-   thread; an execution-shaped spawn with no explicit model also trips
-   model-routing-guard's strict-mode block). Brief the subagent to run exactly one of:
+2. The helper is a `node` script (a state change — it pulls, may copy into the
+   cache, and runs migrations), so **delegate it to a Sonnet subagent**
+   (`model:"sonnet"`) — never Haiku (the owner's model-routing floor requires at
+   least `sonnet` for deploy/migration-shaped work; `update.js` runs migrations)
+   — and do not run it inline in the coordinator (the command-guard blocks heavy
+   commands on the main thread; an execution-shaped spawn with no explicit model
+   also trips model-routing-guard's strict-mode block). Brief the subagent to run
+   exactly one of:
    ```
    node "$HOME/.claude/plugins/marketplaces/anti-hall/plugins/anti-hall/skills/update/scripts/update.js" --check
    node "$HOME/.claude/plugins/marketplaces/anti-hall/plugins/anti-hall/skills/update/scripts/update.js"
@@ -241,8 +244,9 @@ Modes:
      alone; the session might be running outside DevSwarm). If inside a
      DevSwarm session, run its `how` command
      (`node companion/install-devswarm-supervisor.js`) regardless of the
-     capability scan's `active` value — delegate to a **Haiku subagent**
-     (`model:"haiku"`), never inline (it's a `node` script that writes a
+     capability scan's `active` value — delegate to a **Sonnet subagent**
+     (`model:"sonnet"`), never Haiku (matches the model-routing floor for
+     deploy/install-shaped work), never inline (it's a `node` script that writes a
      launchd/systemd/cron job; the command-guard blocks heavy commands on the
      main thread). The installer is idempotent (`launchctl unload && load` on
      macOS / systemd reload on Linux), so this both first-installs when absent
@@ -261,8 +265,9 @@ Modes:
      in the SAME `isDevswarmActive(process.env)` branch. When inside a DevSwarm
      session, also run its `how` command
      (`node companion/install-devswarm-ingest.js`) regardless of the scan's
-     `active` value — delegate to a **Haiku subagent** (`model:"haiku"`), never
-     inline (it's a `node` script that writes a launchd/systemd/cron unit; the
+     `active` value — delegate to a **Sonnet subagent** (`model:"sonnet"`),
+     never Haiku (matches the model-routing floor for deploy/install-shaped
+     work), never inline (it's a `node` script that writes a launchd/systemd/cron unit; the
      command-guard blocks heavy commands on the main thread). It is idempotent
      (`launchctl unload && load` on macOS / `systemctl --user daemon-reload` +
      `restart` on Linux), so it first-installs when absent and refreshes an
