@@ -6,6 +6,15 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.116.1 (2026-09-28)
+
+### Fixed
+
+- **wake-watch: no more false "+N new mail" wake after a version handoff, or when an older hook rewrites the mailbox summary.** A counter with no recorded history (an older seen-file predating it, or none at all) was diffed against a fabricated 0 baseline on the very next arm, producing an immediate false wake for history the watcher never actually had. That counter is now seeded from its own first live observation instead. A related flap: the broadcast channel's bucket is now chosen per row (the first bucket whose row actually carries a `total`), matching how the primary snapshot picks it, instead of falling through per field — an older build rewriting the summary without one field no longer flips the channel onto an unrelated, stale bucket and re-fires a false wake on the next new-build rewrite. The seen-file merge also now preserves any keys a newer build wrote that this build doesn't own, instead of dropping them on rewrite.
+- **Handoff tests reap their child processes.** The handoff-forwarding test suite was leaking orphaned watcher processes; it now reaps its own children.
+- **The update skill runs `update.js` on a sonnet subagent**, matching the model-routing floor instead of a heavier default.
+- **The post-handover new-work gate nudge skips scheduled housekeeping prompts** (a mailbox-wake tick, a DevSwarm peer-check tick, a broadcast bug-sweep tick) — these fire on every prompt and can't act on a "park this work" nudge, so gating them was pure noise. Real user prompts are unaffected. A new `autoHandover.gateHousekeepingMarkers` setting adds extra markers on top of the built-in defaults.
+
 ## 0.116.0 (2026-09-27)
 
 ### Added
