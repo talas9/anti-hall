@@ -224,6 +224,26 @@ test('8b211241bbe9 R2: a fresh register REFUSES an id carrying a reserved cursor
   } finally { rm(home); rm(repo); }
 });
 
+test('0.117.1 P2 (D-system-sender-not-reserved): a fresh register REFUSES the exact id "system"', () => {
+  const home = tmpHome(); const repo = gitRepo('reserved-system');
+  try {
+    const ctx = { home, cwd: repo, env: {}, backend: be2(), now: Date.now(), instanceNonce: 'anc:1:1' };
+    const r = cli.cmdRegister('system', { worktree: [repo], session: ['s'] }, ctx);
+    assert.strictEqual(r.ok, false, '"system" must be refused: ' + JSON.stringify(r).slice(0, 160));
+    assert.strictEqual(r.reason, 'reserved-id-token', 'and refused with a NAMED reason, not a generic failure');
+  } finally { rm(home); rm(repo); }
+});
+
+test('0.117.1 P2: a legitimate id that merely CONTAINS "system" as a substring still registers', () => {
+  const home = tmpHome(); const repo = gitRepo('reserved-system-substr');
+  try {
+    const ctx = { home, cwd: repo, env: {}, backend: be2(), now: Date.now(), instanceNonce: 'anc:1:1' };
+    const r = cli.cmdRegister('ecosystem-service', { worktree: [repo], session: ['s'] }, ctx);
+    assert.notStrictEqual(r.ok, false,
+      'an id merely containing "system" is legitimate and must still register: ' + JSON.stringify(r).slice(0, 160));
+  } finally { rm(home); rm(repo); }
+});
+
 test('8b211241bbe9 R2: a legitimate dotted id still registers', () => {
   const home = tmpHome(); const repo = gitRepo('dotted');
   try {

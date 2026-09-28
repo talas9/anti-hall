@@ -23,16 +23,30 @@ reproducing test before the fix.
   `cwd` when the transcript path is absent, with no change to which session a scratchpad
   belongs to (still scoped strictly to `session_id`).
 - **A child's first-ever `heartbeat --summary` (before any `register`) was silently
-  dropped.** `cmdHeartbeat`'s mesh-broadcast ownership check required a pre-existing
-  registry row for the target id before considering any ownership leg; a workspace's very
-  first interaction is often a direct `heartbeat <id> --summary ...` with no prior
-  `register`, so the broadcast was refused `caller-not-registered` and never reached the
-  shared store — `devswarm-child-gate.js`'s Stop gate then kept re-prescribing the same
-  heartbeat forever. `broadcastFamilyOwns` gained a first-claim leg: a cwd-resolved caller
-  (never a forgeable `DEVSWARM_BUILDER_ID` declaration) may claim an id with no registry
-  row, no descriptor and no prior heartbeat. Also: a dropped `--summary` now carries a
-  plain top-level `note: 'summary NOT recorded: <reason>'` instead of only a nested
-  `dropped`/`dropReason` pair that was easy to miss.
+  dropped — then the first fix for that opened an impersonation hole.** `cmdHeartbeat`'s
+  mesh-broadcast ownership check required a pre-existing registry row for the target id
+  before considering any ownership leg; a workspace's very first interaction is often a
+  direct `heartbeat <id> --summary ...` with no prior `register`, so the broadcast was
+  refused `caller-not-registered` and never reached the shared store —
+  `devswarm-child-gate.js`'s Stop gate then kept re-prescribing the same heartbeat
+  forever. The first cut of the fix gave `broadcastFamilyOwns` a first-claim leg that
+  granted ownership of ANY never-registered id to ANY cwd-resolved caller — which let an
+  unrelated caller impersonate a sibling's FUTURE id and lock the real owner out once
+  claimed (review finding B-a0-impersonation). First-claim now additionally requires
+  GROUND TRUTH: the DevSwarm app's own database (`builderForWorktree`, the same
+  ground-truth reader the register-path app-archive guard already trusts) must name a
+  builder for the caller's own resolved worktree whose id is exactly the id being
+  claimed — a bare `DEVSWARM_BUILDER_ID` declaration is never sufficient proof by itself.
+  No app-DB match (DB off/unreadable, no builder row for the worktree, or a different
+  builder id) fails closed, same as any other refusal. Also: a dropped `--summary` now
+  carries a plain top-level `note: 'summary NOT recorded: <reason>'` instead of only a
+  nested `dropped`/`dropReason` pair that was easy to miss.
+- **A workspace could register itself with the exact id `system`.** Mesh code reads a
+  row's `sender`/`from` field to attribute a message; a workspace registered as `system`
+  would make its own outbound rows indistinguishable from a genuine system-authored one.
+  `'system'` is now a reserved EXACT id (never a substring match — an id that merely
+  *contains* "system", e.g. `ecosystem-service`, still registers normally) on a fresh
+  `register`, refused the same way the existing reserved-token ids are.
 - **`devswarm.js nudge <id>` gave no reason for "poke-exhausted."** A failing poke (e.g.
   the session's channel is unreachable) was silently swallowed; `pokeOrEscalate` now
   persists the failure as `lastNudgeError` (carried across sweep ticks) and, once attempts

@@ -1142,39 +1142,70 @@ function ownershipRefusalCause(callerKind, ownEntry) {
 //        dropped"): `id` has NO registry row AT ALL (a child's very first
 //        interaction is often a direct `heartbeat <id> --summary ...`, no
 //        prior `register`) — a strictly WEAKER precondition than (a3), which
-//        already requires a row to exist. Owned when `callerKind ===
-//        'resolved'` (cwd-verified ground truth, never a forgeable
-//        `DEVSWARM_BUILDER_ID` declaration) AND no descriptor AND no
-//        PRE-EXISTING heartbeat for `id` — nothing anywhere claims `id` yet,
-//        so there is nothing to impersonate.
+//        already requires a row to exist.
+//   0.117.1 ROUND 2 FIX (P0 B-a0-impersonation, field-reproduced): the FIRST
+//        cut of (a0) granted first-claim to ANY cwd-resolved caller for ANY
+//        never-registered id — that let an unrelated caller impersonate a
+//        sibling's FUTURE id (claim it before the real owner ever
+//        heartbeats it) and lock the real owner out once claimed.
+//        `callerKind === 'resolved'` alone proves WHERE the caller stands,
+//        never that it owns `id`. GROUND TRUTH is now also required: `id`
+//        must be a DevSwarm APP workspace (builder) whose worktreePath
+//        equals the CALLER's own resolved worktree — verified via the app
+//        DB reader (companion/lib/devswarm-app-db.js's `builderForWorktree`,
+//        the same ground-truth source the register-path app-archive guard
+//        already trusts). A bare DEVSWARM_BUILDER_ID declaration is NOT
+//        sufficient proof by itself (spoofable) — env is never consulted
+//        here at all; only cwd (ground truth) and the app DB (ground truth)
+//        decide. No match — app DB unreadable/off, no builder row for the
+//        caller's worktree, or that row's id differs from `id` — fails
+//        closed (return false): the summary is DROPPED with a `note`
+//        explaining why, exactly like any other refusal.
 //
 // FAIL-CLOSED in full: any throw, an unresolvable worktree, or a target id with
 // no registry row AND no (a0) match returns false, leaving the refusal exactly
 // as it was before this leg.
-function broadcastFamilyOwns(s, caller, id, home, ownEntry, cwd, callerSessionId, hadPriorHeartbeat, callerKind) {
+function broadcastFamilyOwns(s, caller, id, home, ownEntry, cwd, callerSessionId, hadPriorHeartbeat, callerKind, env) {
   try {
     const target = String(id);
     const rows = s.listRegistry() || [];
     const targetRow = rows.find((r) => r && String(r.id) === target) || null;
     if (!targetRow || !targetRow.worktreePath) {
-      // (a0) FIRST-EVER CLAIM (0.117.1 fix, field defect: a child's very
-      // FIRST interaction with its own id is often a direct `heartbeat <id>
-      // --summary ...` — no prior `register` call at all). No registry row
-      // for `id` exists ANYWHERE, so there is nothing to impersonate; this
-      // is a strictly WEAKER precondition than the existing (a3) placeholder
-      // leg below (which already requires no descriptor + no prior
-      // heartbeat, just for a row that happens to exist). Scoped to a
-      // cwd-resolved caller only (`callerKind === 'resolved'` — independently
-      // verified ground truth, never a forgeable `DEVSWARM_BUILDER_ID`
-      // declaration) so a caller cannot merely CLAIM to be some id via env;
-      // it must be standing in a real git worktree. Also requires no
-      // descriptor and no PRE-EXISTING heartbeat for `id` (same
-      // hadPriorHeartbeat signal (a3) uses) so a genuinely already-claimed-
-      // but-unregistered id (heartbeat file exists, descriptor exists, just
-      // no registry row) still falls through to the fail-closed default.
-      if (callerKind === 'resolved' && !hadPriorHeartbeat) {
+      // (a0) FIRST-EVER CLAIM, ground-truth rewrite (0.117.1 round 2, P0
+      // B-a0-impersonation). No registry row for `id` exists ANYWHERE — a
+      // child's very first interaction with its own id is often a direct
+      // `heartbeat <id> --summary ...`, no prior `register` call at all —
+      // but `callerKind === 'resolved'` alone only proves WHERE the caller
+      // stands, never that it owns `id`: the original cut granted first-claim
+      // to ANY cwd-resolved caller for ANY never-registered id, which let an
+      // unrelated caller impersonate a sibling's FUTURE id. Owned now only
+      // when ALL of: (1) `callerKind === 'resolved'` (independently verified
+      // ground truth, never a forgeable `DEVSWARM_BUILDER_ID` declaration);
+      // (2) no descriptor for `id` (evidence `id` was already claimed at
+      // some point — e.g. a tombstoned/re-homed registry row whose
+      // descriptor survived — still falls through to fail-closed); (3) the
+      // DevSwarm APP's own database (ground truth, companion/lib/
+      // devswarm-app-db.js's `builderForWorktree` — the same reader the
+      // register-path app-archive guard trusts) names a builder for the
+      // caller's own resolved worktree WHOSE id is exactly `id`. Any failure
+      // to establish (3) — app DB off/unreadable, no builder row for this
+      // worktree, or a builder id that differs from `id` — fails closed.
+      // `hadPriorHeartbeat` is deliberately NOT part of this gate any more:
+      // since `id` is a database PRIMARY KEY, at most ONE worktree can ever
+      // satisfy (3) for a given `id` — a prior heartbeat under `id` (from
+      // this same ground-truth-verified worktree, the only one that could
+      // ever have passed (3)) is not evidence of a DIFFERENT claimant, so
+      // gating on it only re-locks out the genuine owner on a retry.
+      if (callerKind === 'resolved') {
         try {
-          if (!readDescriptorFile(home, target)) return true;
+          if (readDescriptorFile(home, target)) return false;
+          const rawCwd0 = cwd || process.cwd();
+          const wt0 = resolveCallerWorktree(rawCwd0);
+          if (wt0) {
+            const appDb = require('../companion/lib/devswarm-app-db.js');
+            const builder = appDb.builderForWorktree({ home, env, worktreePath: wt0, now: Date.now() });
+            if (builder && String(builder.id) === target) return true;
+          }
         } catch (_) {}
       }
       return false;
@@ -2114,10 +2145,23 @@ function instCursorSafeId(id) {
 // further down this file, and a module-level array would evaluate it in its
 // temporal dead zone (proven: ReferenceError at load).
 const RESERVED_ID_TOKENS = ['#', '.seen-', '.inst-', '.nd-'];
+// RESERVED-EXACT IDS (0.117.1 P2, D-system-sender-not-reserved): unlike
+// RESERVED_ID_TOKENS above (a substring `includes()` scan — deliberately
+// broad, since those tokens are namespace SEPARATORS this file's own cursor
+// files use), 'system' is reserved as an EXACT id match only — a workspace
+// legitimately named e.g. "ecosystem-service" must keep working. Mesh
+// broadcast/heartbeat code reads a row's `sender`/`from` field to attribute a
+// message to a real workspace; if a workspace could register itself AS
+// 'system', its own outbound rows would be indistinguishable from a genuine
+// system-authored message any consumer trusts more. Refused on a FRESH
+// registration only, matching RESERVED_ID_TOKENS' own posture (an install
+// that already has such a row keeps working).
+const RESERVED_EXACT_IDS = ['system'];
 function reservedIdToken(id) {
   const v = String(id == null ? '' : id);
   for (const t of RESERVED_ID_TOKENS) { if (v.includes(t)) return t; }
   if (v.endsWith('.base')) return '.base';
+  if (RESERVED_EXACT_IDS.includes(v)) return v;
   return null;
 }
 function instanceCursorPath(home, id, shortNonce) {
@@ -9066,7 +9110,7 @@ function cmdHeartbeat(id, flags, ctx) {
           const callerSessionId = realSessionIdFrom(flags, ctx, id);
           const owns = caller === id
             || (ownEntry && ownEntry.id === id)
-            || broadcastFamilyOwns(s, caller, id, home, ownEntry, cwd, callerSessionId, hadPriorHeartbeat, callerInfo.kind);
+            || broadcastFamilyOwns(s, caller, id, home, ownEntry, cwd, callerSessionId, hadPriorHeartbeat, callerInfo.kind, ctx.env);
           if (!owns) {
             // A7: name WHICH leg failed instead of one generic message for
             // an unresolvable identity, an unregistered caller, AND a genuine
