@@ -199,6 +199,36 @@ function realpathOf(p) {
   return useNative ? fs.realpathSync.native(p) : fs.realpathSync(p);
 }
 
+// resolvesIntoLauncherBinDir(filePath, cwd) — true when filePath (literally,
+// or by resolving through a symlink) targets ~/.anti-hall/bin itself or
+// something inside it. DEFAULT_ALLOW's '.anti-hall/**' entry deliberately
+// keeps the REST of .anti-hall/** (handovers, progress, history, state)
+// writable by the coordinator; this check carves the launcher dir back out
+// of that allowlist (R3A1-3), mirroring the Bash-side block in git-guard.js.
+// Best-effort like that one: a literal-path match always fires; the realpath
+// check additionally catches a symlink already on disk, but an env var, a
+// glob, or a not-yet-existing symlink target is out of scope for a
+// path-string guard.
+function resolvesIntoLauncherBinDir(filePath, cwd) {
+  if (!filePath) return false;
+  let home;
+  try { home = os.homedir(); } catch (_) { home = process.env.HOME || process.env.USERPROFILE || ''; }
+  if (!home) return false;
+  const binDir = path.resolve(home, '.anti-hall', 'bin');
+  const normBin = binDir.replace(/\\/g, '/').replace(/\/+$/, '');
+  const base = cwd ? String(cwd) : process.cwd();
+  const abs = path.resolve(base, String(filePath));
+  const normAbs = abs.replace(/\\/g, '/');
+  if (normAbs === normBin || normAbs.startsWith(normBin + '/')) return true;
+  try {
+    const realAbs = realpathOf(abs).replace(/\\/g, '/');
+    let realBin = normBin;
+    try { realBin = realpathOf(binDir).replace(/\\/g, '/'); } catch (_) { /* bin dir doesn't exist yet */ }
+    if (realAbs === realBin || realAbs.startsWith(realBin + '/')) return true;
+  } catch (_) { /* target doesn't exist yet - the literal check above stands */ }
+  return false;
+}
+
 // samePath(a, b) — path equality, case-insensitive on win32 (NTFS is).
 function samePath(a, b) {
   const norm = (s) => String(s).replace(/\\/g, '/').replace(/\/+$/, '');
@@ -618,10 +648,6 @@ function main() {
     process.exit(0);
   }
 
-  // Only block in coordinator context (subagents pass through).
-  const { isCoordinator } = require('./coordinator-detect.js');
-  if (!isCoordinator(payload)) process.exit(0);
-
   const toolName = payload && payload.tool_name;
   if (!EDIT_TOOLS.has(toolName)) process.exit(0);
 
@@ -630,6 +656,30 @@ function main() {
     ? (toolInput.notebook_path || '')
     : (toolInput.file_path || '');
   const cwd = (payload && payload.cwd) || '';
+
+  // LAUNCHER DIR DENY — applies in BOTH coordinator AND subagent context
+  // (unlike everything else below, which is coordinator-only), because
+  // ~/.anti-hall/bin holds installed launcher scripts anti-hall manages
+  // itself (update / doctor --repair); overwriting one runs arbitrary code
+  // under a trusted name on the next invocation. Checked before the
+  // isCoordinator gate on purpose (R3A1-3).
+  if (resolvesIntoLauncherBinDir(filePath, cwd)) {
+    process.stdout.write(JSON.stringify({
+      decision: 'block',
+      reason:
+        'anti-hall edit-guard: BLOCKED. This ' + toolName + ' targets ' +
+        '~/.anti-hall/bin/, the stable launcher directory anti-hall installs ' +
+        'and manages itself (update / doctor --repair). Overwriting a launcher ' +
+        'file here would run arbitrary code under a trusted name on the next ' +
+        'invocation. Leave that directory alone; the rest of .anti-hall/** ' +
+        '(handovers, progress, history, state) stays writable as usual.',
+    }) + '\n');
+    process.exit(2);
+  }
+
+  // Only block in coordinator context (subagents pass through) past this point.
+  const { isCoordinator } = require('./coordinator-detect.js');
+  if (!isCoordinator(payload)) process.exit(0);
 
   // An allowlist match is honored ONLY when the path is honest (not a symlink /
   // reparse point, and not reached through one) — see allowlistIsHonest().

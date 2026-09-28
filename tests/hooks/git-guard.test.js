@@ -302,6 +302,17 @@ const BLOCK = [
   { cmd: 'git push origin main 2>&1 --force', reason: REASON.FORCE },
   { cmd: 'git push origin main >&2 --force', reason: REASON.FORCE },
   { cmd: 'git push origin main &>out.log --force', reason: REASON.FORCE },
+  // --- R3A1-1 (round 3): `>|`/`2>|` is the clobber-redirect operator, NOT a
+  // pipe. splitSegments treated the `|` after `>` as a control-op pipe,
+  // orphaning a trailing --force/trailer into a bogus non-git fake segment
+  // (bypass predates this round; fixed alongside it).
+  { cmd: 'git push origin main >|/tmp/out --force', reason: REASON.FORCE },
+  { cmd: 'git push origin main 2>|/tmp/e --force', reason: REASON.FORCE },
+  { cmd: 'git push >|/tmp/o --force-with-lease origin main', reason: REASON.FORCE },
+  {
+    cmd: `git commit -m x >|/tmp/o --trailer 'Co-Authored-By: Claude <noreply@anthropic.com>'`,
+    reason: REASON.COMMIT,
+  },
   // --- `-F -` / `--file=-` fed by a heredoc (Rule 1, the F-22 fix) ---
   // A `git commit -F -`/`--file=-` reads its message from stdin; when that
   // stdin is a heredoc ON THE SAME command line, the guard must scan the body
@@ -632,6 +643,9 @@ const LAUNCHER_WRITE_BLOCK = [
   "cat > ~/.anti-hall/./bin/devswarm.js <<'EOF'\nx\nEOF",
   "cat > ~/.anti-hall//bin/devswarm.js <<'EOF'\nx\nEOF",
   "cat > foo/../.anti-hall/bin/devswarm.js <<'EOF'\nx\nEOF",
+  // R3A1-1: `>|` clobber-redirect must resolve to the same target check as
+  // a plain `>`.
+  "echo x >| ~/.anti-hall/bin/devswarm.js",
 ];
 const LAUNCHER_WRITE_ALLOW = [
   'node ~/.anti-hall/bin/devswarm.js roster',
@@ -721,6 +735,170 @@ test('ALLOW (launcher dir write): a symlink to an ordinary file is not mistaken 
     } finally {
       fs.rmSync(scratch, { recursive: true, force: true });
     }
+  } finally {
+    h.cleanup();
+  }
+});
+
+// Round-3 deadly-loop hardening (R3-1/R3A1-2/R3C1-1/R3A1-1/R3A1-3/R3A1-4):
+// closes the remaining launcher-dir write-block gaps the R2-1 symlink
+// hardening did not cover (hardlink-mode cp, mv of the dir/file itself,
+// tree-copy into the ~/.anti-hall parent, relative targets/cd-chains, and a
+// symlink planted to an ANCESTOR of bin in the same command), plus the
+// dangling-symlink false-block fix.
+function withLauncher(fn) {
+  const h = makeHome();
+  try {
+    const binDir = path.join(h.home, '.anti-hall', 'bin');
+    fs.mkdirSync(binDir, { recursive: true });
+    const launcher = path.join(binDir, 'devswarm.js');
+    fs.writeFileSync(launcher, 'ORIGINAL LAUNCHER\n', 'utf8');
+    fn(h, binDir, launcher);
+  } finally {
+    h.cleanup();
+  }
+}
+
+test('BLOCK (R3-1): cp -l (hardlink-mode copy) SOURCE resolves into bin - the source operand must be flagged, not just the destination', () => {
+  withLauncher((h, binDir, launcher) => {
+    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'anti-hall-test-hardlink-'));
+    try {
+      const dest = path.join(scratch, 'cplink.js');
+      const r = testHook(HOOK, bashPayload(`cp -l ${launcher} ${dest}`), { home: h.home });
+      assert.strictEqual(r.status, 2, `expected block (exit 2)\nstderr: ${r.stderr}`);
+      assert.match(r.stderr, /stable launcher directory/);
+    } finally {
+      fs.rmSync(scratch, { recursive: true, force: true });
+    }
+  });
+});
+test('BLOCK (R3-1): cp --link (long form) SOURCE resolves into bin', () => {
+  withLauncher((h, binDir, launcher) => {
+    const r = testHook(HOOK, bashPayload(`cp --link ${launcher} /tmp/anti-hall-test-cplink2.js`), { home: h.home });
+    assert.strictEqual(r.status, 2, `expected block (exit 2)\nstderr: ${r.stderr}`);
+    assert.match(r.stderr, /stable launcher directory/);
+  });
+});
+test('ALLOW (R3-1 negative control): a plain cp -l between two ORDINARY files is not blocked', () => {
+  const h = makeHome();
+  try {
+    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'anti-hall-test-hardlink-ok-'));
+    try {
+      const src = path.join(scratch, 'ordinary.txt');
+      fs.writeFileSync(src, 'hi\n', 'utf8');
+      const r = testHook(HOOK, bashPayload(`cp -l ${src} ${path.join(scratch, 'copy.txt')}`), { home: h.home });
+      assert.strictEqual(r.status, 0, `expected allow (exit 0)\nstderr: ${r.stderr}`);
+    } finally {
+      fs.rmSync(scratch, { recursive: true, force: true });
+    }
+  } finally {
+    h.cleanup();
+  }
+});
+test('BLOCK (R3-1): mv of the launcher FILE itself (SOURCE operand)', () => {
+  withLauncher((h, binDir, launcher) => {
+    const r = testHook(HOOK, bashPayload(`mv ${launcher} /tmp/anti-hall-test-mvd.js`), { home: h.home });
+    assert.strictEqual(r.status, 2, `expected block (exit 2)\nstderr: ${r.stderr}`);
+    assert.match(r.stderr, /stable launcher directory/);
+  });
+});
+test('BLOCK (R3-1/R3C1-1): mv of the whole ~/.anti-hall DIRECTORY (ancestor of bin)', () => {
+  withLauncher((h) => {
+    const target = path.join(h.home, '.anti-hall');
+    const r = testHook(HOOK, bashPayload(`mv ${target} ${path.join(h.home, '.ahold')}`), { home: h.home });
+    assert.strictEqual(r.status, 2, `expected block (exit 2)\nstderr: ${r.stderr}`);
+    assert.match(r.stderr, /stable launcher directory/);
+  });
+});
+test('BLOCK (R3C1-1): cp -r of a directory ONTO ~/.anti-hall (ancestor destination, no `bin` in the operand)', () => {
+  withLauncher((h) => {
+    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'anti-hall-test-cpr-'));
+    try {
+      fs.mkdirSync(path.join(scratch, 'evil', 'bin'), { recursive: true });
+      fs.writeFileSync(path.join(scratch, 'evil', 'bin', 'devswarm.js'), 'PWNED\n', 'utf8');
+      const r = testHook(HOOK, bashPayload(`cp -r ${path.join(scratch, 'evil', 'bin')} ${path.join(h.home, '.anti-hall')}/`), { home: h.home });
+      assert.strictEqual(r.status, 2, `expected block (exit 2)\nstderr: ${r.stderr}`);
+      assert.match(r.stderr, /stable launcher directory/);
+    } finally {
+      fs.rmSync(scratch, { recursive: true, force: true });
+    }
+  });
+});
+test('BLOCK (R3A1-2): a symlink planted to an ANCESTOR of bin (~/.anti-hall itself), written through in the SAME command', () => {
+  withLauncher((h) => {
+    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'anti-hall-test-ancestor-link-'));
+    try {
+      const link = path.join(scratch, 'ah9');
+      const r = testHook(HOOK, bashPayload(`ln -s ${path.join(h.home, '.anti-hall')} ${link} && echo PWNED > ${link}/bin/devswarm.js`), { home: h.home });
+      assert.strictEqual(r.status, 2, `expected block (exit 2)\nstderr: ${r.stderr}`);
+      assert.match(r.stderr, /stable launcher directory/);
+    } finally {
+      fs.rmSync(scratch, { recursive: true, force: true });
+    }
+  });
+});
+test('BLOCK (R3A1-2/R3C1-1): relative write target resolved against the hook payload cwd (no cd in the command at all)', () => {
+  withLauncher((h, binDir) => {
+    const r = testHook(HOOK, { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'echo PWNED > devswarm.js' }, session_id: 't', cwd: binDir }, { home: h.home });
+    assert.strictEqual(r.status, 2, `expected block (exit 2)\nstderr: ${r.stderr}`);
+    assert.match(r.stderr, /stable launcher directory/);
+  });
+});
+test('BLOCK (R3A1-2/R3A1-4): chained relative `cd`s compose onto the previous cdDir instead of only the LAST literal cd token', () => {
+  withLauncher((h) => {
+    const cmd = `cd ${h.home}; cd .anti-hall; cd bin; echo PWNED > devswarm.js`;
+    const r = testHook(HOOK, bashPayload(cmd), { home: h.home });
+    assert.strictEqual(r.status, 2, `expected block (exit 2)\nstderr: ${r.stderr}`);
+    assert.match(r.stderr, /stable launcher directory/);
+  });
+});
+test('ALLOW (R3A1-3/R3C1-2/R3A1-4): an ORDINARY dangling symlink (target not yet created, nothing to do with the launcher dir) is no longer a false block', () => {
+  const h = makeHome();
+  try {
+    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'anti-hall-test-dangling-'));
+    try {
+      const dangling = path.join(scratch, 'current.log');
+      fs.symlinkSync(path.join(scratch, 'not-yet-created.log'), dangling);
+      const r = testHook(HOOK, bashPayload(`echo start > ${dangling}`), { home: h.home });
+      assert.strictEqual(r.status, 0, `expected allow (exit 0), got a launcher-dir false block\nstderr: ${r.stderr}`);
+    } finally {
+      fs.rmSync(scratch, { recursive: true, force: true });
+    }
+  } finally {
+    h.cleanup();
+  }
+});
+test('BLOCK (R3A1-3/R3C1-2): a dangling symlink whose LITERAL target text DOES point into the launcher dir still blocks', () => {
+  withLauncher((h, binDir) => {
+    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'anti-hall-test-dangling-launcher-'));
+    try {
+      const link = path.join(scratch, 'dangle-to-launcher.js');
+      // Points at a NOT-YET-CREATED sibling inside bin/ - the launcher dir
+      // itself exists, but this exact leaf doesn't, so realpathSync still
+      // fails and the readlink-text path is exercised.
+      fs.symlinkSync(path.join(binDir, 'not-yet-created-launcher.js'), link);
+      const r = testHook(HOOK, bashPayload(`echo PWNED > ${link}`), { home: h.home });
+      assert.strictEqual(r.status, 2, `expected block (exit 2)\nstderr: ${r.stderr}`);
+      assert.match(r.stderr, /stable launcher directory/);
+    } finally {
+      fs.rmSync(scratch, { recursive: true, force: true });
+    }
+  });
+});
+
+// R3A1-1 (ReDoS -> fail-open via hook timeout): the block-reason HINT regex
+// must stay linear-time so a padded, already-blocked command still exits
+// (BLOCKED) in well under a second, not tens of seconds.
+test('PERF (R3A1-1): a padded, blocked, heredoc-shaped command still exits 2 in well under 1s', () => {
+  const h = makeHome();
+  try {
+    const padding = 'devswarm.js send '.repeat(3000); // ~54 KB
+    const cmd = `git push --force origin main\n: <<'EOF'\n${padding}\nEOF`;
+    const t0 = Date.now();
+    const r = testHook(HOOK, bashPayload(cmd), { home: h.home });
+    const elapsedMs = Date.now() - t0;
+    assert.strictEqual(r.status, 2, `expected block (exit 2)\nstderr: ${r.stderr}`);
+    assert.ok(elapsedMs < 1000, `expected linear-time hint scan (<1000ms), took ${elapsedMs}ms`);
   } finally {
     h.cleanup();
   }

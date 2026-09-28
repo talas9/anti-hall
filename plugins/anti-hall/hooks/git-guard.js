@@ -284,7 +284,16 @@ function splitSegments(cmd) {
     // Operators (outside quotes).
     if (c === '&' && c2 === '&') { flush(); i += 2; continue; }
     if (c === '|' && c2 === '|') { flush(); i += 2; continue; }
-    if (c === '|') { flush(); i++; continue; }
+    // `>|` / `2>|` is the clobber-redirect operator (force a write even under
+    // `set -o noclobber`), NOT a pipe. A bare `|` immediately after `>` is
+    // part of THIS redirect, not a control-op separator - splitting here
+    // would orphan a trailing `--force`/trailer into a bogus non-git segment
+    // (same P1 class as the `&>`/`2>&1` handling above).
+    if (c === '|') {
+      const prev = cur.length ? cur[cur.length - 1] : '';
+      if (prev === '>') { cur += c; i++; continue; }
+      flush(); i++; continue;
+    }
     if (c === ';') { flush(); i++; continue; }
     // `&>` / `&>>` is a redirect-BOTH operator (stdout+stderr to a file), NOT a
     // control-op separator. Keep the `&` in the current segment so the following
@@ -1067,7 +1076,13 @@ function pathHasLauncherSegment(normalized) {
   if (!normalized) return false;
   const segs = normalized.split('/').filter(Boolean).map((s) => s.toLowerCase());
   for (let i = 0; i < segs.length; i++) {
-    if (segs[i] === '.anti-hall' && segs[i + 1] === 'bin') return true;
+    if (segs[i] !== '.anti-hall') continue;
+    // `.anti-hall/bin/...` (the launcher dir or something inside it), OR the
+    // path IS `.anti-hall` itself (the last segment) - the whole directory
+    // that CONTAINS bin, e.g. `mv ~/.anti-hall ~/.x` / `cp -r x ~/.anti-hall`
+    // replaces bin/ wholesale without ever spelling the `bin` segment (R3-1/
+    // R3C1-1).
+    if (segs[i + 1] === 'bin' || i === segs.length - 1) return true;
   }
   return false;
 }
@@ -1095,6 +1110,29 @@ function hasAntiHallBinSegment(p, cdDir) {
 //     directory; if any of them is a symlink, or the deepest existing
 //     prefix's realpath differs from its literal form, re-check the resolved
 //     form. An unresolvable symlink component also fails CLOSED.
+// Reads a symlink's LITERAL target text (bounded chain, loop-guarded) for a
+// leaf that fs.realpathSync could not resolve (dangling target, or an ELOOP
+// cycle). Returns the resolved-as-far-as-possible target path, or null when
+// the chain itself is unreadable/looping (permission error, too many hops) -
+// the only case that should still fail closed.
+function resolveDanglingLinkTarget(p, hops) {
+  const n = typeof hops === 'number' ? hops : 0;
+  if (n > 10) return null; // loop guard
+  let linkText;
+  try {
+    linkText = fs.readlinkSync(p);
+  } catch (_) {
+    return null;
+  }
+  let target = linkText.replace(/\\/g, '/');
+  target = target.startsWith('/') ? path.posix.normalize(target) :
+    path.posix.normalize(path.posix.dirname(p) + '/' + target);
+  try {
+    if (fs.lstatSync(target).isSymbolicLink()) return resolveDanglingLinkTarget(target, n + 1);
+  } catch (_) { /* target doesn't exist - this IS the dangling leaf's literal text */ }
+  return target;
+}
+
 function targetResolvesIntoLauncherDir(rawPath, cdDir) {
   const normalized = normalizeGuardPath(rawPath, cdDir);
   if (!normalized || !normalized.startsWith('/')) return false;
@@ -1102,7 +1140,17 @@ function targetResolvesIntoLauncherDir(rawPath, cdDir) {
     return pathHasLauncherSegment(fs.realpathSync(normalized));
   } catch (_) {
     try {
-      if (fs.lstatSync(normalized).isSymbolicLink()) return true; // broken symlink leaf
+      if (fs.lstatSync(normalized).isSymbolicLink()) {
+        // Dangling target or an ELOOP cycle: realpathSync above could not
+        // resolve it. Read the link's LITERAL target text and test THAT
+        // against the launcher dir instead of failing closed on every
+        // dangling symlink anywhere on disk (R3A1-3/R3C1-2/R3A1-4) - an
+        // ordinary not-yet-created log/pidfile symlink is a common,
+        // unrelated shape. Only an unreadable/looping chain still fails
+        // closed.
+        const target = resolveDanglingLinkTarget(normalized, 0);
+        return target === null ? true : pathHasLauncherSegment(target);
+      }
     } catch (_) { /* leaf doesn't exist at all - the ordinary "new file" case */ }
   }
   const segs = normalized.split('/').filter(Boolean);
@@ -1163,6 +1211,20 @@ function writesLauncherDir(tokens, ev, cdDir) {
   // .anti-hall/bin> /tmp/somewhere` is the first half of a symlink-through
   // attack even though the destination itself sits outside the launcher dir.
   if (ev.verb === 'ln' && operands.length >= 2) targets.push(...operands.slice(0, -1));
+  // `mv`'s SOURCE operand(s) also count as a write target: `mv
+  // ~/.anti-hall/bin/devswarm.js ~/.x` (or `mv ~/.anti-hall ~/.x`) tampers
+  // with the launcher by relocating/renaming it away, even though the
+  // destination itself sits outside the launcher dir (R3-1/R3C1-1).
+  if (ev.verb === 'mv' && operands.length >= 2) targets.push(...operands.slice(0, -1));
+  // `cp`/`install` with a hardlink-creating flag (-l / --link) makes the
+  // destination share an INODE with the source - a later, unrelated write to
+  // that untracked destination silently mutates the source's content too.
+  // Flag the source operand(s) the same way `ln`'s already are (R3-1/
+  // R3C1-1: `cp -l ~/.anti-hall/bin/devswarm.js /tmp/x.js` then `echo
+  // PWNED > /tmp/x.js` bypassed the destination-only check).
+  const hardlinkFlag = ev.verb === 'cp' && ops.some((w) =>
+    w === '--link' || (/^-[a-zA-Z]+$/.test(w) && w.includes('l')));
+  if (hardlinkFlag && operands.length >= 2) targets.push(...operands.slice(0, -1));
   if (ev.verb === 'dd') ops.forEach((w) => { if (w.startsWith('of=')) targets.push(w.slice(3)); });
   if ((ev.verb === 'sed' || ev.verb === 'perl') && ops.some((w) => /^-(?:[a-zA-Z]*i|-in-place)/.test(w))) {
     targets.push(...operands);
@@ -1211,7 +1273,7 @@ function callLiteralCommands(cmd) {
 // into `eval <payload>` segments (depth-bounded) so force/trailer forms hidden
 // behind eval are still caught. Mirrors the wrapper-unwrapping already done for
 // command/sudo/env/timeout in effectiveVerb.
-function scanCommand(cmd, depth) {
+function scanCommand(cmd, depth, baseCwd) {
   const d = typeof depth === 'number' ? depth : 0;
   const segments = splitSegments(cmd);
 
@@ -1222,11 +1284,15 @@ function scanCommand(cmd, depth) {
   // `-F <path>`. Neither affects segmentation, verb resolution, force-push
   // detection, or inline -m/--trailer scanning below.
   const heredocBodies = extractHeredocBodies(cmd);
-  let lastCdDir = null;
+  // Seed with the hook payload's real shell cwd (when known) so a bare
+  // relative write target with NO `cd` anywhere in this command still
+  // resolves against where it actually lands on disk, not just against a
+  // `cd` this same command string happens to contain (R3A1-2/R3C1-1).
+  let lastCdDir = (typeof baseCwd === 'string' && baseCwd) ? baseCwd : null;
 
   if (d < 3) {
     for (const lit of callLiteralCommands(cmd)) {
-      const hit = scanCommand(lit, d + 1);
+      const hit = scanCommand(lit, d + 1, baseCwd);
       if (hit) return hit;
     }
   }
@@ -1270,12 +1336,17 @@ function scanCommand(cmd, depth) {
       continue;
     }
 
-    // Track a literal `cd <dir>` segment (read order) so a later relative
-    // `-F <path>` in this same command can be resolved against it. Does not
-    // affect any existing verb/force/trailer detection.
-    if (ev.verb === 'cd') {
+    // Track a literal `cd <dir>` / `pushd <dir>` segment (read order) so a
+    // later relative `-F <path>` or write target in this same command can be
+    // resolved against it. A RELATIVE dir chains onto the PREVIOUS cdDir
+    // (normalizeGuardPath joins+normalizes) instead of replacing it outright
+    // - `cd ~/.anti-hall; cd bin; echo x > devswarm.js` must resolve `bin`
+    // against `~/.anti-hall`, not treat it as relative to the process cwd
+    // (R3A1-2/R3A1-4/R3C1-1). Does not affect any existing verb/force/
+    // trailer detection.
+    if (ev.verb === 'cd' || ev.verb === 'pushd') {
       const dirTok = ev.args.find((t) => !t.text.startsWith('-'));
-      if (dirTok) lastCdDir = dirTok.text;
+      if (dirTok) lastCdDir = normalizeGuardPath(dirTok.text, lastCdDir) || dirTok.text;
       continue;
     }
 
@@ -1284,7 +1355,7 @@ function scanCommand(cmd, depth) {
       if (d < 3) {
         const payload = extractEvalPayload(seg);
         if (payload) {
-          const nested = scanCommand(payload, d + 1);
+          const nested = scanCommand(payload, d + 1, lastCdDir);
           if (nested) return nested;
         }
       }
@@ -1300,7 +1371,7 @@ function scanCommand(cmd, depth) {
       if (d < 3) {
         const payload = extractShellCPayload(seg);
         if (payload) {
-          const nested = scanCommand(payload, d + 1);
+          const nested = scanCommand(payload, d + 1, lastCdDir);
           if (nested) return nested;
         }
       }
@@ -1587,7 +1658,7 @@ function main() {
     process.exit(0);
   }
 
-  const msg = scanCommand(cmd, 0);
+  const msg = scanCommand(cmd, 0, cwd);
   if (msg) {
     if (looksLikeFileWriteShape(cmd)) {
       return block(msg + '\nHint: this file\'s content was scanned as shell - write ' +
