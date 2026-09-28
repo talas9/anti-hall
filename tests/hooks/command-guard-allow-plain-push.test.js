@@ -576,6 +576,14 @@ const D_BLOCK = [
   'git push origin main 2>&1 | tail -2 | sh', // more than one pipe
   'git push origin main | grep x', // not a tail/head filter
   'git push origin main | tail -2 && git status', // filter not at the end
+  // A1-6: with NO explicit remote token, git parses the SOLE positional
+  // argument as the <repository> (remote), not a refspec — a colon-bearing
+  // token here is an scp-like remote URL to real git (`host:path`), however
+  // ref-shaped it looks. Previously this passed isPlainPushRefAllowed's
+  // SRC===DST===<current branch> check and was wrongly allowed.
+  'git push HEAD:refs/heads/main',
+  'git push main:refs/heads/main',
+  'git push HEAD:main',
 ];
 for (const cmd of D_BLOCK) {
   test(`allow-plain-push (d): still blocked — ${cmd}`, () => {

