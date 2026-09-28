@@ -58,6 +58,17 @@ let currentSessionId = null;
 // eval / `bash -c` level, so `M="...trailer..."; bash -c 'git commit -m "$M"'`
 // is still seen.
 let currentRawCommand = '';
+// launcherFsWalkBudget — a per-invocation cap (R4A1-3) on the number of
+// EXPENSIVE fs-walking targetResolvesIntoLauncherDir() calls (realpathSync/
+// lstatSync chains) writesLauncherDir() will spend on any one command. A
+// pathological command with thousands of write-target-shaped tokens (each
+// perfectly legal on its own) would otherwise perform thousands of syscalls
+// in a single hook invocation. Past the cap, writesLauncherDir() still runs
+// the cheap TEXTUAL checks (LAUNCHER_DIR_RE / hasAntiHallBinSegment /
+// isLauncherDirRoot - pure string work, no syscalls) on every remaining
+// target, it just stops resolving symlinks for them. One process handles
+// exactly one PreToolUse call, so a module-level counter is safe.
+let launcherFsWalkBudget = 64;
 
 function fail_open() {
   process.exit(0);
@@ -281,17 +292,37 @@ function splitSegments(cmd) {
       continue;
     }
 
+    // General unquoted backslash-escape: outside quotes, a backslash makes
+    // the NEXT character literal in the shell - it is never an operator
+    // boundary, whatever that character is. Append both chars as-is and
+    // move on. This must run before every operator check below, or an
+    // escaped operator (most importantly `\>` immediately before `|`) gets
+    // treated as the real thing and a segment gets split where the shell
+    // would never split it (R4A1-1: `echo \>| git push --force …` kept the
+    // real pipe glued into one segment via the `>|` clobber-redirect rule
+    // below, orphaning `git push --force`/the trailer into a
+    // non-git-looking segment that the force/self-credit scan never saw).
+    if (c === '\\' && c2) { cur += c + c2; i += 2; continue; }
+
     // Operators (outside quotes).
     if (c === '&' && c2 === '&') { flush(); i += 2; continue; }
     if (c === '|' && c2 === '|') { flush(); i += 2; continue; }
     // `>|` / `2>|` is the clobber-redirect operator (force a write even under
-    // `set -o noclobber`), NOT a pipe. A bare `|` immediately after `>` is
-    // part of THIS redirect, not a control-op separator - splitting here
-    // would orphan a trailing `--force`/trailer into a bogus non-git segment
-    // (same P1 class as the `&>`/`2>&1` handling above).
+    // `set -o noclobber`), NOT a pipe. A bare `|` immediately after an
+    // UNESCAPED `>` is part of THIS redirect, not a control-op separator -
+    // splitting here would orphan a trailing `--force`/trailer into a bogus
+    // non-git segment (same P1 class as the `&>`/`2>&1` handling above). An
+    // ESCAPED `\>` (odd number of backslashes immediately preceding it in
+    // `cur`, per the general escape rule above) is a LITERAL `>` character,
+    // not a redirect - the following `|` is then a real, unescaped pipe and
+    // must still split (R4A1-1).
     if (c === '|') {
       const prev = cur.length ? cur[cur.length - 1] : '';
-      if (prev === '>') { cur += c; i++; continue; }
+      let precedingBackslashes = 0;
+      if (prev === '>') {
+        for (let k = cur.length - 2; k >= 0 && cur[k] === '\\'; k--) precedingBackslashes++;
+      }
+      if (prev === '>' && precedingBackslashes % 2 === 0) { cur += c; i++; continue; }
       flush(); i++; continue;
     }
     if (c === ';') { flush(); i++; continue; }
@@ -1072,19 +1103,42 @@ function normalizeGuardPath(raw, cdDir) {
 
 // True when the normalized (already-absolute-or-not) path has a
 // `.anti-hall/bin` segment pair anywhere in it (case-insensitive).
+//
+// R4A1-2/R4C1-1: this used to ALSO treat a path whose LAST segment is plain
+// `.anti-hall` (no `bin`) as a launcher-dir hit, unanchored to $HOME. That
+// caught `mv ~/.anti-hall ~/.x`, but it also caught any ORDINARY project- or
+// home-relative use of a `.anti-hall` directory that has nothing to do with
+// the launcher - `cp notes.md .anti-hall/`, `mv f .anti-hall/`, `mv
+// .anti-hall .anti-hall.bak`, `rsync -a src/ .anti-hall/` in a project, and
+// `cp /tmp/skip.json ~/.anti-hall/` were all false-blocked (0.116 allowed
+// them). The unanchored last-segment clause is dropped; the narrower,
+// anchored-to-$HOME "IS the launcher container itself" check now lives in
+// isLauncherDirRoot() below and is only consulted for the specific write
+// shapes that relocate/replace that container wholesale (an mv SOURCE, an rm
+// target, or a copy/move DESTINATION joined with the source's basename).
 function pathHasLauncherSegment(normalized) {
   if (!normalized) return false;
   const segs = normalized.split('/').filter(Boolean).map((s) => s.toLowerCase());
   for (let i = 0; i < segs.length; i++) {
-    if (segs[i] !== '.anti-hall') continue;
-    // `.anti-hall/bin/...` (the launcher dir or something inside it), OR the
-    // path IS `.anti-hall` itself (the last segment) - the whole directory
-    // that CONTAINS bin, e.g. `mv ~/.anti-hall ~/.x` / `cp -r x ~/.anti-hall`
-    // replaces bin/ wholesale without ever spelling the `bin` segment (R3-1/
-    // R3C1-1).
-    if (segs[i + 1] === 'bin' || i === segs.length - 1) return true;
+    if (segs[i] === '.anti-hall' && segs[i + 1] === 'bin') return true;
   }
   return false;
+}
+
+// True when `normalized` resolves EXACTLY to <home>/.anti-hall - the
+// launcher dir's CONTAINER itself, anchored to the real home (safeHomedir/
+// resolveHome, the same source of truth edit-guard's
+// resolvesIntoLauncherBinDir uses) so a project-local `.anti-hall/` (or a
+// non-home `.anti-hall` anywhere else) is never mistaken for it. Used ONLY
+// as an mv/rename SOURCE, an rm target, or paired with a source's basename
+// for a copy/move DESTINATION - never as a blanket "any path under here"
+// check, which is what caused R4A1-2/R4C1-1.
+function isLauncherDirRoot(normalized) {
+  if (!normalized) return false;
+  const home = safeHomedir();
+  if (!home) return false;
+  const want = path.posix.normalize(home.replace(/\\/g, '/').replace(/\/+$/, '') + '/.anti-hall');
+  return normalized.toLowerCase() === want.toLowerCase();
 }
 
 // True when the normalized path has a `.anti-hall/bin` segment pair anywhere
@@ -1136,6 +1190,15 @@ function resolveDanglingLinkTarget(p, hops) {
 function targetResolvesIntoLauncherDir(rawPath, cdDir) {
   const normalized = normalizeGuardPath(rawPath, cdDir);
   if (!normalized || !normalized.startsWith('/')) return false;
+  // Perf guard (R4A1-3): each call below does 1+ realpathSync/lstatSync
+  // syscalls. Past launcherFsWalkBudget calls in this one invocation, stop
+  // spending them - the textual checks (pathHasLauncherSegment /
+  // isLauncherDirRoot) in writesLauncherDir() still run on every target
+  // regardless, so a LITERAL `.anti-hall/bin` (or exact-root) path is still
+  // caught; only best-effort symlink resolution beyond the budget is
+  // skipped.
+  if (launcherFsWalkBudget <= 0) return false;
+  launcherFsWalkBudget--;
   try {
     return pathHasLauncherSegment(fs.realpathSync(normalized));
   } catch (_) {
@@ -1229,8 +1292,55 @@ function writesLauncherDir(tokens, ev, cdDir) {
   if ((ev.verb === 'sed' || ev.verb === 'perl') && ops.some((w) => /^-(?:[a-zA-Z]*i|-in-place)/.test(w))) {
     targets.push(...operands);
   }
+  // `rm`'s operand(s) count as a write target too: `rm -rf ~/.anti-hall/bin`
+  // (bin-segment check below) or `rm -rf ~/.anti-hall` (the whole-container
+  // check, rootTargets below) both destroy the launcher.
+  if (ev.verb === 'rm' && operands.length) targets.push(...operands);
+
+  // R4A1-2/R4C1-1: rootTargets is checked ONLY against isLauncherDirRoot -
+  // the anchored "IS <home>/.anti-hall itself" match - never against the
+  // broad bin-segment/textual checks above. An mv SOURCE or an rm target
+  // that relocates/deletes the launcher's CONTAINER wholesale (`mv
+  // ~/.anti-hall ~/.x`, `rm -rf ~/.anti-hall`) is still caught, while an
+  // ordinary `.anti-hall/` elsewhere (a project dir, or anything not
+  // resolving to the real $HOME's `.anti-hall`) is not.
+  // `ln`'s SOURCE operand(s) get the same whole-container check: `ln -s
+  // ~/.anti-hall link` plants an alias whose later use (`echo PWNED >
+  // link/bin/devswarm.js`) writes through it before the symlink even
+  // exists on disk to resolve at scan time (R3A1-2) - the ln SOURCE itself
+  // being exactly the launcher container is what must be caught here.
+  const rootTargets = [];
+  if (ev.verb === 'mv' && operands.length >= 2) rootTargets.push(...operands.slice(0, -1));
+  if (ev.verb === 'ln' && operands.length >= 2) rootTargets.push(...operands.slice(0, -1));
+  if (ev.verb === 'rm' && operands.length) rootTargets.push(...operands);
+
+  // A copy/move into an EXISTING directory destination places the file at
+  // dest/basename(source), not at dest itself - `cp -r bin ~/.anti-hall`
+  // must still be caught even though the raw destination operand
+  // (`~/.anti-hall`) has no `bin` segment of its own. Only probed for
+  // COPY_VERBS with a source operand, and only when the destination already
+  // exists as a directory on disk - an ordinary `cp x ~/.anti-hall/` (a
+  // non-bin file landing directly under the allowed rest of `.anti-hall/`)
+  // must NOT be blocked just because the destination directory happens to
+  // exist (R4A1-2/R4C1-1).
+  if (COPY_VERBS.has(ev.verb) && operands.length >= 2) {
+    const destNorm = normalizeGuardPath(operands[operands.length - 1], cdDir);
+    let destIsDir = false;
+    if (destNorm && destNorm.startsWith('/')) {
+      try { destIsDir = fs.statSync(destNorm).isDirectory(); } catch (_) { /* doesn't exist (yet) */ }
+    }
+    if (destIsDir) {
+      const destBase = destNorm.replace(/\/+$/, '');
+      for (const src of operands.slice(0, -1)) {
+        const srcBase = path.posix.basename(String(src).replace(/\\/g, '/').replace(/\/+$/, ''));
+        if (srcBase) targets.push(destBase + '/' + srcBase);
+      }
+    }
+  }
+
   return targets.some((p) => LAUNCHER_DIR_RE.test(p) || hasAntiHallBinSegment(p, cdDir) ||
-    targetResolvesIntoLauncherDir(p, cdDir));
+    targetResolvesIntoLauncherDir(p, cdDir)) ||
+    rootTargets.some((p) => isLauncherDirRoot(normalizeGuardPath(p, cdDir)));
 }
 
 // Code strings passed to a call: `execSync('git push --force')`,
@@ -1346,7 +1456,25 @@ function scanCommand(cmd, depth, baseCwd) {
     // trailer detection.
     if (ev.verb === 'cd' || ev.verb === 'pushd') {
       const dirTok = ev.args.find((t) => !t.text.startsWith('-'));
-      if (dirTok) lastCdDir = normalizeGuardPath(dirTok.text, lastCdDir) || dirTok.text;
+      if (dirTok) {
+        // Perf guard (R4A1-3): a long chain of relative `cd`s
+        // (`cd a;cd a;cd a;...`, repeated tens of thousands of times) used
+        // to keep concatenating onto lastCdDir via normalizeGuardPath every
+        // single time - a growing string re-joined/re-normalized on EVERY
+        // iteration, turning an O(n)-segment command into O(n^2) work and
+        // blowing the hook's 10s timeout well before the trailing force
+        // push at the end was ever reached (fail-OPEN by timeout, the
+        // opposite of the intended block). Once the chained dir exceeds a
+        // bounded length/depth, stop compounding it - treat further cd
+        // context as unknown (null) so later relative write targets fall
+        // back to textual-only resolution instead of a `null`-prefixed join
+        // silently misresolving.
+        if (lastCdDir && (lastCdDir.length > 4096 || lastCdDir.split('/').length > 64)) {
+          lastCdDir = null;
+        } else {
+          lastCdDir = normalizeGuardPath(dirTok.text, lastCdDir) || dirTok.text;
+        }
+      }
       continue;
     }
 

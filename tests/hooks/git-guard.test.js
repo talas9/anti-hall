@@ -1185,6 +1185,128 @@ test('JEV unavailable (mode on, endpoint unreachable): fails open to baseline (a
   }
 });
 
+// Round-4 deadly-loop hardening (R4A1-1/R4A1-2/R4A1-3/R4C1-1).
+
+// R4A1-2/R4C1-1: pathHasLauncherSegment's unanchored "last segment is
+// `.anti-hall`" clause false-blocked ordinary, unrelated uses of a
+// `.anti-hall` directory (0.116 allowed all of these). The anchored fix
+// (isLauncherDirRoot, consulted only for an mv/rename SOURCE, an rm target,
+// or a copy/move destination joined with the source's basename) must allow
+// every one of these again.
+const R4_LAUNCHER_ROOT_NEGATIVE = [
+  'cp notes.md .anti-hall/',
+  'mv f .anti-hall/',
+  'mv .anti-hall .anti-hall.bak',
+  'rsync -a src/ .anti-hall/',
+  'cp /tmp/skip.json ~/.anti-hall/',
+];
+for (const cmd of R4_LAUNCHER_ROOT_NEGATIVE) {
+  test(`ALLOW (R4A1-2/R4C1-1): ordinary .anti-hall use, not the launcher container: ${JSON.stringify(cmd)}`, () => {
+    const r = run(cmd);
+    assert.strictEqual(r.status, 0, `expected allow (exit 0)\nstderr: ${r.stderr}`);
+  });
+}
+
+test('BLOCK (R4A1-2/R4C1-1 regression guard): mv of the whole ~/.anti-hall DIRECTORY (SOURCE) still blocks', () => {
+  withLauncher((h) => {
+    const target = path.join(h.home, '.anti-hall');
+    const r = testHook(HOOK, bashPayload(`mv ${target} ${path.join(h.home, '.x')}`), { home: h.home });
+    assert.strictEqual(r.status, 2, `expected block (exit 2)\nstderr: ${r.stderr}`);
+    assert.match(r.stderr, /stable launcher directory/);
+  });
+});
+
+test('BLOCK (R4A1-2/R4C1-1 regression guard): cp -r x ~/.anti-hall/bin (explicit bin destination) still blocks', () => {
+  withLauncher((h, binDir) => {
+    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'anti-hall-test-r4-'));
+    try {
+      fs.mkdirSync(path.join(scratch, 'x'));
+      const r = testHook(HOOK, bashPayload(`cp -r ${path.join(scratch, 'x')} ${binDir}`), { home: h.home });
+      assert.strictEqual(r.status, 2, `expected block (exit 2)\nstderr: ${r.stderr}`);
+      assert.match(r.stderr, /stable launcher directory/);
+    } finally {
+      fs.rmSync(scratch, { recursive: true, force: true });
+    }
+  });
+});
+
+test('BLOCK (R4A1-2/R4C1-1 regression guard): cp -r bin ~/.anti-hall (dest+basename(source) join) still blocks', () => {
+  withLauncher((h) => {
+    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'anti-hall-test-r4-'));
+    try {
+      fs.mkdirSync(path.join(scratch, 'bin'));
+      const r = testHook(HOOK, bashPayload(`cp -r ${path.join(scratch, 'bin')} ${path.join(h.home, '.anti-hall')}`), { home: h.home });
+      assert.strictEqual(r.status, 2, `expected block (exit 2)\nstderr: ${r.stderr}`);
+      assert.match(r.stderr, /stable launcher directory/);
+    } finally {
+      fs.rmSync(scratch, { recursive: true, force: true });
+    }
+  });
+});
+
+test('BLOCK (R4A1-2/R4C1-1 addition): rm -rf ~/.anti-hall (rm target of the whole container)', () => {
+  withLauncher((h) => {
+    const r = testHook(HOOK, bashPayload(`rm -rf ${path.join(h.home, '.anti-hall')}`), { home: h.home });
+    assert.strictEqual(r.status, 2, `expected block (exit 2)\nstderr: ${r.stderr}`);
+    assert.match(r.stderr, /stable launcher directory/);
+  });
+});
+
+test('ALLOW (R4A1-2/R4C1-1 negative control): rm of an ordinary .anti-hall subpath (not the launcher bin)', () => {
+  const r = run('rm .anti-hall/handovers/2026-09-28/sess1/HANDOVER.md');
+  assert.strictEqual(r.status, 0, `expected allow (exit 0)\nstderr: ${r.stderr}`);
+});
+
+// R4A1-1: an ESCAPED `\>` right before `|` must NOT arm the `>|`
+// clobber-redirect rule - it is a literal `>` character, and the following
+// `|` is a real, unescaped pipe that still needs to split into its own
+// segment (0.116 blocked both of these; the round-3 `>|` handling
+// regressed them to a false allow).
+test('BLOCK (R4A1-1): escaped `\\>` before `|` does not swallow a trailing force push into one segment', () => {
+  const r = run('echo \\>| git push --force origin main');
+  assert.strictEqual(r.status, 2, `expected block (exit 2)\nstderr: ${r.stderr}`);
+  assert.match(r.stderr, REASON.FORCE);
+});
+
+test('BLOCK (R4A1-1): escaped `\\>` before `|` does not swallow a trailing self-credit trailer into one segment', () => {
+  const r = run('echo \\>| git commit -m x --trailer "Co-Authored-By: Claude <noreply@anthropic.com>"');
+  assert.strictEqual(r.status, 2, `expected block (exit 2)\nstderr: ${r.stderr}`);
+  assert.match(r.stderr, REASON.COMMIT);
+});
+
+test('ALLOW (R4A1-1 regression guard): a normal, UNESCAPED `>|` clobber-redirect still keeps the segment together', () => {
+  const r = run('echo hi >| /tmp/anti-hall-test-clobber.txt');
+  assert.strictEqual(r.status, 0, `expected allow (exit 0)\nstderr: ${r.stderr}`);
+});
+
+test('BLOCK (R4A1-1 regression guard): a normal, UNESCAPED `>|` still keeps a trailing --force in the SAME segment (round-3 intent preserved)', () => {
+  const r = run('git push origin main >|/tmp/anti-hall-test-clobber2 --force');
+  assert.strictEqual(r.status, 2, `expected block (exit 2)\nstderr: ${r.stderr}`);
+  assert.match(r.stderr, REASON.FORCE);
+});
+
+// R4A1-3: chained relative `cd`s must not grow lastCdDir unbounded
+// (O(n^2) string work) to the point of blowing the hook's timeout, while
+// still catching a real trailing force push in the same command.
+test('PERF (R4A1-3): a 13400x-repeated relative cd-chain (~160KB) still blocks in well under 3s', () => {
+  const cmd = 'cd a;echo>f;'.repeat(13400) + 'git push --force origin main';
+  const t0 = Date.now();
+  const r = run(cmd);
+  const elapsedMs = Date.now() - t0;
+  assert.strictEqual(r.status, 2, `expected block (exit 2)\nstderr: ${r.stderr}`);
+  assert.match(r.stderr, REASON.FORCE);
+  assert.ok(elapsedMs < 3000, `expected linear-ish cd-chain handling (<3000ms), took ${elapsedMs}ms`);
+});
+
+test('PERF (R4A1-3): a ~40KB relative cd-chain still blocks in well under 1s', () => {
+  const cmd = 'cd a;echo>f;'.repeat(3340) + 'git push --force origin main';
+  const t0 = Date.now();
+  const r = run(cmd);
+  const elapsedMs = Date.now() - t0;
+  assert.strictEqual(r.status, 2, `expected block (exit 2)\nstderr: ${r.stderr}`);
+  assert.ok(elapsedMs < 1000, `expected linear-ish cd-chain handling (<1000ms), took ${elapsedMs}ms`);
+});
+
 test('JEV disabled entirely (no jev.json): a paraphrase is never consulted, byte-identical to pre-Jev behavior', () => {
   const r = run('git commit -m "written with help from Claude"');
   assert.strictEqual(r.status, 0);
