@@ -849,6 +849,22 @@ function ghSelfCreditMessage(args) {
 const JEV_CONSULT_CAP = 8;
 const consultGitGuardSelfCreditJevMemo = new Map();
 
+// jevSpentMs / JEV_TOTAL_BUDGET_MS (R7A1-1): JEV_CONSULT_CAP bounds the
+// NUMBER of distinct-text consults, but not their TOTAL wall time. Each
+// consult's own budgetMs (1500) plus askSync's hard backstop (+500) means a
+// single hanging consult can take up to 2s; with a key configured and a
+// hanging gateway, 8 distinct texts can run ~12s — over PreToolUse's 10s hook
+// timeout (hooks.json), so the hook itself gets killed and this guard's
+// force-push block never fires. jevSpentMs is a module-level running total of
+// measured consult time for THIS process; before spawning another consult, if
+// the already-spent time plus this consult's worst case (budgetMs + 500)
+// would exceed JEV_TOTAL_BUDGET_MS, skip the consult entirely and fall back
+// to `false` (baseline regex verdict) — same fail-open contract as every
+// other Jev-absent path, and it never relaxes a regex block that already
+// fired above.
+let jevSpentMs = 0;
+const JEV_TOTAL_BUDGET_MS = 4000;
+
 // consultGitGuardSelfCreditJev(text) -> true when Jev, running "on", confidently
 // judges `text` to contain paraphrased AI self-credit. Trust 'add-block' /
 // baseline `false`: this function's result can only ever ADD a block on top of
@@ -862,6 +878,12 @@ function consultGitGuardSelfCreditJev(text) {
   const key = String(text);
   if (consultGitGuardSelfCreditJevMemo.has(key)) return consultGitGuardSelfCreditJevMemo.get(key);
   if (consultGitGuardSelfCreditJevMemo.size >= JEV_CONSULT_CAP) return false;
+  const CONSULT_BUDGET_MS = 1500;
+  // Total-time guard (R7A1-1): a hanging gateway can push each consult to its
+  // full budgetMs+500 backstop; bail before spawning if the running total
+  // would blow past JEV_TOTAL_BUDGET_MS, well under PreToolUse's 10s timeout.
+  if (jevSpentMs + CONSULT_BUDGET_MS + 500 > JEV_TOTAL_BUDGET_MS) return false;
+  const consultStart = Date.now();
   try {
     const { askSync } = require('./lib/jev-assist.js');
     const result = askSync({
@@ -882,7 +904,7 @@ function consultGitGuardSelfCreditJev(text) {
       state: String(text).slice(0, 4000),
       trust: 'add-block',
       baseline: false,
-      budgetMs: 1500,
+      budgetMs: CONSULT_BUDGET_MS,
       sessionId: currentSessionId || undefined,
     });
     const verdict = result.final === true;
@@ -891,6 +913,8 @@ function consultGitGuardSelfCreditJev(text) {
   } catch (_) {
     consultGitGuardSelfCreditJevMemo.set(key, false);
     return false;
+  } finally {
+    jevSpentMs += Date.now() - consultStart;
   }
 }
 

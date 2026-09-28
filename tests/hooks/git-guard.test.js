@@ -1545,3 +1545,68 @@ test('PERF (R6REV-P1-1): 500 DISTINCT-message commit-creating segments, Jev enab
     h.cleanup();
   }
 });
+
+// PERF (R7A1-1): JEV_CONSULT_CAP (8) bounds the NUMBER of distinct-text
+// consults but not their TOTAL wall time. Each consult's own budgetMs (1500)
+// plus askSync's hard backstop (+500) means a single hanging consult can take
+// up to ~2s; 8 distinct texts against a gateway that accepts and never
+// replies would run ~12s+ over PreToolUse's 10s hook timeout (hooks.json),
+// killing the hook before its trailing force-push block ever fires. The
+// jevSpentMs/JEV_TOTAL_BUDGET_MS guard must bail out of further consults once
+// the running total would blow the budget, so the whole invocation (all 8
+// force-push-triggering commits plus the force push itself) still completes
+// and blocks well under the hook timeout.
+const HANG_SERVER = path.join(__dirname, '..', 'helpers', 'jev-hang-server.js');
+
+function startHangJevServer() {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [HANG_SERVER], {
+      env: { PATH: process.env.PATH },
+    });
+    let buf = '';
+    let settled = false;
+    const onData = (c) => {
+      buf += c;
+      const m = buf.match(/PORT=(\d+)/);
+      if (m && !settled) {
+        settled = true;
+        child.stdout.off('data', onData);
+        resolve({
+          endpoint: `http://127.0.0.1:${m[1]}/hang`,
+          stop: () => { try { child.kill(); } catch (_) { /* ignore */ } },
+        });
+      }
+    };
+    child.stdout.on('data', onData);
+    child.on('error', (e) => { if (!settled) { settled = true; reject(e); } });
+    child.on('exit', (code) => {
+      if (!settled) { settled = true; reject(new Error('hang server exited early, code ' + code)); }
+    });
+  });
+}
+
+test('PERF (R7A1-1): 8 distinct-text force-push repro against a hanging Jev endpoint blocks in < 7s (total Jev time budget)', async () => {
+  const server = await startHangJevServer();
+  try {
+    const h = makeHome();
+    try {
+      h.writeState('jev.json', { enabled: true, integrations: { gitGuardSelfCredit: 'on' } });
+      let cmd = '';
+      for (let i = 0; i < 8; i++) cmd += `git commit -m "fix typo ${i}";`;
+      cmd += 'git push --force origin main';
+      const t0 = Date.now();
+      const r = testHook(HOOK, bashPayload(cmd), {
+        home: h.home,
+        env: { AI_GATEWAY_API_KEY: 'fake', ANTIHALL_JEV_TEST_ENDPOINT: server.endpoint },
+      });
+      const elapsedMs = Date.now() - t0;
+      assert.strictEqual(r.status, 2, `expected block (exit 2)\nstderr: ${r.stderr}`);
+      assert.match(r.stderr, REASON.FORCE);
+      assert.ok(elapsedMs < 7000, `expected the total Jev time budget to bound wall time well under the 10s hook timeout (<7000ms), took ${elapsedMs}ms`);
+    } finally {
+      h.cleanup();
+    }
+  } finally {
+    server.stop();
+  }
+});
