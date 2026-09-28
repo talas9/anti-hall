@@ -400,6 +400,40 @@ function normOwner(o) {
   return typeof o === 'string' ? o.trim() : '';
 }
 
+// devswarmChildAttended(owner) — true only when `owner` identifies a DevSwarm
+// child workspace the app's own database (the ground truth for archive
+// state; companion/lib/devswarm-app-db.js) currently shows LIVE (known, not
+// archived). A Primary that delegates an in_progress task to a child
+// workspace over the mesh has no local heartbeat file for it (agentsRunning()
+// only sees ~/.anti-hall/agents/), so without this the task read as
+// unattended and the Stop hook nagged/blocked on work that was genuinely
+// being worked, just remotely. Reuses appArchivedVerdict — the SAME
+// read-only, fail-open reader devswarm-parent-gate.js already uses to tell a
+// live child from an archived one — instead of re-walking the app DB or a
+// registry file here.
+//   - owner blank, or the pre-existing main/orchestrator/coordinator
+//     main-thread carve-out -> false (not a workspace id at all; unaffected
+//     by this function, handled elsewhere).
+//   - owner (optionally prefixed "workspace:"/"ws:"/"devswarm:") matches a
+//     LIVE app-DB builder id -> true (attended; excluded from nudge/block).
+//   - owner names an ARCHIVED id, an id the app DB doesn't know, or the
+//     registry/app DB can't be read at all (no node:sqlite, no file, wrong
+//     schema, disabled) -> appArchivedVerdict returns true/null either way,
+//     both of which this treats as "still block" — conservative and
+//     deterministic: a stale or unverifiable delegation must never hide a
+//     genuinely neglected task.
+function devswarmChildAttended(owner) {
+  const o = normOwner(owner);
+  if (!o || /^(main|orchestrator|coordinator)$/i.test(o)) return false;
+  const id = o.replace(/^(workspace|ws|devswarm)\s*[:#]\s*/i, '').trim();
+  if (!id) return false;
+  let appDb;
+  try { appDb = require('../companion/lib/devswarm-app-db.js'); } catch (_) { return false; }
+  let verdict;
+  try { verdict = appDb.appArchivedVerdict({ home: metricsHome(), id }); } catch (_) { verdict = null; }
+  return verdict === false; // false = known + NOT archived ("live"); true/null -> still block
+}
+
 // Normalize a blockedBy field to an array of string task ids. The harness sends a
 // list of open task ids that must resolve first; tolerate a single id or junk.
 function normBlockedBy(b) {
@@ -556,7 +590,11 @@ function classifyOpen(openTasks, taskMap) {
 // does not count here (unlike classifyOpen), so a fake dependency cannot
 // silence the generic nudge. A self-reference (A blockedBy A) or a pure cycle
 // (A<->B) never reaches such a terminal, so it is NOT an honest blocker either
-// -- the base nudged in both cases, and this restores that.
+// -- the base nudged in both cases, and this restores that. ALSO drops a task
+// whose owner names a LIVE DevSwarm child workspace (devswarmChildAttended) --
+// a Primary's delegation to a child over the mesh has no local heartbeat, so
+// without this an attended in_progress task false-blocked as if neglected; an
+// archived/unknown/unreadable-registry owner still counts as unattended.
 function unblockedOpen(openTasks, taskMap) {
   const openIds = new Set();
   for (const t of taskMap.values()) {
@@ -605,7 +643,7 @@ function unblockedOpen(openTasks, taskMap) {
     return validBlockers(t).some(id => reachOrTerminal.has(id));
   }
 
-  return openTasks.filter(t => !isOwnerBlocked(t) && !honestlyBlocked(t));
+  return openTasks.filter(t => !isOwnerBlocked(t) && !honestlyBlocked(t) && !devswarmChildAttended(t.owner));
 }
 
 function parseTasksFromFile(filePath) {

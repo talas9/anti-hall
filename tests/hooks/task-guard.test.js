@@ -829,3 +829,99 @@ test('SUBJECT UNKNOWN: a TaskUpdate-only task (no TaskCreate in window) is named
     h.cleanup();
   }
 });
+
+// ---- DEVSWARM CHILD ATTENDANCE (owner naming a mesh child workspace): an
+// in_progress task delegated to a child workspace over the mesh has no local
+// ~/.anti-hall/agents/ heartbeat (agentsRunning() never sees it), so before
+// this fix it false-blocked/nudged as if neglected. devswarmChildAttended()
+// consults the DevSwarm app's own database (companion/lib/devswarm-app-db.js
+// appArchivedVerdict — the same ground-truth reader devswarm-parent-gate.js
+// uses) to tell a LIVE child from an ARCHIVED/unknown one. ----
+
+let sqlite = null;
+try { sqlite = require('node:sqlite'); } catch (_) { sqlite = null; }
+const skipSqlite = sqlite ? false : 'node:sqlite unavailable';
+
+// devswarmAppDbFixture() -> { dbFile, env } — a throwaway app DB with one LIVE
+// builder (b-active: isActive=1, isHidden=0) and one ARCHIVED builder
+// (b-archived: isActive=0, isHidden=1). env points ANTIHALL_DEVSWARM_APP_DB at
+// it with caching disabled, matching tests/companion/devswarm-app-db.test.js's
+// own fixture pattern.
+function devswarmAppDbFixture(h) {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const dbFile = path.join(h.home, 'app-devswarm.db');
+  const db = new sqlite.DatabaseSync(dbFile);
+  db.exec('CREATE TABLE builders (id TEXT PRIMARY KEY, repositoryId TEXT, worktreePath TEXT, isHidden INTEGER NOT NULL DEFAULT 0, isActive INTEGER NOT NULL DEFAULT 1)');
+  const ins = db.prepare('INSERT INTO builders (id, repositoryId, worktreePath, isHidden, isActive) VALUES (?, ?, ?, ?, ?)');
+  ins.run('b-active', 'r1', path.join(h.home, 'wt-active'), 0, 1);
+  ins.run('b-archived', 'r1', path.join(h.home, 'wt-archived'), 1, 0);
+  db.close();
+  return { dbFile, env: { ANTIHALL_DEVSWARM_APP_DB: dbFile, ANTIHALL_DEVSWARM_APP_DB_CACHE_MS: '0' } };
+}
+
+test('ATTENDED: in_progress task owned by a LIVE devswarm child workspace -> no block', { skip: skipSqlite }, () => {
+  const h = makeHome();
+  try {
+    const f = devswarmAppDbFixture(h);
+    const tp = h.writeTranscript([
+      todoWrite([
+        { id: '1', content: 'delegated to the child', status: 'in_progress', owner: 'b-active' },
+      ]),
+    ]);
+    const r = testHook(HOOK, stopPayload(tp), { home: h.home, env: f.env });
+    assert.ok(!isBlock(r), `a live devswarm child owner must not block; reason: ${r.json && r.json.reason}`);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('STILL BLOCKS: owner names an ARCHIVED devswarm workspace', { skip: skipSqlite }, () => {
+  const h = makeHome();
+  try {
+    const f = devswarmAppDbFixture(h);
+    const tp = h.writeTranscript([
+      todoWrite([
+        { id: '1', content: 'delegated to a dead child', status: 'in_progress', owner: 'b-archived' },
+      ]),
+    ]);
+    const r = testHook(HOOK, stopPayload(tp), { home: h.home, env: f.env });
+    assert.ok(isBlock(r), `an archived devswarm child owner must still block; stdout: ${r.stdout}`);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('STILL BLOCKS: owner names an UNKNOWN workspace id', { skip: skipSqlite }, () => {
+  const h = makeHome();
+  try {
+    const f = devswarmAppDbFixture(h);
+    const tp = h.writeTranscript([
+      todoWrite([
+        { id: '1', content: 'delegated to nobody the app knows', status: 'in_progress', owner: 'b-nonexistent' },
+      ]),
+    ]);
+    const r = testHook(HOOK, stopPayload(tp), { home: h.home, env: f.env });
+    assert.ok(isBlock(r), `an unknown workspace owner must still block; stdout: ${r.stdout}`);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('STILL BLOCKS: devswarm registry unreadable (no app DB) -> fail-open to the pre-existing block', { skip: skipSqlite }, () => {
+  const h = makeHome();
+  try {
+    const path = require('node:path');
+    const tp = h.writeTranscript([
+      todoWrite([
+        { id: '1', content: 'delegated, but no app DB to check', status: 'in_progress', owner: 'b-active' },
+      ]),
+    ]);
+    // Point at a DB file that does not exist -> appArchivedVerdict returns null.
+    const env = { ANTIHALL_DEVSWARM_APP_DB: path.join(h.home, 'missing.db'), ANTIHALL_DEVSWARM_APP_DB_CACHE_MS: '0' };
+    const r = testHook(HOOK, stopPayload(tp), { home: h.home, env });
+    assert.ok(isBlock(r), `an unreadable registry must fail open to the current block behavior; stdout: ${r.stdout}`);
+  } finally {
+    h.cleanup();
+  }
+});
