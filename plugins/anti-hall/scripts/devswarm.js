@@ -8771,6 +8771,11 @@ function cmdRespawn(id, flags, ctx) {
   return {
     ok: true, action: 'respawn', id, branch: st.branch, newBranch: next.branch, newId: sp.meshId || null, defaultBranch: def,
     sent: sendOk, parked: !!parkBranch, parkBranch, handoverPath, spawn: { ok: sp.ok, worktreePath: sp.worktreePath, plan: sp.plan },
+    // A1-8: which untracked files actually rode along on the park branch, and
+    // which were skipped as likely secrets (.env/*.pem/*.key/id_rsa*/etc) —
+    // surfaced here (not just silently dropped) so the Primary can see both.
+    untrackedIncluded: park ? park.untrackedIncluded || [] : [],
+    untrackedExcluded: park ? park.untrackedExcluded || [] : [],
     archived: { ok: !!(archived && archived.ok), error: archived && !archived.ok ? archived.error : undefined },
     nag,
   };

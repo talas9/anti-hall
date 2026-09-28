@@ -74,10 +74,33 @@ function localBranchExists(cwd, name) {
   return git(cwd, ['show-ref', '--verify', '--quiet', 'refs/heads/' + name]).ok;
 }
 
+// A1-8: parkWip used to stage EVERY untracked, non-ignored file (`git add
+// -A`) into the pushed WIP park branch — including a credential file the
+// child never meant to commit (a stray `.env`, an `id_rsa` copy, a
+// `credentials.json`, ...). These basename globs are excluded from the park;
+// the full untracked set is still reported back (both what was included and
+// what was skipped) so the Primary can see it, rather than silently dropping
+// files with no visibility.
+const SECRET_BASENAME_GLOBS = [
+  '.env', '.env.*', '*.pem', '*.key', 'id_rsa*', '*.p12', 'credentials*.json', '.npmrc', '.netrc',
+];
+function globToRegExp(glob) {
+  const escaped = glob.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*');
+  return new RegExp('^' + escaped + '$', 'i');
+}
+const SECRET_BASENAME_RES = SECRET_BASENAME_GLOBS.map(globToRegExp);
+function isSecretPath(p) {
+  const base = path.basename(String(p || ''));
+  return SECRET_BASENAME_RES.some((re) => re.test(base));
+}
+
 // parkWip(wt, { branch, parkBranch, id, dirty }) -> { ok, parkBranch, commit,
-// pushed } | { ok:false, stage, error, parkBranch?, commit? }.
+// pushed, untrackedIncluded, untrackedExcluded } | { ok:false, stage, error,
+// parkBranch?, commit? }.
 function parkWip(wt, o) {
   let commit = null;
+  let untrackedIncluded = [];
+  let untrackedExcluded = [];
   if (o.dirty) {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ah-park-'));
     const idx = path.join(tmpDir, 'index');
@@ -85,8 +108,21 @@ function parkWip(wt, o) {
     try {
       const rt = git(wt, ['read-tree', 'HEAD'], { env });
       if (!rt.ok) return { ok: false, stage: 'snapshot', error: 'read-tree failed: ' + rt.err };
-      const add = git(wt, ['add', '-A'], { env });
-      if (!add.ok) return { ok: false, stage: 'snapshot', error: 'add failed: ' + add.err };
+      // Tracked changes (modifications/deletions) only - never stages a NEW
+      // untracked file, so this alone cannot pick up a fresh secret file.
+      const addTracked = git(wt, ['add', '-u'], { env });
+      if (!addTracked.ok) return { ok: false, stage: 'snapshot', error: 'add -u failed: ' + addTracked.err };
+      // Untracked, non-ignored files: filter out secret-pattern basenames
+      // BEFORE staging, using an explicit path list (never a glob pathspec,
+      // so there is no magic-pathspec ambiguity to get subtly wrong).
+      const ls = git(wt, ['ls-files', '--others', '--exclude-standard']);
+      const untracked = ls.ok && ls.out ? ls.out.split('\n').filter(Boolean) : [];
+      untrackedIncluded = untracked.filter((p) => !isSecretPath(p));
+      untrackedExcluded = untracked.filter(isSecretPath);
+      if (untrackedIncluded.length) {
+        const addUntracked = git(wt, ['add', '--'].concat(untrackedIncluded), { env });
+        if (!addUntracked.ok) return { ok: false, stage: 'snapshot', error: 'add (untracked) failed: ' + addUntracked.err };
+      }
       const tree = git(wt, ['write-tree'], { env });
       if (!tree.ok) return { ok: false, stage: 'snapshot', error: 'write-tree failed: ' + tree.err };
       const who = git(wt, ['config', 'user.email']).ok ? [] : ['-c', 'user.name=anti-hall respawn', '-c', 'user.email=respawn@anti-hall.invalid'];
@@ -110,7 +146,7 @@ function parkWip(wt, o) {
     return { ok: false, stage: 'push', parkBranch: o.parkBranch, commit,
       error: 'push of ' + o.parkBranch + ' failed (the local branch keeps the work): ' + p.err.split('\n').slice(-3).join(' ') };
   }
-  return { ok: true, parkBranch: o.parkBranch, commit, pushed: true };
+  return { ok: true, parkBranch: o.parkBranch, commit, pushed: true, untrackedIncluded, untrackedExcluded };
 }
 
 // handoverText(info) -> markdown. Steps are written as "#N text", never
@@ -168,5 +204,5 @@ function briefText(info, handover) {
 
 module.exports = {
   git, worktreeState, needsPark, parkBranchName, nextBranch, localBranchExists,
-  parkWip, handoverText, briefText,
+  parkWip, handoverText, briefText, isSecretPath, SECRET_BASENAME_GLOBS,
 };

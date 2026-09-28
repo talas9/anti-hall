@@ -244,6 +244,42 @@ test('dirty worktree: parked on a new pushed branch, child untouched, spawned fr
   } finally { f.cleanup(); }
 });
 
+test('A1-8: secret-shaped untracked files are excluded from the park branch and reported', () => {
+  const f = fixture();
+  try {
+    fs.writeFileSync(path.join(f.wt, 'new.txt'), 'untracked work\n');
+    fs.writeFileSync(path.join(f.wt, '.env'), 'SECRET=1\n');
+    fs.writeFileSync(path.join(f.wt, '.env.local'), 'SECRET=2\n');
+    fs.writeFileSync(path.join(f.wt, 'id_rsa'), 'not a real key\n');
+    fs.writeFileSync(path.join(f.wt, 'server.pem'), 'not a real cert\n');
+    fs.writeFileSync(path.join(f.wt, 'credentials.json'), '{"k":"v"}\n');
+    fs.writeFileSync(path.join(f.wt, '.npmrc'), '//registry/:_authToken=x\n');
+    const r = cli.run(['respawn', CHILD], f.ctx());
+    assert.strictEqual(r.code, 0, JSON.stringify(r.result));
+    const res = r.result;
+    assert.strictEqual(res.parked, true);
+    // Ordinary untracked work still rides along.
+    assert.strictEqual(git(f.repo, ['show', res.parkBranch + ':new.txt']), 'untracked work');
+    // None of the secret-shaped files reached the pushed park branch.
+    const parkedFiles = git(f.repo, ['ls-tree', '-r', '--name-only', res.parkBranch]).split('\n');
+    for (const name of ['.env', '.env.local', 'id_rsa', 'server.pem', 'credentials.json', '.npmrc']) {
+      assert.ok(!parkedFiles.includes(name), name + ' must not be on the park branch: ' + parkedFiles.join(','));
+    }
+    assert.ok(parkedFiles.includes('new.txt'));
+    // Reported back, not silently dropped.
+    assert.deepStrictEqual(res.untrackedIncluded.sort(), ['new.txt']);
+    assert.deepStrictEqual(
+      res.untrackedExcluded.sort(),
+      ['.env', '.env.local', '.npmrc', 'credentials.json', 'id_rsa', 'server.pem'],
+    );
+    // The excluded files are still sitting untouched in the child's worktree
+    // (never deleted, never staged, never pushed anywhere).
+    for (const name of ['.env', '.env.local', 'id_rsa', 'server.pem', 'credentials.json', '.npmrc']) {
+      assert.ok(fs.existsSync(path.join(f.wt, name)), name + ' still present in the worktree');
+    }
+  } finally { f.cleanup(); }
+});
+
 test('a failed push aborts the respawn: nothing spawned, the local park branch keeps the work', () => {
   const f = fixture();
   try {
