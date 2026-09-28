@@ -85,9 +85,8 @@ const OVERRIDE_CORE =
   '(`workspace message-*`) are BLOCKED. Report status: `node ' + CLI + ' ' +
   'heartbeat <id> --summary "<text>"`. Direct-message: `node ' + CLI + ' send ' +
   '--to-primary --message-file <path>` (or `--to <meshId>`). Check in: `node ' + CLI + ' ' +
-  'roster` (read-only), `node ' + CLI + ' mesh read` (CONSUMES unseen broadcasts — advances ' +
-  'your cursor; use `mesh read --peek` to check in without consuming), `node ' + CLI + ' ' +
-  'inbox read-primary <id>` (read-only — then run the `ackCommand` it returns). RESTING state = ' +
+  'roster`, `mesh read` (CONSUMES broadcasts — use `--peek` to check in without consuming), ' +
+  '`inbox read-primary <id>` (read-only — then run the `ackCommand` it returns). RESTING state = ' +
   'keep polling the mesh — do not idle silently. Scope: COMMUNICATION ONLY; this never ' +
   'changes your assigned task.';
 
@@ -119,14 +118,12 @@ const CHILD_DONE_LINE =
 // tight against the ~10k hook-injection cap (Claude Code caps additionalContext
 // per hook and spills overflow to a file — see verify-first-full.js header).
 const CHILD_QUESTION_LINE =
-  ' BLOCKED ON A DECISION? Never ask the human directly, never halt all work — a ' +
-  'question parks ONE sub-task, not the workspace. Send it to the parent with the ' +
-  '`send --to-primary --question` command above, message = what\'s blocked / options / your ' +
-  'recommendation / the DEFAULT you\'ll take / your deadline. Keep working every ' +
-  'other unblocked item meanwhile. DEFAULT-AND-PROCEED: no reply by your deadline ' +
-  '-> take that default, proceed, and flag it LOUDLY as an explicit assumption in ' +
-  'your report — never silently. Hard-stop ONLY for a destructive/irreversible ' +
-  'action you\'re not authorized to take: park + report, do not guess a default. ' +
+  ' BLOCKED ON A DECISION? Never ask the human directly, never halt all work — a question ' +
+  'parks ONE sub-task; keep working every other unblocked item. Send via `send --to-primary ' +
+  '--question` (message = blocked/options/recommendation/DEFAULT you\'ll take/deadline). ' +
+  'DEFAULT-AND-PROCEED: no reply by deadline -> take that default, proceed, and ' +
+  'flag it LOUDLY as an explicit assumption in your report — never silently. Hard-stop ONLY ' +
+  'for a destructive/irreversible action: park + report, do not guess a default. ' +
   'Ladder: child -> parent -> human, never child -> human.';
 
 const PARENT_QUESTION_LINE =

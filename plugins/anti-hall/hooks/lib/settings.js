@@ -59,9 +59,18 @@ function homeFromEnv(env) {
 // Threads that same env object through AND derives `home` from it (never
 // os.homedir() when the env carries a HOME), so settings.json/legacy lookups
 // resolve against the SAME isolated home a test's fake env already implies.
+// `home` is a LAZY getter, not an eagerly-computed value: get() returns
+// straight from the env override (readEnvOverride, checked first) without
+// ever touching settingsPath()/homeDir() when the env carries the override —
+// so a caller whose env has the looked-up var but no HOME (an env-only
+// fixture that never needs the file tier) is never forced through
+// homeFromEnv()'s real-home refusal under `node --test`. Only a lookup that
+// actually falls through to settings.json evaluates `opts.home`.
 function getWithEnv(section, key, dflt, env) {
   const e = env || process.env;
-  return get(section, key, dflt, { env: e, home: homeFromEnv(e) });
+  const opts = { env: e };
+  Object.defineProperty(opts, 'home', { get: () => homeFromEnv(e), enumerable: true });
+  return get(section, key, dflt, opts);
 }
 
 // path(opts?) -> ~/.anti-hall/settings.json (home-injectable for tests).

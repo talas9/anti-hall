@@ -403,9 +403,8 @@ function monitorArmLine(watcher, rearmOnTickOnly) {
   const tickOnly = rearmOnTickOnly === undefined ? true : !!rearmOnTickOnly;
   const expiryClause = tickOnly
     ? 'use `persistent: true` if your Monitor tool supports it, else max `timeout_ms`. Do NOT ' +
-      're-arm inline when it emits its final/expired event — reply in one line (e.g. "Monitor ' +
-      'lapsed, next cron tick will re-arm it") and stop; the next `inbox tick` cron turn checks ' +
-      '`watcherArmed` and re-arms it then — never two watchers at once.'
+      're-arm inline when it emits its final/expired event — reply in one line and stop; the ' +
+      'next `inbox tick` cron turn re-arms it via `watcherArmed` — never two watchers at once.'
     : 'use `persistent: true` if your Monitor tool supports it, else max `timeout_ms` + re-arm ' +
       'on its final/expired event — never two watchers at once.';
   return ' ALSO arm the `Monitor` tool as your PRIMARY wake path (Cron above is the 30-minute ' +
