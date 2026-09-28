@@ -1105,6 +1105,33 @@ function ownershipRefusalCause(callerKind, ownEntry) {
   return 'ownership-mismatch';
 }
 
+// ownerAppDbEnv(ctx) -> the env object to hand the (a0) first-claim leg's
+// app-DB "ground truth" reader (companion/lib/devswarm-app-db.js's
+// `builderForWorktree`), NEVER `ctx.env` as-is. 0.117.1 round 3 (P0
+// R2-P0-env-forged-appdb-impersonation): in a REAL CLI invocation `ctx.env`
+// defaults to `process.env` (run()'s `ctx0` carried no `env` key of its
+// own) — the SAME process env the caller this leg is meant to distrust
+// fully controls, including `ANTIHALL_DEVSWARM_APP_DB`. Honoring that
+// override here would let the caller redirect "ground truth" at a sqlite
+// file it wrote itself. `ctx.envExplicit` (set once, in `run()`, from
+// whether `ctx0` itself carried an `env` key) distinguishes that real-CLI
+// default from an IN-PROCESS caller (tests, or another in-process embedder)
+// that deliberately supplied its own `env` — that env is not the untrusted
+// external caller's process env, so it is trusted verbatim. Otherwise every
+// OTHER env var is kept (e.g. `XDG_CONFIG_HOME`, still honored for the
+// real per-OS app DB path) and only the two override keys
+// devswarm-app-db.js's `appDbPath()`/cache-TTL reader honor are stripped,
+// so the fixed per-OS app DB path is used instead of a caller-chosen one.
+function ownerAppDbEnv(ctx) {
+  const env = ctx && ctx.env;
+  if (ctx && ctx.envExplicit) return env;
+  if (!env || typeof env !== 'object') return env;
+  const sanitized = Object.assign({}, env);
+  delete sanitized.ANTIHALL_DEVSWARM_APP_DB;
+  delete sanitized.ANTIHALL_DEVSWARM_APP_DB_CACHE_MS;
+  return sanitized;
+}
+
 // broadcastFamilyOwns(s, caller, id, home, ownEntry, cwd, callerSessionId,
 // hadPriorHeartbeat, callerKind) -> bool.
 // The IDENTITY-FAMILY leg of cmdHeartbeat's meshBroadcast ownership check (defect
@@ -1155,12 +1182,37 @@ function ownershipRefusalCause(callerKind, ownEntry) {
 //        DB reader (companion/lib/devswarm-app-db.js's `builderForWorktree`,
 //        the same ground-truth source the register-path app-archive guard
 //        already trusts). A bare DEVSWARM_BUILDER_ID declaration is NOT
-//        sufficient proof by itself (spoofable) — env is never consulted
-//        here at all; only cwd (ground truth) and the app DB (ground truth)
-//        decide. No match — app DB unreadable/off, no builder row for the
-//        caller's worktree, or that row's id differs from `id` — fails
-//        closed (return false): the summary is DROPPED with a `note`
-//        explaining why, exactly like any other refusal.
+//        sufficient proof by itself (spoofable).
+//   0.117.1 ROUND 3 FIX (P0 R2-P0-env-forged-appdb-impersonation): the
+//        round-2 comment above ("env is never consulted here at all") was
+//        itself wrong — appDbPath() honors env.ANTIHALL_DEVSWARM_APP_DB
+//        with no gating, and in a REAL CLI invocation ctx.env defaults to
+//        process.env (run()'s ctx0 carried no env key of its own) — the
+//        SAME process env the untrusted caller fully controls. A caller
+//        could therefore point the "app DB" at a throwaway sqlite file it
+//        wrote itself, containing a builders row for its own worktree
+//        under any id it wants, and pass this leg with no ground truth at
+//        all. ownerAppDbEnv() (below, at this call site) closes this: for
+//        THIS decision only, the override is honored solely when an
+//        IN-PROCESS caller supplied its OWN env key on ctx0 (tests, or
+//        another in-process embedder — never the untrusted external
+//        caller's own process env); a real CLI invocation always resolves
+//        the fixed per-OS app DB path, ignoring ANTIHALL_DEVSWARM_APP_DB.
+//        This leg now also matches an ACTIVE app-DB builder row ONLY — an
+//        archived/hidden-only row no longer grants first-claim
+//        (builderForWorktree({ activeOnly: true }) below; every other
+//        caller of builderForWorktree keeps the existing
+//        active-with-archived-fallback behavior). No match — app DB
+//        unreadable/off, no ACTIVE builder row for the caller's worktree,
+//        or that row's id differs from `id` — fails closed (return
+//        false): the summary is DROPPED with a `note` explaining why,
+//        exactly like any other refusal. Note: this leg still only
+//        guards against MISATTRIBUTION (an accidental or unrelated
+//        wrong-worktree/wrong-id claim), never a same-uid adversary that
+//        also controls its own cwd — such a caller could equally cd into
+//        the target worktree and pass this leg through the REAL app DB;
+//        the mesh append is a consent-based channel, not a security
+//        boundary against the local user (see skills/devswarm/SKILL.md).
 //
 // FAIL-CLOSED in full: any throw, an unresolvable worktree, or a target id with
 // no registry row AND no (a0) match returns false, leaving the refusal exactly
@@ -1203,7 +1255,7 @@ function broadcastFamilyOwns(s, caller, id, home, ownEntry, cwd, callerSessionId
           const wt0 = resolveCallerWorktree(rawCwd0);
           if (wt0) {
             const appDb = require('../companion/lib/devswarm-app-db.js');
-            const builder = appDb.builderForWorktree({ home, env, worktreePath: wt0, now: Date.now() });
+            const builder = appDb.builderForWorktree({ home, env, worktreePath: wt0, now: Date.now(), activeOnly: true });
             if (builder && String(builder.id) === target) return true;
           }
         } catch (_) {}
@@ -9110,7 +9162,7 @@ function cmdHeartbeat(id, flags, ctx) {
           const callerSessionId = realSessionIdFrom(flags, ctx, id);
           const owns = caller === id
             || (ownEntry && ownEntry.id === id)
-            || broadcastFamilyOwns(s, caller, id, home, ownEntry, cwd, callerSessionId, hadPriorHeartbeat, callerInfo.kind, ctx.env);
+            || broadcastFamilyOwns(s, caller, id, home, ownEntry, cwd, callerSessionId, hadPriorHeartbeat, callerInfo.kind, ownerAppDbEnv(ctx));
           if (!owns) {
             // A7: name WHICH leg failed instead of one generic message for
             // an unresolvable identity, an unregistered caller, AND a genuine
@@ -19661,7 +19713,15 @@ function isHelpRequest(positionals, flags) {
 // injectable for tests). NEVER throws — any internal error becomes a
 // { ok:false, error } result with exit code 2.
 function run(argv, ctx0) {
+  // envExplicit: true only when the CALLER (ctx0) supplied its own `env` key
+  // — an in-process embedder (tests, another in-process caller), never the
+  // real CLI's own default. Consulted by ownerAppDbEnv() so the (a0)
+  // first-claim ownership leg never honors ANTIHALL_DEVSWARM_APP_DB out of
+  // a real invocation's plain `process.env` default (0.117.1 round 3, P0
+  // R2-P0-env-forged-appdb-impersonation).
+  const envExplicit = !!(ctx0 && Object.prototype.hasOwnProperty.call(ctx0, 'env'));
   const ctx = Object.assign({ home: os.homedir(), env: process.env }, ctx0 || {});
+  ctx.envExplicit = envExplicit;
   const { positionals, flags } = parseArgs(argv || []);
   const cmd = positionals[0];
   // D4 P0 fix: help intercept runs BEFORE the switch — see isHelpRequest()'s

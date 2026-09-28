@@ -631,11 +631,18 @@ function scheduledForDeletion(home, env) {
 
 function resetCache() { memo = null; }
 
-// builderForWorktree({ home, env, worktreePath, now }) -> { id, builderType, active } | null.
-// The app's own builder record for a worktree (v0.108.0 identity fix): the
-// Primary's checkout is `builderType = 'primary'`, a child workspace is
-// `'standard'`. Prefers the ACTIVE builder; exactly one candidate required
-// (two active builders on one path is ambiguous -> null). Fail-open null.
+// builderForWorktree({ home, env, worktreePath, now, activeOnly }) ->
+// { id, builderType, active } | null. The app's own builder record for a
+// worktree (v0.108.0 identity fix): the Primary's checkout is
+// `builderType = 'primary'`, a child workspace is `'standard'`. Prefers the
+// ACTIVE builder; exactly one candidate required (two active builders on one
+// path is ambiguous -> null). Falls back to archived/hidden rows when none
+// are active — UNLESS `opts.activeOnly` is true, in which case only active
+// rows are ever considered (0.117.1 round 3, R2-P2-archived-builder-fallback:
+// an ownership decision must never grant first-claim off a stale
+// archived/hidden row at a worktree path that was later reused while no
+// active row exists yet). Existing callers that don't pass `activeOnly` keep
+// the original fallback behavior unchanged. Fail-open null.
 function builderForWorktree(opts) {
   const o = opts || {};
   try {
@@ -645,7 +652,7 @@ function builderForWorktree(opts) {
     const all = [];
     for (const [id, b] of map.entries()) if (b.worktreePath === wt) all.push({ id, builderType: b.builderType, active: b.active });
     const act = all.filter((b) => b.active);
-    const pool = act.length ? act : all;
+    const pool = o.activeOnly ? act : (act.length ? act : all);
     return pool.length === 1 ? pool[0] : null;
   } catch (_) { return null; }
 }

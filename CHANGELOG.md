@@ -41,6 +41,17 @@ reproducing test before the fix.
   builder id) fails closed, same as any other refusal. Also: a dropped `--summary` now
   carries a plain top-level `note: 'summary NOT recorded: <reason>'` instead of only a
   nested `dropped`/`dropReason` pair that was easy to miss.
+- **First-claim heartbeat ownership: follow-up hardening round (the app DB "ground
+  truth" was itself env-forgeable).** The fix above's own claim that the app-DB
+  ground-truth reader "never consults env" was wrong: its DB file path honors
+  `ANTIHALL_DEVSWARM_APP_DB` with no gating, and a real CLI invocation's `ctx.env`
+  defaults to `process.env` — the same process env the untrusted caller controls — so a
+  caller could point the "ground truth" DB at a throwaway sqlite file of its own and
+  claim any never-registered id through the very leg meant to stop that. The override is
+  now honored only when an in-process caller (tests, another in-process embedder)
+  supplied its own `env` explicitly; a real CLI invocation always resolves the fixed
+  per-OS app DB path. This leg also now matches an ACTIVE app-DB builder row only — an
+  archived/hidden-only row at the worktree no longer grants first-claim.
 - **A workspace could register itself with the exact id `system`.** Mesh code reads a
   row's `sender`/`from` field to attribute a message; a workspace registered as `system`
   would make its own outbound rows indistinguishable from a genuine system-authored one.

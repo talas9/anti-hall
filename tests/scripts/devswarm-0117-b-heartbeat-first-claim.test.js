@@ -169,6 +169,67 @@ test('item B NEGATIVE (2): an unrelated caller claiming a never-registered id ->
   } finally { rm(home); rm(victimRepo); rm(attackerRepo); }
 });
 
+test('item B NEGATIVE (2b) round 3: a caller cannot forge the app-DB "ground truth" via its own process env in a REAL CLI invocation -> DROPPED with a note', { skip: skipSqlite }, () => {
+  // 0.117.1 round 3 (P0 R2-P0-env-forged-appdb-impersonation): unlike every
+  // other test in this file, this one deliberately does NOT pass an `env`
+  // key on ctx0 — it sets process.env itself, exactly like a real hostile
+  // CLI invocation would, so ctx.env falls back to the real process.env
+  // default (run()'s ctx.envExplicit === false) instead of an in-process
+  // caller's own explicit env.
+  const home = tmpHome();
+  const repo = makeGitRepo('gt-env-forge');
+  const savedDb = process.env.ANTIHALL_DEVSWARM_APP_DB;
+  const savedCache = process.env.ANTIHALL_DEVSWARM_APP_DB_CACHE_MS;
+  try {
+    const id = 'sibling-future-id-envforge';
+    const dbFile = path.join(home, 'forged-appdb.db');
+    const db = new sqlite.DatabaseSync(dbFile);
+    db.exec('CREATE TABLE builders (id TEXT PRIMARY KEY, repositoryId TEXT, worktreePath TEXT, isHidden INTEGER NOT NULL DEFAULT 0, isActive INTEGER NOT NULL DEFAULT 1)');
+    db.prepare('INSERT INTO builders (id, repositoryId, worktreePath, isHidden, isActive) VALUES (?, ?, ?, ?, ?)')
+      .run(id, 'r1', repo, 0, 1);
+    db.close();
+    process.env.ANTIHALL_DEVSWARM_APP_DB = dbFile;
+    process.env.ANTIHALL_DEVSWARM_APP_DB_CACHE_MS = '0';
+
+    const r = cli.run(
+      ['heartbeat', id, '--summary', 'impersonating via forged env-redirected app db'],
+      { home, backend: 'journal', cwd: repo } // no `env` key on ctx0 -> real CLI default (process.env)
+    );
+    const mb = r.result.meshBroadcast;
+    assert.ok(mb, 'a broadcast attempt must be reported');
+    assert.strictEqual(mb.ok, false, 'a forged ANTIHALL_DEVSWARM_APP_DB out of a real invocation\'s own process env must never grant first-claim: ' + JSON.stringify(mb));
+    assert.strictEqual(mb.dropped, true);
+    assert.strictEqual(r.result.note, 'summary NOT recorded: ' + mb.dropReason,
+      'the drop must be surfaced as a plain top-level note');
+  } finally {
+    if (savedDb === undefined) delete process.env.ANTIHALL_DEVSWARM_APP_DB; else process.env.ANTIHALL_DEVSWARM_APP_DB = savedDb;
+    if (savedCache === undefined) delete process.env.ANTIHALL_DEVSWARM_APP_DB_CACHE_MS; else process.env.ANTIHALL_DEVSWARM_APP_DB_CACHE_MS = savedCache;
+    rm(home); rm(repo);
+  }
+});
+
+test('item B NEGATIVE (2c) round 3: an archived-only builder row at the caller\'s worktree does NOT grant first-claim', { skip: skipSqlite }, () => {
+  const home = tmpHome();
+  const repo = makeGitRepo('gt-archived-only');
+  try {
+    const id = 'archived-only-id';
+    // Only an ARCHIVED (isActive: false) builder row exists for this
+    // worktree — 0.117.1 round 3 (R2-P2-archived-builder-fallback): the
+    // ownership decision must never fall back to an archived/hidden row.
+    const f = appDbFixture(home, [{ id, worktreePath: repo, isActive: false }]);
+    const r = cli.run(
+      ['heartbeat', id, '--summary', 'trying to claim via an archived row'],
+      ctx(home, { cwd: repo, env: f.env })
+    );
+    const mb = r.result.meshBroadcast;
+    assert.ok(mb, 'a broadcast attempt must be reported');
+    assert.strictEqual(mb.ok, false, 'an archived-only builder row must not grant first-claim: ' + JSON.stringify(mb));
+    assert.strictEqual(mb.dropped, true);
+    assert.strictEqual(r.result.note, 'summary NOT recorded: ' + mb.dropReason,
+      'the drop must be surfaced as a plain top-level note');
+  } finally { rm(home); rm(repo); }
+});
+
 test('item B NEGATIVE (3): app DB missing/unreadable -> DROPPED with a note (fails closed, never claimed)', () => {
   const home = tmpHome();
   const repo = makeGitRepo('gt-no-appdb');
@@ -220,7 +281,7 @@ test('MUTATION (item B round 2): reverting the app-DB ground-truth check reprodu
       + "          const wt0 = resolveCallerWorktree(rawCwd0);\n"
       + "          if (wt0) {\n"
       + "            const appDb = require('../companion/lib/devswarm-app-db.js');\n"
-      + "            const builder = appDb.builderForWorktree({ home, env, worktreePath: wt0, now: Date.now() });\n"
+      + "            const builder = appDb.builderForWorktree({ home, env, worktreePath: wt0, now: Date.now(), activeOnly: true });\n"
       + "            if (builder && String(builder.id) === target) return true;\n"
       + "          }",
     "          if (!readDescriptorFile(home, target)) return true;",
