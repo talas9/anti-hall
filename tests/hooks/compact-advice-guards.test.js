@@ -42,8 +42,9 @@ function withHome(fn) {
   try { return fn(h); } finally { h.cleanup(); }
 }
 
-// compact-declaration-guard ships opt-in (default off, 0.116.0) — tests that
-// exercise its blocking behavior must explicitly turn it on.
+// compact-declaration-guard shipped opt-in in 0.116.0 and was re-enabled by
+// default in 0.117.0 (see settings-schema.js). enableDeclGuard is kept for
+// tests that want to be explicit about the setting regardless of default.
 function enableDeclGuard(h) {
   fs.writeFileSync(path.join(h.antiHall, 'settings.json'), JSON.stringify({ guards: { compactDeclarationGuard: true } }));
 }
@@ -150,9 +151,9 @@ test('Stop: recentTurns=0 disables the recent-compact rule', () => withHome((h) 
 // ---------------------------------------------------- (b) PreToolUse check
 const safeTurn = () => [user('finish up'), say('Everything is idle.\n\n✅ SAFE TO COMPACT NOW', 88)];
 
-test('PreToolUse: default off -> silent on a fixture that would block if enabled', () => withHome((h) => {
+test('PreToolUse: default on (0.117.0) -> blocks the same fixture with no explicit opt-in', () => withHome((h) => {
   const tp = h.writeTranscript(safeTurn());
-  assert.strictEqual(blocked(testHook(PRE, prePayload(tp, 'Agent', { prompt: 'x', run_in_background: true }), { home: h.home })), null);
+  assert.ok(blocked(testHook(PRE, prePayload(tp, 'Agent', { prompt: 'x', run_in_background: true }), { home: h.home })));
 }));
 
 test('PreToolUse: Agent spawn after SAFE in the same turn -> block (explicit opt-in)', () => withHome((h) => {

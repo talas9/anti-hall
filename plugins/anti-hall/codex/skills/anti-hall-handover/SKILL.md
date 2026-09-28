@@ -371,8 +371,8 @@ final message depends on the `Trigger:` line you recorded above:
 The declared line is the LAST act of the turn either way; work after it makes
 the handover STALE — refresh (same seq, or seq+1) and re-declare before
 claiming safe/saved again. `compact-declaration-guard.js` (shared; on Codex
-registered for shell commands only; opt-in — `guards.compactDeclarationGuard`,
-default OFF) can, when turned on, block state-changing shell after a SAFE
+registered for shell commands only; `guards.compactDeclarationGuard`,
+default ON since 0.117.0) blocks state-changing shell after a SAFE
 declaration in the same turn — regardless of the switch, write
 `RETRACT SAFE TO COMPACT — <why>` first
 if more work is genuinely needed. `tasklist-guard.js` (shared, and registered in
