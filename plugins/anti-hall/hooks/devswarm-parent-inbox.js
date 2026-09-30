@@ -389,6 +389,23 @@ function logSegmentError(home, segment, err) {
   } catch (_) {}
 }
 
+// MAX_NOT_DRAINING_SUPPRESSED_LOG_BYTES — bound for not-draining-suppressed.jsonl.
+const MAX_NOT_DRAINING_SUPPRESSED_LOG_BYTES = 256 * 1024;
+
+// logNotDrainingSuppressed(home) — one capped NDJSON line per turn the
+// "CHILD NOT DRAINING" nudge was suppressed by the item-5 on-change dedupe cap
+// (see the dedupeEmit call above). Read by hooks/doctor.js (same shape as its
+// existing cron-found-mail.jsonl report line) so the cap's own effect is
+// measurable. Never throws, never changes behavior.
+function logNotDrainingSuppressed(home) {
+  try {
+    const p = path.join(devswarmRoot(home), 'not-draining-suppressed.jsonl');
+    try { if (fs.statSync(p).size >= MAX_NOT_DRAINING_SUPPRESSED_LOG_BYTES) return; } catch (_) {}
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.appendFileSync(p, JSON.stringify({ ts: Date.now() }) + '\n');
+  } catch (_) {}
+}
+
 // Volatile-age normalizer for the WORKSPACES table (lib/emit-dedupe.js on-change
 // hash): blanks each row's last cell (the relative-age "last" column, e.g.
 // "42s"/"3m"/"—") so a turn where only ages advanced hashes the same as the last
@@ -2530,11 +2547,32 @@ function main() {
       }
     }
     if (normalList.length) {
-      // Burst collapse only (rule a, no on-change): a changed unread set always
-      // hashes differently and is emitted.
+      // item 5 fix (field report: "CHILD NOT DRAINING" repeated every turn for
+      // an idle child): unlike buildUrgentUnreadSegment just above, this call
+      // used to pass NO keepaliveTurns — rule (a) alone (burst-collapse) only
+      // suppresses a copy that is still PENDING delivery; once a copy is
+      // consumed (the model actually saw it), shouldEmit's `same` branch has no
+      // rule left to apply and falls through to its default `emit = true`, so
+      // an UNCHANGED segment (same unread/notDraining state) re-fired on every
+      // single delivered turn. keepaliveTurns:2 caps that to 2 repeats before
+      // going quiet — same on-change dedupe rule (b) the urgent tier already
+      // uses (line above) — and normalizeInboxVolatile already drops the only
+      // fields (age/trend) that tick on their own, so "no change" here really
+      // does mean no new mail and no child activity; any real change (new
+      // mail, a drained inbox, a status flip) still hashes differently and is
+      // emitted immediately, and an unchanged copy still resurfaces after
+      // `keepaliveTurns` suppressed delivered turns (the existing dedupeEmit
+      // contract — see lib/emit-dedupe.js rule b) rather than going silent
+      // forever.
       const inboxSeg = buildUnreadSegment(normalList, home);
-      if (dedupeEmit(home, sessionId, 'parent-inbox-nudge', inboxSeg, { transcriptPath, normalize: normalizeInboxVolatile })) {
+      if (dedupeEmit(home, sessionId, 'parent-inbox-nudge', inboxSeg, { transcriptPath, normalize: normalizeInboxVolatile, keepaliveTurns: 2 })) {
         segments.push(inboxSeg);
+      } else if (normalList.some((w) => w.notDraining)) {
+        // Report-only suppression counter (same capped-jsonl + doctor-info-line
+        // pattern as cron-found-mail.jsonl — see hooks/doctor.js) so the anti-
+        // spam cap itself stays measurable instead of an invisible behavior
+        // change.
+        logNotDrainingSuppressed(home);
       }
     }
     // Acceptance telemetry only when there is genuine unread backlog (not merely a

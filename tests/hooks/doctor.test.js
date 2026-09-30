@@ -363,6 +363,43 @@ test('doctor: DevSwarm-active session with NO cron-found-mail.jsonl reports the 
   }
 });
 
+// item 5 fix: not-draining-suppressed.jsonl (devswarm-parent-inbox.js's
+// logNotDrainingSuppressed, item 5's on-change dedupe cap) accumulates one
+// line per turn the "CHILD NOT DRAINING" nudge was suppressed — doctor
+// --check reports its line count as one INFO line, same report-only,
+// capped-jsonl pattern as cron-found-mail.jsonl above.
+test('doctor: DevSwarm-active session reports the not-draining-suppressed.jsonl line count as INFO', { skip: process.platform === 'win32' }, () => {
+  const { home, cleanup } = makeFakeHome();
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'antihall-doctor-cwd-'));
+  try {
+    const p = path.join(home, '.anti-hall', 'devswarm', 'not-draining-suppressed.jsonl');
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, [
+      JSON.stringify({ ts: 1 }),
+      JSON.stringify({ ts: 2 }),
+    ].join('\n') + '\n');
+    const r = runDoctor({ cwd, env: { HOME: home, USERPROFILE: home, ANTIHALL_DEVSWARM_SUPERVISOR: 'on', DEVSWARM_REPO_ID: 'repo-x' } });
+    assert.strictEqual(r.code, 0, r.out);
+    assert.match(r.out, /CHILD NOT DRAINING nudges suppressed by the repeat cap: 2/);
+  } finally {
+    cleanup();
+    try { fs.rmSync(cwd, { recursive: true, force: true }); } catch (_) {}
+  }
+});
+
+test('doctor: DevSwarm-active session with NO not-draining-suppressed.jsonl reports the count as 0, never FAILs', { skip: process.platform === 'win32' }, () => {
+  const { home, cleanup } = makeFakeHome();
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'antihall-doctor-cwd-'));
+  try {
+    const r = runDoctor({ cwd, env: { HOME: home, USERPROFILE: home, ANTIHALL_DEVSWARM_SUPERVISOR: 'on', DEVSWARM_REPO_ID: 'repo-x' } });
+    assert.strictEqual(r.code, 0, r.out);
+    assert.match(r.out, /CHILD NOT DRAINING nudges suppressed by the repeat cap: 0/);
+  } finally {
+    cleanup();
+    try { fs.rmSync(cwd, { recursive: true, force: true }); } catch (_) {}
+  }
+});
+
 // 0.117.0: devswarm-startup-samples.ndjson (companion/lib/devswarm-startup-
 // sampling.js) — DATA CAPTURE ONLY toward designing paused-workspace
 // detection. doctor --check reports its line count as one INFO line (never

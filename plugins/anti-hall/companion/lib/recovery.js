@@ -492,7 +492,7 @@ function notifyParentEscalation(descriptor, verdict, opts, openParentStore) {
     const staleSince = Number.isFinite(verdict && verdict.staleSince) ? verdict.staleSince : null;
     const idleMin = staleSince !== null ? Math.max(0, Math.round((now - staleSince) / 60000)) : null;
     const body = 'child ' + descriptor.id + ' idle' + (idleMin !== null ? ' ' + idleMin + 'm' : '')
-      + ' — reassign or archive';
+      + ' — pokes exhausted, a human must click/continue the workspace in the DevSwarm app (or reassign/archive it)';
     // PER-PROJECT: the notice lands in the PARENT's own repoKey store (the key every
     // other mesh writer opens with — never the legacy hashFromWorkspaceId bucket),
     // and deliverEscalation re-derives THAT store's projection (no workspaceId in

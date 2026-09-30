@@ -122,6 +122,23 @@ test('roster from a non-git cwd returns {ok:false,reason:"no-project"}', () => {
   } finally { rm(home); }
 });
 
+// item 3 fix: field report — `roster` from a cwd outside any repo (e.g. a
+// session's scratchpad) returned bare {"ok":false,"reason":"no-project"} with
+// no guidance. repoKey is always git-derived (no repoId->repoKey registry to
+// fall back through — DEVSWARM_REPO_ID is a caller-declared label, not a store
+// key, and trusting it here could silently read the WRONG project's roster),
+// so the chosen, smallest-correct fix is an actionable `error` string, not a
+// new resolution path.
+test('roster from a non-git cwd now also carries an actionable error string (same wording as `send`\'s own no-project error)', () => {
+  const home = tmpHome();
+  try {
+    const r = cli.run(['roster'], ctx(home, { cwd: fakeCwd(home) }));
+    assert.equal(r.result.ok, false);
+    assert.equal(r.result.reason, 'no-project');
+    assert.match(r.result.error, /cd into the repo first/);
+  } finally { rm(home); }
+});
+
 // ---- --from spoofing (D18) --------------------------------------------------
 
 test('send rejects an explicit --from that mismatches the cwd-derived identity (spoofing rejected)', () => {
@@ -267,6 +284,59 @@ test('send --to a real worktree meshId still resolves via the pre-existing meshI
       assert.equal(s.listMessages(childMeshId).length, 1);
     } finally { s.close(); }
   } finally { rm(home); rm(mainRepo); if (childWt) rm(childWt); }
+});
+
+// ---- item 2 fix: `nudge` resolves ids EXACTLY as `send` does -----------------
+// Field report: `nudge <child meshId>` returned {"ok":false,"error":"no
+// descriptor for workspace ..."} while `send --to <that same meshId>` worked —
+// cmdNudge used to look up ONLY readDescriptorFile(home, id) (an exact
+// descriptor-file-by-builder-id match), with no meshId fallback at all.
+
+test('nudge <meshId> resolves via the SAME resolution send uses (a builder-id row registered under a DIFFERENT meshId), instead of failing "no descriptor for workspace"', () => {
+  const home = tmpHome();
+  const mainRepo = makeGitRepo('nudge-meshid-main');
+  let childWt = null;
+  try {
+    childWt = addLinkedWorktree(mainRepo, 'nudge-meshid-child');
+    const childMeshId = derivedId(childWt);
+    assert.notEqual('child-x', childMeshId, 'precondition: id must differ from meshId to actually exercise the fallback');
+    // register (not seedRegistry) so BOTH the descriptor file (readDescriptorFile
+    // needs it) and the repoKey store registry (resolveSendTarget needs it) exist,
+    // exactly as a real child self-registration does.
+    const reg = cli.run(['register', 'child-x', '--worktree', childWt, '--session', 's'], ctx(home, { cwd: mainRepo }));
+    assert.equal(reg.result.ok, true);
+
+    // `nudge <its meshId>` must resolve to the SAME row `send --to <meshId>` would.
+    const r = cli.run(['nudge', childMeshId], ctx(home, { cwd: mainRepo }));
+    assert.equal(r.result.ok, true, 'a meshId must resolve, not fail closed: ' + JSON.stringify(r.result));
+    assert.notEqual(r.result.error, 'no descriptor for workspace ' + JSON.stringify(childMeshId));
+    assert.equal(r.result.id, childMeshId);
+    assert.equal(r.result.result.action, 'escalate'); // no nudgeCommand on this descriptor -> straight to escalate, but it DID resolve
+  } finally { rm(home); rm(mainRepo); if (childWt) rm(childWt); }
+});
+
+test('nudge <its own builder-id> still resolves via the direct descriptor lookup (unaffected fast path, no store open needed)', () => {
+  const home = tmpHome();
+  const mainRepo = makeGitRepo('nudge-builderid-main');
+  let childWt = null;
+  try {
+    childWt = addLinkedWorktree(mainRepo, 'nudge-builderid-child');
+    const reg = cli.run(['register', 'child-x', '--worktree', childWt, '--session', 's'], ctx(home, { cwd: mainRepo }));
+    assert.equal(reg.result.ok, true);
+    const r = cli.run(['nudge', 'child-x'], ctx(home, { cwd: mainRepo }));
+    assert.equal(r.result.ok, true);
+    assert.equal(r.result.id, 'child-x');
+  } finally { rm(home); rm(mainRepo); if (childWt) rm(childWt); }
+});
+
+test('nudge <an id that resolves to nothing, even via meshId> still fails closed with "no descriptor for workspace" (no false positive)', () => {
+  const home = tmpHome();
+  const mainRepo = makeGitRepo('nudge-unresolvable-main');
+  try {
+    const r = cli.run(['nudge', 'primary-doesnotexist'], ctx(home, { cwd: mainRepo }));
+    assert.equal(r.result.ok, false);
+    assert.equal(r.result.error, 'no descriptor for workspace "primary-doesnotexist"');
+  } finally { rm(home); rm(mainRepo); }
 });
 
 test('resolveSendTarget fails closed with a CLEAR ambiguous reason rather than silently picking a candidate (defense-in-depth: id is the registry PRIMARY KEY in a real store, so this exercises the guard directly against a corrupted/duplicated read)', () => {

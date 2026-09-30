@@ -756,7 +756,10 @@ test('pokeOrEscalate: escalation appends a synthetic notice into the PARENT stor
     try { msgs = s.listMessages(parentId, {}); } finally { s.close(); }
     assert.strictEqual(msgs.length, 1, 'exactly one notice landed in the parent store');
     assert.match(msgs[0].body, /child w1 idle 12m/);
-    assert.match(msgs[0].body, /reassign or archive/);
+    // item 1: pokes exhausted -> the notice now tells the owner to click/continue
+    // the workspace in the DevSwarm app (still allows reassign/archive too).
+    assert.match(msgs[0].body, /click\/continue the workspace in the DevSwarm app/);
+    assert.match(msgs[0].body, /reassign\/archive/);
   } finally { cleanup(); }
 });
 

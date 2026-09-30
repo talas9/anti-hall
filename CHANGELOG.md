@@ -25,6 +25,53 @@ the update.
   `watcherArmed` documentation updated in `plugins/anti-hall/codex/skills/
   anti-hall-devswarm/SKILL.md` (Codex has no Monitor tool, so a Codex workspace never
   produces `idle-skip` itself).
+
+Five field-reported fixes from a DevSwarm Primary with 6 child workspaces, each
+root-caused against a reproducing test before the fix.
+
+### Fixed
+
+- **`nudge <id>` escalated immediately ("poke-exhausted") on the very first call
+  after a child had been idle over an hour.** `computeLiveness`'s resolved-to-alive
+  paths (heartbeat-fresh, `nudged`→`alive` on advance, and the general recompute)
+  carried a stale `nudgeAttempts`/`nudgedAt` forward from an EARLIER episode instead
+  of resetting them — only the heartbeat-fresh branch reset the poke budget. A LATER,
+  unrelated stale spell then inherited an already-exhausted budget and escalated on
+  its first `pokeOrEscalate` call. `companion/lib/liveness.js`'s two remaining
+  resolved-to-alive returns now reset `nudgeAttempts`/`nudgedAt` on that episode
+  boundary too. The escalation notice into the parent's store now also tells the
+  owner to click/continue the workspace in the DevSwarm app (still allows
+  reassign/archive), and `lastNudgeError` is preserved unchanged.
+- **`nudge <child meshId>` failed `{"ok":false,"error":"no descriptor for workspace
+  ..."}` while `send --to <that same meshId>` worked.** `cmdNudge` looked up only
+  `readDescriptorFile(home, id)` (an exact builder-id match), with no meshId
+  resolution at all. It now falls back to the SAME resolution `send` uses
+  (`resolveSendTarget`: meshId match, then exact registry-id, then a one-hop
+  retired-redirect) before failing closed.
+- **`roster` from a cwd outside any project (e.g. a session's scratchpad) returned
+  bare `{"ok":false,"reason":"no-project"}` with no guidance.** `repoKey` is always
+  git-derived (there is no repoId→repoKey registry to fall back through —
+  `DEVSWARM_REPO_ID` is a caller-declared label, not a store key, and trusting it
+  here could silently read the wrong project's roster), so `roster` now returns an
+  actionable `error` string (same wording as `send`'s own no-project error) instead
+  of inventing a new resolution path.
+- **task-guard's IDLE NEGLECT block never mentioned delegating a task to a live
+  DevSwarm child workspace.** When at least one live (not-archived) DevSwarm child
+  workspace exists, the IDLE NEGLECT reason now adds one line: delegate the task by
+  setting its owner to the workspace id (`TaskUpdate owner`), which already counts
+  as attended via the existing `devswarmChildAttended` check — detection is
+  unchanged, this only documents the option.
+- **The "CHILD NOT DRAINING" nudge repeated every single turn for an idle child.**
+  `devswarm-parent-inbox.js`'s normal-tier unread segment (`buildUnreadSegment`)
+  passed no `keepaliveTurns` to its on-change dedupe call — unlike the urgent tier
+  just above it — so an UNCHANGED segment re-fired on every delivered turn once
+  the prior copy was consumed. It now passes `keepaliveTurns: 2` (same pattern the
+  urgent tier already uses), capping repeats to 2 before going quiet until the
+  content actually changes (new mail, a drained inbox, a status flip) or the
+  keepalive window resurfaces it. Suppressions are counted in a new
+  `not-draining-suppressed.jsonl`, reported by `doctor --check` alongside the
+  existing `cron-found-mail.jsonl` line.
+
 ## 0.117.2 (2026-09-30)
 
 Security fix for git-guard.

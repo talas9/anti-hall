@@ -1013,12 +1013,27 @@ function devswarmHookSelfTests() {
         try { ({ devswarmRoot: devswarmRootFn } = require(livenessModPath)); } catch (_) { devswarmRootFn = null; }
       }
       if (devswarmRootFn) {
-        const p = path.join(devswarmRootFn(os.homedir()), 'cron-found-mail.jsonl');
+        // item 5 fix (field report: "CHILD NOT DRAINING" repeated every turn
+        // for an idle child) measurement folded into this SAME try/
+        // devswarmRootFn block (reusing `root` below rather than a second
+        // homedir-resolving call site — see tests/hygiene/homedir-call-site-
+        // ratchet.test.js) — not-draining-suppressed.jsonl accumulates one
+        // line per turn hooks/devswarm-parent-inbox.js's on-change dedupe cap
+        // (keepaliveTurns:2) suppressed an unchanged not-draining nudge; same
+        // report-only, capped-jsonl pattern as cron-found-mail.jsonl below.
+        const root = devswarmRootFn(os.homedir());
+        const p = path.join(root, 'cron-found-mail.jsonl');
         let lineCount = 0;
         try { lineCount = fs.readFileSync(p, 'utf8').split('\n').filter(Boolean).length; } catch (_) { lineCount = 0; }
         infol('cron ticks that found mail while a watcher was armed: ' + lineCount +
           ' (cron-found-mail.jsonl — empty after a week of normal use means this cron ' +
           'fallback is removable; see docs/KB-claude-monitor-tool.md §7)');
+
+        const p2 = path.join(root, 'not-draining-suppressed.jsonl');
+        let lineCount2 = 0;
+        try { lineCount2 = fs.readFileSync(p2, 'utf8').split('\n').filter(Boolean).length; } catch (_) { lineCount2 = 0; }
+        infol('CHILD NOT DRAINING nudges suppressed by the repeat cap: ' + lineCount2 +
+          ' (not-draining-suppressed.jsonl)');
       }
     } catch (_) { /* fail-open: measurement reporting must never break doctor */ }
 

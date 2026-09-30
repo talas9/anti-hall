@@ -1006,8 +1006,13 @@ function computeLiveness(opts) {
   if (prev && prev.status === 'nudged') {
     const advanced = nudgedAt !== null && lastOutboundTs !== null && lastOutboundTs > nudgedAt;
     if (advanced) {
+      // RECOVERY = a new episode: the poke woke the session, so its poke budget
+      // resets here too (matching the heartbeat-fresh reset above) — otherwise
+      // nudgeAttempts/nudgedAt persist across episodes and a LATER, unrelated
+      // stale spell inherits an already-exhausted budget, escalating on its
+      // very first `pokeOrEscalate` call instead of getting its own attempts.
       return {
-        status: 'alive', lastOutboundTs, staleSince: null, nudgeAttempts, nudgedAt,
+        status: 'alive', lastOutboundTs, staleSince: null, nudgeAttempts: 0, nudgedAt: null,
         pending, notDraining: unionInfo.notDraining, oldestUnreadAgeMs: unionInfo.oldestUnreadAgeMs,
       };
     }
@@ -1043,12 +1048,18 @@ function computeLiveness(opts) {
   // still reflects the full mailbox depth for drain/ack accounting elsewhere.
   const stale = (bothIdle || neverLaunchedDead) && unionInfo.pendingInbound;
 
+  // A resolved-to-alive verdict is a NEW episode boundary: reset the poke budget
+  // here too (same reasoning as the heartbeat-fresh and nudged->advanced resets
+  // above) so a stale spell that resolves WITHOUT ever being nudged this round
+  // (e.g. prior status was already 'stale', or 'alive' with a stray leftover
+  // count) still starts its next episode with a fresh nudgeAttempts, instead of
+  // silently inheriting an exhausted count from an earlier episode.
   return {
     status: stale ? 'stale' : 'alive',
     lastOutboundTs,
     staleSince: stale ? (priorStaleSince || now) : null,
-    nudgeAttempts,
-    nudgedAt,
+    nudgeAttempts: stale ? nudgeAttempts : 0,
+    nudgedAt: stale ? nudgedAt : null,
     pending,
     notDraining: unionInfo.notDraining,
     oldestUnreadAgeMs: unionInfo.oldestUnreadAgeMs,

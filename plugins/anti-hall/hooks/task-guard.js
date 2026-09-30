@@ -328,7 +328,11 @@ function main() {
       'say which + why). If a task is genuinely blocked on the OWNER (hardware, a ' +
       'decision only a human can make), mark it non-dispatchable honestly — ' +
       'metadata.blockedOn:\'owner\' (or \'user\'/\'human\'/\'external\'), or an "OWNER:" / ' +
-      '"OWNER DECISION" subject prefix — never a fake blockedBy dependency.';
+      '"OWNER DECISION" subject prefix — never a fake blockedBy dependency.' +
+      (anyLiveDevswarmChildren()
+        ? ' If this task is delegated to a DevSwarm workspace, set its owner to the ' +
+          'workspace id (TaskUpdate owner) and it counts as attended.'
+        : '');
   } else {
     const list = renderList(nudgeTasks);
     const more = nudgeTasks.length > 5 ? ' (and ' + (nudgeTasks.length - 5) + ' more)' : '';
@@ -458,6 +462,23 @@ function devswarmChildAttended(owner) {
   let verdict;
   try { verdict = appDb.appArchivedVerdict({ home: metricsHome(), id }); } catch (_) { verdict = null; }
   return verdict === false; // false = known + NOT archived ("live"); true/null -> still block
+}
+
+// anyLiveDevswarmChildren() — true only when the app DB's own record (the SAME
+// ground truth devswarmChildAttended reads above) shows at least one NOT-
+// archived workspace. Purely ADDITIVE — this only decides whether the IDLE
+// NEGLECT reason mentions delegating a task to a workspace; it never touches
+// which tasks are actionable/dispatchable (detection unchanged). Fail-open to
+// false (no node:sqlite, no app DB, disabled, any error) — the hint is simply
+// omitted, never a block.
+function anyLiveDevswarmChildren() {
+  let appDb;
+  try { appDb = require('../companion/lib/devswarm-app-db.js'); } catch (_) { return false; }
+  let map;
+  try { map = appDb.builderStates({ home: metricsHome() }); } catch (_) { map = null; }
+  if (!map || typeof map.values !== 'function') return false;
+  for (const b of map.values()) { if (b && !b.archived) return true; }
+  return false;
 }
 
 // Normalize a blockedBy field to an array of string task ids. The harness sends a

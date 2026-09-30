@@ -13302,7 +13302,26 @@ function cmdGate(id, flags, ctx) {
 
 function cmdNudge(id, flags, ctx) {
   const home = ctx.home;
-  const desc = readDescriptorFile(home, id);
+  let desc = readDescriptorFile(home, id);
+  if (!desc) {
+    // `id` may be a meshId (e.g. a child's `primary-<hash>` label) rather than
+    // its own registry/descriptor id — those have no descriptor file under
+    // their own name, so the direct lookup above misses. Resolve it EXACTLY
+    // as `send` does (resolveSendTarget: meshId match, then exact registry-id
+    // fallback) instead of failing closed here while `send --to` reaches the
+    // same target fine.
+    try {
+      const cwd = ctx.cwd || process.cwd();
+      const repoKey = repokey.repoKeyForWorktree(cwd);
+      if (repoKey) {
+        const s = store.openStore({ home, hash: repoKey, backend: ctx.backend, env: ctx.env });
+        try {
+          const resolved = resolveSendTarget(s, id, home, { rerouteStaleTwin: true });
+          if (resolved.target && resolved.target.id != null) desc = readDescriptorFile(home, resolved.target.id);
+        } finally { s.close(); }
+      }
+    } catch (_) { /* fail-open: falls through to the not-found error below */ }
+  }
   if (!desc) return { ok: false, error: 'no descriptor for workspace ' + JSON.stringify(id) };
   // Pass the persisted verdict (if any) so pokeOrEscalate honors attempt count +
   // cooldown across CLI invocations, exactly as the supervisor sweep does.
@@ -16558,7 +16577,19 @@ function cmdRoster(flags, ctx) {
   const home = ctx.home;
   const cwd = ctx.cwd || process.cwd();
   const repoKey = repokey.repoKeyForWorktree(cwd);
-  if (!repoKey) return { ok: false, reason: 'no-project' };
+  if (!repoKey) {
+    // repoKey is ALWAYS git-derived (repoKeyForWorktree hashes the resolved
+    // common-dir — see devswarm-repokey.js) — there is no repoId->repoKey
+    // registry to fall back through (DEVSWARM_REPO_ID is a caller-declared
+    // label, not a store key, and trusting it here would let a stale/foreign
+    // env value silently read the WRONG project's roster). The correct,
+    // fail-closed fix is telling the caller how to get a real repoKey: cd
+    // into a git worktree of the project first.
+    return {
+      ok: false, reason: 'no-project',
+      error: 'roster must run from inside a git worktree of a DevSwarm project (the mesh store is per-project) — cd into the repo first',
+    };
+  }
   const s = store.openStore({ home, hash: repoKey, backend: ctx.backend, env: ctx.env });
   let sum;
   let broadcastAllForInstances = [];

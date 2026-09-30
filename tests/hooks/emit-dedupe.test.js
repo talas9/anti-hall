@@ -299,6 +299,40 @@ test('PARENT INBOX nudge: trend/age flip in a pending burst -> suppressed; unrea
   } finally { rm(home); }
 });
 
+// item 5 fix (field report: "CHILD NOT DRAINING" repeated every turn for an
+// idle child): devswarm-parent-inbox.js's real call for this key now passes
+// keepaliveTurns:2 (it used to pass none, so an UNCHANGED normal-tier segment
+// re-fired on every single delivered turn — rule (a) alone only suppresses a
+// copy still PENDING delivery). This exercises that exact opts shape.
+test('PARENT INBOX nudge (item 5, keepaliveTurns:2): an unchanged not-draining segment is capped at 2 repeats, then goes quiet until the 3rd delivered turn; a real change still emits immediately', () => {
+  const home = tmpHome();
+  try {
+    const tp = mkTranscript(home);
+    const b = {
+      home, sessionId: 's1', key: 'parent-inbox-nudge', keepaliveTurns: 2,
+      normalize: inbox.normalizeInboxVolatile, transcriptPath: tp, env: ON,
+    };
+    const same = 'DEVSWARM PARENT INBOX: 1 active workspace(s) need attention — X (NOT DRAINING >20m). tail';
+    const changed = 'DEVSWARM PARENT INBOX: 1 active workspace(s) need attention — X (5 unread, NOT DRAINING >20m). tail';
+
+    // Turn 1: first emit.
+    assert.strictEqual(emit({ ...b, content: same, now: T0 }), true);
+    deliver(tp, T0 + 20, same);
+    // Turn 2: unchanged + consumed -> suppressed, counts as 1 suppressed delivered turn.
+    assert.strictEqual(emit({ ...b, content: same, now: T0 + 1 * MIN }), false);
+    deliver(tp, T0 + 1 * MIN + 20, 'OVERRIDE');
+    // Turn 3: still unchanged -> suppressed again (2nd suppressed delivered turn).
+    assert.strictEqual(emit({ ...b, content: same, now: T0 + 2 * MIN }), false);
+    deliver(tp, T0 + 2 * MIN + 20, 'OVERRIDE');
+    // Turn 4: still unchanged, keepalive exceeded -> resurfaces (never silenced forever).
+    assert.strictEqual(emit({ ...b, content: same, now: T0 + 3 * MIN }), true);
+    deliver(tp, T0 + 3 * MIN + 20, same);
+    // A real state change (new mail / drained inbox) always emits immediately,
+    // independent of the cap.
+    assert.strictEqual(emit({ ...b, content: changed, now: T0 + 3 * MIN + 5000 }), true);
+  } finally { rm(home); }
+});
+
 test('ORPHANED MESH banner: unchanged next delivered turn -> suppressed; changed unread -> emitted', () => {
   const home = tmpHome();
   try {

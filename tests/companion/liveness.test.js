@@ -305,15 +305,22 @@ test('TERMINAL short-circuit: a persisted `escalated` verdict is returned unchan
   } finally { cleanup(); }
 });
 
-test('writeVerdict round-trips atomically and nudgeAttempts persists into computeLiveness', () => {
+test('writeVerdict round-trips atomically, and computeLiveness resets nudgeAttempts on a NEW episode (resolved-to-alive)', () => {
+  // Item 1 root-cause fix: a resolved-to-alive verdict is a NEW episode
+  // boundary, so its poke budget resets here too — carrying a stale count
+  // forward (the old behavior this test used to assert) is exactly what made
+  // a LATER, unrelated stale spell inherit an already-exhausted budget and
+  // escalate on its very first pokeOrEscalate call.
   const { home, cleanup } = makeHome();
   try {
     const d = seed(home, { id: 'w6', transcriptAgeMs: 60 * 1000, inboxLines: [], cursor: 0 });
     M.writeVerdict('w6', { status: 'alive', lastOutboundTs: 1, staleSince: null, nudgeAttempts: 2 }, home);
     const v = M.computeLiveness({ descriptor: d, home, idleThresholdMs: IDLE, runners: { gitCommitTs: () => Date.now() - 40 * 60 * 1000 } });
-    assert.strictEqual(v.nudgeAttempts, 2); // carried forward from the persisted verdict
+    assert.strictEqual(v.status, 'alive');
+    assert.strictEqual(v.nudgeAttempts, 0); // reset — new episode, fresh poke budget
+    assert.strictEqual(v.nudgedAt, null);
     const onDisk = JSON.parse(fs.readFileSync(M.livenessPathFor('w6', home), 'utf8'));
-    assert.strictEqual(onDisk.nudgeAttempts, 2);
+    assert.strictEqual(onDisk.nudgeAttempts, 2); // the on-disk PRIOR verdict is untouched by a pure read
   } finally { cleanup(); }
 });
 

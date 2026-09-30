@@ -1021,6 +1021,40 @@ test('STILL BLOCKS: devswarm registry unreadable (no app DB) -> fail-open to the
   }
 });
 
+test('IDLE NEGLECT: a LIVE devswarm child workspace exists -> the reason names the delegate-to-workspace option', { skip: skipSqlite }, () => {
+  const h = makeHome();
+  try {
+    const f = devswarmAppDbFixture(h); // b-active is LIVE (isActive:1, isHidden:0)
+    const tp = h.writeTranscript([
+      todoWrite([
+        { id: '1', content: 'important work', status: 'pending', priority: 'P1' },
+      ]),
+    ]);
+    const r = testHook(HOOK, stopPayload(tp), { home: h.home, env: f.env });
+    assert.ok(isIdleNeglect(r), `expected idle-neglect; stdout: ${r.stdout}`);
+    assert.match(r.json.reason, /delegated to a DevSwarm workspace/);
+    assert.match(r.json.reason, /TaskUpdate owner/);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('IDLE NEGLECT: no devswarm app DB at all -> the delegate-to-workspace hint is omitted (unchanged wording)', () => {
+  const h = makeHome();
+  try {
+    const tp = h.writeTranscript([
+      todoWrite([
+        { id: '1', content: 'important work', status: 'pending', priority: 'P1' },
+      ]),
+    ]);
+    const r = testHook(HOOK, stopPayload(tp), { home: h.home });
+    assert.ok(isIdleNeglect(r), `expected idle-neglect; stdout: ${r.stdout}`);
+    assert.doesNotMatch(r.json.reason, /delegated to a DevSwarm workspace/);
+  } finally {
+    h.cleanup();
+  }
+});
+
 test('PRUNE ADVISORY: guards.pruneCompletedTasksAfter env override lowers the threshold', () => {
   const h = makeHome();
   try {

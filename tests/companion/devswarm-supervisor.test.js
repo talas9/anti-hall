@@ -315,7 +315,7 @@ test('sweepOnce (real computeLiveness + pokeOrEscalate): escalation appends ONE 
     try { msgs = s.listMessages(parentId, {}); } finally { s.close(); }
     assert.strictEqual(msgs.length, 1, 'exactly one parent notice survives three sweeps');
     assert.match(msgs[0].body, /child w1 idle/);
-    assert.match(msgs[0].body, /reassign or archive/);
+    assert.match(msgs[0].body, /click\/continue the workspace in the DevSwarm app/);
   } finally { cleanup(); }
 });
 
@@ -534,7 +534,7 @@ test('sweepOnce (real notifyParentEscalation + real store): urgent mesh unread o
     try { msgs = s.listMessages(parentId, {}); } finally { s.close(); }
     assert.strictEqual(msgs.length, 1, 'exactly one parent notice from the urgency-forced escalate');
     assert.match(msgs[0].body, /child w1 idle/);
-    assert.match(msgs[0].body, /reassign or archive/);
+    assert.match(msgs[0].body, /click\/continue the workspace in the DevSwarm app/);
   } finally { cleanup(); }
 });
 
