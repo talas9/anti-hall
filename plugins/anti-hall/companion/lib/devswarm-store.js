@@ -112,8 +112,14 @@ function sameRegistryWorktree(existingPath, incomingPath) {
   const b = resolveWorktreeReal(incomingPath);
   if (a === b) return true;
   try {
-    const root = require('./identity.js').resolveContext(existingPath, { memo: false }).worktreeRoot;
-    return !!root && root === b;
+    // Canonical resolver, BOTH directions: a submodule/subdir path keys to its
+    // outermost superproject's worktreeRoot (child-turn persists the literal
+    // toplevel, e.g. <ws>/skyfb, under the workspace-keyed id). Same worktree iff
+    // either side's root is the other side's real path (or both share one root).
+    const idn = require('./identity.js');
+    const ra = idn.resolveContext(existingPath, { memo: false }).worktreeRoot;
+    const rb = idn.resolveContext(incomingPath, { memo: false }).worktreeRoot;
+    return (!!ra && ra === b) || (!!rb && rb === a) || (!!ra && ra === rb);
   } catch (_) {
     return false;
   }
