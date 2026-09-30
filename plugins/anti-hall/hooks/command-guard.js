@@ -1709,9 +1709,16 @@ function isFlaggedInterpreterScript(segment) {
 // `command` is the FULL original command string this segment came from —
 // needed only by isSafeSqliteReadonly's pipe-into-stdin check; every other
 // LIGHT_EXCEPTION_FNS entry ignores the extra argument.
+// `timeout [-flags] <duration>` only bounds run time, so the anchored
+// anti-hall CLI exemptions must still see the wrapped `node <dir>/devswarm.js
+// roster` as the segment's own verb (field report: the `timeout N node ...
+// roster | head` form blocked while the same line without `timeout` passed).
+const TIMEOUT_PREFIX_RE = /^\s*timeout\s+(?:-[ks]\s+\S+\s+|-\S+\s+)*\d+[smhd]?\s+/;
+
 function isHeavySegment(segment, command) {
+  const unwrapped = segment.replace(TIMEOUT_PREFIX_RE, '');
   for (const re of LIGHT_EXCEPTIONS) {
-    if (re.test(segment)) return false;
+    if (re.test(segment) || re.test(unwrapped)) return false;
   }
   for (const fn of LIGHT_EXCEPTION_FNS) {
     if (fn(segment, command)) return false;
@@ -2903,30 +2910,27 @@ function isAllowedGcloudReadCommand(command) {
 // segment of the shape `<python3|node|sh|bash> <script file> [args…]` when
 // the script is an existing regular file inside this session's scratchpad or
 // a tmp root (isScratchpadOrTmpPath -> lib/scratchpad.js, realpath'd). The
-// output goes to the background task's file, not the main thread. Refused:
+// output goes to the background task's file, not the main thread. The script
+// segment may be chained (`;`/`&&`/`|`) with bounded read sinks only
+// (wc/head/tail/grep -c|-m N). Refused:
 // any interpreter option before the file (-c/-e/-m/…), a leading env
-// assignment or wrapper, chaining/pipes/groups (isSingleUnbrokenSegment), any
+// assignment or wrapper, chaining to anything but a bounded sink, any
 // `$`/backtick/backslash/process substitution, a stdin redirect, and a
 // write redirect outside the scratchpad/tmp. A foreground run keeps today's
 // rules. Gated by guards.allowBackgroundScratchScripts (default true).
 // ---------------------------------------------------------------------------
 const BACKGROUND_SCRIPT_INTERPRETERS = new Set(['python3', 'node', 'sh', 'bash']);
+const BACKGROUND_CHAIN_DELIMS = new Set([';', '&&', '|', 'end']);
 
-function isBackgroundScratchScript(command, payload) {
-  if (!payload || !payload.tool_input || payload.tool_input.run_in_background !== true) return false;
-  if (typeof command !== 'string' || !command.trim()) return false;
-  if (/#/.test(neutralizeQuotedContents(command))) return false;
-  if (!isSingleUnbrokenSegment(command)) return false;
-  if (hasShellExpansionAnywhere(command)) return false;
-  const neutralized = neutralizeQuotedContents(command);
-  if (/</.test(neutralized)) return false;
-  const ctx = { payload };
-  if (hasDisallowedWriteRedirect(command, ctx)) return false;
-  const tokens = tokenizeQuoted(command.replace(/\d*>>?\s*\S+/g, ' '));
+// One `<python3|node|sh|bash> <script file> [args…]` segment, script inside
+// the scratchpad/tmp (realpath'd), no --confirmed, not an anti-hall plugin script.
+function isBackgroundScratchScriptSegment(segment, ctx) {
+  const tokens = tokenizeQuoted(segment.replace(/\d*>>?\s*\S+/g, ' '));
   if (tokens.length < 2 || !BACKGROUND_SCRIPT_INTERPRETERS.has(tokens[0])) return false;
   const script = tokens[1];
   if (!script || script.startsWith('-')) return false;
   if (!isScratchpadOrTmpPath(script, ctx)) return false;
+  const payload = ctx.payload;
   const base = (typeof payload.cwd === 'string' && payload.cwd) || process.cwd();
   let realScript;
   try {
@@ -2941,6 +2945,32 @@ function isBackgroundScratchScript(command, payload) {
   if (tokens.some((t) => t === '--confirmed' || t.startsWith('--confirmed='))) return false;
   if (isInsideAntiHallPlugin(realScript)) return false;
   return true;
+}
+
+// The command is one or more segments joined by `;`/`&&`/`|`, each either a
+// scratch-script segment or a bounded read sink (tail/head/wc/grep -c|-m N) —
+// the exact remedy shape the block text suggests (`script > out; wc -l out`).
+// At least one scratch-script segment is required; anything else refuses.
+function isBackgroundScratchScript(command, payload) {
+  if (!payload || !payload.tool_input || payload.tool_input.run_in_background !== true) return false;
+  if (typeof command !== 'string' || !command.trim()) return false;
+  if (/#/.test(neutralizeQuotedContents(command))) return false;
+  if (hasShellExpansionAnywhere(command)) return false;
+  const neutralized = neutralizeQuotedContents(command);
+  if (/</.test(neutralized)) return false;
+  const ctx = { payload };
+  if (hasDisallowedWriteRedirect(command, ctx)) return false;
+  const { segments, delims } = splitSegmentsDetailed(command);
+  if (!segments.length) return false;
+  let sawScript = false;
+  for (let i = 0; i < segments.length; i++) {
+    if (!BACKGROUND_CHAIN_DELIMS.has(delims[i])) return false;
+    const seg = segments[i].trim();
+    if (!seg) return false;
+    if (isBackgroundScratchScriptSegment(seg, ctx)) sawScript = true;
+    else if (!isBoundedSinkSegment(seg)) return false;
+  }
+  return sawScript;
 }
 
 function main() {

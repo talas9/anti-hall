@@ -109,3 +109,50 @@ test('background-scratch: guards.allowBackgroundScratchScripts=false restores th
   const res = run('node ' + jsFile, { settings: { guards: { allowBackgroundScratchScripts: false } } });
   assert.strictEqual(res.status, 2);
 });
+
+// Field report 0.118.0: the block text's own remedy shape (script > out; wc;
+// grep -c) was refused even with run_in_background:true.
+test('background-scratch: script chained with bounded read sinks passes in the background', () => {
+  const out = path.join(dir, 'out.txt');
+  const cmds = [
+    'python3 ' + pyFile + ' > ' + out + '; wc -l ' + out + '; grep -c USER ' + out,
+    'python3 ' + pyFile + ' && node ' + jsFile + ' | tail -5',
+    'node ' + jsFile + ' | head -40',
+  ];
+  const wrong = cmds.filter((c) => run(c).status === 2);
+  assert.deepStrictEqual(wrong, []);
+  // Foreground keeps its verdict.
+  assert.strictEqual(run(cmds[0], { bg: false }).status, 2);
+});
+
+test('background-scratch: chains to anything but bounded sinks stay blocked', () => {
+  const cmds = [
+    'python3 ' + pyFile + '; npm test',
+    'python3 ' + pyFile + ' && node --test',
+    'python3 ' + pyFile + ' | tee /nonexistent-anti-hall-dir/x',
+    'python3 ' + pyFile + ' || npm test',
+    'python3 ' + pyFile + ' & npm test',
+    'wc -l ' + pyFile + '; npm test',
+    'python3 ' + pyFile + '; grep foo ' + pyFile,   // unbounded grep is not a sink
+  ];
+  const wrong = cmds.filter((c) => run(c).status !== 2);
+  assert.deepStrictEqual(wrong, []);
+});
+
+// Field report 0.118.0: `timeout N node <devswarm.js> roster | head` blocked
+// while the same read-only verb without `timeout` passed.
+test('timeout-wrapped anti-hall devswarm.js read verbs pass; heavy stays blocked', () => {
+  const ok = [
+    'timeout 30 node ~/.anti-hall/bin/devswarm.js roster 2>&1 | head -40',
+    'timeout -k 5 30 node ~/.anti-hall/bin/devswarm.js inbox tick | tail -3',
+    'timeout 30 node plugins/anti-hall/scripts/devswarm.js mesh read',
+  ];
+  assert.deepStrictEqual(ok.filter((c) => run(c, { bg: false }).status === 2), []);
+  const bad = [
+    'timeout 30 npm test | head',
+    'timeout 30 node /tmp/evil.js',
+    'timeout 30 node evilscripts/devswarm.js roster',
+    'timeout 30 npm run build -- node scripts/devswarm.js list',
+  ];
+  assert.deepStrictEqual(bad.filter((c) => run(c, { bg: false }).status !== 2), []);
+});
