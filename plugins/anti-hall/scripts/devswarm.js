@@ -13096,7 +13096,10 @@ function cmdInbox(sub, id, flags, ctx) {
 function cmdRegisterPrimary(flags, ctx) {
   const home = ctx.home;
   const cwd = ctx.cwd || process.cwd();
-  const worktree = one(flags, 'worktree') || inst.resolveWorktree(cwd);
+  // resolveCallerWorktree (superproject-folding), NOT inst.resolveWorktree's raw
+  // `--show-toplevel`: from a submodule cwd the latter minted a phantom
+  // `primary-<submodule-hash>` row that no caller identity ever matches.
+  const worktree = one(flags, 'worktree') || resolveCallerWorktree(cwd);
   if (!worktree) {
     return { ok: false, error: 'register-primary must run inside a git worktree (or pass --worktree <path>)' };
   }
@@ -13234,7 +13237,7 @@ function cmdWorkspacesList(flags, ctx) {
   // worktree with no flag, fall back to the default bucket (an empty/legacy view).
   let workspaceId = one(flags, 'workspace');
   const worktreeFlag = one(flags, 'worktree');
-  const worktree = worktreeFlag || inst.resolveWorktree(ctx.cwd || process.cwd());
+  const worktree = worktreeFlag || resolveCallerWorktree(ctx.cwd || process.cwd());
   if (workspaceId === undefined) {
     workspaceId = worktree ? inst.primaryWorkspaceId(worktree) : undefined;
   }
@@ -14115,7 +14118,7 @@ function resolveArchiveId(raw, ctx) {
   // derivation cmdWorkspacesList uses (cwd-derived worktree -> repoKey).
   let candidates = [];
   try {
-    const worktree = inst.resolveWorktree(ctx.cwd || process.cwd());
+    const worktree = resolveCallerWorktree(ctx.cwd || process.cwd());
     const workspaceId = worktree ? inst.primaryWorkspaceId(worktree) : undefined;
     const repoKey = worktree ? repokey.repoKeyForWorktree(worktree) : repoKeyForCwd(ctx);
     const s = store.openStore({ home, workspaceId, hash: repoKey || undefined, backend: ctx.backend, env: ctx.env });
