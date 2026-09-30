@@ -421,7 +421,7 @@ function splitSegments(cmd) {
 // exactly like `exec`/`command` - `coproc git push --force origin main` never
 // resolved past the `coproc` word. Also reserved-word-shaped (no argument-
 // position ambiguity), so adding it carries no false-block risk.
-const WRAPPERS = new Set(['command', 'builtin', 'exec', 'sudo', 'env', 'nice', 'nohup', 'time', 'timeout', 'then', 'do', 'else', 'if', 'while', 'until', 'elif', 'coproc']);
+const WRAPPERS = new Set(['command', 'builtin', 'exec', 'sudo', 'env', 'nice', 'nohup', 'time', 'timeout', 'then', 'do', 'else', 'if', 'while', 'until', 'elif', 'coproc', '!']);
 
 function effectiveVerb(tokens) {
   let idx = 0;
