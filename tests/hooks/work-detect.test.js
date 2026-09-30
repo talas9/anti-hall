@@ -214,3 +214,22 @@ test('isCountedWork: devswarm.js heartbeat is NOT counted as work (pre-existing 
 test('isDevswarmHousekeepingOnly: crontab redirecting to an OS tmp path stays housekeeping-only', () => {
   assert.strictEqual(wd.isDevswarmHousekeepingOnly('crontab -l > /tmp/cron.txt'), true);
 });
+
+// L6(b): crash-recovery bookkeeping (.anti-hall/handovers/**, and cwd-relative
+// .anti-hall/progress|history paths) never counts; a mixed command still does.
+test('isCountedWork: handovers/progress/history bookkeeping (absolute or relative) is NOT work', () => {
+  const B = (command) => ({ name: 'Bash', input: { command } });
+  const w = (p) => wd.isCountedWork({ name: 'Write', input: { file_path: p } });
+  assert.strictEqual(w('/Users/x/proj/.anti-hall/handovers/2026-09-30/sid/HANDOVER.md'), false);
+  assert.strictEqual(wd.isCountedWork(B('echo hi >> .anti-hall/handovers/2026-09-30/sid/HANDOVER.md')), false);
+  assert.strictEqual(wd.isCountedWork(B('echo hi >> /Users/x/proj/.anti-hall/handovers/d/s/HANDOVER.md')), false);
+  assert.strictEqual(wd.isCountedWork(B('echo hi >> .anti-hall/progress/2026-09-30/sid.md')), false);
+  assert.strictEqual(wd.isCountedWork(B('echo hi >> .anti-hall/history/2026-09-30/sid.md')), false);
+});
+
+test('isCountedWork: bookkeeping chained with a real project write, or a lookalike path, still counts', () => {
+  const B = (command) => ({ name: 'Bash', input: { command } });
+  assert.strictEqual(wd.isCountedWork(B('echo a >> .anti-hall/handovers/d/s/H.md && echo b >> src/app.js')), true);
+  assert.strictEqual(wd.isCountedWork(B('echo a >> x.anti-hall/handovers/d/s/H.md')), true);
+  assert.strictEqual(wd.isCountedWork({ name: 'Write', input: { file_path: '/Users/x/proj/.anti-hall/other/f.md' } }), true);
+});

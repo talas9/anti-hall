@@ -101,7 +101,10 @@ const SCRATCHPAD_PATH_RE = /\/scratchpad\//;
 // progressRelPath/historyRelPath). Counting the guard's own mandated
 // bookkeeping as "file-changing work" is circular — it must never count,
 // the same way scratchpad message-passing traffic doesn't.
-const ANTIHALL_STATE_DIR_RE = /\/\.anti-hall\/(?:progress|history)\//;
+// handovers/ is the same class (crash-recovery bookkeeping the handover flow
+// itself directs); the leading `/` is optional (start, whitespace or `/`) so a cwd-relative
+// `.anti-hall/...` path (e.g. `echo >> .anti-hall/handovers/…`) is exempt too.
+const ANTIHALL_STATE_DIR_RE = /(?:^|[\s/])\.anti-hall\/(?:progress|history|handovers)\//;
 
 // isUnderTmpRoot(p) -> bool (defect 4b): true when p resolves under the live
 // per-process/per-user OS temp dir (os.tmpdir(), e.g. macOS's
