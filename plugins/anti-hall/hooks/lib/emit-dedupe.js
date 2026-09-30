@@ -416,7 +416,7 @@ function forget(opts) {
     const o = opts || {};
     const env = o.env || process.env;
     if (disabled(env, o.home) || !o.sessionId || !o.key) return;
-    const home = o.home || os.homedir();
+    const home = require('../../companion/lib/test-home-guard.js').resolveHome(o.home, env);
     const p = statePath(home, o.sessionId);
     const state = readState(p);
     if (!Object.prototype.hasOwnProperty.call(state, String(o.key))) return;

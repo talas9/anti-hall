@@ -133,7 +133,7 @@ function writerActivityLine(cwd, handoversRoot, candidate) {
     if (cwd && roots.indexOf(cwd) === -1) roots.push(cwd);
     for (const r of roots) {
       let m;
-      try { m = fs.statSync(path.join(projectDirFor(r, os.homedir()), sid + '.jsonl')).mtimeMs; } catch (_) { continue; }
+      try { m = fs.statSync(path.join(projectDirFor(r, require('../companion/lib/test-home-guard.js').resolveHome()), sid + '.jsonl')).mtimeMs; } catch (_) { continue; }
       const gap = m - candidate.mtimeMs;
       if (!(gap > WRITER_GRACE_MS)) return '';
       return 'WRITER KEPT RUNNING: session ' + sid + ' kept running ' + Math.round(gap / 60000) +

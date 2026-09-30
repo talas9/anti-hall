@@ -586,7 +586,7 @@ test('(q) writer kept running 3.5h after its handover (no commits) -> WRITER KEP
     execFileSync('git', ['init', '-q'], { cwd, stdio: 'ignore' });
     const old = '@' + Math.floor((Date.now() - 5 * 60 * 60 * 1000) / 1000) + ' +0000'; // committed BEFORE the handover
     execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '--allow-empty', '-m', 'a'],
-      { cwd, stdio: 'ignore', env: Object.assign({}, process.env, { GIT_COMMITTER_DATE: old, GIT_AUTHOR_DATE: old }) });
+      { cwd, stdio: 'ignore', env: Object.assign({}, process.env, { HOME: h.home, USERPROFILE: h.home, GIT_COMMITTER_DATE: old, GIT_AUTHOR_DATE: old }) });
     writeHandover(cwd, '2026-09-30', 'sess-w', 1, { ageMs: 4 * 60 * 60 * 1000 });
     writerTranscript(h.home, cwd, 'sess-w', new Date(Date.now() - 30 * 60 * 1000)); // 210 min after the handover
     const c = resumeCtx(h, cwd, 'sess-new', 'startup');
