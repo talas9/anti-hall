@@ -102,7 +102,7 @@ test('mesh read --last N and --since are peek-only', () => {
     const bad = cli.run(['mesh', 'read', '--peek', '--since', 'garbage'], ctx(home, { cwd: repo }));
     assert.equal(bad.result.ok, false);
     assert.equal(bad.result.reason, 'bad-since');
-    const badLast = cli.run(['mesh', 'read', '--last', '0'], ctx(home, { cwd: repo }));
+    const badLast = cli.run(['mesh', 'read', '--peek', '--last', '0'], ctx(home, { cwd: repo }));
     assert.equal(badLast.result.reason, 'bad-last');
 
     // non-peek + filter is refused and consumes nothing.
