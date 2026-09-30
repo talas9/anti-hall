@@ -1767,7 +1767,8 @@ function scanCommand(cmd, depth, baseCwd) {
         'anti-hall git-guard: BLOCKED. This command writes into ~/.anti-hall/bin/, ' +
         'the stable launcher directory. anti-hall installs those files itself ' +
         '(update / doctor --repair); overwriting one would run arbitrary code (such ' +
-        'as a force push) under a trusted launcher name. Leave that directory alone.'
+        'as a force push) under a trusted launcher name. Leave that directory alone; ' +
+        'if the path only appears as prose inside a heredoc/brief, write that text with the Write tool instead.'
       );
     }
 
