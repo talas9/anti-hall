@@ -241,7 +241,7 @@ const LIGHT_EXCEPTIONS = [
   // command (`send`, `heartbeat`, `roster`, `mesh`, `inbox`, `archive-request`,
   // `reconcile`, `spawn`, `merge`) already runs inline, exempt from the heavy-
   // command gate, with no further change needed here.
-  anchoredAntiHallCli('scripts', 'devswarm', '\\b'),
+  anchoredAntiHallCli('scripts', 'devswarm', '(?=\\s|$)'), // file name must END at devswarm.js (not .js.evil / .jsx / .js2)
   // anti-hall's own version-independent stable launchers under
   // ~/.anti-hall/bin/ (hooks/lib/stable-launcher.js) — the SAME
   // scripts/devswarm.js CLI wrapper (and its companion wake-watch poller),

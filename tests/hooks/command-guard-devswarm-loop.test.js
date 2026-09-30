@@ -61,6 +61,20 @@ test('light devswarm segment chained to read-only ls | grep -c stays allowed', (
   assert.strictEqual(blocked(`timeout 20 ${DS} inbox tick primary-63f9261d --quiet; ls -la ~/.claude/projects/ | grep -c 568b8ede`), false);
 });
 
+test('devswarm.js exemption: file name must end exactly at devswarm.js', () => {
+  for (const ok of ['node ~/.anti-hall/bin/devswarm.js roster', 'node ~/.anti-hall/bin/devswarm.js',
+    'node $HOME/.anti-hall/bin/devswarm.js roster', 'node plugins/anti-hall/scripts/devswarm.js roster',
+    'node /x/cache/anti-hall/0.1.0/scripts/devswarm.js send --to a']) {
+    assert.strictEqual(blocked(ok), false, ok);
+  }
+  // (.jsx / .js2 are not heavy-classified at all — the generic node pattern needs .js/.mjs/.cjs —
+  // so only the `.js.<suffix>` look-alikes and foreign launcher dirs are assertable here.)
+  for (const bad of ['node ~/.anti-hall/bin/devswarm.js.evil x', 'node scripts/devswarm.js.evil x',
+    'node ~/.anti-hall/bin/devswarm.js.bak x', 'node ~/evil/.anti-hall/bin/devswarm.js x']) {
+    assert.ok(blocked(bad), bad);
+  }
+});
+
 // ---- bounded verification: cd prefix, venv interpreter, JS test runners ----
 
 function makeProject() {

@@ -296,7 +296,7 @@ function anchoredAntiHallStableLauncher(scriptFile) {
     + (homeAbsSrcs.length ? '|' + homeAbsSrcs.join('|') : '') + ')';
   return new RegExp(
     '^\\s*(?:[A-Za-z_][A-Za-z0-9_]*=\\S*\\s+)*node\\s+' +
-      homeAlt + '[\\\\/]\\.anti-hall[\\\\/]bin[\\\\/]' + scriptSrc + '\\b',
+      homeAlt + '[\\\\/]\\.anti-hall[\\\\/]bin[\\\\/]' + scriptSrc + '(?=\\s|$)', // name must end exactly at the script file (not .js.evil / .jsx)
     'i'
   );
 }
