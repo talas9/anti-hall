@@ -2004,7 +2004,9 @@ function launcherBackstop(rawCmd, baseCwd) {
   // broken across a continuation mid-word really writes into the launcher dir.
   // Remove them (no space) for launcher analysis; the force/credit scans keep
   // their own handling of the raw text.
-  const cmd = rawCmd.replace(/\\\r?\n/g, '');
+  // Only an ODD run of backslashes before the newline is a continuation; in an
+  // even run (`\\` + newline) the last backslash is itself escaped.
+  const cmd = rawCmd.replace(/(?<!\\)(\\+)\r?\n/g, (m, bs) => (bs.length % 2 ? bs.slice(1) : m));
   let cdDir = (typeof baseCwd === 'string' && baseCwd) ? baseCwd : null;
   const baseDir = cdDir;
   for (const raw of backstopPieces(cmd)) {

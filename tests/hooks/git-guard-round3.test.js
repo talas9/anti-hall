@@ -70,3 +70,11 @@ test('PERF (launcher backstop, precheck-positive): 160 KB cd-chain mentioning an
   assert.strictEqual(r.status, 2, `stderr: ${r.stderr}`);
   assert.ok(ms < 2000, `took ${ms}ms`);
 });
+
+// --- Item 5: only an ODD run of backslashes before a newline is a continuation.
+test('ALLOW: an escaped backslash then a newline is not a continuation (no launcher-dir write)', () => {
+  expect('echo x > ~/.anti-hall/b\\\\\nin/y', 0);
+});
+test('BLOCK: a real backslash-newline continuation splicing the launcher path still blocks', () => {
+  expect('echo x > ~/.anti-hall/b\\\nin/y', 2);
+});
