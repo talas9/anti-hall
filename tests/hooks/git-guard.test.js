@@ -1990,6 +1990,110 @@ test('ALLOW (backstop): ordinary heredocs, pipelines, arithmetic and here-string
   }
 });
 
+// 0.117.2 follow-up (deadly-loop wf_95183fe2-760, A1-1/A1-2/A1-3/A1-4).
+//
+// A1-1/A1-3: after a quote desync on an EARLIER physical line, backstopPieces
+// used to cut INSIDE a later git command's own quoted argument (`-C
+// "$(pwd)"`, or a `-m`/`--trailer` value containing `( ; & |` or a backtick -
+// e.g. this repo's own `feat(x): y` conventional-commit style), splitting the
+// piece holding the git verb from the piece holding `--force`/the trailer so
+// neither resolved to verb `git`. gitBackstop now also re-runs the
+// quote-aware splitSegments on each individual PHYSICAL line and applies
+// gitVerdict to any segment whose verb is `git` - a line is almost always
+// quote-balanced on its own even when the whole command is not.
+test('BLOCK (A1-1/A1-3): a quote desync cannot hide a `-C "$(...)"` git command behind its own command-substitution argument', () => {
+  for (const cmd of [
+    "git commit -F - <<'EOF'\nfix: handle user's input\nEOF\ngit -C \"$(pwd)\" push --force-with-lease origin main",
+    "cat <<'EOF'\nit's\nEOF\ngit -C \"$(git rev-parse --show-toplevel)\" push -f origin main",
+  ]) {
+    const r = run(cmd);
+    assert.strictEqual(r.status, 2, `expected block (exit 2)\nstderr: ${r.stderr}`);
+    assert.match(r.stderr, REASON.FORCE);
+  }
+});
+
+test('BLOCK (A1-1/A1-3): a quote desync cannot hide a force push whose OWN argument holds a backstop cut character', () => {
+  const DESYNC = "echo hi # it's fine\n";
+  for (const cmd of [
+    DESYNC + 'A="x;y" git push --force origin main',
+    DESYNC + 'git -c "http.extraHeader=a;b" push --force origin main',
+    DESYNC + 'git push -o "ci;skip" --force origin main',
+    DESYNC + 'git push origin "HEAD:refs/heads/a;b" --force',
+    DESYNC + 'git -C "a (copy)" push --force origin main',
+  ]) {
+    const r = run(cmd);
+    assert.strictEqual(r.status, 2, `expected block (exit 2) for ${JSON.stringify(cmd)}\nstderr: ${r.stderr}`);
+    assert.match(r.stderr, REASON.FORCE);
+  }
+});
+
+test('BLOCK (A1-3): a quote desync cannot hide a self-credit trailer behind a `-C "$(...)"` git command', () => {
+  const r = run("git -C \"$(pwd)\" commit -m fix -m \"Co-Authored-By: Claude <noreply@anthropic.com>\"");
+  assert.strictEqual(r.status, 2, `expected block (exit 2)\nstderr: ${r.stderr}`);
+  assert.match(r.stderr, REASON.COMMIT);
+});
+
+test('BLOCK (A1-3): a quote desync cannot hide a self-credit trailer behind a conventional-commit `feat(x):` subject', () => {
+  const DESYNC = "cat > notes.md <<'EOF'\nIt's done\nEOF\n";
+  for (const [cmd, reason] of [
+    [DESYNC + 'git commit -m "feat(x): y" -m "Co-Authored-By: Claude <noreply@anthropic.com>"', REASON.COMMIT],
+    [DESYNC + 'git commit -m "feat(x): y" --trailer "Co-authored-by: Claude <noreply@anthropic.com>"', REASON.COMMIT],
+    [DESYNC + 'git commit -m "feat(x): y" -m "Generated with Claude Code"', REASON.COMMIT],
+    [DESYNC + 'git tag -a v1.0 -m "feat(x): y" -m "Co-Authored-By: Claude <noreply@anthropic.com>"', REASON.COMMIT],
+    [DESYNC + 'git merge -m "feat(x): y" -m "Co-Authored-By: Claude <noreply@anthropic.com>" other', REASON.COMMIT],
+    [DESYNC + 'git commit-tree -m "feat(x): y" -m "Co-Authored-By: Claude <noreply@anthropic.com>" HEAD^{tree}', REASON.COMMIT],
+    ["echo add -A # it's ready\ngit commit -m \"feat(x): y\" -m \"Co-Authored-By: Claude <noreply@anthropic.com>\"", REASON.COMMIT],
+  ]) {
+    const r = run(cmd);
+    assert.strictEqual(r.status, 2, `expected block (exit 2) for ${JSON.stringify(cmd)}\nstderr: ${r.stderr}`);
+    assert.match(r.stderr, reason);
+  }
+  // Control: the same commit with no desync must also still block (unaffected baseline).
+  const ctrl = run('git commit -m "feat(x): y" -m "Co-Authored-By: Claude <noreply@anthropic.com>"');
+  assert.strictEqual(ctrl.status, 2, `expected block (exit 2)\nstderr: ${ctrl.stderr}`);
+  assert.match(ctrl.stderr, REASON.COMMIT);
+});
+
+// A1-2: `if`/`while`/`until`/`elif` are reserved words in command position
+// exactly like `then`/`do`/`else`, so a force push in the CONDITION of a
+// compound command never resolved past the wrapper word and the git verdict
+// never ran at all - no quote desync needed.
+test('BLOCK (A1-2): a force push in the condition of an if/while/until/elif compound command is no longer skipped', () => {
+  for (const cmd of [
+    'if git push -f origin main; then echo ok; fi',
+    'while git push -f origin main; do break; done',
+    'until git push -f origin main; do break; done',
+    'if false; then :; elif git push -f origin main; then :; fi',
+  ]) {
+    const r = run(cmd);
+    assert.strictEqual(r.status, 2, `expected block (exit 2) for ${JSON.stringify(cmd)}\nstderr: ${r.stderr}`);
+    assert.match(r.stderr, REASON.FORCE);
+  }
+});
+
+// A1-4: the tight-pipe/regex-alternation exception only checked the SINGLE
+// piece right after the `|` for an unbalanced quote. A grouped alternation
+// (`"(a|git push -f)"`) also cuts quote-blind at the `(`/`)`, splitting the
+// still-open quoted span across MORE than one following piece before its
+// closing quote is reached, so the exception missed it and `git push -f`
+// resolved as its own, falsely-blocked piece. backstopPieces now tracks
+// quote parity cumulatively across pieces on the same physical line.
+test('ALLOW (A1-4): a grouped regex alternation mentioning a force-push-shaped pattern is not false-blocked', () => {
+  const r = run('grep -E "(a|git push -f)" x');
+  assert.strictEqual(r.status, 0, `expected allow (exit 0)\nstderr: ${r.stderr}`);
+});
+
+test('ALLOW (A1-4 regression guard): the ungrouped alternation shape stays allowed', () => {
+  const r = run('grep -E "a|git push -f" x');
+  assert.strictEqual(r.status, 0, `expected allow (exit 0)\nstderr: ${r.stderr}`);
+});
+
+test('BLOCK (A1-4 regression guard): a real tight pipe into a force push still blocks', () => {
+  const r = run('x|git push --force origin main');
+  assert.strictEqual(r.status, 2, `expected block (exit 2)\nstderr: ${r.stderr}`);
+  assert.match(r.stderr, REASON.FORCE);
+});
+
 // PERF: the backstop is one linear split and inArithmeticAt resumes its scan
 // (shell-scan.js _scanState). The arithmetic case took ~9s at 0.117.1
 // (quadratic rescans); the others start with a quote desync so the NORMAL

@@ -383,7 +383,13 @@ function splitSegments(cmd) {
 //   timeout 5 git push --force      (timeout duration operand)
 //   nice -n 10 git push --force     (nice -n operand)
 //   (git push --force ...)           (handled by splitSegments dropping the paren)
-const WRAPPERS = new Set(['command', 'builtin', 'exec', 'sudo', 'env', 'nice', 'nohup', 'time', 'timeout', 'then', 'do', 'else']);
+// A1-2 (0.117.2 follow-up): `if`/`while`/`until`/`elif` are reserved words in
+// command position exactly like `then`/`do`/`else` above, so `if git push -f
+// origin main; then …; fi` never resolved past the `if` verb and the git
+// verdict never ran - a total bypass needing no quote desync. Reserved words
+// carry no argument-position ambiguity, so adding them here cannot introduce
+// a false block.
+const WRAPPERS = new Set(['command', 'builtin', 'exec', 'sudo', 'env', 'nice', 'nohup', 'time', 'timeout', 'then', 'do', 'else', 'if', 'while', 'until', 'elif']);
 
 function effectiveVerb(tokens) {
   let idx = 0;
@@ -1843,25 +1849,34 @@ function gitVerdict(ev, d, cmd, heredocBodies, lastCdDir, useJev) {
 // "never git push --force"`) stays allowed: that piece's git verb is `commit`.
 // One narrow exception keeps regex alternations working: a TIGHT single `|`
 // (non-space on both sides, e.g. `grep -E "a|git push --force"`) is not a cut
-// when the text after it, up to the next cut, holds an unbalanced quote - the
-// `|` then sits inside a quoted pattern, not between two commands. A real
-// tight pipe into git (`x|git push --force origin main`) carries no such
-// quote and is still cut.
+// when the quoted span it sits inside closes later, on the SAME physical
+// line - the `|` then sits inside a quoted pattern, not between two
+// commands. A real tight pipe into git (`x|git push --force origin main`)
+// carries no such quote and is still cut. (A1-4, 0.117.2 follow-up: a
+// grouped alternation like `grep -E "(a|git push -f)" x` also cuts at the
+// `(`/`)` quote-blind, splitting the still-open quoted span across MORE than
+// one following piece before its closing quote is reached - the exception
+// below tracks quote parity cumulatively across pieces on the same line,
+// not just within the one piece immediately after the pipe, so it still
+// finds that later close.)
 function backstopPieces(cmd) {
   // Backslash-newline is a line continuation: join, never cut.
   const s = cmd.replace(/\\\r?\n/g, ' ');
   const n = s.length;
-  const pieces = []; // { text, tightPipe }
+  const pieces = []; // { text, tightPipe, line }
   let start = 0;
   let tightPipe = false;
-  function cut(end, next, subst, nextTight) {
-    pieces.push({ text: s.slice(start, end) + (subst ? ' ' + CMDSUBST_SENTINEL + ' ' : ''), tightPipe });
+  let lineIndex = 0;
+  function cut(end, next, subst, nextTight, newLine) {
+    pieces.push({ text: s.slice(start, end) + (subst ? ' ' + CMDSUBST_SENTINEL + ' ' : ''), tightPipe, line: lineIndex });
     start = next;
     tightPipe = nextTight;
+    if (newLine) lineIndex++;
   }
   for (let i = 0; i < n; i++) {
     const c = s[i];
-    if (c === '\n' || c === ';' || c === ')') { cut(i, i + 1, false, false); continue; }
+    if (c === '\n') { cut(i, i + 1, false, false, true); continue; }
+    if (c === ';' || c === ')') { cut(i, i + 1, false, false); continue; }
     // `$(` / backtick: the piece before it gets argv from an expansion.
     if (c === '(') { cut(i, i + 1, i > 0 && s[i - 1] === '$', false); continue; }
     if (c === '`') { cut(i, i + 1, true, false); continue; }
@@ -1881,11 +1896,54 @@ function backstopPieces(cmd) {
   }
   cut(n, n, false, false);
   const out = [];
+  // `pending` accumulates the pieces of a tight-pipe run whose entering quote
+  // parity (dqParity/sqParity, tracked cumulatively over EVERY piece in
+  // order - not just the one right after the pipe) is still odd, i.e. we are
+  // still "inside" a quoted span opened by an earlier piece. It keeps
+  // absorbing following pieces, regardless of their own tightPipe flag,
+  // until the parity flips back even (the quote closes) or the physical
+  // line ends - whichever comes first. If the line changes or input ends
+  // first, the accumulated parts are flushed UNMERGED (the original,
+  // conservative behavior), so an unresolved/never-closing quote still
+  // leaves any real git command as its own scanned piece (fail-closed).
+  let pending = null; // { parts, line }
+  let dqParity = 0;
+  let sqParity = 0;
   for (const p of pieces) {
-    const oddQuote = (p.text.split('"').length - 1) % 2 === 1 || (p.text.split("'").length - 1) % 2 === 1;
-    if (p.tightPipe && oddQuote && out.length) out[out.length - 1] += '|' + p.text;
-    else out.push(p.text);
+    const dq = (p.text.split('"').length - 1) % 2;
+    const sq = (p.text.split("'").length - 1) % 2;
+    const enteringDQ = dqParity;
+    const enteringSQ = sqParity;
+    dqParity ^= dq;
+    sqParity ^= sq;
+
+    if (pending && p.line !== pending.line) {
+      out.push(...pending.parts);
+      pending = null;
+    }
+
+    if (pending) {
+      pending.parts.push(p.text);
+      if (!dqParity && !sqParity) {
+        if (out.length) out[out.length - 1] += '|' + pending.parts.join('|');
+        else out.push(pending.parts.join('|'));
+        pending = null;
+      }
+      continue;
+    }
+
+    if (p.tightPipe && out.length && (enteringDQ || enteringSQ)) {
+      pending = { parts: [p.text], line: p.line };
+      if (!dqParity && !sqParity) {
+        out[out.length - 1] += '|' + pending.parts.join('|');
+        pending = null;
+      }
+      continue;
+    }
+
+    out.push(p.text);
   }
+  if (pending) out.push(...pending.parts);
   return out;
 }
 
@@ -1900,6 +1958,38 @@ function backstopVerb(text) {
     tokens[idx] = { text: tokens[idx].text, quotedOnly: false };
   }
   return effectiveVerb(tokens);
+}
+
+// LINE-LEVEL RECOVERY (A1-1/A1-3, 0.117.2 follow-up). backstopPieces cuts
+// quote-blind at `( ; & | )` and a backtick EVERYWHERE, including inside a
+// git command's OWN quoted argument - e.g. `-C "$(pwd)"`, or a `-m`/
+// `--trailer` message that itself contains one of those characters (a
+// conventional-commit subject like `feat(x): y` opens with `(`). That can
+// cut the piece holding the git verb apart from the piece holding
+// `--force`/the self-credit trailer, so neither resolves to verb `git` and
+// the backstop misses a command the quote-aware pass would have caught had
+// a QUOTE DESYNC on an earlier physical line not disabled it. A single
+// physical line (split on a REAL newline only, same backslash-newline join
+// backstopPieces uses) is, on its own, almost always quote-balanced even
+// when the desync lives earlier in the command - so for every line that
+// mentions `git` at all (cheap gate), re-run the normal quote-aware
+// splitSegments on JUST that line and apply gitVerdict to any segment whose
+// effective verb is `git`. This only ADDS blocks on top of backstopPieces:
+// it can never suppress one.
+function gitBackstopLines(cmd, d, heredocBodies, cwd) {
+  const joined = cmd.replace(/\\\r?\n/g, ' ');
+  for (const line of joined.split('\n')) {
+    if (!/\bgit\b/.test(line)) continue;
+    for (const seg of splitSegments(line)) {
+      const tokens = tokenize(seg);
+      if (!tokens.length) continue;
+      const ev = effectiveVerb(tokens);
+      if (!ev || ev.verb !== 'git') continue;
+      const hit = gitVerdict(ev, d, cmd, heredocBodies, cwd, false);
+      if (hit) return hit;
+    }
+  }
+  return null;
 }
 
 function gitBackstop(cmd, d, heredocBodies, baseCwd) {
@@ -1925,6 +2015,8 @@ function gitBackstop(cmd, d, heredocBodies, baseCwd) {
       }
     }
   }
+  const lineHit = gitBackstopLines(cmd, d, heredocBodies, cwd);
+  if (lineHit) return lineHit;
   return null;
 }
 

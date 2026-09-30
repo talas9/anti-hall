@@ -32,6 +32,22 @@ Security fix for git-guard.
   to check, close to the hook's 10 s timeout. The scan now continues from where it
   stopped instead of starting again at the beginning, so a 96 KB input is checked in
   about 30 ms.
+- **Follow-up hardening on the quote-blind check above.** The quote-blind check cuts a
+  command into pieces at every `; & | ( )` and backtick, so it could also cut INSIDE a
+  git command's own quoted argument - `git -C "$(pwd)" push --force-with-lease origin
+  main`, or a `-m`/`--trailer` message containing one of those characters (a
+  conventional-commit subject like `feat(x): y` opens with `(`). That split the piece
+  holding the git verb from the piece holding `--force`/the trailer, so the command was
+  allowed. The check now also re-reads each physical line on its own with the normal
+  quote-aware splitter and applies the git rules to it - a line is almost always
+  quote-balanced by itself even when the whole command is not. Also, a force push
+  inside the condition of an `if`/`while`/`until`/`elif` (e.g. `if git push -f origin
+  main; then …; fi`) was never checked at all; those are now recognized the same way
+  `then`/`do`/`else` already were. And a regex alternation grouped in parentheses (e.g.
+  `grep -E "(a|git push -f)" x`) was wrongly blocked, because the quote-blind check's
+  own `(`/`)` cuts split the still-open quoted pattern across more than one piece before
+  its closing quote; the check now tracks the quote state across pieces on the same
+  line instead of only the one piece right after a `|`.
 
 ## 0.117.1 (2026-09-28)
 
