@@ -127,7 +127,12 @@ Kill-switch: `guards.projectEditAllow=false`.
 
 "Turn off the task-list nudge", "stop the per-turn verify-first line", "disable the
 parent gate" and the like are one `set <section.key> false`. The switch keys:
-`context.*` (verify-first injections, task tracker, handover resume, defect nudge),
+`context.*` (verify-first injections, task tracker, handover resume, defect nudge;
+`context.dedupeWindowMin` — fallback per-session suppression window (minutes) for
+repeated UserPromptSubmit blocks (LIMIT CONSERVATION, TASK-LIST, DEVSWARM COMMS
+OVERRIDE, DEVSWARM WORKSPACES) when a burst of queued prompts lands in one turn,
+default 20, 0 = off/disables emit-dedupe entirely; suppression counts surface in
+`/anti-hall:doctor`),
 `maintenance.*` (repair-on-reload, progress prune, pre-compact snapshot, task
 lifecycle log, session-end MCP reaper), `guards.*` (api, speculation, claim ledger,
 task, task-list, scan throttle; `guards.modelRouting` takes `strict|advisory|off`;

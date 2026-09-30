@@ -356,10 +356,13 @@ test('STALE WORKSPACE(S) segment: unchanged next delivered turn -> suppressed; c
 
 // ---------------- fallbacks + fail-open ----------------
 
-test('transcript missing -> 15s window fallback (burst inside the window collapses, 60s apart emits)', () => {
+test('transcript missing -> explicit windowMs fallback (burst inside the window collapses, past it emits)', () => {
   const home = tmpHome();
   try {
-    const b = { home, sessionId: 's1', key: 'k', content: 'BLOCK', transcriptPath: path.join(home, 'nope.jsonl'), env: ON };
+    // windowMs passed explicitly (as verify-first.js/task-tracker.js's own callers
+    // never do — they rely on the settings-driven default, see the dedupeWindowMin
+    // tests below) so this test's 15s/60s assertions stay independent of that default.
+    const b = { home, sessionId: 's1', key: 'k', content: 'BLOCK', transcriptPath: path.join(home, 'nope.jsonl'), env: ON, windowMs: 15000 };
     assert.strictEqual(emit({ ...b, now: T0 }), true);
     assert.strictEqual(emit({ ...b, now: T0 + 1000 }), false);
     assert.strictEqual(emit({ ...b, now: T0 + MIN }), true);
@@ -371,9 +374,46 @@ test('transcript with no UPS attachment at all -> unknown -> window fallback (ne
   try {
     const tp = path.join(home, 't.jsonl');
     fs.writeFileSync(tp, assistantLine(T0 - MIN));
-    const b = { home, sessionId: 's1', key: 'k', content: 'BLOCK', transcriptPath: tp, env: ON };
+    const b = { home, sessionId: 's1', key: 'k', content: 'BLOCK', transcriptPath: tp, env: ON, windowMs: 15000 };
     assert.strictEqual(emit({ ...b, now: T0 }), true);
     assert.strictEqual(emit({ ...b, now: T0 + MIN }), true);
+  } finally { rm(home); }
+});
+
+// ---------------- settings.context.dedupeWindowMin (fallback window knob) ---
+
+test('context.dedupeWindowMin (env ANTIHALL_DEDUPE_WINDOW_MIN): same block twice within the configured window (minutes) -> emitted once', () => {
+  const home = tmpHome();
+  try {
+    // No windowMs override -> shouldEmit reads the setting itself (1 minute here).
+    const env = { ANTIHALL_EMIT_DEDUPE: '1', ANTIHALL_DEDUPE_WINDOW_MIN: '1' };
+    const b = { home, sessionId: 's1', key: 'k', content: 'BLOCK', transcriptPath: path.join(home, 'nope.jsonl'), env };
+    assert.strictEqual(emit({ ...b, now: T0 }), true);
+    assert.strictEqual(emit({ ...b, now: T0 + 30 * 1000 }), false, 'still inside the 1-minute window -> suppressed');
+    assert.strictEqual(emit({ ...b, now: T0 + 2 * MIN }), true, 'past the 1-minute window -> re-emitted');
+  } finally { rm(home); }
+});
+
+test('context.dedupeWindowMin: content that CHANGED within the window still emits (a window never suppresses a real change)', () => {
+  const home = tmpHome();
+  try {
+    const env = { ANTIHALL_EMIT_DEDUPE: '1', ANTIHALL_DEDUPE_WINDOW_MIN: '20' };
+    const tp = path.join(home, 'nope.jsonl');
+    assert.strictEqual(emit({ home, sessionId: 's1', key: 'k', content: 'BLOCK A', transcriptPath: tp, env, now: T0 }), true);
+    assert.strictEqual(emit({ home, sessionId: 's1', key: 'k', content: 'BLOCK A', transcriptPath: tp, env, now: T0 + 1000 }), false, 'same content, well inside the 20-minute window -> suppressed');
+    assert.strictEqual(emit({ home, sessionId: 's1', key: 'k', content: 'BLOCK B', transcriptPath: tp, env, now: T0 + 2000 }), true, 'changed content -> emits regardless of the window');
+  } finally { rm(home); }
+});
+
+test('context.dedupeWindowMin=0 -> emit-dedupe disabled entirely (every call emits, nothing recorded), same as guards.emitDedupe=false', () => {
+  const home = tmpHome();
+  try {
+    const env = { ANTIHALL_EMIT_DEDUPE: '1', ANTIHALL_DEDUPE_WINDOW_MIN: '0' };
+    const b = { home, sessionId: 's1', key: 'k', content: 'BLOCK', transcriptPath: path.join(home, 'nope.jsonl'), env };
+    let n = 0;
+    for (let i = 0; i < 5; i++) if (emit({ ...b, now: T0 + i * 1000 })) n++;
+    assert.strictEqual(n, 5);
+    assert.ok(!fs.existsSync(dedupe.statePath(home, 's1')));
   } finally { rm(home); }
 });
 
@@ -523,5 +563,39 @@ test('parent-inbox logSegmentError: appends {ts, segment, code, message} NDJSON;
     const fileHome = path.join(home, 'f');
     fs.writeFileSync(fileHome, 'x');
     assert.doesNotThrow(() => inbox.logSegmentError(fileHome, 'orphans', e));
+  } finally { rm(home); }
+});
+
+// ---------------- summary() — doctor's suppression-count report line ------
+
+test('summary(): counts suppressions across sessions, reports 0/null when nothing was ever suppressed', () => {
+  const home = tmpHome();
+  try {
+    assert.deepStrictEqual(dedupe.summary(home), { totalSuppressed: 0, sessions: 0, lastSuppressedAt: null });
+    const tp = path.join(home, 'nope.jsonl');
+    const env = { ANTIHALL_EMIT_DEDUPE: '1', ANTIHALL_DEDUPE_WINDOW_MIN: '20' };
+    // Session s1: 2 suppressed (burst inside the window), session s2: 1.
+    emit({ home, sessionId: 's1', key: 'k', content: 'B', transcriptPath: tp, env, now: T0 });
+    emit({ home, sessionId: 's1', key: 'k', content: 'B', transcriptPath: tp, env, now: T0 + 1000 });
+    emit({ home, sessionId: 's1', key: 'k', content: 'B', transcriptPath: tp, env, now: T0 + 2000 });
+    emit({ home, sessionId: 's2', key: 'k', content: 'B', transcriptPath: tp, env, now: T0 });
+    emit({ home, sessionId: 's2', key: 'k', content: 'B', transcriptPath: tp, env, now: T0 + 1000 });
+    const s = dedupe.summary(home);
+    assert.strictEqual(s.totalSuppressed, 3);
+    assert.strictEqual(s.sessions, 2);
+    assert.strictEqual(s.lastSuppressedAt, T0 + 2000);
+  } finally { rm(home); }
+});
+
+test('summary(): an emit (not a suppression) never bumps the counter', () => {
+  const home = tmpHome();
+  try {
+    const tp = mkTranscript(home);
+    const env = ON;
+    emit({ home, sessionId: 's1', key: 'k', content: 'B', transcriptPath: tp, env, now: T0 });
+    deliver(tp, T0 + 1000, 'B');
+    emit({ home, sessionId: 's1', key: 'k', content: 'B', transcriptPath: tp, env, now: T0 + 2000 });
+    const s = dedupe.summary(home);
+    assert.strictEqual(s.totalSuppressed, 0);
   } finally { rm(home); }
 });

@@ -151,6 +151,7 @@ const SECTIONS = [
       { key: 'taskTracker', type: 'boolean', default: true, pluginOption: 'context_task_tracker', description: 'task-tracker (UserPromptSubmit): the task-list discipline directive and per-turn reminder.' },
       { key: 'handoverResume', type: 'boolean', default: true, pluginOption: 'context_handover_resume', description: 'handover-resume (SessionStart): point a fresh or compacted session at the newest handover.' },
       { key: 'defectNudge', type: 'boolean', default: true, pluginOption: 'context_defect_nudge', description: 'defect-nudge (SessionStart): the once-a-day note about the defect channel.' },
+      { key: 'dedupeWindowMin', type: 'number', min: 0, default: 20, env: 'ANTIHALL_DEDUPE_WINDOW_MIN', pluginOption: 'context_dedupe_window_min', advanced: true, description: 'Fallback per-session suppression window (minutes) for repeated UserPromptSubmit injection blocks (LIMIT CONSERVATION, TASK-LIST, DEVSWARM COMMS OVERRIDE, DEVSWARM WORKSPACES) when a burst of queued prompts is delivered together and the transcript cannot confirm the earlier copy was already read — used only as the last-resort guard; content that changed always re-emits. 0 disables emit-dedupe entirely (same as guards.emitDedupe=false). [read by: hooks/lib/emit-dedupe.js windowMsFromSettings]' },
     ],
   },
   {

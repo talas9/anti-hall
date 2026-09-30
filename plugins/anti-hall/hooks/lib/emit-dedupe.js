@@ -126,12 +126,34 @@ function matchesExact(els, ch, k) {
 }
 
 // disabled(env, home) -> guards.emitDedupe === false via the settings precedence
-// chain (env ANTIHALL_EMIT_DEDUPE > settings.json > /config > default true);
-// fail-open to the historical env-only kill switch.
+// chain (env ANTIHALL_EMIT_DEDUPE > settings.json > /config > default true), OR
+// context.dedupeWindowMin === 0 (the "0 = off" knob for the whole feature —
+// see settings-schema.js); fail-open to the historical env-only kill switch.
 function disabled(env, home) {
   if (!env) return false;
-  try { return require('./settings.js').get('guards', 'emitDedupe', true, { env, home: home || os.homedir() }) === false; }
-  catch (_) { return env.ANTIHALL_EMIT_DEDUPE === '0'; }
+  try {
+    const s = require('./settings.js');
+    // resolveHome (not a bare os.homedir() fallback): homedir-call-site-ratchet
+    // hygiene lint routes every new call site through the canonical resolver;
+    // `home` is always the caller's already-resolved value here, so this never
+    // exercises resolver's own real-home-under-test refusal.
+    const h = { env, home: require('../../companion/lib/test-home-guard.js').resolveHome(home, env) };
+    if (s.get('guards', 'emitDedupe', true, h) === false) return true;
+    return s.get('context', 'dedupeWindowMin', 20, h) === 0;
+  } catch (_) { return env.ANTIHALL_EMIT_DEDUPE === '0'; }
+}
+
+// windowMsFromSettings(env, home) -> the fallback secondary window (ms), used
+// when the transcript is missing/unreadable and consumption cannot be read.
+// Sourced from context.dedupeWindowMin (default 20 minutes); falls back to
+// the historical 15s constant if settings.js itself cannot be loaded.
+function windowMsFromSettings(env, home) {
+  try {
+    const h = require('../../companion/lib/test-home-guard.js').resolveHome(home, env);
+    const mins = require('./settings.js').get('context', 'dedupeWindowMin', 20, { env, home: h });
+    if (Number.isFinite(mins) && mins > 0) return mins * 60 * 1000;
+  } catch (_) { /* fall through */ }
+  return DEFAULT_WINDOW_MS;
 }
 
 // scanTail(transcriptPath, bytes) -> { atts: [{ts, els}], size } | null.
@@ -218,12 +240,57 @@ function writeEntry(home, sessionId, key, entry, now) {
   } catch (_) {}
 }
 
+// bumpSuppressed(home, sessionId, now) — best-effort per-session suppression
+// counter, stored at state['__stats'] (survives the KEY_TTL_MS prune the same
+// way any other key does: its lastSeenAt is refreshed on every bump). Read
+// back by summary() below for doctor's report line. Never affects shouldEmit's
+// return value — called only after the decision is already made.
+function bumpSuppressed(home, sessionId, now) {
+  try {
+    const p = statePath(home, sessionId);
+    const state = readState(p);
+    const prevStats = state.__stats;
+    const count = (prevStats && Number.isFinite(prevStats.suppressed)) ? prevStats.suppressed : 0;
+    writeEntry(home, sessionId, '__stats', { suppressed: count + 1, lastSeenAt: now, lastSuppressedAt: now }, now);
+  } catch (_) { /* best-effort */ }
+}
+
+// summary(home) -> { totalSuppressed, sessions, lastSuppressedAt } | null.
+// Sums the __stats.suppressed counter across every session's dedupe state
+// file under stateDir(home). Fail-open (returns null on any error) — a report
+// line reading this must never throw or block.
+function summary(home) {
+  try {
+    const dir = stateDir(require('../../companion/lib/test-home-guard.js').resolveHome(home));
+    let files;
+    try { files = fs.readdirSync(dir); } catch (_) { return { totalSuppressed: 0, sessions: 0, lastSuppressedAt: null }; }
+    let totalSuppressed = 0;
+    let sessions = 0;
+    let lastSuppressedAt = null;
+    for (const f of files) {
+      if (!f.startsWith(PREFIX + '-') || !f.endsWith('.json')) continue;
+      const state = readState(path.join(dir, f));
+      const stats = state && state.__stats;
+      if (!stats || !Number.isFinite(stats.suppressed) || stats.suppressed <= 0) continue;
+      totalSuppressed += stats.suppressed;
+      sessions += 1;
+      if (Number.isFinite(stats.lastSuppressedAt) && (lastSuppressedAt === null || stats.lastSuppressedAt > lastSuppressedAt)) {
+        lastSuppressedAt = stats.lastSuppressedAt;
+      }
+    }
+    return { totalSuppressed, sessions, lastSuppressedAt };
+  } catch (_) {
+    return null;
+  }
+}
+
 // shouldEmit(opts) -> boolean. Decides AND records. opts:
 //   home, sessionId, key, content      required (missing sessionId -> true)
 //   transcriptPath  the hook payload's transcript_path (consumption signal)
 //   keepaliveTurns  0/absent = pending-only (rule a); >0 = on-change (rule b)
 //   normalize       optional (string) -> string applied before hashing
-//   windowMs        fallback window when the transcript is unusable (15000)
+//   windowMs        fallback window when the transcript is unusable; defaults
+//                   to context.dedupeWindowMin (20 min) via settings.js
 //   maxPendingMs    re-emit a copy pending longer than this (600000)
 //   now, env        injectable for tests (default Date.now(), process.env)
 function shouldEmit(opts) {
@@ -234,7 +301,7 @@ function shouldEmit(opts) {
     if (!o.sessionId || !o.key) return true;
     const home = o.home || os.homedir();
     const now = Number.isFinite(o.now) ? o.now : Date.now();
-    const windowMs = Number.isFinite(o.windowMs) ? o.windowMs : DEFAULT_WINDOW_MS;
+    const windowMs = Number.isFinite(o.windowMs) ? o.windowMs : windowMsFromSettings(env, home);
     const maxPendingMs = Number.isFinite(o.maxPendingMs) ? o.maxPendingMs : DEFAULT_MAX_PENDING_MS;
     const keepalive = Number.isFinite(o.keepaliveTurns) && o.keepaliveTurns > 0 ? o.keepaliveTurns : 0;
     const hash = hashOf(o.content, o.normalize);
@@ -294,6 +361,9 @@ function shouldEmit(opts) {
         : { hash: prev.hash, tp: prev.tp || null, ch: prev.ch, k: prev.k,
           lastEmittedAt: prev.lastEmittedAt, lastSeenAt: now, turnsSinceEmit: nextTurns },
       now);
+      // Suppression counter (doctor's "emit-dedupe" report line reads this via
+      // summary() below) — best-effort, never affects the emit decision itself.
+      if (!emit) bumpSuppressed(home, o.sessionId, now);
     } catch (_) {
       return true; // cannot persist -> never suppress on unverifiable state
     }
@@ -336,6 +406,6 @@ function resetSession(opts) {
 function _resetMemo() { _memo.clear(); }
 
 module.exports = {
-  shouldEmit, record, resetSession, statePath, hashOf, _resetMemo,
+  shouldEmit, record, resetSession, statePath, hashOf, summary, _resetMemo,
   DEFAULT_WINDOW_MS, DEFAULT_KEEPALIVE_TURNS, DEFAULT_MAX_PENDING_MS,
 };

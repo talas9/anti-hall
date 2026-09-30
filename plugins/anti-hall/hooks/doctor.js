@@ -1046,6 +1046,27 @@ function devswarmHookSelfTests() {
       }
     } catch (_) { /* fail-open: measurement reporting must never break doctor */ }
 
+    // limit-skip (field report) measurement: same rearm-cues.jsonl ledger,
+    // trigger 'limit-skip' — `inbox tick` declining to nag "re-arm it" while
+    // LIMIT CONSERVATION is active. Report-only (never FAIL/WARN).
+    try {
+      const livenessModPath3 = path.join(libDir, 'liveness.js');
+      let devswarmRootFn3 = null;
+      if (fs.existsSync(livenessModPath3)) {
+        try { ({ devswarmRoot: devswarmRootFn3 } = require(livenessModPath3)); } catch (_) { devswarmRootFn3 = null; }
+      }
+      if (devswarmRootFn3) {
+        const p3 = path.join(devswarmRootFn3(require('../companion/lib/test-home-guard.js').resolveHome(undefined, process.env)), 'rearm-cues.jsonl');
+        let limitSkipCount = 0;
+        try {
+          limitSkipCount = fs.readFileSync(p3, 'utf8').split('\n').filter(Boolean)
+            .filter((l) => { try { return JSON.parse(l).trigger === 'limit-skip'; } catch (_) { return false; } }).length;
+        } catch (_) { limitSkipCount = 0; }
+        infol('wake-watch limit-skips: ' + limitSkipCount +
+          ' (rearm-cues.jsonl, trigger limit-skip — LIMIT CONSERVATION active, re-arm deliberately deferred)');
+      }
+    } catch (_) { /* fail-open: measurement reporting must never break doctor */ }
+
     // Startup-state sampling (0.117.0) — DATA CAPTURE ONLY, report-only line
     // (never FAIL/WARN — 0 is expected/normal for a long time; see
     // companion/lib/devswarm-startup-sampling.js's own header for why paused
@@ -1651,6 +1672,21 @@ if (REPAIR_RESURRECTED) {
   if (!result) return;
   head('superseded archived markers');
   infol(result.message);
+})();
+
+// --- 5n2. emit-dedupe suppression counts (REPORT-ONLY, one line) -----------
+// Counters from hooks/lib/emit-dedupe.js summary() — how many repeated
+// UserPromptSubmit injection blocks (LIMIT CONSERVATION, TASK-LIST, DEVSWARM
+// COMMS OVERRIDE, DEVSWARM WORKSPACES, ...) were suppressed instead of being
+// re-sent, across every session's dedupe state file. Stays SILENT when
+// nothing has ever been suppressed (fresh install, or the feature is off).
+(function emitDedupeSection() {
+  let s = null;
+  try { s = require('./lib/emit-dedupe.js').summary(require('../companion/lib/test-home-guard.js').resolveHome(undefined, process.env)); } catch (_) { s = null; }
+  if (!s || !s.totalSuppressed) return;
+  head('emit-dedupe');
+  const ago = Number.isFinite(s.lastSuppressedAt) ? Math.max(0, Math.round((Date.now() - s.lastSuppressedAt) / 60000)) + 'm ago' : 'n/a';
+  infol('suppressed ' + s.totalSuppressed + ' repeated injection(s) across ' + s.sessions + ' session(s) (last ' + ago + ')');
 })();
 
 // --- 5o. dispatch demand effectiveness (REPORT-ONLY, one line) ---------------

@@ -68,6 +68,34 @@ Security fix for git-guard.
   its closing quote; the check now tracks the quote state across pieces on the same
   line instead of only the one piece right after a `|`.
 
+### Fixed
+
+- **UserPromptSubmit injection burst deduplicated by a configurable window (field
+  report)** — a DevSwarm Primary idle through a multi-day usage-limit outage had every
+  queued cron/wake prompt re-delivered together on resume, and each one re-triggered
+  anti-hall's full LIMIT CONSERVATION, TASK-LIST, DEVSWARM COMMS OVERRIDE and DEVSWARM
+  WORKSPACES injection blocks — one resumed turn carried ~60 identical copies (~150 KB).
+  `hooks/limit-conserve-inject.js`, `hooks/task-tracker.js` and `hooks/devswarm-
+  child-turn.js` already deduped their static blocks via `hooks/lib/emit-dedupe.js`
+  (as does `hooks/devswarm-parent-inbox.js`'s WORKSPACES table); the fallback window
+  used when a burst's consumption cannot be read from the transcript is now driven by
+  the new `context.dedupeWindowMin` setting (default `20` minutes, `0` = off/disables
+  emit-dedupe entirely) instead of a fixed 15s constant. Suppression counts (per
+  session and overall, with a last-suppressed age) now surface in `/anti-hall:doctor`
+  via `hooks/lib/emit-dedupe.js`'s new `summary()`.
+- **`inbox tick` reports `watcherArmed limit-skip` while LIMIT CONSERVATION is active**
+  — the mailbox-tick cron prompt tells the agent to re-arm a lapsed Monitor wake-watch
+  when `watcherArmed` reads `false`, which directly contradicted LIMIT CONSERVATION's
+  own "defer non-urgent work" instruction while both were active at once. `inbox tick`
+  (`scripts/devswarm.js` `cmdInboxTick`) now checks `hooks/limit-conserve.js`
+  `isConserving()` after the existing idle-skip check and, while conservation is
+  active, reports the string `watcherArmed limit-skip` instead of `false` — sibling
+  behavior to `devswarm.wakeWatchIdleSkip`'s `idle-skip`, no separate setting. The cron
+  prompt text (`hooks/lib/devswarm-wake.js` `drainCmd`'s `rearmClause`) now says both
+  `idle-skip` and `limit-skip` mean "do not re-arm"; the cron job itself is never
+  altered. Metric: same `~/.anti-hall/devswarm/rearm-cues.jsonl` ledger, trigger
+  `limit-skip`, surfaced by `doctor` as "wake-watch limit-skips: N".
+
 ## 0.117.1 (2026-09-28)
 
 Four field-reported fixes from DevSwarm child workspaces, all root-caused against a

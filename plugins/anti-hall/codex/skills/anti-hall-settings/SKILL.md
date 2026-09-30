@@ -117,7 +117,11 @@ Kill-switch: `guards.projectEditAllow=false`.
 
 Every hook the Codex port registers reads the same switch as on Claude Code, so "turn
 off X" is one `set <section.key> false`: `context.*` (verify-first injections, task
-tracker, handover resume, defect nudge), `maintenance.*` (repair-on-reload, progress
+tracker, handover resume, defect nudge; `context.dedupeWindowMin` — fallback
+per-session suppression window (minutes) for repeated UserPromptSubmit blocks (LIMIT
+CONSERVATION, TASK-LIST, DEVSWARM COMMS OVERRIDE, DEVSWARM WORKSPACES) when a burst
+of queued prompts lands in one turn, default 20, 0 = off/disables emit-dedupe
+entirely; suppression counts surface in doctor), `maintenance.*` (repair-on-reload, progress
 prune, pre-compact snapshot, task lifecycle log), `guards.*` (speculation, claim ledger,
 task, task-list; `guards.modelRouting` takes `strict|advisory|off`), and `devswarm.*`
 (parentGate, childGate, parentInbox, childTurn, childRole, childDrain,

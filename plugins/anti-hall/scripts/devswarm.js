@@ -11791,12 +11791,35 @@ function cmdInboxTick(id, flags, ctx) {
     } catch (_) { /* fail-open: keep watcherArmed exactly as the lock check computed it */ }
   }
 
+  // LIMIT-SKIP (field report, mirrors #39's idle-skip): while LIMIT
+  // CONSERVATION is active (usage at/above its threshold — hooks/
+  // limit-conserve.js isConserving()), re-arming the Monitor wake-watch is
+  // exactly the kind of non-urgent background action limit-conserve-inject.js
+  // already tells the agent to defer; nagging "re-arm it" here directly
+  // contradicts that instruction. Only evaluated when watcherArmed still
+  // reads `false` (a truly-armed watcher, or an idle-skip already decided
+  // above, is always reported as such — never overridden). `watcherArmed`
+  // becomes the STRING `'limit-skip'` (truthy, same as idle-skip, so every
+  // `!watcherArmed` / `!== false` consumer treats it as "don't nag").
+  // Fail-open: any error leaves `watcherArmed` exactly as computed above.
+  let limitSkipped = false;
+  if (!watcherArmed && isSafeId(id)) {
+    try {
+      if (require('../hooks/limit-conserve.js').isConserving().active) {
+        watcherArmed = 'limit-skip';
+        limitSkipped = true;
+      }
+    } catch (_) { /* fail-open: keep watcherArmed exactly as computed above */ }
+  }
+
   // this tick is the re-arm CUE point (see rearmMetricsPath's header above):
   // watcherArmed:false is exactly the condition drainCmd's rearmClause fires
-  // the "re-arm it" instruction on. An idle-skip is a DELIBERATE no-arm
-  // decision, not a lapse — it gets its own trigger bucket so doctor's
-  // idle-skip count and the legacy re-arm-cue count never conflate the two.
+  // the "re-arm it" instruction on. An idle-skip/limit-skip is a DELIBERATE
+  // no-arm decision, not a lapse — each gets its own trigger bucket so
+  // doctor's idle-skip/limit-skip counts and the legacy re-arm-cue count
+  // never conflate them.
   if (idleSkipped) recordRearmCue(home, id, 'idle-skip');
+  else if (limitSkipped) recordRearmCue(home, id, 'limit-skip');
   else if (!watcherArmed && isSafeId(id)) recordRearmCue(home, id, 'tick');
 
   const tickOut = Object.assign({}, counted, { action: 'tick', idMismatch, watcherArmed });
@@ -20382,10 +20405,13 @@ function inboxTickQuietLine(result) {
   if (result && result.ok) {
     const id = result.id != null ? String(result.id) : '';
     const unread = Number.isFinite(result.unreadTotal) ? result.unreadTotal : (result.unreadTotal == null ? 'null' : String(result.unreadTotal));
-    // watcherArmed renders 'idle-skip' verbatim (#39: a deliberate no-arm
-    // decision, distinct from both true and false) — every other value
-    // (boolean or anything else) keeps the pre-#39 true/false rendering.
-    const watcherArmedStr = result.watcherArmed === 'idle-skip' ? 'idle-skip' : (result.watcherArmed ? 'true' : 'false');
+    // watcherArmed renders 'idle-skip'/'limit-skip' verbatim (#39 + field
+    // report: each is a deliberate no-arm decision, distinct from both true
+    // and false) — every other value (boolean or anything else) keeps the
+    // pre-#39 true/false rendering.
+    const watcherArmedStr = (result.watcherArmed === 'idle-skip' || result.watcherArmed === 'limit-skip')
+      ? result.watcherArmed
+      : (result.watcherArmed ? 'true' : 'false');
     return 'tick ' + id + ': unread ' + unread
       + ', known ' + (result.known ? 'true' : 'false')
       + ', meshGap ' + (result.meshGapWithheld ? 'true' : 'false')
