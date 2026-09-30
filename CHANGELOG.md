@@ -21,10 +21,15 @@ the update.
 - **git-guard: odd-quote heredoc prose no longer blocks the executed launcher.** Launcher-dir redirect targets are attributed per line, so an apostrophe in a heredoc body does not make the real command look like a launcher-dir write. `ditto` is now a copy verb for launcher-dir writes.
 - **codex-quota parses "try again at <ordinal date>" and codex-nudge stays quiet while limited.** A Codex usage-limit message giving a reset as an ordinal date ("try again at Oct 3rd, 2026 ...") was not parsed, so no quota record was kept and the nudge kept firing. The date is now parsed, an unparseable limit message falls back to a 6 h cooldown, and codex-nudge is skipped while a quota record is live.
 - **DevSwarm Primary registration and workspace listing no longer key a submodule cwd as its own worktree.** `register-primary`, `workspaces list`, archive-prefix and the ingest installer workdir used the submodule toplevel, minting phantom Primary rows. They now use the superproject-folding resolver. `doctor` detects existing phantom submodule Primary rows; only `doctor --repair` archives them (nothing is deleted).
+- **command-guard read-only-verify and push carve-outs tightened (review round 2).** `cd` is honoured only as an `&&`-chained step (not after `||`, in a pipe, or after `;`) and the cd target and script path are realpath'd, so symlinks cannot steer an anti-hall script past the refusal; the `vitest`/`jest` carve-out requires each operand to be an existing regular `*.test.*`/`*.spec.*` file (a bare `.test.ts` is a filter pattern); a short-sha push source must resolve through git to exactly HEAD (a tag named like the sha no longer matches); a leading `!` negation (`while ! npm test; ...`) no longer hides the heavy verb.
+- **work-detect: a `<<` after an unquoted `#` is a comment, not a heredoc.** The lines below it were dropped as heredoc body and hid real work from the housekeeping-only verdict.
 
 ### Security
 
 - git-guard: a launcher-dir write (cp/tee/mv/sed -i/install/ln/cd+write) placed after a heredoc body with an unbalanced apostrophe was not detected; a quote-blind per-line launcher backstop now blocks it.
+- git-guard: a quoted redirect target spanning a newline (`>"$HOME/<NL>/../<launcher dir>/x"`, also `>>`, `1>`, `&>`, `x>`) escaped the launcher-dir write block because the target was cut at the newline. Redirect words are now read from the raw text (a quoted span runs to its matching quote) in both the quote-aware pass and the backstop.
+- git-guard: a backslash-newline continuation in the middle of a launcher-dir path (`> ~/<dir>/\<NL>bin/y`) bypassed the launcher-dir write block; continuations are now removed (as bash does) before launcher analysis.
+- git-guard: `git push` deleting a remote branch/tag (`--delete`, `-d`, `origin :<ref>`, `--prune`) is now blocked with a reason naming the `skip.json` override; deleting published refs needs explicit owner confirmation.
 
 ## 0.119.0 (2026-09-30)
 
