@@ -700,6 +700,18 @@ const GLUE_BLOCK = [
   GLUE_HD('fine', 'echo x > $HOME/.anti-hall/bin/x'),
   GLUE_HD('fine', 'echo x > /Users/u/.anti-hall/bin/x'),
   GLUE_HD('fine', 'cd ~/.anti-hall/bin && echo x > y'),
+  // Residual (0.119.0): an odd-quote body glues later lines, hiding non-redirect
+  // verbs from the quote-aware pass; the quote-blind launcherBackstop catches them.
+  GLUE_HD("don't", 'cp a ~/.anti-hall/bin/x'),
+  GLUE_HD("don't", 'tee ~/.anti-hall/bin/x'),
+  GLUE_HD("don't", 'mv a ~/.anti-hall/bin/x'),
+  GLUE_HD("don't", 'sed -i s/a/b/ ~/.anti-hall/bin/x'),
+  GLUE_HD("don't", 'install -m 755 a ~/.anti-hall/bin/x'),
+  GLUE_HD("don't", 'ln -sf a ~/.anti-hall/bin/x'),
+  GLUE_HD("don't", 'cd ~/.anti-hall/bin && echo x > y'),
+  GLUE_HD("don't a -> b", 'cd ~/.anti-hall/bin\necho x > y'),
+  GLUE_HD("don't", 'cd ~/.anti-hall/bin\ncp /tmp/a y'),
+  GLUE_HD("it's", 'cd $HOME/.anti-hall/bin; sed -i s/a/b/ y'),
   'echo x > ~/.anti-hall/bin/x',
   'cp a ~/.anti-hall/bin/x',
   'tee ~/.anti-hall/bin/x',

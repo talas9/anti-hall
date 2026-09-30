@@ -1580,6 +1580,14 @@ function targetResolvesIntoLauncherDir(rawPath, cdDir, opts) {
   return pathHasLauncherSegment(rejoined);
 }
 
+const LAUNCHER_BLOCK_MSG = (
+  'anti-hall git-guard: BLOCKED. This command writes into ~/.anti-hall/bin/, ' +
+  'the stable launcher directory. anti-hall installs those files itself ' +
+  '(update / doctor --repair); overwriting one would run arbitrary code (such ' +
+  'as a force push) under a trusted launcher name. Leave that directory alone; ' +
+  'if the path only appears as prose inside a heredoc/brief, write that text with the Write tool instead.'
+);
+
 function writesLauncherDir(tokens, ev, cdDir) {
   const targets = [];
   for (let i = 0; i < tokens.length; i++) {
@@ -1777,13 +1785,7 @@ function scanCommand(cmd, depth, baseCwd) {
     if (!ev) continue;
 
     if (writesLauncherDir(tokens, ev, lastCdDir)) {
-      return (
-        'anti-hall git-guard: BLOCKED. This command writes into ~/.anti-hall/bin/, ' +
-        'the stable launcher directory. anti-hall installs those files itself ' +
-        '(update / doctor --repair); overwriting one would run arbitrary code (such ' +
-        'as a force push) under a trusted launcher name. Leave that directory alone; ' +
-        'if the path only appears as prose inside a heredoc/brief, write that text with the Write tool instead.'
-      );
+      return LAUNCHER_BLOCK_MSG;
     }
 
     if (ev.verb === 'echo' || ev.verb === 'printf') {
@@ -1877,7 +1879,45 @@ function scanCommand(cmd, depth, baseCwd) {
     const gv = gitVerdict(ev, d, cmd, heredocBodies, lastCdDir, true);
     if (gv) return gv;
   }
+  if (d === 0) {
+    const lb = launcherBackstop(cmd, baseCwd);
+    if (lb) return lb;
+  }
   return gitBackstop(cmd, d, heredocBodies, baseCwd);
+}
+
+// Quote-blind launcher-dir write scan. The quote-aware pass above loses sync
+// after an odd quote (a `don't` in a heredoc body) and glues later lines into
+// one token, hiding the verb of a real `cp`/`tee`/`mv`/`sed -i`/`cd` write.
+// This pass cuts the raw text quote-blind (backstopPieces: newline ; & | ( )
+// $( backtick) and runs the same writesLauncherDir on each piece, tracking a
+// literal `cd` so `cd ~/.anti-hall/bin` + a relative write still blocks.
+// Executing a launcher (`node ~/.anti-hall/bin/x`) is not a write. Only ADDS
+// blocks. DELIBERATE FAIL-CLOSED: prose in a heredoc that literally holds a
+// launcher write blocks (owner-ratified trade-off, 0.119.0 revert).
+function launcherBackstop(cmd, baseCwd) {
+  let cdDir = (typeof baseCwd === 'string' && baseCwd) ? baseCwd : null;
+  for (const raw of backstopPieces(cmd)) {
+    const trimmed = raw.replace(/^\s+/, '');
+    const variants = [trimmed];
+    if (/^["']/.test(trimmed)) variants.push(trimmed.replace(/^["']+/, ''));
+    for (const v of variants) {
+      const tokens = tokenize(v);
+      if (!tokens.length) continue;
+      const ev = backstopVerb(v);
+      if (!ev) continue;
+      if (ev.verb === 'cd' || ev.verb === 'pushd') {
+        const dirTok = ev.args.find((t) => !t.text.startsWith('-'));
+        if (dirTok) {
+          cdDir = (cdDir && (cdDir.length > 4096 || cdDir.split('/').length > 64))
+            ? null : (normalizeGuardPath(dirTok.text, cdDir) || dirTok.text);
+        }
+        continue;
+      }
+      if (writesLauncherDir(tokens, ev, cdDir)) return LAUNCHER_BLOCK_MSG;
+    }
+  }
+  return null;
 }
 
 // The git-specific verdicts (force push, push-arg command substitution,
