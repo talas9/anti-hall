@@ -111,8 +111,17 @@ test('canHandoff: an OLDER "newest" version -> false (never regress)', () => {
   assert.strictEqual(canHandoff('0.108.5', '0.108.4', {}), false);
 });
 
-test('canHandoff: HANDOFF_ENV_VAR already set -> false (at most one handoff per process chain)', () => {
+test('canHandoff: legacy/non-semver HANDOFF_ENV_VAR stamp -> false (fail closed)', () => {
   assert.strictEqual(canHandoff('0.108.4', '0.108.5', { [HANDOFF_ENV_VAR]: '1' }), false);
+});
+
+test('canHandoff: a SECOND release in an already handed-off chain (stamp < newest) -> true (was STALE BUILD + manual re-arm)', () => {
+  assert.strictEqual(canHandoff('0.117.1', '0.117.2', { [HANDOFF_ENV_VAR]: '0.117.1' }), true);
+});
+
+test('canHandoff: stamp equal to / newer than newest -> false (chain stays strictly version-monotonic)', () => {
+  assert.strictEqual(canHandoff('0.117.1', '0.117.2', { [HANDOFF_ENV_VAR]: '0.117.2' }), false);
+  assert.strictEqual(canHandoff('0.117.1', '0.117.2', { [HANDOFF_ENV_VAR]: '0.118.0' }), false);
 });
 
 test('canHandoff: non-semver inputs -> false, never throws', () => {
@@ -131,7 +140,7 @@ test('attemptHandoff: the SAME version -> returns null, spawnFn is NEVER called,
   assert.strictEqual(spawnCalled, false, 'the version guard must short-circuit before ever calling spawnFn');
 });
 
-test('attemptHandoff: already handed off once (loop guard) -> returns null, spawnFn is NEVER called', () => {
+test('attemptHandoff: loop guard (legacy stamp) -> returns null, spawnFn is NEVER called', () => {
   let spawnCalled = false;
   const child = attemptHandoff({
     ownVersion: '0.108.4', newestVersion: '0.108.5', scriptPath: '/does/not/matter.js',
@@ -163,14 +172,14 @@ test('attemptHandoff: release() is called BEFORE spawnFn (never two watchers)', 
   assert.deepStrictEqual(order, ['release', 'spawn']);
 });
 
-test('attemptHandoff: a genuinely spawned child gets HANDOFF_ENV_VAR=1 stamped on its env (so IT refuses to hand off again)', () => {
+test('attemptHandoff: a genuinely spawned child gets HANDOFF_ENV_VAR=<target version> stamped on its env (so IT only hands off to a strictly newer one)', () => {
   let seenEnv = null;
   attemptHandoff({
     ownVersion: '0.108.4', newestVersion: '0.108.5', scriptPath: '/does/not/matter.js',
     role: 'child', id: 'kid-1', env: { FOO: 'bar' }, release: () => {},
     spawnFn: (cmd, args, opts) => { seenEnv = opts.env; return { on() {}, once() {} }; },
   });
-  assert.strictEqual(seenEnv[HANDOFF_ENV_VAR], '1');
+  assert.strictEqual(seenEnv[HANDOFF_ENV_VAR], '0.108.5');
   assert.strictEqual(seenEnv.FOO, 'bar', 'must inherit the rest of the parent env');
 });
 

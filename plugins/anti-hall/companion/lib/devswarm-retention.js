@@ -181,7 +181,7 @@ function sqliteStores(home) {
 }
 
 function openDb(home, hash, readOnly) {
-  const { DatabaseSync } = require('node:sqlite');
+  const { DatabaseSync } = require('./sqlite-quiet.js').requireSqlite();
   const p = storeLib().sqlitePathForHash(home, hash);
   const db = new DatabaseSync(p, readOnly ? { readOnly: true } : {});
   db.exec('PRAGMA busy_timeout = 3000;');

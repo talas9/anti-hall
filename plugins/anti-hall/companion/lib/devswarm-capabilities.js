@@ -306,7 +306,7 @@ function tableColumns(file, table) {
   let cols = null;
   let db = null;
   try {
-    const sqlite = require('node:sqlite');
+    const sqlite = require('./sqlite-quiet.js').requireSqlite();
     if (isFile(file)) {
       db = new sqlite.DatabaseSync(file, { readOnly: true });
       const rows = db.prepare('PRAGMA table_info(' + JSON.stringify(table) + ')').all();

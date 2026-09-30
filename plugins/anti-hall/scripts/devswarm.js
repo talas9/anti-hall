@@ -5938,7 +5938,7 @@ function messageGaps(home, env, snap, now) {
   const byRepo = appDb.messageTimestamps({ home, env, sinceMs: 0, untilMs: t - MESSAGE_SETTLE_MS });
   if (!byRepo) return null;
   let sqlite;
-  try { sqlite = require('node:sqlite'); } catch (_) { return null; }
+  try { sqlite = require('../companion/lib/sqlite-quiet.js').requireSqlite(); } catch (_) { return null; }
   const repos = [];
   for (const repo of snap.repositories) {
     const rows = byRepo.get(repo.id) || [];
@@ -14780,7 +14780,7 @@ function rekeyStoreCounts(home, key) {
   const db = store.sqlitePathForHash(home, key);
   if (fs.existsSync(db)) {
     try { out.liveWal = fs.statSync(db + '-wal').size > 0; } catch (_) { out.liveWal = false; }
-    const { DatabaseSync } = require('node:sqlite');
+    const { DatabaseSync } = require('../companion/lib/sqlite-quiet.js').requireSqlite();
     const uri = 'file:' + db.split(path.sep).map(encodeURIComponent).join('/') + '?immutable=1';
     const conn = new DatabaseSync(uri, { readOnly: true });
     try {

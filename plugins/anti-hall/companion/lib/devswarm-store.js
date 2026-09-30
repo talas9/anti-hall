@@ -259,7 +259,7 @@ function selectBackend(opts) {
   return sqliteAvailable() ? 'sqlite' : 'journal';
 }
 function sqliteAvailable() {
-  try { require('node:sqlite'); return true; } catch (_) { return false; }
+  try { require('./sqlite-quiet.js').requireSqlite(); return true; } catch (_) { return false; }
 }
 
 // ---- backend consistency (defect #10 field report) ------------------------
@@ -801,7 +801,7 @@ function openSqlite(home, workspaceId, opts) {
   // makes a contended writer WAIT (bounded) instead of throwing. Overridable
   // (opts.busyTimeoutMs) so tests can drive contention deterministically.
   const busyTimeoutMs = Number.isFinite(o.busyTimeoutMs) ? o.busyTimeoutMs : 3000;
-  const { DatabaseSync } = require('node:sqlite');
+  const { DatabaseSync } = require('./sqlite-quiet.js').requireSqlite();
   const dbPath = path.join(dir, 'devswarm.db');
   // readOnly (Phase 4c, #12 — "213 empty store dirs on the owner's machine"):
   // a PURE-READ caller (liveness sweeps, unread checks, parent/child gate

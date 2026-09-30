@@ -127,7 +127,7 @@ function normPath(p) {
 
 function appDbRows(o) {
   let sqlite;
-  try { sqlite = require('node:sqlite'); } catch (_) { return null; }
+  try { sqlite = require('./sqlite-quiet.js').requireSqlite(); } catch (_) { return null; }
   const file = require('./devswarm-app-db.js').appDbPath({ env: o.env, home: o.home });
   if (!file) return null;
   try { if (!fs.statSync(file).isFile()) return null; } catch (_) { return null; }

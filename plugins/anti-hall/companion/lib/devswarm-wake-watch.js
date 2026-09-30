@@ -402,12 +402,17 @@ function formatHandoffLine(newestVersion) {
 //      version), but checked again here, independently, rather than trusting
 //      the caller — a handoff is a one-way, hard-to-undo action (a live
 //      process replaces itself), so it earns its own guard.
-//   2. LOOP GUARD (env var) — at most ONE handoff per process chain. The
-//      spawned child inherits HANDOFF_ENV_VAR=1; if THAT child later also
-//      finds itself stale (e.g. two releases landed back to back before the
-//      chain caught up), it refuses to hand off again and falls back to the
-//      pre-fix print-and-exit behavior — so a broken/looping version chain
-//      can never spawn an unbounded process tree.
+//   2. LOOP GUARD (env var) — every handoff must target a version STRICTLY
+//      newer than the previous handoff's target. The spawned child inherits
+//      HANDOFF_ENV_VAR=<the version it was handed to>; a later release
+//      (newest > that stamp) may hand off again, but a chain that would
+//      re-target the same or an older version (a broken ownVersion
+//      resolution) is refused and falls back to print-and-exit, so the
+//      process chain stays strictly version-monotonic and bounded. Pre-fix
+//      this was a flat "one handoff per chain" (stamp '1'), which made every
+//      SECOND release in a long-lived chain end in STALE BUILD + a manual
+//      re-arm. A legacy/non-semver stamp (e.g. '1' from an older parent)
+//      still fails closed.
 // Fail-closed (never hands off) on any resolution error.
 function canHandoff(ownVersion, newestVersion, env) {
   try {
@@ -416,7 +421,13 @@ function canHandoff(ownVersion, newestVersion, env) {
     if (upd.compareVersions(newestVersion, ownVersion) <= 0) return false; // same/older -> never
   } catch (_) { return false; }
   const e = env || process.env;
-  if (e && e[HANDOFF_ENV_VAR]) return false;
+  const stamp = e && e[HANDOFF_ENV_VAR];
+  if (stamp) {
+    try {
+      const upd = require(path.join(__dirname, '..', '..', 'skills', 'update', 'scripts', 'update.js'));
+      if (!upd.isSemver(stamp) || upd.compareVersions(newestVersion, stamp) <= 0) return false;
+    } catch (_) { return false; }
+  }
   return true;
 }
 
@@ -452,7 +463,7 @@ function attemptHandoff(opts) {
   try {
     child = spawnFn(process.execPath, [o.scriptPath], {
       stdio: 'inherit',
-      env: Object.assign({}, env, { [HANDOFF_ENV_VAR]: '1' }),
+      env: Object.assign({}, env, { [HANDOFF_ENV_VAR]: String(o.newestVersion) }),
     });
   } catch (_) {
     return null; // synchronous spawn failure -> caller falls back

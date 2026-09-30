@@ -185,7 +185,7 @@ function readSnapshot(file, opts) {
   const env = (opts && opts.env) || process.env;
   const home = (opts && opts.home) || null;
   let sqlite;
-  try { sqlite = require('node:sqlite'); } catch (_) { return null; }
+  try { sqlite = require('./sqlite-quiet.js').requireSqlite(); } catch (_) { return null; }
   try { if (!fs.statSync(file).isFile()) return null; } catch (_) { return null; }
   let db = null;
   try {
@@ -596,7 +596,7 @@ function messageTimestamps(opts) {
   const file = appDbPath(o);
   if (!file) return null;
   let sqlite;
-  try { sqlite = require('node:sqlite'); } catch (_) { return null; }
+  try { sqlite = require('./sqlite-quiet.js').requireSqlite(); } catch (_) { return null; }
   let db = null;
   try {
     if (!fs.statSync(file).isFile()) return null;
