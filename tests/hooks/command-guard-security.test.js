@@ -718,3 +718,44 @@ for (const c of B1_BLOCK) {
     assert.strictEqual(r.status, 2, r.stdout);
   }));
 }
+
+// ---- cd tracking: only an unconditional `&&` cd is honoured; paths realpath'd ----
+// Fixture: <repo>/ah is an anti-hall plugin root (manifest + scripts/settings.js);
+// <repo>/decoy has its own benign scripts/settings.js and a symlink L -> ah/scripts.
+function withCdDecoy(fn) {
+  return withRepo((repo) => {
+    const ah = path.join(repo, 'ah');
+    const decoy = path.join(repo, 'decoy');
+    fs.mkdirSync(path.join(ah, '.claude-plugin'), { recursive: true });
+    fs.mkdirSync(path.join(ah, 'scripts'), { recursive: true });
+    fs.writeFileSync(path.join(ah, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: 'anti-hall' }));
+    fs.writeFileSync(path.join(ah, 'scripts', 'settings.js'), 'x\n');
+    fs.mkdirSync(path.join(decoy, 'scripts'), { recursive: true });
+    fs.writeFileSync(path.join(decoy, 'scripts', 'settings.js'), 'x\n');
+    fs.symlinkSync(path.join(ah, 'scripts'), path.join(decoy, 'L'));
+    return fn({ repo, ah, decoy });
+  });
+}
+const CD_BLOCK = (d) => [
+  { cmd: `cd ${d.decoy} | tail; node scripts/settings.js --check | tail`, cwd: d.ah }, // cd in a pipe: subshell
+  { cmd: `true || cd ${d.decoy}; node scripts/settings.js --check | tail`, cwd: d.ah }, // cd skipped by ||
+  { cmd: `false; cd ${d.decoy}; node scripts/settings.js --check | tail`, cwd: d.ah }, // `;` cd: may have failed
+  { cmd: `cd ${d.decoy}/L && node ../scripts/settings.js --check | tail`, cwd: d.ah }, // cd through a symlink
+  { cmd: `node L/../scripts/settings.js --check | tail`, cwd: d.decoy }, // script path through a symlink
+];
+const CD_ALLOW = (d) => [
+  { cmd: `cd ${d.decoy} && node scripts/settings.js --check | tail`, cwd: d.ah },
+  { cmd: `node scripts/settings.js --check | tail`, cwd: d.decoy },
+];
+test('verify-allow (cd): a conditional/piped cd or a symlinked path cannot steer the script off an anti-hall plugin', () => {
+  withCdDecoy((d) => {
+    for (const c of CD_BLOCK(d)) {
+      const r = run(c.cmd, { cwd: c.cwd });
+      assert.strictEqual(r.status, 2, 'expected BLOCK for ' + c.cmd + '\n' + r.stdout);
+    }
+    for (const c of CD_ALLOW(d)) {
+      const r = run(c.cmd, { cwd: c.cwd });
+      assert.strictEqual(r.status, 0, 'expected ALLOW (control) for ' + c.cmd + '\n' + r.stdout);
+    }
+  });
+});

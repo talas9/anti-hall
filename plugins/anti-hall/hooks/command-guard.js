@@ -2078,9 +2078,12 @@ function isInterpreterScriptCheck(segment, ctx) {
   const base = base0;
   let realScript;
   try {
-    const abs = path.resolve(base, script);
-    if (!fs.statSync(abs).isFile()) return false;
-    realScript = fs.realpathSync(abs);
+    // Joined WITHOUT lexical normalization, then realpath'd: the kernel resolves
+    // `L/../x` through the symlink L, so path.resolve's textual `..` collapse
+    // would point at a different file than the one that actually runs.
+    const joined = path.isAbsolute(script) ? script : base.replace(/\/+$/, '') + '/' + script;
+    realScript = fs.realpathSync.native(joined); // .native: libc realpath keeps `L/..` physical (JS realpathSync pre-normalizes `..`)
+    if (!fs.statSync(realScript).isFile()) return false;
   } catch (_) { return false; }
   // Never a way to flip a safety switch or trust an allowlist from the main
   // thread: `--confirmed` anywhere refuses, and so does any anti-hall script
@@ -2263,8 +2266,18 @@ function isBoundedVerificationCommand(command, ctx) {
     if (effectiveVerb(seg) === 'cd') {
       const cdTok = tokenizeQuoted(seg);
       const cdBase = (ctx.payload && typeof ctx.payload.cwd === 'string' && ctx.payload.cwd) || process.cwd();
-      if (cdTok.length === 2 && cdTok[0] === 'cd' && !/^-|[$`~*?[\]{}\\]/.test(cdTok[1])) {
-        ctx = Object.assign({}, ctx, { payload: Object.assign({}, ctx.payload, { cwd: path.resolve(cdBase, cdTok[1]) }) });
+      // Honoured ONLY as an unconditional step: every earlier delimiter and this
+      // one are `&&`, so the cd ran (and succeeded) before anything after it. A cd
+      // after `||`, in a pipe (subshell), or joined by `;` (may have failed, or be
+      // a subshell) leaves the cwd unknown. The target is realpath'd: the shell's
+      // physical cwd is what relative script paths resolve against.
+      let cdCwd = null;
+      if (cdTok.length === 2 && cdTok[0] === 'cd' && !/^-|[$`~*?[\]{}\\]/.test(cdTok[1]) &&
+          delims[idx] === '&&' && delims.slice(0, idx).every((x) => x === '&&')) {
+        try { cdCwd = fs.realpathSync(path.resolve(cdBase, cdTok[1])); } catch (_) { cdCwd = null; }
+      }
+      if (cdCwd) {
+        ctx = Object.assign({}, ctx, { payload: Object.assign({}, ctx.payload, { cwd: cdCwd }) });
       } else {
         ctx = Object.assign({}, ctx, { cwdUnknown: true });
       }
@@ -2997,9 +3010,12 @@ function isBackgroundScratchScriptSegment(segment, ctx) {
   const base = (typeof payload.cwd === 'string' && payload.cwd) || process.cwd();
   let realScript;
   try {
-    const abs = path.resolve(base, script);
-    if (!fs.statSync(abs).isFile()) return false;
-    realScript = fs.realpathSync(abs);
+    // Joined WITHOUT lexical normalization, then realpath'd: the kernel resolves
+    // `L/../x` through the symlink L, so path.resolve's textual `..` collapse
+    // would point at a different file than the one that actually runs.
+    const joined = path.isAbsolute(script) ? script : base.replace(/\/+$/, '') + '/' + script;
+    realScript = fs.realpathSync.native(joined); // .native: libc realpath keeps `L/..` physical (JS realpathSync pre-normalizes `..`)
+    if (!fs.statSync(realScript).isFile()) return false;
   } catch (_) { return false; }
   // Mirrors the 0.112 F1 rule of the script-check carve-out: never a way to
   // flip a safety switch or trust an allowlist from the main thread —
