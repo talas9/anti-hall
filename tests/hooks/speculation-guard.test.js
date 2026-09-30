@@ -390,6 +390,8 @@ test('speculationFramed SHADOW (default): still blocks even when Jev confidently
     assert.strictEqual(row.mode, 'shadow');
     assert.strictEqual(row.base, true);
     assert.strictEqual(row.final, true, 'shadow never changes the outcome');
+    const trig = c.log().filter((l) => l.event === 'trigger');
+    assert.deepStrictEqual(trig.map((l) => [l.id, l.outcome]), [['speculationFramed', 'seen']], 'the framed-hit trigger is counted');
   } finally { c.h.cleanup(); }
 });
 
@@ -419,6 +421,7 @@ test('speculationFramed: an UNFRAMED "probably" always blocks and never consults
   try {
     assert.ok(isBlock(c.r), `unframed hedge must always block; stdout: ${c.r.stdout}`);
     assert.strictEqual(c.mock.calls, 0, 'an unframed hedge must never reach speculationFramed');
+    assert.strictEqual(c.log().filter((l) => l.event === 'trigger').length, 0, 'no framed hit -> no trigger recorded');
     const log = readAssistLog(c.h.home);
     assert.ok(!log.find((l) => l.id === 'speculationFramed'));
   } finally { c.h.cleanup(); }

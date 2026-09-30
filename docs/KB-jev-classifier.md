@@ -631,6 +631,11 @@ rows by `ts` before anything else (`--project`/`--by`/`--weekly` included), acro
 report without editing the log file — e.g. excluding the 2026-09-24T19:56Z..22:23Z
 accidental unreleased-supervisor `supervisorBlockerLabel` run:
 `--exclude-window 2026-09-24T19:56:00Z..2026-09-24T22:23:00Z`.
+`--exclude-project <name>` (repeatable) likewise drops every raw row of that project; the
+daily rollups have no project field, so they are unaffected. The report also prints
+`triggers seen: N` per rare-trigger integration (speculationFramed, devswarmOnBrief,
+devswarmExtraSanctioned), read from `jev-judge.ndjson` / `devswarm-supervision.ndjson`, so a
+zero-call integration shows whether its trigger ever fired.
 
 **Codex parity:** speculation-guard.js, speculation-judge.js, and model-routing-guard.js
 are all shared files under `plugins/anti-hall/hooks/` (§ codex/README.md) — the Codex

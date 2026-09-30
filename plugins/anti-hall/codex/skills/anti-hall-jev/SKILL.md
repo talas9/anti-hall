@@ -160,6 +160,9 @@ itself.
   choice integration reaches 20 labelled decisions and 50+ calls it can reach
   REMOVE (bad-outcome/failure-rate gates, unchanged) or KEEP (gated on its own
   would-change rate in place of changed-decision rate, since that stays 0).
+- `jev-report.js --exclude-project <name>` (repeatable) drops a leaked project's raw rows
+  (daily rollups have no project, so they are unaffected); the report also lists
+  `triggers seen: N` for rare-trigger integrations.
 - `jev-report.js --since <iso> --until <iso>` / `--exclude-window <iso>..<iso>`
   (repeatable) exclude rows by `ts` before anything else, from both the live
   `jev-assist.ndjson`/`jev-triage.ndjson` AND every rotated generation `.1` ..

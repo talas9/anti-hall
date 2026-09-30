@@ -162,6 +162,30 @@ function consult(c, spec) {
   return { mode: p.mode, pending: true };
 }
 
+// trigger(c, id, tkey, outcome, reason) — "measure everything": records that an
+// integration's TRIGGER occurred ('seen') or that it occurred but nothing was
+// asked ('skipped' + reason), once per distinct (integration, outcome, trigger
+// key) so a signal that persists across sweeps counts once. Zero-call
+// integrations otherwise leave no trace of whether their trigger ever fired.
+// One `jev-trigger` event in the supervision metrics log; fail-open.
+function trigger(c, id, tkey, outcome, reason) {
+  try {
+    const st = c.jevState[id] || {};
+    c.jevState[id] = st;
+    const mark = outcome + ':' + tkey;
+    if ((st.trigSeen || {})[mark]) return;
+    st.trigSeen = Object.assign({}, st.trigSeen);
+    // bounded: keep only the most recent marks
+    const keys = Object.keys(st.trigSeen);
+    if (keys.length >= 20) delete st.trigSeen[keys[0]];
+    st.trigSeen[mark] = 1;
+    c.dirty = true;
+    const f = { now: c.now, id: c.d && c.d.id, key: c.key, integration: id, outcome };
+    if (reason) f.reason = reason;
+    metrics.record(c.home, 'jev-trigger', f);
+  } catch (_) { /* best-effort */ }
+}
+
 function effective(r, threshold) {
   return !!(r && r.mode === 'on' && !r.pending && r.confidence >= threshold);
 }
@@ -194,6 +218,9 @@ function jevAdjust(ctx) {
     const off = signals.find((s) => s.signal === 'off-scope');
     if (off) {
       const files = (off.files || []).slice(0, 20).join(', ');
+      const tkey = String(off.key || off.step || 'off-scope');
+      trigger(c, 'devswarmOnBrief', tkey, 'seen');
+      trigger(c, 'devswarmExtraSanctioned', tkey, 'seen');
       const onBrief = consult(c, {
         id: 'devswarmOnBrief', trust: 'relax-block', baseline: true,
         question: { type: 'noul', instructions: 'A child workspace was given a step plan and a file scope. Is the work described below OFF its brief (not needed for any of its steps)?',
@@ -209,6 +236,8 @@ function jevAdjust(ctx) {
         state: 'user prompts: ' + (c.deps.recentUserPrompts || recentUserPrompts)(ctx.home, ctx.d).join(' | ') + '\nfiles outside scope: ' + files,
         agree: (a) => a === true,
       });
+      if (!onBrief) trigger(c, 'devswarmOnBrief', tkey, 'skipped', 'mode-off-or-jev-disabled');
+      if (!extra) trigger(c, 'devswarmExtraSanctioned', tkey, 'skipped', 'mode-off-or-jev-disabled');
       const offSig = signals.find((s) => s.signal === 'off-scope');
       if (effective(onBrief, onBrief && onBrief.threshold) && typeof onBrief.answer === 'boolean') {
         note(offSig, 'devswarmOnBrief', onBrief, onBrief.answer ? 'off-brief' : 'on-brief', onBrief.answer);

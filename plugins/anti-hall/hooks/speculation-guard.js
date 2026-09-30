@@ -31,7 +31,8 @@
 //   While Jev is enabled every decision appends one line to
 //   ~/.anti-hall/logs/jev-judge.ndjson (no message text, no key). With Jev
 //   disabled (the default) behavior is identical to the regex-only hook and
-//   nothing is logged.
+//   nothing is logged. (With Jev enabled, a framed-hedge hit also appends one
+//   {event:'trigger', id:'speculationFramed', outcome:'seen'} line there.)
 //
 // FRAMED EXPECTATIONS (jevIntegrations.speculationFramed, default SHADOW):
 //   a deterministic regex hit whose hedge sits under a heading/line prefix
@@ -835,6 +836,10 @@ async function main() {
       const { loadJevConfig } = require('./lib/jev-client.js');
       const jevCfg = loadJevConfig();
       if (jevCfg.enabled) {
+        // Measure-everything: the framed-hit TRIGGER occurred. The 'speculationFramed'
+        // call row only exists once ask() runs, so a never-fired trigger and a
+        // fired-but-gated one are otherwise indistinguishable (jev report: "triggers seen").
+        appendJevLog({ ts: new Date().toISOString(), event: 'trigger', id: 'speculationFramed', outcome: 'seen' });
         const { ask, turnRefFromTranscript } = require('./lib/jev-assist.js');
         const jevText = extractLastAssistantTextDedup(transcriptPath) || lastText;
         const framedResult = await ask({

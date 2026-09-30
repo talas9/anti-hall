@@ -249,7 +249,9 @@ repaired retroactively (no source cwd to recover it from).
 
 `--since <iso>` / `--until <iso>` bound the report to rows with `ts` inside that
 window; `--exclude-window <iso>..<iso>` (repeatable) drops rows inside one
-closed interval instead. All three apply BEFORE `--project`/`--by`/`--weekly`,
+closed interval instead; `--exclude-project <name>` (repeatable) drops every raw row of a
+project (e.g. a scratch clone that leaked rows; the daily rollups carry no project, so they
+are unaffected). All of these apply BEFORE `--project`/`--by`/`--weekly`,
 to both `jev-assist.ndjson` and `jev-triage.ndjson` (both live files AND every
 rotated generation `.1` .. `.N`, `jev.logRotatedFiles`, default 10 — a window
 spanning a rotation still sees every row). Days older than the oldest raw row

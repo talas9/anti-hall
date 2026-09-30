@@ -1394,6 +1394,58 @@ function printCredit(credit, lowCredit) {
   }
 }
 
+// Trigger occurrences ("measure everything"): integrations whose call only
+// happens on a rare trigger (speculationFramed, devswarmOnBrief,
+// devswarmExtraSanctioned) leave NO row when the trigger never fires, so a
+// zero-call integration was indistinguishable from a never-reached one. They
+// now append a trigger event to an existing log: jev-judge.ndjson
+// ({event:'trigger', id, outcome:'seen'}) and devswarm-supervision.ndjson
+// ({type:'jev-trigger', integration, outcome:'seen'|'skipped', reason}).
+// Not project-scoped (those events carry no project), so --project /
+// --exclude-project do not apply; --since/--until/--exclude-window do.
+function readTriggerRows(home) {
+  const lib = require('../hooks/lib/jev-assist.js');
+  const dir = path.dirname(logPath(home));
+  const out = [];
+  try {
+    for (const r of lib.readNdjsonFiles(lib.retainedLogFiles(path.join(dir, 'jev-judge.ndjson')))) {
+      if (r && r.event === 'trigger' && r.id) out.push({ ts: r.ts, id: r.id, outcome: r.outcome, reason: r.reason });
+    }
+    for (const r of lib.readNdjsonFiles(lib.retainedLogFiles(path.join(dir, 'devswarm-supervision.ndjson')))) {
+      if (r && r.type === 'jev-trigger' && r.integration) out.push({ ts: r.ts, id: r.integration, outcome: r.outcome, reason: r.reason });
+    }
+  } catch (_) { /* fail-open: no trigger section */ }
+  return out;
+}
+
+// buildTriggerCounts(rows) -> { <id>: { seen, skipped, skippedReasons: {reason: n} } }
+function buildTriggerCounts(rows) {
+  const out = {};
+  for (const r of rows || []) {
+    const g = out[r.id] || (out[r.id] = { seen: 0, skipped: 0, skippedReasons: {} });
+    if (r.outcome === 'seen') g.seen++;
+    else if (r.outcome === 'skipped') {
+      g.skipped++;
+      const k = r.reason || 'unknown';
+      g.skippedReasons[k] = (g.skippedReasons[k] || 0) + 1;
+    }
+  }
+  return out;
+}
+
+function printTriggers(triggers, report) {
+  const ids = Object.keys(triggers || {}).sort();
+  if (ids.length === 0) return;
+  console.log('\ntriggers (occurrences of a rare trigger, not calls):');
+  for (const id of ids) {
+    const g = triggers[id];
+    const row = report && Array.isArray(report.integrations) ? report.integrations.find((r) => r.id === id) : null;
+    const calls = row ? row.calls : 0;
+    const why = g.skipped ? ', skipped ' + g.skipped + ' (' + Object.entries(g.skippedReasons).map(([k, n]) => k + ' x' + n).join(', ') + ')' : '';
+    console.log(`  ${id}: triggers seen: ${g.seen}${why}  [${calls} call(s)${calls === 0 ? ' -- zero-call' : ''}]`);
+  }
+}
+
 function printHeadlines(report) {
   if (report.integrations.length === 0) return;
   console.log('\nheadlines:');
@@ -1512,6 +1564,7 @@ async function main() {
   }
 
   const report = buildReport(rows, { days: opts.days, costPerCall, triageRows, humanLabelByHash, windowLabel: 'window' });
+  const triggers = buildTriggerCounts(filterByTimeWindow(readTriggerRows(home), Object.assign({}, opts, { excludeProjects: null })));
 
   const windows = opts.window
     ? { [opts.window]: COST_WINDOWS[opts.window] != null ? COST_WINDOWS[opts.window] : Number(opts.window) }
@@ -1534,11 +1587,12 @@ async function main() {
   }
 
   if (opts.json) {
-    process.stdout.write(JSON.stringify(Object.assign({}, report, { window: windowInfo, costWindows, budget, budgetStatus, credit, lowCredit, rollupHistory }), null, 2) + '\n');
+    process.stdout.write(JSON.stringify(Object.assign({}, report, { window: windowInfo, costWindows, budget, budgetStatus, credit, lowCredit, rollupHistory, triggers }), null, 2) + '\n');
   } else {
     printWindow(windowInfo);
     printTable(report);
     printHeadlines(report);
+    printTriggers(triggers, report);
     printRollupHistory(rollupHistory);
     printCostWindows(costWindows);
     printBudgetStatus(budgetStatus);
@@ -1553,7 +1607,7 @@ module.exports = {
   auditLogPath, readAuditSnippet, cmdPruneAudit, maybeWarnLowCredit, budgetStatePath,
   parseArgs, groupKeyOf, groupRowsBy, buildWeeklyScorecard, weeklyReason, readJevJson,
   parseIsoMs, filterByTimeWindow, MIN_LABELED_FOR_VERDICT, printRealCostSummary,
-  describeWindow, printWindow, readDailyRollups, buildRollupHistory,
+  describeWindow, printWindow, readDailyRollups, buildRollupHistory, readTriggerRows, buildTriggerCounts,
 };
 
 if (require.main === module) {

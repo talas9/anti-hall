@@ -299,6 +299,32 @@ test('jev scrubs secrets and caps every input', () => withEnv({ ANTIHALL_JEV: nu
   } finally { rm(home); }
 }));
 
+test('jev trigger counter: an off-scope signal records "seen" once per episode, and "skipped" when the integration is off', () => withEnv({ ANTIHALL_JEV: null }, () => {
+  const home = tmpHome();
+  try {
+    jevOn(home);
+    fs.writeFileSync(path.join(home, '.anti-hall', 'settings.json'), JSON.stringify({ jevIntegrations: { devswarmOnBrief: 'off' } }));
+    seed(home, 'ch-t', ['a', 'b'], (p, now) => { planLib.applyStep(p, 1, 'doing', now - 10 * MIN); });
+    const asked = [];
+    const deps = jevDeps(asked);
+    deps.readyCheck = () => ({ ok: true, outside_allowed: ['docs/a.md'] });
+    deps.jev.recentUserPrompts = () => ['please also fix the docs'];
+    const plan = planLib.findPlan(home, { id: 'ch-t' }).plan;
+    plan.scope_globs = ['src/**']; planLib.savePlan(home, 'ch-t', plan);
+    const d = { id: 'ch-t', worktreePath: path.join(home, 'no-such-worktree') };
+    const now = Date.now();
+    sup.evaluateChild(d, { status: 'alive' }, { home, env: JEV_ENV, now, deps });
+    sup.evaluateChild(d, { status: 'alive' }, { home, env: JEV_ENV, now: now + 1000, deps });
+    const t = events(home).filter((e) => e.type === 'jev-trigger');
+    const by = (i, o) => t.filter((e) => e.integration === i && e.outcome === o);
+    assert.strictEqual(by('devswarmOnBrief', 'seen').length, 1, 'once per episode: ' + JSON.stringify(t));
+    assert.strictEqual(by('devswarmExtraSanctioned', 'seen').length, 1);
+    assert.strictEqual(by('devswarmOnBrief', 'skipped').length, 1, 'off integration -> skipped');
+    assert.strictEqual(by('devswarmOnBrief', 'skipped')[0].reason, 'mode-off-or-jev-disabled');
+    assert.strictEqual(by('devswarmExtraSanctioned', 'skipped').length, 0, 'still on -> not skipped');
+  } finally { rm(home); }
+}));
+
 // ---- token burn ---------------------------------------------------------
 
 const tokenUsage = require(path.join(ROOT, 'companion', 'lib', 'devswarm-token-usage.js'));

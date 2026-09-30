@@ -1401,3 +1401,28 @@ test('CLI --exclude-project: raw rows of the named project vanish from the repor
     h.cleanup();
   }
 });
+
+test('CLI: trigger occurrences from jev-judge.ndjson and devswarm-supervision.ndjson surface under `triggers`, incl. for zero-call integrations', () => {
+  const h = makeHome();
+  try {
+    const ts = new Date().toISOString();
+    writeAssistRow(h.home, { ts, id: 'speculation', h: 'r1', project: 'foo', base: false, jev: true, backend: 'jev', mode: 'on' });
+    const logs = path.join(h.home, '.anti-hall', 'logs');
+    fs.mkdirSync(logs, { recursive: true });
+    fs.writeFileSync(path.join(logs, 'jev-judge.ndjson'),
+      JSON.stringify({ ts, event: 'trigger', id: 'speculationFramed', outcome: 'seen' }) + '\n'
+      + JSON.stringify({ ts, verdict: 'allow' }) + '\n');
+    fs.writeFileSync(path.join(logs, 'devswarm-supervision.ndjson'),
+      JSON.stringify({ ts, type: 'jev-trigger', integration: 'devswarmOnBrief', outcome: 'seen' }) + '\n'
+      + JSON.stringify({ ts, type: 'jev-trigger', integration: 'devswarmOnBrief', outcome: 'skipped', reason: 'mode-off-or-jev-disabled' }) + '\n'
+      + JSON.stringify({ ts, type: 'plan', id: 'x' }) + '\n');
+    const out = runJevReportCli(h.home, []);
+    assert.deepStrictEqual(out.triggers.speculationFramed, { seen: 1, skipped: 0, skippedReasons: {} });
+    assert.deepStrictEqual(out.triggers.devswarmOnBrief, { seen: 1, skipped: 1, skippedReasons: { 'mode-off-or-jev-disabled': 1 } });
+    assert.strictEqual(out.integrations.find((r) => r.id === 'speculationFramed'), undefined, 'zero-call integration has no table row');
+    const txt = execFileSync(process.execPath, [JEV_REPORT_CLI, '--home', h.home], { env: { ...process.env, HOME: h.home, USERPROFILE: h.home }, encoding: 'utf8' });
+    assert.match(txt, /speculationFramed: triggers seen: 1.*zero-call/);
+  } finally {
+    h.cleanup();
+  }
+});
