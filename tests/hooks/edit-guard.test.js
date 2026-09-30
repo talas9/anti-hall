@@ -532,6 +532,12 @@ test('DEVSWARM PRIMARY: block reason names `devswarm.js spawn` as the PRIMARY ex
     `Primary reason must forbid subagent-for-workspace-scale: ${reason}`);
 });
 
+test('DEVSWARM PRIMARY: block reason carries the exempt-locations notes hint', () => {
+  const r = runCoord(editPayload('Edit', { filePath: 'src/app.js' }), PRIMARY_ENV);
+  assert.strictEqual(r.status, 2, `stdout: ${r.stdout}`);
+  assert.ok(/\.anti-hall\/history\/\*\* or the scratchpad \(exempt\)/.test(r.json.reason), r.json.reason);
+});
+
 test('DEVSWARM CHILD: block reason is UNCHANGED (no workspace redirect — children never spawn workspaces)', () => {
   const r = runCoord(editPayload('Edit', { filePath: 'src/app.js' }), CHILD_ENV);
   assert.strictEqual(r.status, 2, `stdout: ${r.stdout}`);
@@ -539,7 +545,9 @@ test('DEVSWARM CHILD: block reason is UNCHANGED (no workspace redirect — child
     r.json.reason,
     'DEVSWARM EDIT-DELEGATION RULE: the sub-orchestrator does not touch files ' +
     'directly in its workspace — spawn a subagent to make this edit and have it ' +
-    'report a tight summary. If the user EXPLICITLY instructed you to make THIS ' +
+    'report a tight summary. Session notes/reports can go in .anti-hall/history/** ' +
+    'or the scratchpad (exempt); repo docs need a subagent or a trusted ' +
+    '.anti-hall/edit-allow.json. If the user EXPLICITLY instructed you to make THIS ' +
     "edit yourself, that is the documented override — run 'node scripts/devswarm.js " +
     "skip edit-guard' to record your consent (~/.anti-hall/skip.json, 15-min TTL), " +
     'then retry. Never skip on your own initiative. (tool: Edit)',
