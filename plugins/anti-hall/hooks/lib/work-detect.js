@@ -266,9 +266,20 @@ function stripHeredocBodies(cmd) {
     const neutral = neutralizeQuotedContents(line);
     const hash = neutral.search(/(?:^|\s)#/);
     const code = hash >= 0 ? line.slice(0, hash) : line;
-    if (!/<<(?!<)/.test(hash >= 0 ? neutral.slice(0, hash) : neutral)) continue;
-    const m = /<<-?\s*(?:'([^'\n]+)'|"([^"\n]+)"|([A-Za-z_][A-Za-z0-9_]*))/.exec(code);
-    if (m) delim = m[1] || m[2] || m[3];
+    // An operator `<<` is not backslash-escaped (an odd run of `\` before it
+    // escapes it: `\<<EOF` is a literal word, not a heredoc).
+    const scan = hash >= 0 ? neutral.slice(0, hash) : neutral;
+    let at = -1;
+    for (const hit of scan.matchAll(/(?<!<)<<(?!<)/g)) {
+      let bs = 0;
+      while (hit.index - 1 - bs >= 0 && scan[hit.index - 1 - bs] === '\\') bs++;
+      if (bs % 2 === 0) { at = hit.index; break; }
+    }
+    if (at < 0) continue;
+    // The delimiter word may be partly quoted/escaped (`E"OF"`, `\EOF`): the
+    // terminator line is the word with quoting removed.
+    const m = /^<<-?\s*((?:[^\s;&|()<>'"\\]|'[^'\n]*'|"[^"\n]*"|\\[^\n])+)/.exec(code.slice(at));
+    if (m) delim = m[1].replace(/\\(.)|['"]/g, (_, c) => c || '');
   }
   return out.join('\n');
 }

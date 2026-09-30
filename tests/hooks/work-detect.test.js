@@ -263,3 +263,13 @@ test('a << after an unquoted # is a comment, not a heredoc: the lines below it a
   assert.strictEqual(bashWork(LAUNCHER + ' send primary "a # b" <<EOF\nstep a -> step b\nEOF'), false);
   assert.strictEqual(bashWork(LAUNCHER + ' send primary a#b <<EOF\nstep a -> step b\nEOF'), false);
 });
+
+test('an escaped \\<< is not a heredoc, and a partly quoted delimiter terminates at its unquoted word', () => {
+  assert.strictEqual(bashWork(LAUNCHER + ' send x \\<<EOF\nnpm install\nEOF'), true);
+  assert.strictEqual(bashWork(LAUNCHER + ' send x <<E"OF"\nbody\nEOF\nnpm install'), true);
+  assert.strictEqual(bashWork(LAUNCHER + ' send x <<E\\OF\nbody\nEOF\nnpm install'), true);
+  // controls: an escaped backslash before << is still a heredoc; the body stays data
+  assert.strictEqual(bashWork(LAUNCHER + ' send x \\\\<<EOF\nhello -> world\nEOF'), false);
+  assert.strictEqual(bashWork(LAUNCHER + ' send x <<E"OF"\nhello -> world\nEOF'), false);
+  assert.strictEqual(bashWork(LAUNCHER + ' send x <<\\EOF\nhello -> world\nEOF'), false);
+});
