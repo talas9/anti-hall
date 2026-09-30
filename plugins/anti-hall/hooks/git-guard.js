@@ -1999,7 +1999,10 @@ function launcherBackstop(rawCmd, baseCwd) {
   // backslashes and newlines may only be interleaved inside it). No such text =>
   // nothing for this backstop to find, so skip the per-piece walk entirely.
   // (Variable-built targets are a known gap this backstop never covered.)
-  if (rawCmd.replace(/[\s'"\\]/g, '').indexOf('anti-hall') === -1) return null;
+  // `$` too (`.anti$'-'hall`), and never skip when the cwd is already inside
+  // `.anti-hall`: a pathless write there never names the directory at all.
+  if (rawCmd.replace(/[\s'"\\$]/g, '').indexOf('anti-hall') === -1 &&
+      !(typeof baseCwd === 'string' && baseCwd.indexOf('/.anti-hall') !== -1)) return null;
   // Bash deletes backslash-newline continuations BEFORE parsing, so a path
   // broken across a continuation mid-word really writes into the launcher dir.
   // Remove them (no space) for launcher analysis; the force/credit scans keep
