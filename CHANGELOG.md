@@ -6,7 +6,11 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
-## Unreleased
+## 0.119.0 (2026-09-30)
+
+Fixes from a cross-project peer bug sweep plus Jev measurement fixes: the wake watcher, STALE
+DATA banner, reload/restart wording, guard hints and home isolation, and `jev report` gains
+rare-trigger counters and `--exclude-project`.
 
 ### Fixed
 
