@@ -611,8 +611,40 @@ function gitSubcommand(args) {
   return { sub: null, rest: [] };
 }
 
+// git accepts any unambiguous prefix of a long option (`--del` = `--delete`,
+// `--force-w` = `--force-with-lease`). The force/delete checks below compare
+// full option names, so expand each `--xxx[=value]` before `--` into the
+// option(s) it can denote. An ambiguous prefix expands to EVERY candidate
+// (fail-closed: `--f` counts as `--force`). `--no-*` negations never block, so
+// they pass through untouched.
+const PUSH_LONG_OPTS = ['all', 'branches', 'mirror', 'tags', 'follow-tags', 'delete', 'prune',
+  'force', 'force-with-lease', 'force-if-includes', 'atomic', 'dry-run', 'porcelain', 'verbose',
+  'quiet', 'progress', 'verify', 'set-upstream', 'signed', 'push-option', 'repo', 'receive-pack',
+  'exec', 'thin', 'recurse-submodules', 'ipv4', 'ipv6'];
+function expandPushOptions(rest) {
+  const out = [];
+  let endOfOptions = false;
+  for (const t of rest) {
+    const w = t.text;
+    if (endOfOptions || !w.startsWith('--') || w.startsWith('--no-')) {
+      if (w === '--') endOfOptions = true;
+      out.push(t);
+      continue;
+    }
+    const eq = w.indexOf('=');
+    const name = eq === -1 ? w.slice(2) : w.slice(2, eq);
+    const val = eq === -1 ? '' : w.slice(eq);
+    if (!name || PUSH_LONG_OPTS.indexOf(name) !== -1) { out.push(t); continue; }
+    const cands = PUSH_LONG_OPTS.filter(o => o.startsWith(name));
+    if (cands.length === 0) { out.push(t); continue; }
+    for (const c of cands) out.push(Object.assign({}, t, { text: '--' + c + val }));
+  }
+  return out;
+}
+
 // Does this `git push` arg list carry a force flag or a force-via-+refspec?
 function isForcePush(rest) {
+  rest = expandPushOptions(rest);
   let endOfOptions = false; // set once a literal `--` separator is seen
   for (const t of rest) {
     const w = t.text;
@@ -661,6 +693,7 @@ function isForcePush(rest) {
 // `--prune` (deletes remote refs with no local counterpart). Owner rule: no
 // data deletion, branches included, without explicit confirmation.
 function isDeleteRefPush(rest) {
+  rest = expandPushOptions(rest);
   let endOfOptions = false;
   for (const t of rest) {
     const w = t.text;
