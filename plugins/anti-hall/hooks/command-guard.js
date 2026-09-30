@@ -3260,7 +3260,7 @@ function main() {
   // "just delegate to a subagent"). TEXT ONLY: same rule, same inline-allowed
   // set — just reordered.
   const SCRATCHPAD_SCRIPT_HINT =
-    'Have a script to run? Write it to the scratchpad and run it with run_in_background — never inline. ';
+    'Have a script to run? Write it to the scratchpad and run it with run_in_background (use the literal absolute scratchpad path, not $VAR; chain only wc/head/tail/grep -c/grep -m N) — never inline. ';
   const reason = devswarmPrimary
     ? ('DEVSWARM COMMAND-DELEGATION RULE: the primary/main orchestrator never runs ' +
        'heavy/long/state-changing commands inline — raw output floods the main thread. ' +
