@@ -462,9 +462,10 @@ function main() {
       '(done/in-progress/next); if creating it, put this header at the very top: ' +
       progressHeader + '. Gitignore it so it never ships. ' +
       'Also append each COMPLETED task to ' + (historyAbsPath || historyRelPath) + ' (append-only ' +
-      'ledger, one entry per task: Cause / Fix / Verified) so the fix history ' +
-      'persists across sessions — gitignore it too. Write/edit both files with the ' +
-      'Write/Edit tool, never a Bash heredoc (its body is scanned as shell by git-guard.js).'
+      'ledger, one entry per task: Cause / Fix / Verified; gitignore it too). That file usually ' +
+      'EXISTS already (the task-lifecycle hook writes it) — APPEND with the Edit tool or a one-line ' +
+      '`>>`, NEVER the Write tool (it overwrites the existing ledger). The progress file is the one ' +
+      'to Write/Edit freely. Never use a Bash heredoc (its body is scanned as shell by git-guard.js).'
   );
 
   // OMC-awareness: if an autonomous OMC loop (ralph, ultrawork, autopilot, etc.)

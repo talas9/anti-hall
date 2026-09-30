@@ -311,6 +311,27 @@ function allowlistIsHonest(filePath, cwd) {
   }
 }
 
+// canonicalUnderProjectRoot(filePath, cwd) -> {filePath, root} | null. The path
+// with its directory part realpath'd (a symlinked directory resolves AWAY, so
+// an allowlist name can never be reached through one; the final component is
+// left as-is so allowlistIsHonest still lstat-checks it), paired with the real
+// project root (git superproject toplevel of cwd, see sessionProjectRoot).
+// null unless the resolved path lies inside that root, or on any error.
+function canonicalUnderProjectRoot(filePath, cwd) {
+  try {
+    if (!filePath || !cwd) return null;
+    const { sessionProjectRoot } = require('./lib/handover-find.js');
+    const root = realpathOrSelf(sessionProjectRoot(cwd) || cwd);
+    const abs = path.resolve(String(cwd), String(filePath));
+    const real = path.join(realpathOrSelf(path.dirname(abs)), path.basename(abs));
+    const rel = path.relative(root, real);
+    if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) return null;
+    return { filePath: real, root };
+  } catch (_) {
+    return null;
+  }
+}
+
 // isLikelySource(filePath) — best-effort "this is real code, not a doc/scratch/
 // plan artifact" classifier. Used ONLY to NARROW the plan-mode exemption so a
 // plan-mode session can draft docs/scratch/plan files but is STILL blocked from an
@@ -700,6 +721,13 @@ function main() {
   }
 
   if (isAllowed(filePath, cwd) && allowlistIsHonest(filePath, cwd)) process.exit(0);
+  // Same check against the PROJECT ROOT when the payload cwd is not the root
+  // (a subdirectory the shell cd'd into, a submodule, or a symlinked spelling
+  // such as /tmp vs /private/tmp): '.anti-hall/**' etc. are root-relative, but
+  // the cwd-relative path above reads '../.anti-hall/...' and misses them.
+  // Additive only — never narrows the check above.
+  const canon = canonicalUnderProjectRoot(filePath, cwd);
+  if (canon && isAllowed(canon.filePath, canon.root) && allowlistIsHonest(canon.filePath, canon.root)) process.exit(0);
 
   // Per-project doc-edit allowlist (trusted .anti-hall/edit-allow.json).
   if (projectEditAllow && isProjectEditAllowed(filePath, cwd)) process.exit(0);

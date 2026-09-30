@@ -1627,3 +1627,16 @@ test('SUBMODULE: cwd inside a submodule with NO superproject progress -> block n
     if (fixture) { try { fs.rmSync(fixture.scratchDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }); } catch (_) {} }
   }
 });
+
+// L18 (1): the history ledger already exists (task-lifecycle-log writes it), so the
+// block text must say APPEND (Edit / >>), never Write, and name the exact file.
+test('BLOCK text: history ledger is append-only via Edit or >>, never Write, exact path named', () => {
+  const h = makeHome();
+  try {
+    const tp = h.writeTranscript(edits(4));
+    const r = testHook(HOOK, stopPayload(tp, h.home), { home: h.home });
+    assert.ok(isBlock(r), `expected block; stdout: ${r.stdout}`);
+    assert.ok(r.json.reason.includes(historyPath(h.home)), 'names the exact history file');
+    assert.match(r.json.reason, /APPEND with the Edit tool or a one-line `>>`, NEVER the Write tool/);
+  } finally { h.cleanup(); }
+});

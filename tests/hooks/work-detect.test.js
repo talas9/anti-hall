@@ -233,3 +233,24 @@ test('isCountedWork: bookkeeping chained with a real project write, or a lookali
   assert.strictEqual(wd.isCountedWork(B('echo a >> x.anti-hall/handovers/d/s/H.md')), true);
   assert.strictEqual(wd.isCountedWork({ name: 'Write', input: { file_path: '/Users/x/proj/.anti-hall/other/f.md' } }), true);
 });
+
+// L18 (2): a multi-line mesh message handed over via heredoc is DATA, not work.
+const bashWork = (command) => wd.isCountedWork({ name: 'Bash', input: { command } });
+const LAUNCHER = 'node ~/.anti-hall/bin/devswarm.js';
+
+test('heredoc-fed devswarm send with arrow prose in the body is not counted work', () => {
+  assert.strictEqual(bashWork(LAUNCHER + ' send primary <<\'EOF\'\nstep a -> step b\nEOF'), false);
+});
+
+test('devswarm relay/notice/nudge are comms verbs (not work)', () => {
+  assert.strictEqual(wd.isDevswarmHousekeepingOnly(LAUNCHER + ' relay a b'), true);
+  assert.strictEqual(wd.isDevswarmHousekeepingOnly(LAUNCHER + ' notice x'), true);
+  assert.strictEqual(wd.isDevswarmHousekeepingOnly(LAUNCHER + ' nudge x'), true);
+});
+
+test('heredoc stripping fails closed: expansion in body, command after terminator, quoted << and redirects still count', () => {
+  assert.strictEqual(bashWork(LAUNCHER + ' send primary <<EOF\nhi $(sed -i s/a/b/ f)\nEOF'), true);
+  assert.strictEqual(bashWork(LAUNCHER + ' send primary <<EOF\nhi\nEOF\nsed -i s/a/b/ f'), true);
+  assert.strictEqual(bashWork(LAUNCHER + ' send x "a <<EOF"\nsed -i s/a/b/ f'), true);
+  assert.strictEqual(bashWork(LAUNCHER + ' relay a b > src/x.js'), true);
+});

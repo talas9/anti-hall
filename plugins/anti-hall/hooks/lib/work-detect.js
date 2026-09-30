@@ -201,7 +201,7 @@ const DEVSWARM_FLAG_SKIP_SRC = '(?:-\\S+(?:\\s+[^-\\s]\\S*)?\\s+)*';
 const DEVSWARM_VERB_SRC =
   '(?:inbox\\s+' + DEVSWARM_FLAG_SKIP_SRC
     + '(?:pull|ack|ack-primary|read|read-primary|tick|count|peek-primary|messages)\\b'
-  + '|heartbeat\\b|send\\b|roster\\b|wake-directive\\b)';
+  + '|heartbeat\\b|send\\b|relay\\b|notice\\b|nudge\\b|roster\\b|wake-directive\\b)';
 const DEVSWARM_HOUSEKEEPING_SEGMENT_RE = new RegExp(
   '^\\s*' + DEVSWARM_LAUNCHER_PREFIX_SRC + '\\s+' + DEVSWARM_FLAG_SKIP_SRC + DEVSWARM_VERB_SRC,
   'i'
@@ -242,6 +242,32 @@ function segmentEscapesHousekeeping(seg) {
   return false;
 }
 
+// stripHeredocBodies(cmd) -> string | null. A heredoc body (`send x <<EOF ...
+// EOF`, the natural way to hand a multi-line mesh message to the launcher) is
+// DATA for the command it feeds, never a command line — but the segment split
+// below would read each body line as one, and prose like `a -> b` would then
+// look like a `>` redirect. Drop body lines up to the terminator. Returns null
+// (caller fails closed = "not housekeeping") when a body holds `$(` or a
+// backtick: an unquoted-delimiter heredoc expands those, so they can hide work.
+function stripHeredocBodies(cmd) {
+  const lines = cmd.split('\n');
+  const out = [];
+  let delim = null;
+  for (const line of lines) {
+    if (delim !== null) {
+      if (/\$\(|`/.test(line)) return null;
+      if (line.trim() === delim) delim = null; // terminator line dropped too
+      continue;
+    }
+    out.push(line);
+    // `<<` inside a quoted string is not a heredoc: detect on the neutralized line.
+    if (!/<<(?!<)/.test(neutralizeQuotedContents(line))) continue;
+    const m = /<<-?\s*(?:'([^'\n]+)'|"([^"\n]+)"|([A-Za-z_][A-Za-z0-9_]*))/.exec(line);
+    if (m) delim = m[1] || m[2] || m[3];
+  }
+  return out.join('\n');
+}
+
 // isDevswarmHousekeepingOnly(rawCmd) -> bool. True only when EVERY segment
 // (split on &&, ||, ;, |, newline and a lone background `&` — not the `&` of
 // `2>&1` / `&>`) of the RAW (not quote-neutralized — crontab/
@@ -252,6 +278,10 @@ function segmentEscapesHousekeeping(seg) {
 // (segmentEscapesHousekeeping — R3A1-WD-1).
 function isDevswarmHousekeepingOnly(rawCmd) {
   if (!rawCmd) return false;
+  if (rawCmd.indexOf('<<') !== -1) {
+    rawCmd = stripHeredocBodies(rawCmd);
+    if (rawCmd === null) return false;
+  }
   const segments = rawCmd.split(/&&|\|\||;|\||\n|(?<![<>])&(?!>)/);
   if (!segments.length) return false;
   let sawAny = false;

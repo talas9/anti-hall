@@ -12,6 +12,7 @@ Keep the main agent as coordinator:
 - Delegate noisy or long-running command execution to subagents where available.
 - Keep subagent outputs compact: `{claim, evidence, verdict, blockers, next}` for substantial findings.
 - Present findings scannably: tables/**bold**/`code` where they organize; at most a leading status glyph as signal (✅/❌/⚠️), never decoration. This is the DEFAULT shape for user-facing reports, not an occasional flourish — sliding back to bare plain text over a long session is DRIFT, correct it; still don't overdo it (rule K).
+- One git writer per worktree: parallel mutators use scratch clones (one each); only one agent stages/commits in a shared checkout.
 - Verify delegated claims independently before marking work complete.
 - Do not end with open, silently dropped tasks.
 

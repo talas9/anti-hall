@@ -386,3 +386,22 @@ test('Stop: the tokens-latch exception does not apply once a compact happened af
   const r = testHook(STOP, stopPayload(tp), { home: h.home, env: ENV });
   assert.ok(blocked(r), 'a compact after the tokens-fire must still be blocked');
 }));
+
+// L18 (4): a free-form RETRACT line (not the canonical "RETRACT SAFE TO COMPACT")
+// must clear the declaration in the same turn.
+test('activeDeclaration: a line starting with RETRACT clears it, whatever follows; mid-sentence mention does not', () => {
+  const D = 'This is a good point to compact.\n';
+  assert.strictEqual(advice.activeDeclaration(D + 'RETRACT — not a good point to compact'), null);
+  assert.strictEqual(advice.activeDeclaration(D + 'RETRACT: the compact recommendation, still working'), null);
+  assert.strictEqual(advice.activeDeclaration(D + '**Retracting** that, more work remains'), null);
+  assert.ok(advice.activeDeclaration(D + 'I will not retract anything here.'));
+  assert.ok(advice.activeDeclaration('RETRACT — earlier\n' + D));
+});
+
+test('PreToolUse: a free-form RETRACT line in the same turn -> allow (explicit opt-in)', () => withHome((h) => {
+  enableDeclGuard(h);
+  const good = [user('finish up'), say('All idle. This is a good point to compact.', 88), say('RETRACT — not a good point to compact, one more fix first.')];
+  const tp = h.writeTranscript(good);
+  assert.strictEqual(blocked(testHook(PRE, prePayload(tp, 'Edit', { file_path: '/x' }), { home: h.home })), null);
+  assert.strictEqual(blocked(testHook(PRE, prePayload(tp, 'Bash', { command: 'rm -f /x' }), { home: h.home })), null);
+}));

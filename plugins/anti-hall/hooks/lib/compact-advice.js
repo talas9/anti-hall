@@ -195,13 +195,23 @@ function findAdvice(text) {
   return out.sort((a, b) => a.index - b.index);
 }
 
-// lastRetraction(text) -> index of the last "RETRACT SAFE TO COMPACT"-style line, or -1.
+// A line that BEGINS with the word RETRACT/RETRACTED/RETRACTING is a retraction
+// whatever follows it ("RETRACT — not a good point to compact", "RETRACT: the
+// compact recommendation, still working"). RETRACT_RE above only knew the
+// canonical "RETRACT SAFE TO COMPACT" shape, so a free-form retraction line left
+// the earlier declaration active and the guard kept blocking for the whole turn.
+// Line-start anchored so prose that merely mentions the word mid-sentence is not one.
+const LINE_RETRACT_RE = /^[ \t]*[*_`>\-•]*[ \t]*retract(?:ed|ing)?\b/gim;
+
+// lastRetraction(text) -> index of the last retraction line, or -1.
 function lastRetraction(text) {
   const t = String(text || '');
-  RETRACT_RE.lastIndex = 0;
   let last = -1;
   let m;
-  while ((m = RETRACT_RE.exec(t)) !== null) last = m.index;
+  RETRACT_RE.lastIndex = 0;
+  while ((m = RETRACT_RE.exec(t)) !== null) last = Math.max(last, m.index);
+  LINE_RETRACT_RE.lastIndex = 0;
+  while ((m = LINE_RETRACT_RE.exec(t)) !== null) last = Math.max(last, m.index);
   return last;
 }
 

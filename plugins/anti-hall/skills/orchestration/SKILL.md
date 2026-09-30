@@ -27,6 +27,9 @@ a long operation.
      worktree (`isolation: "worktree"`) and integrate the results afterward.
    - Before launching a swarm, partition the work into non-overlapping file/dir sets
      and state the partition.
+   - One git writer per worktree: parallel mutators use scratch clones (one each), and
+     only one agent stages/commits in a shared checkout (else stale `index.lock`, and
+     commits sweep up other agents' staged hunks).
 4. **Collect, then synthesize in the main thread.** A subagent's context dies when it
    returns; only its final summary survives. Have agents return tight structured
    results; the main thread integrates, decides, and reports.
