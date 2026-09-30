@@ -158,6 +158,17 @@
 //                  a child hivecontrol spawned but that has never yet registered
 //                  itself with the store stays visible instead of invisible.
 //   mesh read      same as `roster --ack` (D23) — listed separately for discovery.
+//                  Flags: `--peek` (no ack), `--seq N` (explicit baseline, implies peek),
+//                  `--last N` (only the newest N unseen rows), `--since <iso|30m|2h|1d>`
+//                  (only rows at/after that time). --last/--since narrow the RETURNED rows
+//                  for peek and non-peek alike; a non-peek read still acks to head, so use
+//                  --peek to filter without consuming (`filteredOut` counts hidden rows).
+//                  Every row (broadcasts here, direct rows from `inbox messages/read-primary`)
+//                  also carries normalized `from`, `text`, `kind` ('broadcast'|'direct');
+//                  the legacy keys (`message`/`sender`/`body`) are unchanged.
+//                  send / heartbeat --summary / mesh read, run from a cwd that is NOT a git
+//                  worktree, fall back to the worktree of the workspace named by
+//                  DEVSWARM_BUILDER_ID (its registered descriptor) before `no-project`.
 //   reconcile      v0.58: for every registry descriptor of THIS project with a
 //                  worktreePath, spawns `node scripts/devswarm.js inbox pull <id>`
 //                  as a SUBPROCESS with cwd=<that worktree> (an in-process call
@@ -897,6 +908,26 @@ function siblingAckGate(storeHandle, callerId, partId, home, now, opts) {
 // became unaddressable, failing closed as `unregistered-recipient`).
 function resolveCallerWorktree(cwd) {
   return identityContext(cwd || process.cwd(), CALLER_CWD).worktreeRoot || null;
+}
+// projectCwdFor(ctx) -> the cwd whose worktree identifies THIS invocation's
+// project/workspace. The caller's own cwd when it resolves to a git worktree
+// (ground truth always wins). When it does NOT (e.g. a scratchpad dir), fall
+// back to the worktree of the workspace DECLARED by env.DEVSWARM_BUILDER_ID, via
+// its registered descriptor — the same "declared identity is trusted only when no
+// worktree ground truth contradicts it" rule callerIdentity applies. Used by
+// send / heartbeat --summary / mesh read so they no longer fail `no-project`
+// from a non-worktree cwd. Fail-open: any miss returns the original cwd.
+function projectCwdFor(ctx) {
+  const cwd = (ctx && ctx.cwd) || process.cwd();
+  try {
+    if (resolveCallerWorktree(cwd)) return cwd;
+    const bid = ctx && ctx.env && ctx.env.DEVSWARM_BUILDER_ID ? String(ctx.env.DEVSWARM_BUILDER_ID) : '';
+    if (!bid) return cwd;
+    const d = readDescriptorFile(ctx.home, bid);
+    const wt = d && typeof d.worktreePath === 'string' ? d.worktreePath : '';
+    if (wt && path.isAbsolute(wt) && fs.existsSync(wt) && resolveCallerWorktree(wt)) return wt;
+  } catch (_) { /* fall through to the raw cwd */ }
+  return cwd;
 }
 // callerIdentityDetailed(env, cwd) -> { identity, kind }. Same resolution as
 // callerIdentity below, but ALSO names WHICH of the three legs produced the
@@ -9120,7 +9151,7 @@ function cmdHeartbeat(id, flags, ctx) {
         + 'the summary was DROPPED (not broadcast) — the base heartbeat still succeeded',
     };
   } else if (summaryText !== undefined) {
-    const cwd = ctx.cwd || process.cwd();
+    const cwd = projectCwdFor(ctx);
     const repoKey = repokey.repoKeyForWorktree(cwd);
     if (!repoKey) {
       meshBroadcast = { ok: false, reason: 'no-project' };
@@ -11245,6 +11276,14 @@ function cmdInboxMessagesInner(id, flags, ctx, opts) {
     // `bodyLength` (UTF-8 byte length, matching how a byte-based clip would cut)
     // lets a clipped consumer self-detect a short read by comparing what it
     // actually received against this field.
+    // Normalized, additive row shape shared with `mesh read` broadcasts: every row
+    // carries `from`, `text`, `kind` ('broadcast'|'direct') alongside the legacy
+    // `sender`/`body` keys (kept for backward compatibility).
+    out2 = Object.assign({}, out2, {
+      from: out2 && out2.sender != null ? out2.sender : null,
+      text: out2 && out2.body != null ? out2.body : '',
+      kind: out2 && out2.mtype === 'broadcast' ? 'broadcast' : 'direct',
+    });
     out2 = Object.assign({}, out2, { bodyLength: Buffer.byteLength(out2 && out2.body != null ? String(out2.body) : '', 'utf8') });
     return out2;
   }) : messages;
@@ -15610,7 +15649,7 @@ function cmdSendMulti(recipients, flags, ctx) {
 
 function cmdSend(flags, ctx) {
   const home = ctx.home;
-  const cwd = ctx.cwd || process.cwd();
+  const cwd = projectCwdFor(ctx);
   const repoKey = repokey.repoKeyForWorktree(cwd);
   if (!repoKey) {
     return {
@@ -17525,7 +17564,7 @@ function healthcheckHumanLine(r) {
 // partition tail (recentCap), never an unbounded history.
 function cmdMeshRead(flags, ctx) {
   const home = ctx.home;
-  const cwd = ctx.cwd || process.cwd();
+  const cwd = projectCwdFor(ctx);
   const repoKey = repokey.repoKeyForWorktree(cwd);
   if (!repoKey) return { ok: false, reason: 'no-project' };
   const from = callerIdentity(ctx.env, cwd);
@@ -17593,11 +17632,41 @@ function cmdMeshRead(flags, ctx) {
     // (sender-aliases.json); `fromLabel` keeps the stored value.
     let aliases = {};
     try { aliases = require('../companion/lib/devswarm-sender-alias.js').readAliases(home); } catch (_) { aliases = {}; }
-    const broadcasts = all
-      .filter((r) => !r.isHeartbeat && Number.isFinite(r.storeSeq) && r.storeSeq > sinceSeq)
+    // --last N / --since <iso|duration> (peek and non-peek alike): narrow the
+    // RETURNED rows only. A non-peek read still advances the cursor to head, so
+    // rows a filter hides are consumed — `filteredOut` reports how many; use
+    // --peek to filter without consuming.
+    const lastRaw = one(flags, 'last');
+    const hasLastFlag = !!(flags && Array.isArray(flags.last) && flags.last.length > 0);
+    let lastN = null;
+    if (hasLastFlag) {
+      const n = Number(lastRaw);
+      if (lastRaw === undefined || !Number.isFinite(n) || n < 1) {
+        return { ok: false, error: '--last must be a positive integer (got ' + JSON.stringify(lastRaw === undefined ? '' : String(lastRaw)) + ')', reason: 'bad-last' };
+      }
+      lastN = Math.floor(n);
+    }
+    const hasSinceFlag = !!(flags && Array.isArray(flags.since) && flags.since.length > 0);
+    const sinceFlagRaw = one(flags, 'since');
+    let sinceTs = null;
+    if (hasSinceFlag) {
+      const dur = sinceFlagRaw === undefined ? null : parseSinceDuration(sinceFlagRaw);
+      const iso = sinceFlagRaw !== undefined && dur === null ? Date.parse(String(sinceFlagRaw)) : NaN;
+      if (dur !== null) sinceTs = now - dur;
+      else if (Number.isFinite(iso)) sinceTs = iso;
+      else {
+        return { ok: false, error: '--since must be an ISO 8601 timestamp or a duration like 30m/2h/1d (got ' + JSON.stringify(sinceFlagRaw === undefined ? '' : String(sinceFlagRaw)) + ')', reason: 'bad-since' };
+      }
+    }
+    let unseen = all.filter((r) => !r.isHeartbeat && Number.isFinite(r.storeSeq) && r.storeSeq > sinceSeq);
+    const unseenCount = unseen.length;
+    if (sinceTs !== null) unseen = unseen.filter((r) => Number.isFinite(r.ts) && r.ts >= sinceTs);
+    if (lastN !== null) unseen = unseen.slice(-lastN);
+    const broadcasts = unseen
       .map((r) => {
         const a = r.sender != null ? aliases[String(r.sender)] : null;
-        const b = { from: a ? a.to : r.sender, message: r.body, timestamp: r.ts, urgency: r.urgency, seq: r.storeSeq };
+        const from = a ? a.to : r.sender;
+        const b = { from, message: r.body, text: r.body, kind: 'broadcast', timestamp: r.ts, urgency: r.urgency, seq: r.storeSeq };
         if (a) b.fromLabel = r.sender;
         return b;
       });
@@ -17612,6 +17681,9 @@ function cmdMeshRead(flags, ctx) {
     const out = { ok: true, action: 'mesh-read', from, acked: !peek, newCursor, count: broadcasts.length, broadcasts };
     if (peek) out.peek = true;
     if (usedExplicitSeq) out.since = sinceSeq;
+    if (lastN !== null) out.last = lastN;
+    if (sinceTs !== null) out.sinceTs = sinceTs;
+    if (broadcasts.length !== unseenCount) out.filteredOut = unseenCount - broadcasts.length;
     return out;
   } finally { s.close(); }
 }
