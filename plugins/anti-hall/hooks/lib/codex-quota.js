@@ -61,7 +61,7 @@ function writeMerged(home, patch) {
 // Codex is expected to become available again; a non-finite/unparseable
 // value falls back to DEFAULT_COOLDOWN_MS from `now` so a record always
 // self-expires (never wedges Codex "unavailable" forever on a bad parse).
-const DEFAULT_COOLDOWN_MS = 60 * 60 * 1000; // 1h — conservative, self-healing
+const DEFAULT_COOLDOWN_MS = 6 * 60 * 60 * 1000; // 6h — usage limits reset on a scale of hours/days; still self-healing
 function recordQuota(opts) {
   const o = opts || {};
   const now = Number.isFinite(o.now) ? o.now : Date.now();
@@ -121,6 +121,25 @@ const QUOTA_RE = /\b(out of|exceed(?:ed|s)?|exhausted|hit (?:your|the)|ran out o
 // end of the string; non-greedy so it stops at the FIRST such boundary.
 const UNTIL_RE = /\b(?:until|resets?(?: at)?|resum(?:e|ing)(?: at)?|available again(?: at)?)\s+([^\n]{1,80}?)(?:[.,;](?=\s|$)|\n|$)/i;
 
+// TRY_AGAIN_RE — the Codex CLI usage-limit wording: "...usage limit. ... try
+// again at Oct 3rd, 2026 9:11 PM." (field message 2026-10-01). Its date holds
+// commas + an ordinal day, which UNTIL_RE's sentence-boundary capture and a bare
+// Date.parse both mishandle.
+const TRY_AGAIN_RE = /\btry again (?:at|after|on)?\s*([A-Za-z0-9:,+\-\/ ]{1,60})/i;
+
+// parseWhen(s) -> epoch-ms | null. Strips ordinal suffixes ("3rd" -> "3") and, if
+// the whole capture doesn't parse, drops trailing words until it does. A
+// zone-less time parses as local time (the message carries no zone).
+function parseWhen(s) {
+  let words = String(s).replace(/(\d)(?:st|nd|rd|th)\b/gi, '$1').replace(/[.,;\s]+$/, '').split(/\s+/);
+  while (words.length) {
+    const t = Date.parse(words.join(' '));
+    if (Number.isFinite(t)) return t;
+    words.pop();
+  }
+  return null;
+}
+
 // detectQuotaMessage(text) -> { reason, until } | null. `until` is an epoch-ms
 // number when a trailing clause parses as a date, else null (caller falls
 // back to DEFAULT_COOLDOWN_MS).
@@ -131,7 +150,9 @@ function detectQuotaMessage(text) {
   const reasonStart = Math.max(0, m.index);
   const reason = text.slice(reasonStart, reasonStart + 120).replace(/\s+/g, ' ').trim();
   let until = null;
-  const u = text.slice(m.index).match(UNTIL_RE);
+  const ta = text.slice(m.index).match(TRY_AGAIN_RE);
+  if (ta) until = parseWhen(ta[1]);
+  const u = until === null && text.slice(m.index).match(UNTIL_RE);
   if (u) {
     const parsed = Date.parse(u[1].trim());
     if (Number.isFinite(parsed)) until = parsed;

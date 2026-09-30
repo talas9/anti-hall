@@ -200,6 +200,10 @@ function main() {
   if (!Number.isFinite(min) || min < 1) min = DEFAULT_MIN;
   if (scan.codeEdits < min) process.exit(0);
   if (scan.codexReview) process.exit(0);
+  // Codex is usage-limited (lib/codex-quota.js): nudging for a review that cannot run is noise.
+  try {
+    if (require('./lib/codex-quota.js').readQuota({ home: require('../companion/lib/test-home-guard.js').resolveHome() }).exhausted) process.exit(0);
+  } catch (_) { /* fail-open: keep nudging */ }
 
   // Session key (mirror speculation-guard). Computed here (moved up from
   // below) so the JEV consult right below can tag its decision row with it.

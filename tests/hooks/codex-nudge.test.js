@@ -311,3 +311,15 @@ test('FAIL-OPEN: malformed JSON -> no block', () => {
     assert.ok(!(r.json && r.json.decision === 'block'));
   } finally { h.cleanup(); }
 });
+
+test('ALLOW: 3 code edits, no Codex review, but Codex is usage-limited (live quota record)', () => {
+  const h = makeHome();
+  try {
+    require('../../plugins/anti-hall/hooks/lib/codex-quota.js').recordQuota({
+      until: Date.now() + 3600e3, reason: 'usage limit', home: h.home,
+    });
+    const tp = h.writeTranscript([toolUseMessage([edit('/x/a.ts'), edit('/x/b.ts'), edit('/x/c.py')])]);
+    const r = testHook(HOOK, stopPayload(tp), { home: h.home });
+    assert.ok(!isBlock(r), `expected allow (quota live); stdout: ${r.stdout}`);
+  } finally { h.cleanup(); }
+});

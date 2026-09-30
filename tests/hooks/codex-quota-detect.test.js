@@ -148,3 +148,47 @@ test('lib/codex-quota.js: detectQuotaMessage matches conservative quota/rate-lim
   const hit3 = quota.detectQuotaMessage('Everything looks fine, no errors.');
   assert.strictEqual(hit3, null);
 });
+
+// Field message 2026-10-01 (codex:codex-rescue): the date has an ordinal day and
+// a comma, which previously parsed to until=null (1h default cooldown).
+const FIELD_MSG = "You've hit your usage limit. Upgrade to Pro, or try again at Oct 3rd, 2026 9:11 PM.";
+
+test('lib/codex-quota.js: parses the exact Codex usage-limit field message (ordinal date, no zone = local)', () => {
+  const hit = quota.detectQuotaMessage(FIELD_MSG);
+  assert.ok(hit);
+  assert.strictEqual(hit.until, new Date(2026, 9, 3, 21, 11).getTime());
+  const hit2 = quota.detectQuotaMessage("ERROR: You've hit your usage limit. Try again at Oct 3rd, 2026 9:11 PM");
+  assert.strictEqual(hit2.until, new Date(2026, 9, 3, 21, 11).getTime());
+  // unparseable tail -> null until (caller falls back to the default cooldown)
+  assert.strictEqual(quota.detectQuotaMessage("You've hit your usage limit, try again later.").until, null);
+});
+
+test('lib/codex-quota.js: unparseable cooldown is 6h and self-expires', () => {
+  assert.strictEqual(quota.DEFAULT_COOLDOWN_MS, 6 * 3600 * 1000);
+  const h = makeHome();
+  try {
+    const now = Date.now();
+    quota.recordQuota({ until: null, reason: 'x', home: h.home, now });
+    assert.strictEqual(quota.readQuota({ home: h.home, now: now + 6 * 3600 * 1000 - 1 }).exhausted, true);
+    assert.strictEqual(quota.readQuota({ home: h.home, now: now + 6 * 3600 * 1000 + 1 }).exhausted, false);
+  } finally { h.cleanup(); }
+});
+
+test('HOOK: the field-message shape (future ordinal date) records the parsed until', () => {
+  const h = makeHome();
+  try {
+    const d = new Date(Date.now() + 3 * 864e5);
+    d.setHours(21, 11, 0, 0);
+    const n = d.getDate();
+    const ord = n + (n % 10 === 1 && n !== 11 ? 'st' : n % 10 === 2 && n !== 12 ? 'nd' : n % 10 === 3 && n !== 13 ? 'rd' : 'th');
+    const mon = d.toLocaleString('en-US', { month: 'short' });
+    const msg = `You've hit your usage limit. Upgrade to Pro, or try again at ${mon} ${ord}, ${d.getFullYear()} 9:11 PM.`;
+    const r = testHook(HOOK, {
+      hook_event_name: 'PostToolUse', tool_name: 'Agent',
+      tool_input: { subagent_type: 'codex:codex-rescue', prompt: 'x' },
+      tool_response: { content: msg }, session_id: 't',
+    }, { home: h.home, expectJson: true });
+    assert.strictEqual(r.status, 0);
+    assert.strictEqual(readState(h.home).quota.until, d.getTime());
+  } finally { h.cleanup(); }
+});
