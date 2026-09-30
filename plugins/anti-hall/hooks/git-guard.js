@@ -114,16 +114,18 @@ function tokenize(segment) {
   let cur = '';
   let curHasUnquoted = false; // did any char of this token come from outside quotes?
   let started = false;
+  let tokStart = -1; // index of the token's first raw char (quotes intact)
   let i = 0;
   const n = segment.length;
 
   function pushToken() {
     if (started) {
-      tokens.push({ text: cur, quotedOnly: !curHasUnquoted });
+      tokens.push({ text: cur, quotedOnly: !curHasUnquoted, raw: segment.slice(tokStart, i) });
     }
     cur = '';
     curHasUnquoted = false;
     started = false;
+    tokStart = -1;
   }
 
   while (i < n) {
@@ -143,6 +145,7 @@ function tokenize(segment) {
     if (c === '#' && !started) {
       break; // rest of the segment is a comment
     }
+    if (tokStart < 0) tokStart = i;
 
     // A1-5 (0.117.2 follow-up): ANSI-C quoting `$'...'`. Bash decodes backslash
     // escapes INSIDE it (unlike a plain `'...'`), so `bash -c $'git push
@@ -1588,6 +1591,49 @@ const LAUNCHER_BLOCK_MSG = (
   'if the path only appears as prose inside a heredoc/brief, write that text with the Write tool instead.'
 );
 
+// Redirect targets read from RAW text (quotes intact): after each `>`, `>>`,
+// `>|`, `&>`, `N>` the shell word - quoted spans taken up to the MATCHING
+// closing quote (spanning newlines, e.g. a quoted `$HOME/<NL>/../.anti-hall/bin/x`),
+// unquoted text up to whitespace or a shell operator - with the quotes
+// stripped. An unterminated quote ends the word (the per-line text scan in
+// writesLauncherDir still covers that glued-heredoc shape).
+function redirectWords(raw) {
+  const out = [];
+  const n = raw.length;
+  for (let k = raw.indexOf('>'); k >= 0; k = raw.indexOf('>', k + 1)) {
+    let i = k + 1;
+    if (raw[i] === '>' || raw[i] === '|') i++;
+    if (raw[i] === '&' || raw[i] === '(') continue; // fd dup / process subst
+    while (raw[i] === ' ' || raw[i] === '\t') i++;
+    let w = '';
+    while (i < n) {
+      const c = raw[i];
+      if (c === '"' || c === "'") {
+        let j = i + 1;
+        while (j < n && raw[j] !== c) j += (c === '"' && raw[j] === '\\') ? 2 : 1;
+        if (j >= n) { i = n; break; } // unterminated
+        w += raw.slice(i + 1, j);
+        i = j + 1;
+      } else if (/[\s;&|<>()]/.test(c)) {
+        break;
+      } else if (c === '\\' && i + 1 < n) {
+        w += raw[i + 1];
+        i += 2;
+      } else {
+        w += c;
+        i++;
+      }
+    }
+    if (w) out.push(w);
+  }
+  return out;
+}
+
+function launcherTargetHit(p, cdDir, opts) {
+  return LAUNCHER_DIR_RE.test(p) || hasAntiHallBinSegment(p, cdDir) ||
+    targetResolvesIntoLauncherDir(p, cdDir, opts);
+}
+
 function writesLauncherDir(tokens, ev, cdDir) {
   const targets = [];
   for (let i = 0; i < tokens.length; i++) {
@@ -1611,6 +1657,9 @@ function writesLauncherDir(tokens, ev, cdDir) {
       if (after) targets.push(after);
       else if (nl < 0) targets.push(tokens[i + 1] ? tokens[i + 1].text : '');
     }
+    // Quote-aware word per redirect, read from the raw token: a quoted target
+    // may span newlines, which the per-line cut above would truncate.
+    if (t.raw && t.raw.indexOf('>') >= 0) targets.push(...redirectWords(t.raw));
   }
   const ops = ev.args.map((a) => a.text);
   const operands = ops.filter((w) => !w.startsWith('-'));
@@ -1692,8 +1741,7 @@ function writesLauncherDir(tokens, ev, cdDir) {
   }
 
   const targetOpts = ev.verb === 'rm' ? { deleteOnly: true } : undefined;
-  return targets.some((p) => LAUNCHER_DIR_RE.test(p) || hasAntiHallBinSegment(p, cdDir) ||
-    targetResolvesIntoLauncherDir(p, cdDir, targetOpts)) ||
+  return targets.some((p) => launcherTargetHit(p, cdDir, targetOpts)) ||
     rootTargets.some((p) => isLauncherDirRoot(normalizeGuardPath(p, cdDir)));
 }
 
@@ -1895,8 +1943,10 @@ function scanCommand(cmd, depth, baseCwd) {
 // Executing a launcher (`node ~/.anti-hall/bin/x`) is not a write. Only ADDS
 // blocks. DELIBERATE FAIL-CLOSED: prose in a heredoc that literally holds a
 // launcher write blocks (owner-ratified trade-off, 0.119.0 revert).
-function launcherBackstop(cmd, baseCwd) {
+function launcherBackstop(rawCmd, baseCwd) {
+  const cmd = rawCmd;
   let cdDir = (typeof baseCwd === 'string' && baseCwd) ? baseCwd : null;
+  const baseDir = cdDir;
   for (const raw of backstopPieces(cmd)) {
     const trimmed = raw.replace(/^\s+/, '');
     const variants = [trimmed];
@@ -1916,6 +1966,11 @@ function launcherBackstop(cmd, baseCwd) {
       }
       if (writesLauncherDir(tokens, ev, cdDir)) return LAUNCHER_BLOCK_MSG;
     }
+  }
+  // Whole-text redirect scan: backstopPieces cuts at every newline, so a quoted
+  // target spanning a newline is split across pieces and never seen whole.
+  for (const w of redirectWords(cmd)) {
+    if (launcherTargetHit(w, baseDir) || (cdDir !== baseDir && launcherTargetHit(w, cdDir))) return LAUNCHER_BLOCK_MSG;
   }
   return null;
 }

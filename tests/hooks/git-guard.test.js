@@ -646,8 +646,18 @@ const LAUNCHER_WRITE_BLOCK = [
   // R3A1-1: `>|` clobber-redirect must resolve to the same target check as
   // a plain `>`.
   "echo x >| ~/.anti-hall/bin/devswarm.js",
+  // A quoted redirect target may span newlines: `"$HOME/<NL>/../.anti-hall/bin/x"`
+  // collapses to the launcher dir. Every redirect operator form must block.
+  'mkdir -p "$HOME/\n"; cat /tmp/evil.js >"$HOME/\n/../.anti-hall/bin/devswarm.js"',
+  'echo x >>"$HOME/\n/../.anti-hall/bin/y"',
+  'echo x 1>"$HOME/\n/../.anti-hall/bin/y"',
+  'echo x &>"$HOME/\n/../.anti-hall/bin/y"',
+  'echo x>"$HOME/\n/../.anti-hall/bin/y"',
+  'echo x > "$HOME/\n/../.anti-hall/bin/y"',
+  "echo x >'/tmp/\n/../..'$HOME/.anti-hall/bin/y",
 ];
 const LAUNCHER_WRITE_ALLOW = [
+  'echo x > "/tmp/a\nb/../c.txt"',
   'node ~/.anti-hall/bin/devswarm.js roster',
   'cat ~/.anti-hall/bin/devswarm.js | head',
   'cp ~/.anti-hall/bin/devswarm.js /tmp/x.js',
