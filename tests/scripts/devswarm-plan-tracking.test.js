@@ -183,3 +183,22 @@ test('no-plan rows are byte-identical: table normalizer and doneStateLabel uncha
   assert.notStrictEqual(inbox.normalizeTableAges(a), inbox.normalizeTableAges(c), 'a step change still re-sends it');
   assert.strictEqual(inbox.doneStateLabel({ workspaces: { w: { gates: {} } } }, 'w', { progress_pct: 40 }), 'working (40%)');
 });
+
+test('regression: the displayed step is monotonic (a stale earlier doing never pulls 6/6 back to 3/6)', () => {
+  const now = 10 * 3600000;
+  const plan = planLib.newPlan({ key: 'k', id: 'k', steps: ['a', 'b', 'c', 'd', 'e', 'f'], now: now - 5 * 3600000 });
+  planLib.applyStep(plan, 1, 'done', now - 300 * 60000);
+  planLib.applyStep(plan, 2, 'done', now - 290 * 60000);
+  planLib.applyStep(plan, 3, 'doing', now - 240 * 60000); // never closed
+  planLib.applyStep(plan, 4, 'done', now - 120 * 60000);
+  planLib.applyStep(plan, 5, 'done', now - 100 * 60000);
+  planLib.applyStep(plan, 6, 'blocked', now - 60 * 60000);
+  assert.match(planLib.finishLabel(plan, now), /^step 6\/6 blocked/);
+  planLib.applyStep(plan, 6, 'done', now - 30 * 60000);
+  assert.strictEqual(planLib.currentStep(plan), null, 'step 3 (stale doing) must not become current again');
+  assert.doesNotMatch(planLib.finishLabel(plan, now), /step 3\//);
+  assert.match(planLib.finishLabel(plan, now), /^steps 6\/6 done/);
+  // An explicit `plan set` with a new list is the reset.
+  planLib.replaceSteps(plan, ['x', 'y'], null, now);
+  assert.strictEqual(planLib.currentStep(plan).n, 1);
+});

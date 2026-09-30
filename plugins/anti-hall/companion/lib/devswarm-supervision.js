@@ -62,19 +62,25 @@ function deterministicSignals(plan, verdict, ctx) {
   const cur = planLib.currentStep(plan);
   if (!cur) return [];
   const out = [];
+  // A child whose latest report is a done-report (`devswarm.js done`) is
+  // awaiting its parent, not stalled: no idle/stall/burn signals until a new
+  // step report lifts plan.done_reported_at (planLib.applyStep).
+  const awaitingParent = Number.isFinite(plan.done_reported_at);
   const status = verdict && verdict.status;
   const lastProgress = Math.max(
     Number.isFinite(plan.step_ts) ? plan.step_ts : (Number.isFinite(plan.created_at) ? plan.created_at : now),
     Number.isFinite(plan.activity_ts) ? plan.activity_ts : 0,
     Number.isFinite(plan.warned_at) ? plan.warned_at : 0,
   );
-  if (status === 'stale' || status === 'nudged' || status === 'escalated') {
+  if (awaitingParent) {
+    // no liveness/progress signals for a done child
+  } else if (status === 'stale' || status === 'nudged' || status === 'escalated') {
     const since = Number.isFinite(verdict.staleSince) ? verdict.staleSince : lastProgress;
     out.push({ signal: 'idle', step: cur.n, key: 'idle:' + cur.n + ':' + since, reason: 'idle ' + planLib.dur(now - since) });
   } else if (status === 'alive' && now - lastProgress >= stallMs) {
     out.push({ signal: 'stall', step: cur.n, key: 'stall:' + cur.n + ':' + lastProgress, reason: 'no step progress ' + planLib.dur(now - lastProgress) });
   }
-  if (usage && burnWarn > 0 && usage.sinceStep >= burnWarn) {
+  if (!awaitingParent && usage && burnWarn > 0 && usage.sinceStep >= burnWarn) {
     out.push({ signal: 'burn', step: cur.n, key: 'burn:' + cur.n + ':' + usage.markTs,
       reason: 'used ' + tokenUsage.fmt(usage.sinceStep) + ' tokens since step ' + cur.n + ' last moved' });
   }

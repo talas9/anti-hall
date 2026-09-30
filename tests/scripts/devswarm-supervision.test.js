@@ -527,3 +527,28 @@ test('activity: a broadcast send from a child with a plan counts as progress', (
     assert.match(planLib.finishLabel(plan, t0 + 160 * MIN), /progress 10m ago/);
   } finally { rm(home); rm(repo); }
 });
+
+test('regression: a done-reported child is awaiting its parent, not stall/burn; a new step re-enables', () => {
+  const home = tmpHome();
+  try {
+    seed(home, 'ch-done', ['read', 'fix', 'test'], (p, now) => { planLib.applyStep(p, 2, 'doing', now - 200 * MIN); });
+    const d = { id: 'ch-done', worktreePath: null };
+    const now = Date.now();
+    const usage = { sinceStep: 9e6, markTs: now - 200 * MIN, closed: null };
+    const deps = Object.assign({}, noJev, { tokenUsage: () => usage });
+    const before = sup.evaluateChild(d, { status: 'alive' }, { home, env: ENV, now, deps });
+    assert.deepStrictEqual(before.signals.map((s) => s.signal).sort(), ['burn', 'stall'], 'control: straying without the done report');
+    const plan = planLib.findPlan(home, { id: 'ch-done' }).plan;
+    plan.done_reported_at = now - 60 * MIN;
+    planLib.savePlan(home, 'ch-done', plan);
+    const after = sup.evaluateChild(d, { status: 'alive' }, { home, env: ENV, now: now + 5 * MIN, deps });
+    assert.deepStrictEqual(after.signals, [], 'done child: no stall/burn');
+    assert.match(planLib.finishLabel(planLib.findPlan(home, { id: 'ch-done' }).plan, now), /awaiting Primary/);
+    const fresh = planLib.findPlan(home, { id: 'ch-done' }).plan;
+    planLib.applyStep(fresh, 3, 'doing', now + 6 * MIN);
+    assert.strictEqual(fresh.done_reported_at, undefined, 'a new step lifts the hold');
+    planLib.savePlan(home, 'ch-done', fresh);
+    const again = sup.evaluateChild(d, { status: 'alive' }, { home, env: ENV, now: now + 300 * MIN, deps });
+    assert.ok(again.signals.length > 0, 'supervision resumes after new work');
+  } finally { rm(home); }
+});

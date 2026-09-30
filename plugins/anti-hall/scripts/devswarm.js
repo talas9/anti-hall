@@ -14627,12 +14627,17 @@ function cmdDone(idArg, flags, ctx) {
   try {
     const found = planLib.findPlan(home, { id, worktreePath: callerIc.worktreeRoot || null });
     const doneNow = Number.isFinite(ctx.now) ? ctx.now : Date.now();
+    let firstDone = false;
     const w = found ? planLib.updatePlan(home, found.key, (plan) => {
-      if (!plan || !plan.steps.length || Number.isFinite(plan.done_at)) return null;
-      plan.done_at = doneNow;
+      if (!plan || !plan.steps.length) return null;
+      // done_reported_at refreshes on every done (holds supervision until a
+      // new step); done_at + the metrics stay once per plan.
+      plan.done_reported_at = doneNow;
+      firstDone = !Number.isFinite(plan.done_at);
+      if (firstDone) plan.done_at = doneNow;
       return plan;
     }) : null;
-    if (w && w.ok && w.changed) {
+    if (w && w.ok && w.changed && firstDone) {
       const plan = w.plan;
       supervisionMetrics.record(home, 'done', { now: doneNow, id, key: found.key,
         durationMs: Number.isFinite(plan.created_at) ? doneNow - plan.created_at : null,

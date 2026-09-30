@@ -200,6 +200,7 @@ function replaceSteps(plan, steps, scope, now) {
       return prev ? prev : { n: i + 1, text: String(text).slice(0, MAX_STEP_TEXT), status: 'todo', ts: null, started_at: null };
     });
     plan.replaced_at = now;
+    delete plan.done_reported_at;
   }
   if (scope !== null) plan.scope_globs = scope.slice(0, MAX_SCOPE_GLOBS);
   return true;
@@ -220,20 +221,29 @@ function applyStep(plan, n, status, now) {
   if (!Number.isFinite(step.started_at)) step.started_at = now;
   plan.step_ts = now;
   plan.current = num;
+  // A new step report is new work: it lifts the done-report hold (supervision
+  // and the roster label resume).
+  delete plan.done_reported_at;
   return { changed: true };
 }
 
-// currentStep(plan) -> the step being worked on: the most recently touched
-// doing/blocked step, else the first step not done, else null (all done).
+// currentStep(plan) -> the step being worked on, MONOTONIC in the reported
+// progress: steps at or below the highest `done` step are never current again
+// (a stale `doing`/`blocked` left on an earlier step must not pull the display
+// back, e.g. 6/6 -> 3/6). Among later steps: the most recently touched
+// doing/blocked one, else the first not done; null when nothing is left.
+// `plan set` (replaceSteps) is the explicit reset.
 function currentStep(plan) {
   if (!plan || !Array.isArray(plan.steps) || !plan.steps.length) return null;
+  let maxDone = 0;
+  for (const s of plan.steps) if (s.status === 'done' && s.n > maxDone) maxDone = s.n;
+  const open = plan.steps.filter((s) => s.n > maxDone && s.status !== 'done');
   let best = null;
-  for (const s of plan.steps) {
+  for (const s of open) {
     if (s.status !== 'doing' && s.status !== 'blocked') continue;
     if (!best || (s.ts || 0) >= (best.ts || 0)) best = s;
   }
-  if (best) return best;
-  return plan.steps.find((s) => s.status !== 'done') || null;
+  return best || open[0] || null;
 }
 
 function stepsDone(plan) {
@@ -307,11 +317,17 @@ function finishLabel(plan, now) {
   const lastTs = lastProgressTs(plan);
   const progress = lastTs !== null ? 'progress ' + dur(now - lastTs) + ' ago' : 'no progress yet';
   const cur = currentStep(plan);
-  if (!cur) return 'steps ' + total + '/' + total + ' done · ' + progress;
+  if (!cur) {
+    return 'steps ' + total + '/' + total + ' done · '
+      + (Number.isFinite(plan.done_reported_at) ? 'done-reported, awaiting Primary' : progress);
+  }
   const inferred = !Number.isFinite(plan.step_ts) && Number.isInteger(plan.inferred_step)
     && plan.inferred_step >= 1 && plan.inferred_step <= total;
   const num = inferred ? '~' + plan.inferred_step : String(cur.n);
   const since = Number.isFinite(cur.started_at) ? cur.started_at : plan.created_at;
+  if (Number.isFinite(plan.done_reported_at)) {
+    return 'step ' + num + '/' + total + ' · done-reported ' + dur(now - plan.done_reported_at) + ' ago, awaiting Primary';
+  }
   return 'step ' + num + '/' + total + (cur.status === 'blocked' ? ' blocked' : '')
     + ' · ' + dur(now - since) + ' · ' + progress;
 }
