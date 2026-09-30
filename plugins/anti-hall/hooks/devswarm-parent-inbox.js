@@ -1343,12 +1343,8 @@ function buildArchiveSegment(ids) {
 // table below may be FROZEN. beatTs null (no heartbeat file at all) renders via
 // formatRelative's "—" (unknown-age) fallback. Uses the same compact relative-age
 // idiom as the table's "last" column.
-function buildStaleBanner(beatTs, now) {
-  return (
-    '⚠ DEVSWARM STALE DATA: ingest daemon last alive ' + formatRelative(beatTs, now)
-    + ' ago — data may be stale (the daemon may have stopped or never started for '
-    + 'this worktree). Run /anti-hall:doctor to check the DevSwarm ingest daemon.'
-  );
+function buildStaleBanner(beatTs, now, opts) {
+  return require('../companion/lib/ingest-health.js').buildStaleBanner(beatTs, now, opts);
 }
 
 // buildOrphansSegment(list) -> string | null. list = summary.orphans[] (Phase A
@@ -2289,6 +2285,9 @@ function main() {
   // never had a project-shaped lock to check. Any failure anywhere in this
   // block -> no banner, hook proceeds byte-identical.
   let staleBanner = null;
+  // Once-per-episode gate state (ingest-health.js staleBannerOnce): the raw
+  // stale verdict, so a recovery clears the dedupe record.
+  let staleRaw = null; // { beatTs } when stale, else null
   try {
     if (rows.length > 0 || (gitTop && !repoKey)) {
       let ingestHealthMod = null;
@@ -2307,7 +2306,7 @@ function main() {
         // comment), but the 'failed' check is still checked FIRST so precedence
         // is explicit and only ONE banner ever renders in this slot.
         if (health.status === 'failed') staleBanner = ingestHealthMod.buildMonitorFaultBanner(health.monitorFault);
-        else if (health.status === 'stale') staleBanner = buildStaleBanner(beatTs, now);
+        else if (health.status === 'stale') staleRaw = { beatTs };
       } else if (typeof devswarmIngest.ingestHeartbeatPath === 'function' && worktreeHash) {
         let beatTs = null;
         try {
@@ -2315,9 +2314,19 @@ function main() {
           beatTs = beat && Number.isFinite(beat.ts) ? beat.ts : null;
         } catch (_) { beatTs = null; }
         if (beatTs === null || (now - beatTs) > HEARTBEAT_STALE_MS) {
-          staleBanner = buildStaleBanner(beatTs, now);
+          staleRaw = { beatTs };
         }
       }
+      // Fail-open: any gate error -> emit the plain banner (pre-fix behavior).
+      try {
+        if (ingestHealthMod && !staleBanner) {
+          staleBanner = ingestHealthMod.staleBannerOnce({
+            stale: !!staleRaw, beatTs: staleRaw && staleRaw.beatTs, now, repoKey, home,
+            sessionId: payload && typeof payload.session_id === 'string' ? payload.session_id : null,
+            transcriptPath: payload && typeof payload.transcript_path === 'string' ? payload.transcript_path : null,
+          });
+        }
+      } catch (_) { if (staleRaw) staleBanner = buildStaleBanner(staleRaw.beatTs, now); }
     }
   } catch (_) { staleBanner = null; }
 

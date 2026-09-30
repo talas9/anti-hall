@@ -7448,6 +7448,12 @@ function selfHeal(ctx) {
     // stale/missing. The SPAWN (never the health read above) is gated.
     if (!isDevswarmActive(env) || !repoKey) return { daemonWarning: 'stale' };
 
+    // DISABLED IN LAUNCHD (owner-intentional `launchctl disable`): the installer's
+    // `launchctl load` cannot start a disabled job, so every heal would spawn the
+    // installer for nothing. Read-only probe, fail-open; NEVER re-enables it.
+    const disabledLabel = ingestHealth.launchdDisabledLabel(repoKey, { platform, io: ctx.io && ctx.io.launchd });
+    if (disabledLabel) return { daemonWarning: 'stale', daemonDisabled: true, daemonDisabledLabel: disabledLabel };
+
     const F = (ctx.io && ctx.io.fs) || fs;
     if (!selfHealCooldownElapsed(home, repoKey, now, F)) {
       // retryAfterMs (defect 2e8653787945, P2): the remaining cooldown, so a
@@ -7512,6 +7518,7 @@ function withSelfHeal(fn, ctx) {
     if (heal.daemonHealthy) r.daemonHealthy = true;
     if (heal.daemonHealAttempted) r.daemonHealAttempted = true;
     if (heal.daemonHealCooldown) r.daemonHealCooldown = true;
+    if (heal.daemonDisabled) { r.daemonDisabled = true; r.daemonDisabledLabel = heal.daemonDisabledLabel; }
     if (Number.isFinite(heal.retryAfterMs)) r.retryAfterMs = heal.retryAfterMs;
     // ADDRESS-FAILURE ATTRIBUTION (defect 2e8653787945, P2): `send --to`/
     // `--to-primary` resolve the recipient against THIS process's in-memory

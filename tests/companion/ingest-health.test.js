@@ -486,3 +486,109 @@ test('D27 contract: a lazy require of a nonexistent module resolves to null, nev
   });
   assert.strictEqual(mod, null);
 });
+
+// ---------------------------------------------------------------------------
+// Once-per-episode stale banner + launchd-disabled detection (launchctl is
+// ALWAYS mocked via io.run / io.launchd — the real binary is never called).
+// ---------------------------------------------------------------------------
+
+const DISABLED_OUT = '\t\t"com.anti-hall.devswarm-ingest.proj-d" => disabled\n\t\t"com.anti-hall.devswarm-ingest.other" => enabled\n';
+const mockRun = (stdout, extra) => () => Object.assign({ status: 0, stdout }, extra || {});
+
+test('launchdDisabledLabel: lists label as disabled -> label; enabled/other/non-darwin/failed/refused -> null; probes gui/<uid> read-only', () => {
+  const calls = [];
+  const run = (cmd, argv) => { calls.push([cmd, argv]); return { status: 0, stdout: DISABLED_OUT }; };
+  assert.strictEqual(health.launchdDisabledLabel('proj-d', { platform: 'darwin', uid: 501, io: { run } }), 'com.anti-hall.devswarm-ingest.proj-d');
+  assert.deepStrictEqual(calls, [['launchctl', ['print-disabled', 'gui/501']]], 'only the read-only print-disabled verb');
+  assert.strictEqual(health.launchdDisabledLabel('other', { platform: 'darwin', uid: 501, io: { run } }), null);
+  assert.strictEqual(health.launchdDisabledLabel('missing', { platform: 'darwin', uid: 501, io: { run } }), null);
+  assert.strictEqual(health.launchdDisabledLabel('proj-d', { platform: 'linux', uid: 501, io: { run } }), null);
+  assert.strictEqual(health.launchdDisabledLabel('proj-d', { platform: 'darwin', uid: 501, io: { run: mockRun(DISABLED_OUT, { status: 1 }) } }), null);
+  assert.strictEqual(health.launchdDisabledLabel('proj-d', { platform: 'darwin', uid: 501, io: { run: mockRun(DISABLED_OUT, { refused: true }) } }), null);
+  assert.strictEqual(health.launchdDisabledLabel('proj-d', { platform: 'darwin', uid: 501, io: { run: () => { throw new Error('boom'); } } }), null);
+});
+
+test('buildStaleBanner: says what is at risk vs not; disabled variant carries the enable command and no blank line', () => {
+  const plain = health.buildStaleBanner(Date.now() - 5 * 60000, Date.now());
+  assert.ok(/roster\/app-state freshness/.test(plain) && /Mesh sends .* NOT affected/.test(plain), plain);
+  assert.ok(/\/anti-hall:doctor/.test(plain) && !/launchctl enable/.test(plain), plain);
+  const dis = health.buildStaleBanner(Date.now() - 5 * 60000, Date.now(), { disabledLabel: 'com.anti-hall.devswarm-ingest.proj-d' });
+  assert.ok(/DISABLED/.test(dis) && /launchctl enable gui\/\S+\/com\.anti-hall\.devswarm-ingest\.proj-d/.test(dis), dis);
+  assert.ok(!plain.includes('\n\n') && !dis.includes('\n\n'));
+});
+
+test('normalizeStaleBanner: same tier hashes equal; crossing 15m / 1h / 6h / 1d changes it', () => {
+  const now = 10 * 24 * 3600 * 1000;
+  const n = (ageMs) => health.normalizeStaleBanner(health.buildStaleBanner(now - ageMs, now));
+  assert.strictEqual(n(3 * 60000), n(9 * 60000));
+  assert.notStrictEqual(n(9 * 60000), n(20 * 60000));
+  assert.strictEqual(n(20 * 60000), n(50 * 60000));
+  assert.notStrictEqual(n(50 * 60000), n(2 * 3600000));
+  assert.notStrictEqual(n(2 * 3600000), n(7 * 3600000));
+  assert.notStrictEqual(n(7 * 3600000), n(30 * 3600000));
+});
+
+test('staleBannerOnce: emits once per episode, re-emits on tier cross, and again after recover-then-relapse', () => {
+  const home = tmpHome();
+  try {
+    const base = { home, sessionId: 'sess-once', repoKey: 'proj-o', platform: 'linux' };
+    const t0 = Date.now();
+    const at = (min, stale) => health.staleBannerOnce(Object.assign({}, base, { stale, beatTs: t0, now: t0 + min * 60000 }));
+    assert.ok(at(3, true), 'first stale prompt emits');
+    assert.strictEqual(at(3.2, true), null, 'repeat suppressed');
+    assert.strictEqual(at(6, true), null, 'age drift within tier suppressed');
+    assert.strictEqual(at(9, true), null);
+    assert.ok(at(20, true), 'crossing 15m tier re-emits');
+    assert.strictEqual(at(21, true), null);
+    assert.strictEqual(at(22, false), null, 'recovered -> nothing');
+    assert.ok(at(23, true), 'relapse after recovery is a NEW episode and emits');
+    assert.strictEqual(at(24, true), null);
+    const other = health.staleBannerOnce(Object.assign({}, base, { sessionId: 'other-sess', stale: true, beatTs: t0, now: t0 + 24 * 60000 }));
+    assert.ok(other, 'dedupe is per-session');
+  } finally { rm(home); }
+});
+
+test('staleBannerOnce: disabled-in-launchd banner names the job once; no sessionId -> fail-open emit every time', () => {
+  const home = tmpHome();
+  try {
+    const io = { run: mockRun(DISABLED_OUT) };
+    const o = { home, sessionId: 'sess-dis', repoKey: 'proj-d', platform: 'darwin', io, stale: true, beatTs: 1000, now: 1000 + 5 * 60000 };
+    const first = health.staleBannerOnce(o);
+    assert.ok(first && /DISABLED/.test(first) && /proj-d/.test(first), String(first));
+    assert.strictEqual(health.staleBannerOnce(o), null);
+    assert.ok(health.staleBannerOnce(Object.assign({}, o, { sessionId: null })));
+    assert.ok(health.staleBannerOnce(Object.assign({}, o, { sessionId: null })));
+  } finally { rm(home); }
+});
+
+test('selfHeal: stale + job DISABLED in launchd -> NO installer spawn, daemonDisabled reported, never re-enabled (launchctl mocked)', () => {
+  const home = tmpHome();
+  const repo = makeGitRepo('disabled');
+  try {
+    let spawned = 0;
+    const runs = [];
+    const ctx = {
+      home, env: ACTIVE_ENV, cwd: repo, now: Date.now(),
+      io: {
+        platform: 'darwin',
+        resolveWorktree: () => repo,
+        repoKeyForWorktree: () => 'proj-d',
+        spawnInstaller: () => { spawned++; },
+        launchd: { run: (cmd, argv) => { runs.push([cmd, argv[0]]); return { status: 0, stdout: DISABLED_OUT }; } },
+      },
+    };
+    for (let i = 0; i < 3; i++) {
+      const r = cli.selfHeal(ctx);
+      assert.strictEqual(r.daemonWarning, 'stale');
+      assert.strictEqual(r.daemonDisabled, true);
+      assert.strictEqual(r.daemonDisabledLabel, 'com.anti-hall.devswarm-ingest.proj-d');
+      assert.strictEqual(r.daemonHealAttempted, undefined);
+    }
+    assert.strictEqual(spawned, 0, 'a disabled job must never be re-healed');
+    assert.ok(runs.every(([c, v]) => c === 'launchctl' && v === 'print-disabled'), 'only read-only probes');
+    // Not disabled -> unchanged heal behavior.
+    ctx.io.launchd.run = () => ({ status: 0, stdout: '' });
+    assert.strictEqual(cli.selfHeal(ctx).daemonHealAttempted, true);
+    assert.strictEqual(spawned, 1);
+  } finally { rm(home); rm(repo); }
+});

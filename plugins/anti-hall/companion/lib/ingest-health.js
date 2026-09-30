@@ -99,15 +99,101 @@ function formatRelative(ts, now) {
   return Math.floor(h / 24) + 'd';
 }
 
-// buildStaleBanner(beatTs, now) -> the SAME visible daemon-liveness warning
-// text devswarm-parent-inbox.js renders (byte-for-byte), so a child sees
-// IDENTICAL wording to the Primary when its project's daemon looks stopped.
-function buildStaleBanner(beatTs, now) {
+// buildStaleBanner(beatTs, now, opts) -> the visible daemon-liveness warning
+// both per-turn hooks render, so a child sees the SAME wording as the Primary.
+// States what is actually at risk (roster/app-state freshness and the native
+// parent->child queue drain) versus what is not (a mesh `send` is a
+// store-direct write, daemon-independent by design — devswarm.js selfHeal D8).
+// `opts.disabledLabel` (from launchdDisabledLabel) adds the one-line re-enable
+// command: the job is disabled in launchd, so it can never auto-start and
+// self-heal cannot restart it. Never enabled by anti-hall itself.
+function buildStaleBanner(beatTs, now, opts) {
+  const label = opts && opts.disabledLabel;
+  let uid = '$(id -u)';
+  try { if (typeof process.getuid === 'function') uid = String(process.getuid()); } catch (_) { /* keep shell form */ }
   return (
     '⚠ DEVSWARM STALE DATA: ingest daemon last alive ' + formatRelative(beatTs, now)
-    + ' ago — data may be stale (the daemon may have stopped or never started for '
-    + 'this worktree). Run /anti-hall:doctor to check the DevSwarm ingest daemon.'
+    + ' ago — roster/app-state freshness may be stale (the daemon may have stopped or never started for '
+    + 'this worktree). Mesh sends are written directly to the store and are NOT affected. '
+    + (label
+      ? 'The launchd job ' + label + ' is DISABLED, so it cannot auto-start and self-heal is skipped; if that '
+        + 'was not intentional, re-enable with: launchctl enable gui/' + uid + '/' + label + ' (anti-hall never '
+        + 'does this for you). '
+      : 'Run /anti-hall:doctor to check the DevSwarm ingest daemon. ')
+    + 'Shown once per stale episode.'
   );
+}
+
+// launchdDisabledLabel(repoKey, opts) -> the per-project ingest launchd label
+// when `launchctl print-disabled gui/<uid>` lists it as disabled, else null
+// (enabled, not darwin, unreadable, refused under a test — fail-open, never
+// throws). READ-ONLY probe, ~20ms; callers invoke it only on the already-stale
+// path. opts: { platform, uid, io: { run(cmd, argv, o) -> spawnSync-shape } }.
+// The default runner is test-home-guard's runServiceCmd, which refuses the
+// real launchctl under any test (returns refused) -> null.
+function launchdDisabledLabel(repoKey, opts) {
+  try {
+    const o = opts || {};
+    if ((o.platform || process.platform) !== 'darwin' || !repoKey) return null;
+    const uid = Number.isFinite(o.uid) ? o.uid : (typeof process.getuid === 'function' ? process.getuid() : null);
+    if (uid === null) return null;
+    const run = (o.io && o.io.run)
+      || require(path.join(__dirname, 'test-home-guard.js')).runServiceCmd;
+    const r = run('launchctl', ['print-disabled', 'gui/' + uid], { timeout: 3000 });
+    if (!r || r.refused || r.error || r.status !== 0 || typeof r.stdout !== 'string') return null;
+    const label = 'com.anti-hall.devswarm-ingest.' + String(repoKey);
+    const esc = label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return new RegExp('"' + esc + '"\\s*=>\\s*(?:disabled|true)\\b').test(r.stdout) ? label : null;
+  } catch (_) { return null; }
+}
+
+// normalizeStaleBanner(text) -> text with the volatile "last alive <age> ago"
+// replaced by a coarse tier, so emit-dedupe re-emits only when staleness
+// crosses a larger threshold (15m, 1h, 6h, 1d), not every minute.
+function normalizeStaleBanner(text) {
+  return String(text).replace(/last alive (—|\d+)([smhd]?) ago/, (_, n, u) => {
+    let tier = 'unknown';
+    if (u) {
+      const v = Number(n);
+      if (u === 's' || (u === 'm' && v < 15)) tier = 't0';
+      else if (u === 'm') tier = 't1';
+      else if (u === 'h') tier = v < 6 ? 't2' : 't3';
+      else tier = 't4';
+    }
+    return 'last alive ' + tier + ' ago';
+  });
+}
+
+const STALE_DEDUPE_KEY = 'devswarm-ingest-stale';
+const STALE_KEEPALIVE_TURNS = 50;
+
+// staleBannerOnce(o) -> banner string | null. Emits the stale banner once per
+// stale EPISODE per session (lib/emit-dedupe.js on-change rule), re-emitting
+// only when staleness crosses a larger tier or the disabled-in-launchd state
+// changes; a recovery (`o.stale` false) forgets the record so a later relapse
+// announces again. Fail-open: any dedupe error -> emit.
+//   o: { stale, beatTs, now, repoKey, home, sessionId, transcriptPath, io, platform }
+function staleBannerOnce(o) {
+  let dd = null;
+  try { dd = require(path.join(__dirname, '..', '..', 'hooks', 'lib', 'emit-dedupe.js')); } catch (_) { dd = null; }
+  const base = { home: o.home, sessionId: o.sessionId, key: STALE_DEDUPE_KEY };
+  if (!o.stale) {
+    if (dd) dd.forget(base);
+    return null;
+  }
+  const banner = buildStaleBanner(o.beatTs, o.now, {
+    disabledLabel: launchdDisabledLabel(o.repoKey, { platform: o.platform, io: o.io }),
+  });
+  let emit = true;
+  try {
+    if (dd) {
+      emit = dd.shouldEmit(Object.assign({}, base, {
+        content: banner, transcriptPath: o.transcriptPath, now: o.now,
+        keepaliveTurns: STALE_KEEPALIVE_TURNS, normalize: normalizeStaleBanner,
+      }));
+    }
+  } catch (_) { emit = true; }
+  return emit ? banner : null;
 }
 
 // doctorRepairMod() — lazy, fail-open require of hooks/lib/doctor-repair.js's
@@ -259,5 +345,8 @@ module.exports = {
   ingestProjectLockPath,
   daemonHealth,
   buildStaleBanner,
+  launchdDisabledLabel,
+  normalizeStaleBanner,
+  staleBannerOnce,
   buildMonitorFaultBanner,
 };

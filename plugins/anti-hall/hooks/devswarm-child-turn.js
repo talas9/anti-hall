@@ -1014,7 +1014,15 @@ function main() {
         // comment), but the 'failed' check is still checked FIRST so precedence
         // is explicit and only ONE banner ever renders in this slot.
         if (health.status === 'failed') staleBanner = ingestHealthMod.buildMonitorFaultBanner(health.monitorFault, now);
-        else if (health.status === 'stale') staleBanner = ingestHealthMod.buildStaleBanner(beatTs, now);
+        else {
+          // Once per stale episode; a recovery clears the record (staleBannerOnce).
+          try {
+            staleBanner = ingestHealthMod.staleBannerOnce({
+              stale: health.status === 'stale', beatTs, now, repoKey, home,
+              sessionId: payload.session_id, transcriptPath: payload.transcript_path,
+            });
+          } catch (_) { if (health.status === 'stale') staleBanner = ingestHealthMod.buildStaleBanner(beatTs, now); }
+        }
       }
 
       // D26 (Phase 8 step 3): mesh DIRECT surfacing. A mesh direct addressed to

@@ -2271,3 +2271,27 @@ test('SWITCH devswarm.parentInbox=false: a Primary gets no roster/override injec
     assert.strictEqual(r.stdout.trim(), '');
   } finally { h.cleanup(); }
 });
+
+test('STALE: banner is injected ONCE per stale episode (same session), not on every prompt; relapse after recovery re-emits', { skip: process.platform === 'win32' }, () => {
+  const h = makeHome();
+  try {
+    writeSharedSummary(h.home, { wsA: { total: 2, cursor: 0, unread: 2, directUnread: 2 } });
+    const run = () => {
+      const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
+      assert.strictEqual(r.status, 0);
+      return staleBanner(ctx(r));
+    };
+    writeDaemonHeartbeat(h.home, REPO_KEY, Date.now() - (HEARTBEAT_STALE_MS + 60 * 1000));
+    const first = run();
+    assert.ok(first && /ingest daemon last alive/.test(first), 'first stale prompt warns');
+    assert.ok(/Mesh sends .* NOT affected/.test(first), first);
+    assert.strictEqual(run(), '', '2nd prompt, same episode: no repeat');
+    assert.strictEqual(run(), '', '3rd prompt, same episode: no repeat');
+    writeDaemonHeartbeat(h.home, REPO_KEY, Date.now() - 10 * 1000, process.pid);
+    writeDaemonLock(h.home, REPO_KEY, process.pid);
+    assert.strictEqual(run(), '', 'healthy: no banner (and the episode record is cleared)');
+    fs.rmSync(path.join(swarmDir(h.home), 'locks', 'ingest-project-' + REPO_KEY + '.lock'), { force: true });
+    writeDaemonHeartbeat(h.home, REPO_KEY, Date.now() - (HEARTBEAT_STALE_MS + 60 * 1000));
+    assert.ok(run(), 'relapse after recovery is a new episode -> warns again');
+  } finally { h.cleanup(); }
+});

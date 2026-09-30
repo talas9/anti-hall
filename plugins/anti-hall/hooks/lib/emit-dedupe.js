@@ -407,10 +407,30 @@ function resetSession(opts) {
   } catch (_) {}
 }
 
+// forget({home, sessionId, key, env}) — drop one key's record (a condition
+// that was being announced has cleared, so its NEXT occurrence is a new
+// episode and must emit even with identical content). No-op (no write) when
+// the key has no record. Fail-open, never throws.
+function forget(opts) {
+  try {
+    const o = opts || {};
+    const env = o.env || process.env;
+    if (disabled(env, o.home) || !o.sessionId || !o.key) return;
+    const home = o.home || os.homedir();
+    const p = statePath(home, o.sessionId);
+    const state = readState(p);
+    if (!Object.prototype.hasOwnProperty.call(state, String(o.key))) return;
+    delete state[String(o.key)];
+    const tmp = p + '.' + process.pid + '.' + crypto.randomBytes(4).toString('hex') + '.tmp';
+    fs.writeFileSync(tmp, JSON.stringify(state));
+    fs.renameSync(tmp, p);
+  } catch (_) {}
+}
+
 // _resetMemo — tests only: the tail scan is memoized per process.
 function _resetMemo() { _memo.clear(); }
 
 module.exports = {
-  shouldEmit, record, resetSession, statePath, hashOf, summary, _resetMemo,
+  shouldEmit, record, forget, resetSession, statePath, hashOf, summary, _resetMemo,
   DEFAULT_WINDOW_MS, DEFAULT_KEEPALIVE_TURNS, DEFAULT_MAX_PENDING_MS,
 };
