@@ -1675,55 +1675,6 @@ function writesLauncherDir(tokens, ev, cdDir) {
     rootTargets.some((p) => isLauncherDirRoot(normalizeGuardPath(p, cdDir)));
 }
 
-// Launcher-dir check only (writesLauncherDir): a QUOTED-delimiter heredoc
-// feeding a pure data sink (`cat`/`tee`, no pipe/`;`/`&`/`(` on its opener
-// line) is inert text - the shell never parses or runs it, and it has no
-// expansion inside. A brief/notes body that MENTIONS a write into the
-// launcher dir is prose, not a write, yet extractHeredocBodies/splitSegments
-// feed body lines through the segment loop as if they were commands (by
-// design, for force-push/self-credit scanning). Returns `cmd` with those
-// bodies cut out (opener line kept, so `cat > <launcher>/x <<'EOF'` is still
-// caught), or `cmd` itself when nothing was stripped. Any doubt (unquoted
-// delimiter, other verb, control operator on the opener line) keeps the body
-// = fail closed.
-const INERT_HEREDOC_VERBS = new Set(['cat', 'tee']);
-function stripInertHeredocBodies(cmd) {
-  let out = '';
-  let last = 0;
-  let inSingle = false;
-  let inDouble = false;
-  const n = cmd.length;
-  for (let i = 0; i < n; i++) {
-    const c = cmd[i];
-    if (inSingle) { if (c === "'") inSingle = false; continue; }
-    if (inDouble) {
-      if (c === '\\') { i++; continue; }
-      if (c === '"') inDouble = false;
-      continue;
-    }
-    if (c === "'") { inSingle = true; continue; }
-    if (c === '"') { inDouble = true; continue; }
-    if (c === '<' && cmd[i + 1] === '<') {
-      const parsed = parseHeredocAt(cmd, i);
-      if (!parsed) continue;
-      const bodyStart = i + parsed.openerText.length + 1;
-      if (parsed.quoted && parsed.terminated && bodyStart <= parsed.end) {
-        const rest = parsed.openerText.replace(/^<<-?\s*(?:'[^']*'|"[^"]*")/, '');
-        const prefix = cmd.slice(cmd.lastIndexOf('\n', i - 1) + 1, i);
-        const segs = splitSegments(prefix);
-        const ev = segs.length ? effectiveVerb(tokenize(segs[segs.length - 1])) : null;
-        if (ev && INERT_HEREDOC_VERBS.has(ev.verb) && !/[|&;(`$]/.test(rest)) {
-          out += cmd.slice(last, bodyStart);
-          last = parsed.end;
-        }
-      }
-      i = Math.max(i, parsed.end - 1);
-    }
-  }
-  if (!last) return cmd;
-  return out + '\n' + cmd.slice(last);
-}
-
 // Code strings passed to a call: `execSync('git push --force')`,
 // `os.system("…")`, `system "…"`, or a list-form argv
 // (`execFileSync('git', ['push', '--force'])`, `run(["git","push","-f"])`), in
@@ -1764,18 +1715,8 @@ function callLiteralCommands(cmd) {
 // into `eval <payload>` segments (depth-bounded) so force/trailer forms hidden
 // behind eval are still caught. Mirrors the wrapper-unwrapping already done for
 // command/sudo/env/timeout in effectiveVerb.
-function scanCommand(cmd, depth, baseCwd, skipLauncher) {
+function scanCommand(cmd, depth, baseCwd) {
   const d = typeof depth === 'number' ? depth : 0;
-  // Launcher-dir writes are judged on the command with inert data-heredoc
-  // bodies cut out; the full-text pass below skips that one check.
-  if (!skipLauncher) {
-    const stripped = stripInertHeredocBodies(cmd);
-    if (stripped !== cmd) {
-      const hit = scanCommand(stripped, d, baseCwd);
-      if (hit) return hit;
-      skipLauncher = true;
-    }
-  }
   const segments = splitSegments(cmd);
 
   // Additive side-channel data for the `-F`/`--file` commit-message scan
@@ -1793,7 +1734,7 @@ function scanCommand(cmd, depth, baseCwd, skipLauncher) {
 
   if (d < 3) {
     for (const lit of callLiteralCommands(cmd)) {
-      const hit = scanCommand(lit, d + 1, baseCwd, skipLauncher);
+      const hit = scanCommand(lit, d + 1, baseCwd);
       if (hit) return hit;
     }
   }
@@ -1821,7 +1762,7 @@ function scanCommand(cmd, depth, baseCwd, skipLauncher) {
     const ev = effectiveVerb(tokens);
     if (!ev) continue;
 
-    if (!skipLauncher && writesLauncherDir(tokens, ev, lastCdDir)) {
+    if (writesLauncherDir(tokens, ev, lastCdDir)) {
       return (
         'anti-hall git-guard: BLOCKED. This command writes into ~/.anti-hall/bin/, ' +
         'the stable launcher directory. anti-hall installs those files itself ' +
@@ -1874,7 +1815,7 @@ function scanCommand(cmd, depth, baseCwd, skipLauncher) {
       if (d < 3) {
         const payload = extractEvalPayload(seg);
         if (payload) {
-          const nested = scanCommand(payload, d + 1, lastCdDir, skipLauncher);
+          const nested = scanCommand(payload, d + 1, lastCdDir);
           if (nested) return nested;
         }
       }
@@ -1890,7 +1831,7 @@ function scanCommand(cmd, depth, baseCwd, skipLauncher) {
       if (d < 3) {
         const payload = extractShellCPayload(seg);
         if (payload) {
-          const nested = scanCommand(payload, d + 1, lastCdDir, skipLauncher);
+          const nested = scanCommand(payload, d + 1, lastCdDir);
           if (nested) return nested;
         }
       }

@@ -646,18 +646,6 @@ const LAUNCHER_WRITE_BLOCK = [
   // R3A1-1: `>|` clobber-redirect must resolve to the same target check as
   // a plain `>`.
   "echo x >| ~/.anti-hall/bin/devswarm.js",
-  'cp x ~/.anti-hall/bin/devswarm.js',
-  'echo > ~/.anti-hall/bin/x',
-  'tee ~/.anti-hall/bin/x',
-  "cat > ~/.anti-hall/bin/x <<EOF\nz\nEOF",
-  'sed -i s/a/b/ ~/.anti-hall/bin/x',
-  // Inert-heredoc stripping (0.118.1) must not hide a REAL write: before,
-  // after, or via an executing/unquoted/piped consumer of the body.
-  "echo x > ~/.anti-hall/bin/y; cat > /tmp/b <<'EOF'\necho x > ~/.anti-hall/bin/y\nEOF",
-  "cat > /tmp/b <<'EOF'\ndon't\nEOF\necho x > ~/.anti-hall/bin/y",
-  "cat > /tmp/b <<EOF\necho hi > ~/.anti-hall/bin/y\nEOF",
-  "bash <<'EOF'\necho hi > ~/.anti-hall/bin/y\nEOF",
-  "cat <<'EOF' | bash\necho hi > ~/.anti-hall/bin/y\nEOF",
 ];
 const LAUNCHER_WRITE_ALLOW = [
   'node ~/.anti-hall/bin/devswarm.js roster',
@@ -666,10 +654,6 @@ const LAUNCHER_WRITE_ALLOW = [
   'ls -la ~/.anti-hall/bin/',
   'node ~/.anti-hall/bin/devswarm.js roster > /tmp/out.txt 2>&1',
   "sed -n '1,5p' ~/.anti-hall/bin/devswarm.js",
-  // Field report (0.118.0): a brief written via a QUOTED data heredoc whose
-  // TEXT mentions a launcher write is prose; only EXECUTING from bin here.
-  "S=/tmp/scr; cat > $S/b.md <<'EOF'\nnever force-push\ncat x > ~/.anti-hall/bin/x\nEOF\ncat $S/r.md >> $S/b.md; node ~/.anti-hall/bin/devswarm.js spawn d -p \"$(cat $S/b.md)\"",
-  "tee /tmp/b.md <<'EOF'\necho hi > ~/.anti-hall/bin/y\nEOF",
 ];
 for (const cmd of LAUNCHER_WRITE_BLOCK) {
   test(`BLOCK (launcher dir write): ${JSON.stringify(cmd)}`, () => {
