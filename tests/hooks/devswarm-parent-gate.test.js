@@ -3787,3 +3787,77 @@ test('HELD: the CURRENT Primary\'s own id listed as held is NEVER excluded (own 
     assert.match(r.json.reason, /YOU \(the Primary\) have 3 unread parent\/peer message\(s\)/);
   } finally { h.cleanup(); }
 });
+
+// L10 REGRESSION (field report 0.118/0.119): the own-mailbox escalation text
+// must name the blocking set by identity only (no per-row unread count, which
+// changes as mail lands and read as a fresh "neglect signature"), must stay
+// quiet while limit conservation is active, and must still fire normally
+// otherwise. Clearing (read+ack -> 0 unread) resets the budget.
+test('ESCALATION (own mailbox): signature is count-free, stays one escalation as N grows', () => {
+  const h = makeHome();
+  try {
+    const env = { ANTIHALL_DEVSWARM_PARENT_GATE_CAP: '2', ANTIHALL_LIMIT_CONSERVE: 'off' };
+    const p = stopPayload('l10-own', true);
+    const seq = [];
+    for (const n of [1, 1, 1, 2, 2, 3, 3, 4]) {
+      writeOwnSummary(h.home, n);
+      const r = run(h.home, p, env);
+      seq.push(r.json ? (/DEVSWARM ESCALATION/.test(r.json.reason) ? 'ESC:' + r.json.reason : 'block') : 'quiet');
+    }
+    const escs = seq.filter((x) => x.startsWith('ESC:'));
+    assert.strictEqual(escs.length, 1, 'exactly one escalation while the own mailbox stays unread: ' + seq.map((x) => x.slice(0, 5)).join(','));
+    assert.match(escs[0], new RegExp('signature \\(' + OWN_ID + ' \\(you\\)\\)'), 'names the set by id only: ' + escs[0]);
+    assert.doesNotMatch(escs[0], /signature \([^)]*unread/, 'no count embedded in the escalation signature');
+    assert.doesNotMatch(escs[0], /cached|live-resolved/, 'no provenance token embedded either');
+  } finally { h.cleanup(); }
+});
+
+test('ESCALATION (own mailbox): held while limit conservation is active; fires once conservation ends', () => {
+  const h = makeHome();
+  try {
+    const p = stopPayload('l10-limit', true);
+    const base = { ANTIHALL_DEVSWARM_PARENT_GATE_CAP: '2' };
+    writeOwnSummary(h.home, 2);
+    const on = { ...base, ANTIHALL_LIMIT_CONSERVE: 'on' };
+    const r1 = run(h.home, p, on); assert.strictEqual(r1.json && r1.json.decision, 'block', 'pre-cap forced-ack still blocks');
+    const r2 = run(h.home, p, on); assert.strictEqual(r2.json && r2.json.decision, 'block');
+    for (let i = 0; i < 3; i++) {
+      writeOwnSummary(h.home, 3 + i);
+      const r = run(h.home, p, on);
+      assert.strictEqual(r.stdout, '', 'no escalation for the own inbox under limit conservation (pass ' + i + ')');
+    }
+    const off = { ...base, ANTIHALL_LIMIT_CONSERVE: 'off' };
+    const r = run(h.home, p, off);
+    assert.match(r.json && r.json.reason, /DEVSWARM ESCALATION/, 'escalation was held, not lost');
+  } finally { h.cleanup(); }
+});
+
+test('ESCALATION (own mailbox): read+ack (0 unread) clears the loop state', () => {
+  const h = makeHome();
+  try {
+    const env = { ANTIHALL_DEVSWARM_PARENT_GATE_CAP: '2', ANTIHALL_LIMIT_CONSERVE: 'off' };
+    const p = stopPayload('l10-clear', true);
+    writeOwnSummary(h.home, 2);
+    run(h.home, p, env); run(h.home, p, env);
+    writeOwnSummary(h.home, 0);
+    const clear = run(h.home, p, env);
+    assert.strictEqual(clear.stdout, '', 'nothing unread -> allow');
+    // New mail after the clear starts a FRESH budget: a plain block, not an escalation.
+    writeOwnSummary(h.home, 1);
+    const again = run(h.home, p, env);
+    assert.strictEqual(again.json && again.json.decision, 'block');
+    assert.doesNotMatch(again.json.reason, /DEVSWARM ESCALATION/, 'budget was reset by the clear');
+  } finally { h.cleanup(); }
+});
+
+test('ESCALATION: limit conservation does NOT quiet a neglected CHILD escalation', () => {
+  const h = makeHome();
+  try {
+    seedWorkspace(h.home, 'ws1', { messages: ['a', 'b'], cursor: 0 });
+    const env = { ANTIHALL_DEVSWARM_PARENT_GATE_CAP: '2', ANTIHALL_LIMIT_CONSERVE: 'on' };
+    const p = stopPayload('l10-child');
+    run(h.home, p, env); run(h.home, p, env);
+    const r3 = run(h.home, p, env);
+    assert.match(r3.json && r3.json.reason, /DEVSWARM ESCALATION/);
+  } finally { h.cleanup(); }
+});

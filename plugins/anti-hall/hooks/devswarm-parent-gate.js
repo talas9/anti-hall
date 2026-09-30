@@ -1029,7 +1029,15 @@ function main() {
   let parkedSegment = null;
   try { parkedSegment = require('../companion/lib/recovery.js').parkedEscalationSegment(home, own.id, CLI); } catch (_) { parkedSegment = null; }
 
-  if (descriptors.length === 0 && own.unread === 0 && !own.unknown && unanswered.length === 0 && !truncated && !parkedSegment) return;
+  if (descriptors.length === 0 && own.unread === 0 && !own.unknown && unanswered.length === 0 && !truncated && !parkedSegment) {
+    // Fully clean pass (own inbox read+acked, no children): clear any prior
+    // loop-state here too, exactly as the clean-pass exit below does. Without
+    // this the forced-ack counter + escalated flag survived an `inbox
+    // read-primary`/`ack-primary` and the NEXT arrival of mail escalated
+    // immediately instead of starting a fresh budget.
+    try { fs.unlinkSync(stateFileFor(payload.session_id, home)); } catch (_) {}
+    return;
+  }
 
   // Build the blocking SET: workspaces with unread backlog past their cursor OR a
   // stale/escalated verdict, PLUS the Primary's own unread. All reads are pure fs
@@ -2337,6 +2345,24 @@ function main() {
     const effectiveCap = hasIntent ? absoluteCap : cap;
     if (hasIntent) nextIntentAcks = effectiveIntentAcks + 1;
     if (effectiveBlocks >= effectiveCap) {
+      // LIMIT-CONSERVATION QUIET (field report): while usage limits are at/above
+      // the conservation threshold (hooks/limit-conserve.js isConserving() — the
+      // SAME state wake-watch's `limit-skip` reads) the Primary cannot act on
+      // its OWN mailbox, so "a human should look" about it is pure noise. Only
+      // the Primary's own-inbox-only set is quieted; a neglected CHILD, a parked
+      // escalation, an unanswered question or a truncation (bypassCap, never
+      // here) still escalate. State is left as persisted (nothing written), so
+      // the escalation still fires once conservation ends and the mail is unread.
+      let limitQuiet = false;
+      try {
+        limitQuiet = blocking.length > 0 && !parkedSegment && !!own.id
+          && blocking.every((b) => b.id === own.id)
+          && require('./limit-conserve.js').isConserving().active === true;
+      } catch (_) { limitQuiet = false; }
+      if (limitQuiet) {
+        try { fs.writeSync(2, 'anti-hall: own-inbox escalation held — limit conservation active\n'); } catch (_) {}
+        return;
+      }
       escalateTimes = nextBlocks;
       nextEscalated = true;
     }
@@ -2621,6 +2647,12 @@ function buildReason(blocking, ownId, unanswered, escalateTimes, truncated, qEsc
     return b.id + (b.id === ownId ? ' (you)' : '') + ' (' + bits.join(', ') + ')';
   }).join('; ');
   const more = blocking.length > 5 ? ' (and ' + (blocking.length - 5) + ' more)' : '';
+  // stableShown: the escalation names the blocking SET by identity only. The
+  // per-row unread count / status / provenance in `shown` changes as mail
+  // lands, so embedding it made each new count read as a fresh neglect
+  // signature (field report: re-escalated for N=2, 3). Counts stay in the
+  // ordinary nag body.
+  const stableShown = blocking.slice(0, 5).map((b) => b.id + (b.id === ownId ? ' (you)' : '')).join('; ');
 
   // QUESTION-SET escalation (spec item 5 / C2) — the ONE loud line the
   // unanswered bypass degrades to after its own cap is exhausted. Deliberately
@@ -2659,7 +2691,7 @@ function buildReason(blocking, ownId, unanswered, escalateTimes, truncated, qEsc
     // signature `escalateTimes` times with no observed change is itself the
     // signal, distinct from "here is what to go read/ack".
     body +=
-      'DEVSWARM ESCALATION: this neglect signature (' + shown + more + ') has been ' +
+      'DEVSWARM ESCALATION: this neglect signature (' + stableShown + more + ') has been ' +
       'forced-acknowledged ' + escalateTimes + ' times with no observed resolution' +
       (hasIntent ? ' (a stated intent was on file for this exact condition, but the absolute backstop was still reached)' : '') +
       ' — a human should look. This will not repeat automatically after this message. ' +

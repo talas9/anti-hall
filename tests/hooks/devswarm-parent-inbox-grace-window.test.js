@@ -238,3 +238,45 @@ test('integration: ANTIHALL_DEVSWARM_INBOX_GRACE_SEC=0 -> flags immediately, no 
     assert.match(ctx(r), /need attention/, ctx(r));
   } finally { h.cleanup(); }
 });
+
+// L10 REGRESSION (field report 0.118/0.119): a child whose verdict status is
+// stale/nudged/escalated bypasses the unread grace (liveness signal), and the
+// row then rendered "N unread, oldest 3s ... CHILD NOT DRAINING: messages YOU
+// sent that the child has NOT yet drained" for a message seconds old.
+for (const st of ['stale', 'nudged', 'escalated']) {
+  test('integration: ' + st + ' child + fresh (3s) own send -> no NOT DRAINING claim, no fresh unread/age reported', () => {
+    const h = makeHome();
+    try {
+      writeSharedSummary(h.home, {
+        wsStuck: {
+          status: st, total: 1, cursor: 0, unread: 1, directUnread: 1,
+          oldestDirectUnreadTs: Date.now() - 3000,
+          oldestDirectUnreadSender: OWN_ID,
+        },
+      });
+      const r = testHook(HOOK, payload(), { env: PRIMARY_ENV, home: h.home });
+      assert.strictEqual(r.status, 0);
+      const c = ctx(r);
+      assert.doesNotMatch(c, /NOT DRAINING/, c);
+      assert.doesNotMatch(c, /oldest \d+s/, c);
+      assert.doesNotMatch(c, /1 unread/, c);
+      assert.match(c, new RegExp(st), 'the stuck status itself must still surface:\n' + c);
+    } finally { h.cleanup(); }
+  });
+}
+
+test('integration: stale child + AGED (150s) own send -> still reports the undrained message (grace is not a blanket mute)', () => {
+  const h = makeHome();
+  try {
+    writeSharedSummary(h.home, {
+      wsStuckOld: {
+        status: 'stale', total: 1, cursor: 0, unread: 1, directUnread: 1,
+        oldestDirectUnreadTs: Date.now() - 150 * 1000,
+        oldestDirectUnreadSender: OWN_ID,
+      },
+    });
+    const r = testHook(HOOK, payload(), { env: PRIMARY_ENV, home: h.home });
+    assert.match(ctx(r), /NOT DRAINING/, ctx(r));
+    assert.match(ctx(r), /1 unread/, ctx(r));
+  } finally { h.cleanup(); }
+});

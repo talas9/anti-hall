@@ -1847,9 +1847,17 @@ function main() {
       // reads (oldestDirectUnreadTs is already a zero-extra-read projection
       // field, see companion/lib/devswarm-store.js computeSummary).
       const wsName = (rowWs && rowWs.label) || names.readName(home, id);
-      const oldestUnreadTs = oldestUnreadTsForGate;
+      // GRACED unread is not reported on a row that got here via `stuck`/
+      // `notDraining` (independent liveness signals the grace never
+      // suppresses): otherwise a stale child plus a seconds-old own send
+      // rendered "N unread, oldest 3s ... CHILD NOT DRAINING: messages YOU
+      // sent that the child has NOT yet drained" (field report, 0.118/0.119).
+      // The row still surfaces for its liveness reason, without the false
+      // drain claim about a message the child has had no time to read.
+      const reportUnread = unreadGraced ? 0 : unread;
+      const oldestUnreadTs = unreadGraced ? null : oldestUnreadTsForGate;
       attention.push({
-        id, unread, cursor, total, status, urgencyMax, wsName, oldestUnreadTs,
+        id, unread: reportUnread, cursor, total, status, urgencyMax: unreadGraced ? null : urgencyMax, wsName, oldestUnreadTs,
         notDraining: notDrainingForLabel, staleAntiHallMessage,
       });
     }
