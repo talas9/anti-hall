@@ -58,3 +58,15 @@ for (const a of ABBREV_ALLOW) {
   test(`ALLOW (long-option abbreviation control): git push ${a}`, () => expect(`git push ${a}`, 0));
 }
 test('ALLOW: an abbreviation-looking operand after `--` is a literal operand', () => expect('git push origin -- --del', 0));
+
+// --- Item 3: launcher backstop precheck. Inputs without `anti-hall` skip the
+// walk (covered by the PERF (backstop) tests in git-guard.test.js); an input
+// that DOES mention it must still finish fast.
+test('PERF (launcher backstop, precheck-positive): 160 KB cd-chain mentioning anti-hall blocks in under 2s', () => {
+  const cmd = "echo hi # it's fine\n# anti-hall\n" + 'cd a;echo>f;'.repeat(13400) + 'git push --force origin main';
+  const t0 = Date.now();
+  const r = run(cmd);
+  const ms = Date.now() - t0;
+  assert.strictEqual(r.status, 2, `stderr: ${r.stderr}`);
+  assert.ok(ms < 2000, `took ${ms}ms`);
+});

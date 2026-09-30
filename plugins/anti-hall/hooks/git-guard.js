@@ -1995,6 +1995,11 @@ function scanCommand(cmd, depth, baseCwd) {
 // blocks. DELIBERATE FAIL-CLOSED: prose in a heredoc that literally holds a
 // launcher write blocks (owner-ratified trade-off, 0.119.0 revert).
 function launcherBackstop(rawCmd, baseCwd) {
+  // Cheap O(n) precheck: a launcher path contains `anti-hall` literally (quotes,
+  // backslashes and newlines may only be interleaved inside it). No such text =>
+  // nothing for this backstop to find, so skip the per-piece walk entirely.
+  // (Variable-built targets are a known gap this backstop never covered.)
+  if (rawCmd.replace(/[\s'"\\]/g, '').indexOf('anti-hall') === -1) return null;
   // Bash deletes backslash-newline continuations BEFORE parsing, so a path
   // broken across a continuation mid-word really writes into the launcher dir.
   // Remove them (no space) for launcher analysis; the force/credit scans keep
