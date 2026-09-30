@@ -2115,3 +2115,120 @@ for (const [label, cmd] of PERF_CASES) {
     assert.ok(elapsedMs < 2000, `expected < 2000ms, took ${elapsedMs}ms`);
   });
 }
+
+// A1-5/A1-6 (0.117.2 follow-up, deadly-loop wf_95183fe2-760). Pre-existing
+// gaps, open in both 0.117.1 and 0.117.2, none needing a quote desync.
+
+// 1) `git push --mirror` force-updates AND DELETES every remote ref.
+test('BLOCK (A1-5): `git push --mirror` is a force push', () => {
+  const r = run('git push --mirror origin');
+  assert.strictEqual(r.status, 2, `expected block (exit 2)\nstderr: ${r.stderr}`);
+  assert.match(r.stderr, REASON.FORCE);
+});
+
+test('ALLOW (A1-5 regression guard): an ordinary push with no mirror/force flag stays allowed', () => {
+  const r = run('git push origin main');
+  assert.strictEqual(r.status, 0, `expected allow (exit 0)\nstderr: ${r.stderr}`);
+});
+
+// 2) `time -p` / `command -p` resolve the effective verb to `-p` instead of
+// skipping it, so the wrapped force push never resolved to `git`.
+test('BLOCK (A1-5): `time -p`/`command -p` no longer swallow the wrapped force push', () => {
+  for (const cmd of ['time -p git push -f origin main', 'command -p git push -f origin main']) {
+    const r = run(cmd);
+    assert.strictEqual(r.status, 2, `expected block (exit 2) for ${JSON.stringify(cmd)}\nstderr: ${r.stderr}`);
+    assert.match(r.stderr, REASON.FORCE);
+  }
+});
+
+test('ALLOW (A1-5 regression guard): `time`/`command` with no `-p` and no force push stay allowed', () => {
+  for (const cmd of ['time ls', 'command git status']) {
+    const r = run(cmd);
+    assert.strictEqual(r.status, 0, `expected allow (exit 0) for ${JSON.stringify(cmd)}\nstderr: ${r.stderr}`);
+  }
+});
+
+// 3) `coproc` is a wrapper word like `exec`; `xargs`-run `git push` is
+// conservatively treated as a force push because xargs appends unknown
+// stdin-read words to the argv it runs.
+test('BLOCK (A1-5): `coproc git push --force` is no longer skipped', () => {
+  const r = run('coproc git push --force origin main');
+  assert.strictEqual(r.status, 2, `expected block (exit 2)\nstderr: ${r.stderr}`);
+  assert.match(r.stderr, REASON.FORCE);
+});
+
+test('BLOCK (A1-5): an xargs-run `git push` is treated as a force push - explicit flag or stdin-fed', () => {
+  for (const cmd of ['xargs git push origin main', 'echo -f | xargs git push origin main']) {
+    const r = run(cmd);
+    assert.strictEqual(r.status, 2, `expected block (exit 2) for ${JSON.stringify(cmd)}\nstderr: ${r.stderr}`);
+    assert.match(r.stderr, REASON.FORCE);
+  }
+});
+
+test('ALLOW (A1-5 regression guard): xargs running a non-git command stays allowed', () => {
+  for (const cmd of ['xargs grep pattern file', 'echo origin | xargs grep pattern', 'find . -name x | xargs cat']) {
+    const r = run(cmd);
+    assert.strictEqual(r.status, 0, `expected allow (exit 0) for ${JSON.stringify(cmd)}\nstderr: ${r.stderr}`);
+  }
+});
+
+// 4) `env -S 'STRING'` word-splits STRING and runs it as a new command; a
+// `bash -c $'...'` ANSI-C-quoted payload must decode before recursion, not
+// carry a literal leading `$` into the re-parsed verb.
+test('BLOCK (A1-5): `env -S` runs its STRING as a command, force push included', () => {
+  const r = run("env -S 'git push -f origin main'");
+  assert.strictEqual(r.status, 2, `expected block (exit 2)\nstderr: ${r.stderr}`);
+  assert.match(r.stderr, REASON.FORCE);
+});
+
+test('ALLOW (A1-5 regression guard): ordinary `env VAR=1 cmd` (no -S) stays allowed', () => {
+  for (const cmd of ['env FOO=1 git status', 'env git status']) {
+    const r = run(cmd);
+    assert.strictEqual(r.status, 0, `expected allow (exit 0) for ${JSON.stringify(cmd)}\nstderr: ${r.stderr}`);
+  }
+});
+
+test('BLOCK (A1-5): `bash -c $\'...\'` ANSI-C quoting is decoded before the payload is re-parsed', () => {
+  const r = run("bash -c $'git push --force origin main'");
+  assert.strictEqual(r.status, 2, `expected block (exit 2)\nstderr: ${r.stderr}`);
+  assert.match(r.stderr, REASON.FORCE);
+});
+
+// 5) A literal string piped/here-strung straight into a bare shell reads its
+// script from there, exactly like `bash -c`.
+test('BLOCK (A1-5): a literal `echo "..." | bash`/`| sh` pipes its script into the shell\'s stdin', () => {
+  for (const cmd of [
+    'echo "git push --force origin main" | bash',
+    'echo "git push --force origin main" | sh',
+  ]) {
+    const r = run(cmd);
+    assert.strictEqual(r.status, 2, `expected block (exit 2) for ${JSON.stringify(cmd)}\nstderr: ${r.stderr}`);
+    assert.match(r.stderr, REASON.FORCE);
+  }
+});
+
+test('BLOCK (A1-5): a here-string into bash/sh reads its script from there too', () => {
+  const r = run('bash <<< "git push --force origin main"');
+  assert.strictEqual(r.status, 2, `expected block (exit 2)\nstderr: ${r.stderr}`);
+  assert.match(r.stderr, REASON.FORCE);
+});
+
+test('ALLOW (A1-5 regression guard): `echo hi | bash -c \'cat\'` and an ordinary here-string stay allowed', () => {
+  for (const cmd of ["echo hi | bash -c 'cat'", 'bash <<< "echo hello world"']) {
+    const r = run(cmd);
+    assert.strictEqual(r.status, 0, `expected allow (exit 0) for ${JSON.stringify(cmd)}\nstderr: ${r.stderr}`);
+  }
+});
+
+// 6) PERF: extractQuotedLiterals(cmd) used to run unmemoized on every `git
+// commit -F -` segment (O(N) calls over an O(N)-length cmd = O(N^2)). 20000
+// segments took ~13s at 0.117.2, over the hook's 10s timeout.
+test('PERF (A1-6): 20000x-repeated `git commit -F -;` + trailing force push blocks in well under 2s', () => {
+  const cmd = 'git commit -F -;'.repeat(20000) + 'git push --force origin main';
+  const t0 = Date.now();
+  const r = run(cmd);
+  const elapsedMs = Date.now() - t0;
+  assert.strictEqual(r.status, 2, `expected block (exit 2)\nstderr: ${r.stderr}`);
+  assert.match(r.stderr, REASON.FORCE);
+  assert.ok(elapsedMs < 2000, `expected < 2000ms, took ${elapsedMs}ms`);
+});

@@ -81,6 +81,27 @@ root-caused against a reproducing test before the fix.
   any path outside the session's git worktree, when `payload.cwd` resolves to one (via
   `companion/lib/identity.js`'s `resolveContext`, the single canonical worktree resolver — no
   new filesystem walk). Both checks fail open when the needed payload fields are absent.
+- **git-guard: more force-push/wrapper bypasses closed (0.117.2 follow-up, A1-5/A1-6).**
+  None needed a quote desync. `git push --mirror` force-updates and deletes every remote
+  ref and is now treated as a force push. `time -p`/`command -p` used to resolve the
+  effective command verb to `-p` itself, skipping the wrapped command entirely - both now
+  skip their own `-p` flag. `coproc git push --force ...` is now recognized as a wrapper,
+  like `exec`. An `xargs`-run `git push` is now treated as a force push whether or not the
+  visible argv already carries `--force`: xargs appends words it reads from stdin as
+  trailing arguments, so a hidden `-f` (e.g. `echo -f | xargs git push origin main`)
+  cannot be ruled out statically. `env -S 'STRING'`/`--split-string` (which word-splits
+  STRING and runs it as a new command) is now unwrapped and re-scanned, and a `bash -c
+  $'...'` ANSI-C-quoted payload is now decoded before being re-parsed (it used to carry a
+  literal leading `$` into the recursed command, so the verb never resolved to `git`). A
+  literal string piped into a bare shell (`echo "git push --force origin main" | bash`)
+  or fed via a here-string (`bash <<< "git push --force origin main"`) is now recognized
+  as feeding that shell's stdin as its script, the same as `bash -c "..."`.
+- **git-guard: quadratic scan on many `git commit -F -` segments (0.117.2 follow-up,
+  A1-6).** `extractQuotedLiterals(cmd)` ran once per `-F -`/`--file=-` segment over the
+  FULL, unchanged command string; 20000 such segments took about 13s, over the hook's 10s
+  timeout (a fail-open miss of a trailing force push). It is now memoized per distinct
+  command string, computed once instead of once per segment; the same input now decides
+  in well under 100ms.
 
 ### Changed
 

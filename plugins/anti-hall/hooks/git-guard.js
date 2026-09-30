@@ -144,6 +144,31 @@ function tokenize(segment) {
       break; // rest of the segment is a comment
     }
 
+    // A1-5 (0.117.2 follow-up): ANSI-C quoting `$'...'`. Bash decodes backslash
+    // escapes INSIDE it (unlike a plain `'...'`), so `bash -c $'git push
+    // --force origin main'` must yield the same payload text as `bash -c
+    // "git push --force origin main"`. Left unhandled, the `$` tokenized as an
+    // ordinary character glued onto the following single-quoted body
+    // (`$git push --force origin main` as one token), so the recursed
+    // payload's verb resolved to `$git`, never `git` - a total bypass.
+    if (c === '$' && segment[i + 1] === "'") {
+      started = true;
+      i += 2;
+      while (i < n && segment[i] !== "'") {
+        if (segment[i] === '\\' && i + 1 < n) {
+          const nx = segment[i + 1];
+          const ESC = { n: '\n', t: '\t', r: '\r', a: '\x07', b: '\b', f: '\f', v: '\v', e: '\x1b', '\\': '\\', "'": "'", '"': '"', '0': '\0' };
+          cur += Object.prototype.hasOwnProperty.call(ESC, nx) ? ESC[nx] : nx;
+          i += 2;
+        } else {
+          cur += segment[i];
+          i++;
+        }
+      }
+      i++; // consume closing quote (or EOF)
+      continue;
+    }
+
     if (c === "'") {
       // Single quote: literal run until next single quote.
       started = true;
@@ -389,7 +414,11 @@ function splitSegments(cmd) {
 // verdict never ran - a total bypass needing no quote desync. Reserved words
 // carry no argument-position ambiguity, so adding them here cannot introduce
 // a false block.
-const WRAPPERS = new Set(['command', 'builtin', 'exec', 'sudo', 'env', 'nice', 'nohup', 'time', 'timeout', 'then', 'do', 'else', 'if', 'while', 'until', 'elif']);
+// A1-5 (0.117.2 follow-up): `coproc` runs its argument list as a command,
+// exactly like `exec`/`command` - `coproc git push --force origin main` never
+// resolved past the `coproc` word. Also reserved-word-shaped (no argument-
+// position ambiguity), so adding it carries no false-block risk.
+const WRAPPERS = new Set(['command', 'builtin', 'exec', 'sudo', 'env', 'nice', 'nohup', 'time', 'timeout', 'then', 'do', 'else', 'if', 'while', 'until', 'elif', 'coproc']);
 
 function effectiveVerb(tokens) {
   let idx = 0;
@@ -451,6 +480,12 @@ function effectiveVerb(tokens) {
         }
         // Skip the DURATION operand if present.
         if (idx < tokens.length && !tokens[idx].quotedOnly) idx++;
+      } else if (word === 'time' || word === 'command') {
+        // A1-5 (0.117.2 follow-up): POSIX `time -p` / `command -p` take a
+        // leading `-p` flag before the real command word. Without skipping
+        // it, `-p` itself resolved as the verb (`time -p git push -f origin
+        // main` -> verb '-p'), and the whole command fell through unjudged.
+        if (idx < tokens.length && !tokens[idx].quotedOnly && tokens[idx].text === '-p') idx++;
       } else if (word === 'nice') {
         // nice [-n N | -N | --adjustment=N] command...
         while (idx < tokens.length && !tokens[idx].quotedOnly && tokens[idx].text.startsWith('-')) {
@@ -598,6 +633,10 @@ function isForcePush(rest) {
     }
     if (w === '--force' || w === '--force-with-lease') return true;
     if (w.startsWith('--force-with-lease=')) return true;
+    // A1-5 (0.117.2 follow-up): `--mirror` force-updates AND DELETES every
+    // remote ref to match the local mirror clone - strictly more destructive
+    // than a plain `--force`, and unconditional (no refspec/flag needed).
+    if (w === '--mirror') return true;
     // `--force-if-includes` / `--no-force-if-includes` is a SAFETY MODIFIER, not a
     // force flag: per git it only has effect alongside `--force-with-lease` and is
     // a no-op on its own. Treating it as force would false-block a legitimate
@@ -965,8 +1004,113 @@ function extractShellCPayload(segment) {
     if (t === '-c' || t === '--command' || /^-[a-z]*c$/.test(t)) {
       return i + 1 < args.length ? args[i + 1].text : '';
     }
+    // A1-5 (0.117.2 follow-up): a here-string (`bash <<< "payload"`) feeds
+    // payload to the shell's stdin as its script - the SAME total bypass
+    // shape as `-c "payload"` (bash reads and runs it as a command list; a
+    // literal here-string is tokenized as its own `<<<` token followed by the
+    // string, since splitSegments does not treat `<<<` as a cut point).
+    if (t === '<<<') {
+      return i + 1 < args.length ? args[i + 1].text : '';
+    }
   }
   return '';
+}
+
+// A1-5 (0.117.2 follow-up): `env -S STRING` (or `--split-string[=STRING]`)
+// tells env to word-split STRING and run the result as a NEW command -
+// effectively a `sh -c` in disguise. Left unhandled, effectiveVerb's `env`
+// branch skips ANY `-`-prefixed token (including `-S`) as an env flag, then
+// treats the quoted STRING itself as the next "command word" - which is
+// fully quoted, so effectiveVerb returns null and the whole command goes
+// unjudged (a total bypass, not just a wrong verb). Returns the STRING
+// payload, or '' if this segment is not an `env -S`/`--split-string` form.
+function extractEnvSPayload(segment) {
+  const tokens = tokenize(segment);
+  let idx = 0;
+  while (idx < tokens.length && !tokens[idx].quotedOnly && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[idx].text)) idx++;
+  if (idx >= tokens.length || tokens[idx].quotedOnly || tokens[idx].text !== 'env') return '';
+  idx++;
+  while (idx < tokens.length) {
+    const t = tokens[idx];
+    const w = t.quotedOnly ? '' : t.text;
+    if (w === '-S' || w === '--split-string') {
+      return idx + 1 < tokens.length ? tokens[idx + 1].text : '';
+    }
+    if (w.startsWith('--split-string=')) return w.slice('--split-string='.length);
+    if (w && (w.startsWith('-') || /^[A-Za-z_][A-Za-z0-9_]*=/.test(w))) { idx++; continue; }
+    break; // env's real command word (not an -S form) - nothing to unwrap here
+  }
+  return '';
+}
+
+// A1-5 (0.117.2 follow-up): `xargs`' own leading flags, mapped to whether they
+// consume a separate value token. Anything else starting with `-` (e.g. `-0`,
+// `-r`, `-t`, `-x`, `-p`, `-o`) is value-less.
+const XARGS_VAL_FLAGS = new Set([
+  '-I', '-i', '-L', '-l', '-n', '-P', '-s', '-a', '-d', '-E',
+  '--replace', '--max-lines', '--max-args', '--max-procs', '--max-chars',
+  '--arg-file', '--delimiter', '--eof',
+]);
+
+// Skip xargs' OWN leading flags (and their values) and return the token list
+// for the COMMAND xargs will run (e.g. `git push origin main` in `xargs -0
+// git push origin main`).
+function xargsCommandTokens(args) {
+  let i = 0;
+  while (i < args.length) {
+    const t = args[i];
+    if (t.quotedOnly) break;
+    const w = t.text;
+    if (w === '--') { i++; break; }
+    if (!w.startsWith('-')) break;
+    i++;
+    if (XARGS_VAL_FLAGS.has(w) && i < args.length && !args[i].quotedOnly && !args[i].text.startsWith('-')) i++;
+  }
+  return args.slice(i);
+}
+
+// A1-5 (0.117.2 follow-up): xargs appends words it reads from STDIN as
+// trailing arguments to the command it runs (unless `-I`/`-i` places them
+// elsewhere) - a hidden `-f`/`--force` can ride in on stdin that the static
+// tokenizer can never see. So ANY `xargs`-run `git push` is treated
+// conservatively as a force push, regardless of whether the visible argv
+// already carries one; other xargs-run git subcommands still get the normal
+// gitVerdict rules (self-credit, command-substitution args, etc).
+function xargsGitVerdict(ev, d, cmd, heredocBodies, cwd, useJev) {
+  const cmdTokens = xargsCommandTokens(ev.args);
+  if (!cmdTokens.length) return null;
+  const innerEv = effectiveVerb(cmdTokens);
+  if (!innerEv || innerEv.verb !== 'git') return null;
+  const { sub } = gitSubcommand(innerEv.args);
+  if (sub === 'push') {
+    return (
+      'anti-hall git-guard: BLOCKED. Force push detected via `xargs git push` - ' +
+      'xargs appends words it reads from stdin to the command it runs, so the ' +
+      'full argv (and any hidden --force/-f) cannot be verified statically. Run ' +
+      '`git push` directly, with explicit arguments, instead of through xargs.'
+    );
+  }
+  return gitVerdict(innerEv, d, cmd, heredocBodies, cwd, useJev);
+}
+
+// A1-5 (0.117.2 follow-up): a literal `echo "TEXT" | bash` (or printf; bash/
+// sh/zsh/dash/ksh/ash) pipes TEXT straight into a shell interpreter's stdin as
+// its script - the same total bypass shape as `bash -c "TEXT"`. Matches only
+// the narrow, unambiguous shape: a single QUOTED echo/printf argument, a real
+// `|`, then a BARE shell verb with nothing else after it (a shell verb
+// followed by more - `-c ...`, a script path - already reads its command from
+// there instead of stdin, and is unrelated). No nested/ambiguous quantifiers
+// (the `(?!\1)` backreference gate is O(1) per character), so this cannot
+// blow up on adversarial input.
+const PIPED_ECHO_SHELL_RE =
+  /(?:^|[;&\n]|\()\s*(?:echo|printf)\s+(['"])((?:(?!\1)[\s\S])*)\1\s*\|\s*(?:bash|sh|zsh|dash|ksh|ash)\s*(?=$|[;&\n)])/g;
+
+function pipedEchoShellPayloads(cmd) {
+  const out = [];
+  let m;
+  PIPED_ECHO_SHELL_RE.lastIndex = 0;
+  while ((m = PIPED_ECHO_SHELL_RE.exec(cmd))) out.push(m[2]);
+  return out;
 }
 
 // Extract `-F <spec>` / `--file[=<spec>]` specs from a `git commit` arg list
@@ -1087,6 +1231,25 @@ function extractQuotedLiterals(cmd) {
     }
   }
   return out;
+}
+
+// A1-6 (0.117.2 follow-up, perf): gitVerdict's `-F -`/`--file=-` branch below
+// calls extractQuotedLiterals(cmd) with the SAME, unchanged `cmd` (the full
+// raw command string) on EVERY `git commit -F -` segment it is invoked for.
+// extractQuotedLiterals is itself only O(cmd.length), but a command built of
+// N such segments concatenated is O(N) segments over an O(N)-length cmd, so
+// calling it unmemoized per segment made the whole scan O(N^2) - 20000
+// segments took ~13s, over the hook's 10s timeout (fail-open on a trailing
+// force push it never reached). A single-slot cache keyed on referential/
+// value equality of `cmd` computes it once per distinct command string; a
+// different `cmd` (nested eval/bash -c/xargs/etc. payload, or the next hook
+// invocation) simply recomputes and overwrites the slot.
+let quotedLiteralsCache = null; // { cmd, result } | null
+function extractQuotedLiteralsCached(cmd) {
+  if (quotedLiteralsCache && quotedLiteralsCache.cmd === cmd) return quotedLiteralsCache.result;
+  const result = extractQuotedLiterals(cmd);
+  quotedLiteralsCache = { cmd, result };
+  return result;
 }
 
 // A devswarm mailbox message written via a Bash heredoc gets NO exemption:
@@ -1774,7 +1937,7 @@ function gitVerdict(ev, d, cmd, heredocBodies, lastCdDir, useJev) {
       if (spec === '-' || spec === '/dev/stdin') {
         const candidates = [];
         if (heredocBodies.length) candidates.push(...heredocBodies.map((h) => h.body));
-        candidates.push(...extractQuotedLiterals(cmd));
+        candidates.push(...extractQuotedLiteralsCached(cmd));
         if (candidates.length) text = candidates.join('\n');
       } else {
         let filePath = spec;
@@ -1994,6 +2157,15 @@ function gitBackstopLines(cmd, d, heredocBodies, cwd) {
 
 function gitBackstop(cmd, d, heredocBodies, baseCwd) {
   const cwd = (typeof baseCwd === 'string' && baseCwd) ? baseCwd : null;
+  // A1-5 (0.117.2 follow-up): a literal `echo "..." | bash` piped-script form
+  // never resolves to verb `git` in EITHER piece (echo/bash), so it must be
+  // unwrapped up front from the raw text, not from a per-piece verb match.
+  if (d < 3) {
+    for (const payload of pipedEchoShellPayloads(cmd)) {
+      const hit = gitBackstop(payload, d + 1, extractHeredocBodies(payload), cwd);
+      if (hit) return hit;
+    }
+  }
   for (const raw of backstopPieces(cmd)) {
     const trimmed = raw.replace(/^\s+/, '');
     // Two readings: as-is, and with one leading layer of quote chars stripped
@@ -2001,10 +2173,24 @@ function gitBackstop(cmd, d, heredocBodies, baseCwd) {
     const variants = [trimmed];
     if (/^["']/.test(trimmed)) variants.push(trimmed.replace(/^["']+/, ''));
     for (const v of variants) {
+      // A1-5: `env -S`/`--split-string` never resolves to verb `env` (its
+      // payload is a single fully-quoted token, so backstopVerb returns
+      // null) - detect and unwrap it before falling through to that null.
+      if (d < 3) {
+        const envPayload = extractEnvSPayload(v);
+        if (envPayload) {
+          const hit = gitBackstop(envPayload, d + 1, extractHeredocBodies(envPayload), cwd);
+          if (hit) return hit;
+          continue;
+        }
+      }
       const ev = backstopVerb(v);
       if (!ev) continue;
       if (ev.verb === 'git') {
         const hit = gitVerdict(ev, d, cmd, heredocBodies, cwd, false);
+        if (hit) return hit;
+      } else if (ev.verb === 'xargs') {
+        const hit = xargsGitVerdict(ev, d, cmd, heredocBodies, cwd, false);
         if (hit) return hit;
       } else if (d < 3 && (ev.verb === 'eval' || SHELL_VERBS.has(ev.verb.toLowerCase()))) {
         const payload = ev.verb === 'eval' ? extractEvalPayload(v) : extractShellCPayload(v);
