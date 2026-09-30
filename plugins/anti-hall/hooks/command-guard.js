@@ -2745,13 +2745,21 @@ function isPlainPushRefAllowed(ref, cwd) {
   if (src === 'HEAD' || src === branch) return true;
   // SRC may also be the checked-out commit spelled as its (abbreviated) sha —
   // the same commit `HEAD` names, so the push is still "my current branch".
-  // Resolved fresh; a sha that is not HEAD's (or any resolve failure) refuses.
+  // Resolved by git itself in the effective cwd (`rev-parse --verify --quiet
+  // <src>^{commit}`), which applies git's own rule that a ref NAME wins over an
+  // abbreviated sha: a tag/branch named like a sha on another commit resolves
+  // to THAT commit, differs from HEAD and refuses. Ambiguous/unknown/any
+  // resolve failure refuses.
   if (/^[0-9a-f]{7,40}$/i.test(src)) {
     try {
       const { spawnSync } = require('child_process');
-      const res = spawnSync('git', ['-C', cwd || process.cwd(), 'rev-parse', 'HEAD'], { encoding: 'utf8', timeout: 5000 });
-      const head = res && res.status === 0 ? String(res.stdout || '').trim().toLowerCase() : '';
-      return !!head && head.startsWith(src.toLowerCase());
+      const resolve = (rev) => {
+        const res = spawnSync('git', ['-C', cwd || process.cwd(), 'rev-parse', '--verify', '--quiet', rev + '^{commit}'],
+          { encoding: 'utf8', timeout: 5000 });
+        return res && res.status === 0 ? String(res.stdout || '').trim().toLowerCase() : '';
+      };
+      const head = resolve('HEAD');
+      return !!head && resolve(src) === head;
     } catch (_) { return false; }
   }
   return false;

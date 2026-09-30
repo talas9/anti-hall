@@ -596,3 +596,27 @@ for (const cmd of D_BLOCK) {
     }
   });
 }
+
+// ---- (d) sha-spelled SRC must resolve (via git, in the effective cwd) to HEAD's commit ----
+
+test('allow-plain-push: sha SRC - HEAD sha allowed; parent sha, unknown sha and a sha-named tag on another commit refused', () => {
+  const repo = makeGitRepo();
+  const git = (...a) => cp.spawnSync('git', ['-C', repo, ...a], { encoding: 'utf8' }).stdout.trim();
+  try {
+    fs.writeFileSync(path.join(repo, 'g.txt'), 'y\n');
+    git('add', 'g.txt');
+    git('commit', '-q', '-m', 'second');
+    const head = git('rev-parse', 'HEAD');
+    const parent = git('rev-parse', 'HEAD~1');
+    const short = head.slice(0, 7);
+    assert.notStrictEqual(run(`git push origin ${short}:main`, { cwd: repo }).status, 2, 'HEAD short sha must stay allowed');
+    assert.notStrictEqual(run(`git push origin ${head}:refs/heads/main`, { cwd: repo }).status, 2, 'HEAD full sha must stay allowed');
+    assert.strictEqual(run(`git push origin ${parent.slice(0, 7)}:main`, { cwd: repo }).status, 2, 'parent sha must be refused');
+    assert.strictEqual(run('git push origin 0000000:main', { cwd: repo }).status, 2, 'unknown sha must be refused');
+    // git resolves a ref NAME before an abbreviated sha: this tag makes `<short>` mean HEAD~1.
+    git('tag', short, 'HEAD~1');
+    assert.strictEqual(run(`git push origin ${short}:main`, { cwd: repo }).status, 2, 'a tag named like the HEAD sha (on HEAD~1) must be refused');
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+});
