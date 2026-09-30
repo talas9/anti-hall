@@ -61,7 +61,10 @@ const EXCLUDED_FILES = new Set([
 // resolveHome(), same as any other unmigrated call site. All 15 were routed
 // through companion/lib/test-home-guard.js#resolveHome() in this fix, so the
 // baseline drops back to 315 (its pre-0.117-integration value).
-const BASELINE = 315;
+// 318: +3 net from the 2026-10-01 lanes (child-gate own-inbox stop-policy and tick marker reads,
+// doctor phantom-Primary check, devswarm.js phantomPrimaryRows default home) — all are
+// `explicit-home || os.homedir()` defaults on read paths that tests inject a home into.
+const BASELINE = 318;
 
 const HOMEDIR_CALL_RE = /\bos\s*\.\s*homedir\s*\(\s*\)/g;
 

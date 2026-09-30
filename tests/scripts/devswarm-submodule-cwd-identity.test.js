@@ -107,14 +107,14 @@ test('phantom Primary rows: detect (read-only) -> repair archives (no delete) ->
   assert.ok(fs.existsSync(desc));
 
   // explicit repair: archive (tombstone), never delete; root row untouched
-  const r = dw.phantomPrimaryRows(home, { repair: true, env: process.env });
+  const r = dw.phantomPrimaryRows(home, { repair: true, env: Object.assign({}, process.env, { HOME: home }) });
   assert.strictEqual(r.archived, 1, JSON.stringify(r));
   assert.ok(!fs.existsSync(desc));
   assert.ok(fs.existsSync(archived), 'archived tombstone must exist (reversible)');
   assert.ok(fs.existsSync(path.join(home, '.anti-hall', 'devswarm', 'workspaces', rootId + '.json')));
 
   // idempotent second run
-  const r2 = dw.phantomPrimaryRows(home, { repair: true, env: process.env });
+  const r2 = dw.phantomPrimaryRows(home, { repair: true, env: Object.assign({}, process.env, { HOME: home }) });
   assert.deepStrictEqual([r2.phantoms.length, r2.archived, r2.errors], [0, 0, 0]);
   assert.strictEqual(dr.checkPhantomPrimaries({ home }), null);
 });
