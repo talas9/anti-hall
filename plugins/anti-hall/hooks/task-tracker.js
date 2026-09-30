@@ -338,6 +338,7 @@ try {
   }
 
   let text;
+  let primaryBlock = '';
   if (skipped) {
     text = '';
   } else {
@@ -370,7 +371,10 @@ try {
           keepaliveTurns: Number.isFinite(repeatEvery) && repeatEvery > 0 ? repeatEvery : 0,
         });
       } catch (_) { emitPrimary = true; }
-      if (emitPrimary) text = text + ' ' + DEVSWARM_PRIMARY;
+      // Held OUT of `text`: the burst-collapse hash below must not depend on
+      // whether the primary block was emitted this time, or a queued burst
+      // emits TASK-LIST twice (first copy hashed with the block, next without).
+      if (emitPrimary) primaryBlock = DEVSWARM_PRIMARY;
     }
   }
 
@@ -396,12 +400,14 @@ try {
   // Official schema: `hookEventName` is NESTED in `hookSpecificOutput`, not a
   // top-level sibling. KB §1.4 specifies `hookSpecificOutput.additionalContext`
   // for UserPromptSubmit; nesting here is correct per the harness contract.
+  const finalText = [emit ? text : '', primaryBlock].filter(Boolean).join('\n\n');
   const out = {
     hookSpecificOutput: {
       hookEventName: 'UserPromptSubmit',
-      additionalContext: text,
+      additionalContext: finalText,
     },
   };
+  emit = emit || !!primaryBlock;
   if (emit) process.stdout.write(JSON.stringify(out) + '\n');
   const mHome2 = emit && demandShown > 0 ? metricsHome() : null;
   if (mHome2) DD.recordDemand({ home: mHome2, sessionId: payload && payload.session_id, count: demandShown });

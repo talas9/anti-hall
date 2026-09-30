@@ -331,7 +331,7 @@ function main() {
       '"OWNER DECISION" subject prefix — never a fake blockedBy dependency.' +
       (anyLiveDevswarmChildren()
         ? ' If this task is delegated to a DevSwarm workspace, set its owner to the ' +
-          'workspace id (TaskUpdate owner) and it counts as attended.'
+          'workspace id, branch or title (TaskUpdate owner) and it counts as attended.'
         : '');
   } else {
     const list = renderList(nudgeTasks);
@@ -445,7 +445,8 @@ function normOwner(o) {
 //     main-thread carve-out -> false (not a workspace id at all; unaffected
 //     by this function, handled elsewhere).
 //   - owner (optionally prefixed "workspace:"/"ws:"/"devswarm:") matches a
-//     LIVE app-DB builder id -> true (attended; excluded from nudge/block).
+//     LIVE app-DB builder id, or (when it is not a known id) the exact branch
+//     name / title of a LIVE workspace -> true (attended; excluded from nudge/block).
 //   - owner names an ARCHIVED id, an id the app DB doesn't know, or the
 //     registry/app DB can't be read at all (no node:sqlite, no file, wrong
 //     schema, disabled) -> appArchivedVerdict returns true/null either way,
@@ -461,7 +462,17 @@ function devswarmChildAttended(owner) {
   try { appDb = require('../companion/lib/devswarm-app-db.js'); } catch (_) { return false; }
   let verdict;
   try { verdict = appDb.appArchivedVerdict({ home: metricsHome(), id }); } catch (_) { verdict = null; }
-  return verdict === false; // false = known + NOT archived ("live"); true/null -> still block
+  if (verdict === false) return true; // known id + NOT archived ("live")
+  if (verdict === true) return false; // known id, archived -> still block
+  // Not a known id: the owner may be spelled as the workspace's BRANCH or TITLE
+  // (label) — what a Primary sees in the roster. Same app-DB snapshot (cached
+  // per process, already read by anyLiveDevswarmChildren); exact match against a
+  // NOT-archived workspace only. Archived/unknown/unreadable -> still block.
+  try {
+    const snap = appDb.snapshot({ home: metricsHome() });
+    if (!snap || !Array.isArray(snap.workspaces)) return false;
+    return snap.workspaces.some((w) => w && w.archived === false && (w.branchName === id || w.label === id));
+  } catch (_) { return false; }
 }
 
 // anyLiveDevswarmChildren() — true only when the app DB's own record (the SAME

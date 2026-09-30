@@ -1039,6 +1039,55 @@ test('IDLE NEGLECT: a LIVE devswarm child workspace exists -> the reason names t
   }
 });
 
+// Owner spelled as the workspace's BRANCH or TITLE (label) instead of its id
+// (field report: owner "feat/contact-email-redesign" read as unattended).
+function devswarmLabelledFixture(h) {
+  const path = require('node:path');
+  const dbFile = path.join(h.home, 'app-devswarm-labelled.db');
+  const db = new sqlite.DatabaseSync(dbFile);
+  db.exec('CREATE TABLE builders (id TEXT PRIMARY KEY, repositoryId TEXT, worktreePath TEXT, branchName TEXT, label TEXT, isHidden INTEGER NOT NULL DEFAULT 0, isActive INTEGER NOT NULL DEFAULT 1)');
+  const ins = db.prepare('INSERT INTO builders (id, repositoryId, worktreePath, branchName, label, isHidden, isActive) VALUES (?, ?, ?, ?, ?, ?, ?)');
+  ins.run('b-live', 'r1', path.join(h.home, 'wt-live'), 'feat/contact-email-redesign', 'Contact email redesign', 0, 1);
+  ins.run('b-dead', 'r1', path.join(h.home, 'wt-dead'), 'feat/old-branch', 'Old title', 1, 0);
+  db.close();
+  return { env: { ANTIHALL_DEVSWARM_APP_DB: dbFile, ANTIHALL_DEVSWARM_APP_DB_CACHE_MS: '0' } };
+}
+
+for (const [what, owner] of [['BRANCH', 'feat/contact-email-redesign'], ['TITLE', 'Contact email redesign'], ['prefixed BRANCH', 'workspace: feat/contact-email-redesign']]) {
+  test('ATTENDED: in_progress task whose owner is a LIVE workspace ' + what + ' -> no block', { skip: skipSqlite }, () => {
+    const h = makeHome();
+    try {
+      const f = devswarmLabelledFixture(h);
+      const tp = h.writeTranscript([todoWrite([{ id: '1', content: 'delegated', status: 'in_progress', owner }])]);
+      const r = testHook(HOOK, stopPayload(tp), { home: h.home, env: f.env });
+      assert.ok(!isBlock(r), `owner=${owner} must count as attended; reason: ${r.json && r.json.reason}`);
+    } finally { h.cleanup(); }
+  });
+}
+
+for (const [what, owner] of [['ARCHIVED branch', 'feat/old-branch'], ['ARCHIVED title', 'Old title'], ['UNKNOWN branch', 'feat/never-existed'], ['partial branch', 'feat/contact']]) {
+  test('STILL BLOCKS: owner is an ' + what, { skip: skipSqlite }, () => {
+    const h = makeHome();
+    try {
+      const f = devswarmLabelledFixture(h);
+      const tp = h.writeTranscript([todoWrite([{ id: '1', content: 'delegated', status: 'in_progress', owner }])]);
+      const r = testHook(HOOK, stopPayload(tp), { home: h.home, env: f.env });
+      assert.ok(isBlock(r), `owner=${owner} must still block; stdout: ${r.stdout}`);
+    } finally { h.cleanup(); }
+  });
+}
+
+test('IDLE NEGLECT hint says the owner may be the workspace id, branch or title', { skip: skipSqlite }, () => {
+  const h = makeHome();
+  try {
+    const f = devswarmLabelledFixture(h);
+    const tp = h.writeTranscript([todoWrite([{ id: '1', content: 'important work', status: 'pending', priority: 'P1' }])]);
+    const r = testHook(HOOK, stopPayload(tp), { home: h.home, env: f.env });
+    assert.ok(isIdleNeglect(r), `expected idle-neglect; stdout: ${r.stdout}`);
+    assert.match(r.json.reason, /workspace id, branch or title/);
+  } finally { h.cleanup(); }
+});
+
 test('IDLE NEGLECT: no devswarm app DB at all -> the delegate-to-workspace hint is omitted (unchanged wording)', () => {
   const h = makeHome();
   try {

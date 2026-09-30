@@ -2343,9 +2343,19 @@ function main() {
   // injected unconditionally (see OVERRIDE_REASSERT's own comment) — it goes in
   // FIRST, ahead of even the staleness banner, so it survives any future segment
   // reordering/truncation as the highest-priority line.
-  const segments = [OVERRIDE_REASSERT];
   const sessionId = (payload && typeof payload.session_id === 'string' && payload.session_id) ? payload.session_id : null;
   const transcriptPath = (payload && typeof payload.transcript_path === 'string') ? payload.transcript_path : null;
+  // Queued-prompt burst collapse (lib/emit-dedupe.js): the static re-assertion
+  // was the one block here emitted on every invocation, so N cron ticks
+  // delivered together showed it N times. Keepalive = guards.injectionRepeatEvery
+  // (same knob as the PRIMARY dispatch-tier block in task-tracker.js; 0 = every
+  // delivered turn, burst collapse only). Fail-open: dedupeEmit -> true.
+  let overrideRepeat = 10;
+  try { overrideRepeat = require('./lib/settings.js').get('guards', 'injectionRepeatEvery', 10); } catch (_) {}
+  const segments = [];
+  if (dedupeEmit(home, sessionId, 'parent-inbox-comms-override', OVERRIDE_REASSERT, {
+    transcriptPath, keepaliveTurns: Number.isFinite(overrideRepeat) && overrideRepeat > 0 ? overrideRepeat : 0,
+  })) segments.push(OVERRIDE_REASSERT);
 
   // Daemon-freshness staleness banner, when present, is injected next — above
   // the table AND independent of rows.length (the legacy-fallback back-compat
