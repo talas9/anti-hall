@@ -71,3 +71,14 @@ for (const [cmd, hrel] of CWD_BLOCK) {
 
 test('ALLOW (control): a non-writing command inside ~/.anti-hall/bin', () => expect('ls', 0, BIN));
 test('ALLOW (control): an ordinary write with no .anti-hall anywhere', () => expect('echo x > /tmp/ah-r4-ok.txt', 0));
+
+// The launcher backstop runs (the precheck cannot skip it) when the command
+// mentions anti-hall: a 160KB cd-chain must stay linear, not seconds.
+test('PERF: a ~160KB cd-chain that mentions anti-hall still blocks a trailing force push in well under 2s', () => {
+  const cmd = 'cd a;echo>f;'.repeat(13400) + 'echo anti-hall; git push --force origin main';
+  const t0 = Date.now();
+  const r = run(cmd);
+  const elapsedMs = Date.now() - t0;
+  assert.strictEqual(r.status, 2, `expected block (exit 2)\nstderr: ${r.stderr}`);
+  assert.ok(elapsedMs < 2000, `expected linear launcher backstop (<2000ms), took ${elapsedMs}ms`);
+});

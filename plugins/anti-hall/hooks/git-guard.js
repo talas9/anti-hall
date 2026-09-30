@@ -1345,7 +1345,17 @@ function stdinCandidateTextCached(cmd, heredocBodies) {
 // hint). The correct way to send a message is to write the file with the
 // Write tool (not a Bash heredoc), then run `devswarm.js send --message-file
 // <path>` as its own, unrelated-body command.
+// Memoized: the launcher scans call this once per path normalization, and each
+// call re-resolved the module and ran os.userInfo() (a getpwuid syscall) -
+// ~half of a 160KB cd-chain's wall time. One process handles one command, so
+// the home never changes underneath the cache.
+let safeHomedirCache = null;
 function safeHomedir() {
+  if (safeHomedirCache === null) safeHomedirCache = computeSafeHomedir();
+  return safeHomedirCache;
+}
+
+function computeSafeHomedir() {
   try {
     // resolveHome() (companion/lib/test-home-guard.js) is the canonical home-
     // directory fallback every shared helper uses - byte-identical in
