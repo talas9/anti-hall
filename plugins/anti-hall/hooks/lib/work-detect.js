@@ -261,8 +261,13 @@ function stripHeredocBodies(cmd) {
     }
     out.push(line);
     // `<<` inside a quoted string is not a heredoc: detect on the neutralized line.
-    if (!/<<(?!<)/.test(neutralizeQuotedContents(line))) continue;
-    const m = /<<-?\s*(?:'([^'\n]+)'|"([^"\n]+)"|([A-Za-z_][A-Za-z0-9_]*))/.exec(line);
+    // Nor is a `<<` after an unquoted `#` (a comment runs to end of line, so the
+    // "body" that follows is real command lines): cut the line at the comment.
+    const neutral = neutralizeQuotedContents(line);
+    const hash = neutral.search(/(?:^|\s)#/);
+    const code = hash >= 0 ? line.slice(0, hash) : line;
+    if (!/<<(?!<)/.test(hash >= 0 ? neutral.slice(0, hash) : neutral)) continue;
+    const m = /<<-?\s*(?:'([^'\n]+)'|"([^"\n]+)"|([A-Za-z_][A-Za-z0-9_]*))/.exec(code);
     if (m) delim = m[1] || m[2] || m[3];
   }
   return out.join('\n');

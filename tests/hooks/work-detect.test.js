@@ -254,3 +254,12 @@ test('heredoc stripping fails closed: expansion in body, command after terminato
   assert.strictEqual(bashWork(LAUNCHER + ' send x "a <<EOF"\nsed -i s/a/b/ f'), true);
   assert.strictEqual(bashWork(LAUNCHER + ' relay a b > src/x.js'), true);
 });
+
+test('a << after an unquoted # is a comment, not a heredoc: the lines below it are real commands and count as work', () => {
+  assert.strictEqual(bashWork(LAUNCHER + ' send primary # <<EOF\nsed -i s/a/b/ f\nEOF'), true);
+  assert.strictEqual(bashWork(LAUNCHER + ' roster # note <<"EOF"\nrm -f src/a.js\nEOF'), true);
+  // controls: a real heredoc (incl. a # inside the body or a quoted/mid-word #) is still data
+  assert.strictEqual(bashWork(LAUNCHER + " send primary <<'EOF'\n# heading -> x\nEOF"), false);
+  assert.strictEqual(bashWork(LAUNCHER + ' send primary "a # b" <<EOF\nstep a -> step b\nEOF'), false);
+  assert.strictEqual(bashWork(LAUNCHER + ' send primary a#b <<EOF\nstep a -> step b\nEOF'), false);
+});
