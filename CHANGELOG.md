@@ -6,6 +6,24 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## Unreleased
+
+### Fixed
+
+- **DevSwarm store id-collision guard no longer rejects a submodule path of the registered workspace.** The persisted toplevel of a child running in a submodule (e.g. `<ws>/sub`) was compared against the workspace-keyed id as if it were a different worktree. The guard now resolves both directions to the outermost superproject root and treats them as the same worktree.
+- **Child summaries and sends refresh the plan progress clock; identical repeats do not.** A child that was working (heartbeat `--summary`, mesh sends) but had not changed plan step was judged stalled. `noteActivity` now records activity with new text; text already among the recent signatures does not refresh, so a looping child still stalls.
+- **child-gate: one-time inbound-only warning when the native queue is unreachable and the outbound half is already satisfied.** The gate re-demanded a heartbeat right after one was sent and prescribed `inbox pull`, which hits the same dead native channel. It now warns once (own kind, cap 1) with an exit that does not need the native channel.
+- **Queued-prompt bursts no longer repeat COMMS OVERRIDE and the primary TASK-LIST block; task-guard accepts workspace branch/title owners.** N cron ticks delivered together showed the static block N times; it now collapses via `emit-dedupe` (keepalive = `guards.injectionRepeatEvery`). task-guard also accepts an owner spelled as the branch name or title of a live, non-archived workspace.
+- **No NOT DRAINING claim on graced fresh sends to stuck children; own-inbox escalation is count-free.** The Primary's own-inbox-only escalation is held while usage limits are at conservation, and the forced-ack state is cleared on a fully clean pass so new mail starts a fresh budget instead of escalating immediately.
+- **`mesh read`/`inbox` row shape is normalized; `mesh read --last/--since` added (peek-only); project resolves from `DEVSWARM_BUILDER_ID` outside a worktree.** The filters require `--peek` so they cannot consume unread rows.
+- **Guard housekeeping.** tasklist-guard ledger wording, heredoc/comms hook housekeeping, edit-guard matches `.anti-hall/**` allowlist names against the project root when cwd is a subdirectory, submodule or symlinked spelling (additive, never narrower), and a line starting with `RETRACT`/`RETRACTED`/`RETRACTING` is a free-form retraction. Docs: one git writer per worktree.
+- **command-guard judges shell-loop bodies per command and tracks `cd`.** A `for ... do node .../devswarm.js send ...; done` loop was blocked while the single send passed, because the loop keyword stayed glued to the body and defeated start-anchored exceptions; the keyword is now stripped and each body segment is classified on its own. Bounded checks follow `cd`; path-qualified interpreters that exist as regular files are accepted; `[npx] vitest run` / `jest` on 1-2 explicit test files and a push of a HEAD sha are allowed (full suites, watch, `--coverage` stay heavy). The `devswarm.js` exemption now requires the file name to end at `devswarm.js`.
+- **git-guard: odd-quote heredoc prose no longer blocks the executed launcher.** Launcher-dir redirect targets are attributed per line, so an apostrophe in a heredoc body does not make the real command look like a launcher-dir write. `ditto` is now a copy verb for launcher-dir writes.
+
+### Security
+
+- git-guard: a launcher-dir write (cp/tee/mv/sed -i/install/ln/cd+write) placed after a heredoc body with an unbalanced apostrophe was not detected; a quote-blind per-line launcher backstop now blocks it.
+
 ## 0.119.0 (2026-09-30)
 
 Fixes from a cross-project peer bug sweep plus Jev measurement fixes: the wake watcher, STALE
