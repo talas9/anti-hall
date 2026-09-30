@@ -11781,11 +11781,30 @@ function cmdInboxTick(id, flags, ctx) {
       try { idleSkipOn = require('../hooks/lib/settings.js').getWithEnv('devswarm', 'wakeWatchIdleSkip', true, ctx.env) !== false; }
       catch (_) { idleSkipOn = true; }
       if (idleSkipOn) {
-        const liveChildren = require('../companion/lib/devswarm-live-children.js');
-        const cwd = ctx.cwd || process.cwd();
-        if (!liveChildren.hasLiveChild(home, cwd)) {
-          watcherArmed = 'idle-skip';
-          idleSkipped = true;
+        // A1-3 (0.118.0 follow-up): scope hasLiveChild from the TICK ID's own
+        // registered worktreePath, not the CALLING process's cwd. A tick can
+        // run from a different clone/checkout of the same project than the
+        // one `id` is registered under (a second worktree, a script invoked
+        // from elsewhere) - process.cwd() then resolves to a DIFFERENT
+        // repoKey (repoKeyForWorktree keys off --git-common-dir, which is
+        // per-checkout), so hasLiveChild's project scoping silently missed
+        // every real sibling child and idle-skip fired even with live
+        // children. If the id's own descriptor/registry can't be resolved,
+        // fail open: skip the idle-skip check entirely (never idle-skip on
+        // an unresolvable scope) rather than falling back to process.cwd().
+        let scopeWorktree = null;
+        try {
+          const selfDesc = readDescriptorFile(home, id);
+          if (selfDesc && typeof selfDesc.worktreePath === 'string' && selfDesc.worktreePath) {
+            scopeWorktree = selfDesc.worktreePath;
+          }
+        } catch (_) { scopeWorktree = null; }
+        if (scopeWorktree) {
+          const liveChildren = require('../companion/lib/devswarm-live-children.js');
+          if (!liveChildren.hasLiveChild(home, scopeWorktree)) {
+            watcherArmed = 'idle-skip';
+            idleSkipped = true;
+          }
         }
       }
     } catch (_) { /* fail-open: keep watcherArmed exactly as the lock check computed it */ }

@@ -103,6 +103,46 @@ against a reproducing test before the fix.
   timeout (a fail-open miss of a trailing force push). It is now memoized per distinct
   command string, computed once instead of once per segment; the same input now decides
   in well under 100ms.
+- **emit-dedupe: a fixed-turn-count keepalive block (`parent-inbox-urgent`,
+  `keepaliveTurns: 10`; `NOT DRAINING`, `keepaliveTurns: 2`; `limit-conserve`;
+  `verify-first`; `task-tracker`) could go silent forever on Codex.** The fallback
+  window used when the transcript cannot confirm consumption (always true on Codex,
+  which has no hook-attachment transcript) doubled as BOTH the pending-suppression
+  window AND the "new turn" detector once `dedupeWindowMin` (default 20 min) replaced
+  the old fixed 15s constant for the former. A `dedupeWindowMin` of 20 minutes meant a
+  turn only counted as "new" every 20 minutes, so a `keepaliveTurns: 10` block needed
+  over 3 hours of unchanged content before it re-surfaced — effectively never, on a
+  normal cadence. The "new turn" check is now back on the original fixed 15s
+  threshold regardless of `dedupeWindowMin`, which continues to govern only the
+  initial pending-suppression window.
+- **git-guard: an xargs-run git command merely MENTIONED inside a quoted commit
+  message or redirect target was wrongly treated as a live command (A1-2, 0.117.2
+  follow-up).** `xargsGitVerdict` ran from the quote-BLIND backstop split (cuts at
+  every `|`/`;`, inside or outside a quoted string), so e.g. `git commit -m 'docs:
+  explain why ls | xargs git push is blocked'` or `echo '... | xargs git push
+  origin' > notes.txt` false-blocked. It now runs only from the quote-aware segment
+  scan and the quote-aware per-line backstop recovery pass; a real `echo -f | xargs
+  git push origin main` still blocks, and an xargs-run git command inside a heredoc
+  BODY line still blocks too (heredoc bodies are deliberately scanned as shell,
+  unrelated to this fix).
+- **DevSwarm `inbox tick`'s wake-watch idle-skip scoped "does this Primary have a
+  live child?" from the CALLING process's cwd instead of the tick id's own
+  registered worktree (A1-3).** A tick invoked from a different clone/checkout of
+  the same project than the one `id` is registered under resolves to a DIFFERENT
+  `repoKey` (repo-keyed off `--git-common-dir`, which is per-checkout), so
+  `hasLiveChild`'s project scoping silently missed every real sibling child and
+  idle-skip fired even with a live child present. The scope now comes from `id`'s
+  own registered descriptor's `worktreePath`; when that cannot be resolved, the
+  idle-skip check is skipped entirely (fail open, never idle-skip on an
+  unresolvable scope) rather than falling back to the calling cwd.
+- **git-guard: the `-F -`/`--file=-` stdin-commit-message scan was still O(N^2) on
+  many segments with quoted text (A1-4, 0.117.2 follow-up).** A1-6's memoization
+  cached only `extractQuotedLiterals`'s result ARRAY; the candidate-text `.join()`
+  and the self-credit regex test against that joined text still ran unmemoized on
+  every `-F -` segment, so a command with quoted text on each segment (e.g. `git
+  commit -F - <<<'m'; ` repeated 20000 times) still paid an O(cmd.length) join +
+  regex scan per segment. Both are now memoized per distinct command string
+  alongside the literal array.
 
 ### Changed
 

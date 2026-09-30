@@ -1252,6 +1252,35 @@ function extractQuotedLiteralsCached(cmd) {
   return result;
 }
 
+// A1-4 (0.118.0 follow-up, perf): the `-F -`/`--file=-` branch below rebuilds
+// AND joins the full heredoc-body + quoted-literal candidate text from
+// scratch on EVERY such segment in a command. extractQuotedLiteralsCached
+// above memoizes only the literal ARRAY, not this join - so a command built
+// of N `-F -` segments (e.g. `git commit -F - <<<'m'; ` repeated 20000x) still
+// paid an O(cmd.length) array build + join N times (O(N^2) overall), the same
+// class of timeout this file's other per-cmd caches (quotedLiteralsCache,
+// hasSelfCredit memoization) already exist to prevent. A single-slot cache,
+// keyed the same way, computes the JOINED text once per distinct `cmd`.
+let stdinCandidateTextCache = null; // { cmd, heredocBodies, text, hasSelfCredit } | null
+function stdinCandidateTextCached(cmd, heredocBodies) {
+  if (stdinCandidateTextCache && stdinCandidateTextCache.cmd === cmd &&
+    stdinCandidateTextCache.heredocBodies === heredocBodies) {
+    return stdinCandidateTextCache;
+  }
+  const candidates = [];
+  if (heredocBodies.length) candidates.push(...heredocBodies.map((h) => h.body));
+  candidates.push(...extractQuotedLiteralsCached(cmd));
+  const text = candidates.length ? candidates.join('\n') : null;
+  // The literal-trailer regex test is itself O(text.length); with `text`
+  // memoized identical across every `-F -`/`--file=-` segment of the SAME
+  // cmd, re-running the two SELF_CREDIT_* regexes on every segment would
+  // still be the O(N^2) this cache exists to close (20000 segments x an
+  // O(N)-length joined text). Cache the boolean verdict alongside the text.
+  const hasSelfCredit = text !== null && (SELF_CREDIT_COAUTHOR.test(text) || SELF_CREDIT_GENERATED.test(text));
+  stdinCandidateTextCache = { cmd, heredocBodies, text, hasSelfCredit };
+  return stdinCandidateTextCache;
+}
+
 // A devswarm mailbox message written via a Bash heredoc gets NO exemption:
 // every heredoc body is always scanned in full, exactly like any other
 // command text (an earlier "exact-shape" allowlist for this one legitimate
@@ -1816,6 +1845,18 @@ function scanCommand(cmd, depth, baseCwd) {
       continue;
     }
 
+    // A1-2 (0.118.0 follow-up): xargs-run `git` verdicts belong to the
+    // quote-aware passes (this segment loop + gitBackstopLines) only, not the
+    // quote-blind backstopPieces split - that split cuts at ANY unquoted-OR-
+    // quoted `|`/`;`, so a `|`/`xargs` mentioned inside a literal string (a
+    // commit message, `echo '...' > notes.txt`, heredoc text) was wrongly
+    // resolving to verb `xargs` and blocking benign commands.
+    if (ev.verb === 'xargs') {
+      const xv = xargsGitVerdict(ev, d, cmd, heredocBodies, lastCdDir, true);
+      if (xv) return xv;
+      continue;
+    }
+
     if (ev.verb !== 'git') continue;
 
     const gv = gitVerdict(ev, d, cmd, heredocBodies, lastCdDir, true);
@@ -1934,11 +1975,11 @@ function gitVerdict(ev, d, cmd, heredocBodies, lastCdDir, useJev) {
     const fileSpecs = fileCommitMessages(rest);
     for (const spec of fileSpecs) {
       let text = null;
+      let hasSelfCreditVerdict = null; // pre-computed only for the memoized stdin branch
       if (spec === '-' || spec === '/dev/stdin') {
-        const candidates = [];
-        if (heredocBodies.length) candidates.push(...heredocBodies.map((h) => h.body));
-        candidates.push(...extractQuotedLiteralsCached(cmd));
-        if (candidates.length) text = candidates.join('\n');
+        const cached = stdinCandidateTextCached(cmd, heredocBodies);
+        text = cached.text;
+        hasSelfCreditVerdict = cached.hasSelfCredit;
       } else {
         let filePath = spec;
         if (!path.isAbsolute(filePath) && lastCdDir) {
@@ -1951,7 +1992,9 @@ function gitVerdict(ev, d, cmd, heredocBodies, lastCdDir, useJev) {
         }
       }
       if (text === null) continue;
-      if (SELF_CREDIT_COAUTHOR.test(text) || SELF_CREDIT_GENERATED.test(text)) {
+      if (hasSelfCreditVerdict === null
+        ? (SELF_CREDIT_COAUTHOR.test(text) || SELF_CREDIT_GENERATED.test(text))
+        : hasSelfCreditVerdict) {
         return (
           'anti-hall git-guard: BLOCKED. Commit message (via `-F`/`--file`, ' +
           'read from a heredoc body or file) contains an AI/assistant self-credit ' +
@@ -2147,7 +2190,13 @@ function gitBackstopLines(cmd, d, heredocBodies, cwd) {
       const tokens = tokenize(seg);
       if (!tokens.length) continue;
       const ev = effectiveVerb(tokens);
-      if (!ev || ev.verb !== 'git') continue;
+      if (!ev) continue;
+      if (ev.verb === 'xargs') {
+        const xv = xargsGitVerdict(ev, d, cmd, heredocBodies, cwd, false);
+        if (xv) return xv;
+        continue;
+      }
+      if (ev.verb !== 'git') continue;
       const hit = gitVerdict(ev, d, cmd, heredocBodies, cwd, false);
       if (hit) return hit;
     }
@@ -2188,9 +2237,6 @@ function gitBackstop(cmd, d, heredocBodies, baseCwd) {
       if (!ev) continue;
       if (ev.verb === 'git') {
         const hit = gitVerdict(ev, d, cmd, heredocBodies, cwd, false);
-        if (hit) return hit;
-      } else if (ev.verb === 'xargs') {
-        const hit = xargsGitVerdict(ev, d, cmd, heredocBodies, cwd, false);
         if (hit) return hit;
       } else if (d < 3 && (ev.verb === 'eval' || SHELL_VERBS.has(ev.verb.toLowerCase()))) {
         const payload = ev.verb === 'eval' ? extractEvalPayload(v) : extractShellCPayload(v);

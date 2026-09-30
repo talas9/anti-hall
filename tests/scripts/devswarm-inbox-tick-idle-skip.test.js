@@ -129,6 +129,36 @@ test('#39: an archived-only child counts as 0 live -> idle-skip fires', () => {
   } finally { rm(home); rm(repo); }
 });
 
+// A1-3 (0.118.0 follow-up): the tick's scope must come from `id`'s OWN
+// registered worktreePath, not the calling process's cwd. A tick invoked from
+// a DIFFERENT clone of the same project (a separate `git clone`, not a linked
+// worktree - so it has its own --git-common-dir and a DIFFERENT repoKey) used
+// to resolve hasLiveChild's project scope from that unrelated clone's cwd,
+// silently missing every real sibling child and firing idle-skip even though
+// the Primary has a live child.
+test('#39 (A1-3): cwd in ANOTHER clone of the same project with a live child -> no idle-skip', () => {
+  const home = tmpHome();
+  const repo = makeGitRepo('other-clone');
+  const child = makeChildWorktree(repo, 'other-clone');
+  // A second, independent clone of `repo` - a DIFFERENT --git-common-dir, so
+  // repoKeyForWorktree(otherClone) != repoKeyForWorktree(repo)/repoKeyForWorktree(child).
+  const otherClone = fs.mkdtempSync(path.join(os.tmpdir(), 'anti-hall-tick-idle-skip-otherclone-'));
+  fs.rmSync(otherClone, { recursive: true, force: true });
+  const cloneR = cp.spawnSync('git', ['clone', '-q', repo, otherClone]);
+  assert.strictEqual(cloneR.status, 0, 'git clone failed: ' + cloneR.stderr);
+  try {
+    register(home, repo, 'primary1');
+    register(home, child, 'child1');
+    // The tick's OWN registered worktree (repo) has a live child, but the
+    // CALLING process's cwd is the unrelated second clone.
+    const ticked = cli.run(['inbox', 'tick', 'primary1'], ctx(home, { cwd: otherClone })).result;
+    assert.strictEqual(ticked.watcherArmed, false, 'must scope from the tick id\'s own worktree, not the unrelated calling cwd');
+    const rows = rearmCueRows(home);
+    assert.strictEqual(rows.length, 1);
+    assert.strictEqual(rows[0].trigger, 'tick');
+  } finally { rm(home); rm(repo); rm(otherClone); }
+});
+
 test('#39: a --child caller never idle-skips (its watcher covers its own mail, not a roster)', () => {
   const home = tmpHome();
   const repo = makeGitRepo('child-caller');

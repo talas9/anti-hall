@@ -335,7 +335,12 @@ function shouldEmit(opts) {
         if ((now - prev.lastEmittedAt) < windowMs) {
           emit = false; nextTurns = turns;
         } else if (keepalive > 0) {
-          const newTurn = (now - lastSeen) >= windowMs;
+          // "New turn" detection stays on the old fixed small threshold
+          // regardless of dedupeWindowMin: that setting only governs the
+          // initial pending-suppression window above, not the keepalive
+          // re-surface cadence (a large dedupeWindowMin must not silence
+          // fixed-turn-count keepalive blocks like parent-inbox-urgent).
+          const newTurn = (now - lastSeen) >= DEFAULT_WINDOW_MS;
           if (!(newTurn && turns >= keepalive)) { emit = false; nextTurns = turns + (newTurn ? 1 : 0); }
         }
       } else if (!consumed) {

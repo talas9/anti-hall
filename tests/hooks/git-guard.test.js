@@ -2172,6 +2172,41 @@ test('ALLOW (A1-5 regression guard): xargs running a non-git command stays allow
   }
 });
 
+// A1-2 (0.118.0 follow-up): xargsGitVerdict used to also run from the
+// quote-blind backstopPieces split (cuts at ANY `|`/`;`, inside or outside a
+// quoted string), so `xargs git push` merely MENTIONED inside a quoted
+// commit message or a redirect target - never executed as a real command -
+// wrongly resolved to verb `xargs` and blocked. It must only fire from the
+// quote-aware scanCommand segment pass and gitBackstopLines' quote-aware
+// per-line re-split.
+test('ALLOW (A1-2): "xargs git push" mentioned inside a quoted commit message or redirect target stays allowed', () => {
+  const cmds = [
+    "git commit -m 'docs: explain why ls | xargs git push is blocked'",
+    "echo '... | xargs git push origin' > notes.txt",
+  ];
+  for (const cmd of cmds) {
+    const r = run(cmd);
+    assert.strictEqual(r.status, 0, `expected allow (exit 0) for ${JSON.stringify(cmd)}\nstderr: ${r.stderr}`);
+  }
+});
+
+test('BLOCK (A1-2 regression guard): a real `echo -f | xargs git push origin main` still blocks', () => {
+  const r = run('echo -f | xargs git push origin main');
+  assert.strictEqual(r.status, 2, `expected block (exit 2)\nstderr: ${r.stderr}`);
+  assert.match(r.stderr, REASON.FORCE);
+});
+
+// Heredoc BODY text is scanned as shell (R2REV1-1, deliberate fail-closed:
+// git-guard cannot tell heredoc data from a real script), so a heredoc line
+// that itself looks like a live `xargs git push` invocation still blocks -
+// this is unrelated to the backstopPieces quote-blind bug above and must not
+// regress when xargsGitVerdict moves to gitBackstopLines' per-line pass.
+test('BLOCK (A1-2 regression guard): an xargs-run git push inside a heredoc BODY line still blocks (deliberate fail-closed)', () => {
+  const r = run("cat <<'EOF'\nsee ls | xargs git push origin main for context\nEOF");
+  assert.strictEqual(r.status, 2, `expected block (exit 2)\nstderr: ${r.stderr}`);
+  assert.match(r.stderr, REASON.FORCE);
+});
+
 // 4) `env -S 'STRING'` word-splits STRING and runs it as a new command; a
 // `bash -c $'...'` ANSI-C-quoted payload must decode before recursion, not
 // carry a literal leading `$` into the re-parsed verb.
@@ -2225,6 +2260,24 @@ test('ALLOW (A1-5 regression guard): `echo hi | bash -c \'cat\'` and an ordinary
 // segments took ~13s at 0.117.2, over the hook's 10s timeout.
 test('PERF (A1-6): 20000x-repeated `git commit -F -;` + trailing force push blocks in well under 2s', () => {
   const cmd = 'git commit -F -;'.repeat(20000) + 'git push --force origin main';
+  const t0 = Date.now();
+  const r = run(cmd);
+  const elapsedMs = Date.now() - t0;
+  assert.strictEqual(r.status, 2, `expected block (exit 2)\nstderr: ${r.stderr}`);
+  assert.match(r.stderr, REASON.FORCE);
+  assert.ok(elapsedMs < 2000, `expected < 2000ms, took ${elapsedMs}ms`);
+});
+
+// A1-4 (0.118.0 follow-up, perf): the A1-6 test above has no quoted text, so
+// extractQuotedLiteralsCached's memoized ARRAY was always empty and never
+// exercised the unmemoized JOIN of that array + heredoc bodies that the
+// `-F -`/`--file=-` branch used to rebuild from scratch on EVERY segment. A
+// quoted here-string (`<<<'m'`) on each of the 20000 segments makes
+// extractQuotedLiteralsCached return a large (O(N)) array, so the join alone
+// - not the array build - reproduces the O(N^2) blowup unless it is also
+// memoized per `cmd`.
+test('PERF (A1-4): 20000x-repeated `git commit -F - <<<\'m\';` + trailing force push blocks in well under 2s', () => {
+  const cmd = "git commit -F - <<<'m'; ".repeat(20000) + 'git push --force origin main';
   const t0 = Date.now();
   const r = run(cmd);
   const elapsedMs = Date.now() - t0;
