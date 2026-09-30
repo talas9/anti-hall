@@ -266,17 +266,30 @@ function main() {
     // keeps today's behavior (assume reload/restart is enough) rather than
     // block on a fact we cannot verify.
     let harnessRegistered = true;
+    let registryAhead = false; // registry names a build newer than this running session
     try {
       const upd = require(path.join(__dirname, '..', 'skills', 'update', 'scripts', 'update.js'));
       const { resolveHome } = require('../companion/lib/test-home-guard.js');
       const updPaths = upd.resolvePaths(process.env, resolveHome(undefined, process.env));
       const harnessVersion = upd.versionFromInstalledJson(updPaths.installedJson);
       if (upd.isSemver(harnessVersion) && semverGreater(mirrored, harnessVersion)) harnessRegistered = false;
+      else if (upd.isSemver(harnessVersion) && semverGreater(harnessVersion, running)) registryAhead = true;
     } catch (_) { harnessRegistered = true; }
 
+    // Same rule as update.js's harnessAction and doctor.js: a registry
+    // (installed_plugins.json) already newer than the running session needs a
+    // full RESTART (field-verified 2026-09-24); /reload-plugins only picks up
+    // a cache-only change, and is the try-first path when the registry
+    // version is unknown.
     const additionalContext = harnessRegistered
-      ? `Tell the user now: anti-hall v${mirrored} is already downloaded (you are running v${running}) ` +
-        `— run /reload-plugins (Claude) or restart Codex / start a fresh session (Codex) to pick it up.` +
+      ? (registryAhead
+        ? `Tell the user now: anti-hall v${mirrored} is already downloaded (you are running v${running}) ` +
+          `and the Claude Code harness registry already names it — RESTART Claude Code (exit and resume the session) ` +
+          `to load it; /reload-plugins is not enough once the registry is newer than the running session ` +
+          `(Codex: restart Codex / start a fresh session).`
+        : `Tell the user now: anti-hall v${mirrored} is already downloaded (you are running v${running}) ` +
+          `— run /reload-plugins (Claude; if the new version is not reflected afterwards, RESTART Claude Code) ` +
+          `or restart Codex / start a fresh session (Codex) to pick it up.`) +
         (headline ? ` Highlight: ${headline}` : '')
       : `Tell the user now: anti-hall v${mirrored} is downloaded locally (you are running v${running}), but the ` +
         `Claude Code harness has not registered it yet — run /anti-hall:update (Claude; syncs the cache AND the ` +
@@ -321,8 +334,9 @@ function main() {
 
     const additionalContext =
       `Tell the user now: anti-hall v${cache.latest} is available (you are running v${running}) ` +
-      `— run /anti-hall:update (Claude) or the anti-hall-update skill (Codex), then reload via ` +
-      `/reload-plugins (Claude) or restart Codex / start a fresh session (Codex).`;
+      `— run /anti-hall:update (Claude) or the anti-hall-update skill (Codex), then do what it ends with: ` +
+      `/reload-plugins (Claude) when only the plugin cache was synced, or a full RESTART of Claude Code when it ` +
+      `reports the harness registry changed; restart Codex / start a fresh session (Codex).`;
     emit(additionalContext);
 
     if (sessionId) {

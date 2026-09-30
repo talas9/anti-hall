@@ -368,7 +368,8 @@ Invoke via slash command:
 - **`/anti-hall:update`** — updates anti-hall in place: `git pull --ff-only` the
   marketplace clone, syncs the version-pinned cache (semver-anchored, traversal-proof),
   prints the changelog delta between installed and latest, then instructs
-  `/reload-plugins` for in-session reload. Hooks and statusline pick up from disk
+  `/reload-plugins` for in-session reload (or a full RESTART when the harness registry
+  changed — the helper says which). Hooks and statusline pick up from disk
   immediately; `/reload-plugins` refreshes the skill list and version label. `--check`
   mode answers "is anti-hall up to date?" without pulling or writing. After a pull, also
   runs `scripts/migrate-state.js` once per repo (idempotent) to fold legacy root

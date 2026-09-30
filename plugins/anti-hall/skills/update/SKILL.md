@@ -189,6 +189,12 @@ Modes:
    node "$HOME/.claude/plugins/marketplaces/anti-hall/plugins/anti-hall/skills/update/scripts/update.js" --check
    node "$HOME/.claude/plugins/marketplaces/anti-hall/plugins/anti-hall/skills/update/scripts/update.js"
    ```
+   **Opus fallback (applies to EVERY Sonnet delegation in this skill):** if the
+   Sonnet worker is unavailable or usage-exhausted (spawn rejected, model/tier
+   unavailable, or a usage/rate-limit error), respawn the SAME brief with
+   `model:"opus"` instead of running it inline or skipping it. Opus clears the
+   model-routing floor (Sonnet-or-higher; the guard ranks opus above sonnet), so
+   the fallback never trips model-routing-guard. Never fall back to Haiku.
    **Always the MARKETPLACE CLONE's own copy, never `${CLAUDE_PLUGIN_ROOT}`**
    (the currently-LOADED, possibly-stale cache dir): a P0 field bug showed
    `${CLAUDE_PLUGIN_ROOT}` pulling a NEWER version, syncing the cache, then
@@ -207,13 +213,21 @@ Modes:
    offline / no-git, relay that message as-is — do **not** attempt a merge, rebase, or
    force-pull on the user's behalf. Tell them to resolve it in
    `~/.claude/plugins/marketplaces/anti-hall/`.
-5. On a successful update (`action: run /reload-plugins`), **always** end with:
+5. On a successful update, end with the message that matches `action` (the same
+   rule `version-alert` and `doctor` state: `/reload-plugins` ONLY when the plugin
+   cache alone changed; a full RESTART whenever the harness registry
+   (`installed_plugins.json`) now names a newer version than the running session):
 
-   > Run **/reload-plugins** now to load `<version>` in this session (rarely, a
-   > harness build may require a restart instead — if the new version is not
-   > reflected after reloading, restart Claude Code). Statusline + hooks pick up
-   > changes automatically; /reload-plugins refreshes the skill list and version
-   > label.
+   - `action: run /reload-plugins` (cache synced, no registry change):
+
+     > Run **/reload-plugins** now to load `<version>` in this session (rarely, a
+     > harness build may require a restart instead — if the new version is not
+     > reflected after reloading, restart Claude Code). Statusline + hooks pick up
+     > changes automatically; /reload-plugins refreshes the skill list and version
+     > label.
+   - `action: RESTART Claude Code …` (harness registry updated — see the harness-registration bullet above):
+     tell the user to **restart Claude Code** (exit and resume the session) to load
+     `<version>`; `/reload-plugins` is not enough.
 6. After pulling a new plugin version, run
    `node plugins/anti-hall/scripts/migrate-state.js` once per repo (idempotent,
    safe to re-run) to fold any legacy root-level `.anti-hall-progress.md` /
@@ -245,7 +259,7 @@ Modes:
      DevSwarm session, run its `how` command
      (`node companion/install-devswarm-supervisor.js`) regardless of the
      capability scan's `active` value — delegate to a **Sonnet subagent**
-     (`model:"sonnet"`), never Haiku (matches the model-routing floor for
+     (`model:"sonnet"`; Opus fallback per step 2), never Haiku (matches the model-routing floor for
      deploy/install-shaped work), never inline (it's a `node` script that writes a
      launchd/systemd/cron job; the command-guard blocks heavy commands on the
      main thread). The installer is idempotent (`launchctl unload && load` on
@@ -265,7 +279,7 @@ Modes:
      in the SAME `isDevswarmActive(process.env)` branch. When inside a DevSwarm
      session, also run its `how` command
      (`node companion/install-devswarm-ingest.js`) regardless of the scan's
-     `active` value — delegate to a **Sonnet subagent** (`model:"sonnet"`),
+     `active` value — delegate to a **Sonnet subagent** (`model:"sonnet"`; Opus fallback per step 2),
      never Haiku (matches the model-routing floor for deploy/install-shaped
      work), never inline (it's a `node` script that writes a launchd/systemd/cron unit; the
      command-guard blocks heavy commands on the main thread). It is idempotent

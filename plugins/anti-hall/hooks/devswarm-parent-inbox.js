@@ -181,7 +181,23 @@ try { alog = require('../companion/lib/anti-hall-log.js'); } catch (_) {
 // worktree, not the plugin root, so a bare/relative "devswarm.js" reference in
 // emitted text is unrunnable there — every emitted instruction below embeds
 // this absolute path instead (P1 fix).
-const CLI = path.join(__dirname, '..', 'scripts', 'devswarm.js');
+const RAW_CLI = path.join(__dirname, '..', 'scripts', 'devswarm.js');
+
+// CLI — the path actually embedded in emitted text. RAW_CLI is version-pinned
+// (plugin-cache path): after `/reload-plugins` a still-running session keeps
+// executing the OLD version's hook files, so hints kept naming the old (soon
+// pruned) version dir. Prefer the version-independent ~/.anti-hall/bin/
+// launcher (hooks/lib/stable-launcher.js) when it already EXISTS — check-only,
+// this read-path hook never installs it (parent-gate/child-role do) — and fall
+// back to RAW_CLI otherwise or when devswarm.stableLauncher is off. Fail-open.
+let CLI = RAW_CLI;
+try {
+  if (require('./lib/settings.js').enabled('devswarm', 'stableLauncher') !== false) {
+    const stableLauncher = require('./lib/stable-launcher.js');
+    const p = stableLauncher.launcherPath('devswarm');
+    if (p && fs.statSync(p).isFile()) CLI = p;
+  }
+} catch (_) { /* keep RAW_CLI */ }
 
 // A workspace whose supervisor verdict is one of these is idle/stuck (a wedged or
 // escalated child), independent of whether it still has unread backlog.

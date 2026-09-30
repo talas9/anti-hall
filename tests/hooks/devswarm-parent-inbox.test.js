@@ -2053,6 +2053,20 @@ test('P1 FIX: standard unread (PARENT INBOX) segment carries an ABSOLUTE, existi
   } finally { h.cleanup(); }
 });
 
+test('STABLE LAUNCHER: when ~/.anti-hall/bin/devswarm.js exists, emitted hints name it, not the version-pinned plugin path', () => {
+  const h = makeHome();
+  try {
+    const launcher = path.join(h.home, '.anti-hall', 'bin', 'devswarm.js');
+    fs.mkdirSync(path.dirname(launcher), { recursive: true });
+    fs.writeFileSync(launcher, '// stub\n');
+    writeSharedSummary(h.home, { wsA: { total: 3, cursor: 0, unread: 3, directUnread: 3 } });
+    const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
+    const seg = segment(ctx(r), 'DEVSWARM PARENT INBOX');
+    assert.ok(seg.includes('`node ' + launcher + ' send --to'), `must name the stable launcher; seg=${seg}`);
+    assert.ok(!seg.includes(path.join('scripts', 'devswarm.js')), `must not name the version-pinned path; seg=${seg}`);
+  } finally { h.cleanup(); }
+});
+
 test('P1 FIX: urgent unread (URGENT INBOX) segment carries an ABSOLUTE, existing devswarm.js path', () => {
   const h = makeHome();
   try {
