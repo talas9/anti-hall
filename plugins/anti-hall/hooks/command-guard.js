@@ -1113,7 +1113,7 @@ function splitSegments(cmd) {
 const WRAPPERS = new Set([
   'command', 'builtin', 'exec', 'sudo', 'env', 'nice', 'nohup', 'time', 'timeout',
   'taskpolicy', 'xargs',
-  'then', 'do', 'else', 'if', 'while', 'until',
+  'then', 'do', 'else', 'if', 'while', 'until', '!',
 ]);
 
 // Find the effective command verb of one segment: skip leading VAR=value
@@ -1722,7 +1722,7 @@ const TIMEOUT_PREFIX_RE = /^\s*timeout\s+(?:-[ks]\s+\S+\s+|-\S+\s+)*\d+[smhd]?\s
 // node …/devswarm.js send …; done` loop was blocked while the same single
 // send passed). Strip it so the body is judged exactly as it would be alone;
 // every OTHER body segment (`; npm test`) is still classified on its own.
-const CONTROL_KEYWORD_PREFIX_RE = /^\s*(?:(?:do|then|else|if|while|until)\s+)+/;
+const CONTROL_KEYWORD_PREFIX_RE = /^\s*(?:(?:do|then|else|if|while|until|!)\s+)+/;
 
 function isHeavySegment(segment, command) {
   segment = segment.replace(CONTROL_KEYWORD_PREFIX_RE, '');

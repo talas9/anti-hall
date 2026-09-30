@@ -52,6 +52,14 @@ test('devswarm loop: heavy command in condition / else / while still blocks', ()
   assert.ok(blocked('while npm test; do echo x; done'));
 });
 
+test('devswarm loop: a leading `!` negation does not hide the heavy verb', () => {
+  assert.ok(blocked('while ! npm test; do :; done'));
+  assert.ok(blocked('until ! npm install; do :; done'));
+  assert.ok(blocked('if ! npm run build; then echo failed; fi'));
+  assert.ok(blocked('if true; then ! npm test; fi'));
+  assert.strictEqual(blocked(`while ! ${DS} roster; do :; done`), false); // light verb stays light
+});
+
 test('devswarm loop: heavy command substitution in the loop list or args still blocks', () => {
   assert.ok(blocked(`for t in $(npm test); do ${DS} send --to $t; done`));
   assert.ok(blocked(`for t in a; do ${DS} send --to $(npm test); done`));
