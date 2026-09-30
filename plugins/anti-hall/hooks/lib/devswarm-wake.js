@@ -353,11 +353,9 @@ function drainCmd(cli, isChild, useTick, id, watcher) {
     // "any falsy-looking value", or either skip would wrongly trigger a
     // re-arm the feature exists to avoid.
     const rearmClause = (typeof watcher === 'string' && watcher)
-      ? ' If its `watcherArmed` reads exactly `false` (your Monitor lapsed at its 30-minute harness ' +
-        'cap), re-arm it first: `Monitor` with command `node ' + watcher + '` (persistent: true if ' +
-        'supported, else max timeout_ms). `idle-skip` is NOT `false` — it means this workspace has ' +
-        'no live children to hear from, so no re-arm is needed. `limit-skip` is NOT `false` either — ' +
-        'it means LIMIT CONSERVATION is active, so re-arming is deliberately deferred; do not re-arm.'
+      ? ' If its `watcherArmed` reads `false` (your Monitor lapsed at its 30-min cap; not ' +
+        '`idle-skip`/`limit-skip`), re-arm: `Monitor` with `node ' + watcher + '` (persistent: true ' +
+        'if supported, else max timeout_ms).'
       : '';
     return 'run ' + tickCmd + plainNote + ' (with `--child` it first imports anything waiting in your ' +
       'native queue, then prints one line with the SAME unread/meshGap/known signal `inbox ' +

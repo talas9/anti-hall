@@ -6,7 +6,11 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
-## Unreleased
+## 0.118.0 (2026-09-30)
+
+DevSwarm wake-watch/limit-skip and nudge/roster fixes, a codex-nudge scratchpad-exclusion
+fix, and further git-guard hardening — five field-reported fixes, each root-caused
+against a reproducing test before the fix.
 
 ### Added
 
@@ -25,9 +29,6 @@ the update.
   `watcherArmed` documentation updated in `plugins/anti-hall/codex/skills/
   anti-hall-devswarm/SKILL.md` (Codex has no Monitor tool, so a Codex workspace never
   produces `idle-skip` itself).
-
-Five field-reported fixes from a DevSwarm Primary with 6 child workspaces, each
-root-caused against a reproducing test before the fix.
 
 ### Fixed
 
