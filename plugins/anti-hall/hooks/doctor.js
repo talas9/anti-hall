@@ -1542,7 +1542,7 @@ if (REPAIR_INGEST_ORPHANS) {
 // --- 5m2. phantom Primary rows (REPORT-ONLY; repaired only by explicit --repair) ---
 (function phantomPrimarySection() {
   let result = null;
-  try { result = require('./lib/doctor-repair.js').checkPhantomPrimaries({ home: os.homedir() }); } catch (_) { result = null; }
+  try { result = require('./lib/doctor-repair.js').checkPhantomPrimaries({ home: require('../companion/lib/test-home-guard.js').resolveHome(undefined, process.env) }); } catch (_) { result = null; }
   if (!result) return;
   head('phantom Primary rows (submodule-cwd registrations)');
   warnl(result.message);

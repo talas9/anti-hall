@@ -1086,7 +1086,7 @@ function main() {
   // (which hits the same dead native channel) could not be satisfied. Warn ONCE
   // (own kind, cap 1), inbound text only, with an exit that does not need the
   // native channel.
-  const outboundSatisfied = !!(reported || dropAttempt || tickMarkerFreshZero(process.env, os.homedir(), now));
+  const outboundSatisfied = !!(reported || dropAttempt || tickMarkerFreshZero(process.env, testHomeGuard.resolveHome(null, process.env), now));
   const nativeOnlyUnknown = outboundSatisfied && unreadPendingPre === 'unknown' && !durablePre.unknown;
   const kinds = nativeOnlyUnknown ? [] : ['heartbeat-report'];
   if (unreadPendingPre === true) kinds.push('inbox');

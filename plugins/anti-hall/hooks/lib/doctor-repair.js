@@ -2113,7 +2113,7 @@ function checkPhantomPrimaries(opts) {
   try {
     const dw = require(DEVSWARM_SCRIPT);
     if (typeof dw.phantomPrimaryRows !== 'function') return null;
-    const r = dw.phantomPrimaryRows(o.home || os.homedir(), { repair: false });
+    const r = dw.phantomPrimaryRows(require('../../companion/lib/test-home-guard.js').resolveHome(o.home, o.env), { repair: false });
     if (!r || r.phantoms.length === 0) return null;
     const ids = r.phantoms.map((x) => x.id);
     return { count: ids.length, ids, message: '(warn) ' + ids.length + ' phantom Primary row(s) minted from a submodule cwd: ' + r.phantoms.map((x) => x.id + ' -> ' + x.canonicalId).join(', ') + ' (run doctor --repair to archive them; reversible)' };
