@@ -281,7 +281,7 @@ test('jev scrubs secrets and caps every input', () => withEnv({ ANTIHALL_JEV: nu
     jevOn(home);
     seed(home, 'ch-s', ['a', 'b'], (p, now) => {
       planLib.applyStep(p, 1, 'doing', now - 200 * MIN);
-      planLib.recordSummary(p, 'token=abcdef123456 ' + 'x'.repeat(150), false, now);
+      planLib.recordSummary(p, 'token=abcdef123456 ' + 'x'.repeat(150), false, now - 150 * MIN); // old: the child must still read as stalled
     });
     const asked = [];
     const deps = jevDeps(asked);
@@ -476,4 +476,54 @@ test('strayingLine is capped and names the correct verb', () => {
   assert.ok(line.startsWith('DEVSWARM STRAYING: Fix the parser: step 2 no step progress 40m; w2: '), line);
   assert.ok(line.includes('(+2 more)'));
   assert.ok(line.includes('`devswarm.js correct <id>`'));
+});
+
+// ---- child activity (summary / broadcast) refreshes the progress clock -----
+// Field report: a child posted ~10 heartbeat --summary / broadcast updates
+// during a long run but the roster read "STRAYING: stall+burn, progress 1h ago"
+// because only `--step` moved step_ts. Activity with NEW text now counts;
+// an identical repeat (a looping child) does not.
+
+test('activity: heartbeat --summary with new text refreshes stall + finish label; identical repeats do not', () => {
+  const home = tmpHome();
+  try {
+    const c = { home, env: ENV, cwd: os.tmpdir() };
+    const t0 = 1000 * MIN;
+    cli.run(['plan', 'set', 'ch-act', '--steps', '1. a\n2. b\n3. c'], Object.assign({}, c, { now: t0 }));
+    cli.run(['heartbeat', 'ch-act', '--step', '1', '--status', 'doing'], Object.assign({}, c, { now: t0 }));
+    const d = { id: 'ch-act', worktreePath: null };
+    const now = t0 + 45 * MIN;
+    const stalled = sup.evaluateChild(d, { status: 'alive' }, { home, env: ENV, now, deps: noJev });
+    assert.deepStrictEqual(stalled.signals.map((s) => s.signal), ['stall'], 'control: no activity -> stall');
+
+    cli.run(['heartbeat', 'ch-act', '--summary', 'reading the parser'], Object.assign({}, c, { now: now - 5 * MIN }));
+    const fresh = sup.evaluateChild(d, { status: 'alive' }, { home, env: ENV, now, deps: noJev });
+    assert.ok(!fresh.signals.some((s) => s.signal === 'stall'), 'a new summary 5m ago is progress: ' + JSON.stringify(fresh.signals));
+    const plan = planLib.findPlan(home, { id: 'ch-act' }).plan;
+    assert.match(planLib.finishLabel(plan, now), /progress 5m ago/);
+
+    // Looping child: the SAME summary again 40m later does not refresh.
+    cli.run(['heartbeat', 'ch-act', '--summary', 'Reading the  parser'], Object.assign({}, c, { now: now + 35 * MIN }));
+    const later = now + 40 * MIN;
+    const loop = sup.evaluateChild(d, { status: 'alive' }, { home, env: ENV, now: later, deps: noJev });
+    assert.ok(loop.signals.some((s) => s.signal === 'stall'), 'identical repeat -> still stalled: ' + JSON.stringify(loop.signals));
+  } finally { rm(home); }
+});
+
+test('activity: a broadcast send from a child with a plan counts as progress', () => {
+  const home = tmpHome();
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'ah-sup-repo-'));
+  try {
+    cp.spawnSync('git', ['init', '-q', repo], { env: GIT_ENV });
+    git(repo, ['commit', '-q', '--allow-empty', '-m', 'init']);
+    const inst = require(path.join(ROOT, 'companion', 'install-devswarm-ingest.js'));
+    const id = inst.primaryWorkspaceId(inst.resolveWorktree(repo));
+    const t0 = Date.now() - 200 * MIN;
+    cli.run(['plan', 'set', id, '--steps', '1. a\n2. b'], { home, env: ENV, cwd: repo, now: t0 });
+    const s = cli.run(['send', '--broadcast', '--message', 'phase 2 of the loop done'], { home, backend: 'journal', env: ENV, cwd: repo, now: t0 + 150 * MIN });
+    assert.strictEqual(s.result.ok, true, JSON.stringify(s.result));
+    const plan = planLib.findPlan(home, { id }).plan;
+    assert.strictEqual(plan.activity_ts, t0 + 150 * MIN);
+    assert.match(planLib.finishLabel(plan, t0 + 160 * MIN), /progress 10m ago/);
+  } finally { rm(home); rm(repo); }
 });

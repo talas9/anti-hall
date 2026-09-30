@@ -6,7 +6,10 @@
 // THREE DETERMINISTIC SIGNALS (a child without a plan gets none of them):
 //   stall     — busy (verdict alive) but no step progress for
 //               devswarm.stepStallMin minutes (default 30), measured from the
-//               later of the last step change and the last correction.
+//               latest of the last step change, the last child activity with
+//               NEW text (heartbeat --summary / a send; an identical repeat
+//               does not count, so a looping child still stalls) and the last
+//               correction.
 //   off-scope — `ready-check --allow <scope ∪ extras>` over the child's commits
 //               since its fork point finds files outside the plan's scope
 //               globs. Only when the plan has scope globs.
@@ -62,6 +65,7 @@ function deterministicSignals(plan, verdict, ctx) {
   const status = verdict && verdict.status;
   const lastProgress = Math.max(
     Number.isFinite(plan.step_ts) ? plan.step_ts : (Number.isFinite(plan.created_at) ? plan.created_at : now),
+    Number.isFinite(plan.activity_ts) ? plan.activity_ts : 0,
     Number.isFinite(plan.warned_at) ? plan.warned_at : 0,
   );
   if (status === 'stale' || status === 'nudged' || status === 'escalated') {

@@ -15960,6 +15960,16 @@ function cmdSend(flags, ctx) {
         repoKey: repoKey != null ? String(repoKey) : null,
         cwd: cwd != null ? String(cwd) : null,
       });
+      // A sent message is child activity: refresh the sender's plan progress
+      // clock (fresh text only — see planLib.noteActivity). Fail-soft, only
+      // when the sender has a plan; never changes the send result.
+      if (out.sent) {
+        try {
+          const ref = planRefFor(home, from, ctx);
+          const pf = planLib.findPlan(home, ref);
+          if (pf) planLib.updatePlan(home, pf.key, (plan) => (plan && planLib.noteActivity(plan, message, now) ? plan : null));
+        } catch (_) { /* best-effort */ }
+      }
       if (verifyError !== null) out.verifyError = verifyError;
       if (!verified && verifyError === null) {
         out.reason = 'send-not-verified';

@@ -7,7 +7,8 @@
 //   { v, key, id, worktreePath, source, created_at, base,
 //     steps: [{ n, text, status: todo|doing|done|blocked, ts, started_at }],
 //     scope_globs: [], extras: [{ glob, note, ts }],
-//     step_ts, current, warned_at, warned_step, summaries: [{ ts, text, stepped }] }
+//     step_ts, activity_ts, activity_sigs, current, warned_at, warned_step,
+//     summaries: [{ ts, text, stepped }] }
 //
 // KEY: the worktree-derived mesh id (identity.js resolveContext meshId), because `spawn` knows the new worktree path but not
 // the child's own builder id (the child registers under that id later). The
@@ -30,6 +31,7 @@ const MAX_SCOPE_GLOBS = 20;
 const MAX_EXTRAS = 50;
 const MAX_NOTE = 300;
 const SUMMARY_KEEP = 3;
+const ACTIVITY_KEEP = 5;
 
 function plansDir(home) { return path.join(devswarmRoot(home), 'plans'); }
 function strayDir(home) { return path.join(devswarmRoot(home), 'stray'); }
@@ -257,6 +259,32 @@ function recordSummary(plan, text, stepped, now) {
   if (!Array.isArray(plan.summaries)) plan.summaries = [];
   plan.summaries.push({ ts: now, text: String(text).slice(0, 200), stepped: !!stepped });
   if (plan.summaries.length > SUMMARY_KEEP) plan.summaries = plan.summaries.slice(-SUMMARY_KEEP);
+  noteActivity(plan, text, now);
+}
+
+// noteActivity(plan, text, now) -> refreshed. Genuine child activity (a
+// heartbeat --summary, a mesh broadcast/direct the child sent) refreshes
+// `activity_ts`, which the stall clock and the finish label read alongside
+// step_ts. Text already seen among the last ACTIVITY_KEEP signatures
+// (case/whitespace-normalised) does NOT refresh: a child repeating itself is
+// the looping case the stall/devswarmLoop path must still see.
+function noteActivity(plan, text, now) {
+  const sig = require('crypto').createHash('sha1')
+    .update(String(text == null ? '' : text).toLowerCase().replace(/\s+/g, ' ').trim()).digest('hex').slice(0, 12);
+  const seen = Array.isArray(plan.activity_sigs) ? plan.activity_sigs : [];
+  if (seen.includes(sig)) return false;
+  plan.activity_sigs = seen.concat(sig).slice(-ACTIVITY_KEEP);
+  plan.activity_ts = now;
+  return true;
+}
+
+// lastProgressTs(plan) -> the later of the last step change and the last
+// fresh-text activity, or null when neither happened.
+function lastProgressTs(plan) {
+  const a = Number.isFinite(plan.step_ts) ? plan.step_ts : -Infinity;
+  const b = Number.isFinite(plan.activity_ts) ? plan.activity_ts : -Infinity;
+  const m = Math.max(a, b);
+  return Number.isFinite(m) ? m : null;
 }
 
 // dur(ms) -> '42m' | '5h' | '3d'.
@@ -276,7 +304,8 @@ function dur(ms) {
 function finishLabel(plan, now) {
   if (!plan || !Array.isArray(plan.steps) || !plan.steps.length) return null;
   const total = plan.steps.length;
-  const progress = Number.isFinite(plan.step_ts) ? 'progress ' + dur(now - plan.step_ts) + ' ago' : 'no progress yet';
+  const lastTs = lastProgressTs(plan);
+  const progress = lastTs !== null ? 'progress ' + dur(now - lastTs) + ' ago' : 'no progress yet';
   const cur = currentStep(plan);
   if (!cur) return 'steps ' + total + '/' + total + ' done · ' + progress;
   const inferred = !Number.isFinite(plan.step_ts) && Number.isInteger(plan.inferred_step)
@@ -328,7 +357,7 @@ function strayWarnMax(opts) {
 module.exports = {
   STEP_STATUSES, plansDir, strayDir, planPath, strayPath, planKeyForWorktree,
   findPlan, savePlan, updatePlan, planLockPath, parseSteps, parseScope, splitGlobs, newPlan, replaceSteps, applyStep,
-  currentStep, stepsDone, addExtra, recordSummary, dur, finishLabel,
+  currentStep, stepsDone, addExtra, recordSummary, noteActivity, lastProgressTs, dur, finishLabel,
   readStray, saveStray, listStray,
   planTrackingEnabled, planRequired, stepStallMs, strayWarnMax,
 };
