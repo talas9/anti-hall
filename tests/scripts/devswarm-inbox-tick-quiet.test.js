@@ -73,7 +73,9 @@ test('inbox tick --quiet (CLI): one line, exit 0, no mail', () => {
     const env = Object.assign({}, process.env, { HOME: home, ANTI_HALL_LOG_DIR: path.join(home, 'logs') });
     const res = cp.spawnSync(process.execPath, [CLI_PATH, 'inbox', 'tick', 'w1', '--quiet'], { cwd: repo, env, encoding: 'utf8' });
     assert.equal(res.status, 0, res.stdout + res.stderr);
-    assert.match(res.stdout.trim(), /^tick w1: unread \d+, known (true|false), meshGap (true|false), watcherArmed (true|false)$/);
+    // watcherArmed may read 'idle-skip' (#39 default on, 0 live children
+    // registered in this fixture) in addition to the pre-#39 true|false.
+    assert.match(res.stdout.trim(), /^tick w1: unread \d+, known (true|false), meshGap (true|false), watcherArmed (true|false|idle-skip)$/);
   } finally { rm(home); rm(repo); }
 });
 

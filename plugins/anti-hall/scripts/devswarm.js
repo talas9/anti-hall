@@ -11762,10 +11762,42 @@ function cmdInboxTick(id, flags, ctx) {
       watcherArmed = !!(fresh && alive !== false);
     }
   } catch (_) { watcherArmed = false; }
+
+  // IDLE-SKIP (#39, devswarm.wakeWatchIdleSkip, default true): a Primary
+  // (never a `--child` caller — a child's watcher covers ITS OWN mail, not a
+  // roster) with 0 LIVE (non-archived) child workspaces gains nothing from an
+  // armed wake-watch Monitor — nothing will ever message it. Only evaluated
+  // when the lock-based check above already read `false` (a truly-armed
+  // watcher is reported as such, unconditionally). `watcherArmed` becomes the
+  // STRING `'idle-skip'` (truthy, so `!watcherArmed` below and every existing
+  // `!== false` / falsy consumer treats it as "armed enough, don't nag"),
+  // never the boolean `false` — this is what stops drainCmd's rearmClause
+  // (hooks/lib/devswarm-wake.js) from firing its "re-arm it" instruction.
+  // Fail-open: any error here leaves `watcherArmed` exactly as computed above.
+  let idleSkipped = false;
+  if (!watcherArmed && !isChildFlag && isSafeId(id)) {
+    try {
+      let idleSkipOn = true;
+      try { idleSkipOn = require('../hooks/lib/settings.js').getWithEnv('devswarm', 'wakeWatchIdleSkip', true, ctx.env) !== false; }
+      catch (_) { idleSkipOn = true; }
+      if (idleSkipOn) {
+        const liveChildren = require('../companion/lib/devswarm-live-children.js');
+        const cwd = ctx.cwd || process.cwd();
+        if (!liveChildren.hasLiveChild(home, cwd)) {
+          watcherArmed = 'idle-skip';
+          idleSkipped = true;
+        }
+      }
+    } catch (_) { /* fail-open: keep watcherArmed exactly as the lock check computed it */ }
+  }
+
   // this tick is the re-arm CUE point (see rearmMetricsPath's header above):
   // watcherArmed:false is exactly the condition drainCmd's rearmClause fires
-  // the "re-arm it" instruction on.
-  if (!watcherArmed && isSafeId(id)) recordRearmCue(home, id, 'tick');
+  // the "re-arm it" instruction on. An idle-skip is a DELIBERATE no-arm
+  // decision, not a lapse — it gets its own trigger bucket so doctor's
+  // idle-skip count and the legacy re-arm-cue count never conflate the two.
+  if (idleSkipped) recordRearmCue(home, id, 'idle-skip');
+  else if (!watcherArmed && isSafeId(id)) recordRearmCue(home, id, 'tick');
 
   const tickOut = Object.assign({}, counted, { action: 'tick', idMismatch, watcherArmed });
   if (anchorRefresh && anchorRefresh.refreshed) tickOut.anchorRefresh = anchorRefresh;
@@ -20350,10 +20382,14 @@ function inboxTickQuietLine(result) {
   if (result && result.ok) {
     const id = result.id != null ? String(result.id) : '';
     const unread = Number.isFinite(result.unreadTotal) ? result.unreadTotal : (result.unreadTotal == null ? 'null' : String(result.unreadTotal));
+    // watcherArmed renders 'idle-skip' verbatim (#39: a deliberate no-arm
+    // decision, distinct from both true and false) — every other value
+    // (boolean or anything else) keeps the pre-#39 true/false rendering.
+    const watcherArmedStr = result.watcherArmed === 'idle-skip' ? 'idle-skip' : (result.watcherArmed ? 'true' : 'false');
     return 'tick ' + id + ': unread ' + unread
       + ', known ' + (result.known ? 'true' : 'false')
       + ', meshGap ' + (result.meshGapWithheld ? 'true' : 'false')
-      + ', watcherArmed ' + (result.watcherArmed ? 'true' : 'false');
+      + ', watcherArmed ' + watcherArmedStr;
   }
   return 'ok:false ' + String((result && result.error) || (result && result.reason) || 'inbox tick failed');
 }

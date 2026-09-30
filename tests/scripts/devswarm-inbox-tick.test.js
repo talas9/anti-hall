@@ -239,7 +239,12 @@ test('LEVER 1 MEASUREMENT: no watcher lock -> watcherArmed:false -> a "tick" re-
   try {
     register(home, repo, 'w1');
     // No lock file -> watcherArmed reads false -> this IS the re-arm cue point.
-    const ticked = cli.run(['inbox', 'tick', 'w1'], ctx(home, { cwd: repo })).result;
+    // Idle-skip (#39) explicitly OFF here: this test targets the plain
+    // lock-based watcherArmed:false path in isolation — with 0 live children
+    // and idle-skip on (the default), watcherArmed would instead read
+    // 'idle-skip' (see devswarm-wake-watch-idle-skip.test.js for that case).
+    const env = Object.assign({}, ctx(home).env, { ANTIHALL_DEVSWARM_WAKE_WATCH_IDLE_SKIP: 'false' });
+    const ticked = cli.run(['inbox', 'tick', 'w1'], ctx(home, { cwd: repo, env })).result;
     assert.strictEqual(ticked.watcherArmed, false, 'sanity: no lock -> watcherArmed false');
     const lines = fs.readFileSync(rearmCuesFile(home), 'utf8').split('\n').filter(Boolean);
     assert.strictEqual(lines.length, 1);

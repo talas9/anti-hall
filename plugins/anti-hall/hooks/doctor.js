@@ -1022,6 +1022,30 @@ function devswarmHookSelfTests() {
       }
     } catch (_) { /* fail-open: measurement reporting must never break doctor */ }
 
+    // #39 (devswarm.wakeWatchIdleSkip) measurement: rearm-cues.jsonl accumulates
+    // one line per idle-skip (trigger 'idle-skip', written by both
+    // scripts/devswarm.js's cmdInboxTick and companion/lib/devswarm-wake-
+    // watch.js's own startup gate) — a Primary with 0 live children declining
+    // to arm/re-arm its wake-watch Monitor. Report-only (never FAIL/WARN — any
+    // count here, including 0, is a healthy system).
+    try {
+      const livenessModPath2 = path.join(libDir, 'liveness.js');
+      let devswarmRootFn2 = null;
+      if (fs.existsSync(livenessModPath2)) {
+        try { ({ devswarmRoot: devswarmRootFn2 } = require(livenessModPath2)); } catch (_) { devswarmRootFn2 = null; }
+      }
+      if (devswarmRootFn2) {
+        const p2 = path.join(devswarmRootFn2(require('../companion/lib/test-home-guard.js').resolveHome(undefined, process.env)), 'rearm-cues.jsonl');
+        let idleSkipCount = 0;
+        try {
+          idleSkipCount = fs.readFileSync(p2, 'utf8').split('\n').filter(Boolean)
+            .filter((l) => { try { return JSON.parse(l).trigger === 'idle-skip'; } catch (_) { return false; } }).length;
+        } catch (_) { idleSkipCount = 0; }
+        infol('wake-watch idle-skips: ' + idleSkipCount +
+          ' (rearm-cues.jsonl, trigger idle-skip — a Primary with 0 live children declining to arm)');
+      }
+    } catch (_) { /* fail-open: measurement reporting must never break doctor */ }
+
     // Startup-state sampling (0.117.0) — DATA CAPTURE ONLY, report-only line
     // (never FAIL/WARN — 0 is expected/normal for a long time; see
     // companion/lib/devswarm-startup-sampling.js's own header for why paused

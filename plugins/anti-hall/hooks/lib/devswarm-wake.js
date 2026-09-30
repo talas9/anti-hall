@@ -340,10 +340,20 @@ function drainCmd(cli, isChild, useTick, id, watcher) {
     // clause is already reading — no second command, no second field. Only
     // emitted when a watcher script path is available; omitted -> byte-
     // identical to pre-fix text.
+    //
+    // #39 (devswarm.wakeWatchIdleSkip): `watcherArmed` can now also read the
+    // STRING `idle-skip` — a Primary with 0 live children, where `inbox tick`
+    // deliberately declined to nag about re-arming because no watcher would
+    // ever have anything to report. This clause is worded against the LITERAL
+    // token `false` on purpose: `idle-skip` never matches it, so this
+    // instruction stays inert for that case without any extra branch — do
+    // NOT broaden this to "any falsy-looking value", or an idle-skip would
+    // wrongly trigger a re-arm the feature exists to avoid.
     const rearmClause = (typeof watcher === 'string' && watcher)
-      ? ' If its `watcherArmed` reads `false` (your Monitor lapsed at its 30-minute harness cap), ' +
-        're-arm it first: `Monitor` with command `node ' + watcher + '` (persistent: true if ' +
-        'supported, else max timeout_ms).'
+      ? ' If its `watcherArmed` reads exactly `false` (your Monitor lapsed at its 30-minute harness ' +
+        'cap), re-arm it first: `Monitor` with command `node ' + watcher + '` (persistent: true if ' +
+        'supported, else max timeout_ms). `idle-skip` is NOT `false` — it means this workspace has ' +
+        'no live children to hear from, so no re-arm is needed.'
       : '';
     return 'run ' + tickCmd + plainNote + ' (with `--child` it first imports anything waiting in your ' +
       'native queue, then prints one line with the SAME unread/meshGap/known signal `inbox ' +

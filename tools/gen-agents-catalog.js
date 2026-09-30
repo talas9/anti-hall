@@ -123,7 +123,11 @@ function build() {
   // State files
   out.push('**State** (`~/.anti-hall/`): ' + llmsTable('## State files').map((r) => r[0].replace(/\\\|/g, '|')).join('; ') + '. Per project: `.anti-hall/progress/`, `history/`, `handovers/`.');
   out.push('');
-  out.push('**Hard rules**: verify before claiming; no AI self-credit, no force-push; no data deletion without the user\'s explicit confirmation and never by an automated job; DevSwarm messaging via the mesh only; change settings via `/anti-hall:settings` only; skips only on the user\'s explicit request.');
+  // Kept terse on purpose (Codex 32 KiB cap, tests/hygiene/docs-coverage.test.js
+  // test 7): every settings-schema key this generator lists eats into the same
+  // budget, so this static sentence stays as short as it can without dropping
+  // a safety rule.
+  out.push('**Hard rules**: verify before claiming; no AI self-credit, no force-push; no data deletion without explicit user confirmation, never automated; DevSwarm via the mesh only; change settings via `/anti-hall:settings`; skips only on explicit user request.');
   out.push('', END);
   return out.join('\n');
 }

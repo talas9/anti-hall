@@ -6,6 +6,25 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## Unreleased
+
+### Added
+
+- **`devswarm.wakeWatchIdleSkip` (default `true`, #39)** — a DevSwarm Primary with 0 LIVE
+  (non-archived) child workspaces gains nothing from an armed wake-watch Monitor (nothing
+  will ever message it), yet re-arming it every cron tick still costs a turn. When on and
+  the caller is a Primary with 0 live children, `inbox tick` reports `watcherArmed
+  idle-skip` (never the boolean `false`), so the cron prompt's "re-arm if `watcherArmed`
+  false" rule stays inert; if `devswarm-wake-watch.js` is started anyway it prints
+  `[wake-watch] idle-skip: no live child workspaces — not arming (cron fallback covers)`
+  and exits 0 without ever acquiring the watch lock. A live child (`companion/lib/
+  devswarm-live-children.js` `hasLiveChild`) leaves both paths unchanged; an
+  archived-only child still counts as 0 live. The cron fallback itself is never removed
+  or altered. Metric: `~/.anti-hall/devswarm/rearm-cues.jsonl` (trigger `idle-skip`),
+  surfaced by `doctor` as "wake-watch idle-skips: N". Codex mirror: `inbox tick`'s
+  `watcherArmed` documentation updated in `plugins/anti-hall/codex/skills/
+  anti-hall-devswarm/SKILL.md` (Codex has no Monitor tool, so a Codex workspace never
+  produces `idle-skip` itself).
 ## 0.117.2 (2026-09-30)
 
 Security fix for git-guard.

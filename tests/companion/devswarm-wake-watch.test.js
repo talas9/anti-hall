@@ -1054,6 +1054,14 @@ test('T4: on-disk DevSwarm state for this repo\'s own repoKey (summaries/<repoKe
       USERPROFILE: home, // Windows: os.homedir() resolves USERPROFILE and ignores HOME
       // Deliberately ZERO DEVSWARM_*/ANTIHALL_DEVSWARM_* vars — the on-disk
       // summary file is the ONLY positive signal available.
+      //
+      // #39: this isolated HOME has 0 registered children for REPO_ROOT, so
+      // the idle-skip feature (default on) would otherwise decline to arm —
+      // that is correct NEW behavior, but orthogonal to what THIS test
+      // targets (the gate opening on on-disk summary state). Explicitly off
+      // here to keep this test's original, narrower assertion true; see
+      // devswarm-wake-watch-idle-skip.test.js for the idle-skip coverage.
+      ANTIHALL_DEVSWARM_WAKE_WATCH_IDLE_SKIP: 'false',
     };
     // This is the path that falls through to the Primary tier, which spawns
     // real `git` (repoKeyForWorktree + resolveMainWorktree) before the arm

@@ -1477,6 +1477,47 @@ function main() {
   const id = identity.id;
   const watchedRole = identity.role;
 
+  // IDLE-SKIP (#39, devswarm.wakeWatchIdleSkip, default true): a Primary
+  // with 0 LIVE (non-archived) child workspaces gains nothing from this
+  // watcher — nothing will ever message it (only a child can send a Primary
+  // mesh mail). Never applies to a child watcher (it covers its own mail,
+  // never a roster). Checked here, AFTER identity resolution (needs
+  // identity.cwd/home to scope the live-children read) but BEFORE the lock
+  // is ever acquired — an idle-skip must never hold, or contend for, the
+  // per-id watch lock. Exit 0: this is a normal, expected outcome, not a
+  // fault (matches every other `refuse to arm` branch in this function).
+  if (watchedRole === 'primary') {
+    try {
+      let idleSkipOn = true;
+      try { idleSkipOn = require('../../hooks/lib/settings.js').getWithEnv('devswarm', 'wakeWatchIdleSkip', true, env) !== false; }
+      catch (_) { idleSkipOn = true; }
+      if (idleSkipOn) {
+        const liveChildren = require('./devswarm-live-children.js');
+        if (!liveChildren.hasLiveChild(home, identity.cwd || cwd)) {
+          // Same rearm-cues.jsonl metric scripts/devswarm.js's cmdInboxTick
+          // writes for its own idle-skip (trigger 'idle-skip') — deliberately
+          // reimplemented here (append+cap) rather than requiring
+          // scripts/devswarm.js: this module never depends on the CLI (see
+          // this file's own header — pure reads, no shelling out), and
+          // scripts/devswarm.js already requires THIS file lazily inside
+          // cmdInboxTick, so the reverse require would be circular.
+          try {
+            const p = path.join(devswarmRoot(home), 'rearm-cues.jsonl');
+            fs.mkdirSync(path.dirname(p), { recursive: true });
+            let lines = [];
+            try { lines = fs.readFileSync(p, 'utf8').split('\n').filter(Boolean); } catch (_) { lines = []; }
+            lines.push(JSON.stringify({ ts: Date.now(), id, trigger: 'idle-skip' }));
+            if (lines.length > 1000) lines = lines.slice(lines.length - 1000);
+            fs.writeFileSync(p, lines.join('\n') + '\n');
+          } catch (_) { /* fail-open: measurement only, never blocks the idle-skip itself */ }
+          emitLine('[wake-watch] idle-skip: no live child workspaces — not arming (cron fallback covers)');
+          process.exitCode = 0;
+          return;
+        }
+      }
+    } catch (_) { /* fail-open: any surprise here arms exactly as before #39 */ }
+  }
+
   const lockPath = lockPathFor(home, id);
   // Read once, reused both for the lock's own `version` field (unchanged) and
   // the per-poll stale-build check below (item 4c) — never re-derived twice.
