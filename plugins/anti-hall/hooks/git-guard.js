@@ -656,6 +656,24 @@ function isForcePush(rest) {
   return false;
 }
 
+// Does this push arg list delete a remote ref (branch/tag)? `--delete` /
+// `-d` (incl. a bundled short cluster), an empty-source refspec `:<dst>`, or
+// `--prune` (deletes remote refs with no local counterpart). Owner rule: no
+// data deletion, branches included, without explicit confirmation.
+function isDeleteRefPush(rest) {
+  let endOfOptions = false;
+  for (const t of rest) {
+    const w = t.text;
+    if (!endOfOptions && w === '--') { endOfOptions = true; continue; }
+    if (!endOfOptions) {
+      if (w === '--delete' || w === '--prune') return true;
+      if (/^-[a-zA-Z0-9]+$/.test(w) && w.indexOf('d') !== -1) return true;
+    }
+    if (w.length > 1 && w.startsWith(':')) return true;
+  }
+  return false;
+}
+
 // Sentinel string splitSegments injects into a segment when a command
 // substitution / backtick expansion feeds argv into it. Must match the literal
 // used in splitSegments.flushWithSubst().
@@ -2014,6 +2032,15 @@ function gitVerdict(ev, d, cmd, heredocBodies, lastCdDir, useJev) {
         'anti-hall git-guard: BLOCKED. Force push detected. Rewriting published ' +
         'history is a deliberate human action - do it manually with explicit ' +
         'owner confirmation, never from an automated push.'
+      );
+    }
+    if (isDeleteRefPush(rest)) {
+      return (
+        'anti-hall git-guard: BLOCKED. Remote ref deletion detected (push --delete / -d / ' +
+        '--prune / an empty-source :<ref> refspec). Deleting published branches or tags ' +
+        'needs explicit owner confirmation. If the owner has asked for this exact ' +
+        'deletion, the override is the ~/.anti-hall/skip.json git-guard escape hatch ' +
+        '(direct human instruction only); otherwise leave the ref.'
       );
     }
     if (hasCmdSubstArg(rest)) {

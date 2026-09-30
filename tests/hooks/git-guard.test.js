@@ -2411,3 +2411,41 @@ for (const cmd of LAUNCHER_HEREDOC_BLOCK) {
     assert.match(r.stderr, /stable launcher directory/);
   });
 }
+
+// Owner rule: never delete data (branches included) without explicit
+// confirmation. A push that deletes a remote ref is blocked, with a reason
+// naming the skip.json override path.
+const REF_DELETE_BLOCK = [
+  'git push origin :main',
+  'git push origin :refs/heads/x',
+  'git push --delete origin x',
+  'git push -d origin x',
+  'git push origin --delete x',
+  'git push origin -d x',
+  'git push origin :refs/tags/v1',
+  'git push --prune origin "refs/heads/*:refs/heads/*"',
+  'cd /tmp && git push origin :feature',
+];
+const REF_DELETE_ALLOW = [
+  'git push origin main',
+  'git push -u origin feature',
+  'git push origin HEAD:refs/heads/feature',
+  'git push --dry-run origin main',
+  'git push origin v1.0.0',
+  'git branch -d old-local',
+  'git log --oneline origin/main',
+];
+for (const cmd of REF_DELETE_BLOCK) {
+  test(`BLOCK (remote ref deletion): ${JSON.stringify(cmd)}`, () => {
+    const r = run(cmd);
+    assert.strictEqual(r.status, 2, `expected block (exit 2) for: ${cmd}\nstderr: ${r.stderr}`);
+    assert.match(r.stderr, /Remote ref deletion detected/);
+    assert.match(r.stderr, /skip\.json/);
+  });
+}
+for (const cmd of REF_DELETE_ALLOW) {
+  test(`ALLOW (not a remote ref deletion): ${JSON.stringify(cmd)}`, () => {
+    const r = run(cmd);
+    assert.strictEqual(r.status, 0, `expected allow (exit 0) for: ${cmd}\nstderr: ${r.stderr}`);
+  });
+}
