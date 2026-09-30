@@ -1610,3 +1610,404 @@ test('PERF (R7A1-1): 8 distinct-text force-push repro against a hanging Jev endp
     server.stop();
   }
 });
+
+// 0.117.2 quote-blind backstop (git-guard.js gitBackstop). splitSegments
+// quote-tracks heredoc bodies, comments and substitutions, so an apostrophe
+// (or other unbalanced quote char) in any of them desyncs its quote state and
+// swallows every later line - hiding a real `git push --force`. The backstop
+// cuts the raw command at every separator IGNORING quotes and runs the git
+// verdicts on each piece, so no quote desync can hide a git command. Every
+// repro below (collected over four review rounds of tokenizer patching) must
+// BLOCK through either pass; the ALLOW cases guard against new false blocks.
+
+test('BLOCK (R5C1-1): unbalanced quote inside a heredoc body no longer hides a trailing force push', () => {
+  const r = run("cat <<'EOF'\nIt's a test\nEOF\ngit push --force origin main");
+  assert.strictEqual(r.status, 2, `expected block (exit 2)\nstderr: ${r.stderr}`);
+  assert.match(r.stderr, REASON.FORCE);
+});
+
+test('ALLOW (R5C1-1): heredoc prose with apostrophes followed by an innocent command is not false-blocked', () => {
+  const r = run("cat <<'EOF'\nDon't worry, it's fine\nEOF\necho hello world");
+  assert.strictEqual(r.status, 0, `expected allow (exit 0)\nstderr: ${r.stderr}`);
+});
+
+test('BLOCK (R5C1-1): multiple heredocs sharing one opener line still isolate a trailing force push', () => {
+  const r = run("cat <<A <<B\nbody A's text\nA\nbody B's text\nB\ngit push --force origin main");
+  assert.strictEqual(r.status, 2, `expected block (exit 2)\nstderr: ${r.stderr}`);
+  assert.match(r.stderr, REASON.FORCE);
+});
+
+test('ALLOW (R5C1-1): multiple heredocs sharing one opener line, no force, is not false-blocked', () => {
+  const r = run("cat <<A <<B\nbody A's text\nA\nbody B's text\nB\necho done");
+  assert.strictEqual(r.status, 0, `expected allow (exit 0)\nstderr: ${r.stderr}`);
+});
+
+test('BLOCK (R5C1-1): an UNTERMINATED heredoc still lets an EARLIER force push on the opener line block', () => {
+  // The opener line itself is a chained command list, parsed normally before
+  // the (unterminated, rest-of-command) body is skipped opaquely.
+  const r = run("git push --force origin main; cat <<'EOF'\nIt's never closed");
+  assert.strictEqual(r.status, 2, `expected block (exit 2)\nstderr: ${r.stderr}`);
+  assert.match(r.stderr, REASON.FORCE);
+});
+
+test('ALLOW (R5C1-1): an UNTERMINATED heredoc with no other command is not false-blocked', () => {
+  const r = run("cat <<'EOF'\nIt's never closed\nno terminator here, apostrophe's everywhere");
+  assert.strictEqual(r.status, 0, `expected allow (exit 0)\nstderr: ${r.stderr}`);
+});
+
+test('BLOCK (R5C1-1): a chained `&&` on the heredoc OPENER line still splits normally (no P0-class swallow)', () => {
+  const r = run("cat <<EOF && echo hi\nbody\nEOF\ngit push --force origin main");
+  assert.strictEqual(r.status, 2, `expected block (exit 2)\nstderr: ${r.stderr}`);
+  assert.match(r.stderr, REASON.FORCE);
+});
+
+test('BLOCK (R5C1-1): `<<-` dash-strip heredoc with a tab-indented apostrophe body still isolates a trailing force push', () => {
+  const r = run("cat <<-'EOF'\n\tIt's tabbed\nEOF\ngit push --force origin main");
+  assert.strictEqual(r.status, 2, `expected block (exit 2)\nstderr: ${r.stderr}`);
+  assert.match(r.stderr, REASON.FORCE);
+});
+
+test('PERF (R5C1-1): a 160KB heredoc body full of apostrophes still decides in under 2s', () => {
+  const body = "line with an apostrophe's text\n".repeat(Math.ceil((160 * 1024) / 32));
+  const cmd = "cat <<'EOF'\n" + body + "EOF\ngit push --force origin main";
+  const t0 = Date.now();
+  const r = run(cmd);
+  const elapsedMs = Date.now() - t0;
+  assert.strictEqual(r.status, 2, `expected block (exit 2)\nstderr: ${r.stderr}`);
+  assert.match(r.stderr, REASON.FORCE);
+  assert.ok(elapsedMs < 2000, `expected < 2000ms, took ${elapsedMs}ms`);
+});
+
+// R5C1-2/deadly-loop wf_0eb4694d-ae4 round 1 follow-up findings on the
+// R5C1-1 fix itself (P0 multi-heredoc-undershoot-bypass, P1 A1-1/A1-2, P2
+// A1-3), plus C1-1 (delimiter-parser gap). Each BLOCK case is confirmed
+// against real bash semantics (a `git(){ echo GIT-RAN: "$@"; }` stub) before
+// being asserted here - see the deadly-loop review journal for the sem.sh
+// harness output.
+
+test('BLOCK (P0 multi-heredoc-undershoot-bypass): a later heredoc terminator word colliding with an earlier heredoc\'s own BODY line no longer undershoots the combined end', () => {
+  // Real bash: heredoc A's body is the single line "B" (terminated by "A" on
+  // line 3); heredoc B's body is "It's a test" (terminated by "B" on line
+  // 5); line 6 is a real, standalone `git push --force`. Any heredoc
+  // end-resolution mistake lets the apostrophe in B's body open a bogus
+  // quoted span over the trailing force push.
+  const r = run("cat <<A <<B\nB\nA\nIt's a test\nB\ngit push --force origin main");
+  assert.strictEqual(r.status, 2, `expected block (exit 2)\nstderr: ${r.stderr}`);
+  assert.match(r.stderr, REASON.FORCE);
+});
+
+test('ALLOW (P0 multi-heredoc-undershoot-bypass): the same colliding-terminator shape with no force push is not false-blocked', () => {
+  const r = run("cat <<A <<B\nB\nA\nIt's a test\nB\necho done");
+  assert.strictEqual(r.status, 0, `expected allow (exit 0)\nstderr: ${r.stderr}`);
+});
+
+test('BLOCK (P0): a three-heredoc chain on one opener line still isolates a trailing force push', () => {
+  const r = run("cat <<A <<B <<C\na's\nA\nb's\nB\nc's\nC\ngit push --force origin main");
+  assert.strictEqual(r.status, 2, `expected block (exit 2)\nstderr: ${r.stderr}`);
+  assert.match(r.stderr, REASON.FORCE);
+});
+
+test('BLOCK (A1-1): a real quoted `;` in a push arg on the heredoc OPENER LINE still blocks (opener-line quotes are real shell syntax, not heredoc data)', () => {
+  const r = run('cat <<\'EOF\' >/dev/null && git push -o "ci;skip" --force origin main\nbody\nEOF');
+  assert.strictEqual(r.status, 2, `expected block (exit 2)\nstderr: ${r.stderr}`);
+  assert.match(r.stderr, REASON.FORCE);
+});
+
+test('BLOCK (A1-1): a quoted `;` refspec on the heredoc opener line still blocks', () => {
+  const r = run('cat <<\'EOF\' >/dev/null && git push origin "HEAD:refs/heads/a;b" --force\nbody\nEOF');
+  assert.strictEqual(r.status, 2, `expected block (exit 2)\nstderr: ${r.stderr}`);
+  assert.match(r.stderr, REASON.FORCE);
+});
+
+test('BLOCK (A1-1): a quoted `|` push-option on the heredoc opener line still blocks', () => {
+  const r = run('cat <<\'EOF\' >/dev/null && git push -o "a|b" -f origin main\nbody\nEOF');
+  assert.strictEqual(r.status, 2, `expected block (exit 2)\nstderr: ${r.stderr}`);
+  assert.match(r.stderr, REASON.FORCE);
+});
+
+test('ALLOW (A1-1): a real quoted `|` inside an unrelated pipe argument on the heredoc opener line is not false-blocked', () => {
+  const r = run('cat <<\'EOF\' | grep -E "a|git push --force"\nbody\nEOF');
+  assert.strictEqual(r.status, 0, `expected allow (exit 0)\nstderr: ${r.stderr}`);
+});
+
+test('BLOCK (A1-2): a heredoc inside a double-quoted `$( )` command substitution no longer lets body quotes hide a trailing force push (&&)', () => {
+  const r = run('git commit -m "$(cat <<\'EOF\'\nSay "hi\nEOF\n)" && git push --force origin main');
+  assert.strictEqual(r.status, 2, `expected block (exit 2)\nstderr: ${r.stderr}`);
+  assert.match(r.stderr, REASON.FORCE);
+});
+
+test('BLOCK (A1-2): same shape with the trailing push on its own line', () => {
+  const r = run('git commit -m "$(cat <<\'EOF\'\nSay "hi\nEOF\n)"\ngit push --force origin main');
+  assert.strictEqual(r.status, 2, `expected block (exit 2)\nstderr: ${r.stderr}`);
+  assert.match(r.stderr, REASON.FORCE);
+});
+
+test('ALLOW (A1-2): a heredoc inside a double-quoted `$( )` substitution with no force/self-credit is not false-blocked', () => {
+  const r = run('echo "$(cat <<\'EOF\'\nSay "hi\nEOF\n)"');
+  assert.strictEqual(r.status, 0, `expected allow (exit 0)\nstderr: ${r.stderr}`);
+});
+
+test('BLOCK (A1-3): `<<` inside an unquoted `#` comment no longer arms an unterminated quote-neutral span over the rest of the command', () => {
+  const r = run('echo x # <<EOF\ngit push -o "a;b" --force origin main');
+  assert.strictEqual(r.status, 2, `expected block (exit 2)\nstderr: ${r.stderr}`);
+  assert.match(r.stderr, REASON.FORCE);
+});
+
+test('ALLOW (A1-3): an ordinary comment (no `<<`) followed by an innocent command is not false-blocked', () => {
+  const r = run("echo x # it's a note\necho done");
+  assert.strictEqual(r.status, 0, `expected allow (exit 0)\nstderr: ${r.stderr}`);
+});
+
+test('BLOCK (C1-1): a backslash-escaped heredoc delimiter (`<<\\EOF`, a common expansion-suppression idiom) is still recognized as a real heredoc opener', () => {
+  const r = run("cat <<\\EOF\nIt's a test\nEOF\ngit push --force origin main");
+  assert.strictEqual(r.status, 2, `expected block (exit 2)\nstderr: ${r.stderr}`);
+  assert.match(r.stderr, REASON.FORCE);
+});
+
+test('BLOCK (C1-1): a `$`-prefixed heredoc delimiter is still recognized as a real heredoc opener', () => {
+  const r = run("cat <<$X\nIt's a test\nX\ngit push --force origin main");
+  assert.strictEqual(r.status, 2, `expected block (exit 2)\nstderr: ${r.stderr}`);
+  assert.match(r.stderr, REASON.FORCE);
+});
+
+test('BLOCK (C1-1): a digit-led heredoc delimiter is still recognized as a real heredoc opener', () => {
+  const r = run("cat <<1EOF\nIt's a test\n1EOF\ngit push --force origin main");
+  assert.strictEqual(r.status, 2, `expected block (exit 2)\nstderr: ${r.stderr}`);
+  assert.match(r.stderr, REASON.FORCE);
+});
+
+test('ALLOW ($((1<<2)) arithmetic left-shift is still not mistaken for an unrecognized heredoc opener (C1-1 fail-closed fallback must not fire here)', () => {
+  const r = run('echo "$((1<<2))"');
+  assert.strictEqual(r.status, 0, `expected allow (exit 0)\nstderr: ${r.stderr}`);
+});
+
+test('ALLOW (here-string `<<<` is still not mistaken for an unrecognized heredoc opener)', () => {
+  const r = run('grep x <<< "it\'s fine" && echo done');
+  assert.strictEqual(r.status, 0, `expected allow (exit 0)\nstderr: ${r.stderr}`);
+});
+
+test('BLOCK (here-string `<<<` with an apostrophe still isolates a chained force push)', () => {
+  const r = run('grep x <<< "it\'s fine" && git push --force origin main');
+  assert.strictEqual(r.status, 2, `expected block (exit 2)\nstderr: ${r.stderr}`);
+  assert.match(r.stderr, REASON.FORCE);
+});
+
+test('BLOCK: a heredoc-with-apostrophe body inside `bash -c` still isolates a chained force push', () => {
+  const r = run('bash -c "cat <<\'EOF\'\nIt\'s a test\nEOF\ngit push --force origin main"');
+  assert.strictEqual(r.status, 2, `expected block (exit 2)\nstderr: ${r.stderr}`);
+  assert.match(r.stderr, REASON.FORCE);
+});
+
+test('BLOCK: a heredoc-with-apostrophe body inside `eval` still isolates a chained force push', () => {
+  const r = run('eval "cat <<\'EOF\'\nIt\'s a test\nEOF\ngit push --force origin main"');
+  assert.strictEqual(r.status, 2, `expected block (exit 2)\nstderr: ${r.stderr}`);
+  assert.match(r.stderr, REASON.FORCE);
+});
+
+// --- Round-3 deadly-loop hardening (A1R2-1/R2C1-1 P0, A1R2-2 P1, A1R2-3 P1,
+// R2REV1-1 P1 decided/no-fix) ---
+//
+// A1R2-1/R2C1-1 (P0 in the discarded tokenizer patch): a `<<WORD` written as
+// plain double-quoted TEXT (prose that mentions heredoc syntax, or a shift
+// like `a<<b`) must never be read as a heredoc that swallows a chained force
+// push / self-credit trailer as inert "body" text.
+
+test('BLOCK (A1R2-1): a literal `<<EOF` inside plain double-quoted text (no `$(`) no longer hides a chained `&&` force push', () => {
+  const r = run('echo "use <<EOF here" && git push --force origin main');
+  assert.strictEqual(r.status, 2, `expected block (exit 2)\nstderr: ${r.stderr}`);
+  assert.match(r.stderr, REASON.FORCE);
+});
+
+test('BLOCK (A1R2-1): same shape, commit message form, force push on its own line', () => {
+  const r = run('git commit -m "doc: cat <<EOF usage" && git push --force origin main');
+  assert.strictEqual(r.status, 2, `expected block (exit 2)\nstderr: ${r.stderr}`);
+  assert.match(r.stderr, REASON.FORCE);
+});
+
+test('BLOCK (A1R2-1): a double-quoted `a<<b` shift-looking phrase no longer hides a chained force push', () => {
+  const r = run('git commit -am "handle a<<b shift"\ngit push -f origin main');
+  assert.strictEqual(r.status, 2, `expected block (exit 2)\nstderr: ${r.stderr}`);
+  assert.match(r.stderr, REASON.FORCE);
+});
+
+test('BLOCK (A1R2-1): a double-quoted `<<EOF` mention no longer hides a self-credit trailer in a later -m', () => {
+  const r = run('echo "a <<EOF" && git commit -m fix -m "Co-Authored-By: Claude <noreply@anthropic.com>"');
+  assert.strictEqual(r.status, 2, `expected block (exit 2)\nstderr: ${r.stderr}`);
+  assert.match(r.stderr, REASON.COMMIT);
+});
+
+test('ALLOW (A1R2-1 regression guard): ordinary prose mentioning `<<EOF` usage with no dangerous trailer is not false-blocked', () => {
+  const r = run('git commit -m "docs: explain <<EOF usage"');
+  assert.strictEqual(r.status, 0, `expected allow (exit 0)\nstderr: ${r.stderr}`);
+});
+
+test('BLOCK (A1-2 regression guard): a heredoc REOPENED by a real `$( )` command substitution inside double quotes still isolates a chained force push', () => {
+  const r = run('git commit -m "$(cat <<\'EOF\'\nSay "hi\nEOF\n)" && git push --force origin main');
+  assert.strictEqual(r.status, 2, `expected block (exit 2)\nstderr: ${r.stderr}`);
+  assert.match(r.stderr, REASON.FORCE);
+});
+
+// A1R2-3 (P1, pre-existing): a force push written directly inside a
+// double-quoted command substitution was never split into its own segment by
+// splitSegments (it stays inside the quoted span). The backstop cuts at `$(`
+// regardless of quotes, so the substitution body is judged as its own command.
+
+test('BLOCK (A1R2-3): a force push inside a double-quoted `$( )` assigned to a variable is no longer a bypass', () => {
+  const r = run('out="$(git push --force origin main 2>&1)"; echo "$out"');
+  assert.strictEqual(r.status, 2, `expected block (exit 2)\nstderr: ${r.stderr}`);
+  assert.match(r.stderr, REASON.FORCE);
+});
+
+test('BLOCK (A1R2-3): a force push inside a double-quoted `$( )` passed straight to echo is no longer a bypass', () => {
+  const r = run('echo "$(git push --force origin main)"');
+  assert.strictEqual(r.status, 2, `expected block (exit 2)\nstderr: ${r.stderr}`);
+  assert.match(r.stderr, REASON.FORCE);
+});
+
+// A1R2-2 (P1): an apostrophe/quote inside an unquoted `#` comment must not
+// toggle inSingle/inDouble - comment text is not shell syntax, and doing so
+// swallowed the next line's command (e.g. a force push) into a bogus quoted
+// span that was never segmented or scanned.
+
+test('BLOCK (A1R2-2): an apostrophe inside an unquoted `#` comment no longer hides the next line\'s force push', () => {
+  const r = run("echo hi # it's fine\ngit push --force origin main");
+  assert.strictEqual(r.status, 2, `expected block (exit 2)\nstderr: ${r.stderr}`);
+  assert.match(r.stderr, REASON.FORCE);
+});
+
+test('BLOCK (A1R2-2): a comment apostrophe followed by an unrelated command then a real force push still blocks', () => {
+  const r = run("git status # don't worry\ngit fetch && git push --force origin main");
+  assert.strictEqual(r.status, 2, `expected block (exit 2)\nstderr: ${r.stderr}`);
+  assert.match(r.stderr, REASON.FORCE);
+});
+
+test('BLOCK (A1R2-2): a double quote inside an unquoted `#` comment no longer hides the next line\'s force push', () => {
+  const r = run('echo hi # say "hi\ngit push --force origin main');
+  assert.strictEqual(r.status, 2, `expected block (exit 2)\nstderr: ${r.stderr}`);
+  assert.match(r.stderr, REASON.FORCE);
+});
+
+test('ALLOW (A1R2-2 regression guard): an ordinary apostrophe comment with no dangerous trailer is not false-blocked', () => {
+  const r = run("echo hi # it's fine\necho done");
+  assert.strictEqual(r.status, 0, `expected allow (exit 0)\nstderr: ${r.stderr}`);
+});
+
+// R2REV1-1 (P1, DECIDED - deliberate fail-closed, no logic change): a
+// heredoc terminator line with trailing whitespace does not match the
+// delimiter word exactly, so real bash never terminates the heredoc there
+// either - the "force push" text that follows is heredoc body data in real
+// bash, never executed. git-guard still scans and BLOCKs on it (heredoc
+// bodies are scanned as shell, and the backstop cuts at every newline), a
+// conservative fail-closed choice kept intentionally rather than loosened.
+
+test('BLOCK (R2REV1-1, deliberate fail-closed): a heredoc terminator line with trailing whitespace never actually terminates in bash, so the "force push" text after it is unread body data - git-guard still BLOCKs on it by design', () => {
+  const r = run("cat <<'EOF'\nIt's a test\nEOF   \ngit push --force origin main");
+  assert.strictEqual(r.status, 2, `expected block (exit 2)\nstderr: ${r.stderr}`);
+  assert.match(r.stderr, REASON.FORCE);
+});
+
+// --- Review round 3 repros against the discarded tokenizer patch: each one
+// desyncs splitSegments' quote state a different way. The quote-blind
+// backstop must BLOCK all of them. ---
+
+test('BLOCK (backstop R3-1): `$(true)#` quote opener spanning a newline no longer hides a force push', () => {
+  const r = run("echo $(true)#'\n'; git push --force origin main; echo '\n'");
+  assert.strictEqual(r.status, 2, `expected block (exit 2)\nstderr: ${r.stderr}`);
+  assert.match(r.stderr, REASON.FORCE);
+});
+
+test('BLOCK (backstop R3-2): arithmetic + heredoc inside a double-quoted `$( )` commit message no longer hides a chained force push', () => {
+  const r = run('git commit -m "$(n=$((1+1)); cat <<\'EOF\'\nsubject\n\nsay "hi\nEOF\n)" && git push --force origin main');
+  assert.strictEqual(r.status, 2, `expected block (exit 2)\nstderr: ${r.stderr}`);
+  assert.match(r.stderr, REASON.FORCE);
+});
+
+test('BLOCK (backstop R3-3): a quoted `((` before an apostrophe heredoc no longer hides a trailing force push', () => {
+  const r = run("echo \"((\" ; cat <<'EOF'\nit's\nEOF\ngit push --force origin main");
+  assert.strictEqual(r.status, 2, `expected block (exit 2)\nstderr: ${r.stderr}`);
+  assert.match(r.stderr, REASON.FORCE);
+});
+
+test('BLOCK (backstop): a quote desync also cannot hide a self-credit trailer on a later commit', () => {
+  const r = run("echo hi # it's fine\ngit commit -m fix -m \"Co-Authored-By: Claude <noreply@anthropic.com>\"");
+  assert.strictEqual(r.status, 2, `expected block (exit 2)\nstderr: ${r.stderr}`);
+  assert.match(r.stderr, REASON.COMMIT);
+});
+
+test('BLOCK (backstop): a quote desync also cannot hide a `+refspec` force push or a `-f` short flag', () => {
+  for (const push of ['git push origin +main', 'git push -f origin main', 'git push --force-with-lease origin main']) {
+    const r = run("cat <<'EOF'\nit's\nEOF\n" + push);
+    assert.strictEqual(r.status, 2, `expected block for ${push}\nstderr: ${r.stderr}`);
+    assert.match(r.stderr, REASON.FORCE);
+  }
+});
+
+test('BLOCK (backstop): a quote desync cannot hide a force push behind eval / bash -c', () => {
+  for (const wrapped of ["eval 'git push --force origin main'", "bash -c 'git push --force origin main'"]) {
+    const r = run("echo hi # it's fine\n" + wrapped);
+    assert.strictEqual(r.status, 2, `expected block for ${wrapped}\nstderr: ${r.stderr}`);
+    assert.match(r.stderr, REASON.FORCE);
+  }
+});
+
+// DELIBERATE FAIL-CLOSED (accepted false block): the backstop cannot tell a
+// quoted separator from a real one, so quoted text holding a separator
+// followed by a literal git force push blocks.
+test('BLOCK (backstop, deliberate fail-closed): quoted text with a separator before a literal force push', () => {
+  const r = run('git commit -m "don\'t; git push --force"');
+  assert.strictEqual(r.status, 2, `expected block (exit 2)\nstderr: ${r.stderr}`);
+  assert.match(r.stderr, REASON.FORCE);
+});
+
+// ...but a plain mention with no separator in front of `git` stays allowed:
+// that piece's git verb is `commit`, not `push`.
+test('ALLOW (backstop): a commit message that mentions a force push with no separator before it', () => {
+  for (const cmd of [
+    'git commit -m "never git push --force"',
+    'git commit -m "docs: explain why git push --force is blocked"',
+    "git commit -m \"fix: don't force push; keep history\"",
+  ]) {
+    const r = run(cmd);
+    assert.strictEqual(r.status, 0, `expected allow for ${cmd}\nstderr: ${r.stderr}`);
+  }
+});
+
+test('ALLOW (backstop): ordinary heredocs, pipelines, arithmetic and here-strings are not false-blocked', () => {
+  for (const cmd of [
+    "cat <<'EOF'\nDon't worry, it's fine\nEOF\necho hello world",
+    "cat <<'EOF' > notes.md\nIt's done; we don't push (yet) | ok\nEOF\ngit status",
+    "cat <<'EOF' | grep -E \"a|git push --force\"\nbody\nEOF",
+    'echo "$((1<<2))"',
+    'x=$((3 + 4)); echo $x; (( x > 2 )) && echo big',
+    "grep x <<< \"it's fine\" && echo done",
+    'git push origin main 2>&1 | tail -5',
+    'git log --oneline | head -5; git status',
+    'git push -u origin feature/x && gh pr create --fill',
+    "git commit -m \"$(cat <<'EOF'\nfeat: add retry\n\nIt's safe; no force push here.\nEOF\n)\"",
+  ]) {
+    const r = run(cmd);
+    assert.strictEqual(r.status, 0, `expected allow for ${JSON.stringify(cmd)}\nstderr: ${r.stderr}`);
+  }
+});
+
+// PERF: the backstop is one linear split and inArithmeticAt resumes its scan
+// (shell-scan.js _scanState). The arithmetic case took ~9s at 0.117.1
+// (quadratic rescans); the others start with a quote desync so the NORMAL
+// pass sees nothing and the backstop must walk the whole input.
+const PERF_DESYNC = "echo hi # it's fine\n";
+const PERF_CASES = [
+  ['96 KB adversarial arithmetic', 'echo $((1' + '<<y'.repeat(32000) + '))\ngit push --force origin main'],
+  ['160 KB heredoc', PERF_DESYNC + "cat <<'EOF'\n" + "line with an apostrophe's text\n".repeat(5120) + 'EOF\ngit push --force origin main'],
+  ['30000 segments', PERF_DESYNC + 'git tag a;'.repeat(30000) + 'git push --force origin main'],
+  ['160 KB cd-chain', PERF_DESYNC + 'cd a;echo>f;'.repeat(13400) + 'git push --force origin main'],
+];
+for (const [label, cmd] of PERF_CASES) {
+  test(`PERF (backstop): ${label} ending in a force push blocks in under 2s`, () => {
+    const t0 = Date.now();
+    const r = run(cmd);
+    const elapsedMs = Date.now() - t0;
+    assert.strictEqual(r.status, 2, `expected block (exit 2)\nstderr: ${r.stderr}`);
+    assert.match(r.stderr, REASON.FORCE);
+    assert.ok(elapsedMs < 2000, `expected < 2000ms, took ${elapsedMs}ms`);
+  });
+}

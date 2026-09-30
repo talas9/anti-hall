@@ -89,54 +89,84 @@ function parseHeredocAt(cmd, i) {
 // approximation that can only err toward "arithmetic" (the caller then skips
 // no heredoc body — stricter) or toward the pre-existing answer; it never
 // makes a caller skip more text than before.
+//
+// PERF (R2C1-3): both git-guard.js's and command-guard.js's splitSegments
+// call this (directly, and via parseHeredocAt below) once per `<<` found
+// during a SINGLE left-to-right scan of the SAME command string — i.e. at
+// strictly non-decreasing `pos` for a given `cmd`. Rescanning cmd[0, pos)
+// from scratch on every call turned that O(n) single pass into O(n^2): a
+// ~96 KB adversarial input with many `<<` inside an open arithmetic context
+// took ~30s (over git-guard's 10s hook timeout), so a trailing force push
+// could go unjudged. `_scanState` caches the scan position/stack/quote-state
+// between calls and resumes from where the LAST call for this exact `cmd`
+// string left off, instead of restarting at 0 — making the common
+// monotonically-increasing-pos pattern O(1) amortised per call while leaving
+// the function's behavior (and its correctness for an arbitrary/out-of-order
+// `pos`, which falls back to a full rescan) unchanged for every caller.
+let _scanState = null; // { cmd, j, stack, inSingle, inDouble, skipFrom, skipTo }
+
 function inArithmeticAt(cmd, pos) {
-  const stack = [];
-  let inSingle = false;
-  let inDouble = false;
-  let skipFrom = -1;
-  let skipTo = -1;
-  let j = 0;
-  while (j < pos) {
-    if (skipFrom !== -1 && j >= skipFrom) { if (skipTo > pos) return false; j = skipTo; skipFrom = -1; continue; }
+  const n = cmd.length;
+  let st = _scanState;
+  if (!st || st.cmd !== cmd || st.j > pos) {
+    st = _scanState = { cmd, j: 0, stack: [], inSingle: false, inDouble: false, skipFrom: -1, skipTo: -1 };
+  }
+  while (st.j < pos) {
+    if (st.skipFrom !== -1 && st.j >= st.skipFrom) {
+      // Target `pos` falls inside a heredoc body being skipped over — answer
+      // without consuming the skip (a LATER, larger `pos` must still resume
+      // the skip from here), so leave st.j/skipFrom/skipTo untouched.
+      if (st.skipTo > pos) return false;
+      st.j = st.skipTo; st.skipFrom = -1; continue;
+    }
+    const j = st.j;
     const c = cmd[j];
     const c2 = cmd[j + 1];
+    const stack = st.stack;
     const top = stack[stack.length - 1];
-    if (inSingle) { if (c === "'") inSingle = false; j++; continue; }
-    if (c === '\\') { j += 2; continue; }
-    if (!inDouble && c === '$' && c2 === "'") {
-      j += 2;
-      while (j < pos && cmd[j] !== "'") j += cmd[j] === '\\' ? 2 : 1;
-      j++; continue;
+    if (st.inSingle) { if (c === "'") st.inSingle = false; st.j = j + 1; continue; }
+    if (c === '\\') { st.j = j + 2; continue; }
+    if (!st.inDouble && c === '$' && c2 === "'") {
+      // Resolve the WHOLE ANSI-C span in one shot (bounded by the string
+      // length, not by `pos`): the stack is never touched while inside it,
+      // so a single call's answer is identical either way, but a persistent
+      // resumption MUST land exactly on the real closer (or EOF) — stopping
+      // early at `pos` would leave st.j pointing at literal quoted DATA that
+      // a LATER, larger `pos` call would then misparse as real shell syntax
+      // (R2C1-3 follow-up: bounding this by `pos` broke resumable caching).
+      let k = j + 2;
+      while (k < n && cmd[k] !== "'") k += cmd[k] === '\\' ? 2 : 1;
+      st.j = k + 1; continue;
     }
-    if (!inDouble && c === "'") { inSingle = true; j++; continue; }
-    if (c === '"') { inDouble = !inDouble; j++; continue; }
-    if (c === '$' && c2 === '(' && cmd[j + 2] === '(') { stack.push('A'); j += 3; continue; }
-    if (c === '$' && c2 === '[') { stack.push('B'); j += 2; continue; }
-    if (c === '$' && c2 === '(') { stack.push('C'); j += 2; continue; }
-    if (c === '(' && c2 === '(' && top !== 'A' && top !== 'B') { stack.push('A'); j += 2; continue; }
-    if (c === '(') { stack.push('P'); j++; continue; }
+    if (!st.inDouble && c === "'") { st.inSingle = true; st.j = j + 1; continue; }
+    if (c === '"') { st.inDouble = !st.inDouble; st.j = j + 1; continue; }
+    if (c === '$' && c2 === '(' && cmd[j + 2] === '(') { stack.push('A'); st.j = j + 3; continue; }
+    if (c === '$' && c2 === '[') { stack.push('B'); st.j = j + 2; continue; }
+    if (c === '$' && c2 === '(') { stack.push('C'); st.j = j + 2; continue; }
+    if (c === '(' && c2 === '(' && top !== 'A' && top !== 'B') { stack.push('A'); st.j = j + 2; continue; }
+    if (c === '(') { stack.push('P'); st.j = j + 1; continue; }
     if (c === ')') {
-      if (top === 'A' && c2 === ')') { stack.pop(); j += 2; continue; }
+      if (top === 'A' && c2 === ')') { stack.pop(); st.j = j + 2; continue; }
       if (top === 'C' || top === 'P') stack.pop();
-      j++; continue;
+      st.j = j + 1; continue;
     }
-    if (c === '[' && (top === 'B' || top === 'Q')) { stack.push('Q'); j++; continue; }
-    if (c === ']') { if (top === 'B' || top === 'Q') stack.pop(); j++; continue; }
-    if (!inDouble && c === '<' && c2 === '<' && top !== 'A' && top !== 'B') {
+    if (c === '[' && (top === 'B' || top === 'Q')) { stack.push('Q'); st.j = j + 1; continue; }
+    if (c === ']') { if (top === 'B' || top === 'Q') stack.pop(); st.j = j + 1; continue; }
+    if (!st.inDouble && c === '<' && c2 === '<' && top !== 'A' && top !== 'B') {
       // An earlier real heredoc: keep scanning its opener line (it is code),
       // then jump over its body (data — its parens/quotes must not count).
       const h = parseHeredocRaw(cmd, j);
       if (h) {
         const bodyStart = j + h.openerText.length;
-        if (bodyStart < h.end && (skipFrom === -1 || bodyStart < skipFrom)) {
-          skipFrom = bodyStart; skipTo = h.end;
+        if (bodyStart < h.end && (st.skipFrom === -1 || bodyStart < st.skipFrom)) {
+          st.skipFrom = bodyStart; st.skipTo = h.end;
         }
       }
-      j += 2; continue;
+      st.j = j + 2; continue;
     }
-    j++;
+    st.j = j + 1;
   }
-  const top = stack[stack.length - 1];
+  const top = st.stack[st.stack.length - 1];
   return top === 'A' || top === 'B';
 }
 

@@ -1649,156 +1649,280 @@ function scanCommand(cmd, depth, baseCwd) {
 
     if (ev.verb !== 'git') continue;
 
-    // `git -c key=value`: the value may be run as a command.
-    for (let j = 0; j + 1 < ev.args.length; j++) {
-      if (ev.args[j].text !== '-c') continue;
-      const cv = /^[^=]+=([\s\S]*)$/.exec(ev.args[j + 1].text);
-      const hit = cv ? scanCommandValue(cv[1], d) : null;
+    const gv = gitVerdict(ev, d, cmd, heredocBodies, lastCdDir, true);
+    if (gv) return gv;
+  }
+  return gitBackstop(cmd, d, heredocBodies, baseCwd);
+}
+
+// The git-specific verdicts (force push, push-arg command substitution,
+// command-valued `-c`/`git config` values, AI self-credit on commit-creating
+// commands) for ONE resolved `git …` invocation. Shared by scanCommand's
+// quote-aware segment pass and the quote-blind gitBackstop pass below, so both
+// passes apply exactly the same rules and emit exactly the same reasons.
+// `useJev` gates the (network, budgeted) Jev add-block consult: only the
+// quote-aware pass consults it.
+function gitVerdict(ev, d, cmd, heredocBodies, lastCdDir, useJev) {
+  // `git -c key=value`: the value may be run as a command.
+  for (let j = 0; j + 1 < ev.args.length; j++) {
+    if (ev.args[j].text !== '-c') continue;
+    const cv = /^[^=]+=([\s\S]*)$/.exec(ev.args[j + 1].text);
+    const hit = cv ? scanCommandValue(cv[1], d) : null;
+    if (hit) return hit;
+  }
+
+  const { sub, rest } = gitSubcommand(ev.args);
+  if (sub === null) return null;
+
+  // `git config [--file f] key value`: scan each operand as a possible value.
+  if (sub === 'config') {
+    for (const t of rest) {
+      if (t.text.startsWith('-')) continue;
+      const hit = scanCommandValue(t.text, d);
       if (hit) return hit;
     }
+  }
 
-    const { sub, rest } = gitSubcommand(ev.args);
-    if (sub === null) continue;
-
-    // `git config [--file f] key value`: scan each operand as a possible value.
-    if (sub === 'config') {
-      for (const t of rest) {
-        if (t.text.startsWith('-')) continue;
-        const hit = scanCommandValue(t.text, d);
-        if (hit) return hit;
-      }
-    }
-
-    // --- Rule 2: force push ---
-    if (sub === 'push') {
-      if (isForcePush(rest)) {
-        return (
-          'anti-hall git-guard: BLOCKED. Force push detected. Rewriting published ' +
-          'history is a deliberate human action - do it manually with explicit ' +
-          'owner confirmation, never from an automated push.'
-        );
-      }
-      if (hasCmdSubstArg(rest)) {
-        return (
-          'anti-hall git-guard: BLOCKED. `git push` has an argument produced by a ' +
-          'command substitution / backtick expansion, which can smuggle a --force ' +
-          'flag past static inspection. Run the push with literal arguments (no ' +
-          '$( ) or backticks) so the force-push guard can verify it.'
-        );
-      }
-    }
-
-    // --- Rule 1: self-credit in an inline commit message ---
-    // merge / commit-tree take the same -m / -F message flags; interpret-trailers
-    // takes --trailer and is used to stamp a message file before `commit -F`;
-    // tag takes the same -m / -F flags for an annotated tag's message, which is
-    // just as much an AI self-credit vector (e.g. `git tag -a v1.0 -m "...
-    // Co-Authored-By: Claude ..."`).
-    if (sub === 'commit' || sub === 'merge' || sub === 'commit-tree' || sub === 'interpret-trailers' || sub === 'tag') {
-      // Conservative block on a `-c trailer.<name>.key=<self-credit>` remap that
-      // would emit a Co-Authored-By / Generated-with trailer from a benign-looking
-      // custom token, dodging the value scan below.
-      if (hasSelfCreditTrailerKeyRemap(ev.args)) {
-        return (
-          'anti-hall git-guard: BLOCKED. `-c trailer.*.key=` remaps a custom ' +
-          'trailer token to an AI/assistant self-credit key (Co-Authored-By / ' +
-          'Generated-with). Remove the trailer remap - commits carry no AI ' +
-          'co-author credit.'
-        );
-      }
-      const msgs = inlineCommitMessages(rest);
-      for (const m of msgs) {
-        const normalized = m
-          .replace(/\\n/g, '\n')
-          .replace(/\\r/g, '\r')
-          .replace(/\\t/g, '\t');
-        if (
-          SELF_CREDIT_COAUTHOR.test(m) || SELF_CREDIT_GENERATED.test(m) ||
-          SELF_CREDIT_COAUTHOR.test(normalized) || SELF_CREDIT_GENERATED.test(normalized)
-        ) {
-          return (
-            'anti-hall git-guard: BLOCKED. Commit message contains an AI/assistant ' +
-            'self-credit trailer (Co-Authored-By / "Generated with <AI>"). Remove it - ' +
-            'commits carry no AI co-author credit. Re-run the commit without that trailer.'
-          );
-        }
-      }
-      // JEV ADD-BLOCK (gitGuardSelfCredit, default mode "shadow" — see
-      // jev-assist.js / ghSelfCreditMessage's twin call above for the full
-      // rationale). Only reached when an inline -m/-F message was actually
-      // present AND the regex scan above found nothing — can only ADD a
-      // block, never relax the regex verdict.
-      for (const m of msgs) {
-        if (m && consultGitGuardSelfCreditJev(m)) {
-          return (
-            'anti-hall git-guard: BLOCKED. Commit message appears to credit an AI ' +
-            'assistant (paraphrased self-credit, flagged by the Jev classifier — not ' +
-            'a literal trailer match). Remove it - commits carry no AI co-author credit.'
-          );
-        }
-      }
-
-      // --- ADDITIVE: `-F <file>` / `--file[=<file>]` (never removes a block,
-      // only adds one) ---
-      //   - `-F -` / `--file=-` / `-F /dev/stdin`: the message is read from
-      //     STDIN. Scanned against every heredoc body found anywhere in this
-      //     command's raw text (extractHeredocBodies, a side-channel over the
-      //     raw string - splitSegments/force-push/inline-message detection
-      //     above are completely untouched by this).
-      //   - `-F <real path>`: read the file directly (relative paths resolved
-      //     against a preceding literal `cd <dir>` segment if any, else the
-      //     hook's cwd). Fail-open (skip, do not block) if it cannot be read.
-      const fileSpecs = fileCommitMessages(rest);
-      for (const spec of fileSpecs) {
-        let text = null;
-        if (spec === '-' || spec === '/dev/stdin') {
-          const candidates = [];
-          if (heredocBodies.length) candidates.push(...heredocBodies.map((h) => h.body));
-          candidates.push(...extractQuotedLiterals(cmd));
-          if (candidates.length) text = candidates.join('\n');
-        } else {
-          let filePath = spec;
-          if (!path.isAbsolute(filePath) && lastCdDir) {
-            filePath = path.join(lastCdDir, filePath);
-          }
-          try {
-            text = fs.readFileSync(filePath, 'utf8');
-          } catch (_) {
-            text = null; // unreadable/nonexistent -> fail-open, do not guess
-          }
-        }
-        if (text === null) continue;
-        if (SELF_CREDIT_COAUTHOR.test(text) || SELF_CREDIT_GENERATED.test(text)) {
-          return (
-            'anti-hall git-guard: BLOCKED. Commit message (via `-F`/`--file`, ' +
-            'read from a heredoc body or file) contains an AI/assistant self-credit ' +
-            'trailer (Co-Authored-By / "Generated with <AI>"). Remove it - commits ' +
-            'carry no AI co-author credit. Re-run the commit without that trailer.'
-          );
-        }
-        // JEV ADD-BLOCK (gitGuardSelfCredit) — same twin call as the inline
-        // -m/--trailer path above, for a `-F`/`--file`-sourced message.
-        if (consultGitGuardSelfCreditJev(text)) {
-          return (
-            'anti-hall git-guard: BLOCKED. Commit message (via `-F`/`--file`) appears ' +
-            'to credit an AI assistant (paraphrased self-credit, flagged by the Jev ' +
-            'classifier — not a literal trailer match). Remove it - commits carry no ' +
-            'AI co-author credit.'
-          );
-        }
-      }
-    }
-
-    // --- Rule 1 (whole command): any commit-creating git verb whose command
-    // text carries a self-credit trailer line, however it reaches git ---
-    if (COMMIT_CREATING.has(sub) && hasSelfCredit(currentRawCommand)) {
+  // --- Rule 2: force push ---
+  if (sub === 'push') {
+    if (isForcePush(rest)) {
       return (
-        'anti-hall git-guard: BLOCKED. This command creates a commit (git ' + sub + ') ' +
-        'and its text contains an AI/assistant self-credit trailer line ' +
-        '(Co-Authored-By / "Generated with <AI>") - via a pipe, variable, file ' +
-        'written in the same command, or similar. Remove it - commits carry no AI ' +
+        'anti-hall git-guard: BLOCKED. Force push detected. Rewriting published ' +
+        'history is a deliberate human action - do it manually with explicit ' +
+        'owner confirmation, never from an automated push.'
+      );
+    }
+    if (hasCmdSubstArg(rest)) {
+      return (
+        'anti-hall git-guard: BLOCKED. `git push` has an argument produced by a ' +
+        'command substitution / backtick expansion, which can smuggle a --force ' +
+        'flag past static inspection. Run the push with literal arguments (no ' +
+        '$( ) or backticks) so the force-push guard can verify it.'
+      );
+    }
+  }
+
+  // --- Rule 1: self-credit in an inline commit message ---
+  // merge / commit-tree take the same -m / -F message flags; interpret-trailers
+  // takes --trailer and is used to stamp a message file before `commit -F`;
+  // tag takes the same -m / -F flags for an annotated tag's message, which is
+  // just as much an AI self-credit vector (e.g. `git tag -a v1.0 -m "...
+  // Co-Authored-By: Claude ..."`).
+  if (sub === 'commit' || sub === 'merge' || sub === 'commit-tree' || sub === 'interpret-trailers' || sub === 'tag') {
+    // Conservative block on a `-c trailer.<name>.key=<self-credit>` remap that
+    // would emit a Co-Authored-By / Generated-with trailer from a benign-looking
+    // custom token, dodging the value scan below.
+    if (hasSelfCreditTrailerKeyRemap(ev.args)) {
+      return (
+        'anti-hall git-guard: BLOCKED. `-c trailer.*.key=` remaps a custom ' +
+        'trailer token to an AI/assistant self-credit key (Co-Authored-By / ' +
+        'Generated-with). Remove the trailer remap - commits carry no AI ' +
         'co-author credit.'
       );
+    }
+    const msgs = inlineCommitMessages(rest);
+    for (const m of msgs) {
+      const normalized = m
+        .replace(/\\n/g, '\n')
+        .replace(/\\r/g, '\r')
+        .replace(/\\t/g, '\t');
+      if (
+        SELF_CREDIT_COAUTHOR.test(m) || SELF_CREDIT_GENERATED.test(m) ||
+        SELF_CREDIT_COAUTHOR.test(normalized) || SELF_CREDIT_GENERATED.test(normalized)
+      ) {
+        return (
+          'anti-hall git-guard: BLOCKED. Commit message contains an AI/assistant ' +
+          'self-credit trailer (Co-Authored-By / "Generated with <AI>"). Remove it - ' +
+          'commits carry no AI co-author credit. Re-run the commit without that trailer.'
+        );
+      }
+    }
+    // JEV ADD-BLOCK (gitGuardSelfCredit, default mode "shadow" — see
+    // jev-assist.js / ghSelfCreditMessage's twin call above for the full
+    // rationale). Only reached when an inline -m/-F message was actually
+    // present AND the regex scan above found nothing — can only ADD a
+    // block, never relax the regex verdict.
+    for (const m of msgs) {
+      if (m && useJev && consultGitGuardSelfCreditJev(m)) {
+        return (
+          'anti-hall git-guard: BLOCKED. Commit message appears to credit an AI ' +
+          'assistant (paraphrased self-credit, flagged by the Jev classifier — not ' +
+          'a literal trailer match). Remove it - commits carry no AI co-author credit.'
+        );
+      }
+    }
+
+    // --- ADDITIVE: `-F <file>` / `--file[=<file>]` (never removes a block,
+    // only adds one) ---
+    //   - `-F -` / `--file=-` / `-F /dev/stdin`: the message is read from
+    //     STDIN. Scanned against every heredoc body found anywhere in this
+    //     command's raw text (extractHeredocBodies, a side-channel over the
+    //     raw string - splitSegments/force-push/inline-message detection
+    //     above are completely untouched by this).
+    //   - `-F <real path>`: read the file directly (relative paths resolved
+    //     against a preceding literal `cd <dir>` segment if any, else the
+    //     hook's cwd). Fail-open (skip, do not block) if it cannot be read.
+    const fileSpecs = fileCommitMessages(rest);
+    for (const spec of fileSpecs) {
+      let text = null;
+      if (spec === '-' || spec === '/dev/stdin') {
+        const candidates = [];
+        if (heredocBodies.length) candidates.push(...heredocBodies.map((h) => h.body));
+        candidates.push(...extractQuotedLiterals(cmd));
+        if (candidates.length) text = candidates.join('\n');
+      } else {
+        let filePath = spec;
+        if (!path.isAbsolute(filePath) && lastCdDir) {
+          filePath = path.join(lastCdDir, filePath);
+        }
+        try {
+          text = fs.readFileSync(filePath, 'utf8');
+        } catch (_) {
+          text = null; // unreadable/nonexistent -> fail-open, do not guess
+        }
+      }
+      if (text === null) continue;
+      if (SELF_CREDIT_COAUTHOR.test(text) || SELF_CREDIT_GENERATED.test(text)) {
+        return (
+          'anti-hall git-guard: BLOCKED. Commit message (via `-F`/`--file`, ' +
+          'read from a heredoc body or file) contains an AI/assistant self-credit ' +
+          'trailer (Co-Authored-By / "Generated with <AI>"). Remove it - commits ' +
+          'carry no AI co-author credit. Re-run the commit without that trailer.'
+        );
+      }
+      // JEV ADD-BLOCK (gitGuardSelfCredit) — same twin call as the inline
+      // -m/--trailer path above, for a `-F`/`--file`-sourced message.
+      if (useJev && consultGitGuardSelfCreditJev(text)) {
+        return (
+          'anti-hall git-guard: BLOCKED. Commit message (via `-F`/`--file`) appears ' +
+          'to credit an AI assistant (paraphrased self-credit, flagged by the Jev ' +
+          'classifier — not a literal trailer match). Remove it - commits carry no ' +
+          'AI co-author credit.'
+        );
+      }
+    }
+  }
+
+  // --- Rule 1 (whole command): any commit-creating git verb whose command
+  // text carries a self-credit trailer line, however it reaches git ---
+  if (COMMIT_CREATING.has(sub) && hasSelfCredit(currentRawCommand)) {
+    return (
+      'anti-hall git-guard: BLOCKED. This command creates a commit (git ' + sub + ') ' +
+      'and its text contains an AI/assistant self-credit trailer line ' +
+      '(Co-Authored-By / "Generated with <AI>") - via a pipe, variable, file ' +
+      'written in the same command, or similar. Remove it - commits carry no AI ' +
+      'co-author credit.'
+    );
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// QUOTE-BLIND BACKSTOP (0.117.2). splitSegments tracks quotes, and any
+// quote-state desync (an apostrophe in a heredoc body, a quote inside a
+// comment, a heredoc/arithmetic/command-substitution interaction it models
+// imperfectly) makes it read the REST of the command as one quoted span and
+// swallow a later, real `git push --force`. Four rounds of tokenizer patches
+// each opened a new variant, so instead of modelling the shell harder this
+// pass does not model quotes, heredocs or comments AT ALL and therefore cannot
+// desync: it cuts the raw command at every newline, `;`, `&`, `|`, `(`, `)`
+// (which covers `&&`, `||`, `|&`, `$(`) and backtick, and runs ONLY the git
+// verdicts (gitVerdict: force push, push-arg command substitution,
+// command-valued -c/config values, self-credit on commit-creating commands) on
+// each piece, unwrapping eval / `bash -c` payloads the same way. scanCommand
+// blocks when EITHER its quote-aware pass or this pass blocks; the reason text
+// is identical. Non-git verdicts (launcher-dir writes, config-line scans, gh
+// bodies) stay on the quote-aware pass only, so this adds no new false block
+// there. One linear split: O(n).
+//
+// DELIBERATE FAIL-CLOSED (accepted false block): quoted text holding a
+// separator followed by a literal git command - `git commit -m "don't; git
+// push --force"`, or a multi-line message with a LINE that starts with `git
+// push --force` - is blocked, because a quote-blind cut cannot tell it from a
+// real command. A mention with no separator in front of `git` (`git commit -m
+// "never git push --force"`) stays allowed: that piece's git verb is `commit`.
+// One narrow exception keeps regex alternations working: a TIGHT single `|`
+// (non-space on both sides, e.g. `grep -E "a|git push --force"`) is not a cut
+// when the text after it, up to the next cut, holds an unbalanced quote - the
+// `|` then sits inside a quoted pattern, not between two commands. A real
+// tight pipe into git (`x|git push --force origin main`) carries no such
+// quote and is still cut.
+function backstopPieces(cmd) {
+  // Backslash-newline is a line continuation: join, never cut.
+  const s = cmd.replace(/\\\r?\n/g, ' ');
+  const n = s.length;
+  const pieces = []; // { text, tightPipe }
+  let start = 0;
+  let tightPipe = false;
+  function cut(end, next, subst, nextTight) {
+    pieces.push({ text: s.slice(start, end) + (subst ? ' ' + CMDSUBST_SENTINEL + ' ' : ''), tightPipe });
+    start = next;
+    tightPipe = nextTight;
+  }
+  for (let i = 0; i < n; i++) {
+    const c = s[i];
+    if (c === '\n' || c === ';' || c === ')') { cut(i, i + 1, false, false); continue; }
+    // `$(` / backtick: the piece before it gets argv from an expansion.
+    if (c === '(') { cut(i, i + 1, i > 0 && s[i - 1] === '$', false); continue; }
+    if (c === '`') { cut(i, i + 1, true, false); continue; }
+    if (c === '|') {
+      if (i > 0 && s[i - 1] === '>') continue; // `>|` clobber redirect
+      if (s[i + 1] === '|' || s[i + 1] === '&') { cut(i, i + 2, false, false); i++; continue; }
+      const tight = i > 0 && !/\s/.test(s[i - 1]) && i + 1 < n && !/\s/.test(s[i + 1]);
+      cut(i, i + 1, false, tight);
+      continue;
+    }
+    if (c === '&') {
+      if (s[i + 1] === '&') { cut(i, i + 2, false, false); i++; continue; }
+      // `2>&1`, `>&2`, `<&3`, `&>file`: a redirect, not a separator.
+      if ((i > 0 && (s[i - 1] === '>' || s[i - 1] === '<')) || s[i + 1] === '>') continue;
+      cut(i, i + 1, false, false);
+    }
+  }
+  cut(n, n, false, false);
+  const out = [];
+  for (const p of pieces) {
+    const oddQuote = (p.text.split('"').length - 1) % 2 === 1 || (p.text.split("'").length - 1) % 2 === 1;
+    if (p.tightPipe && oddQuote && out.length) out[out.length - 1] += '|' + p.text;
+    else out.push(p.text);
+  }
+  return out;
+}
+
+// Resolve one backstop piece to its effective verb. A leading `{`/`!` word is
+// dropped (braces are not cut points, so `${VAR}` stays whole), and a quoted
+// verb word (`"git" push`) is still the verb - the shell strips the quotes.
+function backstopVerb(text) {
+  const tokens = tokenize(text.replace(/^(?:\s*[{}!](?=\s|$))+/, ''));
+  let idx = 0;
+  while (idx < tokens.length && !tokens[idx].quotedOnly && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[idx].text)) idx++;
+  if (idx < tokens.length && tokens[idx].quotedOnly) {
+    tokens[idx] = { text: tokens[idx].text, quotedOnly: false };
+  }
+  return effectiveVerb(tokens);
+}
+
+function gitBackstop(cmd, d, heredocBodies, baseCwd) {
+  const cwd = (typeof baseCwd === 'string' && baseCwd) ? baseCwd : null;
+  for (const raw of backstopPieces(cmd)) {
+    const trimmed = raw.replace(/^\s+/, '');
+    // Two readings: as-is, and with one leading layer of quote chars stripped
+    // (a quote a desynced line left dangling in front of the command).
+    const variants = [trimmed];
+    if (/^["']/.test(trimmed)) variants.push(trimmed.replace(/^["']+/, ''));
+    for (const v of variants) {
+      const ev = backstopVerb(v);
+      if (!ev) continue;
+      if (ev.verb === 'git') {
+        const hit = gitVerdict(ev, d, cmd, heredocBodies, cwd, false);
+        if (hit) return hit;
+      } else if (d < 3 && (ev.verb === 'eval' || SHELL_VERBS.has(ev.verb.toLowerCase()))) {
+        const payload = ev.verb === 'eval' ? extractEvalPayload(v) : extractShellCPayload(v);
+        if (payload) {
+          const hit = gitBackstop(payload, d + 1, extractHeredocBodies(payload), cwd);
+          if (hit) return hit;
+        }
+      }
     }
   }
   return null;

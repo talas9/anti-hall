@@ -6,6 +6,33 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.117.2 (2026-09-30)
+
+Security fix for git-guard.
+
+### Fixed
+
+- **git-guard could miss a force push that came after a heredoc or a stray quote (0.116.1
+  and 0.117.1).** git-guard splits a command into its separate commands while tracking
+  quotes. Some text threw that tracking off: an apostrophe in a heredoc body
+  (`It's done`), a quote in a `#` comment, or a heredoc inside a quoted `$( … )`. When
+  that happened, the rest of the command looked like one long quoted string, so a later
+  force push was allowed. git-guard now also runs a quote-blind check. It cuts the
+  whole command at every newline, `;`, `&`, `|`, `(`, `)`, `$(` and backtick, ignoring
+  quotes, heredocs and comments, and applies the git rules to each piece: force push in
+  every form, push arguments built by command substitution, command-valued git config,
+  and AI self-credit trailers on commit-creating commands. These pieces are also checked
+  inside `eval` and `bash -c` payloads. The command is blocked if either check blocks it.
+  Rules that are not about git, such as launcher-directory writes, still use only the
+  quote-aware check. Known and deliberate: quoted text that has a separator right before
+  a literal force push, such as `git commit -m "don't; git push --force"`, is now
+  blocked. A plain mention like `git commit -m "never git push --force"` is still
+  allowed.
+- **Slow arithmetic scan.** Long inputs with many `<<` inside `$(( … ))` took about 9 s
+  to check, close to the hook's 10 s timeout. The scan now continues from where it
+  stopped instead of starting again at the beginning, so a 96 KB input is checked in
+  about 30 ms.
+
 ## 0.117.1 (2026-09-28)
 
 Four field-reported fixes from DevSwarm child workspaces, all root-caused against a
