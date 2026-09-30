@@ -1434,6 +1434,19 @@ function main() {
   // reading it before the gate is safe and lets the gate's tiers (c)/(d)
   // evaluate against the real cwd.
   const cwd = process.cwd();
+  // --auto = started by the harness via monitors.json ("when": "always"), at
+  // EVERY session start, not armed by the model. Every stdout line becomes a
+  // transcript event that wakes the session, so an auto-started watcher must
+  // stay SILENT on stdout for the expected not-applicable refusals
+  // (not-a-devswarm-session, disabled-by-settings) — otherwise every
+  // non-DevSwarm session burns a model turn on a no-op refusal. A
+  // model-armed watcher (no --auto) keeps the one refusal line: its caller
+  // needs it to tell "no coverage" from "armed and quiet".
+  const autoStarted = process.argv.includes('--auto');
+  const refuseQuietly = (reason) => {
+    if (autoStarted) return;
+    try { emitLine(formatRefusalLine(reason)); } catch (_) {}
+  };
 
   // Settings switch devswarm.wakeWatch (0.108.4): off -> refuse to arm, one
   // closed-vocabulary line, exit 0 (the cron wake fallback is unaffected).
@@ -1441,7 +1454,7 @@ function main() {
   let wakeWatchOn = true;
   try { wakeWatchOn = require('../../hooks/lib/settings.js').getWithEnv('devswarm', 'wakeWatch', true, env) !== false; } catch (_) { wakeWatchOn = true; }
   if (!wakeWatchOn) {
-    try { emitLine(formatRefusalLine(REFUSAL_REASONS.DISABLED)); } catch (_) {}
+    refuseQuietly(REFUSAL_REASONS.DISABLED);
     process.exitCode = 0;
     return;
   }
@@ -1456,7 +1469,7 @@ function main() {
   // unconditionally), not a fault.
   if (!isDevswarmActiveGate(env, cwd, {})) {
     try { process.stderr.write('[wake-watch] not a DevSwarm session; exiting quietly (not arming).\n'); } catch (_) {}
-    try { emitLine(formatRefusalLine(REFUSAL_REASONS.NOT_DEVSWARM_SESSION)); } catch (_) {}
+    refuseQuietly(REFUSAL_REASONS.NOT_DEVSWARM_SESSION);
     process.exitCode = 0;
     return;
   }

@@ -1134,3 +1134,34 @@ test('main(): devswarm.wakeWatch=false refuses to arm (disabled-by-settings), ex
     assert.ok(!fs.existsSync(path.dirname(lockPathFor(home, id))), 'no watch-lock directory when disabled');
   } finally { rm(home); }
 });
+
+// --auto = harness-started via monitors.json "when": "always" at EVERY session
+// start. Each stdout line wakes the session, so the expected not-applicable
+// refusals must be silent there (a non-DevSwarm terminal session otherwise
+// burned a model turn on "REFUSED TO ARM: not-a-devswarm-session"). The
+// model-armed path (no --auto, tests above) keeps its one refusal line.
+test('main() --auto: a non-DevSwarm session refuses with ZERO stdout, exit 0, zero files/dirs', () => {
+  const home = tmpHome();
+  try {
+    const env = { PATH: process.env.PATH, HOME: home, USERPROFILE: home };
+    const res = spawnSync(process.execPath, [MODULE_PATH, '--auto'], { env, encoding: 'utf8', timeout: 5000 });
+    assert.strictEqual(res.status, 0);
+    assert.strictEqual(res.stdout, '');
+    assert.match(res.stderr, /not a DevSwarm session/);
+    assert.strictEqual(fs.existsSync(path.join(home, '.anti-hall')), false);
+  } finally { rm(home); }
+});
+
+test('main() --auto: devswarm.wakeWatch=false refuses with ZERO stdout, exit 0, no lock', () => {
+  const { switchOff } = require('../helpers/settings-switch.js');
+  const home = tmpHome();
+  try {
+    const id = 'arm-test-child-off-auto';
+    switchOff(home, 'devswarm', 'wakeWatch');
+    const env = { PATH: process.env.PATH, HOME: home, USERPROFILE: home, DEVSWARM_REPO_ID: 'r1', DEVSWARM_SOURCE_BRANCH: 'main', DEVSWARM_BUILDER_ID: id };
+    const res = spawnSync(process.execPath, [MODULE_PATH, '--auto'], { env, encoding: 'utf8', timeout: 5000 });
+    assert.strictEqual(res.status, 0);
+    assert.strictEqual(res.stdout, '');
+    assert.ok(!fs.existsSync(path.dirname(lockPathFor(home, id))), 'no watch-lock directory when disabled');
+  } finally { rm(home); }
+});

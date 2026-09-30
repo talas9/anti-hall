@@ -6,6 +6,12 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## Unreleased
+
+### Fixed
+
+- **Wake watcher no longer wakes non-DevSwarm sessions.** `monitors.json` (`"when": "always"`) starts the watcher at every session start, and every stdout line is a transcript event, so a plain terminal session got `REFUSED TO ARM: not-a-devswarm-session` and spent a model turn on it. The harness-started entry now passes `--auto`; with it the expected refusals (`not-a-devswarm-session`, `disabled-by-settings`) go to stderr only. A model-armed watcher still prints its one refusal line.
+
 ## 0.118.0 (2026-09-30)
 
 DevSwarm wake-watch/limit-skip and nudge/roster fixes, a codex-nudge scratchpad-exclusion

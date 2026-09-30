@@ -96,3 +96,8 @@ test('the watcher script the entry points at is require()-loadable and side-effe
   const src = fs.readFileSync(watcherPath, 'utf8');
   assert.match(src, /require\.main === module/, 'the watcher must guard its main() runner so a bare require() never starts the poll loop');
 });
+
+test('the devswarm-wake-watch command passes --auto so harness-started refusals stay silent on stdout', () => {
+  const entry = JSON.parse(RAW).find((m) => m.name === 'devswarm-wake-watch');
+  assert.match(entry.command, /devswarm-wake-watch\.js --auto$/);
+});
