@@ -1715,7 +1715,17 @@ function isFlaggedInterpreterScript(segment) {
 // roster | head` form blocked while the same line without `timeout` passed).
 const TIMEOUT_PREFIX_RE = /^\s*timeout\s+(?:-[ks]\s+\S+\s+|-\S+\s+)*\d+[smhd]?\s+/;
 
+// A shell control keyword that merely introduces the next command
+// (`for t in a b; do <cmd>`, `then <cmd>`, `if <cmd>`) is not part of that
+// command. The segment splitter leaves the keyword glued to the body, which
+// defeated every start-anchored LIGHT_EXCEPTION (field report: a `for … do
+// node …/devswarm.js send …; done` loop was blocked while the same single
+// send passed). Strip it so the body is judged exactly as it would be alone;
+// every OTHER body segment (`; npm test`) is still classified on its own.
+const CONTROL_KEYWORD_PREFIX_RE = /^\s*(?:(?:do|then|else|if|while|until)\s+)+/;
+
 function isHeavySegment(segment, command) {
+  segment = segment.replace(CONTROL_KEYWORD_PREFIX_RE, '');
   const unwrapped = segment.replace(TIMEOUT_PREFIX_RE, '');
   for (const re of LIGHT_EXCEPTIONS) {
     if (re.test(segment) || re.test(unwrapped)) return false;
@@ -2045,7 +2055,17 @@ function isInterpreterScriptCheck(segment, ctx) {
   const trimmed = segment.trim();
   const tokens = trimmed.split(/\s+/).filter(Boolean);
   if (tokens.length < 3) return false;
-  if (!SCRIPT_CHECK_INTERPRETER_RE.test(tokens[0])) return false;
+  if (ctx && ctx.cwdUnknown) return false; // a preceding `cd` we could not resolve: relative script path is unknowable
+  const payload0 = ctx && ctx.payload;
+  const base0 = (payload0 && typeof payload0.cwd === 'string' && payload0.cwd) || process.cwd();
+  if (!SCRIPT_CHECK_INTERPRETER_RE.test(basename(tokens[0]).toLowerCase())) return false;
+  // A path-qualified interpreter (`../venv/bin/python`, `.venv/bin/python3`) is
+  // the same shape as the bare name: plain path chars only, and it must be an
+  // existing regular file (a nonexistent path is not a checkable interpreter).
+  if (tokens[0] !== basename(tokens[0])) {
+    if (/[$`'"~*?[\]{}\\<>();&|]/.test(tokens[0])) return false;
+    try { if (!fs.statSync(path.resolve(base0, tokens[0])).isFile()) return false; } catch (_) { return false; }
+  }
   const script = tokens[1];
   if (script === '-' || script.startsWith('-')) return false;
   if (/[$`'"~*?[\]{}\\<>();&|]/.test(script)) return false;
@@ -2055,8 +2075,7 @@ function isInterpreterScriptCheck(segment, ctx) {
   if (/</.test(neutralized)) return false;
   if (SCRIPT_CHECK_REFUSED_FLAG_RE.test(neutralized)) return false;
   if (!VERIFY_CHECK_FLAG_RE.test(' ' + neutralized + ' ')) return false;
-  const payload = ctx && ctx.payload;
-  const base = (payload && typeof payload.cwd === 'string' && payload.cwd) || process.cwd();
+  const base = base0;
   let realScript;
   try {
     const abs = path.resolve(base, script);
@@ -2069,7 +2088,7 @@ function isInterpreterScriptCheck(segment, ctx) {
   // walking up from the script's realpath).
   if (tokens.some((t) => t === '--confirmed' || t.startsWith('--confirmed='))) return false;
   if (isInsideAntiHallPlugin(realScript)) return false;
-  const rest = trimmed.slice(trimmed.indexOf(script) + script.length);
+  const rest = trimmed.slice(trimmed.indexOf(script, tokens[0].length) + script.length);
   if (isHeavyCommand(('true ' + rest).replace(VERIFY_CHECK_FLAG_RE_G, ' '))) return false;
   return true;
 }
@@ -2109,6 +2128,22 @@ function isBoundedNodeTestCheck(segment) {
   return true;
 }
 
+// `[npx] vitest run <1-2 explicit test files>` / `[npx] jest <1-2 explicit
+// test files>` — the JS-runner twin of isBoundedNodeTestCheck: no flags, no
+// globs, no directories, each target an explicit `*.test|spec.<js|ts…>` file.
+// Full suites, watch mode, `--coverage` and any other flag stay heavy.
+function isBoundedJsTestRunnerCheck(segment) {
+  const tokens = segment.trim().split(/\s+/).filter(Boolean);
+  let i = 0;
+  if (tokens[i] === 'npx') i++;
+  if (tokens[i] === 'vitest') { i++; if (tokens[i] !== 'run') return false; i++; }
+  else if (tokens[i] === 'jest') i++;
+  else return false;
+  const files = tokens.slice(i);
+  if (files.length < 1 || files.length > 2) return false;
+  return files.every((f) => !f.startsWith('-') && !/[*?\[\]$`\\]/.test(f) && /\.(?:test|spec)\.[mc]?[jt]sx?$/i.test(f));
+}
+
 function isCtestNameCheck(segment) {
   return /^ctest\s+-R\s+\S+$/.test(segment.trim());
 }
@@ -2126,6 +2161,7 @@ function isScratchpadOrTmpPath(p, ctx) {
   if (typeof p !== 'string' || !p) return false;
   const unquoted = p.replace(/^['"]|['"]$/g, '');
   if (!unquoted || /[$`~*?[\]{}]/.test(unquoted)) return false; // expansion/glob: unknowable target
+  if (ctx && ctx.cwdUnknown && !path.isAbsolute(unquoted)) return false; // unresolved preceding `cd`
   const payload = ctx && ctx.payload;
   const base = (payload && typeof payload.cwd === 'string' && payload.cwd) || process.cwd();
   let abs;
@@ -2152,6 +2188,7 @@ function isQualifyingSingleTargetCheck(segment, ctx) {
   if (isSyntaxOnlyCompileCheck(segment)) return true;
   if (isSinglePytestFileCheck(segment)) return true;
   if (isBoundedNodeTestCheck(segment)) return true;
+  if (isBoundedJsTestRunnerCheck(segment)) return true;
   if (isCtestNameCheck(segment)) return true;
   if (isSafeScratchpadGitClone(segment, ctx)) return true;
   if (isGenericCheckFlagCommand(segment)) return true;
@@ -2219,6 +2256,19 @@ function isBoundedVerificationCommand(command, ctx) {
   for (let idx = 0; idx < segments.length; idx++) {
     const seg = segments[idx].trim();
     if (!seg) continue;
+    // A `cd <path>` segment moves where every LATER relative path (script,
+    // interpreter, clone dest) resolves — track it so `cd <repo> && <check>
+    // | tail` is judged against the directory it actually runs in. A cd we
+    // cannot resolve statically marks the cwd unknown (relative paths refuse).
+    if (effectiveVerb(seg) === 'cd') {
+      const cdTok = tokenizeQuoted(seg);
+      const cdBase = (ctx.payload && typeof ctx.payload.cwd === 'string' && ctx.payload.cwd) || process.cwd();
+      if (cdTok.length === 2 && cdTok[0] === 'cd' && !/^-|[$`~*?[\]{}\\]/.test(cdTok[1])) {
+        ctx = Object.assign({}, ctx, { payload: Object.assign({}, ctx.payload, { cwd: path.resolve(cdBase, cdTok[1]) }) });
+      } else {
+        ctx = Object.assign({}, ctx, { cwdUnknown: true });
+      }
+    }
     if (hasDisallowedWriteRedirect(seg, ctx)) return false;
     let kind;
     // `2>&1` only merges stderr INTO the pipe (still bounded by the sink), so
@@ -2668,7 +2718,20 @@ function isPlainPushRefAllowed(ref, cwd) {
   // branch (bare or refs/heads/-qualified). Anything else never qualifies.
   const src = ref.slice(0, colon);
   const dst = ref.slice(colon + 1).replace(/^refs\/heads\//, '');
-  return (src === 'HEAD' || src === branch) && dst === branch;
+  if (dst !== branch) return false;
+  if (src === 'HEAD' || src === branch) return true;
+  // SRC may also be the checked-out commit spelled as its (abbreviated) sha —
+  // the same commit `HEAD` names, so the push is still "my current branch".
+  // Resolved fresh; a sha that is not HEAD's (or any resolve failure) refuses.
+  if (/^[0-9a-f]{7,40}$/i.test(src)) {
+    try {
+      const { spawnSync } = require('child_process');
+      const res = spawnSync('git', ['-C', cwd || process.cwd(), 'rev-parse', 'HEAD'], { encoding: 'utf8', timeout: 5000 });
+      const head = res && res.status === 0 ? String(res.stdout || '').trim().toLowerCase() : '';
+      return !!head && head.startsWith(src.toLowerCase());
+    } catch (_) { return false; }
+  }
+  return false;
 }
 
 // isAllowedPlainPushChain(command, cwd) -> bool. See the header block above.
@@ -3250,7 +3313,7 @@ function main() {
   // run_in_background scratch-script rule) — keep in sync with those.
   const INLINE_ALLOWED_HINT =
     'Inline-allowed ONLY when piped to tail/head/wc/grep -c/grep -m N: `python3 -m pytest -q <one file>`, ' +
-    '`node --test <1-2 files>`, `ctest -R <name>`, `<cc> -fsyntax-only`, `git clone --depth 1 <https-url> <scratch/tmp dir>`, ' +
+    '`node --test <1-2 files>`, `[npx] vitest run|jest <1-2 *.test|spec files>`, `ctest -R <name>`, `<cc> -fsyntax-only`, `git clone --depth 1 <https-url> <scratch/tmp dir>`, ' +
     'a non-heavy command with --check/--dry-run/--list, or `<python3|node|ruby|perl|php> <existing script> --check`. ' +
     'Everything else goes to a subagent.';
   // One-line version of the scratchpad-script path, surfaced right after the
@@ -3260,7 +3323,7 @@ function main() {
   // "just delegate to a subagent"). TEXT ONLY: same rule, same inline-allowed
   // set — just reordered.
   const SCRATCHPAD_SCRIPT_HINT =
-    'Have a script to run? Write it to the scratchpad and run it with run_in_background (use the literal absolute scratchpad path, not $VAR; chain only wc/head/tail/grep -c/grep -m N) — never inline. ';
+    'Have a script to run? Write it to the scratchpad and run it with run_in_background (use the literal absolute scratchpad path, not $VAR; chain only wc/head/tail/grep -c/grep -m N) — never inline: a scratchpad script piped to tail is STILL blocked in the foreground, it must be run_in_background. ';
   const reason = devswarmPrimary
     ? ('DEVSWARM COMMAND-DELEGATION RULE: the primary/main orchestrator never runs ' +
        'heavy/long/state-changing commands inline — raw output floods the main thread. ' +

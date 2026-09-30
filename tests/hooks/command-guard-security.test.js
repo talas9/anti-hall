@@ -241,7 +241,8 @@ const F3_BLOCK = [
   'node tools/gen.js --check | tail -5 && node tools/gen.js --check',
   'python3 tools/gen_contract.py --check | tail -5 &',
   'git clone --depth 1 https://example.invalid/r.git /tmp/cgsec-a | tail ; git clone --depth 1 https://example.invalid/r.git /tmp/cgsec-b',
-  'cd tools && node gen.js --check | tail -5', // script resolves against the payload cwd, not the cd target
+  'cd tools && node tools/gen.js --check | tail -5', // script resolves against the cd target (tools/tools/gen.js does not exist)
+  'cd $HOME/tools && node gen.js --check | tail -5', // unresolvable cd: relative script path is unknowable
 ];
 for (const cmd of F3_BLOCK) {
   test('verify-allow: an unbounded check pipeline or a comment disqualifies: ' + JSON.stringify(cmd), () => {
@@ -255,6 +256,7 @@ for (const cmd of F3_BLOCK) {
 const F3_ALLOW = [
   'python3 tools/gen_contract.py --check | tail -5 && node tools/gen.js --check | head -3',
   'python3 tools/gen_contract.py --check "#not-a-comment" | tail -5',
+  'cd tools && node gen.js --check | tail -5', // script resolves against the cd target
 ];
 for (const cmd of F3_ALLOW) {
   test('verify-allow: control — every check pipeline bounded is still allowed: ' + JSON.stringify(cmd), () => {
