@@ -2135,7 +2135,7 @@ function isBoundedNodeTestCheck(segment) {
 // test files>` — the JS-runner twin of isBoundedNodeTestCheck: no flags, no
 // globs, no directories, each target an explicit `*.test|spec.<js|ts…>` file.
 // Full suites, watch mode, `--coverage` and any other flag stay heavy.
-function isBoundedJsTestRunnerCheck(segment) {
+function isBoundedJsTestRunnerCheck(segment, ctx) {
   const tokens = segment.trim().split(/\s+/).filter(Boolean);
   let i = 0;
   if (tokens[i] === 'npx') i++;
@@ -2144,7 +2144,17 @@ function isBoundedJsTestRunnerCheck(segment) {
   else return false;
   const files = tokens.slice(i);
   if (files.length < 1 || files.length > 2) return false;
-  return files.every((f) => !f.startsWith('-') && !/[*?\[\]$`\\]/.test(f) && /\.(?:test|spec)\.[mc]?[jt]sx?$/i.test(f));
+  if (ctx && ctx.cwdUnknown) return false; // a preceding cd we could not resolve
+  const payload = ctx && ctx.payload;
+  const base = (payload && typeof payload.cwd === 'string' && payload.cwd) || process.cwd();
+  // Each operand must be an EXISTING regular file whose basename is
+  // `<stem>.test|spec.<ext>` - a bare `.test.ts` is a runner FILTER PATTERN
+  // (matches many files), not a file.
+  return files.every((f) => {
+    if (f.startsWith('-') || /[*?\[\]$`\\]/.test(f)) return false;
+    if (!/^.+\.(?:test|spec)\.[mc]?[jt]sx?$/i.test(basename(f))) return false;
+    try { return fs.statSync(path.resolve(base, f)).isFile(); } catch (_) { return false; }
+  });
 }
 
 function isCtestNameCheck(segment) {
@@ -2191,7 +2201,7 @@ function isQualifyingSingleTargetCheck(segment, ctx) {
   if (isSyntaxOnlyCompileCheck(segment)) return true;
   if (isSinglePytestFileCheck(segment)) return true;
   if (isBoundedNodeTestCheck(segment)) return true;
-  if (isBoundedJsTestRunnerCheck(segment)) return true;
+  if (isBoundedJsTestRunnerCheck(segment, ctx)) return true;
   if (isCtestNameCheck(segment)) return true;
   if (isSafeScratchpadGitClone(segment, ctx)) return true;
   if (isGenericCheckFlagCommand(segment)) return true;

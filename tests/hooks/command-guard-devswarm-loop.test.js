@@ -113,18 +113,34 @@ test('path-qualified venv interpreter + script --check | tail is allowed; look-a
   } finally { fs.rmSync(proj, { recursive: true, force: true }); }
 });
 
-test('vitest/jest on 1-2 explicit test files piped to tail allowed; suites/flags/globs blocked', () => {
-  assert.strictEqual(blocked('npx vitest run src/a.test.ts src/b.test.ts | tail -5'), false);
-  assert.strictEqual(blocked('npx jest src/a.spec.js | tail -5'), false);
-  assert.strictEqual(blocked('vitest run a.test.ts | tail -5'), false);
-  assert.ok(blocked('npx vitest run'));
-  assert.ok(blocked('npx vitest run | tail -5'));
-  assert.ok(blocked('npx vitest run src/a.test.ts src/b.test.ts src/c.test.ts | tail -5'));
-  assert.ok(blocked('npx vitest run src/ | tail -5'));
-  assert.ok(blocked('npx vitest run src/*.test.ts | tail -5'));
-  assert.ok(blocked('npx vitest run --coverage a.test.ts | tail -5'));
-  assert.ok(blocked('npx vitest a.test.ts | tail -5')); // watch mode
-  assert.ok(blocked('npx vitest run a.test.ts')); // unbounded output
+test('vitest/jest on 1-2 EXISTING explicit test files piped to tail allowed; suites/flags/globs/patterns blocked', () => {
+  const proj = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'cg-vitest-')));
+  try {
+    fs.mkdirSync(path.join(proj, 'src'));
+    for (const f of ['src/a.test.ts', 'src/b.test.ts', 'src/a.spec.js', 'a.test.ts']) fs.writeFileSync(path.join(proj, f), '\n');
+    fs.writeFileSync(path.join(proj, '.test.ts'), '\n'); // even an existing file named `.test.ts` has no stem
+    const b = (c) => blocked(c, proj);
+    assert.strictEqual(b('npx vitest run src/a.test.ts src/b.test.ts | tail -5'), false);
+    assert.strictEqual(b('npx jest src/a.spec.js | tail -5'), false);
+    assert.strictEqual(b('vitest run a.test.ts | tail -5'), false);
+    assert.ok(b('npx vitest run'));
+    assert.ok(b('npx vitest run | tail -5'));
+    assert.ok(b('npx vitest run src/a.test.ts src/b.test.ts src/c.test.ts | tail -5'));
+    assert.ok(b('npx vitest run src/ | tail -5'));
+    assert.ok(b('npx vitest run src/*.test.ts | tail -5'));
+    assert.ok(b('npx vitest run --coverage a.test.ts | tail -5'));
+    assert.ok(b('npx vitest a.test.ts | tail -5')); // watch mode
+    assert.ok(b('npx vitest run a.test.ts')); // unbounded output
+    // A bare `.test.ts` / `.spec.ts` is a runner filter pattern, not a file.
+    assert.ok(b('npx vitest run .test.ts | tail -5'));
+    assert.ok(b('npx jest .test.js | tail -5'));
+    assert.ok(b('npx jest .spec.tsx .test.js | tail -5'));
+    // Nonexistent file: may expand to a pattern match over many files.
+    assert.ok(b('npx vitest run missing.test.ts | tail -5'));
+    // A directory named like a test file is not a regular file.
+    fs.mkdirSync(path.join(proj, 'dir.test.ts'));
+    assert.ok(b('npx vitest run dir.test.ts | tail -5'));
+  } finally { fs.rmSync(proj, { recursive: true, force: true }); }
 });
 
 test('a scratchpad python script piped to tail stays blocked in the foreground (message says so)', () => {
