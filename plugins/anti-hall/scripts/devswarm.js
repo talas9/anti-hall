@@ -160,9 +160,10 @@
 //   mesh read      same as `roster --ack` (D23) — listed separately for discovery.
 //                  Flags: `--peek` (no ack), `--seq N` (explicit baseline, implies peek),
 //                  `--last N` (only the newest N unseen rows), `--since <iso|30m|2h|1d>`
-//                  (only rows at/after that time). --last/--since narrow the RETURNED rows
-//                  for peek and non-peek alike; a non-peek read still acks to head, so use
-//                  --peek to filter without consuming (`filteredOut` counts hidden rows).
+//                  (only rows at/after that time). --last/--since are PEEK-ONLY: without
+//                  --peek (or --seq) they return ok:false reason `filter-requires-peek`
+//                  (use --peek, then a plain `mesh read` to consume) — a consuming read
+//                  acks to head and would lose the rows a filter hid.
 //                  Every row (broadcasts here, direct rows from `inbox messages/read-primary`)
 //                  also carries normalized `from`, `text`, `kind` ('broadcast'|'direct');
 //                  the legacy keys (`message`/`sender`/`body`) are unchanged.
@@ -17632,12 +17633,16 @@ function cmdMeshRead(flags, ctx) {
     // (sender-aliases.json); `fromLabel` keeps the stored value.
     let aliases = {};
     try { aliases = require('../companion/lib/devswarm-sender-alias.js').readAliases(home); } catch (_) { aliases = {}; }
-    // --last N / --since <iso|duration> (peek and non-peek alike): narrow the
-    // RETURNED rows only. A non-peek read still advances the cursor to head, so
-    // rows a filter hides are consumed — `filteredOut` reports how many; use
-    // --peek to filter without consuming.
+    const hasLast = !!(flags && Array.isArray(flags.last) && flags.last.length > 0);
+    const hasSince = !!(flags && Array.isArray(flags.since) && flags.since.length > 0);
+    // --last N / --since <iso|duration>: PEEK-ONLY. A consuming read acks to
+    // head, so a filter would silently consume rows it never showed — refused.
+    // `filteredOut` is informational (rows hidden from this peek, none consumed).
+    if ((hasLast || hasSince) && !peek) {
+      return { ok: false, reason: 'filter-requires-peek', error: '--last/--since would consume unread broadcasts they do not show; use --peek, then a plain `mesh read` to consume', hint: 'use --peek, then a plain `mesh read` to consume' };
+    }
     const lastRaw = one(flags, 'last');
-    const hasLastFlag = !!(flags && Array.isArray(flags.last) && flags.last.length > 0);
+    const hasLastFlag = hasLast;
     let lastN = null;
     if (hasLastFlag) {
       const n = Number(lastRaw);
@@ -17646,7 +17651,7 @@ function cmdMeshRead(flags, ctx) {
       }
       lastN = Math.floor(n);
     }
-    const hasSinceFlag = !!(flags && Array.isArray(flags.since) && flags.since.length > 0);
+    const hasSinceFlag = hasSince;
     const sinceFlagRaw = one(flags, 'since');
     let sinceTs = null;
     if (hasSinceFlag) {

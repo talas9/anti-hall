@@ -82,7 +82,7 @@ test('inbox messages direct rows carry normalized from/text/kind and keep legacy
   } finally { rm(home); rm(main); }
 });
 
-test('mesh read --last N and --since filter peek and non-peek alike', () => {
+test('mesh read --last N and --since are peek-only', () => {
   const home = tmpHome();
   const repo = makeGitRepo('filters');
   try {
@@ -105,11 +105,16 @@ test('mesh read --last N and --since filter peek and non-peek alike', () => {
     const badLast = cli.run(['mesh', 'read', '--last', '0'], ctx(home, { cwd: repo }));
     assert.equal(badLast.result.reason, 'bad-last');
 
-    // non-peek: filter applies to the returned rows; cursor still advances.
-    const np = cli.run(['mesh', 'read', '--last', '1'], ctx(home, { cwd: repo }));
-    assert.deepEqual(np.result.broadcasts.map((b) => b.text), ['three']);
-    assert.equal(np.result.acked, true);
-    assert.equal(cli.run(['mesh', 'read', '--peek'], ctx(home, { cwd: repo })).result.count, 0);
+    // non-peek + filter is refused and consumes nothing.
+    for (const extra of [['--last', '1'], ['--since', '1h']]) {
+      const np = cli.run(['mesh', 'read'].concat(extra), ctx(home, { cwd: repo }));
+      assert.equal(np.result.ok, false);
+      assert.equal(np.result.reason, 'filter-requires-peek');
+      assert.match(np.result.hint, /use --peek, then a plain `mesh read` to consume/);
+    }
+    const still = cli.run(['mesh', 'read', '--peek'], ctx(home, { cwd: repo }));
+    assert.equal(still.result.count, 3, 'refused filtered read must not ack');
+    assert.equal(cli.run(['mesh', 'read'], ctx(home, { cwd: repo })).result.count, 3);
   } finally { rm(home); rm(repo); }
 });
 
