@@ -1377,3 +1377,27 @@ test('rollups fill days the raw logs no longer cover; a day still in raw is neve
     assert.strictEqual(out.integrations.find((x) => x.id === 'modelRouting').calls, 1, 'raw rows are still the main table');
   } finally { h.cleanup(); }
 });
+
+// --exclude-project <name> (repeatable): drops raw rows of a leaked/scratch project.
+test('parseArgs: --exclude-project is repeatable', () => {
+  const { parseArgs } = require('../../plugins/anti-hall/scripts/jev-report.js');
+  const opts = parseArgs(['--exclude-project', 'v117-int', '--exclude-project', 'scratch']);
+  assert.deepStrictEqual(opts.excludeProjects, ['v117-int', 'scratch']);
+});
+
+test('CLI --exclude-project: raw rows of the named project vanish from the report and the window counts', () => {
+  const h = makeHome();
+  try {
+    const ts = new Date().toISOString();
+    for (let i = 0; i < 5; i++) writeAssistRow(h.home, { ts, id: 'gitGuardSelfCredit', h: 'leak' + i, project: 'v117-int', base: false, jev: null, backend: 'cache', mode: 'shadow' });
+    for (let i = 0; i < 2; i++) writeAssistRow(h.home, { ts, id: 'gitGuardSelfCredit', h: 'real' + i, project: 'anti-hall', base: false, jev: null, backend: 'cache', mode: 'shadow' });
+    const all = runJevReportCli(h.home, []);
+    assert.strictEqual(all.integrations.find((r) => r.id === 'gitGuardSelfCredit').calls, 7);
+    const out = runJevReportCli(h.home, ['--exclude-project', 'v117-int']);
+    assert.strictEqual(out.integrations.find((r) => r.id === 'gitGuardSelfCredit').calls, 2);
+    assert.strictEqual(out.window.rowsExcluded, 5);
+    assert.deepStrictEqual(out.window.excludeProjects, ['v117-int']);
+  } finally {
+    h.cleanup();
+  }
+});

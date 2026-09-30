@@ -8,6 +8,7 @@
 //   node plugins/anti-hall/scripts/jev-report.js [--days 7] [--json] [--window 24h|7d]
 //     [--by project|session] [--project <name>] [--weekly]
 //     [--since <iso>] [--until <iso>] [--exclude-window <iso>..<iso>]
+//     [--exclude-project <name>]
 //   node plugins/anti-hall/scripts/jev-report.js label <hash> [tp|fp]
 //   node plugins/anti-hall/scripts/jev-report.js prune-audit --days N
 //
@@ -19,6 +20,13 @@
 // jev-triage.ndjson alike. Use this to exclude a known-accidental run from a
 // report, e.g. the 2026-09-24T19:56Z..22:23Z supervisorBlockerLabel run:
 //   --exclude-window 2026-09-24T19:56:00Z..2026-09-24T22:23:00Z
+//
+// --exclude-project <name> (repeatable) drops every raw row whose project is
+// <name> (same key as --project; a row with no project is "unknown"), applied
+// together with the time filters above. Use it to drop a known-accidental
+// project such as a scratch clone that leaked test rows into the real log.
+// The daily rollups (jev-daily/) carry NO project, so they are NOT affected:
+// rollup history for days the raw logs no longer cover still counts those rows.
 //
 // --project <name> filters rows to that project (a cwd basename, e.g.
 // "anti-hall" -- see hooks/lib/jev-assist.js's defaultProject(); a row with no
@@ -626,6 +634,12 @@ function parseArgs(argv) {
           opts.excludeWindows.push([Math.min(s, e), Math.max(s, e)]);
         }
       }
+    } else if (argv[i] === '--exclude-project') {
+      const name = argv[++i];
+      if (typeof name === 'string' && name) {
+        if (!opts.excludeProjects) opts.excludeProjects = [];
+        opts.excludeProjects.push(name);
+      }
     }
   }
   return opts;
@@ -636,10 +650,12 @@ function parseArgs(argv) {
 // parseable `ts` is left in place (unaffected, not silently dropped) — this
 // filter can only exclude what it can actually date.
 function filterByTimeWindow(rows, opts) {
-  if (opts.since === null && opts.until === null && (!opts.excludeWindows || opts.excludeWindows.length === 0)) {
+  const hasProjectExcl = Array.isArray(opts.excludeProjects) && opts.excludeProjects.length > 0;
+  if (opts.since === null && opts.until === null && (!opts.excludeWindows || opts.excludeWindows.length === 0) && !hasProjectExcl) {
     return rows;
   }
   return rows.filter((row) => {
+    if (hasProjectExcl && opts.excludeProjects.includes(groupKeyOf(row, 'project'))) return false;
     const ts = row && row.ts ? Date.parse(row.ts) : NaN;
     if (!Number.isFinite(ts)) return true;
     if (opts.since !== null && ts < opts.since) return false;
@@ -667,6 +683,7 @@ function describeWindow(opts, rawCount, filteredCount) {
     since: opts.since !== null ? new Date(opts.since).toISOString() : null,
     until: opts.until !== null ? new Date(opts.until).toISOString() : null,
     excludeWindows: (opts.excludeWindows || []).map(([s, e]) => [new Date(s).toISOString(), new Date(e).toISOString()]),
+    ...(Array.isArray(opts.excludeProjects) && opts.excludeProjects.length ? { excludeProjects: opts.excludeProjects.slice() } : {}),
     rowsTotal: rawCount,
     rowsInWindow: filteredCount,
     rowsExcluded: rawCount - filteredCount,
@@ -685,6 +702,7 @@ function printWindow(windowInfo) {
     : '(none)';
   console.log(
     `window: ${since} .. ${until}  exclude: ${excl}  ` +
+    (windowInfo.excludeProjects ? `exclude-project: ${windowInfo.excludeProjects.join(',')}  ` : '') +
     `rows: ${windowInfo.rowsInWindow} in window / ${windowInfo.rowsTotal} total ` +
     `(${windowInfo.rowsExcluded} excluded)`
   );
