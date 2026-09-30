@@ -98,7 +98,7 @@ const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
 const { execFileSync, spawn } = require('child_process');
-const { jevDecide, loadJevConfig } = require('./jev-client.js');
+const { jevDecide, loadJevConfig, MAX_TIMEOUT_MS, DEFAULT_TIMEOUT_MS } = require('./jev-client.js');
 const testHomeGuard = require('../../companion/lib/test-home-guard.js');
 
 const CACHE_MAX_ENTRIES = 500;
@@ -109,6 +109,12 @@ const QUESTION_VERSION = 'v1';
 const WORKER_PATH = path.join(__dirname, 'jev-assist-worker.js');
 const DETACHED_WORKER_PATH = path.join(__dirname, 'jev-assist-detached-worker.js');
 const DEFAULT_SYNC_TIMEOUT_MS = 1500;
+// askDetached callers never wait on the answer (it lands in the log/cache for a
+// later turn), so latency is free: default to the client's hard ceiling instead
+// of the 1500ms interactive default, which timed out 7-50% of detached calls
+// (successful calls take ~550-1350ms, timeouts landed at ~1500-1700ms). An
+// explicitly configured jev.timeoutMs (anything but the 1500 default) still wins.
+const DETACHED_DEFAULT_BUDGET_MS = MAX_TIMEOUT_MS;
 
 // Integrations that predate the per-integration modes map and must keep
 // their current ("Jev fully trusted") behavior with zero jev.json changes.
@@ -1040,7 +1046,13 @@ function askDetached(opts = {}) {
       finalize({ id, home: h, hash, mode, trust, baseline, judge: null, threshold, r: null, cachedFlag: false, compare, state, project, sessionId, turnRef });
       return;
     }
-    const input = JSON.stringify({ id, question, state, trust, baseline, cacheKey, budgetMs, home, compare, project, sessionId, turnRef });
+    let detachedBudgetMs = DETACHED_DEFAULT_BUDGET_MS;
+    if (Number.isFinite(budgetMs) && budgetMs > 0) detachedBudgetMs = budgetMs;
+    else {
+      const cfgTimeout = loadJevConfig().timeoutMs;
+      if (cfgTimeout !== DEFAULT_TIMEOUT_MS) detachedBudgetMs = cfgTimeout;
+    }
+    const input = JSON.stringify({ id, question, state, trust, baseline, cacheKey, budgetMs: detachedBudgetMs, home, compare, project, sessionId, turnRef });
     const child = spawn(process.execPath, [DETACHED_WORKER_PATH], {
       detached: true,
       stdio: ['pipe', 'ignore', 'ignore'],

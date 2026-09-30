@@ -1009,6 +1009,31 @@ test('askDetached(): returns synchronously without waiting on the network call',
   } finally { h.cleanup(); }
 });
 
+test('askDetached(): default budget outlasts the 1500ms interactive default (2000ms backend still answers)', async () => {
+  const h = makeHome();
+  try {
+    h.writeState('jev.json', { enabled: true, integrations: { newRequest: 'shadow' } });
+    await withMockServer((req, res) => {
+      req.on('data', () => {});
+      req.on('end', () => {
+        setTimeout(() => {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ answers: { decision: { choice: 'new-request', confidence: 0.9 } } }));
+        }, 2000);
+      });
+    }, async (endpoint) => {
+      await withEnv({ HOME: h.home, AI_GATEWAY_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
+        const { askDetached } = freshLib();
+        askDetached({ id: 'newRequest', question: CHOICE_Q, state: 'please fix the bug', trust: 'advisory', baseline: null });
+        const p = path.join(h.home, '.anti-hall', 'logs', 'jev-assist.ndjson');
+        const hit = await waitForLog(p, (r) => r.id === 'newRequest', 100);
+        assert.ok(hit, 'the detached worker must land a row');
+        assert.strictEqual(hit.backend, 'jev', 'a 2s answer must not be cut off at 1500ms: ' + JSON.stringify(hit));
+      });
+    });
+  } finally { h.cleanup(); }
+});
+
 test('askDetached(): mode off -> no network call (baseline-only), still returns instantly', async () => {
   const h = makeHome();
   try {
