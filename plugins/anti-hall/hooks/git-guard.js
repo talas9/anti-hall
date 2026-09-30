@@ -1353,7 +1353,7 @@ function scanConfigLines(text, d) {
 // cp/mv/install/ln/rsync, dd `of=`, and sed/perl `-i` operands. A relative
 // target is joined to the last literal `cd <dir>` of the same command.
 const LAUNCHER_DIR_RE = /\.anti-hall[\\/]+bin(?:[\\/]|$)/i;
-const COPY_VERBS = new Set(['cp', 'mv', 'install', 'ln', 'rsync']);
+const COPY_VERBS = new Set(['cp', 'mv', 'install', 'ln', 'rsync', 'ditto']);
 
 // Normalize `raw` (tilde-expanded, joined to `cdDir` when relative) WITHOUT
 // requiring the result to be absolute, so it stays usable for a bare
