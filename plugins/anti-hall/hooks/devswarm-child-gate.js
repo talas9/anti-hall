@@ -1077,11 +1077,21 @@ function main() {
   // condition is observed cleared (the satisfaction paths above), never
   // because time passed or new mail changed a count.
   const durablePre = readDurableUnread(process.env, os.homedir());
-  const kinds = ['heartbeat-report'];
   const unreadPendingPre = hasUnreadParentMessages(process.env, os.homedir());
+  // NATIVE-UNREACHABLE ONLY (field report: hivecontrol message-count times out /
+  // no localhost): the outbound half is ALREADY satisfied (a real report, a drop
+  // attempt, or a fresh known-zero `inbox tick`) and the durable store is fine;
+  // the ONLY open question is an unreachable native queue. Re-demanding a
+  // heartbeat here nagged right after one was sent, and prescribing `inbox pull`
+  // (which hits the same dead native channel) could not be satisfied. Warn ONCE
+  // (own kind, cap 1), inbound text only, with an exit that does not need the
+  // native channel.
+  const outboundSatisfied = !!(reported || dropAttempt || tickMarkerFreshZero(process.env, os.homedir(), now));
+  const nativeOnlyUnknown = outboundSatisfied && unreadPendingPre === 'unknown' && !durablePre.unknown;
+  const kinds = nativeOnlyUnknown ? [] : ['heartbeat-report'];
   if (unreadPendingPre === true) kinds.push('inbox');
   else if (durablePre.unknown || unreadPendingPre === 'unknown') kinds.push('inbox-unknown');
-  const decision = stopPolicy.consume(os.homedir(), sessionId, 'child-gate', kinds, MAX_BLOCKS, now);
+  const decision = stopPolicy.consume(os.homedir(), sessionId, 'child-gate', kinds, nativeOnlyUnknown ? 1 : MAX_BLOCKS, now);
   if (!decision.block) {
     if (decision.persisted && !state.lifetimeCapLogged) {
       writeState(stateFile, Object.assign({}, state, { lifetimeCapLogged: true }));
@@ -1112,9 +1122,14 @@ function main() {
       '): the store could not be read, so this gate cannot prove your inbox is empty. Run `node ' + CLI +
       ' inbox count ' + resolvedIdSafe(process.env) + '` and read any mail BEFORE you stop. '
     : nativeUnknown
-    ? 'DEVSWARM CHILD INBOX — your NATIVE unread count is UNKNOWN (the `hivecontrol workspace message-count` '
-      + 'probe failed or timed out), so this gate cannot prove your native queue is empty. Run `node ' + CLI
-      + ' inbox pull ' + resolvedIdSafe(process.env) + '` and handle any mail BEFORE you stop. '
+    ? (nativeOnlyUnknown
+      ? 'DEVSWARM CHILD INBOX — the native `hivecontrol workspace message-count` probe failed or timed out, so this '
+        + 'gate cannot prove your native queue is empty (your mesh inbox and report are fine). Try `node ' + CLI
+        + ' inbox pull ' + resolvedIdSafe(process.env) + '` once and handle any mail; if it fails the same way the '
+        + 'native channel is unreachable from here, so you may stop — this warning will not repeat.'
+      : 'DEVSWARM CHILD INBOX — your NATIVE unread count is UNKNOWN (the `hivecontrol workspace message-count` '
+        + 'probe failed or timed out), so this gate cannot prove your native queue is empty. Run `node ' + CLI
+        + ' inbox pull ' + resolvedIdSafe(process.env) + '` and handle any mail BEFORE you stop. ')
     : '';
 
   // WAKE RE-VERIFY (v0.59, reused not re-invented — see header): rides along on
@@ -1137,7 +1152,7 @@ function main() {
       '"blocked on X", or "idle — reassign or archive me"), THEN stop. This keeps the ' +
       'parent\'s task list honest instead of leaving you unnoticed.';
 
-  const reason = inboundPrefix + outboundLine + wakeLine;
+  const reason = nativeOnlyUnknown ? inboundPrefix.trim() : inboundPrefix + outboundLine + wakeLine;
 
   emitBlock(reason);
 }

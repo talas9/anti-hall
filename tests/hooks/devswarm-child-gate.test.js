@@ -1478,10 +1478,34 @@ test('STOP POLICY: native probe FAILURE is unknown -> blocks with a warning, cap
       const env = Object.assign({}, CHILD_ENV, { PATH: binDir + path.delimiter + NO_NATIVE_BIN_PATH });
       const r1 = testHook(HOOK, stopPayload(), { home: h.home, expectJson: true, env });
       assert.strictEqual(r1.json && r1.json.decision, 'block', `unknown native unread must not be waved through; got: ${r1.stdout}`);
-      assert.match(r1.json.reason, /UNKNOWN/);
-      testHook(HOOK, stopPayload(), { home: h.home, expectJson: true, env });
-      const r3 = testHook(HOOK, stopPayload(), { home: h.home, env });
-      assert.strictEqual(r3.stdout, '', 'capped: the unknown warning does not loop');
+      assert.match(r1.json.reason, /native `hivecontrol workspace message-count` probe failed/);
+      // L15: outbound is satisfied (fresh zero tick) so this is a ONE-time
+      // inbound-only warning: no heartbeat nag, no repeat.
+      assert.doesNotMatch(r1.json.reason, /emit a heartbeat/, 'a satisfied outbound must not be re-nagged');
+      assert.match(r1.json.reason, /will not repeat/);
+      const r2 = testHook(HOOK, stopPayload(), { home: h.home, env });
+      assert.strictEqual(r2.stdout, '', 'one-time: the native-unreachable warning does not loop');
+    } finally { fs.rmSync(binDir, { recursive: true, force: true }); }
+  } finally {
+    h.cleanup();
+  }
+});
+
+// L15 (A): unreachable native queue + NOT outbound-satisfied keeps the full
+// (capped) heartbeat demand — only the satisfied case is relaxed.
+test('L15: native probe failure with NO report/tick still demands the heartbeat (cap 2 unchanged)', () => {
+  const h = makeHome();
+  seedAllTestDescriptors(h.home);
+  try {
+    const binDir = fs.mkdtempSync(path.join(os.tmpdir(), 'anti-hall-fakehc-fail2-'));
+    const p = path.join(binDir, 'hivecontrol');
+    fs.writeFileSync(p, '#!/bin/sh\necho "Error: Request timeout" >&2\nexit 1\n');
+    fs.chmodSync(p, 0o755);
+    try {
+      const env = Object.assign({}, CHILD_ENV, { PATH: binDir + path.delimiter + NO_NATIVE_BIN_PATH });
+      const r1 = testHook(HOOK, stopPayload(), { home: h.home, expectJson: true, env });
+      assert.strictEqual(r1.json && r1.json.decision, 'block');
+      assert.match(r1.json.reason, /emit a heartbeat/);
     } finally { fs.rmSync(binDir, { recursive: true, force: true }); }
   } finally {
     h.cleanup();
