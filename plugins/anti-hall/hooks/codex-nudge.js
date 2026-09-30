@@ -45,6 +45,9 @@ function settingsGet(section, key) {
 }
 const os = require('os');
 const crypto = require('crypto');
+// tmpRoots / ownScratchpadDirs / isInsideDir live in lib/scratchpad.js (shared
+// with edit-guard.js / command-guard.js's own-scratchpad exemption).
+const { ownScratchpadDirs, isInsideDir } = require('./lib/scratchpad.js');
 
 // Code-file extensions that count toward a "substantial code change". Docs/config
 // (.md/.json/.txt/.yml) deliberately excluded — a doc edit needs no Codex review.
@@ -88,8 +91,31 @@ function collectTU(node) {
   return out;
 }
 
+// isExcludedFromEdits(fp, payload) -> true when fp (an edited file path) should
+// NOT count toward the "substantial code edits" threshold:
+//   (a) it resolves strictly inside THIS session's own scratchpad
+//       (lib/scratchpad.js ownScratchpadDirs — derived from transcript_path's
+//       encoded-cwd segment + session_id + this process's real uid, never a
+//       name/glob match; mirrors command-guard.js's isScratchpadOrTmpPath). A
+//       throwaway repro script (.py/.js/...) written to the harness-designated
+//       scratchpad is disposable scratch I/O, not a change worth a Codex review.
+//   (b) payload.cwd is present AND resolves (companion/lib/identity.js
+//       resolveContext — the ONE canonical worktree resolver, no new fs walk)
+//       to a real git worktree, AND fp resolves OUTSIDE that worktree. When
+//       payload.cwd is absent/unresolvable the check is skipped (fail open —
+//       never turns an unrelated missing field into a false exclusion).
+function isExcludedFromEdits(fp, payload, ctx) {
+  let abs;
+  try { abs = path.resolve(ctx.base, fp); } catch (_) { return false; }
+  for (const dir of ctx.scratchDirs) {
+    if (isInsideDir(abs, dir)) return true;
+  }
+  if (ctx.worktreeRoot && !isInsideDir(abs, ctx.worktreeRoot)) return true;
+  return false;
+}
+
 // Scan the transcript tail -> { codeFiles:Set<basename>, codeEdits:int, codexReview:bool }.
-function scanTranscript(transcriptPath) {
+function scanTranscript(transcriptPath, payload) {
   const tail = readTranscriptTail(transcriptPath);
   if (!tail) return null;
   const lines = tail.data.split(/\r?\n/);
@@ -97,6 +123,19 @@ function scanTranscript(transcriptPath) {
   const codeFiles = new Set();
   let codeEdits = 0;
   let codexReview = false;
+
+  const base = (payload && typeof payload.cwd === 'string' && payload.cwd) || process.cwd();
+  let scratchDirs = [];
+  try { scratchDirs = ownScratchpadDirs(payload); } catch (_) { scratchDirs = []; }
+  let worktreeRoot = null;
+  if (payload && typeof payload.cwd === 'string' && payload.cwd) {
+    try {
+      worktreeRoot = require('../companion/lib/identity.js')
+        .resolveContext(payload.cwd, { missingPath: 'ancestor' }).worktreeRoot || null;
+    } catch (_) { worktreeRoot = null; }
+  }
+  const excludeCtx = { base, scratchDirs, worktreeRoot };
+
   for (const line of lines) {
     const t = line.trim();
     if (!t) continue;
@@ -108,7 +147,7 @@ function scanTranscript(transcriptPath) {
       // (a) substantial code edit?
       if (name === 'Edit' || name === 'Write' || name === 'MultiEdit') {
         const fp = typeof inp.file_path === 'string' ? inp.file_path : '';
-        if (fp && CODE_EXT.test(fp)) {
+        if (fp && CODE_EXT.test(fp) && !isExcludedFromEdits(fp, payload, excludeCtx)) {
           codeEdits++;
           codeFiles.add(path.basename(fp));
         }
@@ -153,7 +192,7 @@ function main() {
   const transcriptPath = payload && payload.transcript_path;
   if (!transcriptPath || typeof transcriptPath !== 'string') process.exit(0);
 
-  const scan = scanTranscript(transcriptPath);
+  const scan = scanTranscript(transcriptPath, payload);
   if (!scan) process.exit(0);
 
   // Not substantial, or Codex already consulted -> nothing to nudge.

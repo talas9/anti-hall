@@ -5,6 +5,9 @@
 
 const { test } = require('node:test');
 const assert = require('node:assert');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 const { testHook, testHookRaw } = require('../helpers/spawn-hook.js');
 const { makeHome } = require('../helpers/fixtures.js');
 
@@ -100,6 +103,144 @@ test('ALLOW: 3 doc/.md edits are NOT substantial code', () => {
     const r = testHook(HOOK, stopPayload(tp), { home: h.home });
     assert.ok(!isBlock(r), `expected allow (docs only); stdout: ${r.stdout}`);
   } finally { h.cleanup(); }
+});
+
+// ---------------------------------------------------------------------------
+// FIX: edits to the SESSION'S OWN scratchpad (lib/scratchpad.js
+// ownScratchpadDirs, derived from transcript_path's encoded-cwd segment)
+// must not count toward the "substantial code edits" threshold — a throwaway
+// repro script written there is disposable scratch I/O, not a change worth a
+// Codex review. Also: any edited path outside the session's git worktree
+// (companion/lib/identity.js resolveContext) is excluded, when payload.cwd
+// resolves to a real worktree.
+// ---------------------------------------------------------------------------
+const { ownScratchpadDirs } = require('../../plugins/anti-hall/hooks/lib/scratchpad.js');
+
+// writeTranscriptAt(tp, messages) -> writes a JSONL transcript at an EXACT
+// path (unlike fixtures.writeTranscript, which always uses <home>/transcript.jsonl),
+// so the parent directory's basename can be controlled to match the harness's
+// own ~/.claude/projects/<encoded-cwd>/<session-id>.jsonl shape that
+// ownScratchpadDirs()'s transcriptEncodedSegment() derives from.
+function writeTranscriptAt(tp, messages) {
+  fs.mkdirSync(path.dirname(tp), { recursive: true });
+  const body = messages.map((m) => JSON.stringify(m)).join('\n') + '\n';
+  fs.writeFileSync(tp, body, 'utf8');
+}
+
+test('REPRO -> FIX: scratchpad-only edits (e.g. .py repro scripts) do not trigger the nudge', () => {
+  const h = makeHome();
+  try {
+    const sessionId = 'sess-scratch-repro';
+    const projectDir = path.join(h.home, 'proj-enc-scratch');
+    const tp = path.join(projectDir, sessionId + '.jsonl');
+    const dirs = ownScratchpadDirs({ transcript_path: tp, session_id: sessionId });
+    assert.ok(dirs.length > 0, 'must compute at least one scratchpad candidate dir');
+    // Pick a candidate rooted at '/tmp' or '/private/tmp' (NOT bare
+    // os.tmpdir()): the spawned hook child env carries no TMPDIR (see
+    // spawn-hook.js isolatedEnv), so os.tmpdir() inside the hook can
+    // differ from this (parent) test process's TMPDIR; the two hardcoded
+    // roots are unaffected by that and stay identical on both sides.
+    const scratchDir = dirs.find((d) => d.startsWith('/tmp/') || d.startsWith('/private/tmp/')) || dirs[0];
+    const files = [
+      path.join(scratchDir, 'repro1.py'),
+      path.join(scratchDir, 'repro2.py'),
+      path.join(scratchDir, 'repro3.js'),
+    ];
+    writeTranscriptAt(tp, [toolUseMessage(files.map((f) => edit(f)))]);
+    // Sanity: WITHOUT the fix (raw count) this is 3 substantial code edits ->
+    // would nudge. With the fix, all 3 are inside this session's own
+    // scratchpad and must be excluded.
+    const r = testHook(HOOK, { hook_event_name: 'Stop', transcript_path: tp, session_id: sessionId }, { home: h.home });
+    assert.ok(!isBlock(r), `expected allow (scratchpad-only edits excluded); stdout: ${r.stdout}`);
+  } finally { h.cleanup(); }
+});
+
+test('FIX: repo (non-scratchpad) edits still count and still nudge, unchanged', () => {
+  const h = makeHome();
+  try {
+    const tp = h.writeTranscript([
+      toolUseMessage([edit('/x/a.ts'), edit('/x/b.ts'), edit('/x/c.py')]),
+    ]);
+    const r = testHook(HOOK, stopPayload(tp), { home: h.home });
+    assert.ok(isBlock(r), `expected nudge (ordinary repo edits, no cwd/scratchpad match); stdout: ${r.stdout}`);
+  } finally { h.cleanup(); }
+});
+
+test('FIX: mixed scratchpad + repo edits -> only repo edits count toward the threshold', () => {
+  const h = makeHome();
+  try {
+    const sessionId = 'sess-mixed';
+    const projectDir = path.join(h.home, 'proj-enc-mixed');
+    const tp = path.join(projectDir, sessionId + '.jsonl');
+    const dirs = ownScratchpadDirs({ transcript_path: tp, session_id: sessionId });
+    // Pick a candidate rooted at '/tmp' or '/private/tmp' (NOT bare
+    // os.tmpdir()): the spawned hook child env carries no TMPDIR (see
+    // spawn-hook.js isolatedEnv), so os.tmpdir() inside the hook can
+    // differ from this (parent) test process's TMPDIR; the two hardcoded
+    // roots are unaffected by that and stay identical on both sides.
+    const scratchDir = dirs.find((d) => d.startsWith('/tmp/') || d.startsWith('/private/tmp/')) || dirs[0];
+    const scratchFiles = ['a.py', 'b.py', 'c.py', 'd.py', 'e.py'].map((n) => path.join(scratchDir, n));
+    const repoFiles = ['/x/a.ts', '/x/b.ts']; // below MIN (3) on their own
+    writeTranscriptAt(tp, [
+      toolUseMessage(scratchFiles.map((f) => edit(f))),
+      toolUseMessage(repoFiles.map((f) => edit(f))),
+    ]);
+    const r = testHook(HOOK, { hook_event_name: 'Stop', transcript_path: tp, session_id: sessionId }, { home: h.home });
+    assert.ok(!isBlock(r),
+      `expected allow: 5 scratch edits excluded, only 2 repo edits remain (< MIN); stdout: ${r.stdout}`);
+  } finally { h.cleanup(); }
+});
+
+test('FIX: edits outside the session git worktree (payload.cwd resolves) are excluded', () => {
+  const h = makeHome();
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-nudge-repo-'));
+  try {
+    require('node:child_process').spawnSync('git', ['init', '-q'], { cwd: repo });
+    const inRepo = [
+      path.join(repo, 'a.ts'), path.join(repo, 'b.ts'), path.join(repo, 'c.ts'),
+    ];
+    const outsideRepo = [
+      path.join(os.tmpdir(), 'codex-nudge-outside-1.ts'),
+      path.join(os.tmpdir(), 'codex-nudge-outside-2.ts'),
+    ];
+    const tp = h.writeTranscript([
+      toolUseMessage(inRepo.map((f) => edit(f))),
+      toolUseMessage(outsideRepo.map((f) => edit(f))),
+    ]);
+    const payload = { hook_event_name: 'Stop', transcript_path: tp, session_id: 't', cwd: repo };
+    const r = testHook(HOOK, payload, { home: h.home });
+    // 3 in-worktree edits still hit MIN on their own -> nudge fires (proves
+    // in-worktree files are NOT excluded, only the outside ones are).
+    assert.ok(isBlock(r), `expected nudge from the 3 in-worktree edits; stdout: ${r.stdout}`);
+  } finally {
+    h.cleanup();
+    try { fs.rmSync(repo, { recursive: true, force: true }); } catch (_) {}
+  }
+});
+
+test('FIX: edits outside the session git worktree ALONE (below MIN in-worktree) do not nudge', () => {
+  const h = makeHome();
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-nudge-repo2-'));
+  try {
+    require('node:child_process').spawnSync('git', ['init', '-q'], { cwd: repo });
+    const inRepo = [path.join(repo, 'a.ts')]; // below MIN alone
+    const outsideRepo = [
+      path.join(os.tmpdir(), 'codex-nudge-outside-3.ts'),
+      path.join(os.tmpdir(), 'codex-nudge-outside-4.ts'),
+      path.join(os.tmpdir(), 'codex-nudge-outside-5.ts'),
+    ];
+    const tp = h.writeTranscript([
+      toolUseMessage(inRepo.map((f) => edit(f))),
+      toolUseMessage(outsideRepo.map((f) => edit(f))),
+    ]);
+    const payload = { hook_event_name: 'Stop', transcript_path: tp, session_id: 't', cwd: repo };
+    const r = testHook(HOOK, payload, { home: h.home });
+    assert.ok(!isBlock(r),
+      `expected allow: only 1 in-worktree edit counts, 3 outside-worktree excluded; stdout: ${r.stdout}`);
+  } finally {
+    h.cleanup();
+    try { fs.rmSync(repo, { recursive: true, force: true }); } catch (_) {}
+  }
 });
 
 test('DEDUPE: same code-file set already nudged -> allow', () => {

@@ -71,6 +71,25 @@ root-caused against a reproducing test before the fix.
   keepalive window resurfaces it. Suppressions are counted in a new
   `not-draining-suppressed.jsonl`, reported by `doctor --check` alongside the
   existing `cron-found-mail.jsonl` line.
+- **`codex-nudge.js` counted scratchpad-only and out-of-worktree edits as "substantial code
+  edits", nudging for a Codex review over disposable repro scripts.** Seen twice for `*.py`
+  files written to the session's own scratchpad (`/private/tmp/claude-<uid>/<encoded-cwd>/
+  <session>/scratchpad/`), and once for a scratchpad `.js` repro script. The edit counter now
+  excludes any edited path strictly inside the session's own scratchpad (reusing
+  `lib/scratchpad.js`'s `ownScratchpadDirs`/`isInsideDir`, derived from `transcript_path`'s
+  encoded-cwd segment — the same mechanism `edit-guard.js`/`command-guard.js` already use) and
+  any path outside the session's git worktree, when `payload.cwd` resolves to one (via
+  `companion/lib/identity.js`'s `resolveContext`, the single canonical worktree resolver — no
+  new filesystem walk). Both checks fail open when the needed payload fields are absent.
+
+### Changed
+
+- **`command-guard.js`'s "Heavy command detected" delegation text now surfaces the
+  scratchpad-script path first.** The "write it to the scratchpad and run it with
+  run_in_background" option used to be the very last clause of the block message, easy to
+  miss before reading it as a plain "spawn a subagent" instruction. A one-line version now
+  appears right after the first sentence in both the DevSwarm-primary and non-DevSwarm
+  variants. Text only — no change to which commands are allowed or blocked inline.
 
 ## 0.117.2 (2026-09-30)
 

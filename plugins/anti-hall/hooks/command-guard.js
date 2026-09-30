@@ -3222,10 +3222,19 @@ function main() {
     'Inline-allowed ONLY when piped to tail/head/wc/grep -c/grep -m N: `python3 -m pytest -q <one file>`, ' +
     '`node --test <1-2 files>`, `ctest -R <name>`, `<cc> -fsyntax-only`, `git clone --depth 1 <https-url> <scratch/tmp dir>`, ' +
     'a non-heavy command with --check/--dry-run/--list, or `<python3|node|ruby|perl|php> <existing script> --check`. ' +
-    'Scratchpad scripts: run_in_background only. Everything else goes to a subagent.';
+    'Everything else goes to a subagent.';
+  // One-line version of the scratchpad-script path, surfaced right after the
+  // first sentence so it is seen FIRST (fp: seen twice for scratchpad *.py
+  // repro scripts, once for our own scratchpad .js repro — the full detail
+  // used to be the LAST clause, easy to miss before the block gets read as
+  // "just delegate to a subagent"). TEXT ONLY: same rule, same inline-allowed
+  // set — just reordered.
+  const SCRATCHPAD_SCRIPT_HINT =
+    'Have a script to run? Write it to the scratchpad and run it with run_in_background — never inline. ';
   const reason = devswarmPrimary
     ? ('DEVSWARM COMMAND-DELEGATION RULE: the primary/main orchestrator never runs ' +
        'heavy/long/state-changing commands inline — raw output floods the main thread. ' +
+       SCRATCHPAD_SCRIPT_HINT +
        'CHOOSE THE TIER: if this command belongs to a workspace-scale MATTER (a ' +
        'feature/fix/deploy — multi-step, own branch, own review), spin a CHILD WORKSPACE ' +
        'and let it own the work end-to-end: `node scripts/devswarm.js spawn <branch> ' +
@@ -3238,6 +3247,7 @@ function main() {
     : ('COMMAND-DELEGATION RULE: heavy/long/state-changing commands must NEVER run ' +
        'inline in the main coordinator context — they fill the main thread with raw ' +
        'output and the most counterproductive thing a coordinator can do. ' +
+       SCRATCHPAD_SCRIPT_HINT +
        'DELEGATE to a subagent (cheap model: Haiku or similar): ' +
        'spawn a subagent, pass the command, let it run and return only a tight ' +
        'summary. The coordinator synthesizes the summary; raw output never reaches ' +

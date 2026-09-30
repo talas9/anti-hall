@@ -1177,6 +1177,7 @@ const BASELINE_REASON =
   'COMMAND-DELEGATION RULE: heavy/long/state-changing commands must NEVER run ' +
   'inline in the main coordinator context — they fill the main thread with raw ' +
   'output and the most counterproductive thing a coordinator can do. ' +
+  'Have a script to run? Write it to the scratchpad and run it with run_in_background — never inline. ' +
   'DELEGATE to a subagent (cheap model: Haiku or similar): ' +
   'spawn a subagent, pass the command, let it run and return only a tight ' +
   'summary. The coordinator synthesizes the summary; raw output never reaches ' +
@@ -1184,7 +1185,7 @@ const BASELINE_REASON =
   'Inline-allowed ONLY when piped to tail/head/wc/grep -c/grep -m N: `python3 -m pytest -q <one file>`, ' +
   '`node --test <1-2 files>`, `ctest -R <name>`, `<cc> -fsyntax-only`, `git clone --depth 1 <https-url> <scratch/tmp dir>`, ' +
   'a non-heavy command with --check/--dry-run/--list, or `<python3|node|ruby|perl|php> <existing script> --check`. ' +
-  'Scratchpad scripts: run_in_background only. Everything else goes to a subagent.';
+  'Everything else goes to a subagent.';
 
 test('DEVSWARM PRIMARY heavy command: still BLOCKED, reason names `devswarm.js spawn` as the primary exit', () => {
   const r = runHeavy('npm run build', PRIMARY_ENV);
