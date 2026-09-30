@@ -26,6 +26,21 @@ test('the guard recognises the real home under node --test, and never outside it
   finally { process.env.NODE_TEST_CONTEXT = saved; }
 });
 
+test('a spawned hook child (ANTIHALL_TEST_ISOLATION, no NODE_TEST_CONTEXT) with no HOME never writes the real home', () => {
+  // The child env has the isolation marker but no HOME: os.homedir() falls back to
+  // the passwd home. The canonical resolver (used by jev-assist's log/cache paths)
+  // must throw, not resolve it.
+  const { spawnSync } = require('node:child_process');
+  const script = "const g=require(" + JSON.stringify(path.join(ROOT, 'companion', 'lib', 'test-home-guard.js')) + ");"
+    + "let r='resolved';try{g.resolveHome(null);}catch(e){r='threw:'+e.message}"
+    + "process.stdout.write(r)";
+  const r = spawnSync(process.execPath, ['-e', script], {
+    env: { PATH: process.env.PATH, ANTIHALL_TEST_ISOLATION: '1', ANTIHALL_INGEST_DRY_RUN: '1' },
+    encoding: 'utf8',
+  });
+  assert.match(r.stdout, /^threw:/, 'no-HOME child must not resolve the real home: ' + r.stdout + r.stderr);
+});
+
 test('runRepairs / runMigrations refuse the real home before doing anything', () => {
   const repair = require(path.join(ROOT, 'hooks', 'lib', 'doctor-repair.js'));
   const migrations = require(path.join(ROOT, 'companion', 'lib', 'migrations.js'));

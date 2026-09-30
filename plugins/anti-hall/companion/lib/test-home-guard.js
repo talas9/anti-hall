@@ -9,14 +9,18 @@
 // realHomeUnderTest(home) -> true when NODE_TEST_CONTEXT is set and `home`
 // resolves to the passwd home (os.userInfo().homedir — immune to a HOME
 // override, so an isolated HOME reads as "not real"). Outside `node --test`
-// it is always false: production behaviour is unchanged.
+// it is always false: production behaviour is unchanged. ANTIHALL_TEST_ISOLATION
+// (set by tests/helpers on every spawned hook child, which has no
+// NODE_TEST_CONTEXT) counts too, so a child whose HOME is missing/real throws
+// instead of writing the developer's real ~/.anti-hall.
 const os = require('os');
 const path = require('path');
 
 function realHomeUnderTest(home, env) {
   const e = env || process.env;
   const underTest = process.env.NODE_TEST_CONTEXT || e.NODE_TEST_CONTEXT
-    || process.env.ANTIHALL_TEST || e.ANTIHALL_TEST;
+    || process.env.ANTIHALL_TEST || e.ANTIHALL_TEST
+    || process.env.ANTIHALL_TEST_ISOLATION || e.ANTIHALL_TEST_ISOLATION;
   if (!underTest || !home) return false;
   let real = null;
   try { real = os.userInfo().homedir; } catch (_) { real = null; }

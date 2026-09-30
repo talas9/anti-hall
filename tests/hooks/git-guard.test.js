@@ -1544,6 +1544,25 @@ test('PERF (R6REV-P1-1): 3000 commit-creating segments, Jev enabled + no key, co
   }
 });
 
+// Row-flood guard: before the memo/cap a single invocation with N commit-creating
+// segments wrote N jev-assist.ndjson rows (75,000 rows reached a real home log
+// when such a command ran against it). The row count must stay bounded, and
+// everything must land in the test's own HOME.
+test('ROW VOLUME: 3000 commit-creating segments write a bounded number of jev-assist rows', () => {
+  const h = makeHome();
+  try {
+    h.writeState('jev.json', { enabled: true });
+    const cmd = 'git tag a -m "msg";'.repeat(3000) + 'git push --force origin main';
+    const r = testHook(HOOK, bashPayload(cmd), { home: h.home });
+    assert.strictEqual(r.status, 2, `expected block (exit 2)\nstderr: ${r.stderr}`);
+    const log = path.join(h.home, '.anti-hall', 'logs', 'jev-assist.ndjson');
+    const rows = fs.existsSync(log) ? fs.readFileSync(log, 'utf8').split('\n').filter(Boolean).length : 0;
+    assert.ok(rows <= 20, `expected a bounded jev row count (<=20), got ${rows}`);
+  } finally {
+    h.cleanup();
+  }
+});
+
 test('PERF (R6REV-P1-1): 500 DISTINCT-message commit-creating segments, Jev enabled + no key, still complete well under 3s (JEV_CONSULT_CAP bounds distinct-text spawns)', () => {
   const h = makeHome();
   try {
