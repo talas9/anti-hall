@@ -1944,7 +1944,11 @@ function scanCommand(cmd, depth, baseCwd) {
 // blocks. DELIBERATE FAIL-CLOSED: prose in a heredoc that literally holds a
 // launcher write blocks (owner-ratified trade-off, 0.119.0 revert).
 function launcherBackstop(rawCmd, baseCwd) {
-  const cmd = rawCmd;
+  // Bash deletes backslash-newline continuations BEFORE parsing, so a path
+  // broken across a continuation mid-word really writes into the launcher dir.
+  // Remove them (no space) for launcher analysis; the force/credit scans keep
+  // their own handling of the raw text.
+  const cmd = rawCmd.replace(/\\\r?\n/g, '');
   let cdDir = (typeof baseCwd === 'string' && baseCwd) ? baseCwd : null;
   const baseDir = cdDir;
   for (const raw of backstopPieces(cmd)) {

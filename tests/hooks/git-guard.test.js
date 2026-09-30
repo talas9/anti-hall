@@ -655,6 +655,12 @@ const LAUNCHER_WRITE_BLOCK = [
   'echo x>"$HOME/\n/../.anti-hall/bin/y"',
   'echo x > "$HOME/\n/../.anti-hall/bin/y"',
   "echo x >'/tmp/\n/../..'$HOME/.anti-hall/bin/y",
+  // Bash removes backslash-newline continuations before parsing, so a
+  // continuation mid-path still lands in the launcher dir.
+  'echo x > ~/.anti-hall/\\\nbin/y',
+  'echo x >~/.anti-hall\\\n/bin/y',
+  'echo x >\\\n~/.anti-hall/\\\nbin/y',
+  'cp /tmp/a ~/.anti-hall/\\\nbin/y',
 ];
 const LAUNCHER_WRITE_ALLOW = [
   'echo x > "/tmp/a\nb/../c.txt"',
