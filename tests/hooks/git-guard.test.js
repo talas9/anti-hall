@@ -2304,3 +2304,22 @@ test('PERF (A1-4): 20000x-repeated `git commit -F - <<<\'m\';` + trailing force 
   assert.match(r.stderr, REASON.FORCE);
   assert.ok(elapsedMs < 2000, `expected < 2000ms, took ${elapsedMs}ms`);
 });
+
+// Launcher-dir writes quoted inside a heredoc body stay BLOCKED (fail-closed).
+// A narrower "prose in a quoted cat/tee heredoc" exemption was tried and
+// reverted after review found real bypasses through the shapes below.
+const LAUNCHER_HEREDOC_BLOCK = [
+  "cat <<'EOF'\nx\nEOF\ncp a ~/.anti-hall/bin/x\nEOF",
+  "cat <<-'EOF'\n\tx\n\tEOF\ncp a ~/.anti-hall/bin/x\n\tEOF",
+  "eval $(cat <<'EOF'\ncp a ~/.anti-hall/bin/x\nEOF\n)",
+  "$(cat <<'EOF'\ncp a ~/.anti-hall/bin/x\nEOF\n)",
+  "sh <(cat <<'EOF'\ncp a ~/.anti-hall/bin/x\nEOF\n)",
+  "cat <<'EOF' >x.sh\ncp a ~/.anti-hall/bin/x\nEOF\nsource x.sh",
+];
+for (const cmd of LAUNCHER_HEREDOC_BLOCK) {
+  test(`BLOCK (launcher dir write in heredoc body): ${JSON.stringify(cmd)}`, () => {
+    const r = run(cmd);
+    assert.strictEqual(r.status, 2, `expected block (exit 2) for: ${cmd}\nstderr: ${r.stderr}`);
+    assert.match(r.stderr, /stable launcher directory/);
+  });
+}
