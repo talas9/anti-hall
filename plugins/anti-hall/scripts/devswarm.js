@@ -11558,7 +11558,7 @@ function seatRefusal(ctx) {
     } catch (_) { /* no exemption */ }
     return {
       ok: false, reason: 'primary-seat-conflict', holder: v.holder, id: v.id,
-      error: require('../companion/lib/primary-seat.js').conflictText(v, path.join(__dirname, 'devswarm.js')),
+      error: require('../companion/lib/primary-seat.js').conflictText(v, resolveStableCliPath(ctx.home, path.join(__dirname, 'devswarm.js'))),
     };
   } catch (_) { return null; }
 }

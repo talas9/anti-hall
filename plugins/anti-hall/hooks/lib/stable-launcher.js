@@ -219,6 +219,22 @@ function installLauncher(kind, fallbackAbsPath, home) {
   }
 }
 
+// preferStableLauncher(kind, rawPath, home) -> the version-independent
+// stable launcher path (under the anti-hall bin dir) when devswarm.stableLauncher
+// is on AND the launcher already EXISTS on disk (check-only, never installs),
+// else `rawPath`. For read-path hooks that print a CLI path into model-visible
+// text but must not write to the anti-hall home themselves: a version-pinned
+// plugin-cache path goes stale after /reload-plugins or an update prunes that
+// version dir. Fail-open to `rawPath`.
+function preferStableLauncher(kind, rawPath, home) {
+  try {
+    if (require('./settings.js').enabled('devswarm', 'stableLauncher') === false) return rawPath;
+    const p = launcherPath(kind, home);
+    if (p && fs.statSync(p).isFile()) return p;
+  } catch (_) { /* fall through */ }
+  return rawPath;
+}
+
 // installLaunchers({ cliFallback, watcherFallback, home }) -> { cli, watcher }
 // — each field is the stable launcher path on success, or the corresponding
 // fallback path when install failed. A caller can always use the returned
@@ -294,5 +310,6 @@ module.exports = {
   writeIfDifferent,
   installLauncher,
   installLaunchers,
+  preferStableLauncher,
   anchoredAntiHallStableLauncher,
 };

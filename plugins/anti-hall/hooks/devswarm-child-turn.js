@@ -114,7 +114,7 @@ const TRUNCATED_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9
 // WORKTREE, not the plugin root — a relative "scripts/devswarm.js" string in
 // emitted text only resolves when cwd happens to be the plugin root, so every
 // emitted instruction below embeds this absolute path instead (P1 fix).
-const CLI = path.join(__dirname, '..', 'scripts', 'devswarm.js');
+const CLI = require('./lib/stable-launcher.js').preferStableLauncher('devswarm', path.join(__dirname, '..', 'scripts', 'devswarm.js'));
 
 // REMINDER — names `heartbeat --summary` as the verb that actually satisfies
 // the Stop-gate report requirement (devswarm-child-gate.js's

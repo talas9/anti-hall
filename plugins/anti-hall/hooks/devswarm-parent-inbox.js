@@ -190,14 +190,7 @@ const RAW_CLI = path.join(__dirname, '..', 'scripts', 'devswarm.js');
 // launcher (hooks/lib/stable-launcher.js) when it already EXISTS — check-only,
 // this read-path hook never installs it (parent-gate/child-role do) — and fall
 // back to RAW_CLI otherwise or when devswarm.stableLauncher is off. Fail-open.
-let CLI = RAW_CLI;
-try {
-  if (require('./lib/settings.js').enabled('devswarm', 'stableLauncher') !== false) {
-    const stableLauncher = require('./lib/stable-launcher.js');
-    const p = stableLauncher.launcherPath('devswarm');
-    if (p && fs.statSync(p).isFile()) CLI = p;
-  }
-} catch (_) { /* keep RAW_CLI */ }
+const CLI = require('./lib/stable-launcher.js').preferStableLauncher('devswarm', RAW_CLI);
 
 // A workspace whose supervisor verdict is one of these is idle/stuck (a wedged or
 // escalated child), independent of whether it still has unread backlog.
@@ -2380,7 +2373,7 @@ function main() {
       if (mark && Number(mark.shown) < 2) {
         const seat = require('../companion/lib/primary-seat.js');
         const v = seat.seatVerdict({ home, env: Object.assign({}, process.env, { CLAUDE_CODE_SESSION_ID: sessionId }), cwd: cwd || process.cwd(), sessionId, light: true });
-        if (v.state === 'conflict') segments.push(seat.conflictText(v, path.join(__dirname, '..', 'scripts', 'devswarm.js')));
+        if (v.state === 'conflict') segments.push(seat.conflictText(v, CLI));
         fs.writeFileSync(mp, JSON.stringify(Object.assign({}, mark, { shown: 2 })));
       }
     }

@@ -2982,7 +2982,11 @@ function runCheck(opts) {
   const lag = installedVersionLag(paths);
   const lagNote = lag
     ? ' [installed_plugins.json reports ' + lag.jsonVersion + ', cache shows ' + lag.cacheVersion
-      + ' — run /reload-plugins]'
+      + (compareVersions(lag.jsonVersion, lag.cacheVersion) < 0
+        // registry BEHIND the cache: the harness never re-registered the build;
+        // /reload-plugins cannot fix that (same rule as harnessAction/doctor).
+        ? ' — run ' + HARNESS_REGISTER_CMD + ', then RESTART Claude Code; /reload-plugins is not enough]'
+        : ' — RESTART Claude Code to load the registered build; /reload-plugins is not enough]')
     : '';
   return {
     installed,
