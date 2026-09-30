@@ -29,7 +29,7 @@ const PATTERNS = {
 // ALLOWLIST: 'relative/file.js': { pattern: count }. Shrink per batch (B1..B6).
 const ALLOWLIST = {
   'companion/devswarm-ingest.js': { 'primaryWorkspaceId-call': 1 },
-  'companion/install-devswarm-ingest.js': { 'show-toplevel': 1, 'primaryWorkspaceId-call': 1 },
+  'companion/install-devswarm-ingest.js': { 'primaryWorkspaceId-call': 1 },
   // B1: resolvers are identity shims; the one left is the injected-io (fake git) test seam.
   'companion/lib/devswarm-repokey.js': { 'git-common-dir': 1 },
   'companion/lib/devswarm-store.js': { 'primaryWorkspaceId-call': 1 },

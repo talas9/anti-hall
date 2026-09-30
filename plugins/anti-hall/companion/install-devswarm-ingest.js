@@ -390,13 +390,14 @@ function pathIsEmittable(p) {
 // a unit's cwd to $HOME, which is not a git repo — so a daemon with no baked cwd can
 // never resolve a workspace and drains nothing. We resolve the install-time worktree
 // here and bake it into the unit's working directory. Returns the absolute toplevel
-// path, or null when `cwd` is not inside a git worktree (installer then fails open).
+// path (outermost superproject root for a submodule), or null when `cwd` is not inside a git worktree (installer then fails open).
 function resolveWorktree(cwd) {
+  // identity.resolveContext(...).worktreeRoot, NOT a raw `git --show-toplevel`: from a
+  // submodule cwd the latter returned the SUBMODULE's own toplevel and baked it into
+  // the daemon's WorkingDirectory (and its primary-<hash> heartbeat key). The
+  // superproject-folding root is the same path for any non-submodule checkout.
   try {
-    const r = spawnSync('git', ['-C', cwd, 'rev-parse', '--show-toplevel'], { encoding: 'utf8' });
-    if (r.error || r.status !== 0) return null;
-    const top = String(r.stdout || '').trim();
-    return top || null;
+    return require('./lib/identity.js').resolveContext(cwd, { memo: false }).worktreeRoot || null;
   } catch (_) {
     return null;
   }

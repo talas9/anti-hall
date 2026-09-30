@@ -14953,6 +14953,51 @@ function identityRekeyReport(home, ctx0) {
   return out;
 }
 
+// phantomPrimaryRows(home, ctx0) -> { ok, action, dryRun, phantoms: [{ id, worktreePath,
+// canonicalId, canonicalWorktree, archived? , error? }], archived, errors }.
+// Repairs persisted state earlier versions broke: register-primary / `workspaces
+// list` run from a SUBMODULE cwd minted `primary-<submodule-toplevel-hash>` (the raw
+// `git --show-toplevel`). A phantom is a `primary-<8hex>` descriptor whose worktree
+// resolves (identity.resolveContext) into a submodule of ANOTHER registered Primary's
+// worktree, whose own id is that root's meshId. Detect is read-only; with
+// ctx0.repair === true each phantom is ARCHIVED via cmdArchive (tombstone, reversible
+// through `unarchive`) — never deleted, never run implicitly. Idempotent (an archived
+// descriptor leaves workspaces/, so a second run finds nothing), fail-open per row.
+function phantomPrimaryRows(home, ctx0) {
+  const repair = !!(ctx0 && ctx0.repair);
+  const out = { ok: true, action: 'phantom-primary-rows', dryRun: !repair, phantoms: [], archived: 0, errors: 0 };
+  let names = [];
+  try { names = fs.readdirSync(workspacesDir(home)); } catch (_) { return out; }
+  const rows = [];
+  for (const n of names) {
+    const m = /^(primary-[0-9a-f]{8})\.json$/.exec(n);
+    if (!m) continue;
+    const d = readDescriptorFile(home, m[1]);
+    if (d && d.worktreePath) rows.push({ id: m[1], worktreePath: String(d.worktreePath) });
+  }
+  const ids = new Set(rows.map((r) => r.id));
+  for (const r of rows) {
+    try {
+      const c = identityContext(r.worktreePath);
+      if (!c.worktreeRoot || !(c.submoduleDepth > 0) || c.meshId === r.id || !ids.has(c.meshId)) continue;
+      const root = rows.find((x) => x.id === c.meshId);
+      let rootReal = null;
+      try { rootReal = fs.realpathSync(root.worktreePath); } catch (_) { rootReal = null; }
+      if (rootReal !== c.worktreeRoot) continue; // the named Primary must really sit at the folded root
+      const ph = { id: r.id, worktreePath: r.worktreePath, canonicalId: c.meshId, canonicalWorktree: c.worktreeRoot };
+      if (repair) {
+        try {
+          const a = cmdArchive(r.id, Object.assign({ home, env: process.env }, ctx0, { cwd: r.worktreePath, repair: undefined }), { flags: {} });
+          if (a && a.ok) { ph.archived = true; out.archived += 1; } else { ph.error = (a && a.error) || 'archive failed'; out.errors += 1; }
+        } catch (e) { ph.error = String((e && e.message) || e); out.errors += 1; }
+      }
+      out.phantoms.push(ph);
+    } catch (_) { /* fail-open per row */ }
+  }
+  if (out.errors) out.ok = false;
+  return out;
+}
+
 // applyRecoveryIntents(home, ctx0) — G2 doctor/next-run companion for cmdArchive's
 // crash-safe recovery-intent markers. A marker lingers only when a prior archive
 // tombstoned the registry row but its in-process rollback/clear did NOT complete
@@ -20627,7 +20672,7 @@ module.exports = {
   resolveMeshTarget, resolveSendTarget,
   workspacesDir, archivedDir, heartbeatsDir, archiveIgnoreDir, primaryCursorPath, skipFilePath,
   selfHeal, withSelfHeal, SELF_HEAL_COOLDOWN_MS, selfHealCooldownPath,
-  migrateOwnerKeys, identityRekeyReport, rehomeCore, rehomeAcrossStores, rehomeMiskeyedRow, healRegistry, withIdLock, cmdArchive, archivedTombstoneIsOrphaned,
+  migrateOwnerKeys, identityRekeyReport, phantomPrimaryRows, rehomeCore, rehomeAcrossStores, rehomeMiskeyedRow, healRegistry, withIdLock, cmdArchive, archivedTombstoneIsOrphaned,
   resolveArchiveId,
   applyRecoveryIntents, recoveryIntentPath, rehomeStrandedProjectDescriptors,
   cmdWorkspacesList, cmdGate, cmdReconcile, cmdRegister,

@@ -1539,6 +1539,15 @@ if (REPAIR_INGEST_ORPHANS) {
   for (const line of result.lines) infol(line);
 })();
 
+// --- 5m2. phantom Primary rows (REPORT-ONLY; repaired only by explicit --repair) ---
+(function phantomPrimarySection() {
+  let result = null;
+  try { result = require('./lib/doctor-repair.js').checkPhantomPrimaries({ home: os.homedir() }); } catch (_) { result = null; }
+  if (!result) return;
+  head('phantom Primary rows (submodule-cwd registrations)');
+  warnl(result.message);
+})();
+
 // --- 5n. archived-child-stop metrics (REPORT-ONLY, CONDITIONAL) ---------------
 // Design B ("archive tells the live child to stop" — devswarm-child-turn.js
 // skips the descriptor rewrite + phantom retirement on an archived workspace,

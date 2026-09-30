@@ -1932,6 +1932,22 @@ function runRepairs(opts) {
     push('install-divergence', 'none', 'skipped', 'install-integrity check raised: ' + errMsg(e));
   }
 
+  // Phantom Primary rows (submodule-cwd register-primary, fixed in scripts/devswarm.js):
+  // explicit `doctor --repair` ONLY (this block sits inside !migrationsOnly, so the
+  // automatic repair-on-reload/update pass never reaches it). ARCHIVES (tombstone,
+  // reversible via `unarchive`), never deletes; idempotent; fail-open.
+  try {
+    const dw = require(DEVSWARM_SCRIPT);
+    if (typeof dw.phantomPrimaryRows === 'function') {
+      const r = dw.phantomPrimaryRows(home, { repair: !dryRun, cwd, env });
+      if (r.phantoms.length === 0) push('phantom-primary-rows', 'none', 'skipped', 'no phantom Primary rows');
+      else if (dryRun) push('phantom-primary-rows', 'archive', 'skipped', '[dry-run] would archive ' + r.phantoms.length + ' phantom Primary row(s): ' + r.phantoms.map((x) => x.id).join(', '));
+      else if (r.errors) push('phantom-primary-rows', 'archive', 'failed', 'archived ' + r.archived + '/' + r.phantoms.length + ' phantom Primary row(s); ' + r.errors + ' failed');
+      else push('phantom-primary-rows', 'archive', 'fixed', 'archived ' + r.archived + ' phantom Primary row(s) (reversible: devswarm.js unarchive <id>)');
+    }
+  } catch (e) {
+    push('phantom-primary-rows', 'archive', 'skipped', 'phantom-primary check raised (fail-open): ' + errMsg(e));
+  }
   } // end !migrationsOnly
   // --- R13 item 2: WIRE THE FOUR STANDALONE SWEEPS ------------------------
   //
@@ -2088,6 +2104,20 @@ function checkIdentityRekey(opts) {
   } catch (_) {
     return null;
   }
+}
+
+// checkPhantomPrimaries({home}) -> {count, ids, message} | null. REPORT-ONLY detect
+// half of the phantom-Primary-row repair (see devswarm.js phantomPrimaryRows); never writes.
+function checkPhantomPrimaries(opts) {
+  const o = opts || {};
+  try {
+    const dw = require(DEVSWARM_SCRIPT);
+    if (typeof dw.phantomPrimaryRows !== 'function') return null;
+    const r = dw.phantomPrimaryRows(o.home || os.homedir(), { repair: false });
+    if (!r || r.phantoms.length === 0) return null;
+    const ids = r.phantoms.map((x) => x.id);
+    return { count: ids.length, ids, message: '(warn) ' + ids.length + ' phantom Primary row(s) minted from a submodule cwd: ' + r.phantoms.map((x) => x.id + ' -> ' + x.canonicalId).join(', ') + ' (run doctor --repair to archive them; reversible)' };
+  } catch (_) { return null; }
 }
 
 // ---------------------------------------------------------------------------
@@ -3192,6 +3222,7 @@ module.exports = {
   checkMemguardReaperRisk,
   // identity-rekey-candidates report (mesh redesign Phase 2 B1; read-only):
   checkIdentityRekey,
+  checkPhantomPrimaries,
   // broker-parented MCP-orphan-leak surfacing (report-only, defensive; defect bfa063ab8e3f):
   checkOrphanedMcpUnderBroker,
   // Wave D9 — leaked test-fixture store detection (report-only, NO deletion path; defect f3c1bc827d89):

@@ -75,3 +75,46 @@ test('inbox read-primary from the submodule cwd equals the one from the root', (
   assert.strictEqual(b.repoKey, a.repoKey);
   assert.deepStrictEqual(strip(b).meshPartitionIds, strip(a).meshPartitionIds);
 });
+
+test('installer resolveWorktree from the submodule cwd is the superproject root (daemon workdir)', () => {
+  const inst = require(path.join(PLUGIN, 'companion', 'install-devswarm-ingest.js'));
+  assert.strictEqual(inst.resolveWorktree(sub), proj);
+  assert.strictEqual(inst.resolveWorktree(proj), proj);
+  assert.strictEqual(inst.resolveWorktree(tmp), null);
+});
+
+test('phantom Primary rows: detect (read-only) -> repair archives (no delete) -> idempotent', () => {
+  process.env.ANTIHALL_INGEST_DRY_RUN = '1';
+  const dw = require(path.join(PLUGIN, 'scripts', 'devswarm.js'));
+  const dr = require(path.join(PLUGIN, 'hooks', 'lib', 'doctor-repair.js'));
+  const rootId = identity.resolveContext(proj).meshId;
+  const phantomId = identity.resolveContext(sub).toplevel && require(path.join(PLUGIN, 'companion', 'install-devswarm-ingest.js')).primaryWorkspaceId(identity.resolveContext(sub).toplevel);
+  assert.notStrictEqual(phantomId, rootId);
+  // Seed the OLD-version bad state: an explicit --worktree <submodule> mints the phantom row.
+  cli(proj, ['register-primary', '--session', 's1']);
+  const seeded = cli(proj, ['register-primary', '--worktree', sub, '--session', 's2']);
+  assert.strictEqual(seeded.id, phantomId, JSON.stringify(seeded));
+  const desc = path.join(home, '.anti-hall', 'devswarm', 'workspaces', phantomId + '.json');
+  const archived = path.join(home, '.anti-hall', 'devswarm', 'archived', phantomId + '.json');
+  assert.ok(fs.existsSync(desc));
+
+  // detect: read-only, names the phantom, does NOT touch the root row
+  const c = dr.checkPhantomPrimaries({ home });
+  assert.ok(c && c.ids.includes(phantomId) && !c.ids.includes(rootId), JSON.stringify(c));
+  assert.ok(fs.existsSync(desc), 'detect must not write');
+  // automatic (migrations-only) pass never archives
+  assert.ok(!dw.phantomPrimaryRows(home, {}).archived);
+  assert.ok(fs.existsSync(desc));
+
+  // explicit repair: archive (tombstone), never delete; root row untouched
+  const r = dw.phantomPrimaryRows(home, { repair: true, env: process.env });
+  assert.strictEqual(r.archived, 1, JSON.stringify(r));
+  assert.ok(!fs.existsSync(desc));
+  assert.ok(fs.existsSync(archived), 'archived tombstone must exist (reversible)');
+  assert.ok(fs.existsSync(path.join(home, '.anti-hall', 'devswarm', 'workspaces', rootId + '.json')));
+
+  // idempotent second run
+  const r2 = dw.phantomPrimaryRows(home, { repair: true, env: process.env });
+  assert.deepStrictEqual([r2.phantoms.length, r2.archived, r2.errors], [0, 0, 0]);
+  assert.strictEqual(dr.checkPhantomPrimaries({ home }), null);
+});
