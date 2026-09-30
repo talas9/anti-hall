@@ -1584,11 +1584,25 @@ function writesLauncherDir(tokens, ev, cdDir) {
   const targets = [];
   for (let i = 0; i < tokens.length; i++) {
     const t = tokens[i];
-    const k = t.quotedOnly ? -1 : t.text.indexOf('>');
-    if (k < 0) continue;
-    const after = t.text.slice(k + 1).replace(/^>/, '').replace(/^\|/, '');
-    if (after.startsWith('&') || after.startsWith('(')) continue; // fd dup / process subst
-    targets.push(after || (tokens[i + 1] ? tokens[i + 1].text : ''));
+    if (t.quotedOnly) continue;
+    // EVERY `>` in the token is a candidate redirect, and each one's target is
+    // only the text up to the next newline: a real redirect target is one
+    // shell word, never a multi-line span. An odd quote in a heredoc body
+    // (`don't ... -> x`) desyncs the quote-aware tokenizer so one glued token
+    // swallows the body AND the later `node ~/.anti-hall/bin/...` line; taking
+    // everything after the first `>` then read that EXECUTED launcher path as
+    // a write target (prose `->` + apostrophe false block). Scanning every
+    // `>` per line keeps a real `echo x > ~/.anti-hall/bin/y` on a later line
+    // of the same glued token blocked (fail closed).
+    for (let k = t.text.indexOf('>'); k >= 0; k = t.text.indexOf('>', k + 1)) {
+      let rest = t.text.slice(k + 1);
+      const nl = rest.indexOf('\n');
+      if (nl >= 0) rest = rest.slice(0, nl);
+      const after = rest.replace(/^>/, '').replace(/^\|/, '');
+      if (after.startsWith('&') || after.startsWith('(')) continue; // fd dup / process subst
+      if (after) targets.push(after);
+      else if (nl < 0) targets.push(tokens[i + 1] ? tokens[i + 1].text : '');
+    }
   }
   const ops = ev.args.map((a) => a.text);
   const operands = ops.filter((w) => !w.startsWith('-'));

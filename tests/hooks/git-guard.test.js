@@ -669,6 +669,61 @@ for (const cmd of LAUNCHER_WRITE_ALLOW) {
   });
 }
 
+// Field report (4 workspaces): a prose heredoc body with an ODD apostrophe
+// desyncs the quote-aware tokenizer, gluing the body and the later executed
+// `node ~/.anti-hall/bin/devswarm.js send ...` line into one token; a `>`/`->`
+// in the prose then made the EXECUTED launcher path look like a redirect
+// target. Redirect targets are now attributed per line (up to the next
+// newline), and EVERY `>` in the glued token is checked so a real write on a
+// later line still blocks.
+const GLUE_SEND = 'node ~/.anti-hall/bin/devswarm.js send --to x --message-file /abs/m.txt';
+const GLUE_HD = (body, tail) => `cat > /abs/m.txt <<'EOF'\n${body}\nEOF\n${tail}`;
+const GLUE_ALLOW = [
+  GLUE_HD("don't do x -> y", GLUE_SEND),
+  GLUE_HD("don't: a => b; it's > 3 (see `x`) 2>&1 force push bump $(c)", GLUE_SEND),
+  GLUE_HD("don't\nx >\ny", GLUE_SEND),
+  GLUE_HD("isn't it a -> b\nand > c", GLUE_SEND),
+  GLUE_HD("don't x >> y", GLUE_SEND),
+  GLUE_HD('plain -> arrow, bump and force', GLUE_SEND),
+];
+const GLUE_BLOCK = [
+  GLUE_HD("don't do x -> y", 'echo x > ~/.anti-hall/bin/y'),
+  GLUE_HD("don't a -> b\nmore > c", 'echo x > ~/.anti-hall/bin/y'),
+  GLUE_HD("don't", 'echo x > ~/.anti-hall/bin/y'),
+  GLUE_HD("don't x >", 'echo x >~/.anti-hall/bin/y'),
+  GLUE_HD("don't\n->", 'echo x >~/.anti-hall/bin/y'),
+  GLUE_HD('fine', 'echo x > ~/.anti-hall/bin/x'),
+  GLUE_HD('fine', 'cp a ~/.anti-hall/bin/x'),
+  GLUE_HD('fine', 'tee ~/.anti-hall/bin/x'),
+  GLUE_HD('fine', 'sed -i s/a/b/ ~/.anti-hall/bin/x'),
+  GLUE_HD('fine', 'mv a ~/.anti-hall/bin/x'),
+  GLUE_HD('fine', 'echo x > $HOME/.anti-hall/bin/x'),
+  GLUE_HD('fine', 'echo x > /Users/u/.anti-hall/bin/x'),
+  GLUE_HD('fine', 'cd ~/.anti-hall/bin && echo x > y'),
+  'echo x > ~/.anti-hall/bin/x',
+  'cp a ~/.anti-hall/bin/x',
+  'tee ~/.anti-hall/bin/x',
+  'sed -i s/a/b/ ~/.anti-hall/bin/x',
+  'mv a ~/.anti-hall/bin/x',
+  "cat > ~/.anti-hall/bin/x <<'EOF'\nx\nEOF",
+  'echo x > $HOME/.anti-hall/bin/x',
+  'echo x > /Users/u/.anti-hall/bin/x',
+  'cd ~/.anti-hall/bin && echo x > y',
+];
+for (const cmd of GLUE_ALLOW) {
+  test(`ALLOW (odd-quote prose body, executed launcher is not a target): ${JSON.stringify(cmd)}`, () => {
+    const r = run(cmd);
+    assert.strictEqual(r.status, 0, `expected allow for: ${cmd}\nstderr: ${r.stderr}`);
+  });
+}
+for (const cmd of GLUE_BLOCK) {
+  test(`BLOCK (real launcher write, incl. after odd-quote body): ${JSON.stringify(cmd)}`, () => {
+    const r = run(cmd);
+    assert.strictEqual(r.status, 2, `expected block for: ${cmd}\nstderr: ${r.stderr}`);
+    assert.match(r.stderr, /stable launcher directory/);
+  });
+}
+
 // R2-1: the launcher-dir write block hardened with best-effort symlink
 // resolution, plus flagging `ln`'s SOURCE operand. These need a REAL symlink
 // on disk (the textual LAUNCHER_DIR_RE/hasAntiHallBinSegment checks alone
