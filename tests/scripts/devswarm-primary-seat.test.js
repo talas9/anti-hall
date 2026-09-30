@@ -42,7 +42,10 @@ function endSession(f, sid) { rm(path.join(f.home, '.claude', 'sessions', sid + 
 function transcript(f, sid, iso) {
   const dir = drift.projectDirFor(f.repo, f.home);
   fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(path.join(dir, sid + '.jsonl'), JSON.stringify({ type: 'user', cwd: f.repo, sessionId: sid, timestamp: iso }) + '\n');
+  const p = path.join(dir, sid + '.jsonl');
+  fs.writeFileSync(p, JSON.stringify({ type: 'user', cwd: f.repo, sessionId: sid, timestamp: iso }) + '\n');
+  const t = new Date(iso); // last activity = the fixture's own timestamp, not wall-clock write time
+  fs.utimesSync(p, t, t);
 }
 function handover(f, sid, date, mtimeMs) {
   const d = path.join(f.repo, '.anti-hall', 'handovers', date, sid);
@@ -293,5 +296,47 @@ test('(review P2) corrupt descriptor JSON -> state unknown, NOT re-registered, r
     assert.match(c, /corrupt|unparseable/i, c);
     assert.match(c, new RegExp(f.id), c);
     assert.equal(fs.readFileSync(descPath(f), 'utf8'), '{"sessionId": "sess-old", trunc');
+  } finally { f.cleanup(); }
+});
+
+// Report (a), 0.118.x: a LIVE long-running Primary was told an OLDER, dead
+// session "was active until <that session's HANDOVER mtime>". Recency must come
+// from transcript mtimes (last activity), never the handover mtime vs. our START.
+function touch(f, sid, iso) {
+  const t = new Date(iso);
+  fs.utimesSync(path.join(drift.projectDirFor(f.repo, f.home), sid + '.jsonl'), t, t);
+}
+test('staleResume: a live Primary more recently active than an older dead session (with a handover) is NOT told it resumed stale', () => {
+  const f = fixture();
+  try {
+    transcript(f, 'sess-dead', '2026-09-29T06:00:00.000Z');
+    touch(f, 'sess-dead', '2026-09-30T17:36:00.000Z');
+    transcript(f, 'sess-live', '2026-09-29T08:00:00.000Z');
+    touch(f, 'sess-live', '2026-09-30T18:00:00.000Z');
+    const h = { path: handover(f, 'sess-dead', '2026-09-30', Date.parse('2026-09-30T14:11:30Z')), sessionId: 'sess-dead', mtimeMs: Date.parse('2026-09-30T14:11:30Z') };
+    assert.equal(seat.staleResume({ worktree: f.repo, home: f.home, currentSessionId: 'sess-live', handover: h }), null);
+    assert.deepEqual(seat.seatNotices({ state: 'own', id: 'primary-x', stale: null }, { currentSessionId: 'sess-live' }), []);
+  } finally { f.cleanup(); }
+});
+
+test('staleResume: no transcript evidence for the current session -> null (fail-open), never an unconditional claim from a handover', () => {
+  const f = fixture();
+  try {
+    transcript(f, 'sess-dead', '2026-09-29T06:00:00.000Z');
+    const h = { sessionId: 'sess-dead', mtimeMs: Date.parse('2026-09-30T14:11:30Z') };
+    assert.equal(seat.staleResume({ worktree: f.repo, home: f.home, currentSessionId: 'sess-fresh', handover: h }), null);
+  } finally { f.cleanup(); }
+});
+
+test('staleResume: a genuinely stale resume names the other session\'s TRANSCRIPT last activity, not its handover mtime', () => {
+  const f = fixture();
+  try {
+    transcript(f, 'sess-A', '2026-09-30T08:00:00.000Z');
+    touch(f, 'sess-A', '2026-09-30T10:00:00.000Z');
+    transcript(f, 'sess-B', '2026-09-30T10:05:00.000Z');
+    touch(f, 'sess-B', '2026-09-30T15:30:00.000Z'); // kept working 3.5h after its handover
+    const h = { sessionId: 'sess-B', mtimeMs: Date.parse('2026-09-30T12:00:00Z') };
+    const s = seat.staleResume({ worktree: f.repo, home: f.home, currentSessionId: 'sess-A', handover: h });
+    assert.deepEqual(s, { sessionId: 'sess-B', activeUntilMs: Date.parse('2026-09-30T15:30:00Z') });
   } finally { f.cleanup(); }
 });

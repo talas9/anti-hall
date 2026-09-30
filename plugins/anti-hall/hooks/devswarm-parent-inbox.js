@@ -2378,7 +2378,7 @@ function main() {
     if (primaryId && gitTop) {
       const desc = JSON.parse(fs.readFileSync(path.join(home, '.anti-hall', 'devswarm', 'workspaces', primaryId + '.json'), 'utf8'));
       const drift = require('../companion/lib/primary-session-drift.js');
-      const notice = drift.driftNotice(drift.anchorSessionDrift({ anchorSessionId: desc && desc.sessionId, worktree: gitTop, home, currentSessionId: sessionId }), sessionId);
+      const notice = drift.driftNotice(drift.anchorSessionDrift({ anchorSessionId: desc && desc.sessionId, worktree: gitTop, home, currentSessionId: sessionId, currentTranscriptPath: transcriptPath }), sessionId);
       if (notice && dedupeEmit(home, sessionId, 'parent-inbox-session-drift', notice, { transcriptPath, keepaliveTurns: 20 })) segments.push(notice);
     }
   } catch (_) { /* no descriptor / unreadable: no notice */ }

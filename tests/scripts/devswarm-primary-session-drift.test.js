@@ -147,3 +147,26 @@ test('anchor refresh: the running session\'s tick re-points the anchor; never wh
     assert.equal(t2.result.anchorRefresh, undefined);
   } finally { f.cleanup(); }
 });
+
+// Report (a), 0.118.x: the live Primary whose own transcript was not matched in
+// the worktree's projects dir fell through to the anchor-only check and was
+// told an older, dead session was "newer".
+test('anchorSessionDrift: current session\'s transcript outside the scanned dir -> stat it via transcript_path; more recent -> no notice', () => {
+  const f = fixture();
+  try {
+    transcript(f, 'sess-dead', f.repo, '2026-09-29T06:00:00.000Z');
+    const dir = drift.projectDirFor(f.repo, f.home);
+    fs.utimesSync(path.join(dir, 'sess-dead.jsonl'), new Date('2026-09-30T17:36:00Z'), new Date('2026-09-30T17:36:00Z'));
+    const other = path.join(f.home, '.claude', 'projects', 'elsewhere');
+    fs.mkdirSync(other, { recursive: true });
+    const tp = path.join(other, 'sess-live.jsonl');
+    fs.writeFileSync(tp, '{}\n');
+    const args = { anchorSessionId: 'sess-anchor', worktree: f.repo, home: f.home, currentSessionId: 'sess-live' };
+    assert.equal(drift.anchorSessionDrift(args), null, 'no evidence of the current session\'s activity -> silent, not "newer"');
+    assert.equal(drift.anchorSessionDrift(Object.assign({ currentTranscriptPath: tp }, args)), null, 'live session more recently active');
+    // Genuine drift still surfaces: the current session's last activity predates the other's.
+    fs.utimesSync(tp, new Date('2026-09-30T10:00:00Z'), new Date('2026-09-30T10:00:00Z'));
+    const d = drift.anchorSessionDrift(Object.assign({ currentTranscriptPath: tp }, args));
+    assert.equal(d && d.newestSessionId, 'sess-dead');
+  } finally { f.cleanup(); }
+});

@@ -99,24 +99,32 @@ function newestWorktreeHandover(worktree) {
 
 // staleResume({ worktree, home, currentSessionId, handover }) -> { sessionId, activeUntilMs } | null.
 // The current session was RESUMED stale when another session on this worktree
-// started after it (its /clear successor, say) or wrote a newer handover.
+// was ACTIVE after the current session's own last activity. Both sides are
+// measured by transcript mtime (<home>/.claude/projects/<enc>/<sid>.jsonl) —
+// the handover mtime only counts as a lower bound on its writer's activity.
+// 0.118.x fix: the old rule compared the other session's START and the
+// handover's MTIME against this session's START, so a long-running live
+// Primary was told an older, dead session "was active until <its handover
+// mtime>"; and with no transcript of its own it was told so unconditionally.
+// No evidence of this session's own activity -> null (fail-open: say nothing).
 function staleResume(o) {
   const cur = o.currentSessionId ? String(o.currentSessionId) : '';
   if (!cur) return null;
   const drift = require('./primary-session-drift.js');
   const list = drift.sessionsForWorktree(o.worktree, { home: o.home });
-  const mine = list.find((x) => x.sessionId === cur);
+  const mineMs = drift.currentActivityMs(cur, list, { worktree: o.worktree, home: o.home });
+  if (mineMs == null) return null;
   let best = null;
   for (const x of list) {
-    if (x.sessionId === cur || !mine || !(x.startMs > mine.startMs)) continue;
-    let until = x.startMs;
-    try { until = fs.statSync(path.join(drift.projectDirFor(o.worktree, o.home), x.sessionId + '.jsonl')).mtimeMs; } catch (_) { /* start */ }
-    if (!best || until > best.activeUntilMs) best = { sessionId: x.sessionId, activeUntilMs: until };
+    if (x.sessionId === cur || !(x.lastActivityMs > mineMs)) continue;
+    if (!best || x.lastActivityMs > best.activeUntilMs) best = { sessionId: x.sessionId, activeUntilMs: x.lastActivityMs };
   }
   const h = o.handover;
-  if (h && h.sessionId !== cur && (!best || h.mtimeMs > best.activeUntilMs)) {
-    const myStart = mine ? mine.startMs : null;
-    if (myStart == null || h.mtimeMs > myStart) best = { sessionId: h.sessionId, activeUntilMs: h.mtimeMs };
+  if (h && h.sessionId !== cur) {
+    let until = h.mtimeMs;
+    const w = list.find((x) => x.sessionId === h.sessionId);
+    if (w && w.lastActivityMs > until) until = w.lastActivityMs;
+    if (until > mineMs && (!best || until > best.activeUntilMs)) best = { sessionId: h.sessionId, activeUntilMs: until };
   }
   return best;
 }

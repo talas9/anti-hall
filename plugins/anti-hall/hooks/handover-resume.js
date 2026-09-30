@@ -23,7 +23,9 @@
 //
 // Freshness facts: the pointer line is followed by git facts measured at
 // injection time -- HEAD, commits since the handover's mtime, dirty-file
-// count (each git call capped at 1.5 s; omitted outside a git repo).
+// count (each git call capped at 1.5 s; omitted outside a git repo), plus a
+// WRITER KEPT RUNNING line when the handover's writing session's transcript
+// was written > 5 min after the handover (see writerActivityLine).
 // Platform-aware: a Codex payload (hooks/lib/auto-handover-text.js
 // detectPlatform) is told to re-read AGENTS.md instead of CLAUDE.md.
 //
@@ -113,6 +115,36 @@ function freshnessLine(cwd, sinceMs) {
     'count means the handover\'s git/state claims may be stale -- re-verify them before trusting them.';
 }
 
+// writerActivityLine(cwd, handoversRoot, candidate) -> one line when the
+// session that WROTE the handover kept running after it, else ''. Commits
+// alone miss that: a session can spawn workspaces / send mail for hours
+// without committing, leaving the handover's Next Action stale while the git
+// freshness count reads 0. Evidence = the writer's transcript mtime,
+// <home>/.claude/projects/<encoded root>/<session>.jsonl (the repo root, then
+// the raw cwd) -- at most two stat() calls, never a transcript read.
+// Fail-open: no transcript found (e.g. a Codex writer) -> ''.
+const WRITER_GRACE_MS = 5 * 60 * 1000; // the handover turn's own tail writes
+function writerActivityLine(cwd, handoversRoot, candidate) {
+  try {
+    const sid = String(candidate.sessionId || '');
+    if (!/^[A-Za-z0-9._-]+$/.test(sid)) return '';
+    const { projectDirFor } = require('../companion/lib/primary-session-drift.js');
+    const roots = [path.dirname(path.dirname(handoversRoot))];
+    if (cwd && roots.indexOf(cwd) === -1) roots.push(cwd);
+    for (const r of roots) {
+      let m;
+      try { m = fs.statSync(path.join(projectDirFor(r, os.homedir()), sid + '.jsonl')).mtimeMs; } catch (_) { continue; }
+      const gap = m - candidate.mtimeMs;
+      if (!(gap > WRITER_GRACE_MS)) return '';
+      return 'WRITER KEPT RUNNING: session ' + sid + ' kept running ' + Math.round(gap / 60000) +
+        ' min after this handover was written (its transcript last wrote at ' +
+        new Date(m).toISOString().replace(/\.\d{3}Z$/, 'Z') + ') -- its Next Action may be stale; check ' +
+        'what it did after the handover (mesh mail, workspaces, uncommitted edits) before acting on it.';
+    }
+  } catch (_) { /* fail-open */ }
+  return '';
+}
+
 // RESUME_CHECKLIST_HEADING -- matches the handover skill's OWN template
 // heading (SKILL.md: "## Resume-verification checklist"). A handover written
 // before that section existed, or hand-edited without it, has nothing for
@@ -147,7 +179,7 @@ function detectHandoverShape(candidate) {
   return { hasChecklist, existingDetailFiles };
 }
 
-function buildContext(candidate, outcome, prefix, freshness, platform) {
+function buildContext(candidate, outcome, prefix, freshness, platform, writerLine) {
   const seqLabel = candidate.seq > 1 ? 'HANDOVER-' + candidate.seq + '.md' : 'HANDOVER.md';
   const predecessor = candidate.seq > 1
     ? (candidate.seq === 2 ? 'HANDOVER.md' : 'HANDOVER-' + (candidate.seq - 1) + '.md')
@@ -163,6 +195,7 @@ function buildContext(candidate, outcome, prefix, freshness, platform) {
     (outcome ? ' -- INDEX.md outcome: ' + outcome : '')
   );
   if (freshness) lines.push(freshness);
+  if (writerLine) lines.push(writerLine);
   lines.push('');
   lines.push('GUIDED RESUME PATH:');
   // ADAPTIVE (peer ask 3, 0.112 lane): step 2 and step 3 only name what this
@@ -345,7 +378,7 @@ function main() {
     : 'A previous session left a handover';
 
   const outcome = readIndexOutcome(handoversRoot, candidate.date, candidate.sessionId, candidate.seq);
-  let additionalContext = buildContext(candidate, outcome, prefix, freshnessLine(cwd, candidate.mtimeMs), detectPlatform(payload));
+  let additionalContext = buildContext(candidate, outcome, prefix, freshnessLine(cwd, candidate.mtimeMs), detectPlatform(payload), writerActivityLine(cwd, handoversRoot, candidate));
   if (snap) additionalContext += '\n\n' + buildSnapshotLine(snap, candidate);
 
   // Record that a resume injection happened THIS session, pointing at the

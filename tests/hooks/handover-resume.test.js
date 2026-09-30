@@ -567,3 +567,49 @@ test('(p) precompact-snapshot writes from a weird cwd, then handover-resume (nor
     fs.rmSync(cwd, { recursive: true, force: true });
   }
 });
+
+// Report (b), 0.118.x: the git FRESHNESS count only sees commits. A writing
+// session that kept running (mesh mail, spawned workspaces) without
+// committing left a stale Next Action behind a "0 commit(s)" freshness line.
+function writerTranscript(home, root, sid, mtime) {
+  const dir = path.join(home, '.claude', 'projects', root.replace(/[/\\:.]/g, '-'));
+  fs.mkdirSync(dir, { recursive: true });
+  const p = path.join(dir, sid + '.jsonl');
+  fs.writeFileSync(p, JSON.stringify({ type: 'user', sessionId: sid }) + '\n');
+  fs.utimesSync(p, mtime, mtime);
+}
+
+test('(q) writer kept running 3.5h after its handover (no commits) -> WRITER KEPT RUNNING line with the minutes', () => {
+  const h = makeHome();
+  const cwd = fs.realpathSync(makeProjectCwd());
+  try {
+    execFileSync('git', ['init', '-q'], { cwd, stdio: 'ignore' });
+    const old = '@' + Math.floor((Date.now() - 5 * 60 * 60 * 1000) / 1000) + ' +0000'; // committed BEFORE the handover
+    execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '--allow-empty', '-m', 'a'],
+      { cwd, stdio: 'ignore', env: Object.assign({}, process.env, { GIT_COMMITTER_DATE: old, GIT_AUTHOR_DATE: old }) });
+    writeHandover(cwd, '2026-09-30', 'sess-w', 1, { ageMs: 4 * 60 * 60 * 1000 });
+    writerTranscript(h.home, cwd, 'sess-w', new Date(Date.now() - 30 * 60 * 1000)); // 210 min after the handover
+    const c = resumeCtx(h, cwd, 'sess-new', 'startup');
+    assert.match(c, /FRESHNESS \(measured now\): HEAD [0-9a-f]+; 0 commit\(s\)/, 'commit count is still 0');
+    assert.match(c, /WRITER KEPT RUNNING: session sess-w kept running 210 min after this handover was written/, c);
+  } finally {
+    h.cleanup();
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test('(r) writer transcript within the grace window, or absent -> no WRITER line (fail-open)', () => {
+  const h = makeHome();
+  const cwd = fs.realpathSync(makeProjectCwd());
+  try {
+    writeHandover(cwd, '2026-09-30', 'sess-w', 1, { ageMs: 60 * 60 * 1000 });
+    assert.doesNotMatch(resumeCtx(h, cwd, 'sess-new', 'startup'), /WRITER KEPT RUNNING/, 'no transcript at all');
+    writerTranscript(h.home, cwd, 'sess-w', new Date(Date.now() - 58 * 60 * 1000)); // 2 min after
+    const c = resumeCtx(h, cwd, 'sess-new', 'startup');
+    assert.match(c, /A previous session left a handover/, 'the injection itself still happens');
+    assert.doesNotMatch(c, /WRITER KEPT RUNNING/);
+  } finally {
+    h.cleanup();
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
+});

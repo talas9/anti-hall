@@ -89,7 +89,22 @@ function sessionsForWorktree(worktree, opts) {
   return out;
 }
 
-// anchorSessionDrift({ anchorSessionId, worktree, home, fs }) ->
+// currentActivityMs(cur, list, o) -> the current session's transcript mtime,
+// or null. At most two stat() calls; never reads the transcript.
+function currentActivityMs(cur, list, o) {
+  const F = o.fs || fs;
+  const hit = list.find((s) => s.sessionId === cur);
+  if (hit) return hit.lastActivityMs;
+  const cands = [];
+  if (o.currentTranscriptPath) cands.push(String(o.currentTranscriptPath));
+  if (SID_RE.test(cur)) cands.push(path.join(projectDirFor(o.worktree, o.home), cur + '.jsonl'));
+  for (const p of cands) {
+    try { const m = F.statSync(p).mtimeMs; if (Number.isFinite(m)) return m; } catch (_) { /* next */ }
+  }
+  return null;
+}
+
+// anchorSessionDrift({ anchorSessionId, worktree, home, fs, currentSessionId, currentTranscriptPath }) ->
 //   null | { anchorSessionId, newestSessionId, newestActivityMs }.
 // Drift = the newest session on the worktree is NOT the anchor's recorded one.
 // No anchor session, no transcripts, or the anchor IS the newest -> null.
@@ -105,12 +120,20 @@ function anchorSessionDrift(opts) {
     // is actually more recently active than the CURRENT running session's own
     // last activity — a session that merely started earlier/later but has
     // since gone stale must not outrank the live one on id/anchor alone.
-    // o.currentSessionId not found in `list` (its own transcript not yet
-    // matched/written) -> fail open to the anchor-only drift below, same as
-    // before this fix.
+    // No o.currentSessionId at all -> the anchor-only drift below.
     const cur = o.currentSessionId != null ? String(o.currentSessionId) : '';
-    const curEntry = cur ? list.find((s) => s.sessionId === cur) : null;
-    if (curEntry && list[0].lastActivityMs <= curEntry.lastActivityMs) return null;
+    if (cur) {
+      // 0.118.x fix: a KNOWN current session whose transcript was not matched
+      // in `list` (not written yet, beyond MAX_SCAN, or launched from another
+      // cwd so it lives in a different projects dir) used to fall through to
+      // the anchor-only check and name a DEAD, less-recently-active session
+      // "newer" to the live Primary. Stat its own transcript directly (the
+      // hook's transcript_path, then <projects>/<cur>.jsonl); if its activity
+      // is still unknown, stay silent — the running session is live now, and
+      // a "newer" claim needs evidence.
+      const curMs = currentActivityMs(cur, list, o);
+      if (curMs == null || list[0].lastActivityMs <= curMs) return null;
+    }
     return { anchorSessionId: anchor, newestSessionId: list[0].sessionId, newestActivityMs: list[0].lastActivityMs };
   } catch (_) { return null; }
 }
@@ -126,4 +149,4 @@ function driftNotice(drift, currentSessionId) {
     + 'Primary — never stand down on a label alone; check `devswarm.js roster`.)';
 }
 
-module.exports = { projectDirFor, sessionsForWorktree, anchorSessionDrift, driftNotice };
+module.exports = { projectDirFor, sessionsForWorktree, currentActivityMs, anchorSessionDrift, driftNotice };
