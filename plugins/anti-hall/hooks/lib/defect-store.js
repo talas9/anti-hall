@@ -31,7 +31,7 @@
 // No counts or flags are ever STORED — two fields stored separately can
 // disagree (see unread:400/storeUnread:0 above); a single derivation cannot.
 //
-// WRITE DISCIPLINE: create with fs.openSync(file, 'wx') (O_EXCL — refuses to
+// WRITE DISCIPLINE: create with fs.openSync(file, 'ax') (O_EXCL — refuses to
 // clobber); on EEXIST, fall through to append. Append with exactly ONE
 // fs.appendFileSync(file, line + "\n") call. Every line is hard-capped at
 // MAX_LINE_BYTES (4096) — small enough that concurrent O_APPEND writes from
@@ -545,7 +545,9 @@ function appendLine(file, lineStr, opts) {
     if (create) {
       let fd;
       try {
-        fd = fs.openSync(file, 'wx');
+        // 'ax' = O_CREAT|O_EXCL|O_APPEND. Plain 'wx' leaves the fd at offset 0, so a
+        // concurrent EEXIST-loser's append could land first and be overwritten by this write.
+        fd = fs.openSync(file, 'ax');
       } catch (e) {
         // `exclusive` (backfill's idempotence key): an existing file means
         // "already recorded" — never append a second copy.
