@@ -160,6 +160,67 @@ function detectQuotaMessage(text) {
   return { reason, until };
 }
 
+// scanJobLogs({home, now}) -> { until, reason } | null. A codex:codex-rescue that
+// returns only a BACKGROUND job id ("run /codex:status task-...") never shows the
+// usage-limit error to the PostToolUse hook: it lives only in the codex-companion
+// job log (<home>/.claude/plugins/data/codex-openai-codex/state/<repo>/jobs/*.log).
+// Cheap + bounded + fail-open: newest MAX_DIRS job dirs and newest MAX_FILES logs
+// modified within MAX_AGE_MS, TAIL_BYTES of each. A hit whose "try again at" time
+// has already passed is stale and ignored (recordQuota would otherwise turn a past
+// date into a fresh default cooldown). Records via recordQuota unless an equal or
+// later outage is already recorded. Never throws.
+const JOB_SCAN = { MAX_DIRS: 20, MAX_FILES: 10, MAX_AGE_MS: 24 * 60 * 60 * 1000, TAIL_BYTES: 8192 };
+function newestEntries(dir, filter, limit, minMtime) {
+  const out = [];
+  for (const name of fs.readdirSync(dir)) {
+    if (filter && !filter(name)) continue;
+    try {
+      const full = path.join(dir, name);
+      const st = fs.statSync(full);
+      if (st.mtimeMs >= minMtime) out.push({ full, mtimeMs: st.mtimeMs });
+    } catch (_) { /* skip */ }
+  }
+  return out.sort((a, b) => b.mtimeMs - a.mtimeMs).slice(0, limit);
+}
+function scanJobLogs(opts) {
+  try {
+    const o = opts || {};
+    const now = Number.isFinite(o.now) ? o.now : Date.now();
+    const home = require('../../companion/lib/test-home-guard.js').resolveHome(o.home);
+    const root = path.join(home, '.claude', 'plugins', 'data', 'codex-openai-codex', 'state');
+    const minMtime = now - JOB_SCAN.MAX_AGE_MS;
+    const logs = [];
+    for (const repo of newestEntries(root, null, JOB_SCAN.MAX_DIRS, minMtime)) {
+      try {
+        const jobs = path.join(repo.full, 'jobs');
+        logs.push(...newestEntries(jobs, (n) => n.endsWith('.log'), JOB_SCAN.MAX_FILES, minMtime));
+      } catch (_) { /* no jobs dir */ }
+    }
+    logs.sort((a, b) => b.mtimeMs - a.mtimeMs);
+    for (const log of logs.slice(0, JOB_SCAN.MAX_FILES)) {
+      let text = '';
+      try {
+        const fd = fs.openSync(log.full, 'r');
+        try {
+          const size = fs.fstatSync(fd).size;
+          const len = Math.min(size, JOB_SCAN.TAIL_BYTES);
+          const buf = Buffer.alloc(len);
+          fs.readSync(fd, buf, 0, len, size - len);
+          text = buf.toString('utf8');
+        } finally { fs.closeSync(fd); }
+      } catch (_) { continue; }
+      const hit = detectQuotaMessage(text);
+      if (!hit) continue;
+      const until = hit.until === null ? log.mtimeMs + DEFAULT_COOLDOWN_MS : hit.until;
+      if (until <= now) continue; // already expired
+      const cur = readQuota({ home: o.home, now });
+      if (!(cur.exhausted && cur.until >= until)) recordQuota({ until, reason: hit.reason, home: o.home, now });
+      return { until, reason: hit.reason };
+    }
+  } catch (_) { /* fail-open */ }
+  return null;
+}
+
 module.exports = {
-  statePath, recordQuota, clearQuota, readQuota, detectQuotaMessage, DEFAULT_COOLDOWN_MS,
+  statePath, recordQuota, clearQuota, readQuota, detectQuotaMessage, scanJobLogs, DEFAULT_COOLDOWN_MS,
 };

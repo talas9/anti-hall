@@ -2261,6 +2261,46 @@ function isBoundedSinkSegment(segment) {
   return false;
 }
 
+// Read-only FILTER stages that may sit between a qualifying check and its
+// bounded sink (`vitest run f 2>&1 | grep -E "Tests|FAIL" | head -5`): the
+// pipeline is bounded by its LAST stage, and these only transform stdin to
+// stdout. Anything that can write a file or run a program (tee, xargs, sh,
+// `sed -i`/`w`/`e`, `sort -o`, awk with system()/getline/redirects/pipes)
+// is NOT a filter and keeps the pipeline blocked.
+function isReadOnlyFilterSegment(segment) {
+  const verb = effectiveVerb(segment);
+  if (!verb) return false;
+  const raw = segment.trim();
+  const tokens = tokenizeQuoted(raw);
+  const args = tokens.slice(1);
+  if (verb === 'grep') return true;
+  if (verb === 'cut' || verb === 'tr') return true;
+  if (verb === 'sort') return !args.some((t) => /^(?:-[a-zA-Z]*o|--output|--compress-program)/.test(t));
+  if (verb === 'uniq') return args.every((t) => t.startsWith('-')); // a positional is an OUTPUT file
+  if (verb === 'sed') {
+    if (!args.includes('-n')) return false;
+    const rest = args.filter((t) => t !== '-n');
+    return rest.length === 1 && /^(?:(?:\d+|\$)(?:,(?:\d+|\$))?|\/[^\/\\]+\/)p$/.test(rest[0]);
+  }
+  if (verb === 'awk') {
+    if (args.some((t) => /^-f|^--file|^-i|^--include|^-e|^--source/.test(t))) return false;
+    return !/system|getline|close|ENVIRON|fflush|[|>]/.test(raw);
+  }
+  return false;
+}
+
+// A segment that is NOT heavy by itself and does not open a subshell, a loop
+// or a substitution (those stay on their existing paths) may ride in a chain
+// of otherwise-allowed segments.
+function isPlainLightSegment(segment, command) {
+  const seg = segment.trim();
+  if (/\$\(|`|<\(|>\(|\$\{/.test(seg)) return false;
+  if (/[()]/.test(neutralizeQuotedContents(seg))) return false;
+  if (/^(?:!\s*)?(?:for|while|until|if|then|do|else|elif|case|select|function|time|\{)\b/.test(seg) || /^\{/.test(seg)) return false;
+  if (/^(?:done|fi|esac|\})$/.test(seg)) return false;
+  try { return !isHeavySegment(seg, command); } catch (_) { return false; }
+}
+
 function isTriviallySafeSegment(segment) {
   const verb = effectiveVerb(segment);
   return !!verb && VERIFY_TRIVIAL_VERBS.has(verb);
@@ -2350,6 +2390,15 @@ function isBoundedVerificationCommand(command, ctx) {
       kind = 'sink';
     } else if (isTriviallySafeSegment(seg)) {
       kind = 'trivial';
+    } else if (idx > 0 && delims[idx - 1] === '|' && isReadOnlyFilterSegment(seg)) {
+      // A read-only filter fed by a pipe: bounded only if the pipeline still
+      // ends in a sink (enforced below: an unbounded tail stage returns false).
+      kind = 'filter';
+    } else if (!(idx > 0 && delims[idx - 1] === '|') && isPlainLightSegment(seg, command)) {
+      // A non-heavy segment that starts its own pipeline/step (e.g. `git
+      // check-ignore ...`, `echo X`) rides along: the chain is allowed iff
+      // EVERY segment is individually allowed.
+      kind = 'light';
     } else {
       return false;
     }

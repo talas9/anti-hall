@@ -202,7 +202,9 @@ function main() {
   if (scan.codexReview) process.exit(0);
   // Codex is usage-limited (lib/codex-quota.js): nudging for a review that cannot run is noise.
   try {
-    if (require('./lib/codex-quota.js').readQuota({ home: require('../companion/lib/test-home-guard.js').resolveHome() }).exhausted) process.exit(0);
+    const cq = require('./lib/codex-quota.js');
+    if (settingsGet('guards', 'codexQuotaDetect') !== false) cq.scanJobLogs(); // background job logs carry the error the Agent hook never sees
+    if (cq.readQuota({ home: require('../companion/lib/test-home-guard.js').resolveHome() }).exhausted) process.exit(0);
   } catch (_) { /* fail-open: keep nudging */ }
 
   // Session key (mirror speculation-guard). Computed here (moved up from

@@ -130,6 +130,11 @@ function main() {
     return;
   }
 
+  // A background codex job's usage-limit error is only in its job log (see
+  // lib/codex-quota.js scanJobLogs); fold it into the same quota record first.
+  try {
+    if (require('./lib/settings.js').get('guards', 'codexQuotaDetect', true) !== false) require('./lib/codex-quota.js').scanJobLogs();
+  } catch (_) { /* fail-open */ }
   const prefix = quotaNote();
   // Emit whenever the binary is reachable OR a live quota outage exists —
   // the quota case is the one place this hook must speak even though the
