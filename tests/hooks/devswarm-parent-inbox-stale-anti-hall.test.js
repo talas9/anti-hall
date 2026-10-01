@@ -6,7 +6,7 @@
 // a stale build with a totally different remedy (restart, not poke/escalate).
 //
 // The roster table and the parent-inbox nag now show "stale anti-hall <v>:
-// restart this session (or drain with `<newest CLI path>`)" INSTEAD OF
+// run /reload-plugins (restart only if it persists) (or drain with `<newest CLI path>`)" INSTEAD OF
 // "not-draining" for a workspace whose heartbeat-recorded anti-hall version
 // (item 4a) is older than the newest one registered/cached on this machine.
 
@@ -94,7 +94,7 @@ test('roster + nag: a notDraining workspace on a STALE anti-hall build shows "st
     assert.doesNotMatch(tableRow(c, 'wsStale'), /not-draining/,
       'the roster row must NOT show not-draining once a stale build is detected:\n' + c);
     assert.match(tableRow(c, 'wsStale'), /stale anti-hall 0\.105\.3/, 'the roster row must name the stale version:\n' + c);
-    assert.match(c, /stale anti-hall 0\.105\.3: restart this session \(or drain with `node .*devswarm\.js`\)/,
+    assert.match(c, /stale anti-hall 0\.105\.3: run \/reload-plugins \(restart only if it persists\) \(or drain with `node .*devswarm\.js`\)/,
       'the nag segment must carry the full restart/drain guidance:\n' + c);
     assert.doesNotMatch(c, /NOT DRAINING >20m/, 'must not ALSO show the generic not-draining tag:\n' + c);
   } finally { h.cleanup(); }

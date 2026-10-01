@@ -69,6 +69,18 @@ test('report 2: chain of individually-allowed segments is allowed; a heavy segme
   } finally { fs.rmSync(proj, { recursive: true, force: true }); }
 });
 
+test('F1: shell-wrapped heavy segments cannot ride an allowed chain', () => {
+  const proj = makeProj();
+  try {
+    const b = (c) => blocked(c, proj);
+    const ok = 'node --test a.test.js | tail -3';
+    for (const x of ['sh -c "make"', 'bash -lc "npm ci"', 'zsh -c "cargo build"', 'env sh -c "make"', 'nohup sh -c "make"', 'eval make', 'eval "make"', 'sh -c "npm test | tail"']) {
+      assert.ok(b(ok + '; ' + x), 'after: ' + x);
+      assert.ok(b(x + '; ' + ok), 'before: ' + x);
+    }
+  } finally { fs.rmSync(proj, { recursive: true, force: true }); }
+});
+
 test('addendum: pipeline ending in a bounded sink is bounded through read-only filters; others keep blocking', () => {
   const proj = makeProj();
   try {

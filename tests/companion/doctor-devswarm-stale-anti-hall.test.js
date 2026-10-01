@@ -75,7 +75,7 @@ test('a workspace on an older anti-hall build than the newest known -> WARN nami
     const line = r.results.find((x) => /workspace a: stale anti-hall/.test(x.message));
     assert.ok(line, 'a stale-anti-hall-build WARN line must be present: ' + JSON.stringify(r.results));
     assert.strictEqual(line.status, D.WARN);
-    assert.match(line.message, /stale anti-hall 0\.105\.3: restart this session \(or drain with `node .*devswarm\.js`\)/);
+    assert.match(line.message, /stale anti-hall 0\.105\.3: run \/reload-plugins \(restart only if it persists\) \(or drain with `node .*devswarm\.js`\)/);
   } finally { cleanup(); }
 });
 
@@ -120,7 +120,7 @@ test('newest version is known (installed_plugins.json) but its cache dir/CLI fil
     // Must NEVER name a `node <path>` command pointing at a cache dir/file
     // that does not exist on disk (the live crash this test guards against).
     assert.doesNotMatch(line.message, /node .*0\.107\.1.*devswarm\.js/);
-    assert.match(line.message, /stale anti-hall 0\.105\.3: restart this session \(or drain with `the newest anti-hall CLI`\)/);
+    assert.match(line.message, /stale anti-hall 0\.105\.3: run \/reload-plugins \(restart only if it persists\) \(or drain with `the newest anti-hall CLI`\)/);
   } finally { cleanup(); }
 });
 

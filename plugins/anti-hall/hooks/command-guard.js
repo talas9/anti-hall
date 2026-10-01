@@ -2298,7 +2298,9 @@ function isPlainLightSegment(segment, command) {
   if (/[()]/.test(neutralizeQuotedContents(seg))) return false;
   if (/^(?:!\s*)?(?:for|while|until|if|then|do|else|elif|case|select|function|time|\{)\b/.test(seg) || /^\{/.test(seg)) return false;
   if (/^(?:done|fi|esac|\})$/.test(seg)) return false;
-  try { return !isHeavySegment(seg, command); } catch (_) { return false; }
+  // Full classifier (shell -c / eval / wrapper / substitution unwrapping), so a
+  // shell-wrapped heavy command cannot ride a chain; light inner stays light.
+  try { return !isHeavyCommand(seg); } catch (_) { return false; }
 }
 
 function isTriviallySafeSegment(segment) {

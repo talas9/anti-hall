@@ -6,6 +6,17 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.120.10 (2026-10-02)
+
+### Fixed
+
+- The wake-watch update-available line is emitted once per new version, persisted across re-armed watchers, and says /reload-plugins.
+- The task-guard IDLE NEGLECT text tells you to set blockedBy for tasks waiting on an in-flight task.
+- command-guard allows chains of individually light segments with an allowed bounded form. Shell-wrapped and heavy segments still block.
+- Read-only filters before a bounded last stage (`... | grep -E x | head`) are treated as bounded.
+- Codex rate limits that surface only in background job logs are detected and recorded, so the Critic seat falls back and the Codex nudge stays quiet.
+- The stale-version notice says /reload-plugins.
+
 ## 0.120.9 (2026-10-01)
 
 ### Fixed

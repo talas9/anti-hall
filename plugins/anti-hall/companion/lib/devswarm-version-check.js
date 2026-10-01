@@ -123,7 +123,7 @@ function newestCliPath(opts) {
  */
 function staleAntiHallMessage(recordedVersion, newestVersion, cliPath) {
   const cmd = cliPath ? ('node ' + cliPath) : 'the newest anti-hall CLI';
-  return 'stale anti-hall ' + (recordedVersion || 'unknown') + ': restart this session (or drain with `' + cmd + '`)';
+  return 'stale anti-hall ' + (recordedVersion || 'unknown') + ': run /reload-plugins (restart only if it persists) (or drain with `' + cmd + '`)';
 }
 
 module.exports = {
