@@ -3206,3 +3206,51 @@ test('runPostPullReexec: fail-open when the re-exec spawn genuinely fails — ke
     assert.match(note, /post-pull re-exec of 0\.107\.1's update\.js failed/);
   } finally { t.cleanup(); }
 });
+
+// Field report: native `message-count` Request timeouts on live worktrees read
+// as "reconcile failed" (imported 0, lost 0). They are a calm, aggregated skip.
+test('reconcilePostUpdate: native-timeout rows -> ONE aggregated "skipped N (native unavailable: timeout)" line, never "failed"', () => {
+  const row = (id) => ({ id, worktreePath: '/wt/' + id, ok: false, imported: 0, duplicate: 0, nativeCount: 0, lost: 0, locked: true, nativeTimeout: true, error: 'hivecontrol workspace message-count exited 1: Error: Request timeout' });
+  const result = U.reconcilePostUpdate({
+    paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+    env: { DEVSWARM_REPO_ID: 'r1' },
+    cwd: process.cwd(),
+    devswarm: {
+      run: () => ({
+        code: 0,
+        result: {
+          ok: true, action: 'reconcile', repoKey: 'fake-repo', count: 6, imported: 0, lost: 0, nativeTimeouts: 4,
+          results: [row('a'), row('b'), row('c'), row('d'),
+            { id: 'e', ok: false, skipped: true, imported: 0, lost: 0 }, { id: 'f', ok: true, imported: 0, lost: 0 }],
+        },
+      }),
+    },
+  });
+  assert.strictEqual(result.attempted, true);
+  assert.strictEqual(result.lost, 0);
+  assert.match(result.detail, /^reconciled 1 worktree\(s\), skipped 1 \(archived\), skipped 4 \(native unavailable: timeout\) — imported 0/);
+  assert.doesNotMatch(result.detail, /fail|Request timeout/i);
+  assert.strictEqual((result.detail.match(/native unavailable/g) || []).length, 1, 'aggregated: mentioned once, not per worktree');
+});
+
+test('reconcilePostUpdate: native-timeout rows never appear in a REAL failure listing', () => {
+  const result = U.reconcilePostUpdate({
+    paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+    env: { DEVSWARM_REPO_ID: 'r1' },
+    cwd: process.cwd(),
+    devswarm: {
+      run: () => ({
+        code: 2,
+        result: {
+          ok: false, action: 'reconcile', repoKey: 'fake-repo', count: 2, imported: 0,
+          results: [
+            { id: 'slow', ok: false, nativeTimeout: true, locked: true, lost: 0, error: 'Request timeout' },
+            { id: 'bad', ok: false, lost: 0, error: 'descriptor has no inboxPath' },
+          ],
+        },
+      }),
+    },
+  });
+  assert.match(result.detail, /bad: descriptor has no inboxPath/);
+  assert.doesNotMatch(result.detail, /slow/);
+});

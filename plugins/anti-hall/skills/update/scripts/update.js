@@ -1148,6 +1148,7 @@ function reconcilePostUpdate(opts) {
     // rows read as failures on 0.115.2).
     const resultsForSkipCount = (result && Array.isArray(result.results)) ? result.results : [];
     const skippedCount = resultsForSkipCount.filter((x) => x && x.skipped).length;
+    const nativeTimeoutCount = resultsForSkipCount.filter((x) => x && x.nativeTimeout).length;
     if (!result || !result.ok) {
       // P1 fix: a reconcile that LOST messages (real shortfall — distinct
       // from a benign `locked` contention skip) must surface the loss count
@@ -1178,7 +1179,7 @@ function reconcilePostUpdate(opts) {
           // recognized benign classification, same posture as the existing
           // locked/hivecontrolMissing/worktreeMissing exclusions — an
           // archived row was never a genuine reconcile failure.
-          const real = result.results.filter((x) => x && !x.ok && !x.locked && !x.hivecontrolMissing && !x.worktreeMissing && !x.skipped);
+          const real = result.results.filter((x) => x && !x.ok && !x.locked && !x.hivecontrolMissing && !x.worktreeMissing && !x.skipped && !x.nativeTimeout);
           if (real.length) {
             const shown = real.slice(0, MAX_LISTED).map((x) => x.id + ': ' + (x.error || 'unknown error'));
             const more = real.length > MAX_LISTED ? ' (+' + (real.length - MAX_LISTED) + ' more)' : '';
@@ -1196,9 +1197,11 @@ function reconcilePostUpdate(opts) {
       imported: result.imported,
       lost: result.lost || 0,
       skipped: skippedCount,
+      nativeTimeouts: nativeTimeoutCount,
       results: result.results,
-      detail: 'reconciled ' + (result.count - skippedCount) + ' worktree(s)'
+      detail: 'reconciled ' + (result.count - skippedCount - nativeTimeoutCount) + ' worktree(s)'
         + (skippedCount ? ', skipped ' + skippedCount + ' (archived)' : '')
+        + (nativeTimeoutCount ? ', skipped ' + nativeTimeoutCount + ' (native unavailable: timeout)' : '')
         + ' — imported ' + result.imported + ' message(s) into the shared store',
     };
   } catch (e) {

@@ -790,3 +790,31 @@ test('WAL adoption race: two same-worktree readers adopting one prior-key WAL ->
     assert.equal(total, 2, 'the two messages were applied exactly once across both readers: ' + JSON.stringify({ ra, raced }));
   } finally { rm(home); }
 });
+
+test('count-gate: message-count Request timeout -> ok:false + nativeTimeout:true, read-messages never called, nothing imported/lost', () => {
+  const home = tmpHome();
+  try {
+    seedDescriptor(home, 'tmo');
+    const calls = [];
+    const run = (spec) => {
+      calls.push(spec.args[1]);
+      return { ok: false, raw: '', error: 'hivecontrol workspace message-count exited 1: Error: Request timeout' };
+    };
+    const r = pull.pullOnce({ home, id: 'tmo', io: { run }, backend: 'journal' });
+    assert.equal(r.ok, false);
+    assert.equal(r.nativeTimeout, true);
+    assert.deepEqual(calls, ['message-count']);
+    assert.ok(!r.lost && !r.imported);
+  } finally { rm(home); }
+});
+
+test('count-gate: a NON-timeout message-count failure does not set nativeTimeout', () => {
+  const home = tmpHome();
+  try {
+    seedDescriptor(home, 'tmo2');
+    const run = () => ({ ok: false, raw: '', error: 'hivecontrol workspace message-count exited 2: boom' });
+    const r = pull.pullOnce({ home, id: 'tmo2', io: { run }, backend: 'journal' });
+    assert.equal(r.ok, false);
+    assert.equal(r.nativeTimeout, undefined);
+  } finally { rm(home); }
+});

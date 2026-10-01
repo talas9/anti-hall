@@ -1815,9 +1815,12 @@ function runRepairs(opts) {
       const { result } = devswarm.run(['reconcile'], { cwd, env, home });
       const skippedCount = (result && Array.isArray(result.results))
         ? result.results.filter((x) => x && x.skipped).length : 0;
+      const nativeTimeoutCount = (result && Array.isArray(result.results))
+        ? result.results.filter((x) => x && x.nativeTimeout).length : 0;
       if (result && result.ok) {
-        push('reconcile', 'reconcile', 'fixed', 'reconciled ' + (result.count - skippedCount) + ' worktree(s)'
+        push('reconcile', 'reconcile', 'fixed', 'reconciled ' + (result.count - skippedCount - nativeTimeoutCount) + ' worktree(s)'
           + (skippedCount ? ', skipped ' + skippedCount + ' (archived)' : '')
+          + (nativeTimeoutCount ? ', skipped ' + nativeTimeoutCount + ' (native unavailable: timeout)' : '')
           + ' — imported ' + result.imported + ' message(s) into the shared store');
       } else if (result && result.lost) {
         // P1 fix: a reconcile that LOST messages (real shortfall, distinct
@@ -1843,7 +1846,7 @@ function runRepairs(opts) {
           // skipped (archived/pruned worktree, additive field) is a SIXTH
           // recognized benign classification — same posture as the other
           // exclusions here, never a genuine reconcile failure.
-          const real = result.results.filter((x) => x && !x.ok && !x.locked && !x.hivecontrolMissing && !x.worktreeMissing && !x.skipped);
+          const real = result.results.filter((x) => x && !x.ok && !x.locked && !x.hivecontrolMissing && !x.worktreeMissing && !x.skipped && !x.nativeTimeout);
           if (real.length) {
             const shown = real.slice(0, MAX_LISTED).map((x) => x.id + ': ' + (x.error || 'unknown error'));
             const more = real.length > MAX_LISTED ? ' (+' + (real.length - MAX_LISTED) + ' more)' : '';

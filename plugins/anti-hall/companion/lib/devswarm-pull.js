@@ -488,7 +488,12 @@ function pullOnce(opts) {
     // NON-DESTRUCTIVE count-gate. count===0 -> never touch read-messages.
     const cRes = run({ args: ['workspace', 'message-count'], env });
     if (!cRes || !cRes.ok) {
-      return Object.assign({ ok: false, locked: true, error: (cRes && cRes.error) || 'message-count failed' }, replayOut);
+      // nativeTimeout (additive): the native app did not answer in time. The
+      // count-gate runs BEFORE any destructive read, so nothing was read, lost
+      // or imported — cmdReconcile classifies it as a calm benign skip.
+      const cErr = (cRes && cRes.error) || 'message-count failed';
+      const timedOut = !!(cRes && (cRes.timedOut || /request timeout|timed out|ETIMEDOUT/i.test(String(cErr))));
+      return Object.assign({ ok: false, locked: true, error: cErr }, timedOut ? { nativeTimeout: true } : {}, replayOut);
     }
     const nativeCount = parseCount(cRes.raw);
     if (!(nativeCount > 0)) {

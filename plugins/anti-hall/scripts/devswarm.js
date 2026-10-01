@@ -9493,6 +9493,7 @@ function cmdInboxPull(id, flags, ctx) {
     out.promotion = { promoted: !!promotedPull.promoted };
     if (promotedPull.registryWriteError) out.promotion.registryWriteError = promotedPull.registryWriteError;
   }
+  if (res.nativeTimeout) out.nativeTimeout = true;
   if (res.error) out.error = res.error;
   return out;
 }
@@ -17785,6 +17786,19 @@ function cmdMeshRead(flags, ctx) {
 // self-describing `worktreeMissing:true` result instead of ever letting that
 // misleading spawn failure occur. Detect-only: never deletes/unlinks/moves
 // anything — the descriptor and any archived/ counterpart are left untouched.
+const RECONCILE_TIMEOUT_RETRY_BACKOFF_MS = 1500;
+
+// isNativeTimeoutRun(r, parsed) -> bool. True ONLY for a clean native-timeout
+// shape with no loss and no import: pullOnce's `nativeTimeout` marker, or the
+// reconcile subprocess itself killed on its spawn timeout (ETIMEDOUT) with no
+// parseable output. Anything that lost or imported is never a timeout skip.
+function isNativeTimeoutRun(r, parsed) {
+  if (parsed) {
+    return parsed.ok === false && parsed.nativeTimeout === true && !parsed.lost && !parsed.imported;
+  }
+  return !!(r && r.error && r.error.code === 'ETIMEDOUT');
+}
+
 function defaultSpawnReconcile(d, ctx) {
   let worktreeExists = true;
   try { worktreeExists = fs.existsSync(d.worktreePath); } catch (_) { worktreeExists = true; }
@@ -18118,11 +18132,25 @@ function cmdReconcile(flags, ctx) {
       continue;
     }
     processed++;
-    const r = spawnFn(spawnTarget, ctx);
+    let r = spawnFn(spawnTarget, ctx);
     let parsed = null;
-    if (r && !r.error && typeof r.stdout === 'string') {
-      try { parsed = JSON.parse(r.stdout); } catch (_) { parsed = null; }
+    const parseRun = () => {
+      parsed = null;
+      if (r && !r.error && typeof r.stdout === 'string') {
+        try { parsed = JSON.parse(r.stdout); } catch (_) { parsed = null; }
+      }
+    };
+    parseRun();
+    // ONE retry with a short backoff when the native app timed out (update/
+    // reconcile path only — the hook paths never go through here). Only while
+    // the sweep budget still has room; a retry of a pure count-gate timeout is
+    // safe (nothing was read yet).
+    if (isNativeTimeoutRun(r, parsed) && !(budgetMs > 0 && (clockNow() - startedAt) >= budgetMs)) {
+      try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Number.isFinite(ctx.nativeTimeoutRetryBackoffMs) ? ctx.nativeTimeoutRetryBackoffMs : RECONCILE_TIMEOUT_RETRY_BACKOFF_MS); } catch (_) { /* best-effort backoff */ }
+      r = spawnFn(spawnTarget, ctx);
+      parseRun();
     }
+    const nativeTimeout = isNativeTimeoutRun(r, parsed);
     results.push({
       id: d.id,
       worktreePath: d.worktreePath,
@@ -18173,6 +18201,12 @@ function cmdReconcile(flags, ctx) {
       // own contract (injected `ctx.io.spawnReconcile` test doubles are real
       // spawn stand-ins and are never subject to this fs check).
       worktreeMissing: !!(r && r.worktreeMissing),
+      // SEVENTH recognized benign skip: the native app timed out on the
+      // non-destructive message-count gate (after one retry) and nothing was
+      // imported or lost — reported as `skipped (native unavailable: timeout)`,
+      // never `failed`. Set from pullOnce's own `nativeTimeout` marker or the
+      // subprocess' own ETIMEDOUT kill, never from a loss shape.
+      nativeTimeout,
       // deliberate: under-detect only (a report field), never a removal decision — bare marker check is fine here.
       archivedDuplicate: !!(r && r.worktreeMissing && hasArchivedCounterpart(home, d.id)),
       skipped: false,
@@ -18231,8 +18265,9 @@ function cmdReconcile(flags, ctx) {
   // archived-workspace row deliberately never spawned (app-DB or local
   // marker, set only by the pre-spawn archived checks above, never by
   // parsing a subprocess error string) is not a reconcile failure.
-  const allRowsOkOrBenign = results.every((r) => r.ok === true || r.locked === true || r.hivecontrolMissing === true || r.worktreeMissing === true || r.notGitRoot === true || r.skipped === true);
+  const allRowsOkOrBenign = results.every((r) => r.ok === true || r.locked === true || r.hivecontrolMissing === true || r.worktreeMissing === true || r.notGitRoot === true || r.skipped === true || r.nativeTimeout === true);
   const skipped = results.filter((r) => r.skipped === true).length;
+  const nativeTimeouts = results.filter((r) => r.nativeTimeout === true).length;
 
   // Task #6 name backfill (off the hot path — reconcile is a gated/manual
   // sweep, NEVER the every-turn hook, so a `hivecontrol` spawn here is fine).
@@ -18279,6 +18314,7 @@ function cmdReconcile(flags, ctx) {
     namesRefreshed,
     elapsedMs: clockNow() - startedAt,
   };
+  if (nativeTimeouts) out.nativeTimeouts = nativeTimeouts;
   if (healed) out.healed = healed;
   if (namesBackfilled) out.namesBackfilled = namesBackfilled;
   return out;

@@ -2170,3 +2170,89 @@ test('both fixes: fold-facing signals (groupRegistryByMeshId / resolveMeshTarget
     assert.strictEqual(mt.resolvesTo, 'row-live');
   } finally { rm(home); rm(repo); }
 });
+
+// ============================================================================
+// reconcile: native message-count TIMEOUT is a calm benign skip, not a failure
+// (field report: 4 live worktrees "failed" on `hivecontrol workspace
+// message-count ... Request timeout` with imported 0 / lost 0).
+// ============================================================================
+const TIMEOUT_PULL = {
+  status: 1,
+  stdout: JSON.stringify({
+    ok: false, action: 'pull', imported: 0, duplicate: 0, nativeCount: 0, locked: true, lost: 0, nativeTimeout: true,
+    error: 'hivecontrol workspace message-count exited 1: Error: Request timeout',
+  }),
+  error: null,
+};
+
+test('reconcile: message-count Request timeout on every live worktree (after ONE retry) -> ok:true, nativeTimeout rows, nativeTimeouts total, lost 0', () => {
+  const home = tmpHome();
+  const repo = makeGitRepo('reconcile-native-timeout');
+  try {
+    const repoKey = repokey.repoKeyForWorktree(repo);
+    seedRegistry(home, repoKey, { id: 'child-t1', worktreePath: '/wt/t1', sessionId: 's' });
+    seedRegistry(home, repoKey, { id: 'child-t2', worktreePath: '/wt/t2', sessionId: 's' });
+    const calls = [];
+    const io = { spawnReconcile: (d) => { calls.push(d.id); return TIMEOUT_PULL; } };
+    const r = cli.run(['reconcile'], ctx(home, { cwd: repo, io, nativeTimeoutRetryBackoffMs: 0 }));
+    assert.equal(r.result.ok, true, 'a pure native timeout with nothing lost must not fail the sweep');
+    assert.equal(r.result.imported, 0);
+    assert.equal(r.result.lost, 0);
+    assert.equal(r.result.nativeTimeouts, 2);
+    assert.ok(r.result.results.every((x) => x.nativeTimeout === true && x.lost === 0));
+    assert.equal(calls.length, 4, 'exactly ONE retry per timed-out worktree (2 + 2)');
+  } finally { rm(home); rm(repo); }
+});
+
+test('reconcile: a timeout on the first attempt that succeeds on the retry is a normal ok row (no nativeTimeout)', () => {
+  const home = tmpHome();
+  const repo = makeGitRepo('reconcile-timeout-retry-ok');
+  try {
+    const repoKey = repokey.repoKeyForWorktree(repo);
+    seedRegistry(home, repoKey, { id: 'child-r1', worktreePath: '/wt/r1', sessionId: 's' });
+    let n = 0;
+    const io = {
+      spawnReconcile: () => (++n === 1 ? TIMEOUT_PULL
+        : { status: 0, stdout: JSON.stringify({ ok: true, imported: 1, nativeCount: 1, lost: 0 }), error: null }),
+    };
+    const r = cli.run(['reconcile'], ctx(home, { cwd: repo, io, nativeTimeoutRetryBackoffMs: 0 }));
+    assert.equal(n, 2);
+    assert.equal(r.result.ok, true);
+    assert.equal(r.result.imported, 1);
+    assert.equal(r.result.results[0].nativeTimeout, false);
+    assert.equal(r.result.nativeTimeouts, undefined);
+  } finally { rm(home); rm(repo); }
+});
+
+test('reconcile: the subprocess killed on its own spawn timeout (ETIMEDOUT, no output) is also a native-timeout skip', () => {
+  const home = tmpHome();
+  const repo = makeGitRepo('reconcile-spawn-etimedout');
+  try {
+    const repoKey = repokey.repoKeyForWorktree(repo);
+    seedRegistry(home, repoKey, { id: 'child-e1', worktreePath: '/wt/e1', sessionId: 's' });
+    const e = Object.assign(new Error('spawnSync node ETIMEDOUT'), { code: 'ETIMEDOUT' });
+    const io = { spawnReconcile: () => ({ error: e, status: null, signal: 'SIGTERM' }) };
+    const r = cli.run(['reconcile'], ctx(home, { cwd: repo, io, nativeTimeoutRetryBackoffMs: 0 }));
+    assert.equal(r.result.ok, true);
+    assert.equal(r.result.results[0].nativeTimeout, true);
+  } finally { rm(home); rm(repo); }
+});
+
+test('reconcile: a timeout marker COMBINED with lost/imported is never benign (still fails)', () => {
+  const home = tmpHome();
+  const repo = makeGitRepo('reconcile-timeout-with-loss');
+  try {
+    const repoKey = repokey.repoKeyForWorktree(repo);
+    seedRegistry(home, repoKey, { id: 'child-l1', worktreePath: '/wt/l1', sessionId: 's' });
+    const io = {
+      spawnReconcile: () => ({
+        status: 1, error: null,
+        stdout: JSON.stringify({ ok: false, locked: true, nativeTimeout: true, nativeCount: 2, lost: 2, error: 'x Request timeout' }),
+      }),
+    };
+    const r = cli.run(['reconcile'], ctx(home, { cwd: repo, io, nativeTimeoutRetryBackoffMs: 0 }));
+    assert.equal(r.result.ok, false);
+    assert.equal(r.result.lost, 2);
+    assert.equal(r.result.results[0].nativeTimeout, false);
+  } finally { rm(home); rm(repo); }
+});
