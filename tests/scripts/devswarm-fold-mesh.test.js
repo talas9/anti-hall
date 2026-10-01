@@ -272,8 +272,14 @@ for (const B of backends) {
     const W1 = makeGitRepo('livefold-' + B.name);
     const repoKey = repokey.repoKeyForWorktree(W1);
     try {
-      seedReg(home, repoKey, { id: 'live-1', worktreePath: topOf(W1), sessionId: 'session-1', updatedAt: Date.now() - 60000 });
-      seedReg(home, repoKey, { id: 'live-2', worktreePath: topOf(W1), sessionId: 'session-2', updatedAt: Date.now() });
+      // upsertRegistry stamps updatedAt = Date.now() itself (a caller-supplied
+      // updatedAt is ignored), so "live-2 is the freshest" only holds if the
+      // clock has strictly advanced between the two seeds. On a fast runner both
+      // landed in the same ms -> a tie -> the first-registered row (live-1, the
+      // one holding the backlog) won survivorship and nothing was forwarded.
+      seedReg(home, repoKey, { id: 'live-1', worktreePath: topOf(W1), sessionId: 'session-1' });
+      for (const t0 = Date.now(); Date.now() === t0;) { /* spin to the next ms */ }
+      seedReg(home, repoKey, { id: 'live-2', worktreePath: topOf(W1), sessionId: 'session-2' });
       seedDirect(home, repoKey, 'live-1', 'payload-from-live-1');
 
       const r = cli.foldMeshDuplicates(home, { cwd: W1, env: {}, backend: B.backend });
