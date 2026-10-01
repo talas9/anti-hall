@@ -29,6 +29,7 @@ Fixes from the second cross-project peer bug sweep (Primaries plus their workspa
 - **work-detect: a `<<` after an unquoted `#` is a comment, not a heredoc.** The lines below it were dropped as heredoc body and hid real work from the housekeeping-only verdict.
 - **git-guard: the quote-blind launcher backstop is skipped unless the text can contain an `anti-hall` path; a backslash-newline collapses only after an odd backslash run.** The backstop made the 160 KB cd-chain PERF test about 10x slower; an O(n) precheck restores it. A launcher-dir-looking path with an escaped backslash before the newline no longer false-blocks.
 - **work-detect: an escaped `\<<` is not a heredoc, and a partly quoted delimiter (`<<E"OF"`) ends at its unquoted word.** Both dropped real commands from the housekeeping-only verdict.
+- **Defect channel: two concurrent `defect report` calls for the same fingerprint could lose one line.** The creating process opened the file without O_APPEND and overwrote the other's append. The file is now created with `'ax'` (O_CREAT|O_EXCL|O_APPEND).
 
 ### Security
 
