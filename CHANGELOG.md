@@ -6,6 +6,12 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.120.2 (2026-10-01)
+
+### Fixed
+
+- Compact advice/declaration guards no longer fire on a MENTION of the phrase: straight double-quoted text and backticked `/compact` mid-sentence are treated as quotes. Instruction forms ("Run `/compact …`", a standalone command line, a bare SAFE TO COMPACT line) still count.
+
 ## 0.120.1 (2026-10-01)
 
 ### Fixed
