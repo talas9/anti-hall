@@ -6,6 +6,15 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.120.3 (2026-10-01)
+
+### Fixed
+
+- The update's reconcile step: a DevSwarm native `message-count` timeout with nothing imported or lost is now "skipped (native unavailable: timeout)", reported in one aggregated summary line, with one retry after a backoff, instead of "failed" per worktree.
+- `devswarm.js archive`/`unarchive`/`archive-request` accept mesh ids, resolved like `send --to`. An ambiguous id lists the candidate UUIDs and archives nothing.
+- parent-gate: unread broadcast rows to a done (archive_ready) child no longer count as neglect, and the escalation suggests archiving when every flagged child is done or idle.
+- New regression tests for edit-guard handover writes and devswarm.js send loops.
+
 ## 0.120.2 (2026-10-01)
 
 ### Fixed
