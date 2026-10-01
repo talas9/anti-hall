@@ -19619,6 +19619,98 @@ function parseSubmoduleWorktreeFailures(res, cwd) {
   return out;
 }
 
+// repairSubmoduleWorktrees(failures, text, branch, cwd) -> { repaired, remaining }
+// (0.120.8, SkyCrew field defect, 3rd occurrence). ROOT CAUSE (proven from the
+// DevSwarm app's own source + its log): `workspace create` starts the
+// `worktreeInclude` copy (`.devswarm/config.json`, e.g. `skyflutter/.env`) in
+// the BACKGROUND (`copyUntrackedFiles`, not awaited) and then runs
+// `git worktree add -b <branch> <wt>/<sub> <sha>` per submodule. The copy does
+// `mkdir -p <wt>/<sub>` + `cp -Rp`, so the submodule dir is NON-EMPTY when
+// `worktree add` runs -> git refuses ("'<path>' already exists"). Only a
+// submodule that has an include file present is hit (skyflutter/.env exists;
+// skyinform/.env.local and skywebsite/.env did not). A later workspace setup
+// step may remove the dir, which is why it can look "missing" afterwards while
+// the branch (created by the failed attempt chain) remains. The fix belongs to
+// DevSwarm (await the copy / skip gitlink paths); this is the loss-free
+// client-side repair, run only for the exact `already exists` shape:
+//   - path is an EMPTY dir          -> rmdir it (never recursive)
+//   - path is a NON-EMPTY dir       -> rename it aside, add the worktree, move
+//                                      the pre-copied files back when they do
+//                                      not collide, rmdir the aside if empty
+//                                      (anything left stays on disk, reported)
+//   - branch already exists         -> `worktree add <path> <branch>` (no -b)
+//   - stale registration for path   -> `git worktree prune` (git only drops
+//                                      entries whose dir is gone)
+//   - path already a live checkout (has .git) -> left alone, still reported
+// Never deletes content, never touches another worktree, fail-open: any
+// problem leaves the failure in `remaining`.
+function repairSubmoduleWorktrees(failures, text, branch, cwd) {
+  const repaired = [];
+  const remaining = [];
+  const subPaths = submodulePathsFor(cwd);
+  const g = (dir, args) => spawnSync('git', ['-C', dir].concat(args), { encoding: 'utf8', timeout: 60000 });
+  for (const f of (failures || [])) {
+    const P = f && f.path;
+    const S = Array.isArray(subPaths) && typeof P === 'string' && path.isAbsolute(P)
+      ? subPaths.find((sp) => P.endsWith('/' + sp)) : null;
+    if (!S || f.error !== 'already exists') { remaining.push(f); continue; }
+    let aside = null;
+    try {
+      const wt = P.slice(0, -(S.length + 1));
+      const common = g(wt, ['rev-parse', '--path-format=absolute', '--git-common-dir']);
+      if (common.status !== 0) { remaining.push(f); continue; }
+      const modGit = path.join(common.stdout.trim(), 'modules', S);
+      if (!fs.existsSync(modGit) || fs.existsSync(path.join(P, '.git'))) { remaining.push(f); continue; }
+      let b = branch;
+      let sha = null;
+      const esc = P.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const cm = new RegExp('git worktree add -b (\\S+) ' + esc + ' (\\S+)').exec(text || '');
+      if (cm) { b = cm[1]; sha = cm[2]; }
+      if (!b) { remaining.push(f); continue; }
+      if (!sha) { const r = g(wt, ['rev-parse', 'HEAD:' + S]); if (r.status === 0) sha = r.stdout.trim(); }
+      const movedBack = [];
+      let st = null;
+      try { st = fs.lstatSync(P); } catch (_) { st = null; }
+      if (st && !st.isDirectory()) { remaining.push(f); continue; }
+      if (st) {
+        if (fs.readdirSync(P).length === 0) fs.rmdirSync(P);
+        else { aside = P + '.pre-wt-' + process.pid; fs.renameSync(P, aside); }
+      }
+      const wl = g(modGit, ['worktree', 'list', '--porcelain']);
+      const listing = wl.status === 0 ? wl.stdout : '';
+      // git lists realpaths (macOS /var -> /private/var); compare like with like.
+      const real = (x) => { try { return fs.realpathSync(path.dirname(x)) + '/' + path.basename(x); } catch (_) { return x; } };
+      const realP = real(P);
+      const blocks = listing.split('\n\n').map((blk) => ({ dir: blk.split('\n')[0].slice('worktree '.length), blk }));
+      if (blocks.some((x) => x.dir === P || x.dir === realP)) g(modGit, ['worktree', 'prune']);
+      const other = blocks.find((x) => x.blk.indexOf('branch refs/heads/' + b + '\n') !== -1 || x.blk.endsWith('branch refs/heads/' + b));
+      if (other && other.dir !== P && other.dir !== realP && fs.existsSync(other.dir)) throw new Error('branch ' + b + ' is checked out in another worktree');
+      const exists = g(modGit, ['rev-parse', '--verify', '--quiet', 'refs/heads/' + b]).status === 0;
+      const addArgs = exists ? ['worktree', 'add', P, b]
+        : (sha ? ['worktree', 'add', '-b', b, P, sha] : ['worktree', 'add', '-b', b, P]);
+      const add = g(modGit, addArgs);
+      if (add.status !== 0 || !fs.existsSync(path.join(P, '.git'))) throw new Error(String(add.stderr || 'worktree add failed').trim().split('\n').pop());
+      let leftover = null;
+      if (aside) {
+        for (const e of fs.readdirSync(aside)) {
+          const dest = path.join(P, e);
+          let taken = true;
+          try { fs.lstatSync(dest); } catch (_) { taken = false; }
+          if (!taken) { fs.renameSync(path.join(aside, e), dest); movedBack.push(e); }
+        }
+        try { fs.rmdirSync(aside); } catch (_) { leftover = aside; }
+        aside = null;
+      }
+      repaired.push({ path: P, branch: b, sha, reusedBranch: exists, movedBack, leftoverAside: leftover || undefined });
+    } catch (e) {
+      // Put a moved-aside dir back so nothing is lost, then report the failure.
+      if (aside) { try { if (!fs.existsSync(P)) fs.renameSync(aside, P); } catch (_) { /* left aside on disk */ } }
+      remaining.push(Object.assign({}, f, { repairError: String(e && e.message || e) }));
+    }
+  }
+  return { repaired, remaining };
+}
+
 // spawnFlagValueError(rest) -> string | null (0.112). `hivecontrol workspace
 // create`'s value-taking options are -s/--source, -a/--agent, -p/--prompt and
 // -t/--title. A value that is really the NEXT option (`spawn b -s main -t -p
@@ -19727,7 +19819,12 @@ function cmdSpawn(rest, ctx) {
   // failed — see parseSubmoduleWorktreeFailures's own header. NEVER flips
   // `ok` (the workspace itself was created and may still be perfectly usable
   // for the primary repo) and NEVER auto-repaired — report only.
-  const submoduleFailures = parseSubmoduleWorktreeFailures(res, cwd);
+  const parsedSubmoduleFailures = parseSubmoduleWorktreeFailures(res, cwd);
+  const submoduleText = [res.raw, res.stderr].filter((x) => typeof x === 'string' && x).join('\n');
+  let submoduleRepair = { repaired: [], remaining: parsedSubmoduleFailures };
+  try { submoduleRepair = repairSubmoduleWorktrees(parsedSubmoduleFailures, submoduleText, branch, cwd); } catch (_) { /* fail-open: report the original failures */ }
+  const submoduleFailures = submoduleRepair.remaining;
+  const submoduleRepaired = submoduleRepair.repaired;
 
   // Title derivation is pure/no I/O — computed up front, but the actual
   // update-title CALL only fires inside the worktreePath-resolved branch
@@ -19888,11 +19985,24 @@ function cmdSpawn(rest, ctx) {
     // NEVER flips `ok` — the workspace itself was created and may still be
     // usable for the primary repo; see parseSubmoduleWorktreeFailures header.
     submoduleFailures: submoduleFailures.length ? submoduleFailures : undefined,
-    warnings: submoduleFailures.length ? [
-      submoduleFailures.length + ' of the workspace\'s submodule worktree(s) failed to create — see '
-      + 'submoduleFailures. The workspace may still be usable for the primary repo but broken for the '
-      + 'affected submodule(s); this was NOT auto-repaired.',
-    ] : undefined,
+    // Present ONLY when spawn repaired a submodule worktree that `create` failed
+    // to make (see repairSubmoduleWorktrees) — the loss-free repair, never a delete.
+    submoduleRepaired: submoduleRepaired.length ? submoduleRepaired : undefined,
+    submoduleHint: (submoduleFailures.length || submoduleRepaired.length)
+      ? 'Submodule worktrees are created at the superproject\'s pinned commit'
+        + (submoduleRepaired.length && submoduleRepaired[0].sha ? ' (' + submoduleRepaired[0].sha + ')' : '')
+        + ', not the submodule\'s default branch.'
+      : undefined,
+    warnings: (submoduleFailures.length || submoduleRepaired.length) ? [].concat(
+      submoduleRepaired.length ? [
+        submoduleRepaired.length + ' submodule worktree(s) failed at create (a pre-copied worktreeInclude file made the path '
+        + 'non-empty) and were repaired by spawn — see submoduleRepaired.',
+      ] : [],
+      submoduleFailures.length ? [
+        submoduleFailures.length + ' of the workspace\'s submodule worktree(s) failed to create — see '
+        + 'submoduleFailures. The workspace may still be usable for the primary repo but broken for the '
+        + 'affected submodule(s); this was NOT auto-repaired.',
+      ] : []) : undefined,
     // DISTINCT from `created`: the workspace exists, but a session running in it
     // is a separate fact with separate evidence. Never `false` — absence of a
     // signal inside a short window is not proof of failure (see header).
@@ -21028,7 +21138,7 @@ module.exports = {
   // reader_cursors adapters:
   deriveReaderNonce, callerReaderKey, commitNdAck, floorCursor, importReaderCursorsAllStores, repairReaderFloorsAllStores, markAppArchivedDescriptors, retireStaleArchivedMarkers, localArchivedAppLive, appLiveArchivedRows, appOnlyArchive, attemptAppArchive, deriveTitleFromBrief, appSessionOnWorktree, refreshNamesFromApp, syncAppState, messageGaps, appStatePath, cmdAppState, cmdSyncUi, repairChildSenderLabelsAllStores,
   // spawn speed + submodule-failure reporting (0.109.0) — exported for direct unit testing:
-  spawnSourceFreshness, remoteRefAgeSec, gitCommonDirFor, parseSubmoduleWorktreeFailures,
+  spawnSourceFreshness, remoteRefAgeSec, gitCommonDirFor, parseSubmoduleWorktreeFailures, repairSubmoduleWorktrees,
   senderIdentityDetailed, childSenderId, isPrimaryCheckout,
   refreshAnchorSession,
   childLabelRefusal,
