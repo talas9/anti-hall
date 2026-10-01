@@ -120,6 +120,7 @@ test('IDLE NEGLECT: actionable-now pending + no agents -> idle-neglect block nam
     assert.ok(isIdleNeglect(r), `expected idle-neglect block; stdout: ${r.stdout}`);
     assert.match(r.json.reason, /refactor the parser/, 'names the actionable task');
     assert.match(r.json.reason, /PARALLEL/, 'demands parallel dispatch');
+    assert.match(r.json.reason, /blockedBy.*addBlockedBy.*instead of dispatching/, 'includes in-flight task blocker guidance');
   } finally {
     h.cleanup();
   }
