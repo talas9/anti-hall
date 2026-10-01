@@ -405,3 +405,79 @@ test('PreToolUse: a free-form RETRACT line in the same turn -> allow (explicit o
   assert.strictEqual(blocked(testHook(PRE, prePayload(tp, 'Edit', { file_path: '/x' }), { home: h.home })), null);
   assert.strictEqual(blocked(testHook(PRE, prePayload(tp, 'Bash', { command: 'rm -f /x' }), { home: h.home })), null);
 }));
+
+// ------------------------------------------- L22: pause-nag <-> guard deadlock
+// The auto-handover pause nag MANDATES a closing /compact line; the guard must
+// never read that mandated text as a SAFE TO COMPACT declaration.
+const nagText = require('../../plugins/anti-hall/hooks/lib/auto-handover-text.js');
+const NAG_HP = '.anti-hall/handovers/2026-10-01/cadv-1/HANDOVER.md';
+const NAG_PAYLOAD = { session_id: SESSION, cwd: process.cwd() };
+const nagFooters = () => [
+  nagText.buildDecisiveSuffix(NAG_PAYLOAD, NAG_HP, true, false),
+  nagText.buildDecisiveSuffix(NAG_PAYLOAD, NAG_HP, true, true),
+  nagText.buildDecisiveSuffix(NAG_PAYLOAD, NAG_HP, false, false),
+  nagText.buildDecisiveSuffix(NAG_PAYLOAD, NAG_HP, null, false),
+].map((s) => s.replace(/^[\s\S]*?verbatim: /, ''));
+const fireCommandLine = () => '`' + nagText.compactCommand(NAG_HP, 'claude') + '`';
+const BASH_WORK = { command: 'git commit -m x' };
+
+test('L22 (c): nag-mandated footers and the suggested /compact command are NOT a SAFE declaration', () => {
+  for (const f of nagFooters().concat([fireCommandLine(), 'Handover saved.\n\n' + fireCommandLine()])) {
+    assert.strictEqual(advice.activeDeclaration(f, { declarationsOnly: true }), null, f);
+  }
+  assert.ok(advice.activeDeclaration('✅ SAFE TO COMPACT NOW', { declarationsOnly: true }));
+  assert.ok(advice.activeDeclaration('✅ Safe for a context reset now.', { declarationsOnly: true }));
+});
+
+test('L22 (c): PreToolUse allows Bash after the mandated footer / command line in the same turn', () => withHome((h) => {
+  for (const f of nagFooters().concat([fireCommandLine()])) {
+    const tp = h.writeTranscript([user('go'), say('Handover written.\n\n' + f, 85)]);
+    assert.strictEqual(blocked(testHook(PRE, prePayload(tp, 'Bash', BASH_WORK), { home: h.home })), null, f);
+  }
+}));
+
+test('L22 (a): a RETRACT line alone clears an explicit declaration in the same turn', () => withHome((h) => {
+  const tp = h.writeTranscript([user('wrap up'), say('✅ SAFE TO COMPACT NOW'), say('RETRACT SAFE TO COMPACT — still working')]);
+  assert.strictEqual(blocked(testHook(PRE, prePayload(tp, 'Bash', BASH_WORK), { home: h.home })), null);
+  const tp2 = h.writeTranscript([user('wrap up'), say('✅ SAFE TO COMPACT NOW'), say('RETRACT — one more fix first')]);
+  assert.strictEqual(blocked(testHook(PRE, prePayload(tp2, 'Edit', { file_path: '/x' }), { home: h.home })), null);
+}));
+
+test('L22 (b): Write/Edit of handover files is exempt while a declaration is active; other edits stay blocked', () => withHome((h) => {
+  const tp = h.writeTranscript([user('wrap up'), say('✅ SAFE TO COMPACT NOW')]);
+  const cwd = process.cwd();
+  const run = (tool, file) => blocked(testHook(PRE, prePayload(tp, tool, { file_path: file }), { home: h.home }));
+  for (const tool of ['Write', 'Edit', 'MultiEdit']) {
+    assert.strictEqual(run(tool, NAG_HP), null, tool + ' relative handover path');
+    assert.strictEqual(run(tool, path.join(cwd, NAG_HP)), null, tool + ' absolute handover path');
+    assert.strictEqual(run(tool, path.join(cwd, '.anti-hall/handovers/INDEX.md')), null);
+  }
+  // fail closed: lookalikes / traversal out of the handovers dir stay blocked
+  assert.ok(run('Edit', 'src/app.js'));
+  assert.ok(run('Edit', '.anti-hall/handovers/../../src/app.js'));
+  assert.ok(run('Edit', '.anti-hall/handovers-evil/x.md'));
+  assert.ok(run('Edit', 'x/.anti-hall/handovers'));
+  assert.ok(run('Write', '.anti-hall/progress/INDEX.md'));
+  // Bash and Agent stay blocked
+  assert.ok(blocked(testHook(PRE, prePayload(tp, 'Bash', BASH_WORK), { home: h.home })));
+  assert.ok(blocked(testHook(PRE, prePayload(tp, 'Agent', { prompt: 'x' }), { home: h.home })));
+}));
+
+test('L22 (d): a declaration is scoped to its turn — a new user prompt clears it, incl. one with injected reminders', () => withHome((h) => {
+  const blockedAfter = (...more) => blocked(testHook(PRE, prePayload(h.writeTranscript([user('wrap up'), say('✅ SAFE TO COMPACT NOW'), ...more]), 'Bash', BASH_WORK), { home: h.home }));
+  assert.ok(blockedAfter());
+  assert.strictEqual(blockedAfter(user('now fix the bug')), null);
+  const mixed = { type: 'user', isSidechain: false, timestamp: ts(), message: { role: 'user', content: [{ type: 'text', text: '<system-reminder>hook ctx</system-reminder>' }, { type: 'text', text: 'now fix the bug' }] } };
+  assert.strictEqual(blockedAfter(mixed), null, 'array content: reminder block + real prompt');
+  assert.strictEqual(blockedAfter(user('<system-reminder>hook ctx</system-reminder>\nnow fix the bug')), null, 'string content: reminder prefix + real prompt');
+  // a bare injected reminder is still NOT a new turn
+  assert.ok(blockedAfter(user('<system-reminder>hook ctx</system-reminder>')));
+}));
+
+test('L22 e2e: nag emitted -> agent prints mandated footer -> next user turn -> Bash allowed', () => withHome((h) => {
+  const nag = { type: 'user', isSidechain: false, timestamp: ts(), message: { role: 'user', content: 'Stop hook feedback:\n' + nagText.buildPauseNag(88, NAG_PAYLOAD) + nagFooters()[0] } };
+  const tp = h.writeTranscript([user('finish the task'), say('Task done.', 88), nag, say('Handover saved.\n\n' + nagFooters()[0], 88), say('Suggested: ' + fireCommandLine(), 88)]);
+  assert.strictEqual(blocked(testHook(PRE, prePayload(tp, 'Bash', BASH_WORK), { home: h.home })), null, 'same turn');
+  fs.appendFileSync(tp, JSON.stringify(user('thanks, next: run the build')) + '\n');
+  assert.strictEqual(blocked(testHook(PRE, prePayload(tp, 'Bash', BASH_WORK), { home: h.home })), null, 'next turn');
+}));

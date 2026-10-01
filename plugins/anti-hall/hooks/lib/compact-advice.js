@@ -31,6 +31,7 @@
 const NOT_TYPED_RE = /^\s*<(task-notification|local-command-|system-reminder|bash-std(out|err))/;
 // A background task's notification starts a new assistant response (it counts
 // toward turnsSinceCompact) but NOT a new user turn.
+const LEADING_REMINDERS_RE = /^(?:\s*<system-reminder>[\s\S]*?<\/system-reminder>)+/;
 const NOTIFY_RE = /^\s*<task-notification>/;
 const COMPACT_CMD_RE = /^\s*<command-name>\s*\/compact\s*<\/command-name>/;
 
@@ -172,10 +173,21 @@ function isQuestionSentence(t, index) {
 // more specific forms in between (good point to/for, safe for a context
 // reset) and the standalone /compact line after it are already anchored
 // enough on their own and need no extra position gate (R3A1/#29).
-function findAdvice(text) {
+//
+// opts.declarationsOnly (PreToolUse compact-declaration-guard): count ONLY the
+// explicit SAFE declaration forms (ADVICE_RES[0] "safe to compact", [2] "safe
+// for a context reset"). The pause nag MANDATES a closing "GOOD POINT TO
+// /compact NOW" line and a pasteable `/compact focus: …` command
+// (hooks/lib/auto-handover-text.js); those must never block the agent's next
+// tool call, so the "good point" / "run|then /compact" / standalone /compact
+// forms are advice for the Stop guard only.
+const DECLARATION_RE_INDEXES = new Set([0, 2]);
+function findAdvice(text, opts) {
+  const declarationsOnly = !!(opts && opts.declarationsOnly);
   const t = stripQuoted(text);
   const out = [];
   ADVICE_RES.forEach((re, reIndex) => {
+    if (declarationsOnly && !DECLARATION_RE_INDEXES.has(reIndex)) return;
     re.lastIndex = 0;
     let m;
     while ((m = re.exec(t)) !== null) {
@@ -217,8 +229,8 @@ function lastRetraction(text) {
 
 // activeDeclaration(text) -> the last advice match NOT followed by a
 // retraction, or null.
-function activeDeclaration(text) {
-  const adv = findAdvice(text);
+function activeDeclaration(text, opts) {
+  const adv = findAdvice(text, opts);
   if (!adv.length) return null;
   const last = adv[adv.length - 1];
   return lastRetraction(text) > last.index ? null : last;
@@ -260,7 +272,10 @@ function classify(line) {
     if (Array.isArray(c) && c.some((b) => b && b.type === 'tool_result')) return { kind: 'tool' };
     const txt = textOfBlocks(c, ['text']);
     if (NOTIFY_RE.test(txt)) return { kind: 'notify' };
-    if (!txt.trim() || NOT_TYPED_RE.test(txt) || COMPACT_CMD_RE.test(txt)) return null;
+    // Hook-injected <system-reminder> blocks may precede (or be bundled with)
+    // the real prompt; judge the prompt by what is left after them.
+    const typed = txt.replace(LEADING_REMINDERS_RE, '');
+    if (!typed.trim() || NOT_TYPED_RE.test(typed) || COMPACT_CMD_RE.test(typed)) return null;
     return { kind: 'user' };
   }
   if (e.type === 'assistant' && e.message) {

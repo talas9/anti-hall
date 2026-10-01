@@ -19,7 +19,9 @@
 //
 // NO DEADLOCK: a later real user message starts a new turn (resets), and an
 // explicit retraction line from the assistant — "RETRACT SAFE TO COMPACT" —
-// clears it within the turn. Injected <task-notification>s do NOT reset: a
+// clears it within the turn. Only an explicit SAFE declaration counts (not the
+// pause nag's mandated "GOOD POINT TO /compact" footer or /compact command),
+// and Write/Edit of .anti-hall/handovers/** is exempt (refreshing the handover). Injected <task-notification>s do NOT reset: a
 // background result arriving after SAFE is exactly the "kept working" case.
 //
 // Contract (PreToolUse): matches sibling PreToolUse guards (command-guard.js,
@@ -31,13 +33,26 @@
 'use strict';
 
 const fs = require('fs');
+const path = require('path');
 
 const WORK_TOOLS = new Set(['Agent', 'Task', 'Write', 'Edit', 'MultiEdit', 'NotebookEdit']);
 const EXTRA_BASH_WORK_RE = /\bgit\s+(?:push|tag)\b|\bgh\s+pr\s+(?:merge|create)\b/i;
 
+// Writing/editing the handover itself is the very thing the block message tells
+// the agent to do — never new work. Resolved + segment-anchored so `..`
+// traversal, `.anti-hall/handovers-x/`, and the bare dir itself stay blocked.
+const HANDOVER_FILE_RE = /(?:^|\/)\.anti-hall\/handovers\/[^/][^]*$/;
+function isHandoverEdit(payload) {
+  const ti = payload.tool_input || {};
+  const fp = typeof ti.file_path === 'string' ? ti.file_path : (typeof ti.notebook_path === 'string' ? ti.notebook_path : null);
+  if (!fp) return false;
+  const cwd = typeof payload.cwd === 'string' && payload.cwd ? payload.cwd : process.cwd();
+  return HANDOVER_FILE_RE.test(path.resolve(cwd, fp).split(path.sep).join('/'));
+}
+
 function isNewWork(payload) {
   const name = String(payload.tool_name || '');
-  if (WORK_TOOLS.has(name)) return true;
+  if (WORK_TOOLS.has(name)) return !isHandoverEdit(payload);
   const cmd = payload.tool_input && typeof payload.tool_input.command === 'string' ? payload.tool_input.command : null;
   if (cmd === null) return false;
   const { BASH_WORK_RE, neutralizeQuotedContents } = require('./lib/work-detect.js');
@@ -65,7 +80,7 @@ function main() {
   if (!lines) return;
 
   const advice = require('./lib/compact-advice.js');
-  const decl = advice.activeDeclaration(advice.readTurn(lines).turnText);
+  const decl = advice.activeDeclaration(advice.readTurn(lines).turnText, { declarationsOnly: true });
   if (!decl) return;
 
   fs.writeSync(1, JSON.stringify({
