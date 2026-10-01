@@ -2,8 +2,8 @@
 // L30 field report: `devswarm.js archive <uuid>` printed appArchive.ok:true while the
 // DevSwarm app still listed the workspace live. Root cause: attemptAppArchive judged success
 // from hivecontrol's EXIT CODE alone (an exit-0 no-op / unparsed body counted as archived) and
-// nothing re-read the app. Now: the app DB (and, when it answers, `workspace list all`) must
-// confirm; otherwise ok:false, verified:false, partial:true + the exact manual command.
+// nothing re-read the app. Now: the app DB (else the archive response's archived:true) must
+// confirm (`workspace list all` keeps archived rows, so it is NOT a signal); otherwise ok:false, verified:false, partial:true + the exact manual command.
 // Also: `archive <branch|meshId>` for an already-archived/app-live workspace archives the app
 // side only; roster/app-state/doctor/--repair surface and repair the mismatch.
 // Every hivecontrol call goes through a FAKE binary on PATH; HOME is a tmp dir.
@@ -144,12 +144,21 @@ test('real success: DB flips to archived and the real body is accepted -> ok:tru
   } finally { rm(t.W); rm(t.home); }
 });
 
-test('DB says archived but `workspace list all` still lists the workspace -> not verified', () => {
-  const t = setup('listlive', { effectDb: true, listAll: [{ id: ID_A, branch: BRANCH, repositoryId: 'r1', worktreePath: '/x', label: 'l' }] });
+test('`workspace list all` keeps archived rows (live-measured): DB archived + still listed -> VERIFIED ok', () => {
+  const t = setup('listlive', { effectDb: true, archiveBody: JSON.stringify({ archived: true, alreadyArchived: false }), listAll: [{ id: ID_A, branch: BRANCH, repositoryId: 'r1', worktreePath: '/x', label: 'l' }] });
+  try {
+    const r = cli.run(['archive', ID_A], t.ctx);
+    assert.strictEqual(r.result.appArchive.ok, true, JSON.stringify(r.result));
+    assert.strictEqual(r.result.appArchive.verified, true);
+  } finally { rm(t.W); rm(t.home); }
+});
+
+test('app DB is preferred over the response: archived:true body but the DB row still open -> NOT verified', () => {
+  const t = setup('bodyonly', { archiveBody: JSON.stringify({ archived: true, alreadyArchived: false }) });
   try {
     const r = cli.run(['archive', ID_A], t.ctx);
     assert.strictEqual(r.result.appArchive.ok, false, JSON.stringify(r.result));
-    assert.match(r.result.appArchive.error, /list all/);
+    assert.match(r.result.appArchive.error, /app DB still lists/);
   } finally { rm(t.W); rm(t.home); }
 });
 

@@ -13666,7 +13666,7 @@ function hcArchiveCall(ident, base) {
       if (body && typeof body === 'object' && body.archived === false) {
         return { ok: false, raw: String(r.raw || ''), error: 'hivecontrol reported archived:false: ' + String(r.raw || '').trim().slice(0, 200) };
       }
-      return { ok: true, raw: String((r && r.raw) || '') };
+      return { ok: true, raw: String((r && r.raw) || ''), archivedTrue: !!(body && typeof body === 'object' && body.archived === true) };
     }
     return { ok: false, raw: String((r && r.raw) || ''), error: String((r && r.error) || '') || 'unknown hivecontrol failure' };
   };
@@ -13676,21 +13676,19 @@ function hcArchiveCall(ident, base) {
   return Object.assign({}, r2, { retried: true });
 }
 
-// verifyAppArchived(id, ctx) -> { verified: true } | { verified: false, why } .
-// The app DB (fresh read, builders.isActive/isHidden) is the authority; when the
-// read-only `hivecontrol workspace list all` ALSO answers and still lists the id,
-// the app is live regardless. Anything unreadable/unknown is NOT verified.
-function verifyAppArchived(id, ctx) {
+// verifyAppArchived(id, ctx, resp) -> { verified: true } | { verified: false, why } .
+// The app DB (fresh read, builders.isActive/isHidden) is the authority when it is
+// readable and holds the builder. Otherwise the hivecontrol archive JSON response
+// (`archived:true`, alreadyArchived either way) is the evidence. `workspace list all`
+// membership is NOT a signal: it keeps archived rows (live-measured 2026-10-01).
+function verifyAppArchived(id, ctx, resp) {
   let states = null;
   try { states = require('../companion/lib/devswarm-app-db.js').builderStates({ home: ctx.home, env: ctx.env, now: ctx.now, fresh: true }); }
   catch (_) { states = null; }
   const b = states && states.get(String(id));
-  if (!b) return { verified: false, why: 'the app DB could not confirm the workspace afterwards' };
-  if (!b.archived) return { verified: false, why: 'the app DB still lists the workspace open (isActive=1)' };
-  let live = null;
-  try { live = fetchActiveWorkspaceRecords({ env: ctx.env, cwd: ctx.cwd }); } catch (_) { live = null; }
-  if (live && live.ok && live.records.some((r) => r.id === String(id))) return { verified: false, why: '`hivecontrol workspace list all` still lists the workspace' };
-  return { verified: true };
+  if (b) return b.archived ? { verified: true } : { verified: false, why: 'the app DB still lists the workspace open (isActive=1)' };
+  if (resp && resp.archivedTrue) return { verified: true };
+  return { verified: false, why: 'the app DB could not confirm the workspace and hivecontrol did not report archived:true' };
 }
 
 function attemptAppArchive(id, desc, ctx) {
@@ -13705,7 +13703,7 @@ function attemptAppArchive(id, desc, ctx) {
   const base = { env: ctx.env, cwd, timeout: APP_ARCHIVE_TIMEOUT_MS };
   const branch = target.branch || (desc && desc.branch) || null;
   const first = hcArchiveCall(String(id), base);
-  let v = first.ok ? verifyAppArchived(id, ctx) : null;
+  let v = first.ok ? verifyAppArchived(id, ctx, first) : null;
   const retried = !!first.retried;
   if (first.ok && v.verified) return Object.assign({ attempted: true, ok: true, verified: true, via: 'id' }, retried ? { retried: true } : {});
   // Exit 0 but the app is unchanged (field report): the id was accepted as a no-op.
@@ -13714,7 +13712,7 @@ function attemptAppArchive(id, desc, ctx) {
   if (first.ok && branch) {
     second = hcArchiveCall(branch, base);
     if (second.ok) {
-      v = verifyAppArchived(id, ctx);
+      v = verifyAppArchived(id, ctx, second);
       if (v.verified) return { attempted: true, ok: true, verified: true, via: 'branch', retried: retried || !!second.retried };
     }
   }
