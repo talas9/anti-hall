@@ -1713,8 +1713,15 @@ function writesLauncherDir(tokens, ev, cdDir) {
       let rest = t.text.slice(k + 1);
       const nl = rest.indexOf('\n');
       if (nl >= 0) rest = rest.slice(0, nl);
-      const after = rest.replace(/^>/, '').replace(/^\|/, '');
+      let after = rest.replace(/^>/, '').replace(/^\|/, '');
       if (after.startsWith('&') || after.startsWith('(')) continue; // fd dup / process subst
+      // The target is the FIRST shell word, not the rest of the line:
+      // `>/dev/null && node <launcher> ...` (or `"a > b", "<launcher>"` inside a
+      // JS string) writes only to that first word. Cut there unless the word holds
+      // a quote/backslash/expansion/brace (it could span whitespace or hide a
+      // command) - then keep the whole rest of the line (fail closed).
+      const word = after.replace(/^\s+/, '').split(/\s/, 1)[0];
+      if (word && (/^\$[A-Za-z_]\w*$/.test(word) || !/[`$(){}'"\\]/.test(word))) after = word;
       if (after) targets.push(after);
       else if (nl < 0) targets.push(tokens[i + 1] ? tokens[i + 1].text : '');
     }

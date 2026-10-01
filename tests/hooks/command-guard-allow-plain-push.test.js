@@ -620,3 +620,55 @@ test('allow-plain-push: sha SRC - HEAD sha allowed; parent sha, unknown sha and 
     fs.rmSync(repo, { recursive: true, force: true });
   }
 });
+
+// ---- (e) redirect to THIS session's own scratchpad is a bounded sink ----
+
+function runWithScratchpad(command) {
+  const repo = makeGitRepo();
+  const sid = 'l27-' + process.pid + '-' + Math.random().toString(36).slice(2, 8);
+  const projDir = path.join('/tmp', 'claude-' + process.getuid(), repo.replace(/[^A-Za-z0-9]/g, '-'));
+  const sp = path.join(projDir, sid, 'scratchpad');
+  fs.mkdirSync(sp, { recursive: true });
+  const h = makeHome();
+  try {
+    const payload = {
+      hook_event_name: 'PreToolUse', tool_name: 'Bash',
+      tool_input: { command: command.split('@SP@').join(sp) },
+      session_id: sid, cwd: repo,
+    };
+    return testHook(HOOK, payload, { home: h.home, env: { CLAUDE_CODE_ENTRYPOINT: 'cli' } });
+  } finally {
+    h.cleanup();
+    fs.rmSync(projDir, { recursive: true, force: true });
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+}
+
+test('allow-plain-push (e): `git push origin main > <own scratchpad>/push.out 2>&1` is allowed', () => {
+  const res = runWithScratchpad('git push origin main > @SP@/push.out 2>&1');
+  assert.notStrictEqual(res.status, 2, res.stdout);
+});
+
+test('allow-plain-push (e): `>>` append and a chained add/commit/push with the sink are allowed', () => {
+  assert.notStrictEqual(runWithScratchpad('git push origin main >> @SP@/push.out 2>&1').status, 2);
+  assert.notStrictEqual(runWithScratchpad('git add . && git commit -q -m "wip" && git push -q origin main > @SP@/p.out 2>&1').status, 2);
+});
+
+test('allow-plain-push (e): the sink does not widen ref/flag rules (foreign branch, --force, src:dst stay blocked)', () => {
+  assert.strictEqual(runWithScratchpad('git push origin other > @SP@/push.out 2>&1').status, 2);
+  assert.strictEqual(runWithScratchpad('git push --force origin main > @SP@/push.out 2>&1').status, 2);
+  assert.strictEqual(runWithScratchpad('git push origin main:evil > @SP@/push.out 2>&1').status, 2);
+});
+
+test('allow-plain-push (e): targets outside the own scratchpad stay blocked (generic /tmp, env var, ~, traversal)', () => {
+  assert.strictEqual(runWithScratchpad('git push origin main > /tmp/out.log 2>&1').status, 2);
+  assert.strictEqual(runWithScratchpad('git push origin main > $HOME/x 2>&1').status, 2);
+  assert.strictEqual(runWithScratchpad('git push origin main > ~/.bashrc 2>&1').status, 2);
+  assert.strictEqual(runWithScratchpad('git push origin main > @SP@/../../../../../etc/x 2>&1').status, 2);
+});
+
+test('allow-plain-push (e): a redirect followed by anything else, or a stdin redirect, stays blocked', () => {
+  assert.strictEqual(runWithScratchpad('git push origin main > @SP@/a.out && npm test').status, 2);
+  assert.strictEqual(runWithScratchpad('git push origin main > @SP@/a.out; cat /etc/passwd').status, 2);
+  assert.strictEqual(runWithScratchpad('git push origin main > @SP@/a.out < /etc/passwd').status, 2);
+});

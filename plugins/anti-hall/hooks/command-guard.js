@@ -2180,7 +2180,8 @@ function isScratchpadOrTmpPath(p, ctx) {
   let abs;
   try { abs = path.resolve(base, unquoted); } catch (_) { return false; }
   const sp = require('./lib/scratchpad.js');
-  const roots = sp.ownScratchpadDirs(payload).concat(sp.tmpRoots());
+  // ctx.ownOnly: THIS session's scratchpad only, not the generic tmp roots.
+  const roots = sp.ownScratchpadDirs(payload).concat(ctx && ctx.ownOnly ? [] : sp.tmpRoots());
   for (const root of roots) {
     if (sp.isInsideDir(abs, root)) return true;
   }
@@ -2518,6 +2519,11 @@ function appendProjectCommandAllowAudit(entry) {
 //       segment; and ONE final `| tail [-n] N` / `| head [-n] N` output filter.
 //       A foreign DST, a delete (`:dst`), `+` force and every flag stay
 //       exactly as blocked as before.
+//   (e) ONE final `> <file>` / `>> <file>` redirect (optionally with `2>&1`)
+//       whose target is inside THIS session's own scratchpad (a bounded sink,
+//       the same as `| tail`; the output goes to a file, not the main thread).
+//       NOT the generic tmp roots, a `$`/glob/`~` target, or any other redirect
+//       form — those keep blocking.
 // ---------------------------------------------------------------------------
 
 // A bare remote/ref token: no leading '-' or '+' (rules out every flag and
@@ -2766,8 +2772,13 @@ function isPlainPushRefAllowed(ref, cwd) {
 }
 
 // isAllowedPlainPushChain(command, cwd) -> bool. See the header block above.
-function isAllowedPlainPushChain(command, cwd) {
+function isAllowedPlainPushChain(command, cwd, payload) {
   if (typeof command !== 'string' || !command.trim()) return false;
+  // (e) strip ONE final own-scratchpad file redirect (keeping a trailing `2>&1`).
+  const sink = command.match(/\s+>>?\s*([^\s<>&|;'"`$\\]+)((?:\s+2>&1)?)\s*$/);
+  if (sink && payload && isScratchpadOrTmpPath(sink[1], { payload, ownOnly: true })) {
+    command = command.slice(0, sink.index) + sink[2];
+  }
   const split = splitSegmentsDetailed(command);
   const segments = split.segments.slice();
   const delims = split.delims.slice();
@@ -3283,7 +3294,7 @@ function main() {
   try {
     if (settingsGet('guards', 'allowPlainPush') !== false) {
       const cwd = (payload && payload.cwd) || '';
-      if (isAllowedPlainPushChain(command, cwd)) {
+      if (isAllowedPlainPushChain(command, cwd, payload)) {
         process.exit(0);
       }
     }
