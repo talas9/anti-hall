@@ -6,6 +6,12 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.120.1 (2026-10-01)
+
+### Fixed
+
+- Compact-declaration guard deadlock: the auto-handover nag's mandated footer (`GOOD POINT TO /compact NOW`) and its pasteable `/compact focus: …` line were read as a SAFE TO COMPACT declaration, blocking every tool call in later turns; refreshing the handover (which the block itself demanded) was also blocked. Now only an explicit SAFE declaration counts, `.anti-hall/handovers/**` edits are always allowed, and leading hook reminders no longer stop a new user prompt from resetting the turn.
+
 ## 0.120.0 (2026-10-01)
 
 Fixes from the second cross-project peer bug sweep (Primaries plus their workspaces), three rounds of adversarial security review of the command/git/edit guards, and DevSwarm identity, inbox and mesh fixes.
