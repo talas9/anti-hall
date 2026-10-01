@@ -77,3 +77,50 @@ test('fail closed: a symlinked .anti-hall directory cannot smuggle a source writ
     assert.strictEqual(write(h.home, path.join(repo, '.anti-hall', 'x.js'), path.join(repo, 'packages', 'foo')).status, 2);
   } finally { h.cleanup && h.cleanup(); fs.rmSync(repo, { recursive: true, force: true }); }
 });
+
+// L24: a main-thread Write to <repo>/.anti-hall/handovers/<date>/<sid>/HANDOVER.md
+// (the handover skill's target) must pass for a plain coordinator, a DevSwarm
+// Primary and a DevSwarm child, from every cwd spelling, even when the
+// <date>/<sid> (or the whole handovers) dir does not exist yet. Reported on
+// 0.118.0, where any cwd other than the repo root blocked it.
+const HREL = path.join('.anti-hall', 'handovers', '2026-10-01', 'sid', 'HANDOVER.md');
+const ENVS = {
+  plain: {},
+  primary: { DEVSWARM_REPO_ID: 'repo-x' },
+  child: { DEVSWARM_REPO_ID: 'repo-x', DEVSWARM_SOURCE_BRANCH: 'feature/y' },
+};
+function writeEnv(home, filePath, cwd, env) {
+  return testHook('edit-guard.js', {
+    hook_event_name: 'PreToolUse', tool_name: 'Write',
+    tool_input: { file_path: filePath, content: 'x' }, session_id: 't', cwd,
+  }, { home, env: Object.assign({ CLAUDE_CODE_ENTRYPOINT: 'cli' }, env) });
+}
+
+for (const [role, env] of Object.entries(ENVS)) {
+  for (const exists of [false, true]) {
+    test(`handover doc allowed (${role}, dirs ${exists ? 'exist' : 'missing'}): abs/rel/subdir/symlink cwd`, () => {
+      const repo = makeRepo(); const h = makeHome(); const link = repo + '-link';
+      try {
+        if (exists) fs.mkdirSync(path.dirname(path.join(repo, HREL)), { recursive: true });
+        fs.symlinkSync(repo, link);
+        const abs = path.join(repo, HREL);
+        assert.strictEqual(writeEnv(h.home, abs, repo, env).status, 0, 'abs, root cwd');
+        assert.strictEqual(writeEnv(h.home, HREL, repo, env).status, 0, 'relative');
+        assert.strictEqual(writeEnv(h.home, abs, path.join(repo, 'packages', 'foo'), env).status, 0, 'subdir cwd');
+        assert.strictEqual(writeEnv(h.home, abs, link, env).status, 0, 'symlinked cwd');
+        assert.strictEqual(writeEnv(h.home, path.join(link, HREL), repo, env).status, 0, 'symlinked path');
+      } finally { fs.rmSync(link, { force: true }); h.cleanup && h.cleanup(); fs.rmSync(repo, { recursive: true, force: true }); }
+    });
+  }
+}
+
+test('fail closed: handover lookalike root, traversal and another repo stay blocked (Primary, subdir cwd)', () => {
+  const repo = makeRepo(); const other = makeRepo(); const h = makeHome();
+  const sub = path.join(repo, 'packages', 'foo');
+  const env = ENVS.primary;
+  try {
+    assert.strictEqual(writeEnv(h.home, path.join(repo, '.anti-hall-x', 'handovers', 'HANDOVER.md'), sub, env).status, 2, 'lookalike root dir');
+    assert.strictEqual(writeEnv(h.home, path.join(repo, '.anti-hall', 'handovers', '..', '..', 'src', 'x.js'), sub, env).status, 2, 'traversal');
+    assert.strictEqual(writeEnv(h.home, path.join(other, HREL), sub, env).status, 2, 'other repo');
+  } finally { h.cleanup && h.cleanup(); fs.rmSync(repo, { recursive: true, force: true }); fs.rmSync(other, { recursive: true, force: true }); }
+});
