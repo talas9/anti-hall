@@ -6,6 +6,13 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.120.5 (2026-10-01)
+
+### Fixed
+
+- `devswarm.js roster` no longer lists an archived workspace twice. A native branch-name row whose worktree maps to an archived descriptor folds into the archived row (`hints:['archived']`). The output adds `liveCount`/`archivedCount`.
+- command-guard names state-changing remote operations (`gh pr create/merge`, `git push`) as such in its block reason, instead of "heavy". A `;`-joined `cd` that would qualify with `&&` gets a "use `cd <dir> &&`" hint. Behaviour is unchanged.
+
 ## 0.120.4 (2026-10-01)
 
 ### Security
