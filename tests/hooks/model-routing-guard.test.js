@@ -1115,3 +1115,69 @@ test('update-in-session: briefs that only mention updating something else are no
     assert.notStrictEqual(r.status, 2);
   } finally { h.cleanup(); }
 });
+
+// ------------------------------------------- reasoning-shaped briefs (L33)
+// Heavy reading + synthesis is not mechanical even when the brief also says
+// download/list/commit/push: never blocked, never told to use haiku.
+function spawnOpus(h, description, prompt) {
+  return testHook(HOOK, payload({ model: 'opus', subagent_type: 'general-purpose', description, prompt }), { home: h.home });
+}
+function assertNoHaikuAdvice(r) {
+  const txt = JSON.stringify(r.json || {});
+  assert.doesNotMatch(txt, /haiku/, 'a reasoning brief must never be steered to haiku');
+}
+
+test('REASONING: PDF read/synthesize/KB-reconcile brief on opus is NOT blocked and never suggests haiku', () => {
+  const h = makeHome();
+  try {
+    const r = spawnOpus(h, 'Ingest PDF source',
+      'Download the 45-page PDF from the KB inbox, read it page by page, write a source note, ' +
+      'amend and reconcile the KB docs, list what changed, then commit/push.');
+    assert.notStrictEqual(r.status, 2, `must not block; stdout: ${r.stdout}`);
+    assertNoHaikuAdvice(r);
+  } finally { h.cleanup(); }
+});
+
+test('REASONING: synthesize/summarize a document + export is not blocked', () => {
+  const h = makeHome();
+  try {
+    const r = spawnOpus(h, 'Summarize report', 'Summarize the attached document, synthesize the findings and export them to a file.');
+    assert.notStrictEqual(r.status, 2, `must not block; stdout: ${r.stdout}`);
+    assertNoHaikuAdvice(r);
+  } finally { h.cleanup(); }
+});
+
+test('REASONING: pure mechanical briefs on opus are still BLOCKED', () => {
+  const h = makeHome();
+  try {
+    assertBlock(spawnOpus(h, 'run tests', 'Run npm test and report the results. List failing files.'), /flagship model/);
+    assertBlock(spawnOpus(h, 'fetch logs', 'Read logs and list the errors, then export them to a file.'), /flagship model/);
+    assertBlock(spawnOpus(h, 'build', 'Install dependencies, run the build, then git push.'), /flagship model/);
+  } finally { h.cleanup(); }
+});
+
+test('REASONING: a bare "read logs" (no non-trivial source) does not count as reasoning', () => {
+  const h = makeHome();
+  try {
+    assertBlock(spawnOpus(h, 'tail', 'Read logs, tail the output and download the dump.'), /flagship model/);
+  } finally { h.cleanup(); }
+});
+
+test('REASONING: mixed brief (mechanical steps + analyze) is not blocked; analysis words inside code spans do not count', () => {
+  const h = makeHome();
+  try {
+    const mixed = spawnOpus(h, 'build and analyze', 'Run the build, download the artifacts, then analyze the output and explain regressions.');
+    assert.notStrictEqual(mixed.status, 2, `must not block; stdout: ${mixed.stdout}`);
+    assertNoHaikuAdvice(mixed);
+    assertBlock(spawnOpus(h, 'run cmd', 'Run `jev analyze --summarize` then download the dump and tail the logs.'), /flagship model/);
+  } finally { h.cleanup(); }
+});
+
+test('REASONING: research-exempt advisory no longer steers an investigation brief to haiku', () => {
+  const h = makeHome();
+  try {
+    const r = spawnOpus(h, 'investigate the old-version device population', 'check status of Firestore writes and export the findings');
+    assertAdvisory(r, /research-shaped exempt/);
+    assertNoHaikuAdvice(r);
+  } finally { h.cleanup(); }
+});

@@ -172,6 +172,20 @@ const MECHANICAL_SHAPE_RE =
 const REVIEW_DESIGN_VERB_RE =
   /\b(review|audit|design|architect(?:ure)?|plan|brainstorm|critique|analy[sz]e|analysis|investigate|root[- ]cause)\b/i;
 
+// REASONING signals (L33): heavy reading + synthesis/reconciliation is not
+// mechanical even when the brief also says commit/push/list/export. Like COMPLEX
+// this can only VETO a block (isMechanicalOnly), never cause one. Matched with
+// code spans stripped (config keys / CLI syntax must not count). investigate/
+// research are NOT here: they keep their own RESEARCH_RE path (a HARD_EXECUTION
+// verb still blocks them). A bare "read X"
+// is not enough — it needs a non-trivial source (document/pdf/paper/N-page/
+// "page by page"), so "read logs" and "run npm test and report" stay mechanical.
+const REASONING_RE =
+  /\b(analy[sz]\w*|synthesi[sz]\w*|summari[sz]\w*|reconcil\w*|evaluat\w*|interpret\w*|distill\w*|compare|comparison)\b|\bread\w*\b[^.\n]{0,60}\b(?:pdf|pdfs|pages?|papers?|documents?|specs?|transcripts?|articles?|books?|manuals?|whitepapers?)\b|\b\d+[- ]page\b|\bpage[- ]by[- ]page\b/i;
+function isReasoningShaped(corpus) {
+  return REASONING_RE.test(stripCodeSpans(corpus));
+}
+
 function readOnlyMechanical(corpus) {
   return READONLY_RE.test(corpus) && MECHANICAL_SHAPE_RE.test(corpus)
     && !REVIEW_DESIGN_VERB_RE.test(stripCodeSpans(corpus));
@@ -373,7 +387,9 @@ function main() {
   const complex = countSignals(tokens, COMPLEX);
 
   // COMPLEX-ANYWHERE veto: any planning signal => never block (rows 1-3 can't fire).
-  const isMechanicalOnly = mechanical > 0 && complex === 0;
+  // L33: heavy reading/synthesis (REASONING_RE) vetoes the same way, so such a
+  // brief is never blocked nor told to use haiku just because it also commits/lists.
+  const isMechanicalOnly = mechanical > 0 && complex === 0 && !isReasoningShaped(corpus);
 
   // Strict mode (now the default). Setting guards.modelRouting (env
   // ANTIHALL_MODEL_ROUTING > settings.json > /config > 'strict'); never inferred.
@@ -460,8 +476,7 @@ function main() {
         'MODEL-ROUTING (advisory, research-shaped exempt): this spawn looks ' +
         "execution-shaped on a flagship model ('" + model + "'), but it also reads " +
         'as research/investigation work with no unambiguous execution verb present, ' +
-        'so it is exempt from blocking. If this is genuinely mechanical work, prefer ' +
-        "model:'haiku' (or 'sonnet' if it authors code)."
+        'so it is exempt from blocking.'
       );
     }
     if (consultModelRoutingJev(corpus, payload)) {

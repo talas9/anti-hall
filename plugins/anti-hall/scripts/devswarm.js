@@ -914,7 +914,8 @@ function resolveCallerWorktree(cwd) {
 // project/workspace. The caller's own cwd when it resolves to a git worktree
 // (ground truth always wins). When it does NOT (e.g. a scratchpad dir), fall
 // back to the worktree of the workspace DECLARED by env.DEVSWARM_BUILDER_ID, via
-// its registered descriptor — the same "declared identity is trusted only when no
+// its registered descriptor, else to CLAUDE_PROJECT_DIR (a Primary has no builder
+// id) — the same "declared identity is trusted only when no
 // worktree ground truth contradicts it" rule callerIdentity applies. Used by
 // send / heartbeat --summary / mesh read so they no longer fail `no-project`
 // from a non-worktree cwd. Fail-open: any miss returns the original cwd.
@@ -923,10 +924,16 @@ function projectCwdFor(ctx) {
   try {
     if (resolveCallerWorktree(cwd)) return cwd;
     const bid = ctx && ctx.env && ctx.env.DEVSWARM_BUILDER_ID ? String(ctx.env.DEVSWARM_BUILDER_ID) : '';
-    if (!bid) return cwd;
-    const d = readDescriptorFile(ctx.home, bid);
-    const wt = d && typeof d.worktreePath === 'string' ? d.worktreePath : '';
-    if (wt && path.isAbsolute(wt) && fs.existsSync(wt) && resolveCallerWorktree(wt)) return wt;
+    if (bid) {
+      const d = readDescriptorFile(ctx.home, bid);
+      const wt = d && typeof d.worktreePath === 'string' ? d.worktreePath : '';
+      if (wt && path.isAbsolute(wt) && fs.existsSync(wt) && resolveCallerWorktree(wt)) return wt;
+    }
+    // A Primary usually has no builder id: fall back to the harness-set project
+    // root (CLAUDE_PROJECT_DIR) under the same fail-closed rule (absolute, exists,
+    // resolves to a git worktree through the canonical resolver).
+    const pd = ctx && ctx.env && ctx.env.CLAUDE_PROJECT_DIR ? String(ctx.env.CLAUDE_PROJECT_DIR) : '';
+    if (pd && path.isAbsolute(pd) && fs.existsSync(pd) && resolveCallerWorktree(pd)) return pd;
   } catch (_) { /* fall through to the raw cwd */ }
   return cwd;
 }
