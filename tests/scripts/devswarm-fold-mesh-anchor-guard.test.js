@@ -4,7 +4,7 @@ const { withReaderCursors } = require('../helpers/fake-reader-cursors.js');
 // `primary-<hash>` row's cursor advanced across two wake-watch turns with NO
 // `read-primary` issued in between (cursorStore 3139->3140->3141), while the
 // swept rows (storeSeq 34167/34170) PROVABLY still exist in that exact row's
-// own row set (`inbox messages primary-63f9261d --limit 5000` returns them).
+// own row set (`inbox messages primary-0a1b2c3d --limit 5000` returns them).
 // The next `read-primary` started past them; both downstream children had to
 // resend.
 //

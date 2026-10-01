@@ -173,7 +173,7 @@ for (const B of backends) {
       const mainMesh = meshOf(main);
       // Two registry rows, NEITHER live: sessionId null, and the SYNTHETIC
       // unclaimed: prefix — both fail isLiveSessionId (matches the measured
-      // primary-63f9261d field shape).
+      // primary-0a1b2c3d field shape).
       seedB(home, repoKey, { id: 'row-a', worktreePath: mainTop, sessionId: null });
       seedB(home, repoKey, { id: 'row-b', worktreePath: mainTop, sessionId: 'unclaimed:row-b' });
 

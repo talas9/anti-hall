@@ -247,7 +247,7 @@ test('FAIL-OPEN: a malformed row (non-finite updatedAt, non-string id) never thr
 test('hasLiveCandidate: false when every row is non-live (null/empty/synthetic sessionId)', () => {
   const rows = [
     { id: 'a', sessionId: null },
-    { id: 'b', sessionId: 'unclaimed:primary-63f9261d' },
+    { id: 'b', sessionId: 'unclaimed:primary-0a1b2c3d' },
   ];
   assert.strictEqual(hasLiveCandidate(rows), false);
 });

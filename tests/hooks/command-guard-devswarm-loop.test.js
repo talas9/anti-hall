@@ -66,7 +66,7 @@ test('devswarm loop: heavy command substitution in the loop list or args still b
 });
 
 test('light devswarm segment chained to read-only ls | grep -c stays allowed', () => {
-  assert.strictEqual(blocked(`timeout 20 ${DS} inbox tick primary-63f9261d --quiet; ls -la ~/.claude/projects/ | grep -c 568b8ede`), false);
+  assert.strictEqual(blocked(`timeout 20 ${DS} inbox tick primary-0a1b2c3d --quiet; ls -la ~/.claude/projects/ | grep -c deadbeef`), false);
 });
 
 test('devswarm.js exemption: file name must end exactly at devswarm.js', () => {

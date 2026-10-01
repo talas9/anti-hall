@@ -1,5 +1,5 @@
 'use strict';
-// Cursor-integrity investigation (field data: partition primary-63f9261d with
+// Cursor-integrity investigation (field data: partition primary-0a1b2c3d with
 // a UUID twin row) — regression tests for two of the three CONFIRMED findings:
 //
 // (A) `read-primary`'s mesh-sibling union read pulled a NEVER-READ sibling's

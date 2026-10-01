@@ -42,13 +42,13 @@ test('collapseFamilies: two descriptors sharing one worktreePath -> ONE family, 
 test('collapseFamilies: the SELF/Primary row duplicated (live-evidence case) collapses to one', () => {
   // own's synthetic self-row + a real descriptor registered under the SAME
   // canonical mesh id (the literal live-evidence duplication: the SAME id
-  // string "primary-63f9261d" appearing twice).
-  const resolve = (wt) => (wt === '/repo/self' ? 'primary-63f9261d' : 'canon:' + wt);
-  const ownRow = { id: 'primary-63f9261d', worktreePath: '/repo/self', realUnread: 2, unreadUnknown: false };
-  const selfDescriptor = { id: 'primary-63f9261d', worktreePath: '/repo/self', realUnread: 0, unreadUnknown: false };
+  // string "primary-0a1b2c3d" appearing twice).
+  const resolve = (wt) => (wt === '/repo/self' ? 'primary-0a1b2c3d' : 'canon:' + wt);
+  const ownRow = { id: 'primary-0a1b2c3d', worktreePath: '/repo/self', realUnread: 2, unreadUnknown: false };
+  const selfDescriptor = { id: 'primary-0a1b2c3d', worktreePath: '/repo/self', realUnread: 0, unreadUnknown: false };
   const families = collapseFamilies([ownRow, selfDescriptor], { resolve });
   assert.strictEqual(families.length, 1, 'the duplicated self row collapses to one family');
-  assert.strictEqual(families[0].survivor.id, 'primary-63f9261d');
+  assert.strictEqual(families[0].survivor.id, 'primary-0a1b2c3d');
 });
 
 test('collapseFamilies: a descriptor whose worktree no longer exists still groups deterministically, never throws', () => {

@@ -22,7 +22,7 @@ const path = require('node:path');
 const W = require(path.join(__dirname, '..', '..', 'plugins', 'anti-hall', 'companion', 'lib', 'devswarm-wake-watch.js'));
 const { tick, normalizeState, loadSeenState, saveSeenState } = W;
 
-const ID = 'primary-63f9261d';
+const ID = 'primary-0a1b2c3d';
 
 function tmpHome() { return fs.mkdtempSync(path.join(os.tmpdir(), 'anti-hall-wakewatch-roleflip-')); }
 function rm(h) { try { fs.rmSync(h, { recursive: true, force: true }); } catch (_) {} }

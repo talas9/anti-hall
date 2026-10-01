@@ -789,7 +789,7 @@ test('readPrimarySnapshot (real store, not mocked): 50 broadcast/heartbeat rows 
 // attachBroadcastChannel / readBroadcastSnapshot — END-TO-END through the
 // REAL store, closing a DevSwarm Primary field report: after `send
 // --broadcast`, wake-watch woke the SENDER on its own broadcast ("new mesh
-// mail for child primary-63f9261d: broadcast direct total 189 -> 190 (+1)").
+// mail for child primary-0a1b2c3d: broadcast direct total 189 -> 190 (+1)").
 // Root cause: `workspaces[<id>].broadcastUnread` (devswarm-store.js
 // computeSummary) counted every non-heartbeat broadcast row past a
 // workspace's own cursor with no check on WHO sent it — a workspace's own

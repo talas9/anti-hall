@@ -2266,7 +2266,7 @@ test('IDENTITY-FAMILY: the SELF/Primary row duplicated (live evidence: the same 
     // own's synthetic self-row (via writeOwnSummary, id=OWN_ID) PLUS a REAL
     // descriptor registered under the Primary's OWN worktree/canonical id —
     // reproducing the literal live-evidence duplication where
-    // "primary-63f9261d (you)" appeared twice in one blocking line.
+    // "primary-0a1b2c3d (you)" appeared twice in one blocking line.
     writeOwnSummary(h.home, 2);
     seedWorkspace(h.home, OWN_ID, { messages: ['x', 'y', 'z'], cursor: 0, worktreePath: REPO_CWD });
     const r = run(h.home, stopPayload());
@@ -3422,7 +3422,7 @@ test('DEFECT 427dbff95f28 FIX: a reply to a DIFFERENT registry row of the SAME i
   const wt = makeLinkedWorktree();
   try {
     const childUuidRow = 'a1b2c3d4-1111-2222-3333-444455556666';
-    const childBuilderRow = 'primary-63f9261d';
+    const childBuilderRow = 'primary-0a1b2c3d';
     // Both rows registered against the SAME child worktree — the UUID-row /
     // builder-id-row shape this defect's report names explicitly.
     seedWorkspace(h.home, childUuidRow, { messages: [], cursor: 0, worktreePath: wt.dir });
