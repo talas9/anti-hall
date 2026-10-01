@@ -6,6 +6,18 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.120.4 (2026-10-01)
+
+### Security
+
+- git-guard now blocks launcher-dir writes via glob redirect targets and same-command variable targets (pre-existing).
+
+### Fixed
+
+- git-guard reads a redirect target as its first word (fewer false blocks after an odd quote).
+- command-guard allows `git push ... > <own scratchpad file>` (symlinks refused; newline-safe).
+- Test fixtures use neutral ids.
+
 ## 0.120.3 (2026-10-01)
 
 ### Fixed
