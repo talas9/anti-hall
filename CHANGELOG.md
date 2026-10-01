@@ -6,6 +6,25 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.120.9 (2026-10-01)
+
+### Fixed
+
+- tasklist-guard demanded a progress header `started:` taken from its own clock, so it changed every Stop and could never be satisfied. It is now derived once from the transcript and persisted.
+- The running-agent count reads "unknown" instead of 0 when a launch is outside the transcript window, and never fires DISPATCH NOW on an unknown count.
+- parent-gate re-checks the live own-unread count before blocking on a cached one.
+- git-guard's command-substitution block suggests the Write tool for message text.
+
+### Added
+
+- `mesh read` also returns `messages`.
+- `mesh history` re-reads consumed broadcasts without moving cursors.
+- `inbox messages --with-broadcasts`.
+
+### Changed
+
+- After an update, `/reload-plugins` is the step to take. It was verified on 2026-10-01 to load new hooks and skills; restart only if a path still shows the old version.
+
 ## 0.120.8 (2026-10-01)
 
 ### Fixed
