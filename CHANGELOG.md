@@ -6,6 +6,15 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.120.8 (2026-10-01)
+
+### Fixed
+
+- `devswarm.js spawn` repairs a submodule worktree DevSwarm failed to add. Root cause: DevSwarm's background, un-awaited `worktreeInclude` copy pre-creates the submodule dir before `git worktree add -b`. The repair sets the files aside, adds the worktree (attaching to an existing branch if needed) and restores the files without overwriting; conflicts are reported. The output includes a pinned-commit hint.
+- `send`/`mesh read`/heartbeat from a non-worktree cwd (e.g. the session scratchpad) fall back to `CLAUDE_PROJECT_DIR` for a Primary.
+- model-routing-guard no longer blocks a flagship on reasoning-heavy briefs (analyze/synthesize/read a PDF page by page), and never suggests haiku for them.
+- command-guard allows a background direct-exec of an executable script in the session's own scratchpad, and names the allowed shapes. `git pull` and mutating fetches are labelled as state-changing remote operations.
+
 ## 0.120.7 (2026-10-01)
 
 ### Changed
