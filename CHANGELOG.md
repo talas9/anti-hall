@@ -6,6 +6,14 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.120.7 (2026-10-01)
+
+### Changed
+
+- `/anti-hall:update` runs update.js (and the DevSwarm supervisor/ingest installer steps) IN the main session instead of delegating to a Sonnet subagent. Reason: it runs migrations, and the main session must judge the result, per the owner's rule that deploys and migrations are never handed to a delegated model by default.
+- command-guard exempts the anchored update.js and installer invocations.
+- model-routing-guard blocks a subagent spawn that would run the update (setting `guards.updateInSession`, default on).
+
 ## 0.120.6 (2026-10-01)
 
 ### Fixed
