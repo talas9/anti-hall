@@ -623,12 +623,13 @@ test('allow-plain-push: sha SRC - HEAD sha allowed; parent sha, unknown sha and 
 
 // ---- (e) redirect to THIS session's own scratchpad is a bounded sink ----
 
-function runWithScratchpad(command) {
+function runWithScratchpad(command, setup) {
   const repo = makeGitRepo();
   const sid = 'l27-' + process.pid + '-' + Math.random().toString(36).slice(2, 8);
   const projDir = path.join('/tmp', 'claude-' + process.getuid(), repo.replace(/[^A-Za-z0-9]/g, '-'));
   const sp = path.join(projDir, sid, 'scratchpad');
   fs.mkdirSync(sp, { recursive: true });
+  if (setup) setup(sp);
   const h = makeHome();
   try {
     const payload = {
@@ -671,4 +672,20 @@ test('allow-plain-push (e): a redirect followed by anything else, or a stdin red
   assert.strictEqual(runWithScratchpad('git push origin main > @SP@/a.out && npm test').status, 2);
   assert.strictEqual(runWithScratchpad('git push origin main > @SP@/a.out; cat /etc/passwd').status, 2);
   assert.strictEqual(runWithScratchpad('git push origin main > @SP@/a.out < /etc/passwd').status, 2);
+});
+
+test('allow-plain-push (e): a redirect through a symlink (dangling, live, or in a parent dir) is refused; a new file in a real dir is allowed', () => {
+  const dangling = (sp) => fs.symlinkSync(path.join(os.tmpdir(), 'l27-nonexistent-' + process.pid), path.join(sp, 'dang'));
+  const live = (sp) => { fs.writeFileSync(path.join(sp, 'real'), ''); fs.symlinkSync(path.join(sp, 'real'), path.join(sp, 'lnk')); };
+  const dirLink = (sp) => fs.symlinkSync('/etc', path.join(sp, 'etcl'));
+  const realDir = (sp) => fs.mkdirSync(path.join(sp, 'sub'));
+  assert.strictEqual(runWithScratchpad('git push origin main > @SP@/dang 2>&1', dangling).status, 2);
+  assert.strictEqual(runWithScratchpad('git push origin main > @SP@/lnk 2>&1', live).status, 2);
+  assert.strictEqual(runWithScratchpad('git push origin main >> @SP@/etcl/x', dirLink).status, 2);
+  assert.notStrictEqual(runWithScratchpad('git push origin main > @SP@/sub/new.out 2>&1', realDir).status, 2);
+});
+
+test('allow-plain-push (e): a newline before the redirect makes it a separate command, not a sink', () => {
+  assert.strictEqual(runWithScratchpad('git push origin main\n> @SP@/f').status, 2);
+  assert.strictEqual(runWithScratchpad('git push origin main\n>> @SP@/f 2>&1').status, 2);
 });

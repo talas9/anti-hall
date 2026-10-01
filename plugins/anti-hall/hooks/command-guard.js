@@ -2771,12 +2771,41 @@ function isPlainPushRefAllowed(ref, cwd) {
   return false;
 }
 
+// sinkPathHasSymlink(target, payload) -> true when the lexical target path, or
+// any EXISTING component below the own scratchpad root, is a symlink (dangling
+// included): a redirect through it writes wherever the link points, and
+// realpath containment cannot see a dangling link. Not under a lexical own
+// root -> true (refuse). A non-existing leaf in a real dir is fine.
+function sinkPathHasSymlink(target, payload) {
+  try {
+    const base = (payload && typeof payload.cwd === 'string' && payload.cwd) || process.cwd();
+    const abs = path.resolve(base, target.replace(/^['"]|['"]$/g, ''));
+    const sp = require('./lib/scratchpad.js');
+    const root = sp.ownScratchpadDirs(payload).find((r) => abs.startsWith(r + path.sep));
+    if (!root) return true;
+    let cur = root;
+    for (const part of path.relative(root, abs).split(path.sep)) {
+      cur = path.join(cur, part);
+      let st;
+      try { st = fs.lstatSync(cur); } catch (e) {
+        if (e && e.code === 'ENOENT') return false; // rest does not exist yet
+        return true;
+      }
+      if (st.isSymbolicLink()) return true;
+    }
+    return false;
+  } catch (_) { return true; }
+}
+
 // isAllowedPlainPushChain(command, cwd) -> bool. See the header block above.
 function isAllowedPlainPushChain(command, cwd, payload) {
   if (typeof command !== 'string' || !command.trim()) return false;
   // (e) strip ONE final own-scratchpad file redirect (keeping a trailing `2>&1`).
-  const sink = command.match(/\s+>>?\s*([^\s<>&|;'"`$\\]+)((?:\s+2>&1)?)\s*$/);
-  if (sink && payload && isScratchpadOrTmpPath(sink[1], { payload, ownOnly: true })) {
+  // `[ \t]` (not `\s`): a newline before `>` makes it a SEPARATE command, so
+  // a plain push, newline, then `> f` is not one push with a sink.
+  const sink = command.match(/[ \t]+>>?[ \t]*([^\s<>&|;'"`$\\]+)((?:[ \t]+2>&1)?)[ \t]*$/);
+  if (sink && payload && isScratchpadOrTmpPath(sink[1], { payload, ownOnly: true }) &&
+      !sinkPathHasSymlink(sink[1], payload)) {
     command = command.slice(0, sink.index) + sink[2];
   }
   const split = splitSegmentsDetailed(command);
