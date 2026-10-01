@@ -234,4 +234,22 @@ function runningAgents(transcriptPath, preLines) {
   return out;
 }
 
-module.exports = { scanTranscript, runningAgents, extractTexts, TERMINAL_NOTIFICATION_STATUS };
+// runningAgentsOrNull(transcriptPath, preLines) -> [{...}] | null. Like
+// runningAgents, but null ("unknown") when the count cannot be trusted: the scan
+// is unreadable, or the transcript is larger than the capped tail window and no
+// agent was found in it — a launch that sits BEFORE the window is invisible, so
+// an empty result there is "unknown", not "0 running" (L34 field: DISPATCH NOW
+// said "0 running" while a pre-window agent was still pending).
+function runningAgentsOrNull(transcriptPath, preLines) {
+  const out = runningAgents(transcriptPath, preLines);
+  if (out === null) return null;
+  if (out.length === 0) {
+    try {
+      const { MAX_TAIL_BYTES } = require('./transcript-tail.js');
+      if (require('fs').statSync(transcriptPath).size > MAX_TAIL_BYTES) return null;
+    } catch (_) { return null; }
+  }
+  return out;
+}
+
+module.exports = { scanTranscript, runningAgents, runningAgentsOrNull, extractTexts, TERMINAL_NOTIFICATION_STATUS };

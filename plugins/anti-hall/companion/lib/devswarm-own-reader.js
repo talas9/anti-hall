@@ -155,4 +155,42 @@ function ownReaderUnread(home, cwd, id, entry, rawUnread) {
   return delta > 0 ? Math.max(0, raw - delta) : raw;
 }
 
-module.exports = { ownReaderDelta, ownReaderUnread };
+// ownReaderLiveUnread(home, cwd, id, entry) -> number | null.
+// LIVE re-read of THIS reader's own unread count (the same countFor primitive
+// `inbox tick` uses), for the Stop gate to confirm before it BLOCKS on a count
+// that came from the cached summary — a summary lags an ack by up to a turn
+// (L34 field: "1 unread, cached" blocked right after the Primary acked). null =
+// could not be determined (no declared own row, store unopenable, any read
+// error): the caller keeps the cached number, never a guessed 0. When the live
+// count is 0 the cached summary is refreshed too (best-effort).
+function ownReaderLiveUnread(home, cwd, id, entry) {
+  try {
+    const devswarmCli = require('../../scripts/devswarm.js');
+    const readerCursors = require('./reader-cursors.js');
+    const reader = readerCursors.readerKey(devswarmCli.deriveReaderNonce({ home, cwd }));
+    if (!reader) return null;
+    const storeHandle = require('./devswarm-unread.js').openStoreForUnread({ worktreePath: cwd, id, home });
+    if (!storeHandle) return null;
+    try {
+      const own = storeHandle.readerCursorRows(id).find((r) => r.ns === 'store' && r.reader === reader);
+      if (!own || !Number.isFinite(own.value)) return null;
+      const c = readerCursors.countFor(storeHandle, {
+        reader, partition: id, inboxPath: (entry && entry.inboxPath) || null, cursorPath: (entry && entry.cursorPath) || null, home,
+      });
+      if (c.unknown || !Number.isFinite(c.unread)) return null;
+      const liveTotal = storeHandle.messageCount(id);
+      if (!Number.isFinite(liveTotal)) return null;
+      const live = Math.max(c.unread, Math.max(0, liveTotal - own.value));
+      if (live === 0) {
+        try { require('./devswarm-store.js').deriveSummary(storeHandle, { home }); } catch (_) { /* best-effort refresh */ }
+      }
+      return live;
+    } finally {
+      try { storeHandle.close(); } catch (_) {}
+    }
+  } catch (_) {
+    return null;
+  }
+}
+
+module.exports = { ownReaderDelta, ownReaderUnread, ownReaderLiveUnread };

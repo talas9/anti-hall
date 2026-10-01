@@ -2170,7 +2170,9 @@ function gitVerdict(ev, d, cmd, heredocBodies, lastCdDir, useJev) {
         'anti-hall git-guard: BLOCKED. `git push` has an argument produced by a ' +
         'command substitution / backtick expansion, which can smuggle a --force ' +
         'flag past static inspection. Run the push with literal arguments (no ' +
-        '$( ) or backticks) so the force-push guard can verify it.'
+        '$( ) or backticks) so the force-push guard can verify it. If this is ' +
+        'message text (e.g. inside printf/echo written to a file), write that ' +
+        'file with the Write tool instead.'
       );
     }
   }

@@ -145,3 +145,40 @@ test('own id listed in devswarm.heldPartitions -> own descriptor\'s new unread S
     assert.match(r.json.reason, /\b2 unread\b/);
   } finally { h.cleanup(); }
 });
+
+// L34: the Stop gate must never BLOCK on a CACHED own-unread count without a
+// live re-read (field: "YOU (the Primary) have 1 unread (1 unread, cached)"
+// right after the Primary had acked). The cache here is deliberately stale
+// (says 1 unread, cursor above this reader's own position -> the cached path).
+function staleCache(home) {
+  const root = path.join(home, '.anti-hall', 'devswarm');
+  fs.writeFileSync(path.join(root, 'summaries', REPO_KEY + '.json'), JSON.stringify({
+    workspaces: { [OWN_ID]: { unread: 1, total: 9, cursor: 8 } }, archivedRegistryRows: [],
+  }));
+}
+
+test('L34: cache says 1 unread, LIVE says 0 (reader already acked) -> no block', () => {
+  const h = makeHome();
+  try {
+    writeGateSession(h.home, REPO_CWD, STARTED_AT);
+    seedOwn(h.home, { total: 7, floor: 1, ownReaderValue: 7 });
+    staleCache(h.home);
+    const r = testHookRaw(HOOK, JSON.stringify({ hook_event_name: 'Stop', session_id: 'sess-l34-zero' }), { home: h.home, env: PRIMARY_ENV });
+    assert.strictEqual(r.status, 0);
+    assert.strictEqual(r.json, null, `live 0 must not block; stdout=${r.stdout} stderr=${r.stderr}`);
+  } finally { h.cleanup(); }
+});
+
+test('L34: cache says 1 unread, LIVE says 1 -> still blocks', () => {
+  const h = makeHome();
+  try {
+    writeGateSession(h.home, REPO_CWD, STARTED_AT);
+    seedOwn(h.home, { total: 7, floor: 1, ownReaderValue: 6 });
+    staleCache(h.home);
+    const r = testHookRaw(HOOK, JSON.stringify({ hook_event_name: 'Stop', session_id: 'sess-l34-one' }), { home: h.home, env: PRIMARY_ENV });
+    assert.strictEqual(r.status, 0);
+    assert.ok(r.json, `stdout must be JSON; stdout=${r.stdout} stderr=${r.stderr}`);
+    assert.strictEqual(r.json.decision, 'block');
+    assert.match(r.json.reason, /\b1 unread\b/);
+  } finally { h.cleanup(); }
+});

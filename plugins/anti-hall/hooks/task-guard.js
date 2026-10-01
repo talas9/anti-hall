@@ -168,8 +168,8 @@ function main() {
   if (actionable.length >= 1) {
     if (DD.enabled()) {
       let running = null;
-      try { running = require('./lib/agent-scan.js').runningAgents(transcriptPath); } catch (_) { running = null; }
-      demand = DD.evaluate({ actionable, knownIds: [...taskMap.keys()], inProgressIds: openTasks.filter((t) => /in[-_]?progress/i.test(t.status || '')).map((t) => t.id), running: running || [] });
+      try { running = require('./lib/agent-scan.js').runningAgentsOrNull(transcriptPath); } catch (_) { running = null; }
+      demand = DD.evaluate({ actionable, knownIds: [...taskMap.keys()], inProgressIds: openTasks.filter((t) => /in[-_]?progress/i.test(t.status || '')).map((t) => t.id), running });
     } else {
       // Setting off: legacy blanket rule.
       demand = { fire: !haveAgents, dispatch: actionable };

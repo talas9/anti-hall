@@ -68,9 +68,13 @@ function taskRefs(text) {
 
 // evaluate({ actionable, knownIds, inProgressIds, running, cap }) ->
 //   { fire, dispatch: [task], covered: [id], unmapped, running, cap }
-// running: [{ description }] from agent-scan.runningAgents (null => treated as []).
+// running: [{ description }] from agent-scan.runningAgentsOrNull. null = the
+// running-agent count is UNKNOWN: never fire on a count that might be a wrong 0.
 function evaluate(opts) {
   const actionable = (opts && opts.actionable) || [];
+  if (opts && opts.running === null) {
+    return { fire: false, unknown: true, dispatch: [], covered: [], unmapped: 0, running: 0, cap: 0 };
+  }
   const running = (opts && Array.isArray(opts.running)) ? opts.running : [];
   const cap = (opts && Number.isFinite(opts.cap) && opts.cap > 0) ? opts.cap : configuredCap();
   const known = new Set(((opts && opts.knownIds) || actionable.map((t) => t.id)).map(String));

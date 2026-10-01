@@ -245,8 +245,8 @@ function freshnessNote(payload) {
     const actionable = classifyOpen(open, state.taskMap);
     if (actionable.length >= 1 && DD.enabled()) {
       let running = null;
-      try { running = require('./lib/agent-scan.js').runningAgents(tp, lines); } catch (_) { running = null; }
-      const res = DD.evaluate({ actionable, knownIds: [...state.taskMap.keys()], inProgressIds: open.filter((t) => /in[-_]?progress/i.test(t.status || '')).map((t) => t.id), running: running || [] });
+      try { running = require('./lib/agent-scan.js').runningAgentsOrNull(tp, lines); } catch (_) { running = null; }
+      const res = DD.evaluate({ actionable, knownIds: [...state.taskMap.keys()], inProgressIds: open.filter((t) => /in[-_]?progress/i.test(t.status || '')).map((t) => t.id), running });
       if (res.fire) {
         // Jev dispatchTier (advisory, default on): "→ <tier> (<conf>)" per task
         // from a CACHED verdict only (never a network wait here); off / shadow /
@@ -261,6 +261,8 @@ function freshnessNote(payload) {
         if (foot) out += ' ' + foot;
         if (tier) { try { tier.commit(); } catch (_) {} }
         demandShown = res.dispatch.length;
+      } else if (res.unknown) {
+        out += 'Background-agent running-agent count unknown (transcript window too short to prove none are in flight): check before dispatching more. ';
       }
     }
 

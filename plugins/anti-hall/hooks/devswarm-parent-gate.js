@@ -172,7 +172,7 @@ const { readActiveCache } = require('../companion/lib/devswarm-archived-cache.js
 // on an idle-but-alive child. CONTENT, not age, is the only signal that
 // distinguishes real neglect from noise).
 const { isNoiseText } = require('../companion/lib/devswarm-noise.js');
-const { ownReaderDelta } = require('../companion/lib/devswarm-own-reader.js');
+const { ownReaderDelta, ownReaderLiveUnread } = require('../companion/lib/devswarm-own-reader.js');
 // primaryWorkspaceId/worktreeHash: the SAME per-worktree Primary-id convention
 // devswarm-parent-inbox.js and the ingest daemon already use (#34 parity — the
 // Primary's OWN unread, resolved below via readOwnUnread).
@@ -712,6 +712,14 @@ function readOwnUnread(home, cwd, repoKey) {
       } else {
         unread = delta > 0 ? Math.max(0, rawUnread - delta) : rawUnread;
         staleOwnCache = false; ownSource = 'cache';
+        // L34: never BLOCK on a cached own-unread count — re-read the live count
+        // first (same primitive as `inbox tick`). Live 0 -> no block (and the
+        // summary is refreshed); live N -> that number; undeterminable (null)
+        // -> keep the cached count (fail-closed, unchanged).
+        if (unread > 0) {
+          const liveNow = ownReaderLiveUnread(home, top, id, entry);
+          if (liveNow !== null) { unread = liveNow; ownSource = 'live'; }
+        }
       }
     }
     const urgencyMax = (unread > 0 && entry && entry.urgencyMax) ? entry.urgencyMax : null;

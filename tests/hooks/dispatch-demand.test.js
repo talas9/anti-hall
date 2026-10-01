@@ -342,3 +342,50 @@ test('SETTING guards.maxParallelDispatch=1: one running (unmapped) agent -> no d
       'cap=1 with one already running -> no demand for the next task');
   } finally { h.cleanup(); }
 });
+
+// ---- L34: running-agent count must come from durable evidence, never a guessed 0 ----
+// Field (tf3-scanner, 0.120.7): right after /reload-plugins the line said
+// "DISPATCH NOW … (0 running, cap 14)" while an agent spawned BEFORE the reload
+// was still running. The count is transcript-derived (agent-scan), not
+// plugin-version-keyed; the verified way to read 0 wrongly is the launch
+// tool_result sitting before the capped 1.5MB tail window (or an unreadable
+// scan collapsing to []).
+function fillerEntry(bytes) {
+  return { type: 'user', timestamp: iso(8), message: { role: 'user', content: [{ type: 'text', text: 'x'.repeat(bytes) }] } };
+}
+
+test('L34: agent launched BEFORE the tail window (still pending) -> count unknown, NO "DISPATCH NOW (0 running)"', () => {
+  const h = makeHome();
+  try {
+    const tp = h.writeTranscript([
+      ...agentLaunch('toolu_a1', 'abcdef123456', 'long-running reviewer'),
+      fillerEntry(1.7 * 1024 * 1024),
+      ...createTasks(['write the docs'], 1),
+    ]);
+    const r = testHook(TRACKER, trackerPayload(tp), { home: h.home, env: Object.assign({}, NO_DEDUPE, HIGH_CAP) });
+    assert.strictEqual(r.status, 0);
+    assert.doesNotMatch(ctx(r), /DISPATCH NOW/, ctx(r));
+    assert.match(ctx(r), /running-agent count unknown/, ctx(r));
+  } finally { h.cleanup(); }
+});
+
+test('L34: agent launched in-window and pending is counted regardless of plugin version path', () => {
+  const h = makeHome();
+  try {
+    const tp = h.writeTranscript([
+      ...agentLaunch('toolu_a1', 'abcdef123456', 'reviewer on #1'),
+      ...createTasks(['write the docs', 'second thing'], 1),
+    ]);
+    for (const root of ['/x/cache/anti-hall/0.120.7', '/x/cache/anti-hall/0.120.8']) {
+      const r = testHook(TRACKER, trackerPayload(tp), { home: h.home, env: Object.assign({}, NO_DEDUPE, HIGH_CAP, { CLAUDE_PLUGIN_ROOT: root }) });
+      assert.match(demandLine(ctx(r)), /\(1 running, cap 16\)/, ctx(r));
+    }
+  } finally { h.cleanup(); }
+});
+
+test('L34: transcript unreadable by the scan -> evaluate() reports unknown, never fires', () => {
+  const DD = require('../../plugins/anti-hall/hooks/lib/dispatch-demand.js');
+  const res = DD.evaluate({ actionable: [{ id: '1', content: 'a' }], knownIds: ['1'], running: null, cap: 14 });
+  assert.strictEqual(res.fire, false);
+  assert.strictEqual(res.unknown, true);
+});

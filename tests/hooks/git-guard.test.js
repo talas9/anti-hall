@@ -34,7 +34,7 @@ function run(command) {
 //   REMAP    -> '-c trailer.*.key=`'                  (Rule 1, trailer-key remap)
 const REASON = {
   FORCE: /Force push detected/,
-  CMDSUBST: /command substitution \/ backtick/,
+  CMDSUBST: /command substitution \/ backtick[\s\S]*write that file with the Write tool instead/,
   COMMIT: /AI\/assistant self-credit trailer/,
   REMAP: /trailer\.\*\.key=/,
   FILE: /Commit message \(via `-F`\/`--file`/,
