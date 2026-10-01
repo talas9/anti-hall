@@ -100,8 +100,18 @@ function stripQuoted(text) {
   let t = String(text || '');
   t = t.replace(/```[\s\S]*?```/g, (m) => m.replace(/[^\n]/g, ' '));
   t = t.replace(/^[ \t]*>.*$/gm, (m) => ' '.repeat(m.length));
-  t = t.replace(/”[^”\n]{0,400}”|“[^”\n]{0,400}”/g, (m) => ' '.repeat(m.length));
-  t = t.replace(/`[^`\n]{0,400}`/g, (m) => (/\/(?:compact|clear|new)\b/i.test(m) ? m : ' '.repeat(m.length)));
+  t = t.replace(/”[^”\n]{0,400}”|“[^”\n]{0,400}”|"[^"\n]{0,400}"/g, (m) => ' '.repeat(m.length));
+  // An inline-code span naming /compact|/clear|/new stays intact ONLY as an
+  // instruction: right after an instruction verb ("run `/compact`") or opening
+  // its own line (optionally bulleted). Anywhere else ("the `/compact focus:`
+  // line no longer counts") it is a mention and is blanked like any other span.
+  t = t.replace(/`[^`\n]{0,400}`/g, (m, off) => {
+    if (!/\/(?:compact|clear|new)\b/i.test(m)) return ' '.repeat(m.length);
+    const before = t.slice(Math.max(0, off - 40), off);
+    const instruction = /(?:^|\n)[ \t]*(?:[-*+]|\d+[.)])?[ \t]*$/.test(before) ||
+      /\b(?:run|type|use|do|then|now|recommend(?:ed)?|suggest(?:ed)?)\s*:?\s*$/i.test(before);
+    return instruction ? m : ' '.repeat(m.length);
+  });
   // Boundary-aware so a contraction's apostrophe (“don't”, “it's”) is never
   // mistaken for an opening quote: the opening quote must be preceded by
   // start-of-string/whitespace/an opening bracket, and the closing quote

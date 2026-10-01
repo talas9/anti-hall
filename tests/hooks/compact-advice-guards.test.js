@@ -481,3 +481,36 @@ test('L22 e2e: nag emitted -> agent prints mandated footer -> next user turn -> 
   fs.appendFileSync(tp, JSON.stringify(user('thanks, next: run the build')) + '\n');
   assert.strictEqual(blocked(testHook(PRE, prePayload(tp, 'Bash', BASH_WORK), { home: h.home })), null, 'next turn');
 }));
+
+// ------------------------------------------------- L23 mention vs recommendation
+test('findAdvice: L23 — mentions (straight/curly quotes, inline code, fenced block, blockquote) do not count', () => {
+  const reported = 'Only an explicit "SAFE TO COMPACT" counts now; the nag-mandated footer and the `/compact focus:` line no longer do.';
+  for (const opts of [undefined, { declarationsOnly: true }]) {
+    assert.strictEqual(advice.findAdvice(reported, opts).length, 0);
+    assert.strictEqual(advice.findAdvice('The phrase "good point to /compact" is what the nag writes.', opts).length, 0);
+    assert.strictEqual(advice.findAdvice('The phrase “SAFE TO COMPACT” is a declaration.', opts).length, 0);
+    assert.strictEqual(advice.findAdvice('The phrase `SAFE TO COMPACT` is a declaration.', opts).length, 0);
+    assert.strictEqual(advice.findAdvice('Example:\n```\nSAFE TO COMPACT\n```\ndone', opts).length, 0);
+    assert.strictEqual(advice.findAdvice('> SAFE TO COMPACT\nquoted above', opts).length, 0);
+  }
+  assert.strictEqual(advice.findAdvice('Mention: the `/compact` command and then `/compact focus: x` are quoted.').length, 0);
+});
+
+test('findAdvice: L23 — real recommendations still match; RETRACT still clears', () => {
+  assert.ok(advice.findAdvice('Done.\nSAFE TO COMPACT').length);
+  assert.ok(advice.findAdvice('Yes, you can safely compact now. Safe to compact now.').length);
+  assert.ok(advice.findAdvice('This is a good point to /compact.').length);
+  assert.ok(advice.findAdvice('Run `/compact focus: x`').length);
+  assert.ok(advice.findAdvice('Next:\n`/compact focus: x`').length);
+  assert.ok(advice.activeDeclaration('SAFE TO COMPACT').phrase);
+  assert.strictEqual(advice.activeDeclaration('SAFE TO COMPACT\nRETRACT SAFE TO COMPACT'), null);
+});
+
+test('Stop: L23 — the reported reply that quotes the phrase is allowed at 50% context', () => withHome((h) => {
+  const tp = h.writeTranscript([
+    user('explain the fix'), say('working', 50), toolUse('Write'), toolResult(),
+    say('Only an explicit "SAFE TO COMPACT" counts now; the nag-mandated footer and the `/compact focus:` line no longer do.', 50),
+  ]);
+  const r = testHook(STOP, stopPayload(tp), { home: h.home, env: ENV });
+  assert.strictEqual(blocked(r), null, r.stdout);
+}));
