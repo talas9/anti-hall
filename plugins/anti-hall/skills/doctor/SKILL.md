@@ -27,6 +27,7 @@ changes nothing.
   `subagent_type:"general-purpose"` → exit 2) and allows a benign spawn with no model and
   no mechanical signals (exit 0); omc-detect.js (the OMC-deference shared helper consumed
   by task-guard / tasklist-guard) is checked for presence + syntax validity.
+- **Phantom Primary rows:** report-only detection of Primary registrations keyed by a submodule cwd; only `--repair` archives them (nothing is deleted).
 - **Statusline:** whether a statusLine is installed and in which scope.
 - **DevSwarm RUNTIME health** (when the DevSwarm gate is active — same gate as the
   liveness supervisor section): store/journal health (sqlite `quick_check` via an

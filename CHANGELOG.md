@@ -6,7 +6,9 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
-## Unreleased
+## 0.120.0 (2026-10-01)
+
+Fixes from the second cross-project peer bug sweep (Primaries plus their workspaces), three rounds of adversarial security review of the command/git/edit guards, and DevSwarm identity, inbox and mesh fixes.
 
 ### Fixed
 
