@@ -104,14 +104,15 @@ its own purposes).
      any reason, the helper does **not** retry with `--accept-command` — it
      reports the exact command for a human to run. Reported as
      `harnessRegistered: {attempted, ok, detail}` on the JSON status line and
-     in the human summary. **On success, tell the user to RESTART Claude Code
-     (exit and resume the session) to load it — field-verified (2026-09-24):
-     after `claude plugin update` the registry updates immediately, but a
-     session ALREADY RUNNING keeps executing hooks from the OLD install path
-     until it restarts (`claude plugin update --help` itself says "restart
-     required to apply"). `/reload-plugins` is NOT sufficient for this path —
-     unlike a fresh cache-dir sync (step 5 above), which `/reload-plugins`
-     alone can pick up — never tell the user it might be enough here.**
+     in the human summary. **On success, tell the user to run `/reload-plugins` to load it —
+     field-verified (2026-10-01): after `claude plugin update`, a plain
+     `/reload-plugins` (no restart) ran hooks and showed skill base directories
+     from the new version dir and the wake-watch Monitor handed off to it.
+     (History: `claude plugin update --help` says "restart required to apply" and
+     a 2026-09-24 test saw a reload not suffice; superseded.) Restart Claude Code
+     only as the fallback: if a hook or skill path still shows the old version
+     after the reload, or to re-run SessionStart-only injections (a reload may
+     not re-run SessionStart hooks).**
      `installed_plugins.json` itself is still never written directly by this
      helper.
    - **Reconcile (auto, DevSwarm-session-only, fail-open — `reconcilePostUpdate`,
@@ -211,20 +212,21 @@ Modes:
    force-pull on the user's behalf. Tell them to resolve it in
    `~/.claude/plugins/marketplaces/anti-hall/`.
 5. On a successful update, end with the message that matches `action` (the same
-   rule `version-alert` and `doctor` state: `/reload-plugins` ONLY when the plugin
-   cache alone changed; a full RESTART whenever the harness registry
-   (`installed_plugins.json`) now names a newer version than the running session):
+   rule `version-alert` and `doctor` state: `/reload-plugins` first in every case; a
+   full restart only as the fallback when a hook or skill path still shows the old
+   version afterwards, or to re-run SessionStart-only injections):
 
    - `action: run /reload-plugins` (cache synced, no registry change):
 
-     > Run **/reload-plugins** now to load `<version>` in this session (rarely, a
-     > harness build may require a restart instead — if the new version is not
-     > reflected after reloading, restart Claude Code). Statusline + hooks pick up
-     > changes automatically; /reload-plugins refreshes the skill list and version
-     > label.
-   - `action: RESTART Claude Code …` (harness registry updated — see the harness-registration bullet above):
-     tell the user to **restart Claude Code** (exit and resume the session) to load
-     `<version>`; `/reload-plugins` is not enough.
+     > Run **/reload-plugins** now to load `<version>` in this session (if a hook
+     > or skill path still shows the old version afterwards, restart Claude Code;
+     > a restart is also how to re-run SessionStart-only injections, which a reload
+     > may not). Statusline + hooks pick up changes automatically; /reload-plugins
+     > refreshes the skill list and version label.
+   - `action: run /reload-plugins — the harness now registers <version> …` (harness registry updated — see the harness-registration bullet above):
+     same message; the registry is already updated, so the reload loads `<version>`.
+   - `action: run manually: claude plugin update … — then run /reload-plugins …`:
+     relay the command for the human to run, then the reload.
 6. After pulling a new plugin version, run
    `node plugins/anti-hall/scripts/migrate-state.js` once per repo (idempotent,
    safe to re-run) to fold any legacy root-level `.anti-hall-progress.md` /
@@ -309,7 +311,9 @@ disk per event (so in-place edits take effect on the next event), but the entry 
 installed to a new cache dir remains invisible until `/reload-plugins` or a restart.
 `/reload-plugins` is what refreshes the **skill list**, **version label**, and **cache-bound paths**.
 
-**Honest edge:** on some harness builds `/reload-plugins` may not pick up a brand-new
-version dir until a restart. If after `/reload-plugins` the new version is not reflected,
-the fallback is to **restart Claude Code**. Do not claim more than this — the update on
+**Honest edge:** field-verified 2026-10-01, `/reload-plugins` alone loaded a new
+version dir (hooks, skill base directories, Monitor hand-off). If after it a hook or
+skill path still shows the old version, the fallback is to **restart Claude Code**;
+a restart is also how to re-run SessionStart-only injections (a reload may not
+re-fire SessionStart hooks — not confirmed in the Claude Code docs). Do not claim more than this — the update on
 disk is real either way; only the in-session refresh path varies by harness build.

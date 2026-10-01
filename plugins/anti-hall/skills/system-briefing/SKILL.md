@@ -42,7 +42,7 @@ the guards fire?", use `doctor`.
 | ack / receipt | `read-primary` reads without advancing; the returned `inbox ack-primary <id> --receipt <rid>` acknowledges. |
 | stale anti-hall <v> | A workspace whose heartbeat records an older anti-hall build than this machine has; restart that session (not neglect). |
 | inbox grace | Fresh unread to a child is not nagged for `devswarm.inboxGraceSec` (120 s) unless it heartbeats first. |
-| harness registration | `installed_plugins.json`, the harness's record of which build to load; `update` refreshes it via `claude plugin update`, which needs a full RESTART (not `/reload-plugins`). |
+| harness registration | `installed_plugins.json`, the harness's record of which build to load; `update` refreshes it via `claude plugin update`, after which `/reload-plugins` loads the new build (restart only as the fallback). |
 | Primary seat | The Primary's mesh id (`primary-<hash>`, same partitions and cursors). A new session adopts it only when the holder has closed; while two sessions conflict, the other one's sends/acks/spawns/merges are refused until `devswarm.js primary takeover`. |
 | sender label | A message's `from`: a child sends as its workspace id, only the Primary checkout as `primary-<hash>`; old child labels map to the child via `sender-aliases.json`. |
 | twin / identity family | Several registry rows for one workspace (e.g. slug row + UUID row), grouped and retired together. |

@@ -7,9 +7,9 @@
 // 40 Stops were blocked in one session by an already-fixed old nudge, because
 // `installed_plugins.json` (harness-owned) was re-registered at the newer
 // version but the running session's hooks kept executing the OLD build until
-// a full restart — /reload-plugins does not pick this up (doctor.js's own
-// harness-registration check, `claude plugin update --help` documents
-// "restart required to apply", field-verified 2026-09-24).
+// a reload/restart (as of 2026-10-01 a plain /reload-plugins is enough — see
+// doctor.js's harness-registration check for the field evidence and the
+// superseded 2026-09-24 "restart required" finding).
 //
 // VERIFIED FIRST (before writing this file): can a running old hook actually
 // know a newer version is registered? YES — doctor.js already does exactly

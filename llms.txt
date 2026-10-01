@@ -35,7 +35,7 @@ workspaces (DevSwarm >= 2.5.3), owner-approved prune, message retention, screens
 ```
 
 Codex: `node plugins/anti-hall/codex/install-codex.js` (project) or `--global`. Update with
-`/anti-hall:update` (Claude) or the `anti-hall-update` skill (Codex), then `/reload-plugins` (or a restart when the update says the harness registry changed).
+`/anti-hall:update` (Claude) or the `anti-hall-update` skill (Codex), then `/reload-plugins` (Claude Code; restart only if a hook or skill path still shows the old version).
 
 ## Docs
 
@@ -134,7 +134,7 @@ Shared libraries (not hooks): `verify-first-core.js`, `coordinator-detect.js`, `
 | debt | Register and audit deliberate technical debt markers. |
 | handover | Minimal-but-lossless session handover for a fresh session. |
 | doctor | Health check and `--repair` (hooks present, guards fire, companions, DevSwarm, split stores). |
-| update | Self-update, changelog delta, repairs, then `/reload-plugins` (or a restart when the harness registry changed). |
+| update | Self-update, changelog delta, repairs, then `/reload-plugins` (restart only if a hook or skill path still shows the old version). |
 | activate | One-shot first-run setup. |
 | install-statusline | Installs the two-line statusline. |
 | settings | Show/change any setting (`~/.anti-hall/settings.json`), including auto-handover. |
@@ -187,7 +187,7 @@ Shared libraries (not hooks): `verify-first-core.js`, `coordinator-detect.js`, `
 | scripts/capability-scan.js | Harness capability scan (see the update skill). |
 | scripts/harvest-debt.js | Backs the debt skill. |
 | scripts/migrate-state.js | State-layout migration CLI (see the update skill). |
-| skills/update/scripts/update.js | The updater (`--check`); re-execs the freshly pulled version for post-pull stages; re-registers the plugin with the harness (`claude plugin update`) and then asks for a RESTART. |
+| skills/update/scripts/update.js | The updater (`--check`); re-execs the freshly pulled version for post-pull stages; re-registers the plugin with the harness (`claude plugin update`) and then asks for a `/reload-plugins`. |
 | hooks/doctor.js | Doctor (`--repair`, `--quiet`). |
 | companion/mcp-reaper.js + install-reaper.js | Opt-in interval job killing orphaned MCP servers (macOS LaunchAgent / systemd user timer). |
 | companion/devswarm-supervisor.js + install-devswarm-supervisor.js | Opt-in DevSwarm sweep: liveness poke/escalate (never kills), app-DB sync, auto-archive, message retention, hourly housekeeping (child-gate/reaped sweeps), own log rotation. Installer dry-runs under tests or a temp HOME. |

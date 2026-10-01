@@ -98,7 +98,7 @@ test('doctor: installed_plugins.json already at the newest version -> OK, no war
   }
 });
 
-test('doctor: installed_plugins.json AHEAD of the running session\'s own version -> WARN to restart (not /reload-plugins)', () => {
+test('doctor: installed_plugins.json AHEAD of the running session\'s own version -> WARN to /reload-plugins first, restart only if it persists', () => {
   const { home, cleanup } = makeFakeHome();
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'antihall-doctor-harnessver-cwd-'));
   try {
@@ -113,9 +113,10 @@ test('doctor: installed_plugins.json AHEAD of the running session\'s own version
     const r = runDoctor({ home, cwd });
     assert.match(r.out, /installed_plugins\.json is registered at 9\.9\.9, but this session is still running/,
       'must name both the registered version and the version this session is actually running:\n' + r.out);
-    assert.match(r.out, /RESTART Claude Code/, 'must say RESTART, not merely suggest it:\n' + r.out);
-    assert.doesNotMatch(r.out, /\/reload-plugins is enough|or \/reload-plugins\)/,
-      'must never imply /reload-plugins alone is sufficient after a harness registry update:\n' + r.out);
+    assert.match(r.out, /run \/reload-plugins to load 9\.9\.9/, 'must recommend /reload-plugins first (field-verified 2026-10-01):\n' + r.out);
+    assert.match(r.out, /restart Claude Code/, 'must keep restart as the fallback:\n' + r.out);
+    assert.doesNotMatch(r.out, /\/reload-plugins is not enough/,
+      'the superseded "reload is not enough" claim must not return:\n' + r.out);
     assert.doesNotMatch(r.out, /has not re-registered this build/,
       'the registry WAS updated — this is the restart-needed case, not the not-registered case:\n' + r.out);
   } finally {

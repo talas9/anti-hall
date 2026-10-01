@@ -402,14 +402,14 @@ const HARNESS_REGISTER_TIMEOUT_MS = 20000;
 const HARNESS_REGISTER_CMD = 'claude plugin update anti-hall@anti-hall';
 
 // harnessAction(harnessRegistered, updated, latest) -> the status `action`.
-// A registration that was needed but failed never says "/reload-plugins": the
-// harness keeps loading the old build until the user registers and restarts.
+// A registration that was needed but failed says to run the register command
+// FIRST: until the harness registers the build, a reload cannot load it.
 function harnessAction(harnessRegistered, updated, latest) {
   if (harnessRegistered && harnessRegistered.ok) {
-    return 'RESTART Claude Code (exit and resume the session) — the harness now registers ' + latest + '; /reload-plugins is not enough';
+    return 'run /reload-plugins — the harness now registers ' + latest + ' (restart Claude Code only if a hook or skill path still shows the old version afterwards)';
   }
   if (harnessRegistered && harnessRegistered.attempted) {
-    return 'run manually: ' + HARNESS_REGISTER_CMD + ' — then RESTART Claude Code (exit and resume the session); /reload-plugins is not enough';
+    return 'run manually: ' + HARNESS_REGISTER_CMD + ' — then run /reload-plugins (restart Claude Code only if a hook or skill path still shows the old version afterwards)';
   }
   return updated ? 'run /reload-plugins' : 'already up to date';
 }
@@ -557,20 +557,19 @@ function harnessRegisterPostUpdate(opts) {
     }
     return {
       attempted: true, ok: true,
-      // Field-verified (2026-09-24): after `claude plugin update` the registry
-      // is updated immediately, but a SESSION ALREADY RUNNING keeps executing
-      // hooks from the OLD install path until it restarts — `claude plugin
-      // update --help` itself says "restart required to apply". /reload-plugins
-      // is NOT sufficient for this path (unlike a fresh cache-dir sync, which
-      // /reload-plugins alone can pick up) — never tell the user it might be.
-      detail: 'harness re-registered to ' + latest + ' — RESTART Claude Code (exit and resume the session) to load it; /reload-plugins is not enough after a harness registry update',
+      // Field-verified (2026-10-01): after `claude plugin update` the registry
+      // is updated immediately and a plain /reload-plugins (no restart) loads
+      // the new hooks, skills and Monitor. (History: `claude plugin update
+      // --help` says "restart required to apply" and a 2026-09-24 test saw a
+      // reload not suffice; superseded.) Restart is only the fallback.
+      detail: 'harness re-registered to ' + latest + ' — run /reload-plugins to load it (restart Claude Code only if a hook or skill path still shows the old version afterwards)',
     };
   } catch (e) {
     const stderr = e && (e.stderr || (e.output && e.output[2]));
     const msg = (stderr ? String(stderr) : (e && e.message) || String(e)).trim();
     return {
       attempted: true, ok: false,
-      detail: 'harness update failed — run manually: ' + cmdStr + ', then RESTART Claude Code (' + (msg.split('\n')[0] || 'unknown error') + ')',
+      detail: 'harness update failed — run manually: ' + cmdStr + ', then run /reload-plugins (' + (msg.split('\n')[0] || 'unknown error') + ')',
     };
   }
 }
@@ -2987,9 +2986,9 @@ function runCheck(opts) {
     ? ' [installed_plugins.json reports ' + lag.jsonVersion + ', cache shows ' + lag.cacheVersion
       + (compareVersions(lag.jsonVersion, lag.cacheVersion) < 0
         // registry BEHIND the cache: the harness never re-registered the build;
-        // /reload-plugins cannot fix that (same rule as harnessAction/doctor).
-        ? ' — run ' + HARNESS_REGISTER_CMD + ', then RESTART Claude Code; /reload-plugins is not enough]'
-        : ' — RESTART Claude Code to load the registered build; /reload-plugins is not enough]')
+        // /reload-plugins cannot fix that until it is registered (same rule as harnessAction/doctor).
+        ? ' — run ' + HARNESS_REGISTER_CMD + ', then /reload-plugins]'
+        : ' — run /reload-plugins to load the registered build (restart only if a hook or skill path still shows the old version)]')
     : '';
   return {
     installed,
@@ -3412,8 +3411,8 @@ function runUpdate(opts) {
       wakeMonitor,
       codexGraphifyHooksMigrate,
       harnessRegistered,
-      // A harness re-registration needs a full RESTART (see
-      // harnessRegisterPostUpdate); a plain cache sync only needs a reload.
+      // A harness re-registration and a plain cache sync both end in
+      // /reload-plugins (see harnessAction / harnessRegisterPostUpdate).
       action: harnessAction(harnessRegistered, updated, latest),
     },
     changelog,
@@ -3498,14 +3497,14 @@ function runPostPullReexec(opts) {
         // The harness re-registration may already have happened in THIS
         // (parent) process; the child then finds installed_plugins.json current
         // and reports "nothing to do". Keep the record of the one that ran —
-        // and its RESTART action — rather than letting the no-op overwrite it.
+        // and its registration action — rather than letting the no-op overwrite it.
         const mine = status.harnessRegistered;
         const theirs = parsed.status.harnessRegistered;
         if (mine && mine.attempted && !(theirs && theirs.attempted)) {
           merged.harnessRegistered = mine;
-          merged.action = status.action; // RESTART, or the manual command on failure
+          merged.action = status.action; // reload, or the manual command on failure
         } else if (theirs && theirs.attempted && typeof parsed.status.action === 'string') {
-          // The NEW version attempted the registration: its RESTART (or its
+          // The NEW version attempted the registration: its reload (or its
           // manual-command-on-failure) action replaces our reload one.
           merged.action = parsed.status.action;
         }

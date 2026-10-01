@@ -210,7 +210,7 @@ test('installedVersionLag: no cache dirs → null (nothing to disagree with)', (
   } finally { t.cleanup(); }
 });
 
-test('runCheck: installed_plugins.json BEHIND the cache surfaces a register+RESTART note (not /reload-plugins) in action', () => {
+test('runCheck: installed_plugins.json BEHIND the cache surfaces a register-then-/reload-plugins note in action', () => {
   const t = makeTree();
   try {
     writePluginJson(t.marketplaceDir, '0.107.0');
@@ -220,7 +220,7 @@ test('runCheck: installed_plugins.json BEHIND the cache surfaces a register+REST
     const exec = execStub({ fetch: '', 'rev-parse': 'origin/main\n', show: JSON.stringify({ version: '0.107.0' }) });
     const s = U.runCheck({ paths: pathsFor(t), exec });
     assert.strictEqual(s.installed, '0.107.0');
-    assert.strictEqual(s.action, "already up to date [installed_plugins.json reports 0.105.3, cache shows 0.107.0 — run claude plugin update anti-hall@anti-hall, then RESTART Claude Code; /reload-plugins is not enough]");
+    assert.strictEqual(s.action, "already up to date [installed_plugins.json reports 0.105.3, cache shows 0.107.0 — run claude plugin update anti-hall@anti-hall, then /reload-plugins]");
   } finally { t.cleanup(); }
 });
 

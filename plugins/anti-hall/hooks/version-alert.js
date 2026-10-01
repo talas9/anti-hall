@@ -261,8 +261,7 @@ function main() {
     // rather than re-deriving path logic) still names the OLD version, and
     // telling the user "/reload-plugins picks it up" is FALSE: doctor.js's
     // own harness-registration check documents that a harness registry lag
-    // needs `claude plugin update`, not a reload/restart, before a newer
-    // build actually loads. Fail-open: an unreadable/unknown harness version
+    // needs `claude plugin update` before a reload can load a newer build. Fail-open: an unreadable/unknown harness version
     // keeps today's behavior (assume reload/restart is enough) rather than
     // block on a fact we cannot verify.
     let harnessRegistered = true;
@@ -278,22 +277,21 @@ function main() {
 
     // Same rule as update.js's harnessAction and doctor.js: a registry
     // (installed_plugins.json) already newer than the running session needs a
-    // full RESTART (field-verified 2026-09-24); /reload-plugins only picks up
-    // a cache-only change, and is the try-first path when the registry
-    // version is unknown.
+    // /reload-plugins (field-verified 2026-10-01: a reload alone loaded the
+    // registered build's hooks and skills); a restart is only the fallback.
     const additionalContext = harnessRegistered
       ? (registryAhead
         ? `Tell the user now: anti-hall v${mirrored} is already downloaded (you are running v${running}) ` +
-          `and the Claude Code harness registry already names it — RESTART Claude Code (exit and resume the session) ` +
-          `to load it; /reload-plugins is not enough once the registry is newer than the running session ` +
+          `and the Claude Code harness registry already names it — run /reload-plugins to load it ` +
+          `(if a hook or skill path still shows v${running} afterwards, restart Claude Code — exit and resume the session) ` +
           `(Codex: restart Codex / start a fresh session).`
         : `Tell the user now: anti-hall v${mirrored} is already downloaded (you are running v${running}) ` +
-          `— run /reload-plugins (Claude; if the new version is not reflected afterwards, RESTART Claude Code) ` +
+          `— run /reload-plugins (Claude; if a hook or skill path still shows the old version afterwards, restart Claude Code) ` +
           `or restart Codex / start a fresh session (Codex) to pick it up.`) +
         (headline ? ` Highlight: ${headline}` : '')
       : `Tell the user now: anti-hall v${mirrored} is downloaded locally (you are running v${running}), but the ` +
         `Claude Code harness has not registered it yet — run /anti-hall:update (Claude; syncs the cache AND the ` +
-        `harness registration) or the anti-hall-update skill (Codex), then restart. /reload-plugins alone will not ` +
+        `harness registration) or the anti-hall-update skill (Codex), then /reload-plugins (Claude) or restart (Codex). A reload alone will not ` +
         `pick this up until the harness registers it.` +
         (headline ? ` Highlight: ${headline}` : '');
     emit(additionalContext);
@@ -335,8 +333,8 @@ function main() {
     const additionalContext =
       `Tell the user now: anti-hall v${cache.latest} is available (you are running v${running}) ` +
       `— run /anti-hall:update (Claude) or the anti-hall-update skill (Codex), then do what it ends with: ` +
-      `/reload-plugins (Claude) when only the plugin cache was synced, or a full RESTART of Claude Code when it ` +
-      `reports the harness registry changed; restart Codex / start a fresh session (Codex).`;
+      `/reload-plugins (Claude; restart Claude Code only if a hook or skill path still shows the old version afterwards); ` +
+      `restart Codex / start a fresh session (Codex).`;
     emit(additionalContext);
 
     if (sessionId) {

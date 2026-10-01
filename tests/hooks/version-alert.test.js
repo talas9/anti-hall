@@ -189,7 +189,7 @@ test('CASE 2 ALERT: mirrored newer version on disk => reload-only directive', ()
     assert.match(ctx, /restart Codex/);
     assert.doesNotMatch(ctx, /\/anti-hall:update/); // reload-only, not an update nudge
     // Registry version unknown (no installed_plugins.json): try-reload-first, restart if not reflected.
-    assert.match(ctx, /if the new version is not reflected afterwards, RESTART/);
+    assert.match(ctx, /if a hook or skill path still shows the old version afterwards, restart Claude Code/);
     assert.match(ctx, /Big new feature headline/); // cheap local changelog headline
   } finally { h.cleanup(); }
 });
@@ -355,9 +355,10 @@ test('CASE 2 HARNESS OK: cache mirrored AND installed_plugins.json already names
     assert.match(ctx, /already downloaded/i);
     assert.match(ctx, /\/reload-plugins/);
     assert.doesNotMatch(ctx, /\/anti-hall:update/);
-    // Registry newer than the running session => RESTART (same rule as update.js/doctor.js).
-    assert.match(ctx, /RESTART Claude Code/);
-    assert.match(ctx, /\/reload-plugins is not enough/);
+    // Registry newer than the running session => /reload-plugins first, restart as fallback (field-verified 2026-10-01).
+    assert.match(ctx, /run \/reload-plugins to load it/);
+    assert.match(ctx, /restart Claude Code/);
+    assert.doesNotMatch(ctx, /\/reload-plugins is not enough/);
   } finally { h.cleanup(); }
 });
 

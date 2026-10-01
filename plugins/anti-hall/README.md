@@ -73,7 +73,7 @@ Invoke as `/anti-hall:<name>`:
 | `install-statusline` | "install the statusline" | writes the statusline setting, wraps any existing one, backup/restore |
 | `doctor` | "is anti-hall working?" | live self-tests on every guard; `--repair` for safe auto-fixes |
 | `system-briefing` | "brief me on anti-hall", "what does X mean" | operator guide (terms, rules, verbs, settings) + live inventory of every hook/skill shipped |
-| `update` | "update anti-hall" | pulls latest, shows changelog delta, prompts `/reload-plugins` (or a restart when the harness registry changed) |
+| `update` | "update anti-hall" | pulls latest, shows changelog delta, prompts `/reload-plugins` (restart only if a hook or skill path still shows the old version) |
 | `flutter-debug` | debugging a running Flutter app | agent-driven hot-reload + visual-verification debug loop |
 | `activate` | first-time setup | one-shot idempotent install of statusline + model-routing state |
 | `simplify` | "simplify this" / "deslop" | behavior-preserving simplification with a measured `net: -N lines` score |

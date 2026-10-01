@@ -208,9 +208,17 @@ ok(`anti-hall plugin version ${version}`);
 //      is itself running (`version`, read above from THIS process's own
 //      plugin.json under ROOT) -> the harness registry was already updated,
 //      but the CURRENT session's hooks are still executing the OLD build
-//      because it has not restarted. Field-verified (2026-09-24): `claude
-//      plugin update --help` itself documents "restart required to apply" —
-//      /reload-plugins does NOT pick this up, only a full restart does.
+//      because it has not reloaded. Fix: /reload-plugins first, then a full
+//      restart only if it persists.
+//      FIELD EVIDENCE (2026-10-01, current): after `/reload-plugins` ALONE (no
+//      restart) on a 0.120.6 -> 0.120.7 registry update, PreToolUse hooks ran
+//      from .../cache/anti-hall/anti-hall/0.120.7/hooks/git-guard.js, the Skill
+//      tool's Base directory for system-briefing was .../0.120.7/skills/..., and
+//      the wake-watch Monitor handed itself off to 0.120.7.
+//      HISTORY (superseded 2026-10-01): `claude plugin update --help` says
+//      "restart required to apply" and a single field test on 2026-09-24 saw a
+//      reload not suffice; that drove the old "RESTART, /reload-plugins is not
+//      enough" wording.
 // Both are read-only — never part of the repair pass.
 try {
   const upd = require(path.join(ROOT, 'skills', 'update', 'scripts', 'update.js'));
@@ -221,7 +229,7 @@ try {
   if (upd.isSemver(harnessVersion) && upd.isSemver(newest) && upd.compareVersions(harnessVersion, newest) < 0) {
     warnl(`installed_plugins.json reports ${harnessVersion}, but ${newest} is available in cache/marketplace — the harness has not re-registered this build. Fix: claude plugin update anti-hall@anti-hall.`);
   } else if (upd.isSemver(harnessVersion) && upd.isSemver(version) && upd.compareVersions(version, harnessVersion) < 0) {
-    warnl(`installed_plugins.json is registered at ${harnessVersion}, but this session is still running ${version} — RESTART Claude Code (exit and resume the session) to load ${harnessVersion}; /reload-plugins is not enough after a harness registry update.`);
+    warnl(`installed_plugins.json is registered at ${harnessVersion}, but this session is still running ${version} — run /reload-plugins to load ${harnessVersion}; if this warning persists afterwards (a hook or skill path still shows ${version}), restart Claude Code (exit and resume the session).`);
   } else if (upd.isSemver(harnessVersion)) {
     ok(`installed_plugins.json harness registration is current (${harnessVersion}) and this session is running it`);
   }

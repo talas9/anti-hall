@@ -72,10 +72,10 @@ test('harnessRegisterPostUpdate: stale installed_plugins -> runs `claude plugin 
   assert.deepStrictEqual(calls[0], ['plugin', 'update', 'anti-hall@anti-hall']);
   assert.strictEqual(out.attempted, true);
   assert.strictEqual(out.ok, true);
-  assert.match(out.detail, /RESTART Claude Code/,
-    'field-verified: /reload-plugins does not pick up a harness registry update, only a real restart does');
-  assert.doesNotMatch(out.detail, /\/reload-plugins is enough|or \/reload-plugins\)/,
-    'must never imply /reload-plugins alone is sufficient after a harness registry update');
+  assert.match(out.detail, /run \/reload-plugins to load it/,
+    'field-verified 2026-10-01: /reload-plugins alone loads a harness registry update');
+  assert.match(out.detail, /restart Claude Code only if/, 'restart is only the fallback');
+  assert.doesNotMatch(out.detail, /\/reload-plugins is not enough/);
 });
 
 test('harnessRegisterPostUpdate: command failure is fail-open and reports the manual command (never throws)', () => {
@@ -202,32 +202,32 @@ function reexecFixture() {
 }
 function fakeChild(status) { return () => ({ status: 0, stdout: JSON.stringify({ status }) + '\n' }); }
 
-test('re-exec: the parent already re-registered -> the child\'s "nothing to do" never hides it; RESTART action kept', () => {
+test('re-exec: the parent already re-registered -> the child\'s "nothing to do" never hides it; reload action kept', () => {
   const fx = reexecFixture();
   try {
     const parentReg = { attempted: true, ok: true, detail: 'harness re-registered to 0.109.0 — RESTART' };
-    const local = { installed: '0.108.0', latest: '0.109.0', updated: true, harnessRegistered: parentReg, action: 'RESTART Claude Code …' };
+    const local = { installed: '0.108.0', latest: '0.109.0', updated: true, harnessRegistered: parentReg, action: 'run /reload-plugins — the harness now registers 0.109.0' };
     const { status } = U.runPostPullReexec({
       paths: fx.paths, status: local, env: {}, cwd: fx.root,
       spawnReexec: fakeChild({ harnessRegistered: { attempted: false, ok: false, detail: 'nothing to do' }, newStage: { ran: true }, action: 'already up to date' }),
     });
     assert.deepStrictEqual(status.harnessRegistered, parentReg);
-    assert.strictEqual(status.action, 'RESTART Claude Code …');
+    assert.strictEqual(status.action, 'run /reload-plugins — the harness now registers 0.109.0');
     assert.deepStrictEqual(status.newStage, { ran: true });
   } finally { fs.rmSync(fx.root, { recursive: true, force: true }); }
 });
 
-test('re-exec: an older parent without registration -> the NEW update.js registers and its RESTART action wins', () => {
+test('re-exec: an older parent without registration -> the NEW update.js registers and its reload action wins', () => {
   const fx = reexecFixture();
   try {
     const local = { installed: '0.107.1', latest: '0.108.0', updated: true, action: 'run /reload-plugins' };
     const childReg = { attempted: true, ok: true, detail: 'harness re-registered to 0.108.0 — RESTART' };
     const { status } = U.runPostPullReexec({
       paths: fx.paths, status: local, env: {}, cwd: fx.root,
-      spawnReexec: fakeChild({ harnessRegistered: childReg, action: 'RESTART Claude Code (exit and resume the session) — the harness now registers 0.108.0; /reload-plugins is not enough' }),
+      spawnReexec: fakeChild({ harnessRegistered: childReg, action: 'run /reload-plugins — the harness now registers 0.108.0 (restart Claude Code only if a hook or skill path still shows the old version afterwards)' }),
     });
     assert.deepStrictEqual(status.harnessRegistered, childReg);
-    assert.match(status.action, /^RESTART Claude Code/);
+    assert.match(status.action, /^run \/reload-plugins — the harness now registers/);
   } finally { fs.rmSync(fx.root, { recursive: true, force: true }); }
 });
 
@@ -250,19 +250,19 @@ test('P2a: `claude` not on PATH -> retries with CLAUDE_CODE_EXECPATH', () => {
   assert.strictEqual(out.ok, true);
 });
 
-test('P2a: no `claude` and no CLAUDE_CODE_EXECPATH -> failure whose action is the manual command + RESTART, never /reload-plugins', () => {
+test('P2a: no `claude` and no CLAUDE_CODE_EXECPATH -> failure whose action is the manual command first, then /reload-plugins', () => {
   const out = U.harnessRegisterPostUpdate({
     installedVersion: '1.0.0', latest: '1.1.0', env: {},
     execFileFn: () => { throw enoent(); },
   });
   assert.strictEqual(out.attempted, true);
   assert.strictEqual(out.ok, false);
-  assert.match(out.detail, /claude plugin update anti-hall@anti-hall, then RESTART/);
+  assert.match(out.detail, /claude plugin update anti-hall@anti-hall, then run \/reload-plugins/);
   const action = U.harnessAction(out, true, '1.1.0');
-  assert.match(action, /^run manually: claude plugin update anti-hall@anti-hall — then RESTART Claude Code/);
+  assert.match(action, /^run manually: claude plugin update anti-hall@anti-hall — then run \/reload-plugins/);
   assert.doesNotMatch(action, /^run \/reload-plugins/);
-  // A needed-and-succeeded registration says RESTART; nothing attempted keeps the reload action.
-  assert.match(U.harnessAction({ attempted: true, ok: true }, true, '1.1.0'), /^RESTART Claude Code/);
+  // A needed-and-succeeded registration says reload; nothing attempted keeps the plain reload action.
+  assert.match(U.harnessAction({ attempted: true, ok: true }, true, '1.1.0'), /^run \/reload-plugins — the harness now registers 1\.1\.0/);
   assert.strictEqual(U.harnessAction({ attempted: false, ok: false }, true, '1.1.0'), 'run /reload-plugins');
 });
 
