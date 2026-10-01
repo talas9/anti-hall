@@ -1690,9 +1690,70 @@ function redirectWords(raw) {
   return out;
 }
 
+// The full text of the command being scanned (set at scanCommand depth 0): a
+// `$NAME` redirect target is resolved against `NAME=<value>` assignments in it.
+let launcherCmdText = '';
+
+// A glob target (`?*[`) whose pattern could expand to a path under
+// <home>/.anti-hall/bin. A shell glob never spans `/`, so match segment by
+// segment: the first N pattern segments must each match the launcher dir's N
+// segments (case-insensitive) and the pattern must reach below the dir.
+function globCouldHitLauncher(p, cdDir) {
+  if (!/[?*[]/.test(p)) return false;
+  const home = safeHomedir();
+  if (!home) return false;
+  const norm = normalizeGuardPath(p.replace(/^\$\{HOME\}|^\$HOME(?![\w])/, home), cdDir);
+  if (!norm.startsWith('/')) return false;
+  const want = (home.replace(/\\/g, '/').replace(/\/+$/, '') + '/.anti-hall/bin').split('/').filter(Boolean);
+  const segs = norm.split('/').filter(Boolean);
+  if (segs.length <= want.length) return false;
+  return want.every((w, i) => {
+    let re = '';
+    const g = segs[i];
+    for (let k = 0; k < g.length; k++) {
+      const c = g[k];
+      if (c === '*') re += '[^/]*';
+      else if (c === '?') re += '[^/]';
+      else if (c === '[') {
+        const end = g.indexOf(']', k + 2);
+        if (end < 0) { re += '\\['; continue; }
+        let cls = g.slice(k + 1, end).replace(/\\/g, '\\\\');
+        if (cls[0] === '!') cls = '^' + cls.slice(1);
+        re += '[' + cls + ']';
+        k = end;
+      } else re += c.replace(/[.+^${}()|\\\]]/g, '\\$&');
+    }
+    try { return new RegExp('^' + re + '$', 'i').test(w); } catch (_) { return true; }
+  });
+}
+
+// `$NAME` / `${NAME}` (+ optional /suffix) target whose NAME is assigned in
+// the same command text (`NAME=`, `export NAME=`, `local NAME=`): resolve the
+// value (following `$OTHER` chains a few hops) and test value+suffix. An
+// unassigned variable is NOT a hit (`> $S/out.txt` is ordinary).
+function varTargetHitsLauncher(p, cdDir, hops) {
+  const m = /^\$(?:\{([A-Za-z_]\w*)\}|([A-Za-z_]\w*))(.*)$/s.exec(p);
+  if (!m || !launcherCmdText || (hops || 0) > 4) return false;
+  const name = m[1] || m[2], suffix = m[3];
+  const re = new RegExp('(?:^|[\\s;&|(])(?:(?:export|local|declare|typeset)[ \\t]+(?:-\\w+[ \\t]+)*)?' + name +
+    '=("[^"\\n]*"|\'[^\'\\n]*\'|[^\\s;&|)]*)', 'g');
+  let a;
+  while ((a = re.exec(launcherCmdText)) !== null) {
+    const value = a[1].replace(/^["']|["']$/g, '');
+    const c2 = (value + suffix).replace(/^\$\{HOME\}|^\$HOME(?![\w])/, safeHomedir() || '$HOME');
+    if (/^\$/.test(c2)) {
+      if (varTargetHitsLauncher(c2, cdDir, (hops || 0) + 1)) return true;
+      continue;
+    }
+    if (LAUNCHER_DIR_RE.test(c2) || hasAntiHallBinSegment(c2, cdDir) || globCouldHitLauncher(c2, cdDir)) return true;
+  }
+  return false;
+}
+
 function launcherTargetHit(p, cdDir, opts) {
   return LAUNCHER_DIR_RE.test(p) || hasAntiHallBinSegment(p, cdDir) ||
-    targetResolvesIntoLauncherDir(p, cdDir, opts);
+    targetResolvesIntoLauncherDir(p, cdDir, opts) ||
+    globCouldHitLauncher(p, cdDir) || varTargetHitsLauncher(p, cdDir);
 }
 
 function writesLauncherDir(tokens, ev, cdDir) {
@@ -1721,7 +1782,7 @@ function writesLauncherDir(tokens, ev, cdDir) {
       // a quote/backslash/expansion/brace (it could span whitespace or hide a
       // command) - then keep the whole rest of the line (fail closed).
       const word = after.replace(/^\s+/, '').split(/\s/, 1)[0];
-      if (word && (/^\$[A-Za-z_]\w*$/.test(word) || !/[`$(){}'"\\]/.test(word))) after = word;
+      if (word && (/^\$(?:\{[A-Za-z_]\w*\}|[A-Za-z_]\w*)(?:\/[^`$(){}'"\\]*)?$/.test(word) || !/[`$(){}'"\\]/.test(word))) after = word;
       if (after) targets.push(after);
       else if (nl < 0) targets.push(tokens[i + 1] ? tokens[i + 1].text : '');
     }
@@ -1855,6 +1916,7 @@ function callLiteralCommands(cmd) {
 // command/sudo/env/timeout in effectiveVerb.
 function scanCommand(cmd, depth, baseCwd) {
   const d = typeof depth === 'number' ? depth : 0;
+  if (d === 0) launcherCmdText = cmd;
   const segments = splitSegments(cmd);
 
   // Additive side-channel data for the `-F`/`--file` commit-message scan
