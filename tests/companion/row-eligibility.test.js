@@ -50,7 +50,7 @@ test('plain active row: nothing fires, reason eligible, liveness null unless ask
     writeDesc(home, 'workspaces', 'w1', { worktreePath: '/x/w1', sessionId: 's1' });
     const e = re.rowEligibility({ id: 'w1', worktreePath: '/x/w1' }, { home, env: envFor(home) });
     assert.deepStrictEqual(e, {
-      id: 'w1', archived: false, archivedBy: [], markerArchived: false, appArchived: false,
+      id: 'w1', archived: false, archivedBy: [], markerArchived: false, appArchived: false, appActive: false,
       status: 'active', present: true, held: false, ignored: false,
       live: null, busy: null, waitingOnUser: null, waitingQuestion: null, reason: 'eligible',
     });

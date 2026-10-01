@@ -112,6 +112,8 @@ function project(row, ctx, heldIds) {
     archivedBy,
     markerArchived,
     appArchived,
+    // the app DB positively says this row/worktree is ACTIVE (not merely "not archived")
+    appActive: !!(st && st.appActive),
     status: st ? st.status : 'unknown',
     present: st ? st.present : false,
     held,

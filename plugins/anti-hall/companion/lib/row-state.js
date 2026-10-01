@@ -104,7 +104,7 @@ function rowStateDetail(opts) {
   else if (o.registryRow) present = true;
   else present = activeDescriptorExists(o.home, id, F);
   const status = archived ? 'archived' : appArchived ? 'app-archived' : present ? 'active' : 'unknown';
-  return { status, archived, appArchived, present, appArchivedVia };
+  return { status, archived, appArchived, present, appArchivedVia, appActive: appDb === false };
 }
 
 // isRowArchived(opts) -> bool. Either archive kind — the question routing,

@@ -16864,7 +16864,7 @@ function cmdRoster(flags, ctx) {
           const d = readDescriptorPathState(path.join(ads.path, n)).descriptor;
           if (!d || String(d.id) !== aid || !d.worktreePath) continue;
           if (descriptorPhysicalOwnerKey(d) !== repoKey) continue;
-          const k = inst.primaryWorkspaceId(d.worktreePath);
+          const k = rosterMeshId(d.worktreePath);
           if (k && !archivedByWt.has(k)) archivedByWt.set(k, aid);
         } catch (_) { /* skip this descriptor */ }
       }
@@ -16872,12 +16872,12 @@ function cmdRoster(flags, ctx) {
   } catch (_) { /* fail-open: no fold, native rows project as before */ }
   for (const child of nativeChildren) {
     if (child.path && knownIds.has(inst.primaryWorkspaceId(child.path))) continue; // already represented via the store
-    const archivedId = child.path ? archivedByWt.get(inst.primaryWorkspaceId(child.path)) : null;
+    const archivedId = child.path ? archivedByWt.get(rosterMeshId(child.path)) : null;
     // The app's own DB saying this worktree is ACTIVE outranks a stale marker
     // (a path reused by a newer live workspace must never read archived).
     let appActive = false;
     if (archivedId) {
-      try { appActive = require('../companion/lib/devswarm-app-db.js').appArchivedVerdict({ home, env: ctx.env, id: null, worktreePath: child.path, now }) === false; } catch (_) { appActive = false; }
+      try { appActive = rosterElig.of({ id: '', worktreePath: child.path, repoKey }).appActive === true; } catch (_) { appActive = false; }
     }
     if (archivedId && !appActive) {
       const prior = workspaces.find((w) => w.id === archivedId);
