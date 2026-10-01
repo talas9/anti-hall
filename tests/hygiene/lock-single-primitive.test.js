@@ -5,7 +5,7 @@
 // that design and several shipped the same races (blind-unlink reclaim, an
 // empty mid-write holder read as stale, blind release). This scans
 // plugins/anti-hall (Claude + codex/ port) outside lock.js for lock code:
-//   - excl-create:  ANY O_EXCL create ('wx' flag or O_EXCL) — the lock-publish primitive;
+//   - excl-create:  ANY O_EXCL create ('wx'/'ax'/'wx+'/'ax+' flag or O_EXCL) — the lock-publish primitive;
 //   - link:         ANY linkSync — the write-then-link publish primitive;
 //   - unlink-lock:  unlinkSync on a line naming a lock (a hand-written stale
 //                   reclaim or blind release deletes the lock file directly).
@@ -29,7 +29,7 @@ const LOCKISH = /lock/i;
 // counted (not only lock-named lines) and the non-lock uses are allowlisted
 // with their reason; a direct unlink is only counted on a lock-named line.
 const PATTERNS = {
-  'excl-create': { re: /['"]wx['"]|\bO_EXCL\b/g, lockOnly: false },
+  'excl-create': { re: /['"][wa]x\+?['"]|\bO_EXCL\b/g, lockOnly: false },
   'link': { re: /\blinkSync\s*\(/g, lockOnly: false },
   'unlink-lock': { re: /\bunlinkSync\s*\(/g, lockOnly: true },
 };
