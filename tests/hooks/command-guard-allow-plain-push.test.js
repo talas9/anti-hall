@@ -704,3 +704,27 @@ test('leading cd joined by `;` and `&&` classify identically for add+commit', ()
     fs.rmSync(repo, { recursive: true, force: true });
   }
 });
+
+// Field replay (2026-10-01): a long commit message with parens, a version-like
+// token and hex ids was blocked in the `&&` form but the `;` form passed. The
+// message is NOT the cause: the blocked form also carries a PUSH (with `git
+// log` BEFORE it and `status --branch` after), the passing form has no push at
+// all (add/commit are never heavy). Pin both facts.
+test('field replay: message text never flips the verdict; the push is what differs', () => {
+  const repo = makeGitRepo();
+  try {
+    const msg = '"data: Model 3 VEH coverage for CAR1 - 0x213 with the 2025.20.8 two-byte layout (layout overrides), VEH routes for 0x20E 0x289 checked against Log A, remaining 66 ids classified with sender and length, regenerated DBCs and docs"';
+    const blocked = 'cd ' + repo + '; git add -A && git commit -q -m ' + msg + ' && git log --oneline -1 && git push -q origin main 2>&1 | tail -2; git status --short --branch | head -1';
+    const passed = 'cd ' + repo + '; git add -A; git commit -q -m ' + msg + '; git log --oneline -1';
+    assert.strictEqual(run(blocked, { cwd: repo }).status, 2);
+    assert.notStrictEqual(run(passed, { cwd: repo }).status, 2);
+    // Same chain with a trivial message: identical verdict (text is irrelevant).
+    assert.strictEqual(run(blocked.split(msg).join('"x"'), { cwd: repo }).status, 2);
+    // The `&&` join of the no-push form agrees with the `;` join.
+    assert.notStrictEqual(run('cd ' + repo + ' && git add -A && git commit -q -m ' + msg + ' && git log --oneline -1', { cwd: repo }).status, 2);
+    // A push-only chain with the same long message is allowed.
+    assert.notStrictEqual(run('cd ' + repo + ' && git add -A && git commit -q -m ' + msg + ' && git push -q origin main 2>&1 | tail -2', { cwd: repo }).status, 2);
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+});
