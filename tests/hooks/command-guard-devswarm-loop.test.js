@@ -197,3 +197,14 @@ test('git push: bare form + bounded filter allowed; env-assignment prefix stays 
     assert.ok(blocked('GIT_SSH_COMMAND="sh -c x" git push origin main', repo));
   } finally { fs.rmSync(repo, { recursive: true, force: true }); }
 });
+
+test('cd <dir> && for-loop of devswarm.js sends piped to `head -c N` is allowed; heavy verbs in the loop stay blocked', () => {
+  const dir = fs.mkdtempSync(path.join('/tmp', 'dsloop-cdhead-'));
+  try {
+    const abs = 'node /Users/talas9/.anti-hall/bin/devswarm.js';
+    assert.strictEqual(blocked(`cd ${dir} && for t in primary-6181f376 primary-0c66ac80; do ${abs} send --to $t --message-file /tmp/x.md | head -c 50; done`, dir), false);
+    assert.strictEqual(blocked(`cd ${dir} && for t in a b; do ${DS} send --to $t --message-file /tmp/x.md | head -50; done`, dir), false);
+    assert.ok(blocked(`cd ${dir} && for t in a; do npm test | head -c 50; done`, dir));
+    assert.ok(blocked(`cd ${dir} && for t in a; do ${DS} send --to $t --message-file /tmp/x.md; npm run build | head -c 5; done`, dir));
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});

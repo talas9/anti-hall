@@ -478,6 +478,15 @@ function isArchiveReadyFor(id, repoKey, home) {
   return !!(entry && entry.archive_ready === true);
 }
 
+// isBroadcastRow(row) -> true for a row of broadcast kind (store `mtype`, or an
+// NDJSON `type`/`kind` field). A broadcast is shared FYI traffic, not mail
+// addressed to one child: once that child is DONE (archive_ready) an unread
+// broadcast is not the Primary's neglect. A direct message is never matched.
+function isBroadcastRow(row) {
+  if (!row || typeof row !== 'object') return false;
+  return row.mtype === 'broadcast' || row.type === 'broadcast' || row.kind === 'broadcast';
+}
+
 // findGitToplevel used to live here as a local pure-fs walk-up (byte-for-byte
 // mirrored across 6 hook files — Phase 2 mesh redesign, B3). It is retired:
 // readOwnUnread below now resolves `top` via companion/lib/identity.js's
@@ -1323,6 +1332,11 @@ function main() {
     // — only a row this Primary can prove is its own recent send is ever
     // eligible for the grace label below.
     let hadStoreOnlyRealRows = false;
+    // doneChild: the Primary ruled this child done (archive_ready, see
+    // isArchiveReadyFor). Its unread BROADCAST rows are not neglect (direct
+    // rows still count). Never the Primary's own descriptor; fail-closed false.
+    let doneChild = false;
+    if (!isOwnDescriptor) { try { doneChild = isArchiveReadyFor(d.id, dKey, home); } catch (_) { doneChild = false; } }
     try {
       const u = readUnreadMessages(d.inboxPath, d.cursorPath);
       if (!u || !u.known) {
@@ -1422,6 +1436,7 @@ function main() {
         for (const row of u.rows) {
           if (row === null) { realUnread++; unreadAgeUnknown = true; continue; } // unparseable -> fail open (real)
           if (isNoiseText(row.message)) continue; // positively-classified noise -> excluded
+          if (doneChild && isBroadcastRow(row)) continue; // broadcast to a done child: not neglect
           {
             const rts = unreadRowTs(row);
             if (rts === null) unreadAgeUnknown = true;
@@ -1526,6 +1541,7 @@ function main() {
             let storeRealRowsAllOwnSend = true;
             for (const row of union.storeOnlyUnreadRows) {
               if (isNoiseText(row && row.body)) continue;
+              if (doneChild && isBroadcastRow(row)) continue; // broadcast to a done child: not neglect
               storeRealRows++;
               // SENDER FILTER REMOVED (for COUNTING) — see the matching
               // NDJSON-tier comment above (~:1190): a mesh-direct row this
@@ -1698,6 +1714,7 @@ function main() {
       // session is provably running" and "not alerting because it is archived"
       // apart from "never had a stale verdict at all".
       idleAlive,
+      done: doneChild,
       archived,
       // appArchived: REPORT-ONLY provenance, same purpose as `archived` above —
       // "not alerting because the DevSwarm app itself says this workspace is
@@ -1920,12 +1937,18 @@ function main() {
     // family whose ONLY store-only real rows are the Primary's own recent
     // sends is left eligible for grace, same as a native-inbox send.
     let familyHadStoreOnlyRealRows = false;
+    // familyAllDoneOrIdle: every live member is done (archive_ready) or an idle
+    // live session — drives the "archive done children" hint in the escalation.
+    let familyAllDone = true;
+    let familyAllDoneOrIdle = true;
     for (const m of members) {
       if (m && (m.held || (famIsChild && (m.archived || m.appArchived || m.archiveIgnored)))) {
         if (Number.isFinite(m.realUnread) && m.realUnread > 0) archivedMemberUnread += m.realUnread;
         continue;
       }
       liveMembers += 1;
+      if (!m.done) familyAllDone = false;
+      if (!(m.done || (m.idleAlive && !m.busy && !m.waitingOnUser))) familyAllDoneOrIdle = false;
       if (m.unreadAgeUnknown) familyAgeUnknown = true;
       if (m.busy) familyBusy = true;
       if (m.waitingOnUser) familyWaitingOnUser = true;
@@ -2080,6 +2103,7 @@ function main() {
       for (const m of waitingMembers) { if (m.waitingQuestion) wq[String(m.id)] = m.waitingQuestion; }
       if (Object.keys(wq).length) entry.waitingQuestions = wq;
     }
+    if (liveMembers > 0 && famIsChild && familyAllDoneOrIdle) entry.doneOrIdle = true;
     if (busyButStaleMail) entry.busyStaleAgeMin = Math.max(1, Math.round(familyOldestUnreadAgeMs / 60000));
     if (foreignProject) entry.foreignProject = true;
     if (worktreeGone) entry.worktreeGone = true;
@@ -2685,6 +2709,7 @@ function buildReason(blocking, ownId, unanswered, escalateTimes, truncated, qEsc
   body += buildInformationalSegment(unansweredInformational);
   body += buildWaitingOnInputSegment(blocking, reasonHome);
 
+  const flaggedChildren = blocking.filter((b) => b.id !== ownId && !b.foreignProject);
   if (escalateTimes) {
     // Standalone escalation wording (requirement D) — deliberately NOT the
     // normal nag body below: forced-acknowledging the same unresolved
@@ -2695,6 +2720,9 @@ function buildReason(blocking, ownId, unanswered, escalateTimes, truncated, qEsc
       'forced-acknowledged ' + escalateTimes + ' times with no observed resolution' +
       (hasIntent ? ' (a stated intent was on file for this exact condition, but the absolute backstop was still reached)' : '') +
       ' — a human should look. This will not repeat automatically after this message. ' +
+      (flaggedChildren.length > 0 && flaggedChildren.every((b) => b.doneOrIdle)
+        ? 'Every flagged child is done or idle: archive them (`devswarm.js archive <id>`) instead of acknowledging again. '
+        : '') +
       'Escape hatch: the user may direct a skip via ~/.anti-hall/skip.json ("devswarm-parent-gate").';
     return body;
   }

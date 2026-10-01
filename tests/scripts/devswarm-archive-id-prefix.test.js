@@ -198,3 +198,67 @@ test('archive verb (via cli.run) rejects a "/"-bearing id at the dispatcher gate
     assert.strictEqual(r.result.error, 'invalid or missing workspace id');
   } finally { rm(W); rm(home); }
 });
+
+// ---------------------------------------------------------------------------
+// (6) MESH ID (`primary-<hash>`, what `send --to` / the roster show) resolves
+// through the same registry join as `send --to`.
+// ---------------------------------------------------------------------------
+function seedOneWithMesh(home, W, id) {
+  const repoKey = repokey.repoKeyForWorktree(W);
+  const top = inst.resolveWorktree(W);
+  const ctx = { home, cwd: W, env: { HOME: home }, backend: BACKEND };
+  const desc = { id, worktreePath: top, sessionId: 'sess-' + id, ownerKey: repoKey, repoKey };
+  seedReg(home, repoKey, desc); writeDesc(home, id, desc);
+  return { ctx, repoKey, meshId: inst.primaryWorkspaceId(top) };
+}
+
+test('archive <meshId> resolves to the single workspace of that worktree and archives it', () => {
+  const home = tmpHome();
+  const W = makeGitRepo('mesh-one');
+  try {
+    const { ctx, repoKey, meshId } = seedOneWithMesh(home, W, UUID_C);
+    assert.match(meshId, /^primary-/);
+    const r = cli.run(['archive', meshId], ctx);
+    assert.strictEqual(r.code, 0, JSON.stringify(r.result));
+    assert.strictEqual(r.result.id, UUID_C);
+    assert.deepStrictEqual(regIds(home, repoKey), []);
+    assert.strictEqual(fs.existsSync(cli.descriptorPath(home, UUID_C)), false);
+  } finally { rm(W); rm(home); }
+});
+
+test('archive <meshId> with several workspaces in that worktree archives NOTHING and lists UUIDs', () => {
+  const home = tmpHome();
+  const W = makeGitRepo('mesh-amb');
+  try {
+    const { ctx, repoKey } = seedThree(home, W);
+    const meshId = inst.primaryWorkspaceId(inst.resolveWorktree(W));
+    const r = cli.run(['archive', meshId], ctx);
+    assert.strictEqual(r.code, 2, JSON.stringify(r.result));
+    assert.match(String(r.result.error), /ambiguous/i);
+    assert.deepStrictEqual(r.result.candidates.slice().sort(), [UUID_A, UUID_B, UUID_C].sort());
+    assert.deepStrictEqual(regIds(home, repoKey), [UUID_A, UUID_B, UUID_C].sort());
+  } finally { rm(W); rm(home); }
+});
+
+test('archive-request <meshId> ambiguity errors with candidates; unknown id keeps the literal path', () => {
+  const home = tmpHome();
+  const W = makeGitRepo('mesh-req');
+  try {
+    const { ctx } = seedThree(home, W);
+    const meshId = inst.primaryWorkspaceId(inst.resolveWorktree(W));
+    const r = cli.run(['archive-request', meshId], ctx);
+    assert.strictEqual(r.code, 2, JSON.stringify(r.result));
+    assert.strictEqual(r.result.candidates.length, 3);
+  } finally { rm(W); rm(home); }
+});
+
+test('resolveArchiveId: an unknown primary-<hash> mesh id still gets the invalid-id error', () => {
+  const home = tmpHome();
+  const W = makeGitRepo('mesh-none');
+  try {
+    const { ctx } = seedThree(home, W);
+    const r = cli.resolveArchiveId('primary-00000000', ctx);
+    assert.strictEqual(r.ok, false);
+    assert.strictEqual(r.error, 'invalid or missing workspace id');
+  } finally { rm(W); rm(home); }
+});

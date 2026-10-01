@@ -14131,13 +14131,49 @@ function resolveArchiveId(raw, ctx) {
     candidates = []; // fail-closed: an unresolvable project context yields no candidates, not a crash
   }
   if (candidates.length === 1) return { ok: true, id: candidates[0] };
-  if (candidates.length === 0) return { ok: false, error: 'invalid or missing workspace id' };
+  if (candidates.length === 0) {
+    // Step 3: `raw` may be a MESH id (`primary-<hash>`, the label `send --to`
+    // and the roster show) — resolve it through the same registry join `send
+    // --to` uses (meshCandidateRows: every row whose worktree derives to that
+    // meshId, live or not, since a done child being archived is rarely live).
+    // A phantom row keyed BY the meshId is not an archivable workspace.
+    const mesh = resolveMeshIdToWorkspaceIds(raw, ctx);
+    if (mesh.length === 1) return { ok: true, id: mesh[0] };
+    if (mesh.length > 1) {
+      return {
+        ok: false,
+        error: 'ambiguous mesh id ' + JSON.stringify(raw) + ' matches ' + mesh.length
+          + ' workspaces — archived nothing; use one full id: ' + mesh.join(', '),
+        candidates: mesh,
+      };
+    }
+    return { ok: false, error: 'invalid or missing workspace id' };
+  }
   return {
     ok: false,
     error: 'ambiguous workspace id prefix ' + JSON.stringify(raw) + ' matches ' + candidates.length
       + ' workspaces — archived nothing; use the full id: ' + candidates.join(', '),
     candidates,
   };
+}
+
+// resolveMeshIdToWorkspaceIds(meshId, ctx) -> string[] of registry ids (full
+// UUIDs) whose worktree derives to `meshId`, via meshCandidateRows (the join
+// resolveMeshTarget/`send --to` use). Every such row (a phantom keyed by the
+// meshId itself excluded) — unlike send, never picks the freshest live one:
+// archiving the wrong twin is destructive, so >1 rows is reported as ambiguous.
+// [] when none or on any resolution error (fail-closed: archive nothing).
+function resolveMeshIdToWorkspaceIds(meshId, ctx) {
+  try {
+    const home = ctx.home;
+    const worktree = resolveCallerWorktree(ctx.cwd || process.cwd());
+    const repoKey = worktree ? repokey.repoKeyForWorktree(worktree) : repoKeyForCwd(ctx);
+    const s = store.openStore({ home, hash: repoKey || undefined, backend: ctx.backend, env: ctx.env });
+    try {
+      const rows = meshCandidateRows(s, meshId).filter((d) => d && d.id != null && String(d.id) !== String(meshId) && isSafeId(String(d.id)));
+      return rows.map((d) => String(d.id)).sort(); // several rows: never guess which to archive
+    } finally { s.close(); }
+  } catch (_) { return []; }
 }
 
 // restoreArchivedDescriptor(home, id, ctx, opts) -> { ok, error?, restoredLink? }
@@ -20154,7 +20190,9 @@ function runArmed(cmd, positionals, flags, ctx, argv) {
       case 'unarchive': {
         const id = positionals[1];
         if (!isSafeId(id)) return { code: 2, result: { ok: false, error: 'invalid or missing workspace id' } };
-        const r = cmdUnarchive(id, ctx);
+        const resolvedU = resolveArchiveId(id, ctx);
+        if (resolvedU.candidates) return { code: 2, result: Object.assign({ action: 'unarchive', id }, resolvedU) };
+        const r = cmdUnarchive(resolvedU.ok ? resolvedU.id : id, ctx);
         return { code: r.ok ? 0 : 2, result: r };
       }
       case 'archive-ignore': {
@@ -20173,7 +20211,10 @@ function runArmed(cmd, positionals, flags, ctx, argv) {
         // Send-time self-heal (Phase 7): archive-request is a mesh-direct STORE
         // write (v0.58) — still a "send-like verb" per withSelfHeal's own
         // categorization, so the per-project ingest daemon health check still runs.
-        const r = withSelfHeal(() => cmdArchiveRequest(id, flags, ctx), ctx);
+        const resolvedR = resolveArchiveId(id, ctx);
+        if (resolvedR.candidates) return { code: 2, result: Object.assign({ action: 'archive-request' }, resolvedR, { id }) };
+        const reqId = resolvedR.ok ? resolvedR.id : id;
+        const r = withSelfHeal(() => cmdArchiveRequest(reqId, flags, ctx), ctx);
         return { code: r.ok ? 0 : 2, result: r };
       }
       case 'register-primary': {
