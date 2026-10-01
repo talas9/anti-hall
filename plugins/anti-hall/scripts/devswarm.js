@@ -16846,8 +16846,51 @@ function cmdRoster(flags, ctx) {
   // canonicalized one for the SAME real directory must collapse to one row.
   const knownIds = new Set(workspaces.map((w) => w.worktreePath).filter(Boolean).map((p) => inst.primaryWorkspaceId(p)));
   const nativeChildren = fetchNativeChildren(ctx);
+  // A native row's id is the BRANCH NAME, but anti-hall's archive marker is
+  // archived/<uuid>.json — every id-keyed archive predicate misses it (and
+  // isSafeId rejects a `/` branch outright), so an archived workspace whose
+  // worktree is still listed natively read as live next to its own archived
+  // row. Join by canonical worktree identity instead (same primaryWorkspaceId
+  // dedup key as above), restricted to THIS project's archived descriptors.
+  const archivedByWt = new Map();
+  try {
+    const ads = checkedArchivedDir(home);
+    if (ads.ok && ads.exists) {
+      for (const n of fs.readdirSync(ads.path)) {
+        if (!/\.json$/.test(n)) continue;
+        const aid = n.slice(0, -'.json'.length);
+        try {
+          if (!isSafeId(aid)) continue;
+          const d = readDescriptorPathState(path.join(ads.path, n)).descriptor;
+          if (!d || String(d.id) !== aid || !d.worktreePath) continue;
+          if (descriptorPhysicalOwnerKey(d) !== repoKey) continue;
+          const k = inst.primaryWorkspaceId(d.worktreePath);
+          if (k && !archivedByWt.has(k)) archivedByWt.set(k, aid);
+        } catch (_) { /* skip this descriptor */ }
+      }
+    }
+  } catch (_) { /* fail-open: no fold, native rows project as before */ }
   for (const child of nativeChildren) {
     if (child.path && knownIds.has(inst.primaryWorkspaceId(child.path))) continue; // already represented via the store
+    const archivedId = child.path ? archivedByWt.get(inst.primaryWorkspaceId(child.path)) : null;
+    // The app's own DB saying this worktree is ACTIVE outranks a stale marker
+    // (a path reused by a newer live workspace must never read archived).
+    let appActive = false;
+    if (archivedId) {
+      try { appActive = require('../companion/lib/devswarm-app-db.js').appArchivedVerdict({ home, env: ctx.env, id: null, worktreePath: child.path, now }) === false; } catch (_) { appActive = false; }
+    }
+    if (archivedId && !appActive) {
+      const prior = workspaces.find((w) => w.id === archivedId);
+      if (prior) { prior.foldedNative = (prior.foldedNative || []).concat(String(child.branch || child.id)); continue; }
+      const hints = rosterHints(home, archivedId, child.path, now, null, { repoKey, env: ctx.env, cache: appArchivedCache, elig: rosterElig, registryBacked: false });
+      if (!hints.includes('archived')) hints.unshift('archived');
+      workspaces.push({
+        id: archivedId, working_on: null, directUnread: null, broadcastUnread: null, urgencyMax: null,
+        worktreePath: child.path, source: 'archived', meshId: rosterMeshId(child.path),
+        hints, wsName: child.label || null, foldedNative: [String(child.branch || child.id)],
+      });
+      continue;
+    }
     const id = child.branch || child.id || null;
     workspaces.push({
       id, working_on: null,
@@ -17015,6 +17058,10 @@ function cmdRoster(flags, ctx) {
     ok: true, action: 'roster', repoKey,
     known: !storeUnavailable, storeUnavailable, storeUnavailableReason, storeUnavailableScope,
     count: workspaces.length, workspaces, recent: sum.recent || [],
+    // live vs archived split of `count` — a row is archived when it is labelled
+    // source:'archived' or carries the `archived` hint (app-archived rows too).
+    liveCount: workspaces.filter((w) => !(w.source === 'archived' || (w.hints || []).includes('archived'))).length,
+    archivedCount: workspaces.filter((w) => w.source === 'archived' || (w.hints || []).includes('archived')).length,
   };
 }
 
