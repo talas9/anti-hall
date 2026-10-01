@@ -151,8 +151,9 @@ function main() {
   const rawSessionId = payload && payload.session_id != null ? String(payload.session_id) : '';
   const sessionIdForPath = sanitizeSessionId(rawSessionId);
   const progressDate = new Date().toISOString().slice(0, 10);
-  const progressHeader = '<!-- session: ' + (rawSessionId || UNKNOWN_SESSION) +
-    ' | started: ' + new Date().toISOString() + ' -->';
+  // progressHeader is built lazily (below, after the state file is read): its
+  // `started:` must be STABLE per session, never this hook's own wall clock.
+  let progressHeader = '';
   const progressRelPath = path.join('.anti-hall', 'progress', progressDate, sessionIdForPath + '.md');
   const historyRelPath = path.join('.anti-hall', 'history', progressDate, sessionIdForPath + '.md');
   const cwd = payload && payload.cwd;
@@ -371,6 +372,7 @@ function main() {
 
   let lastHash = '';
   let blocks = 0;
+  let startedIso = '';
   try {
     const rawState = fs.readFileSync(stateFile, 'utf8').trim();
     if (rawState) {
@@ -378,6 +380,7 @@ function main() {
       if (parsed && typeof parsed === 'object') {
         lastHash = typeof parsed.hash === 'string' ? parsed.hash : '';
         blocks = Number.isFinite(parsed.blocks) ? parsed.blocks : 0;
+        if (typeof parsed.started === 'string' && Number.isFinite(Date.parse(parsed.started))) startedIso = parsed.started;
       }
     }
   } catch (_) {
@@ -390,6 +393,13 @@ function main() {
   if (blocks >= MAX_BLOCKS) {
     process.exit(0); // hard cap — never loop on churn
   }
+
+  // Session start for the demanded progress header: derived ONCE (earliest
+  // main-transcript timestamp, else now) and persisted in the state file, then
+  // reused verbatim — the demanded value never changes between Stops.
+  if (!startedIso) startedIso = firstTranscriptIso(transcriptPath) || new Date().toISOString();
+  progressHeader = '<!-- session: ' + (rawSessionId || UNKNOWN_SESSION) +
+    ' | started: ' + startedIso + ' -->';
 
   // STALE-BUILD DOWNGRADE (peer complaint #2): installed_plugins.json already
   // registered a newer anti-hall version than this running hook process — the
@@ -604,7 +614,7 @@ function main() {
   // state was durably written (so the dedup + MAX_BLOCKS cap can actually fire).
   try {
     fs.mkdirSync(stateDir, { recursive: true });
-    fs.writeFileSync(stateFile, JSON.stringify({ hash, blocks: blocks + 1 }), 'utf8');
+    fs.writeFileSync(stateFile, JSON.stringify({ hash, blocks: blocks + 1, started: startedIso }), 'utf8');
   } catch (_) {
     process.exit(0); // can't persist the cap -> fail-open, do not block (no loop)
   }
@@ -685,6 +695,27 @@ function isFreshRelativeToWork(tsMs, scan) {
   }
   const age = Date.now() - tsMs;
   return age <= readFreshMs();
+}
+
+// firstTranscriptIso(path) -> ISO string of the first timestamped entry in the
+// transcript head (the session's own start), or '' when none can be read.
+function firstTranscriptIso(transcriptPath) {
+  try {
+    const fd = fs.openSync(transcriptPath, 'r');
+    try {
+      const buf = Buffer.alloc(65536);
+      const n = fs.readSync(fd, buf, 0, buf.length, 0);
+      const lines = buf.toString('utf8', 0, n).split('\n');
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        let e;
+        try { e = JSON.parse(line); } catch (_) { continue; }
+        const t = e && typeof e.timestamp === 'string' ? Date.parse(e.timestamp) : NaN;
+        if (Number.isFinite(t)) return new Date(t).toISOString();
+      }
+    } finally { fs.closeSync(fd); }
+  } catch (_) { /* fall through */ }
+  return '';
 }
 
 function sanitizeSessionId(raw) {

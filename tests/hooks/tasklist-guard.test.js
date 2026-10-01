@@ -1640,3 +1640,43 @@ test('BLOCK text: history ledger is append-only via Edit or >>, never Write, exa
     assert.match(r.json.reason, /APPEND with the Edit tool or a one-line `>>`, NEVER the Write tool/);
   } finally { h.cleanup(); }
 });
+
+test('STABLE header: demanded `started:` is the same across consecutive Stops, even as the transcript grows/rotates', () => {
+  const h = makeHome();
+  try {
+    const session = 'stable-started';
+    const t0 = new Date(Date.now() - 3 * 3600 * 1000);
+    const started = (r) => {
+      assert.ok(isBlock(r), `expected block; stdout: ${r.stdout}`);
+      const m = /started: (\S+) -->/.exec(r.json.reason);
+      assert.ok(m, `reason must carry header; ${r.json.reason}`);
+      return m[1];
+    };
+    const mk = (n, from = 0) => {
+      const a = [];
+      for (let i = from; i < n; i++) a.push(edit(i, new Date(t0.getTime() + i * 60000)));
+      return a;
+    };
+    let tp = h.writeTranscript(mk(10));
+    const s1 = started(testHook(HOOK, stopPayload(tp, h.home, session), { home: h.home }));
+    assert.strictEqual(s1, t0.toISOString());
+    tp = h.writeTranscript(mk(20));
+    const s2 = started(testHook(HOOK, stopPayload(tp, h.home, session), { home: h.home }));
+    // rotated/compacted: first entries dropped
+    tp = h.writeTranscript(mk(40, 25));
+    const s3 = started(testHook(HOOK, stopPayload(tp, h.home, session), { home: h.home }));
+    assert.strictEqual(s2, s1);
+    assert.strictEqual(s3, s1);
+  } finally { h.cleanup(); }
+});
+
+test('STABLE header: a just-updated progress file passes (no header demand)', () => {
+  const h = makeHome();
+  try {
+    const session = 'stable-fresh';
+    const tp = h.writeTranscript([...taskCreate('1', 'x', 'completed'), ...edits(10)]);
+    writeProgress(h.home, Date.now() + 5000, session);
+    const r = testHook(HOOK, stopPayload(tp, h.home, session), { home: h.home });
+    assert.ok(!isBlock(r), `fresh progress must allow; stdout: ${r.stdout}`);
+  } finally { h.cleanup(); }
+});
