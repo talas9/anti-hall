@@ -359,7 +359,7 @@ function formatStaleVersionLine(role, id, ownVersion, newestVersion, scriptPath)
 //                        registered at all — saying "is registered" here is
 //                        false and just "restart" would not load it; the
 //                        fix is `/anti-hall:update` (syncs the cache AND
-//                        runs the harness registration), then restart.
+//                        runs the harness registration), then /reload-plugins.
 function formatUpdateAvailableLine(role, id, ownVersion, newestVersion, registered) {
   if (registered) {
     return '[wake-watch] update available: anti-hall ' + newestVersion + ' is registered, but no cache directory for it '
@@ -370,7 +370,7 @@ function formatUpdateAvailableLine(role, id, ownVersion, newestVersion, register
   return '[wake-watch] update available: anti-hall ' + newestVersion + ' is newer (seen via the marketplace clone) but '
     + 'is not registered with the harness and has no cache directory yet (this watcher for ' + (role || 'unknown') + ' '
     + (id || 'unknown') + ' stays on ' + (ownVersion || 'unknown') + '). Not exiting; run /anti-hall:update to sync '
-    + 'the cache and register it with the harness, then restart — this will be re-checked on the next update sync.';
+    + 'the cache and register it with the harness, then /reload-plugins — this will be re-checked on the next update sync.';
 }
 
 // ---------------------------------------------------------------------------
@@ -1333,6 +1333,38 @@ function saveSeenState(home, id, state, fsi, role) {
   } catch (_) { /* best-effort; a failed persist only risks one re-notify after a restart, never a crash */ }
 }
 
+// Once-per-newer-version announcement of the update-available line. The
+// in-process edge-trigger alone re-fired on every re-armed watcher chain
+// (Monitor expiry/handoff, ~30 min), and each stdout line wakes the session.
+// The last-announced version persists in the watcher's own seen file under a
+// key this build does not "own" for the counters, so saveSeenState's
+// merge-preserve carries it through. Returns true when `version` is strictly
+// newer than the last announced one (and records it); false otherwise.
+function claimUpdateAnnouncement(home, id, version, fsi) {
+  const F = fsi || fs;
+  const p = seenPath(home, id);
+  let obj = {};
+  try {
+    const parsed = JSON.parse(String(F.readFileSync(p, 'utf8')));
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) obj = parsed;
+  } catch (_) { obj = {}; }
+  const prev = obj.updateAnnouncedVersion;
+  try {
+    const upd = require(path.join(__dirname, '..', '..', 'skills', 'update', 'scripts', 'update.js'));
+    if (upd.isSemver(prev) && upd.isSemver(version) && upd.compareVersions(version, prev) <= 0) return false;
+  } catch (_) {
+    if (prev === version) return false;
+  }
+  try {
+    F.mkdirSync(path.dirname(p), { recursive: true });
+    obj.updateAnnouncedVersion = version;
+    const tmp = p + '.' + process.pid + '.tmp';
+    F.writeFileSync(tmp, JSON.stringify(obj));
+    F.renameSync(tmp, p);
+  } catch (_) { /* best-effort: worst case one re-announce after a restart */ }
+  return true;
+}
+
 function lockPathFor(home, id) {
   return path.join(devswarmRoot(home), 'locks', 'wake-watch-' + String(id) + '.lock');
 }
@@ -1761,7 +1793,7 @@ function main() {
       if (staleVersion.newestVersion !== notifiedUpdateVersion) {
         notifiedUpdateVersion = staleVersion.newestVersion;
         try {
-          emitLine(formatUpdateAvailableLine(watchedRole, id, ownVersion, staleVersion.newestVersion, staleVersion.registered));
+          if (claimUpdateAnnouncement(home, id, staleVersion.newestVersion, fs)) emitLine(formatUpdateAvailableLine(watchedRole, id, ownVersion, staleVersion.newestVersion, staleVersion.registered));
         } catch (_) {}
       }
     }
@@ -1811,6 +1843,7 @@ module.exports = {
   parentGone,
   formatParentGoneLine,
   formatUpdateAvailableLine,
+  claimUpdateAnnouncement,
   REFUSAL_REASONS,
   ERROR_TOLERANCE,
   ERROR_BACKOFF_MS,

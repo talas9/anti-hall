@@ -17,7 +17,7 @@ const path = require('node:path');
 const { spawn } = require('node:child_process');
 
 const MODULE_PATH = path.join(__dirname, '..', '..', 'plugins', 'anti-hall', 'companion', 'lib', 'devswarm-wake-watch.js');
-const { checkStaleVersion, formatStaleVersionLine, formatUpdateAvailableLine } = require(MODULE_PATH);
+const { checkStaleVersion, formatStaleVersionLine, formatUpdateAvailableLine, claimUpdateAnnouncement } = require(MODULE_PATH);
 
 // Same pattern as tests/companion/devswarm-wake-watch.test.js's own helper of
 // the same name — waits for `pattern` in the child's accumulated stdout (or a
@@ -220,6 +220,39 @@ test('formatUpdateAvailableLine: registered=false never claims the version is "r
   assert.doesNotMatch(line, /Exiting/);
 });
 
+test('formatUpdateAvailableLine: says /reload-plugins, never "restart"', () => {
+  for (const reg of [true, false]) {
+    const line = formatUpdateAvailableLine('child', 'abc-123', '0.108.4', '0.108.5', reg);
+    assert.doesNotMatch(line, /restart/i);
+  }
+  assert.match(formatUpdateAvailableLine('child', 'abc-123', '0.108.4', '0.108.5', false), /\/anti-hall:update to sync[\s\S]*then \/reload-plugins/);
+});
+
+test('claimUpdateAnnouncement: same version twice -> one announcement; strictly newer -> announces again; older -> silent', () => {
+  const home = tmpHome();
+  try {
+    assert.strictEqual(claimUpdateAnnouncement(home, 'c1', '0.120.9'), true);
+    assert.strictEqual(claimUpdateAnnouncement(home, 'c1', '0.120.9'), false);
+    assert.strictEqual(claimUpdateAnnouncement(home, 'c1', '0.120.10'), true);
+    assert.strictEqual(claimUpdateAnnouncement(home, 'c1', '0.120.9'), false);
+    assert.strictEqual(claimUpdateAnnouncement(home, 'c2', '0.120.9'), true, 'per-id state');
+  } finally { rm(home); }
+});
+
+test('claimUpdateAnnouncement: preserves the watcher counters already in the seen file', () => {
+  const home = tmpHome();
+  try {
+    const seen = path.join(home, '.anti-hall', 'devswarm', 'wake', 'c1.seen');
+    fs.mkdirSync(path.dirname(seen), { recursive: true });
+    fs.writeFileSync(seen, JSON.stringify({ lastTotal: 7, lastTotal2: 3, lastBroadcastUnread: 1 }));
+    assert.strictEqual(claimUpdateAnnouncement(home, 'c1', '0.120.9'), true);
+    const obj = JSON.parse(fs.readFileSync(seen, 'utf8'));
+    assert.strictEqual(obj.lastTotal, 7);
+    assert.strictEqual(obj.lastTotal2, 3);
+    assert.strictEqual(obj.updateAnnouncedVersion, '0.120.9');
+  } finally { rm(home); }
+});
+
 test('formatUpdateAvailableLine: never throws on missing fields', () => {
   assert.doesNotThrow(() => formatUpdateAvailableLine(null, null, null, '0.108.5', true));
   assert.doesNotThrow(() => formatUpdateAvailableLine(null, null, null, '0.108.5', false));
@@ -269,6 +302,25 @@ test('main(): newer version known via marketplace only (no cache dir) -> prints 
     assert.strictEqual(res.exited, false,
       'must still be running (killed only by the test harness), never self-exit with no watcher left');
   } finally { try { fs.rmSync(home, { recursive: true, force: true }); } catch (_) {} }
+});
+
+test('main(): a RE-ARMED watcher chain (same HOME + id) does not re-announce the same available version', async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'anti-hall-wakewatch-staleversion-rearm-'));
+  try {
+    const srcDir = path.join(home, '.claude', 'plugins', 'marketplaces', 'anti-hall', 'plugins', 'anti-hall', '.claude-plugin');
+    fs.mkdirSync(srcDir, { recursive: true });
+    fs.writeFileSync(path.join(srcDir, 'plugin.json'), JSON.stringify({ name: 'anti-hall', version: '0.999.0' }), 'utf8');
+    const env = {
+      PATH: process.env.PATH, HOME: home, USERPROFILE: home,
+      DEVSWARM_REPO_ID: 'r1', DEVSWARM_SOURCE_BRANCH: 'main', DEVSWARM_BUILDER_ID: 'rearm-child-1',
+      ANTIHALL_DEVSWARM_WAKE_WATCH_POLL_MS: '250',
+    };
+    const first = await waitForStdoutMatch([MODULE_PATH], { env }, /update available: anti-hall 0\.999\.0/, 6000);
+    assert.match(first.stdout, /update available: anti-hall 0\.999\.0/);
+    // Second chain: wait for its arm line, then a few more polls.
+    const second = await waitForStdoutMatch([MODULE_PATH], { env }, /armed: watching child rearm-child-1[\s\S]*$/, 3000);
+    assert.doesNotMatch(second.stdout, /update available/, 'same version must not be announced again: ' + JSON.stringify(second.stdout));
+  } finally { rm(home); }
 });
 
 test('formatStaleVersionLine: names role, id, own version, newest version, and the re-arm command', () => {
