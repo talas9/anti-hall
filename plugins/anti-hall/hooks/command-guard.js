@@ -1463,6 +1463,19 @@ function isGitPushSegment(segment) {
   return subIdx !== -1 && tokens[subIdx].toLowerCase() === 'push';
 }
 
+// isGitPullFetchSegment(segment) -> true for `git pull` / `git fetch` (they move
+// refs/objects from a remote). Used ONLY to word the block reason; verdicts are
+// unchanged (HEAVY_PATTERNS already flags both).
+function isGitPullFetchSegment(segment) {
+  if (effectiveVerb(segment) !== 'git') return false;
+  const tokens = tokenizeQuoted(segment);
+  const gitIdx = tokens.findIndex((t) => basename(t).toLowerCase() === 'git');
+  if (gitIdx === -1) return false;
+  const subIdx = gitSubcommandIndex(tokens, gitIdx);
+  const sub = subIdx === -1 ? '' : tokens[subIdx].toLowerCase();
+  return sub === 'pull' || sub === 'fetch';
+}
+
 // isSafeSqliteReadonly(segment) -> true iff this is a `sqlite3` invocation
 // with `-readonly` present as its OWN argv token before the db path, and the
 // SQL/args after the db path contain none of sqlite3's dangerous dot-commands
@@ -1914,7 +1927,7 @@ function classifyHeavy(command, depth) {
   const d = typeof depth === 'number' ? depth : 0;
   for (const seg of splitSegments(command)) {
     if (isHeavySegment(seg, command)) {
-      if (isHeavyGhSegment(seg) || isGitPushSegment(seg)) return { kind: 'remote', label: 'state-changing remote operation' };
+      if (isHeavyGhSegment(seg) || isGitPushSegment(seg) || isGitPullFetchSegment(seg)) return { kind: 'remote', label: 'state-changing remote operation' };
       const verb = effectiveVerb(seg);
       if (verb && HEAVY_VERBS.has(verb)) return { kind: 'verb', label: verb };
       return { kind: 'category', label: 'heavy-pattern' };
@@ -3078,7 +3091,10 @@ function isAllowedGcloudReadCommand(command) {
 // any interpreter option before the file (-c/-e/-m/…), a leading env
 // assignment or wrapper, chaining to anything but a bounded sink, any
 // `$`/backtick/backslash/process substitution, a stdin redirect, and a
-// write redirect outside the scratchpad/tmp. A foreground run keeps today's
+// write redirect outside the scratchpad/tmp. A script run DIRECTLY (`<path> [args]`,
+// shebang + exec bit) is also accepted when it is a regular executable file
+// inside this session's OWN scratchpad (no tmp roots, no symlink component).
+// A foreground run keeps today's
 // rules. Gated by guards.allowBackgroundScratchScripts (default true).
 // ---------------------------------------------------------------------------
 const BACKGROUND_SCRIPT_INTERPRETERS = new Set(['python3', 'node', 'sh', 'bash']);
@@ -3088,11 +3104,17 @@ const BACKGROUND_CHAIN_DELIMS = new Set([';', '&&', '|', 'end']);
 // the scratchpad/tmp (realpath'd), no --confirmed, not an anti-hall plugin script.
 function isBackgroundScratchScriptSegment(segment, ctx) {
   const tokens = tokenizeQuoted(segment.replace(/\d*>>?\s*\S+/g, ' '));
-  if (tokens.length < 2 || !BACKGROUND_SCRIPT_INTERPRETERS.has(tokens[0])) return false;
-  const script = tokens[1];
+  // Direct exec (shebang + exec bit): argv[0] is itself the script. Stricter
+  // than the interpreter form: OWN scratchpad only (never a generic tmp root),
+  // every component lstat'd (no symlinks), regular executable file. A leading
+  // `VAR=…` token is not a path, so env-prefix assignments stay refused.
+  const direct = tokens.length >= 1 && tokens[0].includes('/') && !BACKGROUND_SCRIPT_INTERPRETERS.has(tokens[0]);
+  if (!direct && (tokens.length < 2 || !BACKGROUND_SCRIPT_INTERPRETERS.has(tokens[0]))) return false;
+  const script = direct ? tokens[0] : tokens[1];
   if (!script || script.startsWith('-')) return false;
-  if (!isScratchpadOrTmpPath(script, ctx)) return false;
+  if (!isScratchpadOrTmpPath(script, direct ? Object.assign({ ownOnly: true }, ctx) : ctx)) return false;
   const payload = ctx.payload;
+  if (direct && sinkPathHasSymlink(script, payload)) return false;
   const base = (typeof payload.cwd === 'string' && payload.cwd) || process.cwd();
   let realScript;
   try {
@@ -3101,7 +3123,9 @@ function isBackgroundScratchScriptSegment(segment, ctx) {
     // would point at a different file than the one that actually runs.
     const joined = path.isAbsolute(script) ? script : base.replace(/\/+$/, '') + '/' + script;
     realScript = fs.realpathSync.native(joined); // .native: libc realpath keeps `L/..` physical (JS realpathSync pre-normalizes `..`)
-    if (!fs.statSync(realScript).isFile()) return false;
+    const st = fs.statSync(realScript);
+    if (!st.isFile()) return false;
+    if (direct && (st.mode & 0o111) === 0) return false;
   } catch (_) { return false; }
   // Mirrors the 0.112 F1 rule of the script-check carve-out: never a way to
   // flip a safety switch or trust an allowlist from the main thread —
@@ -3426,7 +3450,7 @@ function main() {
   // "just delegate to a subagent"). TEXT ONLY: same rule, same inline-allowed
   // set — just reordered.
   const SCRATCHPAD_SCRIPT_HINT =
-    'Have a script to run? Write it to the scratchpad and run it with run_in_background (use the literal absolute scratchpad path, not $VAR; chain only wc/head/tail/grep -c/grep -m N) — never inline: a scratchpad script piped to tail is STILL blocked in the foreground, it must be run_in_background. ';
+    'Have a script to run? Write it to the scratchpad and run it with run_in_background (run it as `<interpreter> <script>` or an executable scratchpad path, in the background; no VAR=… prefix; use the literal absolute scratchpad path, not $VAR; chain only wc/head/tail/grep -c/grep -m N) — never inline: a scratchpad script piped to tail is STILL blocked in the foreground, it must be run_in_background. ';
   // A leading `cd <dir>;` leaves the cwd unknown (only an unconditional `&&`
   // cd is tracked), so a relative-path check fails ONLY because of the `;`.
   // Hint exactly then: the same command joined with `&&` would qualify.

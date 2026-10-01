@@ -1177,7 +1177,7 @@ const BASELINE_REASON =
   'COMMAND-DELEGATION RULE: heavy/long/state-changing commands must NEVER run ' +
   'inline in the main coordinator context — they fill the main thread with raw ' +
   'output and the most counterproductive thing a coordinator can do. ' +
-  'Have a script to run? Write it to the scratchpad and run it with run_in_background (use the literal absolute scratchpad path, not $VAR; chain only wc/head/tail/grep -c/grep -m N) — never inline: a scratchpad script piped to tail is STILL blocked in the foreground, it must be run_in_background. ' +
+  'Have a script to run? Write it to the scratchpad and run it with run_in_background (run it as `<interpreter> <script>` or an executable scratchpad path, in the background; no VAR=… prefix; use the literal absolute scratchpad path, not $VAR; chain only wc/head/tail/grep -c/grep -m N) — never inline: a scratchpad script piped to tail is STILL blocked in the foreground, it must be run_in_background. ' +
   'DELEGATE to a subagent (cheap model: Haiku or similar): ' +
   'spawn a subagent, pass the command, let it run and return only a tight ' +
   'summary. The coordinator synthesizes the summary; raw output never reaches ' +

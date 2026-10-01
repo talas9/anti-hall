@@ -156,3 +156,83 @@ test('timeout-wrapped anti-hall devswarm.js read verbs pass; heavy stays blocked
   ];
   assert.deepStrictEqual(bad.filter((c) => run(c, { bg: false }).status !== 2), []);
 });
+
+// L33: a scratch script run DIRECTLY (shebang + exec bit), background only,
+// inside this session's OWN scratchpad. Env-prefix assignments stay refused.
+function runOwn(command, opts) {
+  const o = opts || {};
+  const repo = fs.mkdtempSync(path.join('/tmp', 'bg-own-repo-'));
+  const sid = 'l33-' + process.pid + '-' + Math.random().toString(36).slice(2, 8);
+  const projDir = path.join('/tmp', 'claude-' + process.getuid(), repo.replace(/[^A-Za-z0-9]/g, '-'));
+  const sp = path.join(projDir, sid, 'scratchpad');
+  const otherSp = path.join(projDir, sid + '-other', 'scratchpad');
+  fs.mkdirSync(sp, { recursive: true });
+  fs.mkdirSync(otherSp, { recursive: true });
+  const mk = (d, name, mode) => { const f = path.join(d, name); fs.writeFileSync(f, '#!/bin/sh\necho 1\n'); fs.chmodSync(f, mode); return f; };
+  mk(sp, 'shoot.sh', 0o755);
+  mk(sp, 'plain.sh', 0o644);
+  mk(otherSp, 'foreign.sh', 0o755);
+  fs.writeFileSync(path.join(sp, 'modal-shot.mjs'), 'console.log(1)\n');
+  fs.symlinkSync(path.join(sp, 'shoot.sh'), path.join(sp, 'link.sh'));
+  fs.symlinkSync(otherSp, path.join(sp, 'dirlink'));
+  const xtmp = mk('/tmp', 'l33-' + process.pid + '-x.sh', 0o755);
+  const h = makeHome();
+  try {
+    const toolInput = { command: command.split('@SP@').join(sp).split('@OTHER@').join(otherSp).split('@XTMP@').join(xtmp) };
+    if (o.bg !== false) toolInput.run_in_background = true;
+    return testHook(HOOK, { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: toolInput, session_id: sid, cwd: repo },
+      { home: h.home, env: { CLAUDE_CODE_ENTRYPOINT: 'cli' } });
+  } finally {
+    h.cleanup();
+    fs.rmSync(xtmp, { force: true });
+    fs.rmSync(projDir, { recursive: true, force: true });
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+}
+
+test('background-scratch direct exec: an executable file in the OWN scratchpad runs in the background, alone or chained', () => {
+  const ok = [
+    '@SP@/shoot.sh',
+    '@SP@/shoot.sh --flag value',
+    'node @SP@/modal-shot.mjs && @SP@/shoot.sh',
+    'node @SP@/modal-shot.mjs; @SP@/shoot.sh | tail -5',
+  ];
+  const wrong = ok.filter((c) => runOwn(c).status === 2);
+  assert.deepStrictEqual(wrong, []);
+});
+
+test('background-scratch direct exec: refused for non-exec, foreign scratchpad, symlinks, /tmp, foreground, env prefix', () => {
+  const bad = [
+    '@SP@/plain.sh',                              // not executable
+    '@OTHER@/foreign.sh',                         // another session's scratchpad
+    '@SP@/link.sh',                               // symlink to an own-scratchpad file
+    '@SP@/dirlink/foreign.sh',                    // symlinked directory component
+    '@XTMP@',                                     // generic /tmp, not the own scratchpad
+    '@SP@/missing.sh',
+    'VARIANTS="A B C D" @SP@/shoot.sh',           // env prefix stays refused
+    'FOO=1 @SP@/shoot.sh',
+    '@SP@/shoot.sh && npm test',                  // chain to a non-sink
+    '@SP@/shoot.sh --confirmed',
+    '@SP@/shoot.sh $(npm test)',
+  ];
+  // A heavy `node` segment (the real field shape) makes the whole chain gated;
+  // the bad direct-exec segment must then make the carve-out refuse.
+  const wrong = bad.filter((c) => runOwn('node @SP@/modal-shot.mjs && ' + c).status !== 2);
+  assert.deepStrictEqual(wrong, []);
+  assert.strictEqual(runOwn('node @SP@/modal-shot.mjs && @SP@/shoot.sh', { bg: false }).status, 2, 'foreground keeps its verdict');
+});
+
+test('command-guard block text states the allowed background shapes and the no VAR= prefix rule', () => {
+  const r = runOwn('node @SP@/modal-shot.mjs && VARIANTS="A B" @SP@/shoot.sh');
+  assert.strictEqual(r.status, 2);
+  assert.match(r.json.reason, /`<interpreter> <script>` or an executable scratchpad path, in the background; no VAR=… prefix/);
+});
+
+test('command-guard names git pull/fetch as state-changing remote operations (verdict unchanged: still blocked)', () => {
+  for (const c of ['git pull origin main', 'git fetch --prune origin']) {
+    const r = run(c, { bg: false });
+    assert.strictEqual(r.status, 2, c);
+    assert.match(r.json.reason, /State-changing remote operation detected/, c);
+    assert.doesNotMatch(r.json.reason, /heavy-pattern/, c);
+  }
+});
