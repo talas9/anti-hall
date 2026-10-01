@@ -118,6 +118,14 @@ function isDeployShaped(corpus) {
   }
   return kinds.size >= 2;
 }
+// A spawn brief that RUNS anti-hall's update helper (see main()).
+const UPDATE_NODE_RE = /\bnode\s+["']?\S*update\.js\b/i;
+const UPDATE_SKILL_PATH_RE = /\bnode\s+["']?\S*skills[\\/]update[\\/]scripts[\\/]update\.js\b/i;
+const UPDATE_SLASH_RE = /\b(?:run|invoke|execute)\s+`?\/anti-hall:update\b/i;
+function runsAntiHallUpdate(corpus) {
+  return UPDATE_SKILL_PATH_RE.test(corpus) || UPDATE_SLASH_RE.test(corpus) ||
+    (UPDATE_NODE_RE.test(corpus) && /anti-hall/i.test(corpus));
+}
 const MODEL_RANK = { haiku: 1, sonnet: 2, opus: 3, fable: 3 };
 
 // Complex signals -> opus/fable. COMPLEX ANYWHERE (description OR prompt) => never
@@ -340,6 +348,18 @@ function main() {
 
   // Bounded scan corpus: description + prompt, capped at SCAN_LIMIT.
   const corpus = (description + '\n' + prompt).slice(0, SCAN_LIMIT);
+
+  // anti-hall's own update must run in the MAIN session (update.js runs
+  // migrations; the main session judges a failure). Block a spawn whose brief RUNS
+  // it: `node <..>/update.js` under skills/update/scripts (or any `node .../update.js`
+  // in a brief that names anti-hall), or an explicit "run /anti-hall:update".
+  // A brief that merely mentions updating something else does not match.
+  try {
+    if (require('./lib/settings.js').enabled('guards', 'updateInSession') && runsAntiHallUpdate(corpus)) {
+      block('anti-hall update must run in the main session (it runs migrations; the main session judges the result): ' +
+        'run `node <path>/update.js …` directly, not via a subagent.');
+    }
+  } catch (_) { /* fail-open */ }
 
   // Handover-delegation advisory runs FIRST and independently of the model-tier
   // table below — it is about WHO writes the handover, not which model runs it.

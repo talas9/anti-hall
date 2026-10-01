@@ -256,6 +256,22 @@ const LIGHT_EXCEPTIONS = [
   // plugin-relative devswarm.js entry immediately above).
   anchoredAntiHallStableLauncher('devswarm.js'),
   anchoredAntiHallStableLauncher('wake-watch.js'),
+  // The update skill's own helper, run IN-SESSION on the main model (owner
+  // decision: update.js runs migrations, so it is never handed to a cheap
+  // subagent). Matches ONLY `node [quoted] <any prefix>/skills/update/scripts/
+  // update.js` (plugin cache, marketplace clone, repo checkout) as the
+  // segment's own verb: the dir chain must be exactly skills/update/scripts/,
+  // and the file name must END at update.js (optional closing quote, then
+  // whitespace/end) so `update.js.evil` / `other/scripts/update.js` stay
+  // gated. Chained commands are separate segments (`; npm test` still blocks);
+  // only bounded sinks (tail/head/grep) are light on their own.
+  /^\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*node\s+["']?(?:\S*[\\/])?skills[\\/]update[\\/]scripts[\\/]update\.js["']?(?=\s|$)/i,
+  // The two DevSwarm companion installers the update skill's step 7 runs
+  // in-session for the same reason (they install/refresh a launchd/systemd
+  // unit; the main session judges a failure). Same anchoring: own-verb `node`,
+  // file name ends at the installer's name.
+  anchoredAntiHallCli('companion', 'install-devswarm-supervisor', '(?=\\s|$)'),
+  anchoredAntiHallCli('companion', 'install-devswarm-ingest', '(?=\\s|$)'),
 ];
 
 // DevSwarm destructive-read redirect: the two CONSUMING native hivecontrol inbox

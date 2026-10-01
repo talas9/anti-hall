@@ -91,7 +91,7 @@ and getting a yes); re-arming a guard never does. /config, env and a `settings.j
 | PreToolUse (Write/Edit/MultiEdit/NotebookEdit) | edit-guard.js | Coordinator must delegate file edits (root-anchored allowlist for docs/state). | — | safety.editGuard (safety: --confirmed); `ANTIHALL_EDIT_GUARD_ALLOW` |
 | PreToolUse (Read) | inbox-read-guard.js | Blocks a direct Read of a raw DevSwarm inbox file (use the CLI). | — | devswarm.inboxReadGuard |
 | PreToolUse (SendMessage) | devswarm-comms-guard.js | Blocks `SendMessage` to a peer session that is a registered DevSwarm workspace (mesh only); never blocks subagent steering. | — | devswarm.commsGuard |
-| PreToolUse (Agent/Task) | model-routing-guard.js | Routes spawns to the cheapest fitting model: blocks a mechanical spawn with no model (strict default), advises on flagship + mechanical. | — | guards.modelRouting (strict/advisory/off) |
+| PreToolUse (Agent/Task) | model-routing-guard.js | Routes spawns to the cheapest fitting model: blocks a mechanical spawn with no model (strict default), advises on flagship + mechanical; blocks a spawn that runs anti-hall's own update (it runs in the main session, guards.updateInSession). | — | guards.modelRouting (strict/advisory/off) |
 | PreToolUse (Agent/Task) | swarm-guard.js | Anti-fork-bomb: spawn-rate cap + real free-memory check. | — | safety.swarmGuard (safety: --confirmed) |
 | PreToolUse (Agent/Task) | phase-tracker.js | Records spawns for the statusline and the Stop guards. | — | — |
 | PostToolUse (Bash) | output-verify-guard.js | Advisory: flags a pass claim next to failing runner output. | — | `ANTIHALL_OUTPUT_VERIFY_GUARD=off` |

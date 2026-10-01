@@ -178,23 +178,18 @@ Modes:
    - "is anti-hall up to date" / "check for an update" → `--check`
    - "update" / "upgrade anti-hall" → full update
 2. The helper is a `node` script (a state change — it pulls, may copy into the
-   cache, and runs migrations), so **delegate it to a Sonnet subagent**
-   (`model:"sonnet"`) — never Haiku (the owner's model-routing floor requires at
-   least `sonnet` for deploy/migration-shaped work; `update.js` runs migrations)
-   — and do not run it inline in the coordinator (the command-guard blocks heavy
-   commands on the main thread; an execution-shaped spawn with no explicit model
-   also trips model-routing-guard's strict-mode block). Brief the subagent to run
-   exactly one of:
+   cache, and runs migrations), so **run it directly in the main session, in the
+   foreground, with a generous Bash `timeout`** (e.g. 600000) — never delegate it
+   to a subagent: the main session holds the context needed to judge a migration
+   failure or partial apply, and migrations/deploys are handled in-session, not
+   handed to a cheaper model. command-guard allows exactly this invocation
+   (optionally piped to a bounded sink). Run exactly one of:
    ```
    node "$HOME/.claude/plugins/marketplaces/anti-hall/plugins/anti-hall/skills/update/scripts/update.js" --check
    node "$HOME/.claude/plugins/marketplaces/anti-hall/plugins/anti-hall/skills/update/scripts/update.js"
    ```
-   **Opus fallback (applies to EVERY Sonnet delegation in this skill):** if the
-   Sonnet worker is unavailable or usage-exhausted (spawn rejected, model/tier
-   unavailable, or a usage/rate-limit error), respawn the SAME brief with
-   `model:"opus"` instead of running it inline or skipping it. Opus clears the
-   model-routing floor (Sonnet-or-higher; the guard ranks opus above sonnet), so
-   the fallback never trips model-routing-guard. Never fall back to Haiku.
+   Never spawn a subagent for it (model-routing-guard blocks an update spawn;
+   `guards.updateInSession`).
    **Always the MARKETPLACE CLONE's own copy, never `${CLAUDE_PLUGIN_ROOT}`**
    (the currently-LOADED, possibly-stale cache dir): a P0 field bug showed
    `${CLAUDE_PLUGIN_ROOT}` pulling a NEWER version, syncing the cache, then
@@ -206,7 +201,9 @@ Modes:
    also now re-execs the freshly-pulled version's own copy internally as a
    second line of defense — see its own `runPostPullReexec` — but the
    INVOCATION path here should never depend on that.)
-   and report its stdout verbatim (the JSON line + the human summary).
+   Read its JSON summary and the human summary; if a migration failed or a repair
+   was only partly applied, the main session decides the follow-up (re-run, run
+   `doctor --repair`, or report) — relay the output, do not paper over it.
 3. Present the result to the user: the `installed → latest` versions, whether it
    updated, and the **changelog delta** (the printed `## <version>` sections).
 4. If the helper hit a **STOP** (dirty clone / diverged branch) or reported
@@ -258,11 +255,9 @@ Modes:
      alone; the session might be running outside DevSwarm). If inside a
      DevSwarm session, run its `how` command
      (`node companion/install-devswarm-supervisor.js`) regardless of the
-     capability scan's `active` value — delegate to a **Sonnet subagent**
-     (`model:"sonnet"`; Opus fallback per step 2), never Haiku (matches the model-routing floor for
-     deploy/install-shaped work), never inline (it's a `node` script that writes a
-     launchd/systemd/cron job; the command-guard blocks heavy commands on the
-     main thread). The installer is idempotent (`launchctl unload && load` on
+     capability scan's `active` value — run it **in-session, foreground** (it
+     writes a launchd/systemd/cron job; installs are handled by the main session,
+     which judges a failure — command-guard allows this exact installer). The installer is idempotent (`launchctl unload && load` on
      macOS / systemd reload on Linux), so this both first-installs when absent
      and refreshes an already-installed supervisor so the next sweep runs this
      build's code. REPORT it plainly ("DevSwarm session detected — installed/
@@ -279,10 +274,9 @@ Modes:
      in the SAME `isDevswarmActive(process.env)` branch. When inside a DevSwarm
      session, also run its `how` command
      (`node companion/install-devswarm-ingest.js`) regardless of the scan's
-     `active` value — delegate to a **Sonnet subagent** (`model:"sonnet"`; Opus fallback per step 2),
-     never Haiku (matches the model-routing floor for deploy/install-shaped
-     work), never inline (it's a `node` script that writes a launchd/systemd/cron unit; the
-     command-guard blocks heavy commands on the main thread). It is idempotent
+     `active` value — run it **in-session, foreground**
+     (it writes a launchd/systemd/cron unit; installs are handled by the main
+     session, which judges a failure — command-guard allows this exact installer). It is idempotent
      (`launchctl unload && load` on macOS / `systemctl --user daemon-reload` +
      `restart` on Linux), so it first-installs when absent and refreshes an
      already-installed daemon to this build's code. Unlike the supervisor (a

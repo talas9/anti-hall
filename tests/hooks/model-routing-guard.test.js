@@ -1083,3 +1083,35 @@ test('JEV modelRouting: an allowed or advisory spawn never consults Jev (no row)
     assert.deepStrictEqual(jevRows(h.home), []);
   } finally { h.cleanup(); }
 });
+
+// ---- update must run in the main session (guards.updateInSession) ----
+test('update-in-session: a spawn that runs anti-hall update.js / /anti-hall:update is blocked', () => {
+  const h = makeHome();
+  try {
+    for (const prompt of [
+      'Run exactly: node "$HOME/.claude/plugins/marketplaces/anti-hall/plugins/anti-hall/skills/update/scripts/update.js" --check',
+      'In the anti-hall checkout run node ./update.js and report',
+      'Please run /anti-hall:update and report',
+    ]) {
+      const r = testHook(HOOK, payload({ description: 'update', prompt, model: 'sonnet', subagent_type: 'general-purpose' }), { home: h.home });
+      assertBlock(r, /main session/);
+    }
+  } finally { h.cleanup(); }
+});
+
+test('update-in-session: briefs that only mention updating something else are not blocked; setting off allows', () => {
+  const h = makeHome();
+  try {
+    for (const prompt of [
+      'Update the npm dependencies in package.json and run the tests',
+      'Fix the update.js docs typo in the changelog',
+      'Run node scripts/update.js for the billing project',
+    ]) {
+      const r = testHook(HOOK, payload({ description: 'work', prompt, model: 'sonnet', subagent_type: 'general-purpose' }), { home: h.home });
+      assert.notStrictEqual(r.status, 2, prompt);
+    }
+    const r = testHook(HOOK, payload({ description: 'u', prompt: 'Run node plugins/anti-hall/skills/update/scripts/update.js', model: 'sonnet', subagent_type: 'general-purpose' }),
+      { home: h.home, env: { ANTIHALL_UPDATE_IN_SESSION: '0' } });
+    assert.notStrictEqual(r.status, 2);
+  } finally { h.cleanup(); }
+});
