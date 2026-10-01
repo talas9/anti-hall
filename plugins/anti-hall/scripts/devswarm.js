@@ -19664,10 +19664,12 @@ function repairSubmoduleWorktrees(failures, text, branch, cwd) {
     let aside = null;
     try {
       const wt = P.slice(0, -(S.length + 1));
-      const common = g(wt, ['rev-parse', '--path-format=absolute', '--git-common-dir']);
-      if (common.status !== 0) { remaining.push(f); continue; }
-      const modGit = path.join(common.stdout.trim(), 'modules', S);
-      if (!fs.existsSync(modGit) || fs.existsSync(path.join(P, '.git'))) { remaining.push(f); continue; }
+      const common = gitCommonDirFor(wt);
+      if (!common) { remaining.push(f); continue; }
+      const modGit = path.join(common, 'modules', S);
+      // Presence of the submodule worktree's own link file (not identity resolution).
+      const linkFile = path.join(P, '.git');
+      if (!fs.existsSync(modGit) || fs.existsSync(linkFile)) { remaining.push(f); continue; }
       let b = branch;
       let sha = null;
       const esc = P.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -19701,7 +19703,7 @@ function repairSubmoduleWorktrees(failures, text, branch, cwd) {
       const addArgs = exists ? ['worktree', 'add', P, b]
         : (sha ? ['worktree', 'add', '-b', b, P, sha] : ['worktree', 'add', '-b', b, P]);
       const add = g(modGit, addArgs);
-      if (add.status !== 0 || !fs.existsSync(path.join(P, '.git'))) throw new Error(String(add.stderr || 'worktree add failed').trim().split('\n').pop());
+      if (add.status !== 0 || !fs.existsSync(linkFile)) throw new Error(String(add.stderr || 'worktree add failed').trim().split('\n').pop());
       let leftover = null;
       const conflicts = [];
       if (aside) {
