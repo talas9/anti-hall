@@ -6,6 +6,16 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.120.6 (2026-10-01)
+
+### Fixed
+
+- `devswarm.js archive` reported `appArchive.ok:true` from hivecontrol's exit code alone, without checking the DevSwarm app, so a workspace could stay live in the app while anti-hall treated it as archived. The app archive is now VERIFIED against the app-DB snapshot, or against hivecontrol's `archived:true` response when the DB isn't readable. Note in passing: `workspace list all` keeps archived rows, so it isn't an archived signal. An unverified archive returns `partial:true` with `manualCommand`.
+- `archive <branch|meshId|uuid>` archives the app side alone when the anti-hall descriptor is already archived.
+- roster rows carry `appArchived`; `appStillLive` and a one-time Primary note surface workspaces the app still shows after an anti-hall archive.
+- `doctor` detects that mismatch, and only an explicit `doctor --repair` runs the verified app archive.
+- Verified live against DevSwarm on throwaway workspaces.
+
 ## 0.120.5 (2026-10-01)
 
 ### Fixed
