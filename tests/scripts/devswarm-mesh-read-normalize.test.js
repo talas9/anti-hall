@@ -148,3 +148,67 @@ test('send / heartbeat --summary / mesh read resolve the project from DEVSWARM_B
     assert.equal(n2.result.reason, 'no-project');
   } finally { rm(home); rm(repo); }
 });
+
+test('L36: mesh read emits top-level `messages` (same array as `broadcasts`)', () => {
+  const home = tmpHome();
+  const repo = makeGitRepo('msgkey');
+  try {
+    const repoKey = repokey.repoKeyForWorktree(repo);
+    seedRegistry(home, repoKey, { id: inst.primaryWorkspaceId(repo), worktreePath: repo, sessionId: 's' });
+    cli.run(['send', '--broadcast', '--message', 'bk'], ctx(home, { cwd: repo }));
+    for (const extra of [['--peek'], []]) {
+      const r = cli.run(['mesh', 'read'].concat(extra), ctx(home, { cwd: repo }));
+      assert.deepEqual(r.result.messages, r.result.broadcasts);
+      assert.equal(r.result.messages[0].text, 'bk');
+    }
+  } finally { rm(home); rm(repo); }
+});
+
+test('L36: mesh history re-reads consumed broadcasts without moving the cursor', () => {
+  const home = tmpHome();
+  const repo = makeGitRepo('hist');
+  try {
+    const repoKey = repokey.repoKeyForWorktree(repo);
+    seedRegistry(home, repoKey, { id: inst.primaryWorkspaceId(repo), worktreePath: repo, sessionId: 's' });
+    for (const t of ['a', 'b', 'c']) cli.run(['send', '--broadcast', '--message', t], ctx(home, { cwd: repo }));
+    const consumed = cli.run(['mesh', 'read'], ctx(home, { cwd: repo }));
+    assert.equal(consumed.result.count, 3);
+    assert.match(consumed.result.hint, /mesh history/);
+    assert.equal(cli.run(['mesh', 'read', '--peek'], ctx(home, { cwd: repo })).result.count, 0, 'consumed');
+    const h = cli.run(['mesh', 'history'], ctx(home, { cwd: repo }));
+    assert.equal(h.result.ok, true, JSON.stringify(h.result));
+    assert.equal(h.result.action, 'mesh-history');
+    assert.deepEqual(h.result.messages.map((b) => b.text), ['a', 'b', 'c']);
+    assert.equal(h.result.acked, false);
+    const h2 = cli.run(['mesh', 'history', '--last', '2'], ctx(home, { cwd: repo }));
+    assert.deepEqual(h2.result.messages.map((b) => b.text), ['b', 'c']);
+    // by store seq: rows after seq of 'a'
+    const seqA = h.result.messages[0].seq;
+    const bySeq = cli.run(['mesh', 'read', '--peek', '--seq', String(seqA)], ctx(home, { cwd: repo }));
+    assert.deepEqual(bySeq.result.messages.map((b) => b.text), ['b', 'c']);
+    assert.equal(cli.run(['mesh', 'read', '--peek'], ctx(home, { cwd: repo })).result.count, 0, 'history never moved the cursor back');
+  } finally { rm(home); rm(repo); }
+});
+
+test('L36: inbox messages --with-broadcasts merges broadcasts by seq; default shape unchanged', () => {
+  const home = tmpHome();
+  const main = makeGitRepo('withb');
+  try {
+    const repoKey = repokey.repoKeyForWorktree(main);
+    seedRegistry(home, repoKey, { id: 'peer-1', worktreePath: path.join(home, 'nowhere'), sessionId: 's' });
+    cli.run(['send', '--to', 'peer-1', '--message', 'd1'], ctx(home, { cwd: main }));
+    cli.run(['send', '--broadcast', '--message', 'b1'], ctx(home, { cwd: main }));
+    cli.run(['send', '--to', 'peer-1', '--message', 'd2'], ctx(home, { cwd: main }));
+    const plain = cli.run(['inbox', 'messages', 'peer-1'], ctx(home, { cwd: main }));
+    assert.deepEqual(plain.result.messages.map((m) => m.text), ['d1', 'd2']);
+    assert.equal(plain.result.broadcastCount, undefined);
+    const w = cli.run(['inbox', 'messages', 'peer-1', '--with-broadcasts'], ctx(home, { cwd: main }));
+    assert.equal(w.result.ok, true, JSON.stringify(w.result));
+    assert.deepEqual(w.result.messages.map((m) => m.text), ['d1', 'b1', 'd2']);
+    assert.deepEqual(w.result.messages.map((m) => m.kind), ['direct', 'broadcast', 'direct']);
+    assert.equal(w.result.broadcastCount, 1);
+    // acking verb ignores it (no merge) and says so
+    const rp = cli.run(['inbox', 'read-primary', 'peek-nonexistent', '--with-broadcasts'], ctx(home, { cwd: main }));
+    assert.ok(!(rp.result.messages || []).some((m) => m.kind === 'broadcast'));
+  } finally { rm(home); rm(main); }
+});

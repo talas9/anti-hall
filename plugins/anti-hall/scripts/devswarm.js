@@ -34,6 +34,8 @@
 //                  (table-wide UNIQUE) over either when verifying a specific
 //                  message.
 //   inbox messages <id> [--limit N] [--since <index>|<ISO date>] [--tail N]
+//                  [--with-broadcasts]  (non-acking only) also merge the project's broadcasts
+//                  (newest 50, kind:'broadcast', ordered by seq) into `messages`; `broadcastCount` reports them.
 //                  NON-ACKING read of a partition's rows (earliest-first). --since
 //                  and --tail bound it to recent mail WITHOUT the destructive
 //                  read-primary path (defect 3f6027ee462a). Both are REJECTED on
@@ -158,6 +160,12 @@
 //                  a child hivecontrol spawned but that has never yet registered
 //                  itself with the store stays visible instead of invisible.
 //   mesh read      same as `roster --ack` (D23) — listed separately for discovery.
+//                  Top-level arrays: `messages` (same array as `broadcasts`, matching
+//                  `inbox read-primary`/`inbox messages`) and `broadcasts` (kept for compat).
+//   mesh history [--last N] [--since <iso|30m|2h|1d>]
+//                  NEVER-consuming re-read of ALL broadcasts, already-consumed ones
+//                  included (= `mesh read --peek --seq 0`; `mesh read --peek --seq N`
+//                  re-reads rows after store seq N). No cursor moves.
 //                  Flags: `--peek` (no ack), `--seq N` (explicit baseline, implies peek),
 //                  `--last N` (only the newest N unseen rows), `--since <iso|30m|2h|1d>`
 //                  (only rows at/after that time). --last/--since are PEEK-ONLY: without
@@ -2640,7 +2648,7 @@ const VALUE_REQUIRED_FLAGS = new Set(['message', 'message-file']);
 // a mid-argv `--help` (e.g. `inbox read --help ws1`) would swallow the
 // FOLLOWING positional as its own value via the generic heuristic below,
 // same failure class BOOLEAN_ONLY_FLAGS already exists to close.
-const BOOLEAN_ONLY_FLAGS = new Set(['force', 'peek', 'answers', 'help', 'ack-after-print', 'quiet', 'cc-primary', 'short']);
+const BOOLEAN_ONLY_FLAGS = new Set(['force', 'peek', 'answers', 'help', 'ack-after-print', 'quiet', 'cc-primary', 'short', 'with-broadcasts']);
 // parseArgs(argv) -> { positionals: string[], flags: { name: string[] } }.
 // Supports `--name value`, `--name=value`, repeatable (`--set a --set b`), and
 // bare boolean flags (`--json`). Values are collected as arrays so a caller can
@@ -11305,6 +11313,26 @@ function cmdInboxMessagesInner(id, flags, ctx, opts) {
     out2 = Object.assign({}, out2, { bodyLength: Buffer.byteLength(out2 && out2.body != null ? String(out2.body) : '', 'utf8') });
     return out2;
   }) : messages;
+  // `--with-broadcasts` (non-acking `inbox messages` only): merge the project's
+  // shared broadcasts into the row list, tagged kind:'broadcast', ordered by
+  // store `seq` (newest 50). Opt-in so the default shape for existing consumers
+  // is unchanged. Rows are read-only copies: no cursor moves.
+  let broadcastsMerged = null;
+  if (hasFlag(flags, 'with-broadcasts') && !doAck && typeof s.listMessages === 'function') {
+    let aliasesB = {};
+    try { aliasesB = require('../companion/lib/devswarm-sender-alias.js').readAliases(home); } catch (_) { aliasesB = {}; }
+    const bc = s.listMessages(store.BROADCAST_PARTITION_ID)
+      .filter((r) => !r.isHeartbeat && Number.isFinite(r.storeSeq))
+      .slice(-50)
+      .map((r) => {
+        const a = r.sender != null ? aliasesB[String(r.sender)] : null;
+        const from = a ? a.to : r.sender;
+        return { from, sender: from, text: r.body, body: r.body, message: r.body, kind: 'broadcast', mtype: 'broadcast', ts: r.ts, timestamp: r.ts, urgency: r.urgency, seq: r.storeSeq, storeSeq: r.storeSeq, bodyLength: Buffer.byteLength(String(r.body == null ? '' : r.body), 'utf8') };
+      });
+    broadcastsMerged = bc.length;
+    messages = (Array.isArray(messages) ? messages : []).concat(bc)
+      .sort((x, y) => (Number(x && x.seq) || 0) - (Number(y && y.seq) || 0));
+  }
   // Mesh message triage (Jev, part 2) — ADVISORY ONLY, purely additive. Every
   // row above is UNCHANGED by this step; a row this call could not confidently
   // classify (disabled, low confidence, or any failure) simply never gains a
@@ -11381,6 +11409,8 @@ function cmdInboxMessagesInner(id, flags, ctx, opts) {
     meshGroupError: meshGroupError || null, totalsPartial: !!meshGroupUnresolved,
     ...(msgStoreUnavailable ? { unreadStoreUnknown: true } : {}),
   };
+  if (broadcastsMerged !== null) out.broadcastCount = broadcastsMerged;
+  else if (hasFlag(flags, 'with-broadcasts') && doAck) out.withBroadcastsIgnored = 'acking verb; use `inbox messages <id> --with-broadcasts` (non-acking)';
   // 73303d4c098b fix: surface the redirect so a caller addressing the OLD
   // (now-folded) id sees it landed on the survivor instead of silently
   // getting someone else's mailbox with no explanation.
@@ -18014,8 +18044,9 @@ function cmdMeshRead(flags, ctx) {
     // side effects, matching `peek-primary`'s own contract on the direct-
     // message side.
     if (!peek) store.deriveSummary(s, { home, env: ctx.env, now });
-    const out = { ok: true, action: 'mesh-read', from, acked: !peek, newCursor, count: broadcasts.length, broadcasts };
+    const out = { ok: true, action: 'mesh-read', from, acked: !peek, newCursor, count: broadcasts.length, broadcasts, messages: broadcasts };
     if (peek) out.peek = true;
+    else out.hint = 'consumed broadcasts stay re-readable without moving any cursor: `mesh history [--last N]`, or `inbox messages <id> --with-broadcasts`';
     if (usedExplicitSeq) out.since = sinceSeq;
     if (lastN !== null) out.last = lastN;
     if (sinceTs !== null) out.sinceTs = sinceTs;
@@ -20766,7 +20797,15 @@ function runArmed(cmd, positionals, flags, ctx, argv) {
           const r = cmdMeshRead(flags, ctx);
           return { code: r.ok ? 0 : 2, result: r };
         }
-        return { code: 2, result: { ok: false, error: 'unknown mesh subcommand: ' + JSON.stringify(sub || '') + ' (read)' } };
+        if (sub === 'history') {
+          // Never-consuming re-read of ALL broadcasts (incl. already-consumed
+          // ones): `mesh read --peek --seq 0` (+ optional --last/--since).
+          const hflags = Object.assign({}, flags, { seq: ['0'], peek: [true] });
+          const r = cmdMeshRead(hflags, ctx);
+          if (r && r.ok) r.action = 'mesh-history';
+          return { code: r.ok ? 0 : 2, result: r };
+        }
+        return { code: 2, result: { ok: false, error: 'unknown mesh subcommand: ' + JSON.stringify(sub || '') + ' (read|history)' } };
       }
       case 'reconcile': {
         const r = cmdReconcile(flags, ctx);
