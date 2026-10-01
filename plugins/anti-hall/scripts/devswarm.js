@@ -6084,7 +6084,16 @@ function syncAppState(home, ctx) {
       // devswarm-parent-inbox.js relies on, since it must scope even when the
       // app DB itself is unreadable (no live snapshot to resolve repositoryId
       // against at ask-time).
-      if (archivedIds.has(w.id)) openButMarkedArchived.push({ id: w.id, label: w.label, repositoryId: w.repositoryId, worktreePath: wtKey });
+      if (archivedIds.has(w.id)) {
+        const marker = archivedDescs.find((d) => String(d.id) === String(w.id));
+        // localArchive: anti-hall's OWN `archive` verb wrote the marker (never app-sourced) — the
+        // owner-visible "app still shows a workspace you archived" case; `cmd` is the exact fix.
+        const localArchive = !!marker && !APP_SOURCED_MARKERS.has(marker.archivedBy) && w.builderType !== 'primary';
+        openButMarkedArchived.push({
+          id: w.id, label: w.label, repositoryId: w.repositoryId, worktreePath: wtKey,
+          localArchive, cmd: localArchive ? 'hivecontrol workspace archive ' + (w.branchName || w.id) : null,
+        });
+      }
     }
     active.sort((a, b) => (a.repositoryId || '').localeCompare(b.repositoryId || '') || ((a.rank == null ? Infinity : a.rank) - (b.rank == null ? Infinity : b.rank)));
     const gapCooldown = Number.isFinite(c.gapCooldownMs) ? c.gapCooldownMs : APP_GAP_COOLDOWN_MS;
@@ -13638,7 +13647,50 @@ function appBuilderGate(id, ctx) {
   if (!bt) return { ok: false, reason: 'app builderType unknown' };
   if (bt === 'primary') return { ok: false, reason: 'primary builder' };
   if (!b.active || b.archived) return { ok: false, reason: 'app builder is not open' };
-  return { ok: true };
+  return { ok: true, branch: b.branchName || null };
+}
+
+// hcArchiveCall(ident, spec) -> { ok, error, raw, retried? }. ONE `workspace archive
+// <ident>` spawn, retried ONCE on the known-flaky boundary-confirmation error.
+// ok = the process exited 0 AND its JSON body (when it parses) does not say
+// `archived:false`. EXIT 0 IS NOT PROOF the app archived anything — callers
+// verify through verifyAppArchived before reporting success.
+function hcArchiveCall(ident, base) {
+  const spec = Object.assign({}, base, { args: ['workspace', 'archive', String(ident)] });
+  const once = () => {
+    let r;
+    try { r = hcRun(spec); } catch (e) { r = { ok: false, error: String((e && e.message) || e) }; }
+    if (r && r.ok) {
+      let body = null;
+      try { body = JSON.parse(String(r.raw || '')); } catch (_) { body = null; }
+      if (body && typeof body === 'object' && body.archived === false) {
+        return { ok: false, raw: String(r.raw || ''), error: 'hivecontrol reported archived:false: ' + String(r.raw || '').trim().slice(0, 200) };
+      }
+      return { ok: true, raw: String((r && r.raw) || '') };
+    }
+    return { ok: false, raw: String((r && r.raw) || ''), error: String((r && r.error) || '') || 'unknown hivecontrol failure' };
+  };
+  const r1 = once();
+  if (r1.ok || !APP_ARCHIVE_RETRYABLE_RE.test(r1.error)) return r1;
+  const r2 = once();
+  return Object.assign({}, r2, { retried: true });
+}
+
+// verifyAppArchived(id, ctx) -> { verified: true } | { verified: false, why } .
+// The app DB (fresh read, builders.isActive/isHidden) is the authority; when the
+// read-only `hivecontrol workspace list all` ALSO answers and still lists the id,
+// the app is live regardless. Anything unreadable/unknown is NOT verified.
+function verifyAppArchived(id, ctx) {
+  let states = null;
+  try { states = require('../companion/lib/devswarm-app-db.js').builderStates({ home: ctx.home, env: ctx.env, now: ctx.now, fresh: true }); }
+  catch (_) { states = null; }
+  const b = states && states.get(String(id));
+  if (!b) return { verified: false, why: 'the app DB could not confirm the workspace afterwards' };
+  if (!b.archived) return { verified: false, why: 'the app DB still lists the workspace open (isActive=1)' };
+  let live = null;
+  try { live = fetchActiveWorkspaceRecords({ env: ctx.env, cwd: ctx.cwd }); } catch (_) { live = null; }
+  if (live && live.ok && live.records.some((r) => r.id === String(id))) return { verified: false, why: '`hivecontrol workspace list all` still lists the workspace' };
+  return { verified: true };
 }
 
 function attemptAppArchive(id, desc, ctx) {
@@ -13649,23 +13701,136 @@ function attemptAppArchive(id, desc, ctx) {
   try { cap = devswarmCaps.can('workspace.archive', { home, env: ctx.env }); }
   catch (e) { return { attempted: false, reason: 'capability check failed: ' + String((e && e.message) || e) }; }
   if (!cap || !cap.ok) return { attempted: false, reason: (cap && cap.reason) || 'dormant' };
-  const argv = ['workspace', 'archive', String(id)];
   const cwd = (desc && desc.worktreePath) || ctx.cwd || process.cwd();
-  const spec = { args: argv, env: ctx.env, cwd, timeout: APP_ARCHIVE_TIMEOUT_MS };
-  let res;
-  try { res = hcRun(spec); } catch (e) { res = { ok: false, error: String((e && e.message) || e) }; }
-  if (res && res.ok) return { attempted: true, ok: true };
-  // Retry ONCE on the specific known-flaky boundary-confirmation error — never
-  // a blind "retry any failure" (that could double-run a genuinely destructive
-  // native verb on a real, non-transient failure).
-  const errText = String((res && res.error) || '');
-  if (APP_ARCHIVE_RETRYABLE_RE.test(errText)) {
-    let res2;
-    try { res2 = hcRun(spec); } catch (e) { res2 = { ok: false, error: String((e && e.message) || e) }; }
-    if (res2 && res2.ok) return { attempted: true, ok: true, retried: true };
-    return { attempted: true, ok: false, retried: true, error: String((res2 && res2.error) || errText) };
+  const base = { env: ctx.env, cwd, timeout: APP_ARCHIVE_TIMEOUT_MS };
+  const branch = target.branch || (desc && desc.branch) || null;
+  const first = hcArchiveCall(String(id), base);
+  let v = first.ok ? verifyAppArchived(id, ctx) : null;
+  const retried = !!first.retried;
+  if (first.ok && v.verified) return Object.assign({ attempted: true, ok: true, verified: true, via: 'id' }, retried ? { retried: true } : {});
+  // Exit 0 but the app is unchanged (field report): the id was accepted as a no-op.
+  // The CLI also accepts the BRANCH name — try that once, then re-verify.
+  let second = null;
+  if (first.ok && branch) {
+    second = hcArchiveCall(branch, base);
+    if (second.ok) {
+      v = verifyAppArchived(id, ctx);
+      if (v.verified) return { attempted: true, ok: true, verified: true, via: 'branch', retried: retried || !!second.retried };
+    }
   }
-  return { attempted: true, ok: false, error: errText || 'unknown hivecontrol failure' };
+  const error = !first.ok ? first.error
+    : (second && !second.ok ? second.error : 'hivecontrol exited 0 but ' + ((v && v.why) || 'the archive could not be verified'));
+  return {
+    attempted: true, ok: false, verified: false, retried: retried || !!(second && second.retried) || undefined, error,
+    manualCommand: 'hivecontrol workspace archive ' + (branch || id),
+  };
+}
+
+// localArchivedAppLive(home, ctx) -> { appDb, rows:[{ id, appId, branch, label, worktreePath, repoKey, cmd }] }.
+// READ-ONLY. A workspace anti-hall's OWN `archive` verb tombstoned (archived/<id>.json
+// with no app-sourced archivedBy) whose DevSwarm app builder is STILL open
+// (isActive=1, not hidden, non-primary): the app side was never archived. App-sourced
+// markers are excluded (retireStaleArchivedMarkers owns them: the app is right there).
+// A twin guard skips any row whose id or worktree has a live ACTIVE descriptor.
+// ctx.repoKey scopes to one project (owner key of the archived descriptor).
+function localArchivedAppLive(home, ctx) {
+  const c = ctx || {};
+  const out = { appDb: false, rows: [] };
+  let snap = c.snap || null;
+  try { if (!snap) snap = require('../companion/lib/devswarm-app-db.js').snapshot({ home, env: c.env, now: c.now, fresh: true }); } catch (_) { snap = null; }
+  if (!snap || !Array.isArray(snap.workspaces)) return out;
+  out.appDb = true;
+  const appDb = require('../companion/lib/devswarm-app-db.js');
+  let archivedDescs = []; let activeDescs = [];
+  try { archivedDescs = readJsonDescriptors(archivedDir(home)); } catch (_) { archivedDescs = []; }
+  try { activeDescs = readJsonDescriptors(workspacesDir(home)); } catch (_) { activeDescs = []; }
+  const wtKey = (p) => (p ? (canonicalWorktreeRealPath(String(p)) || String(p)) : null);
+  const activeIds = new Set(activeDescs.map((d) => String(d.id)));
+  const activeWts = new Set(activeDescs.map((d) => wtKey(d.worktreePath)).filter(Boolean));
+  const seen = new Set();
+  for (const d of archivedDescs) {
+    if (!d || d.id == null || !isSafeId(String(d.id))) continue;
+    const id = String(d.id);
+    if (APP_SOURCED_MARKERS.has(d.archivedBy) || activeIds.has(id)) continue;
+    const wt = wtKey(d.worktreePath);
+    if (wt && activeWts.has(wt)) continue;
+    if (c.repoKey && descriptorPhysicalOwnerKey(d) !== c.repoKey) continue;
+    const w = appDb.workspaceFor(snap, { id, worktreePath: d.worktreePath || null });
+    if (!w || !w.active || w.archived || String(w.builderType || '').toLowerCase() === 'primary' || !w.builderType || seen.has(w.id)) continue;
+    seen.add(w.id);
+    out.rows.push({
+      id, appId: w.id, branch: w.branchName || d.branch || null, label: w.label || null,
+      worktreePath: wt, repoKey: descriptorPhysicalOwnerKey(d) || null,
+      cmd: 'hivecontrol workspace archive ' + (w.branchName || d.branch || w.id),
+    });
+  }
+  return out;
+}
+
+// appLiveArchivedRows(home, { repair, cwd, env, now }) -> { rows, archived, errors, appDb, results }.
+// The `doctor` detection (read-only) and `doctor --repair` (repair:true) for the
+// anti-hall-archived / app-still-live mismatch. EXPLICIT only — never called from a
+// hook, supervisor or update path. The repair is the VERIFIED app archive
+// (attemptAppArchive); app archive is reversible in the app and nothing is deleted.
+function appLiveArchivedRows(home, ctx) {
+  const c = ctx || {};
+  const env = c.env || process.env;
+  const now = Number.isFinite(c.now) ? c.now : Date.now();
+  let repoKey = null;
+  try { repoKey = repokey.repoKeyForWorktree(c.cwd || process.cwd()) || null; } catch (_) { repoKey = null; }
+  const found = localArchivedAppLive(home, { env, now, repoKey });
+  const out = { appDb: found.appDb, rows: found.rows, archived: 0, errors: 0, results: [] };
+  if (!c.repair) return out;
+  for (const r of found.rows) {
+    let res;
+    try { res = attemptAppArchive(r.appId, { id: r.id, worktreePath: r.worktreePath, branch: r.branch }, { home, cwd: c.cwd, env, now }); }
+    catch (e) { res = { attempted: true, ok: false, verified: false, error: String((e && e.message) || e) }; }
+    out.results.push({ id: r.id, appArchive: res });
+    if (res.ok) out.archived++; else out.errors++;
+  }
+  return out;
+}
+
+// appOnlyArchive(raw, ctx) -> result | null. `archive <branch|meshId|id-prefix|uuid>` for a
+// workspace anti-hall ALREADY archived whose app builder is still open: archives the
+// APP side only (verified, idempotent) and says so. null = not this case (the normal
+// cmdArchive path runs). Exactly one match or it archives nothing.
+function appOnlyArchive(raw, ctx) {
+  if (typeof raw !== 'string' || !raw) return null;
+  const home = ctx.home;
+  const env = ctx.env || process.env;
+  if (isSafeId(raw) && readDescriptorPathState(descriptorPath(home, raw)).exists) return null; // still active in anti-hall
+  let repoKey = null;
+  try { repoKey = repokey.repoKeyForWorktree(ctx.cwd || process.cwd()) || null; } catch (_) { repoKey = null; }
+  const found = localArchivedAppLive(home, { env, now: ctx.now, repoKey });
+  if (!found.appDb) return null;
+  const hit = found.rows.filter((r) => r.id === raw || r.appId === raw || r.branch === raw
+    || (isSafeId(raw) && raw.length >= 6 && (r.id.startsWith(raw) || r.appId.startsWith(raw)))
+    || rosterMeshId(r.worktreePath) === raw);
+  if (hit.length === 0) {
+    // Already archived on BOTH sides (idempotent): an archived descriptor + an app-archived builder.
+    let appDb = null; let snap = null;
+    try { appDb = require('../companion/lib/devswarm-app-db.js'); snap = appDb.snapshot({ home, env, now: ctx.now, fresh: true }); } catch (_) { snap = null; }
+    if (!snap) return null;
+    const archIds = new Set(readJsonDescriptors(archivedDir(home)).map((d) => String(d.id)));
+    const w = snap.workspaces.find((x) => x.archived === true && archIds.has(x.id)
+      && (x.id === raw || x.branchName === raw || (isSafeId(raw) && raw.length >= 6 && x.id.startsWith(raw))));
+    if (w) {
+      return { ok: true, action: 'archive', id: w.id, descriptorArchived: false, alreadyArchived: true, appArchive: { attempted: false, ok: true, verified: true, reason: 'already archived in the DevSwarm app' } };
+    }
+    return null;
+  }
+  if (hit.length > 1) {
+    return { ok: false, action: 'archive', id: raw, descriptorArchived: false, error: 'ambiguous: ' + JSON.stringify(raw) + ' matches ' + hit.length + ' app-live workspaces — archived nothing; use one full id: ' + hit.map((r) => r.appId).join(', '), candidates: hit.map((r) => r.appId) };
+  }
+  const r = hit[0];
+  const appArchive = attemptAppArchive(r.appId, { id: r.id, worktreePath: r.worktreePath, branch: r.branch }, { home, cwd: ctx.cwd, env, now: ctx.now });
+  const res = { ok: true, action: 'archive', id: r.id, descriptorArchived: false, alreadyArchived: true, appOnly: true, appArchive };
+  if (!appArchive.ok) {
+    res.partial = true;
+    res.manualStep = 'run `' + (appArchive.manualCommand || r.cmd) + '` — the app archive was NOT verified' + (appArchive.error ? ' [' + appArchive.error + ']' : '');
+  }
+  return res;
 }
 
 function cmdArchive(id, ctx, opts) {
@@ -14008,13 +14173,17 @@ function cmdArchive(id, ctx, opts) {
     : attemptAppArchive(id, desc, ctx);
   archived.appArchive = appArchive;
   if (appArchive.ok) {
-    archived.manualStep = 'archived in the DevSwarm app too (isActive=0/isHidden=1)'
+    archived.manualStep = 'archived in the DevSwarm app too (isActive=0/isHidden=1, verified)'
       + (appArchive.retried ? ' — succeeded on retry' : '') + '.';
   } else {
-    archived.manualStep = 'run `hivecontrol workspace archive ' + id + '` (or archive it manually in the '
+    // The app side did NOT verifiably archive: the descriptor IS archived, so the
+    // result is a PARTIAL success (ok stays true for callers that gate on the local
+    // archive; `partial` + appArchive.verified:false is the honest signal).
+    if (appArchive.attempted) archived.partial = true;
+    archived.manualStep = 'run `' + (appArchive.manualCommand || ('hivecontrol workspace archive ' + id)) + '` (or archive it manually in the '
       + 'DevSwarm app) to also archive workspace ' + id + ' there — anti-hall\'s own archive only tombstoned '
       + 'its local descriptor/registry (archive keeps disk contents; never delete without confirmation).'
-      + (appArchive.attempted ? ' [app archive attempted and failed: ' + String(appArchive.error || 'unknown') + ']'
+      + (appArchive.attempted ? ' [app archive attempted, NOT verified: ' + String(appArchive.error || 'unknown') + ']'
         : (appArchive.reason ? ' [app archive not attempted: ' + String(appArchive.reason) + ']' : ''));
   }
   // LIVE-CHILD WARNING (defect df54edf54804 hardening): archiving unlinks the
@@ -16963,6 +17132,23 @@ function cmdRoster(flags, ctx) {
       worktreePath: null, source: 'archived', meshId: null, hints: ['archived'],
     });
   }
+  for (const w of workspaces) w.appArchived = null; // null = unknown (no app DB / no matching builder)
+  // anti-hall archived it, the app still shows it live: surfaced (never hidden) with the exact fix.
+  let appStillLive = null;
+  try {
+    const found = localArchivedAppLive(home, { env: ctx.env, now, repoKey });
+    if (found.rows.length) {
+      appStillLive = {
+        count: found.rows.length,
+        rows: found.rows.map((r) => ({ id: r.id, appId: r.appId, branch: r.branch, label: r.label, cmd: r.cmd })),
+        message: 'app still shows ' + found.rows.length + ' workspace(s) you archived — run: ' + found.rows.map((r) => r.cmd).join(' ; '),
+      };
+      for (const r of found.rows) {
+        const row = workspaces.find((x) => String(x.id) === r.id);
+        if (row && Array.isArray(row.hints) && !row.hints.includes('app-live')) row.hints.push('app-live');
+      }
+    }
+  } catch (_) { appStillLive = null; }
   // v0.108.0: the DevSwarm app DB (read-only, fail-open) — the app's title wins
   // over the names cache, each matched row gains `app` { rank, pinned, focused,
   // finish, brief, builderType }, and rows are ordered by sidebar rank (stable:
@@ -16975,6 +17161,8 @@ function cmdRoster(flags, ctx) {
       for (const w of workspaces) {
         const ws = appDb.workspaceFor(snap, { id: w.id, worktreePath: w.worktreePath });
         if (!ws) continue;
+        // appArchived: the app DB's verdict for this row (true archived / false live); null stays = unknown.
+        w.appArchived = ws.archived === true ? true : (ws.active === true ? false : null);
         if (ws.label) w.wsName = ws.label;
         const brief = appDb.briefDelivery(snap, ws, now);
         w.app = { rank: ws.rank, pinned: ws.isPinned, focused: ws.id === focused, finish: appDb.finishSignal(ws), brief: brief ? brief.status : null, builderType: ws.builderType };
@@ -17058,6 +17246,7 @@ function cmdRoster(flags, ctx) {
     ok: true, action: 'roster', repoKey,
     known: !storeUnavailable, storeUnavailable, storeUnavailableReason, storeUnavailableScope,
     count: workspaces.length, workspaces, recent: sum.recent || [],
+    ...(appStillLive ? { appStillLive } : {}),
     // live vs archived split of `count` — a row is archived when it is labelled
     // source:'archived' or carries the `archived` hint (app-archived rows too).
     liveCount: workspaces.filter((w) => !(w.source === 'archived' || (w.hints || []).includes('archived'))).length,
@@ -20220,11 +20409,14 @@ function runArmed(cmd, positionals, flags, ctx, argv) {
       }
       case 'archive': {
         const rawId = positionals[1];
+        // Already archived in anti-hall but still LIVE in the app: archive the app side only.
+        const appOnly = appOnlyArchive(rawId, ctx);
+        if (appOnly) return { code: appOnly.ok && !appOnly.partial ? 0 : 2, result: appOnly };
         if (!isSafeId(rawId)) return { code: 2, result: { ok: false, error: 'invalid or missing workspace id' } };
         const resolved = resolveArchiveId(rawId, ctx);
         if (!resolved.ok) return { code: 2, result: Object.assign({ action: 'archive', id: rawId, descriptorArchived: false }, resolved) };
         const r = cmdArchive(resolved.id, ctx, { flags });
-        return { code: r.ok ? 0 : 2, result: r };
+        return { code: r.ok && !r.partial ? 0 : 2, result: r };
       }
       case 'reap-orphans': {
         const r = cmdReapOrphans(flags, ctx);
@@ -20836,7 +21028,7 @@ module.exports = {
   deriveInstanceNonce,
   // mesh redesign B5 / Phase 3 — THE nonce every production site uses, plus the
   // reader_cursors adapters:
-  deriveReaderNonce, callerReaderKey, commitNdAck, floorCursor, importReaderCursorsAllStores, repairReaderFloorsAllStores, markAppArchivedDescriptors, retireStaleArchivedMarkers, deriveTitleFromBrief, appSessionOnWorktree, refreshNamesFromApp, syncAppState, messageGaps, appStatePath, cmdAppState, cmdSyncUi, repairChildSenderLabelsAllStores,
+  deriveReaderNonce, callerReaderKey, commitNdAck, floorCursor, importReaderCursorsAllStores, repairReaderFloorsAllStores, markAppArchivedDescriptors, retireStaleArchivedMarkers, localArchivedAppLive, appLiveArchivedRows, appOnlyArchive, attemptAppArchive, deriveTitleFromBrief, appSessionOnWorktree, refreshNamesFromApp, syncAppState, messageGaps, appStatePath, cmdAppState, cmdSyncUi, repairChildSenderLabelsAllStores,
   // spawn speed + submodule-failure reporting (0.109.0) — exported for direct unit testing:
   spawnSourceFreshness, remoteRefAgeSec, gitCommonDirFor, parseSubmoduleWorktreeFailures,
   senderIdentityDetailed, childSenderId, isPrimaryCheckout,

@@ -1951,6 +1951,21 @@ function runRepairs(opts) {
   } catch (e) {
     push('phantom-primary-rows', 'archive', 'skipped', 'phantom-primary check raised (fail-open): ' + errMsg(e));
   }
+  // Archived in anti-hall but still LIVE in the DevSwarm app (the `archive` verb's app step
+  // never took effect): explicit `doctor --repair` ONLY (inside !migrationsOnly). The repair
+  // is the VERIFIED app archive — reversible in the app, nothing deleted, idempotent, fail-open.
+  try {
+    const dw = require(DEVSWARM_SCRIPT);
+    if (typeof dw.appLiveArchivedRows === 'function') {
+      const r = dw.appLiveArchivedRows(home, { repair: !dryRun, cwd, env });
+      if (r.rows.length === 0) push('app-live-archived', 'none', 'skipped', 'no workspace archived in anti-hall is still live in the DevSwarm app');
+      else if (dryRun) push('app-live-archived', 'app-archive', 'skipped', '[dry-run] app still shows ' + r.rows.length + ' workspace(s) you archived — would run: ' + r.rows.map((x) => x.cmd).join(' ; '));
+      else if (r.errors) push('app-live-archived', 'app-archive', 'failed', 'verified app archive ' + r.archived + '/' + r.rows.length + '; not verified: ' + r.results.filter((x) => !x.appArchive.ok).map((x) => x.id + ' (' + (x.appArchive.error || x.appArchive.reason || 'unknown') + ')').join(', ') + ' — run manually: ' + r.rows.map((x) => x.cmd).join(' ; '));
+      else push('app-live-archived', 'app-archive', 'fixed', 'archived ' + r.archived + ' workspace(s) in the DevSwarm app (verified; reversible in the app)');
+    }
+  } catch (e) {
+    push('app-live-archived', 'app-archive', 'skipped', 'app-live-archived check raised (fail-open): ' + errMsg(e));
+  }
   } // end !migrationsOnly
   // --- R13 item 2: WIRE THE FOUR STANDALONE SWEEPS ------------------------
   //

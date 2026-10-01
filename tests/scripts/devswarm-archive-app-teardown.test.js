@@ -79,11 +79,14 @@ function writeAppDb(home, rows) {
   const { DatabaseSync } = require('node:sqlite');
   const dbPath = path.join(home, 'fixture-devswarm-app.db');
   const db = new DatabaseSync(dbPath);
-  db.exec('CREATE TABLE builders (id TEXT PRIMARY KEY, isActive INTEGER, isHidden INTEGER, builderType TEXT, worktreePath TEXT, label TEXT)');
-  const st = db.prepare('INSERT INTO builders (id, isActive, isHidden, builderType, worktreePath, label) VALUES (?, ?, ?, ?, ?, ?)');
-  for (const r of rows) st.run(r.id, r.isActive === undefined ? 1 : r.isActive, r.isHidden || 0, r.builderType === undefined ? 'standard' : r.builderType, r.worktreePath || null, r.label || null);
+  db.exec('CREATE TABLE builders (id TEXT PRIMARY KEY, isActive INTEGER, isHidden INTEGER, builderType TEXT, worktreePath TEXT, label TEXT, branchName TEXT)');
+  const st = db.prepare('INSERT INTO builders (id, isActive, isHidden, builderType, worktreePath, label, branchName) VALUES (?, ?, ?, ?, ?, ?, ?)');
+  for (const r of rows) st.run(r.id, r.isActive === undefined ? 1 : r.isActive, r.isHidden || 0, r.builderType === undefined ? 'standard' : r.builderType, r.worktreePath || null, r.label || null, r.branchName || null);
   db.close();
   return dbPath;
+}
+function effectJs(dbPath) {
+  return "try{const {DatabaseSync}=require('node:sqlite');const d=new DatabaseSync(" + JSON.stringify(dbPath) + ");d.prepare('UPDATE builders SET isActive=0,isHidden=1 WHERE id=? OR branchName=?').run(a[2],a[2]);d.close();}catch(_){}\n";
 }
 function mutateCalls(fake) {
   return readCalls(fake.callsFile).filter((c) => c.argv[0] === 'workspace' && (c.argv[1] === 'archive' || c.argv[1] === 'delete') && c.argv[2] !== '--help');
@@ -102,7 +105,7 @@ test('APP ARCHIVE: app DB confirms an open STANDARD builder with the exact id + 
   try {
     seedOne(home, W, ID_A);
     const dbPath = writeAppDb(home, [{ id: ID_A, builderType: 'standard' }]);
-    const fake = fakeHivecontrol(path.join(home, 'bin'), { version: '2.5.3', workspaceHelp: HELP_253, verbHelp: { archive: ARCHIVE_253 } });
+    const fake = fakeHivecontrol(path.join(home, 'bin'), { version: '2.5.3', workspaceHelp: HELP_253, verbHelp: { archive: ARCHIVE_253 }, effectDb: dbPath });
     capsLib.resetCache();
     const ctx = { home, cwd: W, env: { HOME: home, PATH: fake.dir, ANTIHALL_DEVSWARM_APP_DB: dbPath }, backend: BACKEND };
     const r = cli.run(['archive', ID_A], ctx);
@@ -155,6 +158,7 @@ test('APP ARCHIVE: retries ONCE on "Could not confirm terminal process boundary"
       + "if(a[0]==='workspace'&&a[1]==='archive'&&a[2]==='--help'){process.stdout.write(fs.readFileSync(" + JSON.stringify(ARCHIVE_253) + ",'utf8'));process.exit(0);}\n"
       + "if(a[0]==='workspace'&&a[1]==='archive'){let n=parseInt(fs.readFileSync(" + JSON.stringify(stateFile) + ",'utf8'),10)||0;n++;fs.writeFileSync(" + JSON.stringify(stateFile) + ",String(n));\n"
       + "  if(n===1){process.stderr.write('Error: Could not confirm terminal process boundary\\n');process.exit(1);}\n"
+      + "  " + effectJs(path.join(home, 'fixture-devswarm-app.db'))
       + "  console.log(JSON.stringify({ok:true}));process.exit(0);}\n"
       + 'process.exit(2);\n';
     fs.writeFileSync(path.join(bin, 'hivecontrol'), src, { mode: 0o755 });
@@ -189,6 +193,7 @@ test('APP ARCHIVE: retries ONCE on the reworded "Could not confirm terminal <id>
       + "if(a[0]==='workspace'&&a[1]==='archive'&&a[2]==='--help'){process.stdout.write(fs.readFileSync(" + JSON.stringify(ARCHIVE_253) + ",'utf8'));process.exit(0);}\n"
       + "if(a[0]==='workspace'&&a[1]==='archive'){let n=parseInt(fs.readFileSync(" + JSON.stringify(stateFile) + ",'utf8'),10)||0;n++;fs.writeFileSync(" + JSON.stringify(stateFile) + ",String(n));\n"
       + "  if(n===1){process.stderr.write('Error: Could not confirm terminal " + ID_A + " stopped\\n');process.exit(1);}\n"
+      + "  " + effectJs(path.join(home, 'fixture-devswarm-app.db'))
       + "  console.log(JSON.stringify({ok:true}));process.exit(0);}\n"
       + 'process.exit(2);\n';
     fs.writeFileSync(path.join(bin, 'hivecontrol'), src, { mode: 0o755 });
@@ -250,7 +255,7 @@ test('APP ARCHIVE: a genuinely FAILED archive (not the retryable error) is repor
     assert.strictEqual(r.result.appArchive.ok, false, JSON.stringify(r.result));
     const calls = readCalls(fake.callsFile).filter((c) => c.argv[0] === 'workspace' && c.argv[1] === 'archive' && c.argv[2] !== '--help');
     assert.strictEqual(calls.length, 1, 'a non-retryable failure must not be retried: ' + JSON.stringify(calls));
-    assert.match(r.result.manualStep, /app archive attempted and failed/);
+    assert.match(r.result.manualStep, /app archive attempted, NOT verified/);
   } finally { rm(W); rm(home); }
 });
 

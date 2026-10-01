@@ -335,6 +335,23 @@ function uiSyncAsk(home, sessionId, appDbState, rowIds, now) {
   } catch (_) { return null; }
 }
 
+// appLiveArchivedNote(home, sessionId, conflicts, now) -> string | null. ONE line, at most
+// once per session per set (deduped on the same marker-file idiom as uiSyncAsk): anti-hall's
+// own `archive` verb archived these but the DevSwarm app still shows them open (the app step
+// never took effect). Names the exact command; never hides the row, never runs anything.
+function appLiveArchivedNote(home, sessionId, conflicts, now) {
+  try {
+    const live = (conflicts || []).filter((c) => c && c.localArchive === true && c.cmd);
+    if (!live.length) return null;
+    const p = uiSyncAskPath(home, 'app-live:' + String(sessionId || ''), live.map((c) => String(c.id)));
+    if (fs.existsSync(p)) return null;
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, JSON.stringify({ at: now, ids: live.map((c) => String(c.id)) }));
+    return 'DEVSWARM: app still shows ' + live.length + ' workspace(s) you archived — run: ' + live.map((c) => c.cmd).join(' ; ')
+      + ' (reversible in the app; anti-hall `doctor --repair` runs the verified app archive)';
+  } catch (_) { return null; }
+}
+
 function parentInboxLogPath(home) {
   return path.join(devswarmRoot(home), 'parent-inbox.log');
 }
@@ -2479,6 +2496,8 @@ function main() {
       }
       const ask = uiSyncAsk(home, sessionId, st, rows.map((r) => String(r.id)), now);
       if (ask) segments.push(ask);
+      const liveNote = appLiveArchivedNote(home, sessionId, st.conflicts, now);
+      if (liveNote) segments.push(liveNote);
     } catch (_) { /* fail-open */ }
   }
 
@@ -2675,4 +2694,6 @@ module.exports = {
   doneStateLabel,
   // maintainer-notice (0.117.0) — exported for direct unit testing:
   buildMaintainerNoticeSegment,
+  // app-live archived note — exported for direct unit testing:
+  appLiveArchivedNote,
 };

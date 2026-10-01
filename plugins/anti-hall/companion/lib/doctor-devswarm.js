@@ -858,8 +858,19 @@ function appDbChecks(opts) {
     const scopedConflicts = curRepoId
       ? st.openButMarkedArchived.filter((u) => u && u.repositoryId != null && String(u.repositoryId) === curRepoId)
       : [];
-    if (scopedConflicts.length) {
-      out.push({ status: WARN, message: 'open in the DevSwarm app but archived in anti-hall (stale marker — the app is right; the next app-DB sync retires it, `doctor --repair` does it now): ' + scopedConflicts.map((u) => (u.label || u.id) + ' (' + String(u.id).slice(0, 8) + ')').join('; ') });
+    const localHeld = scopedConflicts.filter((u) => u.localArchive === true);
+    if (localHeld.length) {
+      out.push({
+        status: WARN,
+        message: 'app still shows ' + localHeld.length + ' workspace(s) you archived in anti-hall — run: '
+          + localHeld.map((u) => u.cmd || ('hivecontrol workspace archive ' + u.id)).join(' ; ')
+          + ' (or `doctor --repair` runs the verified app archive; reversible in the app)',
+        appLiveArchived: localHeld.map((u) => ({ id: u.id, cmd: u.cmd || null })),
+      });
+    }
+    const staleConflicts = scopedConflicts.filter((u) => u.localArchive !== true);
+    if (staleConflicts.length) {
+      out.push({ status: WARN, message: 'open in the DevSwarm app but archived in anti-hall (stale marker — the app is right; the next app-DB sync retires it, `doctor --repair` does it now): ' + staleConflicts.map((u) => (u.label || u.id) + ' (' + String(u.id).slice(0, 8) + ')').join('; ') });
     }
   }
   if (st.gaps && Array.isArray(st.gaps.repos)) {

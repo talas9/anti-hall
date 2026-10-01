@@ -405,7 +405,7 @@ function builderStates(opts) {
   const snap = snapshot(o);
   if (!snap) return null;
   const map = new Map();
-  for (const w of snap.workspaces) map.set(w.id, { active: w.active, archived: w.archived, worktreePath: w.worktreePath, builderType: w.builderType });
+  for (const w of snap.workspaces) map.set(w.id, { active: w.active, archived: w.archived, worktreePath: w.worktreePath, builderType: w.builderType, branchName: w.branchName });
   if (useCross && sig) writeCrossCache(o.home, file, sig, now, map);
   return map;
 }
