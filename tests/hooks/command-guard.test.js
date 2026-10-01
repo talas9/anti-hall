@@ -1484,3 +1484,33 @@ test('ARITH ALLOW (sanity): echo $((1<<2))', () => {
   const r = runCoord('echo $((1<<2))');
   assert.strictEqual(r.status, 0, `expected allow; stdout: ${r.stdout}`);
 });
+
+test('state-changing remote op (gh pr create): still BLOCKED, reason names the real category, not "heavy"', () => {
+  for (const env of [undefined, PRIMARY_ENV]) {
+    const r = runHeavy('gh pr create -R owner/repo --base staging --head develop --title "x" --body-file /tmp/pr.md 2>&1 | tail -2', env);
+    assert.strictEqual(r.status, 2, `stdout: ${r.stdout}`);
+    const reason = r.json.reason;
+    assert.ok(/State-changing remote operation detected — /.test(reason), reason);
+    assert.ok(!/Heavy command detected/.test(reason), reason);
+    assert.ok(!/heavy-pattern/.test(reason), reason);
+  }
+});
+
+test('`;`-joined leading cd: block reason hints `cd <dir> &&`; the && form is allowed', () => {
+  const dir = require('node:fs').mkdtempSync(require('node:path').join(require('node:os').tmpdir(), 'cdjoin-'));
+  try {
+    require('node:fs').writeFileSync(require('node:path').join(dir, 'gen.py'), 'print(1)\n');
+    const h = makeHome();
+    try {
+      const go = (command) => testHook(HOOK, Object.assign(bashPayload(command), { cwd: dir }), { home: h.home, env: COORD });
+      const semi = go('cd ' + dir + '; python3 gen.py --check | tail -1');
+      assert.strictEqual(semi.status, 2, semi.stdout);
+      assert.ok(/use `cd <dir> &&`, not `;`/.test(semi.json.reason), semi.json.reason);
+      const amp = go('cd ' + dir + ' && python3 gen.py --check | tail -1');
+      assert.notStrictEqual(amp.status, 2, amp.stdout);
+      const other = go('cd ' + dir + '; npm run build');
+      assert.strictEqual(other.status, 2);
+      assert.ok(!/not `;`/.test(other.json.reason), 'no hint when && would not help');
+    } finally { h.cleanup(); }
+  } finally { require('node:fs').rmSync(dir, { recursive: true, force: true }); }
+});

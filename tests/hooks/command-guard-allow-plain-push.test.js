@@ -689,3 +689,18 @@ test('allow-plain-push (e): a newline before the redirect makes it a separate co
   assert.strictEqual(runWithScratchpad('git push origin main\n> @SP@/f').status, 2);
   assert.strictEqual(runWithScratchpad('git push origin main\n>> @SP@/f 2>&1').status, 2);
 });
+
+// Parity: `cd <dir>; git add -A && git commit -m …` (`;`-joined cd) must never
+// be stricter or looser than the `&&`-joined form (field report, 2026-09-30).
+test('leading cd joined by `;` and `&&` classify identically for add+commit', () => {
+  const repo = makeGitRepo();
+  try {
+    const body = 'git add -A && git commit -q -m "data: Model 3 VEH coverage …"';
+    const semi = run('cd ' + repo + '; ' + body, { cwd: repo });
+    const amp = run('cd ' + repo + ' && ' + body, { cwd: repo });
+    assert.notStrictEqual(semi.status, 2, semi.stdout);
+    assert.strictEqual(semi.status, amp.status);
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+});

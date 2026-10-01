@@ -1436,6 +1436,17 @@ function isHeavyGitSegment(segment) {
   return false;
 }
 
+// isGitPushSegment(segment) -> true iff the real git subcommand is `push`.
+// Used only to pick the block-reason wording (state-changing, not "heavy").
+function isGitPushSegment(segment) {
+  if (effectiveVerb(segment) !== 'git') return false;
+  const tokens = tokenizeQuoted(segment);
+  const gitIdx = tokens.findIndex((t) => basename(t).toLowerCase() === 'git');
+  if (gitIdx === -1) return false;
+  const subIdx = gitSubcommandIndex(tokens, gitIdx);
+  return subIdx !== -1 && tokens[subIdx].toLowerCase() === 'push';
+}
+
 // isSafeSqliteReadonly(segment) -> true iff this is a `sqlite3` invocation
 // with `-readonly` present as its OWN argv token before the db path, and the
 // SQL/args after the db path contain none of sqlite3's dangerous dot-commands
@@ -1887,6 +1898,7 @@ function classifyHeavy(command, depth) {
   const d = typeof depth === 'number' ? depth : 0;
   for (const seg of splitSegments(command)) {
     if (isHeavySegment(seg, command)) {
+      if (isHeavyGhSegment(seg) || isGitPushSegment(seg)) return { kind: 'remote', label: 'state-changing remote operation' };
       const verb = effectiveVerb(seg);
       if (verb && HEAVY_VERBS.has(verb)) return { kind: 'verb', label: verb };
       return { kind: 'category', label: 'heavy-pattern' };
@@ -3358,7 +3370,8 @@ function main() {
   // allowlist or a fixed category name) — NEVER raw command/stdin text — so no
   // attacker-controlled content is reflected into the model-visible reason.
   const cls = classifyHeavy(command);
-  const detail = cls
+  const detected = cls && cls.kind === 'remote' ? 'State-changing remote operation detected' : 'Heavy command detected';
+  const detail = cls && cls.kind === 'remote' ? '' : cls
     ? (cls.kind === 'verb'
         ? '(verb: ' + cls.label + ')'
         : '(category: ' + cls.label + ')')
@@ -3398,6 +3411,16 @@ function main() {
   // set — just reordered.
   const SCRATCHPAD_SCRIPT_HINT =
     'Have a script to run? Write it to the scratchpad and run it with run_in_background (use the literal absolute scratchpad path, not $VAR; chain only wc/head/tail/grep -c/grep -m N) — never inline: a scratchpad script piped to tail is STILL blocked in the foreground, it must be run_in_background. ';
+  // A leading `cd <dir>;` leaves the cwd unknown (only an unconditional `&&`
+  // cd is tracked), so a relative-path check fails ONLY because of the `;`.
+  // Hint exactly then: the same command joined with `&&` would qualify.
+  let cdJoinHint = '';
+  try {
+    const m = /^(\s*cd\s+[^;&|\n]+?)\s*;/.exec(command);
+    if (m && isBoundedVerificationCommand(m[1] + ' &&' + command.slice(m[0].length), { payload })) {
+      cdJoinHint = ' If the check is meant to run inline: use `cd <dir> &&`, not `;`.';
+    }
+  } catch (_) { /* hint is best-effort */ }
   const reason = devswarmPrimary
     ? ('DEVSWARM COMMAND-DELEGATION RULE: the primary/main orchestrator never runs ' +
        'heavy/long/state-changing commands inline — raw output floods the main thread. ' +
@@ -3408,9 +3431,9 @@ function main() {
        '-p "<brief>"` (guard-exempt, run it inline). ALTERNATIVE, only for genuinely ' +
        'small/scoped work (one command, a lookup, a scoped check): delegate to a subagent ' +
        '(cheap model: Haiku or similar) that runs it and returns only a tight summary. Do ' +
-       'NOT hand a workspace-scale matter to a subagent. Heavy command detected ' + detail +
+       'NOT hand a workspace-scale matter to a subagent. ' + detected + (detail ? ' ' + detail : '') +
        ' — spin a workspace, or delegate to a subagent if it is genuinely small. ' +
-       INLINE_ALLOWED_HINT)
+       INLINE_ALLOWED_HINT + cdJoinHint)
     : ('COMMAND-DELEGATION RULE: heavy/long/state-changing commands must NEVER run ' +
        'inline in the main coordinator context — they fill the main thread with raw ' +
        'output and the most counterproductive thing a coordinator can do. ' +
@@ -3418,9 +3441,9 @@ function main() {
        'DELEGATE to a subagent (cheap model: Haiku or similar): ' +
        'spawn a subagent, pass the command, let it run and return only a tight ' +
        'summary. The coordinator synthesizes the summary; raw output never reaches ' +
-       'the main thread. Heavy command detected ' + detail +
+       'the main thread. ' + detected + (detail ? ' ' + detail : '') +
        ' — delegate to a subagent. ' +
-       INLINE_ALLOWED_HINT);
+       INLINE_ALLOWED_HINT + cdJoinHint);
 
   process.stdout.write(JSON.stringify({ decision: 'block', reason }) + '\n');
   process.exit(2);
