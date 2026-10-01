@@ -210,3 +210,25 @@ test('cmdSpawn end-to-end: repairs the reproduced failure, reports submoduleRepa
     assert.ok(fs.existsSync(path.join(wt, 'skyflutter', '.git')));
   } finally { rm(f); }
 });
+
+test('repair: include-copied file colliding with a TRACKED file is never overwritten -- kept aside and reported in conflicts', () => {
+  const f = fixture();
+  try {
+    const wt = path.join(f.root, 'wt-h');
+    git(f.parent, ['worktree', 'add', '-q', '-b', 'fix/h', wt]);
+    const p = path.join(wt, 'skyflutter');
+    fs.mkdirSync(p, { recursive: true });
+    fs.writeFileSync(path.join(p, 'skyflutter.txt'), 'COPIED-OVER'); // same path as a tracked file
+    fs.writeFileSync(path.join(p, '.env'), 'SECRET=1\n');
+    const out = cli.repairSubmoduleWorktrees([{ path: p, error: 'already exists' }], '', 'fix/h', f.parent);
+    assert.strictEqual(out.remaining.length, 0, JSON.stringify(out));
+    assert.strictEqual(fs.readFileSync(path.join(p, 'skyflutter.txt'), 'utf8'), 'skyflutter.txt', 'tracked content intact');
+    assert.strictEqual(fs.readFileSync(path.join(p, '.env'), 'utf8'), 'SECRET=1\n');
+    const c = out.repaired[0].conflicts;
+    assert.strictEqual(c.length, 1);
+    assert.strictEqual(c[0].file, 'skyflutter.txt');
+    assert.strictEqual(fs.readFileSync(c[0].kept, 'utf8'), 'COPIED-OVER', 'copy kept aside');
+    assert.strictEqual(path.dirname(path.dirname(c[0].kept)), wt, 'aside lives in the workspace dir, not /tmp');
+    assert.match(path.basename(path.dirname(c[0].kept)), /\.pre-wt-/);
+  } finally { rm(f); }
+});

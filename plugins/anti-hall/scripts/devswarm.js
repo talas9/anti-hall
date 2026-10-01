@@ -19674,7 +19674,12 @@ function repairSubmoduleWorktrees(failures, text, branch, cwd) {
       if (st && !st.isDirectory()) { remaining.push(f); continue; }
       if (st) {
         if (fs.readdirSync(P).length === 0) fs.rmdirSync(P);
-        else { aside = P + '.pre-wt-' + process.pid; fs.renameSync(P, aside); }
+        else {
+          // Unique, inside the workspace's own dir (never /tmp): same filesystem, rename is atomic.
+          let n = 0;
+          do { aside = P + '.pre-wt-' + process.pid + '-' + Date.now().toString(36) + (n ? '-' + n : ''); n++; } while (fs.existsSync(aside));
+          fs.renameSync(P, aside);
+        }
       }
       const wl = g(modGit, ['worktree', 'list', '--porcelain']);
       const listing = wl.status === 0 ? wl.stdout : '';
@@ -19691,17 +19696,20 @@ function repairSubmoduleWorktrees(failures, text, branch, cwd) {
       const add = g(modGit, addArgs);
       if (add.status !== 0 || !fs.existsSync(path.join(P, '.git'))) throw new Error(String(add.stderr || 'worktree add failed').trim().split('\n').pop());
       let leftover = null;
+      const conflicts = [];
       if (aside) {
+        // Move back ONLY into free slots: never overwrite or merge into anything the checkout made.
         for (const e of fs.readdirSync(aside)) {
           const dest = path.join(P, e);
           let taken = true;
           try { fs.lstatSync(dest); } catch (_) { taken = false; }
           if (!taken) { fs.renameSync(path.join(aside, e), dest); movedBack.push(e); }
+          else conflicts.push({ file: e, kept: path.join(aside, e) });
         }
-        try { fs.rmdirSync(aside); } catch (_) { leftover = aside; }
+        try { fs.rmdirSync(aside); } catch (_) { leftover = aside; } // non-recursive: only when empty
         aside = null;
       }
-      repaired.push({ path: P, branch: b, sha, reusedBranch: exists, movedBack, leftoverAside: leftover || undefined });
+      repaired.push({ path: P, branch: b, sha, reusedBranch: exists, movedBack, conflicts: conflicts.length ? conflicts : undefined, leftoverAside: leftover || undefined });
     } catch (e) {
       // Put a moved-aside dir back so nothing is lost, then report the failure.
       if (aside) { try { if (!fs.existsSync(P)) fs.renameSync(aside, P); } catch (_) { /* left aside on disk */ } }
