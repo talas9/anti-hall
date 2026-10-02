@@ -327,13 +327,30 @@ test('F: a watcher whose lock is stolen mid-loop prints LOCK LOST to stderr, exi
     // model that new holder advancing the seen-state further (its own,
     // fresher progress) BEFORE this exiting watcher's next tick fires.
     const stolenToken = 'stolen-token-xyz';
-    fs.writeFileSync(lockPath, JSON.stringify({ pid: 999999, ts: Date.now(), token: stolenToken, version: '0.97.1' }));
-    fs.writeFileSync(seenPath, JSON.stringify({ lastTotal: 99, lastTotal2: 12 }));
+    const steal = () => {
+      fs.writeFileSync(lockPath, JSON.stringify({ pid: 999999, ts: Date.now(), token: stolenToken, version: '0.97.1' }));
+      fs.writeFileSync(seenPath, JSON.stringify({ lastTotal: 99, lastTotal2: 12 }));
+    };
+    steal();
 
-    const exitCode = await new Promise((resolve) => {
-      child.on('exit', (code) => resolve(code));
-      setTimeout(() => { try { child.kill('SIGKILL'); } catch (_) {} resolve(null); }, 5000);
-    });
+    // RACE FIX (CI run 36971811004, ubuntu/node22 hang -> exit null): lock.js
+    // refresh() is read-token -> write tmp -> rename, so a one-shot steal that
+    // lands between the watcher's read and its rename is silently overwritten
+    // by the watcher's own token (reproduced: the lock file held the watcher's
+    // token after the 'steal', and the watcher looped until the kill timer). A
+    // real stealer is itself a lock.js holder that restamps every tick and
+    // would lose at ITS next refresh; this fake holder never restamps, so it
+    // must keep asserting ownership until the watcher gives up. Re-assert
+    // every 20ms while the child is alive (a clobber is undone before the
+    // watcher's next ~250ms tick, which then sees the foreign token).
+    const reassert = setInterval(() => { try { steal(); } catch (_) {} }, 20);
+    let exitCode;
+    try {
+      exitCode = await new Promise((resolve) => {
+        child.on('exit', (code) => resolve(code));
+        setTimeout(() => { try { child.kill('SIGKILL'); } catch (_) {} resolve(null); }, 5000);
+      });
+    } finally { clearInterval(reassert); }
 
     assert.strictEqual(exitCode, 0, 'the watcher must exit cleanly (code 0), not crash, on lock loss');
     assert.match(stderrBuf, /\[wake-watch\] LOCK LOST: lock-held/, 'lock loss must be reported on STDERR');
