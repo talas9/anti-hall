@@ -6,6 +6,20 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.121.8 (2026-10-03)
+
+### Fixed
+
+- **Directory listing:** the plugin icon moved to the plugin's top level (`./icon.png`) and is now an original "AH" monogram; the display name is "Anti-Hall"; the description is shorter; the marketplace entry has a homepage and an author URL.
+- Skill front matter is valid strict YAML (three skill descriptions were not).
+- Literal NUL bytes removed from two source files; they now use the `\0` escape.
+- The monitor command quotes `${CLAUDE_PLUGIN_ROOT}`, so it works when the install path contains a space.
+
+### Added
+
+- README and PRIVACY have a "What it runs and writes" table.
+- Hygiene tests: strict skill front matter, no NUL bytes in shipped files, icon at the plugin's top level, quoted monitor command.
+
 ## 0.121.7 (2026-10-03)
 
 ### Changed
