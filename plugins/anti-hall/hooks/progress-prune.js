@@ -126,7 +126,7 @@ function gitignoreHint(cwd) {
     const hint = require('./lib/gitignore-hint.js');
     const s = hint.status(cwd, { timeoutMs: 100 });
     if (s.status !== 'not-ignored') return;
-    const file = path.join(os.homedir(), '.anti-hall', 'gitignore-hint-state.json');
+    const file = path.join(require('../companion/lib/test-home-guard.js').resolveHome(), '.anti-hall', 'gitignore-hint-state.json');
     let state = {};
     try { const j = JSON.parse(fs.readFileSync(file, 'utf8')); if (j && typeof j === 'object' && !Array.isArray(j)) state = j; } catch (_) { /* fresh */ }
     const now = Date.now();
