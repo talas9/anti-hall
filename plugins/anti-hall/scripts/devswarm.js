@@ -150,7 +150,10 @@
 //                  (see `inbox count/read/ack` below) — never compare `seq` to an
 //                  `index`. For verifying a specific message landed, match on
 //                  `hash` instead (table-wide UNIQUE).
-//   roster [--ack]
+//   roster [--ack] [--all] [--json]
+//                  Plain output is a COMPACT table of LIVE workspaces + one
+//                  `+N archived` line (`--all` or ANTIHALL_ROSTER_HIDE_ARCHIVED=0
+//                  lists archived rows too; `--json` prints the full JSON object).
 //                  ALLOW-listed projection read of this project's shared registry +
 //                  `working_on` + `recent[]` broadcast digest. `--ack` (alias of
 //                  `mesh read`, D23) advances the CALLER's own broadcast cursor to
@@ -272,7 +275,7 @@ const {
 const {
   cmdDiagnose, cmdHealthcheck, cmdMeshRead, cmdReadyCheck, cmdRoster, computeDiagnosis,
   computeInstanceNonceCounts, diagnoseHumanLine, fetchActiveWorkspaceRecords, healthcheckHumanLine,
-  rosterHints,
+  rosterHints, rosterHumanText,
 } = require('./devswarm-lib/roster-diag.js');
 const {
   checkSpawnLaunch, cmdMergeVerb, cmdRespawn, cmdSpawn, deriveTitleFromBrief, gitCommonDirFor,
@@ -383,7 +386,7 @@ const VERB_HELP = {
   'migrate-owner-keys': { synopsis: 'forward-migrate descriptor owner keys', mutates: 'MUTATES descriptor files on disk' },
   send: { synopsis: 'send a mesh message: --to <id>[,<id2>…]|--to-primary|--broadcast --message TEXT|--message-file <path>|--message-stdin [--urgency low|normal|high|urgent] [--question] [--answers] [--quiet] [--cc-primary]. `--quiet` prints one line ("sent seq N -> X, B bytes, ok") instead of the full JSON, and still prints "ok:false ..." + a non-zero exit on failure. `--cc-primary` (direct --to sends only) ALSO copies the Primary with the identical message body, best-effort — reported under the result\'s `ccPrimary`, never flips the primary send\'s own ok/exit code. Several recipients (`--to a,b` or a repeated `--to`, deduped) each get the same body; every one is attempted, results come back per recipient (ok, seq, bytes), and the exit is non-zero if any failed.', mutates: 'MUTATES the store — appends a mesh message (and, with --cc-primary, a second one to the Primary) and may wake recipients' },
   relay: { synopsis: 'relay <seq|receipt> --to <id> [--note-file <path>] — forward a message THIS caller already received (its own inbox) to <id> verbatim, prefixed with a provenance header ("relayed from X, seq N, M bytes"). <seq> is the row\'s own `seq` (from `inbox messages`/`read-primary`); <receipt> is a read-primary readReceiptId and resolves only when it covers exactly one message. relay never acks: the read still needs its own `inbox ack-primary --receipt <receipt>`. Verifies the relayed byte length against the source and refuses (ok:false) on a mismatch or an empty source body — never a silent partial relay. Example: `relay 42 --to sibling-workspace-id`.', mutates: 'MUTATES the store — appends one mesh message (via `send`, under this file\'s own Primary-seat gate)' },
-  roster: { synopsis: 'show the mesh roster (--ack clears your own broadcast-unread)', mutates: 'read-only, unless --ack is passed (clears broadcastUnread)' },
+  roster: { synopsis: 'show the mesh roster as a compact table of live workspaces (--all adds archived rows, --json prints the full data, --ack clears your own broadcast-unread)', mutates: 'read-only, unless --ack is passed (clears broadcastUnread)' },
   'wake-directive': { synopsis: 'reprint the SessionStart mailbox wake directive', mutates: 'read-only' },
   diagnose: { synopsis: 'read-only mesh-health projection', mutates: 'read-only' },
   'app-state': { synopsis: 'DevSwarm app-DB summary: open workspaces by sidebar rank, PR/brief signals, session map, drift, message gaps (--json)', mutates: 'read-only' },
@@ -1056,10 +1059,14 @@ function main() {
   const isSendQuiet = argv[0] === 'send' && argv.includes('--quiet');
   const isInboxTickQuiet = argv[0] === 'inbox' && argv[1] === 'tick' && argv.includes('--quiet');
   const isSupervisionReport = argv[0] === 'supervision-report' && result && result.ok === true;
+  // plain `roster` (no --ack, ok result): compact live-workspace table; --all
+  // (or ANTIHALL_ROSTER_HIDE_ARCHIVED=0) adds archived rows, --json = full data.
+  const isRosterText = argv[0] === 'roster' && !argv.includes('--ack') && !!result && result.ok === true && result.action === 'roster';
   const wantHuman = (argv[0] === 'healthcheck' || argv[0] === 'diagnose' || argv[0] === 'app-state' || isHelpResult || isSupervisionReport
-    || isInboxReadPrimaryText || isSendQuiet || isInboxTickQuiet) && !argv.includes('--json');
+    || isInboxReadPrimaryText || isSendQuiet || isInboxTickQuiet || isRosterText) && !argv.includes('--json');
   const out = wantHuman
-    ? (argv[0] === 'healthcheck' ? healthcheckHumanLine(result) : (argv[0] === 'diagnose' ? diagnoseHumanLine(result)
+    ? (isRosterText ? rosterHumanText(result, { all: argv.includes('--all') || process.env.ANTIHALL_ROSTER_HIDE_ARCHIVED === '0', home: require('../companion/lib/test-home-guard.js').resolveHome(undefined, process.env), now: Date.now() })
+      : argv[0] === 'healthcheck' ? healthcheckHumanLine(result) : (argv[0] === 'diagnose' ? diagnoseHumanLine(result)
       : (argv[0] === 'app-state' ? (result.text || JSON.stringify(result))
         : isSupervisionReport ? supervisionMetrics.formatReport(result)
         : (isInboxReadPrimaryText ? inboxReadPrimaryTextLines(result) : (isSendQuiet ? sendQuietLine(result)

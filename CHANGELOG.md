@@ -6,6 +6,12 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## Unreleased
+
+- `devswarm.js roster` now prints a compact table of live workspaces plus a `+N archived` line instead of the full JSON. `--all` (or `ANTIHALL_ROSTER_HIDE_ARCHIVED=0`) adds archived rows, `--json` prints the full data as before, and `roster --ack` is unchanged.
+- The stale-handover nag no longer makes the agent end its reply with "Refresh the handover first". It now says to refresh the handover, then end with the normal good-point line naming the saved handover path (or say plainly that the refresh could not be done).
+- Orchestration brief guidance: a subagent's `report`/`summary`/`findings`/`analysis` `*.md` file writes are rejected by the harness; name such files `<role>-<topic>.md` or have the subagent return the text.
+
 ## 0.121.6 (2026-10-02)
 
 ### Fixed

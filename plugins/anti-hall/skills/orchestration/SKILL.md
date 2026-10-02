@@ -140,6 +140,7 @@ filler. Every brief states:
 - **Return format** — the tight structured result you want back (a verdict, a diff
   summary, a list with `file:line` citations) — NOT a transcript.
 - **Scratchpad is volatile** — the session scratchpad (`/tmp`) does not survive a machine or session restart; anything that must outlive the session (worker reports, evidence, handoffs) goes under the repo's gitignored `.anti-hall/` directory.
+- **File names** — when a subagent must leave a file, do not name it `report`/`summary`/`findings`/`analysis` `*.md` (the harness rejects those writes for subagents); use `<role>-<topic>.md`, or have it return the text and write the file yourself.
 
 Precise and concise both matter: a vague brief produces wandering, wasteful work; a
 bloated brief wastes tokens and buries the goal. Aim for the minimum that makes the

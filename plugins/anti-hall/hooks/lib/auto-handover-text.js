@@ -171,7 +171,8 @@ function buildSoftAdvisory(pct) {
 // unmissable line naming the exact command:
 //   fresh + in-progress task -> 🟢 GOOD POINT TO /compact NOW
 //   fresh + handover reads as done -> 🟢 GOOD POINT TO /clear (or /new) NOW
-//   stale (work continued since the handover was written) -> ⚠️ refresh first
+//   stale (work continued since the handover was written) -> refresh now, then
+//     the same 🟢 line once saved (say so plainly if the refresh could not be done)
 //   unknown (no readable/parseable transcript, e.g. Codex) -> 📝 neutral line
 // freshness: true (fresh -> the good-point line) | false (stale -> the
 // refresh line) | null (UNKNOWN -> neutral line; never 🟢 on an unprovable
@@ -179,22 +180,32 @@ function buildSoftAdvisory(pct) {
 function buildDecisiveSuffix(payload, handoverPath, freshness, taskComplete) {
   const platform = detectPlatform(payload);
   const clearCmd = platform === 'codex' ? '/new' : '/clear';
-  if (freshness === false) {
-    return '\n\nEnd your reply to the user with exactly this line, verbatim: ' +
-      '⚠️ **Refresh the handover first**, then /compact.';
-  }
   const path = handoverPath || '<the HANDOVER*.md path you saved>';
+  if (freshness === false) {
+    // Stale: the agent refreshes in THIS turn, so the closing line is the normal
+    // good-point line (the fresh case's builder), not a fixed "refresh first"
+    // line that would be untrue once the refresh is done.
+    return '\n\n⚠️ The saved handover is stale (work continued after it was written): refresh it now. ' +
+      'Once it is saved, end your reply to the user with exactly this line, verbatim: ' +
+      goodPointLine(path, clearCmd, taskComplete) +
+      ' Only if you could not refresh it, say so plainly instead of that line.';
+  }
   if (freshness !== true) {
     return '\n\nEnd your reply to the user with exactly this line, verbatim: ' +
       '📝 Handover saved at ' + path + ". If you've continued working since, refresh it; then /compact.";
   }
+  return '\n\nEnd your reply to the user with exactly this line, verbatim: ' +
+    goodPointLine(path, clearCmd, taskComplete);
+}
+
+// goodPointLine(path, clearCmd, taskComplete) — the 🟢 closing line shared by the
+// fresh case and (after the in-turn refresh) the stale case.
+function goodPointLine(path, clearCmd, taskComplete) {
   if (taskComplete) {
-    return '\n\nEnd your reply to the user with exactly this line, verbatim: ' +
-      '🟢 **GOOD POINT TO ' + clearCmd + ' NOW**: handover saved at ' + path + '. ' +
+    return '🟢 **GOOD POINT TO ' + clearCmd + ' NOW**: handover saved at ' + path + '. ' +
       'Task looks complete — ' + clearCmd + ' starts fresh; /compact if you want to keep going in this session.';
   }
-  return '\n\nEnd your reply to the user with exactly this line, verbatim: ' +
-    '🟢 **GOOD POINT TO /compact NOW**: handover saved at ' + path + '. ' +
+  return '🟢 **GOOD POINT TO /compact NOW**: handover saved at ' + path + '. ' +
     '/compact keeps working on the same task; ' + clearCmd + ' if the next task is different.';
 }
 

@@ -1563,7 +1563,57 @@ function cmdMeshRead(flags, ctx) {
   } finally { s.close(); }
 }
 
+// rosterIsArchivedRow(w) -> bool. The SAME predicate cmdRoster's `archivedCount`
+// uses: source 'archived' or the `archived` hint (app-archived rows too).
+function rosterIsArchivedRow(w) {
+  return !!w && (w.source === 'archived' || (Array.isArray(w.hints) && w.hints.includes('archived')));
+}
+
+function rosterRelative(ts, now) {
+  if (!Number.isFinite(ts) || ts <= 0) return '—';
+  const s = Math.floor(Math.max(0, now - ts) / 1000);
+  if (s < 60) return s + 's';
+  const m = Math.floor(s / 60);
+  if (m < 60) return m + 'm';
+  const h = Math.floor(m / 60);
+  return h < 24 ? h + 'h' : Math.floor(h / 24) + 'd';
+}
+
+// rosterHumanText(result, { all, home, now }) -> string. The compact default
+// rendering of plain `roster` (the full JSON stays behind `--json`): the same
+// columns as the per-turn parent-inbox table (workspace, status, finish, unread,
+// last), one line per LIVE workspace, then one `+N archived` line. `all`
+// includes archived rows. The hook's own formatter works on rows built by that
+// hook's separate per-turn pipeline, so it is not shared; this one reads the
+// roster result rows directly.
+function rosterHumanText(result, opts) {
+  const o = opts || {};
+  const now = Number.isFinite(o.now) ? o.now : Date.now();
+  const rows = Array.isArray(result && result.workspaces) ? result.workspaces : [];
+  const shown = o.all ? rows : rows.filter((w) => !rosterIsArchivedRow(w));
+  const hidden = rows.length - shown.length;
+  const lines = [];
+  if (shown.length) {
+    lines.push('| workspace | status | finish | unread | last |', '|---|---|---|---|---|');
+    for (const w of shown) {
+      const hints = Array.isArray(w.hints) ? w.hints : [];
+      const status = hints.length ? hints.slice(0, 3).map((h) => String(h).split(':')[0]).join(', ') : 'active';
+      const finish = (w.plan && w.plan.label) || (w.app && w.app.finish) || '—';
+      const nums = [w.directUnread, w.broadcastUnread].filter((n) => Number.isFinite(n));
+      const unread = nums.length ? nums.reduce((a, b) => a + b, 0) : '—';
+      const last = o.home && w.id != null ? rosterLastOutboundTs(o.home, w.id) : null;
+      const name = names.displayName(w.id, w.wsName).replace(/\|/g, '\\|');
+      lines.push('| ' + name + ' | ' + status + ' | ' + finish + ' | ' + unread + ' | ' + rosterRelative(last, now) + ' |');
+    }
+  } else {
+    lines.push('no live workspaces');
+  }
+  if (hidden > 0) lines.push('+' + hidden + ' archived (use --all to list them, --json for the full data)');
+  return lines.join('\n');
+}
+
 module.exports = {
+  rosterHumanText, rosterIsArchivedRow,
   LIST_CHILDREN_TIMEOUT_MS, parseChildrenList, fetchTrustedRepositoryId, fetchNativeChildren,
   fetchActiveWorkspaceRecords, rosterLastOutboundTs, rosterIdleDays,
   INSTANCE_SPLIT_CONCURRENT_GAP_MS, computeInstanceNonceCounts, rosterHints, cmdRoster,

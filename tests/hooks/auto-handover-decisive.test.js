@@ -111,7 +111,7 @@ test('decisive: fresh handover at Stop pause-nag -> the directive contains the g
     assert.ok(reason, 'expected a nag');
     assert.match(reason, /🟢 \*\*GOOD POINT TO \/compact NOW\*\*/);
     assert.match(reason, /handover saved at/);
-    assert.doesNotMatch(reason, /Refresh the handover first/);
+    assert.doesNotMatch(reason, /handover is stale/);
   } finally { s.h.cleanup(); }
 });
 
@@ -130,8 +130,12 @@ test('decisive: stale handover (work continued after it was written) -> refresh-
     const r = testHook(HOOK, { hook_event_name: 'Stop', session_id: SID, cwd: s.cwd, transcript_path: tp }, { home: s.h.home, env: KNOWN_WINDOW, expectJson: true });
     const reason = decision(r);
     assert.ok(reason, 'expected a nag');
-    assert.match(reason, /⚠️ \*\*Refresh the handover first\*\*, then \/compact/);
-    assert.doesNotMatch(reason, /GOOD POINT/);
+    assert.match(reason, /⚠️ The saved handover is stale .*refresh it now/);
+    // The 🟢 line is only the CLOSING line AFTER the refresh is saved, never an unconditional one.
+    assert.match(reason, /Once it is saved, end your reply to the user with exactly this line, verbatim: 🟢 \*\*GOOD POINT TO \/compact NOW\*\*: handover saved at .*HANDOVER\.md/);
+    assert.match(reason, /Only if you could not refresh it, say so plainly/);
+    assert.doesNotMatch(reason, /Refresh the handover first/);
+    assert.doesNotMatch(reason, /End your reply to the user with exactly this line, verbatim: 🟢/);
     void handoverPath;
   } finally { s.h.cleanup(); }
 });
@@ -179,7 +183,7 @@ test('decisive: autoHandover.decisivePrompt=false -> old plain pause-nag text, n
     const reason = decision(r);
     assert.ok(reason, 'expected the plain nag');
     assert.doesNotMatch(reason, /GOOD POINT/);
-    assert.doesNotMatch(reason, /Refresh the handover first/);
+    assert.doesNotMatch(reason, /handover is stale/);
     assert.match(reason, /Good stopping point/);
   } finally { s.h.cleanup(); }
 });
@@ -193,7 +197,7 @@ test('decisive: no handover file yet -> no decisive line at all (fire directive 
     const reason = decision(r);
     assert.match(reason, /AUTO-HANDOVER REQUIRED/);
     assert.doesNotMatch(reason, /GOOD POINT/);
-    assert.doesNotMatch(reason, /Refresh the handover first/);
+    assert.doesNotMatch(reason, /handover is stale/);
   } finally { s.h.cleanup(); }
 });
 
@@ -281,8 +285,8 @@ test('decisive (review P1): a SUBAGENT (sidechain) edit after the handover -> �
       assistantUsageLine(pctToTokens(90)),
       toolLine('Edit', { file_path: path.join(s.cwd, 'src', 'a.js') }, 0, { isSidechain: true }),
     ]);
-    assert.match(reason, /⚠️ \*\*Refresh the handover first\*\*/);
-    assert.doesNotMatch(reason, /GOOD POINT/);
+    assert.match(reason, /⚠️ The saved handover is stale/);
+    assert.match(reason, /Once it is saved, end your reply .*verbatim: 🟢/);
   } finally { s.h.cleanup(); }
 });
 
@@ -293,7 +297,7 @@ test('decisive (review P1): a Bash `cp` after the handover -> ⚠️ refresh', (
       assistantUsageLine(pctToTokens(90)),
       toolLine('Bash', { command: 'cp src/a.js src/b.js' }, 0),
     ]);
-    assert.match(reason, /⚠️ \*\*Refresh the handover first\*\*/);
+    assert.match(reason, /⚠️ The saved handover is stale/);
   } finally { s.h.cleanup(); }
 });
 
