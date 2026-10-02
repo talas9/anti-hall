@@ -259,6 +259,17 @@ function cmdInboxTick(id, flags, ctx) {
     if (alerts.length) counted = Object.assign({}, counted, { walAlerts: alerts });
   } catch (_) { /* health is report-only */ }
 
+  // devswarm.tickRosterEvery (default 0 = off): every Nth `--quiet` Primary tick
+  // appends the compact roster after the unchanged first line. The tick count is
+  // kept as `seq` in the wake-tick marker (written below only while the feature is on).
+  let rosterEvery = 0;
+  try { rosterEvery = Number(require('../../hooks/lib/settings.js').getWithEnv('devswarm', 'tickRosterEvery', 0, ctx.env)); } catch (_) { rosterEvery = 0; }
+  const wantRoster = Number.isInteger(rosterEvery) && rosterEvery > 0 && hasFlag(flags, 'quiet') && !isChildFlag && isSafeId(id);
+  let tickSeq = 0;
+  if (wantRoster) {
+    try { tickSeq = (Number(JSON.parse(fs.readFileSync(wakeTickPathFor(id, home), 'utf8')).seq) || 0) + 1; } catch (_) { tickSeq = 1; }
+  }
+
   // Effect 1: wake-tick marker.
   try {
     if (isSafeId(id)) {
@@ -277,6 +288,7 @@ function cmdInboxTick(id, flags, ctx) {
         // straight passthrough, not new logic.
         known: !!(counted && counted.known),
       };
+      if (tickSeq) marker.seq = tickSeq;
       const p = wakeTickPathFor(id, home);
       const tmp = p + '.' + process.pid + '.' + process.hrtime.bigint().toString(36) + '.tick.tmp';
       fs.writeFileSync(tmp, JSON.stringify(marker));
@@ -473,6 +485,25 @@ function cmdInboxTick(id, flags, ctx) {
 
   const tickOut = Object.assign({}, counted, { action: 'tick', idMismatch, watcherArmed });
   if (anchorRefresh && anchorRefresh.refreshed) tickOut.anchorRefresh = anchorRefresh;
+  // Interval roster: only on the Nth tick, with unread 0 and known, and only on POSITIVE
+  // proof of a live child (a live non-self roster row AND hasLiveChild, which fails open to
+  // "has a child" on doubt). Non-enumerable, so the JSON form of tick is never changed;
+  // inboxTickQuietLine prints it after the unchanged first line.
+  if (wantRoster && tickSeq % rosterEvery === 0 && counted && counted.known && counted.unreadTotal === 0) {
+    try {
+      const selfDesc = readDescriptorFile(home, id);
+      const scopeWorktree = selfDesc && typeof selfDesc.worktreePath === 'string' ? selfDesc.worktreePath : null;
+      if (scopeWorktree && require('../../companion/lib/devswarm-live-children.js').hasLiveChild(home, scopeWorktree)) {
+        const roster = require('./roster-diag.js');
+        const r = roster.cmdRoster({}, ctx);
+        const liveOthers = r && r.ok && r.known && Array.isArray(r.workspaces)
+          ? r.workspaces.filter((w) => w && String(w.id) !== String(id) && !roster.rosterIsArchivedRow(w)) : [];
+        if (liveOthers.length > 0) {
+          Object.defineProperty(tickOut, 'rosterText', { value: roster.rosterHumanText(r, { home, now }), enumerable: false });
+        }
+      }
+    } catch (_) { /* fail-open: the tick line alone */ }
+  }
   return tickOut;
 }
 
@@ -1712,7 +1743,8 @@ function inboxTickQuietLine(result) {
     return 'tick ' + id + ': unread ' + unread
       + ', known ' + (result.known ? 'true' : 'false')
       + ', meshGap ' + (result.meshGapWithheld ? 'true' : 'false')
-      + ', watcherArmed ' + watcherArmedStr;
+      + ', watcherArmed ' + watcherArmedStr
+      + (typeof result.rosterText === 'string' && result.rosterText ? '\n' + result.rosterText : '');
   }
   return 'ok:false ' + String((result && result.error) || (result && result.reason) || 'inbox tick failed');
 }
