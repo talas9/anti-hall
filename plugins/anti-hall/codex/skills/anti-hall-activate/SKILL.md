@@ -11,7 +11,7 @@ Activation for Codex installs the supported Codex hook subset and writes an advi
 
 Codex does not expand `${PLUGIN_ROOT}` inside a skill's own instructions — that
 variable is only set for plugin-bundled hook commands (see
-`docs/KB-codex-platform-hooks-plugins.md`). Codex does show you this skill's own
+`https://github.com/talas9/anti-hall/blob/main/docs/KB-codex-platform-hooks-plugins.md`). Codex does show you this skill's own
 file path when it selects the skill ("Codex starts with each skill's name,
 description, and file path" — official Codex Skills doc). Resolve the plugin
 root from that path before running anything below:

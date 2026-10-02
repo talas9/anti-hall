@@ -289,7 +289,7 @@ Read/Write/Edit tools, not the workflow script) maintains
 - **`gate`** per phase: `"locked" | "not-run"`. Set to `"locked"` **only** immediately after
   Step 5's deadly-loop returns `go:true` for that phase — **never** set by the phase-build step
   (Step 4) itself, and never inferred from `status:"done"` alone. `status` is written by the same
-  agent whose self-report this repo's own research says cannot be trusted (`docs/KB-false-completion.md`
+  agent whose self-report this repo's own research says cannot be trusted (`https://github.com/talas9/anti-hall/blob/main/docs/KB-false-completion.md`
   §5); `gate` is the independent record that the deadly-loop actually ran and converged.
 - **`escalations`** — a counter; see Step 5's build→plan escalation cap below.
 - **Heartbeats are NOT reinvented.** Spawned build/review agents already write
@@ -327,9 +327,9 @@ Use the **`Workflow` tool / Dynamic Workflows** to fan out at L. Primitives:
   - Step 5 per-phase deadly-loops (Reviewer + Auditor + Critic trio, same phase diff).
 - **Caps:** ~`min(16, cores-2)` in-flight agents (this repo's own working assumption, not
   Anthropic-documented — official docs only guarantee "up to 16, fewer on limited-CPU
-  machines"; see `docs/KB-token-usage-models.md` §5/§9); 1000 total per run. **Cost: many
+  machines"; see `https://github.com/talas9/anti-hall/blob/main/docs/KB-token-usage-models.md` §5/§9); 1000 total per run. **Cost: many
   tokens** — Anthropic's own measurement: multi-agent fan-out costs ~15× a single chat
-  turn, ~4× for a lone agent (`docs/KB-token-usage-models.md` §5) — **test on a small
+  turn, ~4× for a lone agent (`https://github.com/talas9/anti-hall/blob/main/docs/KB-token-usage-models.md` §5) — **test on a small
   slice first.** Determinism: no `Date.now()` / `Math.random()` / argless
   `new Date()` in the workflow script; pass seeds/timestamps via `args`.
 
@@ -473,11 +473,11 @@ and only **after** Step 5's deadly-loop has already LOCKed (`go:true`) on that p
 coordinator MAY offer the owner one additional `/code-review ultra` pass on that phase's diff.
 
 Disclose plainly, every time it's offered:
-- **It is a PAID feature, not part of the free deadly-loop.** Per `docs/KB-model-modes.md` §7:
+- **It is a PAID feature, not part of the free deadly-loop.** Per `https://github.com/talas9/anti-hall/blob/main/docs/KB-model-modes.md` §7:
   Pro/Max get 3 free one-time runs, then usage-billed, **typically $5–$20/review** depending on
   change size; **Team/Enterprise get 0 free runs.**
 - **It requires Claude.ai account authentication** — **not available** on Bedrock/Vertex/Foundry
-  or for Zero-Data-Retention orgs (`docs/KB-model-modes.md` §7).
+  or for Zero-Data-Retention orgs (`https://github.com/talas9/anti-hall/blob/main/docs/KB-model-modes.md` §7).
 - **It is never autonomous-invoked.** Even under granted autonomy, this step is never offered
   or run without an explicit owner opt-in *this specific time* — a standing "AFK"/"full
   autonomy" grant does not cover a paid, per-run cloud action the owner hasn't necessarily
@@ -575,7 +575,7 @@ inherit these guards; a background agent cannot bypass a gate the main thread co
   Main thread coordinates; concurrency capped at ~`min(16, cores-2)` (working assumption,
   see line 234 caveat). Determinism: no
   `Date.now()` / `Math.random()` / argless `new Date()`; pass seeds via `args`. Cost: many
-  tokens (~15× a chat turn per Anthropic's own measurement — `docs/KB-token-usage-models.md`
+  tokens (~15× a chat turn per Anthropic's own measurement — `https://github.com/talas9/anti-hall/blob/main/docs/KB-token-usage-models.md`
   §5) — test on a small slice first. S/M don't use it.
 - **`deadly-loop`** (same plugin) — the debate engine for Steps 3 & 5 (Reviewer + Auditor + Critic trio per
   its `references/MODEL-POLICY.md`), the A3 branch/SHA verification preamble (Step 4.2), the

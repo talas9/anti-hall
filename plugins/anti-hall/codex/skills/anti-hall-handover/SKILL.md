@@ -22,7 +22,7 @@ directive fired, follow it exactly as written; nothing else changes.
 Prepares a session handover: perishable job state (goal, current position,
 next executable step, decisions, dead ends, verification status) written to
 disk so a fresh session — with no memory of this one — resumes correctly.
-Built from anti-hall's `docs/KB-session-handover.md` (repo-clone-only, not
+Built from anti-hall's `https://github.com/talas9/anti-hall/blob/main/docs/KB-session-handover.md` (repo-clone-only, not
 bundled with a packaged install — cite it as the anti-hall repo's own doc,
 since the target project won't have that path).
 
@@ -90,7 +90,7 @@ place rather than incrementing again.
 
 **Carry-forward rule (seq N>1).** A later handover is often written from an
 already-compacted context, and every re-summary loses more (anti-hall repo
-`docs/KB-handover-research.md`, P3/P4: never compact a compaction). So:
+`https://github.com/talas9/anti-hall/blob/main/docs/KB-handover-research.md`, P3/P4: never compact a compaction). So:
 - COPY the predecessor's Session rules, Done + Verified rows and NOT-verified
   rows **verbatim, with their original evidence**, each tagged
   `(carried from <predecessor file>)` — never re-summarize or re-word them.
@@ -103,11 +103,11 @@ already-compacted context, and every re-summary loses more (anti-hall repo
 **≤200 lines. Front-loaded**: the first ~15 lines are Situation (2-3 lines) plus a
 single concrete NEXT ACTION — one thing the next session can execute immediately,
 no interpretation required. Context re-injection mechanisms in general truncate
-by keeping a file's START (docs/KB-session-handover.md, principle O4) —
+by keeping a file's START (https://github.com/talas9/anti-hall/blob/main/docs/KB-session-handover.md, principle O4) —
 everything load-bearing goes early; sources and full chronology go last, where
 losing them costs least.
 
-Fixed section order, every time (SBAR-derived, docs/KB-session-handover.md's
+Fixed section order, every time (SBAR-derived, https://github.com/talas9/anti-hall/blob/main/docs/KB-session-handover.md's
 consolidated schema):
 
 1. **Situation** — 2-3 lines: what this session was doing.
@@ -130,7 +130,7 @@ consolidated schema):
    job (scope limits, "don't X until Y", ordering/serial-only rules, approval
    gates), quoted EXACTLY with the turn/date it came from — never paraphrased.
    This is the class compaction keeps worst (one study measured 17% of injected
-   constraints retained — anti-hall repo `docs/KB-handover-research.md`, P2).
+   constraints retained — anti-hall repo `https://github.com/talas9/anti-hall/blob/main/docs/KB-handover-research.md`, P2).
    Write `none issued` rather than omitting the section. Keep every rule that
    is still active in every later seq.
 3. **Done + Verified** — with evidence: `file:line`, the command run, and its
@@ -153,7 +153,7 @@ consolidated schema):
     command specific to this repo. Directly counters two documented
     post-context-reset failures: behavioral rules silently dropped (F1 — hence
     the `AGENTS.md` re-read) and stale repo/directory state (F2) —
-    docs/KB-session-handover.md.
+    https://github.com/talas9/anti-hall/blob/main/docs/KB-session-handover.md.
     After running it, **append** a `resume-verified: <ISO timestamp> --
     <one-line git-status/pwd/smoke summary>` line to this file — this is what
     proves the checklist actually ran, not just that it was written down.
@@ -166,7 +166,7 @@ consolidated schema):
     session rule, and invite corrections — the incoming side restating the
     handover is the step structured clinical handoffs credit with fewer errors
     (I-PASS "synthesis by receiver", anti-hall repo
-    `docs/KB-handover-research.md`, P8/P9).
+    `https://github.com/talas9/anti-hall/blob/main/docs/KB-handover-research.md`, P8/P9).
 
 Everywhere: concrete over vague ("2-space indentation", not "format properly").
 Pointers over payloads — reference files/commits/artifacts by path, never inline
@@ -326,7 +326,7 @@ stops compaction (no stdout, exit 0). The resume hook names it on the next
 
 **Write proactively** — at task boundaries or when a reset is likely, not only
 when asked and not at the absolute context-window limit (reset mechanisms can
-themselves fail once truly at capacity — docs/KB-session-handover.md, F4).
+themselves fail once truly at capacity — https://github.com/talas9/anti-hall/blob/main/docs/KB-session-handover.md, F4).
 
 ## Before ending: quiesce, declare, stay honest
 

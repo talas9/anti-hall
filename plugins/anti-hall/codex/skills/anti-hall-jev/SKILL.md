@@ -9,7 +9,7 @@ description: Activate, configure, check, or read the tracking loop of the opt-in
 
 Codex does not expand `${PLUGIN_ROOT}` inside a skill's own instructions — resolve
 it from the path Codex shows you for this SKILL.md (see
-`docs/KB-codex-platform-hooks-plugins.md`):
+`https://github.com/talas9/anti-hall/blob/main/docs/KB-codex-platform-hooks-plugins.md`):
 
 ```bash
 ANTI_HALL_ROOT="$(cd "$(dirname "$SKILL_FILE")/../../.." && pwd)"
@@ -113,7 +113,7 @@ itself.
   working and forward-migrates automatically, nothing deleted). In `on`,
   `tasklistTrivial`/`codexNudgeSubstantial` ask synchronously (1.5 s cap, fail-open)
   and a confident "trivial" verdict skips the nudge. Full per-id trust/hook/API table:
-  `docs/KB-jev-classifier.md` §10. Claude Code exposes each as its own `/config` row
+  `https://github.com/talas9/anti-hall/blob/main/docs/KB-jev-classifier.md` §10. Claude Code exposes each as its own `/config` row
   ("Jev integration · <name>"); Codex has no `/config` equivalent — use
   `settings.js show --section jevIntegrations` or the `anti-hall-settings` skill.
   **Claude/Codex parity**: `speculation`, `triage`, `claimLedger`, `mergeGateHedge`,
@@ -136,7 +136,7 @@ itself.
   regardless of the raw rates; a <1% changed-decision rate is a low-yield NOTE
   only, never a REMOVE trigger by itself; a shadow-mode row's yield is now
   computed from `wouldChange` (what Jev would have done) instead of `changed`
-  (which is always null in shadow by construction — see `docs/KB-jev-classifier.md`).
+  (which is always null in shadow by construction — see `https://github.com/talas9/anti-hall/blob/main/docs/KB-jev-classifier.md`).
   **v0.108.3 fix:** a label-only (`choice`/string) integration's `changed%`
   column used to print a bare `0.0%`, indistinguishable from "Jev never
   changed anything here". It now shows `n/a (N distinct)`, a `label-only

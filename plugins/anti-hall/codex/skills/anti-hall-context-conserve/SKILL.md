@@ -11,7 +11,7 @@ This is the Codex port of anti-hall limit/context conservation. It combines hook
 
 Codex does not expand `${PLUGIN_ROOT}` inside a skill's own instructions — that
 variable is only set for plugin-bundled hook commands (see
-`docs/KB-codex-platform-hooks-plugins.md`). Codex does show you this skill's own
+`https://github.com/talas9/anti-hall/blob/main/docs/KB-codex-platform-hooks-plugins.md`). Codex does show you this skill's own
 file path when it selects the skill ("Codex starts with each skill's name,
 description, and file path" — official Codex Skills doc). Resolve the plugin
 root from that path before running anything below:
@@ -63,7 +63,7 @@ from the live catalog (`anti-hall-model-policy`), don't hardcode either slug.
   input-token threshold — check the catalog/current pricing for the live number and whether it
   applies to your resolved model. For a very-large-context task (a big repo dump, a huge diff),
   consider capping scope or routing to a Claude model instead (no equivalent premium up to 1M
-  there). See `docs/KB-token-usage-models.md` §2/§7.
+  there). See `https://github.com/talas9/anti-hall/blob/main/docs/KB-token-usage-models.md` §2/§7.
 
 ## Codex routing policy
 

@@ -125,4 +125,4 @@ Env-only: `ANTIHALL_CONTEXT_WINDOW_TOKENS`, `ANTI_HALL_THROTTLE_PATTERNS`, `ANTI
 
 ## Where to look
 
-`llms.txt` (every hook/skill/script/setting in one page) · `docs/GUIDE.md` (per-hook detail, settings) · `docs/KB-devswarm-hivecontrol.md` + `docs/KB-devswarm-app-db.md` (DevSwarm) · `docs/KB-jev-classifier.md` (Jev) · `CHANGELOG.md` (what changed) · `AGENTS.md` (the protocol for Codex). `docs/` ships only with a repo clone.
+`llms.txt` (every hook/skill/script/setting in one page) · `https://github.com/talas9/anti-hall/blob/main/docs/GUIDE.md` (per-hook detail, settings) · `https://github.com/talas9/anti-hall/blob/main/docs/KB-devswarm-hivecontrol.md` + `https://github.com/talas9/anti-hall/blob/main/docs/KB-devswarm-app-db.md` (DevSwarm) · `https://github.com/talas9/anti-hall/blob/main/docs/KB-jev-classifier.md` (Jev) · `CHANGELOG.md` (what changed) · `AGENTS.md` (the protocol for Codex). `docs/` ships only with a repo clone.

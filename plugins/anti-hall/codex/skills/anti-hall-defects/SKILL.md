@@ -15,7 +15,7 @@ separate Codex implementation to drift from.
 
 Codex does not expand `${PLUGIN_ROOT}` inside a skill's own instructions — only plugin-
 bundled hook commands get that substitution (see
-`docs/KB-codex-platform-hooks-plugins.md`). Codex shows this skill's own file path when
+`https://github.com/talas9/anti-hall/blob/main/docs/KB-codex-platform-hooks-plugins.md`). Codex shows this skill's own file path when
 it selects it; resolve the plugin root from that path:
 
 ```bash

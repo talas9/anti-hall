@@ -55,15 +55,15 @@ Everything else (logs, handovers, defect reports) stays in `~/.anti-hall/` and `
 | **Guards** | Always-on Node hooks: `git-guard` (AI self-credit / force-push), `api-guard` (fabricated stdlib/builtin APIs), `command-guard` (heavy commands → subagents), `edit-guard` (direct edits → subagents), `swarm-guard` (fork-bomb / memory), `task-guard`/`tasklist-guard` (stop with open work), `model-routing-guard` (cheapest fitting model), `merge-gate`/`ship-it-guard` (opt-in). |
 | **Verify-first discipline** | Full Iron-Law + rationalization-table protocol at session start (survives compaction), a rotating one-line nudge every turn, and the always-on scope-fidelity + anti-sycophancy rules. |
 | **Orchestration** | Coordinator discipline: delegate broad reads/heavy commands to subagents, independently verify a subagent's "done" claim before trusting it, live phase progress on the statusline. |
-| **DevSwarm mesh** | Optional, dormant unless a DevSwarm session is active. Layered recovery (self-report → poke → escalate, never auto-kill), one mailbox per session, per-turn mesh status table, the DevSwarm app database as ground truth, auto-archive of done workspaces (DevSwarm ≥ 2.5.3), message retention. Full reference: [`docs/KB-devswarm-hivecontrol.md`](https://github.com/talas9/anti-hall/blob/main/docs/KB-devswarm-hivecontrol.md). |
-| **Jev classifier** | Optional LLM-backed speculation classifier. [`docs/KB-jev-classifier.md`](https://github.com/talas9/anti-hall/blob/main/docs/KB-jev-classifier.md). |
+| **DevSwarm mesh** | Optional, dormant unless a DevSwarm session is active. Layered recovery (self-report → poke → escalate, never auto-kill), one mailbox per session, per-turn mesh status table, the DevSwarm app database as ground truth, auto-archive of done workspaces (DevSwarm ≥ 2.5.3), message retention. Full reference: [`https://github.com/talas9/anti-hall/blob/main/docs/KB-devswarm-hivecontrol.md`](https://github.com/talas9/anti-hall/blob/main/docs/KB-devswarm-hivecontrol.md). |
+| **Jev classifier** | Optional LLM-backed speculation classifier. [`https://github.com/talas9/anti-hall/blob/main/docs/KB-jev-classifier.md`](https://github.com/talas9/anti-hall/blob/main/docs/KB-jev-classifier.md). |
 | **Auto-handover** | On by default: at 85% context the agent writes a handover itself, tells you, and suggests `/compact` or `/clear`. |
 | **Settings** | Every setting in one place, `~/.anti-hall/settings.json`, via `/anti-hall:settings` (or `scripts/settings.js`); a headline subset also appears in `/config`. |
 | **Statusline** | Live two-line bar — git/model/context/cost, plus live orchestration/context gauge. |
 | **doctor / update** | `doctor` runs live behavioral self-tests on every guard (`--repair` for safe fixes); `update` pulls the latest release and prints the changelog delta. Repairs also run by themselves after a plugin reload or on a new version. |
 
 Full per-hook table (every hook, its event, exact behavior, and version history) moved
-to [`docs/GUIDE.md`](https://github.com/talas9/anti-hall/blob/main/docs/GUIDE.md#hook-reference--plugin-features-table-detailed-per-hook) — nothing was deleted,
+to [`https://github.com/talas9/anti-hall/blob/main/docs/GUIDE.md`](https://github.com/talas9/anti-hall/blob/main/docs/GUIDE.md#hook-reference--plugin-features-table-detailed-per-hook) — nothing was deleted,
 only relocated so this page stays a landing page.
 
 ## Codex port
@@ -72,7 +72,7 @@ The Codex-native port lives in [`codex/`](codex/README.md) and is intentionally
 separate from the Claude plugin — different hooks.json, different skill set
 (`anti-hall-*`), same underlying guards where payload contracts are verified for
 Codex. Parity notes, model-routing categories, and the full changelog are in
-[`codex/README.md`](codex/README.md) and [`docs/GUIDE.md`](https://github.com/talas9/anti-hall/blob/main/docs/GUIDE.md).
+[`codex/README.md`](codex/README.md) and [`https://github.com/talas9/anti-hall/blob/main/docs/GUIDE.md`](https://github.com/talas9/anti-hall/blob/main/docs/GUIDE.md).
 
 ## Skills
 
@@ -100,15 +100,15 @@ Invoke as `/anti-hall:<name>`:
 | `settings` | "anti-hall settings", "set auto-handover to 80%" | show or change any setting; one `~/.anti-hall/settings.json` |
 
 Full descriptions (arguments, env vars, version history) moved to
-[`docs/GUIDE.md`](https://github.com/talas9/anti-hall/blob/main/docs/GUIDE.md#skills-reference-detailed).
+[`https://github.com/talas9/anti-hall/blob/main/docs/GUIDE.md`](https://github.com/talas9/anti-hall/blob/main/docs/GUIDE.md#skills-reference-detailed).
 
 ## Documentation
 
 Full index (every doc, grouped, one-line descriptions):
-[`docs/README.md`](https://github.com/talas9/anti-hall/blob/main/docs/README.md).
-Start with [`docs/KB.md`](https://github.com/talas9/anti-hall/blob/main/docs/KB.md)
+[`https://github.com/talas9/anti-hall/blob/main/docs/README.md`](https://github.com/talas9/anti-hall/blob/main/docs/README.md).
+Start with [`https://github.com/talas9/anti-hall/blob/main/docs/KB.md`](https://github.com/talas9/anti-hall/blob/main/docs/KB.md)
 (canonical index + ground truth) →
-[`docs/GUIDE.md`](https://github.com/talas9/anti-hall/blob/main/docs/GUIDE.md) (full
+[`https://github.com/talas9/anti-hall/blob/main/docs/GUIDE.md`](https://github.com/talas9/anti-hall/blob/main/docs/GUIDE.md) (full
 hook/skills reference). This README uses absolute GitHub URLs for `docs/` links
 because this file ships inside the plugin cache, where `../../docs/` does not exist.
 
@@ -118,20 +118,20 @@ Install by asking Claude **"install the statusline"**, or run
 `node plugins/anti-hall/statusline/install-statusline.js`. `--consolidate` merges with
 an existing statusline (e.g. OMC HUD) instead of replacing it. Restart Claude Code once
 after installing — `statusLine` is only read at startup. Full renderer/tier detail:
-[`docs/GUIDE.md`](https://github.com/talas9/anti-hall/blob/main/docs/GUIDE.md#statusline-configuration-tuning-troubleshooting-and-local-testing-plugin)
+[`https://github.com/talas9/anti-hall/blob/main/docs/GUIDE.md`](https://github.com/talas9/anti-hall/blob/main/docs/GUIDE.md#statusline-configuration-tuning-troubleshooting-and-local-testing-plugin)
 and [`statusline/STATUSLINE.md`](statusline/STATUSLINE.md).
 
 ## Configuration / tuning, Troubleshooting / FAQ, Test locally
 
-Moved to [`docs/GUIDE.md`](https://github.com/talas9/anti-hall/blob/main/docs/GUIDE.md#statusline-configuration-tuning-troubleshooting-and-local-testing-plugin) —
+Moved to [`https://github.com/talas9/anti-hall/blob/main/docs/GUIDE.md`](https://github.com/talas9/anti-hall/blob/main/docs/GUIDE.md#statusline-configuration-tuning-troubleshooting-and-local-testing-plugin) —
 env-var reference for every opt-in feature, common gotchas, and how to run the suite
 locally (`node --test`).
 
 ## Contributing
 
-See [`docs/GUIDE.md`](https://github.com/talas9/anti-hall/blob/main/docs/GUIDE.md#contributing--testing-plugin) for the full
+See [`https://github.com/talas9/anti-hall/blob/main/docs/GUIDE.md`](https://github.com/talas9/anti-hall/blob/main/docs/GUIDE.md#contributing--testing-plugin) for the full
 contributing guide (style, test conventions, PR checklist).
 
 ## License
 
-MIT © Mohammed Talas. See [LICENSE](../../LICENSE).
+MIT © Mohammed Talas. See [LICENSE](https://github.com/talas9/anti-hall/blob/main/LICENSE).

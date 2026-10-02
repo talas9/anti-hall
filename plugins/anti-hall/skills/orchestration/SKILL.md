@@ -57,7 +57,7 @@ Match the model to the job (resolve to the newest in each tier at runtime — us
 tokens `haiku`/`sonnet`/`opus`/`fable`, never a versioned model id):
 - **Haiku** — mechanical execution: web fetch, grep/search, file listing, running
   commands, builds, test runs, data dumps, log tails, git push, deploys, repetitive bulk
-  operations. **~10× cheaper than Fable on both input and output** (`docs/KB-fable-5.md`)
+  operations. **~10× cheaper than Fable on both input and output** (`https://github.com/talas9/anti-hall/blob/main/docs/KB-fable-5.md`)
   — keep all execution-shaped work here.
 - **Sonnet (floor for code)** — code authoring, analysis, standard code review, most
   subagent work.
@@ -107,7 +107,7 @@ L3  Workers
 > each child then uses subagents *inside* its own workspace (children never spawn
 > grandchildren — shallow + wide at both tiers). A **child** workspace uses the plain
 > hierarchy above and spawns no workspaces. Heuristic source:
-> `docs/KB-devswarm-hivecontrol.md` §8.1–8.2. Handing a workspace-scale matter to a
+> `https://github.com/talas9/anti-hall/blob/main/docs/KB-devswarm-hivecontrol.md` §8.1–8.2. Handing a workspace-scale matter to a
 > subagent is the failure this note exists to prevent.
 
 For peer coordination among long-lived streams, a team (`TeamCreate` +
@@ -121,7 +121,7 @@ isolated, fire-and-collect work.
 - **Don't fan out beyond the work.** A 3-file change doesn't need 10 agents. Scale the
   swarm to the actual independent units. This isn't a style preference — Anthropic's own
   measurement: multi-agent fan-out costs ~15× a single chat turn, a lone agent ~4×, and
-  Claude Code's Agent Teams ~7× in plan mode (`docs/KB-token-usage-models.md` §5).
+  Claude Code's Agent Teams ~7× in plan mode (`https://github.com/talas9/anti-hall/blob/main/docs/KB-token-usage-models.md` §5).
 - **Tear down what you set up.** Worktrees, teams, and background jobs are cleaned up
   when the work is integrated. Don't leave orphans.
 - **Surface, don't swallow.** If a background agent fails or is rate-limited, report
@@ -284,7 +284,7 @@ only way a sibling/Primary/child learns anything happened. (Phase 5: `read-prima
 
 Full detail (guard mechanics, wake-tier caveats, Codex parity, supervisor
 escalate-on-urgent): `devswarm` skill's "v0.58 mesh-only messaging" section and
-`docs/KB-devswarm-hivecontrol.md` §8.7's same-named note. Outside an active DevSwarm
+`https://github.com/talas9/anti-hall/blob/main/docs/KB-devswarm-hivecontrol.md` §8.7's same-named note. Outside an active DevSwarm
 workspace, none of this applies and this section is inert.
 
 ## Watchdog & heartbeat
@@ -458,12 +458,12 @@ to be delegated.
 
 References (docs in this source repo — `docs/` ships with a repo clone, NOT with the
 `/plugin install` bundle, so the runtime cannot open them):
-- `docs/CONTEXT-PRESERVATION-KB.md` — consolidated, source-backed evidence base for
+- `https://github.com/talas9/anti-hall/blob/main/docs/CONTEXT-PRESERVATION-KB.md` — consolidated, source-backed evidence base for
   context-window discipline (caching, delegation, compaction, retrieval, memory,
   output discipline).
-- `docs/TASKLIST-GUARD.md` (usage) + `docs/TASK-WORK.md` (design rationale) — the
+- `https://github.com/talas9/anti-hall/blob/main/docs/TASKLIST-GUARD.md` (usage) + `https://github.com/talas9/anti-hall/blob/main/docs/TASK-WORK.md` (design rationale) — the
   task-list + progress-file discipline. NOTE: `TASK-WORK.md` contains some
-  version-pinned facts flagged historical in `docs/KB.md` — treat versions as
+  version-pinned facts flagged historical in `https://github.com/talas9/anti-hall/blob/main/docs/KB.md` — treat versions as
   historical.
 
 ## Relationship to other skills in this plugin

@@ -101,7 +101,7 @@ If a phase's fix requires re-planning (not just another fix-wave), that's an esc
 
 Codex does not expand `${PLUGIN_ROOT}` inside a skill's own instructions — that
 variable is only set for plugin-bundled hook commands (see
-`docs/KB-codex-platform-hooks-plugins.md`). Resolve the plugin root from this
+`https://github.com/talas9/anti-hall/blob/main/docs/KB-codex-platform-hooks-plugins.md`). Resolve the plugin root from this
 SKILL.md's own file path (which Codex shows you when it selects the skill)
 before running the command below:
 

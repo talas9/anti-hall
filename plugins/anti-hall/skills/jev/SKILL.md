@@ -5,7 +5,7 @@ description: Activate, configure, check, or read the tracking loop of the opt-in
 
 # Jev
 
-Jev is anti-hall's opt-in classifier backend (see `docs/KB-jev-classifier.md` for the
+Jev is anti-hall's opt-in classifier backend (see `https://github.com/talas9/anti-hall/blob/main/docs/KB-jev-classifier.md` for the
 full design). It is **default OFF** and, once enabled, only ever ADDS or RELAXES a
 decision within a trust rule the caller controls — see the KB doc's "Fallback
 semantics" section. This skill is the activation/config/status front door;
@@ -30,7 +30,7 @@ else.**
      has live-verified end to end.
    - **TypeSafe direct** — supported by `jev-client.js`'s `typesafe` transport, but
      **not** independently live-verified in this build (TypeSafe's own console has
-     closed sign-ups as of this writing — see `docs/KB-jev-classifier.md` §8). Say
+     closed sign-ups as of this writing — see `https://github.com/talas9/anti-hall/blob/main/docs/KB-jev-classifier.md` §8). Say
      this plainly if they pick it.
 4. Ask for the key in plain prose (a secret is not a multiple-choice question, so
    don't offer it as one):
@@ -504,7 +504,7 @@ fail-open to the nudge) and a confident "trivial" verdict skips the nudge.
 `findingDedup` is called from `scripts/finding-dedup.js` (a standalone CLI, not a
 hook), one async `ask()` call per candidate finding pair, concurrency 4, capped at
 200 pairs per run — see the `deadly-loop`/`deadly-loop-multi` skills' Phase B3/step-5
-wiring. See `docs/KB-jev-classifier.md` §10 for the full table
+wiring. See `https://github.com/talas9/anti-hall/blob/main/docs/KB-jev-classifier.md` §10 for the full table
 with hook/event/API details.
 
 ## Never do this

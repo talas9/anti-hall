@@ -73,7 +73,7 @@ swarm, keeps itself free, and synthesizes — it does not do the auditing itself
 **Capacity math (the DISPATCH wave):** respect the concurrency cap
 (~`min(16, cores-2)` — this repo's own working assumption, not an Anthropic-documented
 formula; official docs only guarantee "up to 16 concurrent agents, fewer on machines with
-limited CPU cores," no disclosed subtraction constant, see `docs/KB-token-usage-models.md`
+limited CPU cores," no disclosed subtraction constant, see `https://github.com/talas9/anti-hall/blob/main/docs/KB-token-usage-models.md`
 §5/§9) AND the swarm-guard spawn cap (≤ 20 spawns / 60 s). At quadruple
 the dispatch is **12 auditors** (4 Reviewers + 4 Auditors + 4 Critics) — 12 ≤ `min(16,
 cores-2)` on an 8-core+ host and 12 ≤ 20/60 s, so the whole trio fan-out fits in ONE

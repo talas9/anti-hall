@@ -9,7 +9,7 @@ description: Show or change any anti-hall setting for Codex. Use when the user s
 
 Codex does not expand `${PLUGIN_ROOT}` inside a skill's own instructions — resolve
 it from the path Codex shows you for this SKILL.md (see
-`docs/KB-codex-platform-hooks-plugins.md`):
+`https://github.com/talas9/anti-hall/blob/main/docs/KB-codex-platform-hooks-plugins.md`):
 
 ```bash
 ANTI_HALL_ROOT="$(cd "$(dirname "$SKILL_FILE")/../../.." && pwd)"
