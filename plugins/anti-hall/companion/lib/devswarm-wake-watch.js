@@ -1626,7 +1626,7 @@ function main() {
       catch (_) { idleSkipOn = true; }
       if (idleSkipOn) {
         const liveChildren = require('./devswarm-live-children.js');
-        if (!liveChildren.hasLiveChild(home, identity.cwd || cwd)) {
+        if (!liveChildren.hasLiveChild(home, identity.cwd || cwd, { env, excludeHeldIgnored: true })) {
           // Same rearm-cues.jsonl metric scripts/devswarm.js's cmdInboxTick
           // writes for its own idle-skip (trigger 'idle-skip') — deliberately
           // reimplemented here (append+cap) rather than requiring

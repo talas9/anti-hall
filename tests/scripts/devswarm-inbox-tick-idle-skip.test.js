@@ -129,6 +129,31 @@ test('#39: an archived-only child counts as 0 live -> idle-skip fires', () => {
   } finally { rm(home); rm(repo); }
 });
 
+// A held (devswarm.heldPartitions) or archive-ignored child is exempt from the
+// parent gate, so it is not a live child for the idle-skip either.
+for (const kind of ['held', 'ignored']) {
+  test('#39: a Primary whose only child is ' + kind + ' -> idle-skip fires', () => {
+    const home = tmpHome();
+    const repo = makeGitRepo('only-' + kind);
+    const child = makeChildWorktree(repo, 'only-' + kind);
+    try {
+      register(home, repo, 'primary1');
+      register(home, child, 'child1');
+      const before = cli.run(['inbox', 'tick', 'primary1'], ctx(home, { cwd: repo })).result;
+      assert.strictEqual(before.watcherArmed, false, 'sanity: a live child must arm normally first');
+      let env = {};
+      if (kind === 'held') env = { ANTIHALL_DEVSWARM_HELD_PARTITIONS: 'child1' };
+      else {
+        const dir = path.join(home, '.anti-hall', 'devswarm', 'archive-ignore');
+        fs.mkdirSync(dir, { recursive: true });
+        fs.writeFileSync(path.join(dir, 'child1.json'), '{}');
+      }
+      const ticked = cli.run(['inbox', 'tick', 'primary1'], ctx(home, { cwd: repo, env })).result;
+      assert.strictEqual(ticked.watcherArmed, 'idle-skip');
+    } finally { rm(home); rm(repo); rm(child); }
+  });
+}
+
 // A1-3 (0.118.0 follow-up): the tick's scope must come from `id`'s OWN
 // registered worktreePath, not the calling process's cwd. A tick invoked from
 // a DIFFERENT clone of the same project (a separate `git clone`, not a linked

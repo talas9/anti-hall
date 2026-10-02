@@ -171,6 +171,30 @@ test('#39: Primary with 1 LIVE child -> arms normally (no idle-skip line)', asyn
   } finally { rm(home); rm(repo); }
 });
 
+// A held (devswarm.heldPartitions) or archive-ignored child is exempt from the
+// parent gate (`archived || held || ignored`), so it is not a live child here
+// either: a Primary whose only children are held/ignored must idle-skip.
+for (const kind of ['held', 'ignored']) {
+  test('a Primary whose only child is ' + kind + ' idle-skips (not armed)', () => {
+    const home = tmpHome();
+    const repo = makeGitRepo('only-' + kind);
+    const child = makeChildWorktree(repo, 'only-' + kind);
+    try {
+      registerDescriptor(home, 'child1', child);
+      const env = { PATH: process.env.PATH, HOME: home, USERPROFILE: home, DEVSWARM_REPO_ID: 'r1' };
+      if (kind === 'held') env.ANTIHALL_DEVSWARM_HELD_PARTITIONS = 'child1';
+      else {
+        const dir = path.join(home, '.anti-hall', 'devswarm', 'archive-ignore');
+        fs.mkdirSync(dir, { recursive: true });
+        fs.writeFileSync(path.join(dir, 'child1.json'), '{}');
+      }
+      const res = spawnSync(process.execPath, [MODULE_PATH], { env, cwd: repo, encoding: 'utf8', timeout: 8000 });
+      assert.strictEqual(res.status, 0, 'stdout=' + res.stdout + ' stderr=' + res.stderr);
+      assert.match(res.stdout, /\[wake-watch\] idle-skip: no live child workspaces/);
+    } finally { rm(home); rm(repo); rm(child); }
+  });
+}
+
 test('#39: a CHILD watcher (role child) never idle-skips even with no siblings registered', async () => {
   const home = tmpHome();
   try {

@@ -430,7 +430,7 @@ function cmdInboxTick(id, flags, ctx) {
         } catch (_) { scopeWorktree = null; }
         if (scopeWorktree) {
           const liveChildren = require('../../companion/lib/devswarm-live-children.js');
-          if (!liveChildren.hasLiveChild(home, scopeWorktree)) {
+          if (!liveChildren.hasLiveChild(home, scopeWorktree, { env: ctx.env, excludeHeldIgnored: true })) {
             watcherArmed = 'idle-skip';
             idleSkipped = true;
           }
