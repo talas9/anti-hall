@@ -59,7 +59,7 @@ Documented-but-not-yet-adapted anti-hall hard-hook parity:
   conceptually to Codex: a Codex-run DevSwarm Primary/child must channel
   workspace comms through the DevSwarm mesh (`devswarm.js send --to
   <meshId>`), not any future cross-session messaging mechanism Codex might add.
-- `hooks/fable-availability.js`: intentionally **Claude-only, no Codex mirror** — it probes `~/.claude.json` for a Claude Fable model entitlement to inform the Claude Reviewer-seat fallback, which is irrelevant to gpt-5.x Codex/OMX sessions (Fable is an Anthropic-exclusive model tier, not reachable from the Codex CLI). Like the DevSwarm supervisor, it has no Codex mirror by design — this holds regardless of whether Fable routing itself is policy-enabled or disabled on the Claude side (see `MODEL-POLICY.md`; Fable routing is RE-ENABLED as of 2026-07-12).
+- `hooks/fable-availability.js`: intentionally **Claude-only, no Codex mirror** — it probes Claude's own user config for a Fable model entitlement to inform the Claude Reviewer-seat fallback, which is irrelevant to gpt-5.x Codex/OMX sessions (Fable is an Anthropic-exclusive model tier, not reachable from the Codex CLI). Like the DevSwarm supervisor, it has no Codex mirror by design — this holds regardless of whether Fable routing itself is policy-enabled or disabled on the Claude side (see `MODEL-POLICY.md`; Fable routing is RE-ENABLED as of 2026-07-12).
 
 Model routing for Codex uses Codex model CATEGORIES, resolved from the live
 catalog at the time you act — never a slug pinned in this doc. See
