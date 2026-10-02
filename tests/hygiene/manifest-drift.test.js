@@ -82,6 +82,9 @@ const CLAUDE_ONLY_ALLOWLIST = [
   // PreToolUse Bash: scan-throttle guards a Claude-Code-specific heavy-scan
   // pattern (graphify) invoked from Claude sessions; not yet ported.
   { event: 'PreToolUse', file: 'scan-throttle.js', reason: 'throttles a Claude-session-invoked scan pattern; not yet ported to the Codex tool surface' },
+  // PreToolUse TaskStop: the note reads Claude Code teammate / background-agent
+  // transcript records and fires on the Claude TaskStop tool.
+  { event: 'PreToolUse', file: 'stale-agent-stop-note.js', reason: 'TaskStop matcher over Claude Code teammate/background-agent transcript records; no Codex TaskStop tool or record shape is known' },
   // PreToolUse edit-family matchers (Write/Edit/MultiEdit/NotebookEdit):
   // install-codex.js's own header states the current Codex hook runtime does
   // not hard-run PreToolUse for edit-family tools at all.

@@ -490,6 +490,16 @@
             "timeout": 10
           }
         ]
+      },
+      {
+        "matcher": "TaskStop",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/stale-agent-stop-note.js\"",
+            "timeout": 10
+          }
+        ]
       }
     ],
     "PostToolUse": [

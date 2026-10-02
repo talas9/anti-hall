@@ -86,6 +86,7 @@ const SWITCHES = {
   'jev-weekly-scorecard.js': 'jev.weeklyNotice',
   'jev-review-reminder.js': 'jev.reviewReminder',
   'silent-agent-nudge.js': 'guards.silentAgentNudge',
+  'stale-agent-stop-note.js': 'guards.staleAgentStopNote',
   'compact-advice-guard.js': 'guards.compactAdviceGuard',
   'compact-declaration-guard.js': 'guards.compactDeclarationGuard',
   'codex-quota-detect.js': 'guards.codexQuotaDetect',
