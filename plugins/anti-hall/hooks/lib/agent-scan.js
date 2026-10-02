@@ -168,10 +168,19 @@ function scanTranscript(transcriptPath, preLines) {
   // resumed via SendMessage after a usage-limit stop counts as RUNNING again
   // — until its NEXT completion notification, not whatever marked it terminal
   // BEFORE the resume (e.g. a "stopped" notification from the usage limit
-  // itself). terminalSeq/resumeSeq track the transcript ORDER (line index) of
+  // itself). terminalEv/resumeSeq track the transcript ORDER (line index) of
   // the newest evidence of each kind per agent id so the final reconciliation
   // pass below can tell which happened last.
-  const terminalSeq = new Map();
+  // terminalEv: id -> [{seq, ts}] of EVERY terminal evidence (ts = its entry
+  // timestamp ms, NaN when missing/unparseable). Reconciliation needs them all,
+  // not just the newest by order: a stop notification that sits LATER in the
+  // transcript but is stamped BEFORE the resume describes the earlier run.
+  const terminalEv = new Map();
+  const markTerminal = (id, evSeq, evTs) => {
+    terminal.add(id);
+    if (!terminalEv.has(id)) terminalEv.set(id, []);
+    terminalEv.get(id).push({ seq: evSeq, ts: evTs });
+  };
   const resumeSeq = new Map();
   const resumeFull = new Set(); // resume ids that came from resumedAgentId (full ids)
   const resumeTs = new Map(); // id-or-prefix -> entry timestamp ms of its newest resume
@@ -199,6 +208,7 @@ function scanTranscript(transcriptPath, preLines) {
     // `task_status` attachment (taskId, status, outputFilePath) — the launch
     // tool_result may by then sit OUTSIDE the capped tail window (the
     // compaction's own large attachments push it out), so adopt the agent here.
+    const entryTs = typeof entry.timestamp === 'string' ? Date.parse(entry.timestamp) : NaN;
     const att = entry.attachment;
     if (att && att.type === 'task_status' && typeof att.taskId === 'string' && att.taskId) {
       if (att.status === 'running') {
@@ -213,13 +223,11 @@ function scanTranscript(transcriptPath, preLines) {
           });
         }
       } else if (TERMINAL_NOTIFICATION_STATUS.test(String(att.status))) {
-        terminal.add(att.taskId);
-        terminalSeq.set(att.taskId, seq);
+        markTerminal(att.taskId, seq, entryTs);
       }
     }
 
     const content = entry.message && entry.message.content;
-    const entryTs = typeof entry.timestamp === 'string' ? Date.parse(entry.timestamp) : NaN;
 
     if (hasToolUse && entry.type === 'assistant' && Array.isArray(content)) {
       for (const block of content) {
@@ -247,7 +255,7 @@ function scanTranscript(transcriptPath, preLines) {
         if (block && block.type === 'tool_use' && block.name === 'TaskStop' && block.input && typeof block.input.task_id === 'string' && block.input.task_id) {
           // Applied after the walk: an errored TaskStop (its paired tool_result
           // is_error) stopped nothing. Result not visible -> still terminal.
-          taskStops.push({ id: block.input.task_id, seq, toolUseId: block.id });
+          taskStops.push({ id: block.input.task_id, seq, toolUseId: block.id, ts: entryTs });
         }
       }
     }
@@ -263,8 +271,7 @@ function scanTranscript(transcriptPath, preLines) {
           const tidm = TASK_ID_RE.exec(body);
           const statm = STATUS_RE.exec(body);
           if (tidm && tidm[1] && statm && TERMINAL_NOTIFICATION_STATUS.test(statm[1])) {
-            terminal.add(tidm[1]);
-            terminalSeq.set(tidm[1], seq);
+            markTerminal(tidm[1], seq, entryTs);
           }
         }
       }
@@ -311,11 +318,11 @@ function scanTranscript(transcriptPath, preLines) {
           const rid = resumeMatch.id;
           if (resumeMatch.full) resumeFull.add(rid);
           resumeSeq.set(rid, seq);
-          if (Number.isFinite(entryTs)) resumeTs.set(rid, entryTs);
+          if (Number.isFinite(entryTs)) resumeTs.set(rid, entryTs); else resumeTs.delete(rid);
           continue;
         }
         if (isQueuedMessageResult(text)) continue;
-        if (isToolResult) otherToolResultTexts.push({ toolUseId, text, seq });
+        if (isToolResult) otherToolResultTexts.push({ toolUseId, text, seq, ts: entryTs });
       }
     }
   }
@@ -330,8 +337,7 @@ function scanTranscript(transcriptPath, preLines) {
 
   for (const s of taskStops) {
     if (erroredToolUseIds.has(s.toolUseId)) continue;
-    terminal.add(s.id);
-    terminalSeq.set(s.id, Math.max(s.seq, terminalSeq.get(s.id) || 0));
+    markTerminal(s.id, s.seq, s.ts);
   }
 
   // SAFETY NET pass: for any launched-but-not-yet-terminal agent, check
@@ -343,7 +349,7 @@ function scanTranscript(transcriptPath, preLines) {
   // has not happened yet.
   for (const [id, rec] of launched) {
     if (terminal.has(id)) continue;
-    for (const { toolUseId, text, seq: evidenceSeq } of otherToolResultTexts) {
+    for (const { toolUseId, text, seq: evidenceSeq, ts: evidenceTs } of otherToolResultTexts) {
       if (toolUseId !== undefined && toolUseId === rec.toolUseId) continue; // the launch's own result already named it — not "later" evidence
       // Delivery evidence only from the answer to a TaskOutput/SendMessage call
       // naming this agent; a Read/Bash/grep result that merely contains the id
@@ -351,7 +357,7 @@ function scanTranscript(transcriptPath, preLines) {
       // judged on the text alone.
       const call = toolUseId !== undefined ? toolUses.get(toolUseId) : undefined;
       if (call && !(DELIVERY_TOOLS.has(call.name) && namesAgent(call.input, id, launched))) continue;
-      if (text.split('\n').some((ln) => ln.indexOf(id) !== -1 && !RUNNING_ROW_RE.test(ln))) { terminal.add(id); terminalSeq.set(id, evidenceSeq); break; }
+      if (text.split('\n').some((ln) => ln.indexOf(id) !== -1 && !RUNNING_ROW_RE.test(ln))) { markTerminal(id, evidenceSeq, evidenceTs); break; }
     }
   }
 
@@ -384,8 +390,13 @@ function scanTranscript(transcriptPath, preLines) {
       const rec = launched.get(id);
       if (rec && resumeTs.has(rid)) rec.resumedAtMs = Math.max(rec.resumedAtMs || 0, resumeTs.get(rid));
       if (!terminal.has(id)) continue;
-      const tSeq = terminalSeq.has(id) ? terminalSeq.get(id) : -1;
-      if (rSeq > tSeq) terminal.delete(id);
+      // Terminal evidence still stands only if it is AFTER the resume by order
+      // and not stamped earlier than the resume (a late-arriving record of the
+      // previous run). Missing/unparseable timestamps fall back to order alone.
+      const rTs = resumeTs.get(rid);
+      const stands = (terminalEv.get(id) || []).some((e) =>
+        e.seq > rSeq && !(Number.isFinite(e.ts) && Number.isFinite(rTs) && e.ts < rTs));
+      if (!stands) terminal.delete(id);
     }
   }
 
