@@ -140,6 +140,8 @@ lifecycle log, session-end MCP reaper), `guards.*` (api, speculation, claim ledg
 task, task-list, scan throttle; `guards.modelRouting` takes `strict|advisory|off`;
 `guards.noBlockingQuestions` takes `off|advise|block` (default `off`; Claude only — watches the
 `AskUserQuestion` tool; live firing not yet verified, see docs/KB-claude-code-hooks.md);
+`guards.questionAgentsNote` (default on) adds one advisory line to a question asked while background
+agents are in flight, independent of that mode;
 `guards.injectionRepeatEvery` — turns between full re-injections of a static
 per-turn reminder block (VERIFY-FIRST, the DevSwarm PRIMARY dispatch-tier/
 top-fan-out-tier suffixes) once its first-turn/post-compact copy is consumed,

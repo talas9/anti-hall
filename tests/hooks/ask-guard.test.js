@@ -245,3 +245,116 @@ test('schema / manifest / docs parity for guards.noBlockingQuestions', () => {
   }
   assert.match(fs.readFileSync(path.join(ROOT, 'docs', 'GUIDE.md'), 'utf8'), /in block mode those flows must use the `DESTRUCTIVE:`\/`CREDENTIAL:` marker/);
 });
+
+// ---- guards.questionAgentsNote (advisory: agents in flight when a question is asked) ----
+
+function agentLaunchLines(tuid, agentId, description) {
+  const text =
+    'Async agent launched successfully. (This tool result is internal metadata.)\n' +
+    'agentId: ' + agentId + " (internal ID - do not mention to user. Use SendMessage with to: '" + agentId + "')\n" +
+    'The agent is working in the background. You will be notified automatically when it completes.\n' +
+    'output_file: /tmp/none/' + agentId + '.output\n';
+  return [
+    { type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id: tuid, name: 'Agent', input: { description, prompt: 'do it' } }] } },
+    { type: 'user', message: { role: 'user', content: [{ tool_use_id: tuid, type: 'tool_result', content: [{ type: 'text', text }] }] } },
+  ];
+}
+function agentDoneLine(agentId) {
+  return { type: 'queue-operation', operation: 'enqueue', content: '<task-notification>\n<task-id>' + agentId + '</task-id>\n<status>completed</status>\n<summary>done</summary>\n</task-notification>' };
+}
+function writeTranscript(h, entries) {
+  const p = path.join(h.home, 'transcript.jsonl');
+  fs.writeFileSync(p, entries.map((e) => JSON.stringify(e)).join('\n') + '\n');
+  return p;
+}
+function withTp(tp) { return Object.assign(payload([q('Which one?', 'Pick')]), { transcript_path: tp }); }
+function noteHome(settings) {
+  const h = makeHome();
+  if (settings) fs.writeFileSync(path.join(h.home, '.anti-hall', 'settings.json'), JSON.stringify(settings));
+  return h;
+}
+const ctxOf = (r) => (r.json && r.json.hookSpecificOutput && r.json.hookSpecificOutput.additionalContext) || '';
+
+test('questionAgentsNote: one agent in flight -> note names it; no block decision', () => {
+  const h = noteHome(null);
+  try {
+    const tp = writeTranscript(h, agentLaunchLines('tu1', 'aaaa1111bbbb2222', 'audit the schema'));
+    const r = run(h, withTp(tp));
+    assert.strictEqual(r.status, 0);
+    const c = ctxOf(r);
+    assert.match(c, /1 background agent is still in flight \(audit the schema\)/);
+    assert.match(c, /act on one of these options before the answer arrives/);
+    assert.ok(!('decision' in r.json));
+    assert.ok(c.length < 400, 'size ' + c.length);
+  } finally { h.cleanup(); }
+});
+
+test('questionAgentsNote: two agents -> count and both descriptions', () => {
+  const h = noteHome(null);
+  try {
+    const tp = writeTranscript(h, [...agentLaunchLines('tu1', 'aaaa1111bbbb2222', 'one'), ...agentLaunchLines('tu2', 'cccc3333dddd4444', 'two')]);
+    assert.match(ctxOf(run(h, withTp(tp))), /2 background agents are still in flight \(one; two\)/);
+  } finally { h.cleanup(); }
+});
+
+test('questionAgentsNote: zero agents (launched then finished) -> silent', () => {
+  const h = noteHome(null);
+  try {
+    const tp = writeTranscript(h, [...agentLaunchLines('tu1', 'aaaa1111bbbb2222', 'one'), agentDoneLine('aaaa1111bbbb2222')]);
+    assertSilent(run(h, withTp(tp)));
+  } finally { h.cleanup(); }
+});
+
+test('questionAgentsNote: unknown (no / unreadable transcript) -> silent', () => {
+  const h = noteHome(null);
+  try {
+    assertSilent(run(h, payload([q('Which one?', 'Pick')])));
+    assertSilent(run(h, withTp(path.join(h.home, 'missing.jsonl'))));
+  } finally { h.cleanup(); }
+});
+
+test('questionAgentsNote: setting off -> silent even with an agent in flight', () => {
+  const h = noteHome({ guards: { questionAgentsNote: false } });
+  try {
+    const tp = writeTranscript(h, agentLaunchLines('tu1', 'aaaa1111bbbb2222', 'one'));
+    assertSilent(run(h, withTp(tp)));
+  } finally { h.cleanup(); }
+});
+
+test('questionAgentsNote: works with noBlockingQuestions off (explicit) and rides along with advise', () => {
+  let h = noteHome({ guards: { noBlockingQuestions: 'off' } });
+  try {
+    const tp = writeTranscript(h, agentLaunchLines('tu1', 'aaaa1111bbbb2222', 'one'));
+    assert.match(ctxOf(run(h, withTp(tp))), /1 background agent is still in flight/);
+  } finally { h.cleanup(); }
+  h = noteHome({ guards: { noBlockingQuestions: 'advise' } });
+  try {
+    const tp = writeTranscript(h, agentLaunchLines('tu1', 'aaaa1111bbbb2222', 'one'));
+    const c = ctxOf(run(h, withTp(tp)));
+    assert.ok(c.startsWith(ADVISE) && /still in flight/.test(c), c);
+  } finally { h.cleanup(); }
+});
+
+test('questionAgentsNote: block mode still blocks an unmarked question; the note never replaces the block', () => {
+  const h = noteHome({ guards: { noBlockingQuestions: 'block' } });
+  try {
+    const tp = writeTranscript(h, agentLaunchLines('tu1', 'aaaa1111bbbb2222', 'one'));
+    assertBlocked(run(h, withTp(tp)));
+  } finally { h.cleanup(); }
+});
+
+test('schema / manifest parity for guards.questionAgentsNote', () => {
+  const schema = require(path.join(PLUGIN, 'hooks', 'lib', 'settings-schema.js'));
+  const e = schema.findSetting('guards', 'questionAgentsNote');
+  assert.ok(e);
+  assert.strictEqual(e.type, 'boolean');
+  assert.strictEqual(e.default, true);
+  assert.strictEqual(e.env, 'ANTIHALL_QUESTION_AGENTS_NOTE');
+  assert.strictEqual(e.pluginOption, 'guards_question_agents_note');
+  const manifest = JSON.parse(fs.readFileSync(path.join(PLUGIN, '.claude-plugin', 'plugin.json'), 'utf8'));
+  assert.strictEqual(manifest.userConfig.guards_question_agents_note.default, true);
+  for (const f of ['docs/GUIDE.md', 'llms.txt']) {
+    const t = fs.readFileSync(path.join(ROOT, f), 'utf8');
+    assert.ok(t.includes('guards.questionAgentsNote') && t.includes('ANTIHALL_QUESTION_AGENTS_NOTE'), f);
+  }
+});

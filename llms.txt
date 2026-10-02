@@ -105,7 +105,7 @@ and getting a yes); re-arming a guard never does. /config, env and a `settings.j
 | PreToolUse (Write/Edit/MultiEdit) | ship-it-guard.js | Opt-in: blocks hard-risk code edits with no `PLAN.md`. | — | `ANTIHALL_SHIPIT_GATE=on` |
 | PreToolUse (Write/Edit/MultiEdit/NotebookEdit) | edit-guard.js | Coordinator must delegate file edits (root-anchored allowlist for docs/state). | — | safety.editGuard (safety: --confirmed); `ANTIHALL_EDIT_GUARD_ALLOW` |
 | PreToolUse (Read) | inbox-read-guard.js | Blocks a direct Read of a raw DevSwarm inbox file (use the CLI). | — | devswarm.inboxReadGuard |
-| PreToolUse (AskUserQuestion) | ask-guard.js | Optional, off by default: advises or blocks a question call that would hold work waiting for an answer; a first question starting `DESTRUCTIVE:` or `CREDENTIAL:` is allowed. Claude only. | — | guards.noBlockingQuestions (off/advise/block) |
+| PreToolUse (AskUserQuestion) | ask-guard.js | Optional, off by default: advises or blocks a question call that would hold work waiting for an answer; a first question starting `DESTRUCTIVE:` or `CREDENTIAL:` is allowed. Also adds a note when background agents are in flight. Claude only. | — | guards.noBlockingQuestions (off/advise/block), guards.questionAgentsNote |
 | PreToolUse (SendMessage) | devswarm-comms-guard.js | Blocks `SendMessage` to a peer session that is a registered DevSwarm workspace (mesh only); never blocks subagent steering. | — | devswarm.commsGuard |
 | PreToolUse (Agent/Task) | model-routing-guard.js | Routes spawns to the cheapest fitting model: blocks a mechanical spawn with no model (strict default), advises on flagship + mechanical; blocks a spawn that runs anti-hall's own update (it runs in the main session, guards.updateInSession). | — | guards.modelRouting (strict/advisory/off) |
 | PreToolUse (Agent/Task) | swarm-guard.js | Anti-fork-bomb: spawn-rate cap + real free-memory check. | — | safety.swarmGuard (safety: --confirmed) |
@@ -232,6 +232,7 @@ the schema's non-advanced set plus the sensitive credential keys. Codex: no `/co
 | guards.handoverCommitGuard | true | `ANTIHALL_HANDOVER_COMMIT_GUARD` |
 | guards.modelRouting | strict (strict/advisory/off) | `ANTIHALL_MODEL_ROUTING` |
 | guards.noBlockingQuestions | off (off/advise/block) | `ANTIHALL_NO_BLOCKING_QUESTIONS` |
+| guards.questionAgentsNote | true | `ANTIHALL_QUESTION_AGENTS_NOTE` |
 | guards.apiGuard / speculationGuard / claimLedger / taskGuard / tasklistGuard / scanThrottle | true | `ANTI_HALL_SCAN_THROTTLE` (scanThrottle) |
 | safety.gitGuard / commandGuard / editGuard / swarmGuard (safety: risky `set`/`reset` need `--confirmed`; normal precedence applies, settings.json values count) | true | `ANTIHALL_GIT_GUARD`, `ANTIHALL_COMMAND_GUARD`, `ANTIHALL_EDIT_GUARD`, `ANTIHALL_SWARM_GUARD` |
 | guards.editGuardAllow / allowSubagentMailbox (advanced, safety: --confirmed) | "" / false | `ANTIHALL_EDIT_GUARD_ALLOW`, `ANTIHALL_ALLOW_SUBAGENT_MAILBOX` |

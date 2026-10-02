@@ -15,6 +15,11 @@
 //             ~/.anti-hall/logs/ask-guard.ndjson.
 // No other heuristic: the guard never infers what the user wants from the transcript.
 //
+// Independent of that mode, guards.questionAgentsNote (default on) adds one
+// advisory line when agent-scan proves one or more background agents are in flight
+// (they may act on an option before the answer arrives). Silent when the count is
+// unknown or zero; never blocks; works with noBlockingQuestions off.
+//
 // In a DevSwarm CHILD workspace the doctrine is child -> parent -> human, so
 // block and advise add one sentence pointing at `devswarm.js send --to-primary
 // --question ...`.
@@ -66,10 +71,35 @@ function logMarker(marker) {
   } catch (_) { /* fail-open */ }
 }
 
+// agentsNote(payload) -> one advisory line, or '' when no agent is provably in
+// flight. Silent on null (unknown: unreadable transcript, or a window too short to
+// prove "none") and on an empty list. Fail-open to ''.
+const NOTE_MAX_LISTED = 5;
+const NOTE_DESC_MAX = 60;
+function agentsNote(payload) {
+  try {
+    if (!require('./lib/settings.js').enabled('guards', 'questionAgentsNote')) return '';
+    const tp = payload && payload.transcript_path;
+    if (!tp || typeof tp !== 'string') return '';
+    const agents = require('./lib/agent-scan.js').runningAgentsOrNull(tp);
+    if (!Array.isArray(agents) || agents.length === 0) return '';
+    const names = agents.slice(0, NOTE_MAX_LISTED).map((a) => {
+      const d = String((a && a.description) || '').replace(/[\u0000-\u001f\u007f]+/g, ' ').trim().slice(0, NOTE_DESC_MAX);
+      return d || 'unnamed agent';
+    });
+    const more = agents.length > NOTE_MAX_LISTED ? ', +' + (agents.length - NOTE_MAX_LISTED) + ' more' : '';
+    return agents.length + ' background agent' + (agents.length === 1 ? ' is' : 's are') + ' still in flight (' + names.join('; ') + more
+      + '). They may act on one of these options before the answer arrives: pause them (SendMessage) or tell them to wait for the decision.';
+  } catch (_) { return ''; }
+}
+
 function main() {
   let mode = 'off';
   try { mode = String(require('./lib/settings.js').get('guards', 'noBlockingQuestions') || 'off'); } catch (_) { mode = 'off'; }
-  if (mode !== 'advise' && mode !== 'block') return;
+  if (mode !== 'advise' && mode !== 'block') mode = 'off';
+  let noteOn = true;
+  try { noteOn = require('./lib/settings.js').enabled('guards', 'questionAgentsNote'); } catch (_) { noteOn = true; }
+  if (mode === 'off' && !noteOn) return;
 
   try { if (require('./skip-guard.js').isSkipped('ask-guard')) return; } catch (_) { /* stay active */ }
 
@@ -82,14 +112,16 @@ function main() {
   try { child = require('./lib/devswarm-role.js').isChildWorkspace(process.env); } catch (_) { child = false; }
   const suffix = child ? CHILD_TEXT : '';
 
-  if (mode === 'advise') {
-    emit({ hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: ADVISE_TEXT + suffix } }, 0);
-    return;
+  if (mode === 'block') {
+    const marker = markerOf(payload.tool_input);
+    if (!marker) { emit({ decision: 'block', reason: BLOCK_TEXT + suffix }, 2); return; }
+    logMarker(marker);
   }
-
-  const marker = markerOf(payload.tool_input);
-  if (marker) { logMarker(marker); return; }
-  emit({ decision: 'block', reason: BLOCK_TEXT + suffix }, 2);
+  const parts = [];
+  if (mode === 'advise') parts.push(ADVISE_TEXT + suffix);
+  const note = agentsNote(payload);
+  if (note) parts.push(note);
+  if (parts.length) emit({ hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: parts.join(' ') } }, 0);
 }
 
 try { main(); } catch (_) { /* fail-open */ }
