@@ -6,6 +6,30 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.120.12 (2026-10-02)
+
+### Added
+
+- Plugin icon (`plugins/anti-hall/.claude-plugin/icon.png`), also referenced from the Codex manifest interface (`composerIcon`, `logo`).
+- Short manifest description plus keywords in both manifests.
+- CONTRIBUTING, SECURITY and issue templates.
+
+### Changed
+
+- BEHAVIOUR CHANGE: scan-throttle is now advisory-only. It injects `additionalContext` and never rewrites the command or tool input.
+- Codex `anti-hall-activate` and `anti-hall-context-conserve` skills run shipped scripts (`codex/scripts/`) in place of inline `node -e` one-liners.
+
+### Fixed
+
+- The NUL dedup-key separator in `doctor-runtime.js` is written as an escape instead of a literal control byte.
+
+### Docs
+
+- README overhaul: demo, what-it-blocks table, verify and uninstall, glossary.
+- llms.txt uses absolute links.
+- The Windows claim is corrected.
+- Settings descriptions for `allowGcloudReads` and `allowBackgroundScratchScripts` reworded (text only, no detection change); GUIDE matches.
+
 ## 0.120.11 (2026-10-02)
 
 ### Fixed

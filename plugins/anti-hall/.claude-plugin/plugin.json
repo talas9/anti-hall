@@ -2,7 +2,7 @@
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "anti-hall",
   "displayName": "Anti-Hallucination Verify-First",
-  "version": "0.120.11",
+  "version": "0.120.12",
   "description": "Verify-first guardrails for Claude Code: always-on Node hooks that block fabricated APIs, AI commit self-credit, force-push, un-delegated heavy commands and fake \"done\" claims, plus root-cause, orchestration and handover skills. Pure Node (>= 22), macOS and Linux; a separate Codex port ships alongside.",
   "author": {
     "name": "Mohammed Talas",
