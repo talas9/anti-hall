@@ -6,11 +6,21 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
-## Unreleased
+## 0.121.7 (2026-10-03)
 
-- `devswarm.js roster` now prints a compact table of live workspaces plus a `+N archived` line instead of the full JSON. `--all` (or `ANTIHALL_ROSTER_HIDE_ARCHIVED=0`) adds archived rows, `--json` prints the full data as before, and `roster --ack` is unchanged.
-- The stale-handover nag no longer makes the agent end its reply with "Refresh the handover first". It now says to refresh the handover, then end with the normal good-point line naming the saved handover path (or say plainly that the refresh could not be done).
-- Orchestration brief guidance: a subagent's `report`/`summary`/`findings`/`analysis` `*.md` file writes are rejected by the harness; name such files `<role>-<topic>.md` or have the subagent return the text.
+### Changed
+
+- `devswarm.js roster` prints a compact table of live workspaces with a "+N archived" line; `--all` lists archived ones and `--json` gives the full data as before.
+
+### Fixed
+
+- The stale-handover reminder no longer makes a reply end with "refresh the handover first" after the handover was refreshed in that same turn.
+- The workspace stop gate's cap message no longer says there will be no further stop blocks; it now says the limit starts over after a report.
+
+### Added
+
+- The stalled-agent check records its phase timings when a run is slow, to diagnose a rare 30-second timeout whose cause is not yet known.
+- Orchestration guidance: Claude Code rejects subagent files named report, summary, findings or analysis; name them differently.
 
 ## 0.121.6 (2026-10-02)
 
