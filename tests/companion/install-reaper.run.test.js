@@ -124,18 +124,22 @@ test('missing reaper script -> exit 1 with a clear error (no scheduler touched)'
 });
 
 // --------------------------------------------------------------------------
-// Windows no-op: real run only when actually on win32 (skip-not-fail elsewhere).
-// process.platform cannot be faked in-process, and windowsNoop() is not exported,
-// so off-Windows we assert nothing here and rely on the e2e Windows path + the
-// builder layer below. ON win32, a real run must exit 0 and print the no-op msg.
+// Windows no-op: the child is preloaded with a fake process.platform === 'win32'
+// (tests/helpers/fake-win32-preload.js) so the real win32 branch of main() runs
+// on every host. It must exit 0, print the no-op message, and install nothing.
 // --------------------------------------------------------------------------
-test('windows no-op: exit 0 + unsupported message',
-  { skip: process.platform !== 'win32' }, () => {
-    const { status, stdout } = runInstall([]);
-    assert.strictEqual(status, 0, 'windows must no-op with exit 0');
-    assert.match(stdout, /Windows is unsupported/i);
-    assert.match(stdout, /No scheduler installed/i);
-  });
+test('windows no-op: exit 0 + unsupported message', () => {
+  const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ah-reaper-win-'));
+  try {
+    const r = spawnSync(process.execPath,
+      ['-r', path.join(__dirname, '..', 'helpers', 'fake-win32-preload.js'), INSTALL],
+      { encoding: 'utf8', timeout: 15000, env: { ...process.env, HOME: tmpHome, USERPROFILE: tmpHome } });
+    assert.strictEqual(r.status, 0, 'windows must no-op with exit 0');
+    assert.match(r.stdout, /Windows is unsupported/i);
+    assert.match(r.stdout, /No scheduler installed/i);
+    assert.deepStrictEqual(fs.readdirSync(tmpHome), [], 'nothing installed into the temp home');
+  } finally { fs.rmSync(tmpHome, { recursive: true, force: true }); }
+});
 
 // --------------------------------------------------------------------------
 // OS-GATED BUILDER LAYER (boundary doc):

@@ -33,6 +33,14 @@ function has(bin) {
 const HAS_PY = has('python3');
 const HAS_NODE = has('node');
 const HAS_NX = (() => { try { return spawnSync('python3', ['-c', 'import networkx'], { timeout: 8000 }).status === 0; } catch (_) { return false; } })();
+// CI gap guard: the workflow installs networkx and sets ANTIHALL_REQUIRE_NX=1. If CI
+// is set and that opt-in is present but networkx is missing, fail instead of
+// silently skipping the opt-in third-party API tests. Developer machines skip.
+if (process.env.CI && process.env.ANTIHALL_REQUIRE_NX === '1') {
+  test('CI requires networkx (ANTIHALL_REQUIRE_NX=1)', () => {
+    assert.ok(HAS_NX, 'networkx is not importable by python3: the 3rd-party api-guard tests would be skipped');
+  });
+}
 
 function write(file_path, content) {
   return { hook_event_name: 'PreToolUse', tool_name: 'Write', tool_input: { file_path: xplatPath(file_path), content }, session_id: 't', cwd: process.cwd() };

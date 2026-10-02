@@ -60,6 +60,16 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: ${{ matrix.node }}
+      # tests/hooks/api-guard.test.js exercises the opt-in third-party API check,
+      # which needs networkx importable by `python3`. A venv works on both runners
+      # (ubuntu 24.04 and Homebrew python are PEP 668 "externally managed", so a
+      # bare `pip install` fails there); its bin dir goes on PATH for later steps.
+      # ANTIHALL_REQUIRE_NX makes the test file fail, not skip, if this breaks.
+      - name: install networkx for api-guard tests
+        run: |
+          python3 -m venv "$RUNNER_TEMP/nx-venv"
+          "$RUNNER_TEMP/nx-venv/bin/python" -m pip install networkx==3.4.2
+          echo "$RUNNER_TEMP/nx-venv/bin" >> "$GITHUB_PATH"
       # Bare `node --test` auto-discovers test files (**/*.test.js, plus a tests/
       # subtree) from the working directory. No shell glob is expanded, so it
       # behaves identically on bash, zsh, and PowerShell — unlike `node --test
@@ -81,3 +91,5 @@ jobs:
       # `--test-shard=i/n` (built in, Node >=20.5) hands this job every n-th
       # discovered test file, so the shards of one cell partition the suite.
       - run: node --test --test-shard=${{ matrix.shard }}/${{ matrix.total }}
+        env:
+          ANTIHALL_REQUIRE_NX: '1'

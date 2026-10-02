@@ -92,10 +92,11 @@ function sweepMarker(marker) {
 }
 
 // --------------------------------------------------------------------------
-// Windows: reaper must no-op. Assert and skip the Unix body.
+// Windows: reaper must no-op. The child is preloaded with a fake
+// process.platform === 'win32' so the real win32 branch runs on every host.
 // --------------------------------------------------------------------------
-test('mcp-reaper e2e (Windows no-op path)', { skip: process.platform !== 'win32' }, () => {
-  const r = runReaper({});
+test('mcp-reaper e2e (Windows no-op path)', () => {
+  const r = runReaper({ NODE_OPTIONS: `-r ${JSON.stringify(path.join(__dirname, '..', 'helpers', 'fake-win32-preload.js'))}` });
   assert.strictEqual(r.status, 0, 'reaper must exit 0 on Windows');
   assert.match(String(r.stdout), /Windows is unsupported/i, 'must print the Windows no-op message');
 });
