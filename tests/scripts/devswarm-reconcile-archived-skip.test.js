@@ -118,7 +118,9 @@ test('cmdReconcile: an archived row whose worktree is ALSO missing on disk is sk
     assert.strictEqual(row.worktreeMissing, true);
     assert.strictEqual(row.skipped, true);
     assert.match(row.skipReason, /archived/i);
-    assert.match(row.error, /worktree not found on disk/);
+    // Terminal, expected state: not a failure, so no ok:false and no error text.
+    assert.strictEqual(row.ok, true);
+    assert.strictEqual(row.error, null);
   } finally { rm(home); rm(repo); }
 });
 

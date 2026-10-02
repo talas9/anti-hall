@@ -26,6 +26,8 @@ const {
 const {
   LIST_CHILDREN_TIMEOUT_MS, parseChildrenList,
 } = require('./roster-diag.js');
+const repoUnknown = require('../../companion/lib/devswarm-repo-unknown.js');
+const alog = require('../../companion/lib/anti-hall-log.js');
 
 // defaultSpawnReconcile(d, ctx) -> spawnSync result. Spawns THIS SAME script
 // (`__filename`, via `process.execPath` — an ABSOLUTE resolved binary path,
@@ -287,6 +289,25 @@ function cmdReconcile(flags, ctx) {
   let processed = 0;
   const deferredIds = [];
   const results = [];
+  // "Repository not found" (hivecontrol no longer knows this worktree's repo) is
+  // terminal for THAT ROW (per-row scope: a sibling worktree hivecontrol still
+  // knows is never suppressed): see companion/lib/devswarm-repo-unknown.js.
+  // While the row's marker is live its native pull is not spawned.
+  const sweepNow = Number.isFinite(ctx.now) ? ctx.now : Date.now();
+  const repoUnknownScope = (d) => 'pull:' + d.id;
+  let repoUnknownSkipped = 0;
+  const pushRepoUnknownSkip = (d) => {
+    repoUnknownSkipped++;
+    results.push({
+      id: d.id, worktreePath: d.worktreePath, ok: true, imported: 0, duplicate: 0,
+      nativeCount: 0, lost: 0, locked: false, hivecontrolMissing: false,
+      worktreeMissing: false, repoUnknown: true,
+      archivedDuplicate: false,
+      skipped: true,
+      skipReason: 'repository not known to hivecontrol (terminal; rechecked periodically)',
+      error: null,
+    });
+  };
   for (const d of targets) {
     // Pre-spawn missing-worktree skip (defaultSpawnReconcile only — see doc
     // comment above): costs zero budget, unlike letting spawnFn discover it
@@ -309,14 +330,17 @@ function cmdReconcile(flags, ctx) {
         // disk" failures on an entirely healthy sweep). A LIVE row whose
         // worktree vanished stays a genuine failure below, unchanged.
         const archived = archivedCounterpart || reconcileRowArchived(home, d, ctx);
+        // An archived+pruned row is a terminal, expected state: skipped, so NOT
+        // ok:false and carrying no error (skipReason says why). A LIVE row whose
+        // worktree vanished stays ok:false with the real error.
         results.push({
-          id: d.id, worktreePath: d.worktreePath, ok: false, imported: 0, duplicate: 0,
+          id: d.id, worktreePath: d.worktreePath, ok: archived, imported: 0, duplicate: 0,
           nativeCount: 0, lost: 0, locked: false, hivecontrolMissing: false,
           worktreeMissing: true,
           archivedDuplicate: archivedCounterpart,
           skipped: archived,
           skipReason: archived ? 'archived workspace, worktree pruned from disk' : null,
-          error: 'worktree not found on disk: ' + d.worktreePath,
+          error: archived ? null : 'worktree not found on disk: ' + d.worktreePath,
         });
         continue;
       }
@@ -331,7 +355,7 @@ function cmdReconcile(flags, ctx) {
       // sweep's job to drain, and refusing it noiselessly costs zero budget.
       if (reconcileRowArchived(home, d, ctx)) {
         results.push({
-          id: d.id, worktreePath: d.worktreePath, ok: false, imported: 0, duplicate: 0,
+          id: d.id, worktreePath: d.worktreePath, ok: true, imported: 0, duplicate: 0,
           nativeCount: 0, lost: 0, locked: false, hivecontrolMissing: false,
           worktreeMissing: false,
           archivedDuplicate: hasArchivedCounterpart(home, d.id),
@@ -356,6 +380,7 @@ function cmdReconcile(flags, ctx) {
       // ANTIHALL_REPOKEY_GIT_TIMEOUT_MS-bounded primitive gitCommonDir already
       // uses) rather than a second implementation.
       //
+      if (repoUnknown.isSuppressed(home, repoKey, repoUnknownScope(d), sweepNow)) { pushRepoUnknownSkip(d); continue; }
       // BUDGET-BEFORE-PROBE (D11-C2, root cause for reconcile escaping its own
       // budget): this probe is a real child-process spawn bounded only by
       // ANTIHALL_REPOKEY_GIT_TIMEOUT_MS (up to ~10s per broken worktree), NOT
@@ -396,6 +421,7 @@ function cmdReconcile(flags, ctx) {
       }
       if (gitRoot !== d.worktreePath) spawnTarget = Object.assign({}, d, { worktreePath: gitRoot });
     }
+    if (!usingDefaultSpawn && repoUnknown.isSuppressed(home, repoKey, repoUnknownScope(d), sweepNow)) { pushRepoUnknownSkip(d); continue; }
     // Budget check: only once we're about to actually spawn a child. A budget
     // of 0 means unlimited (never defers).
     if (budgetMs > 0 && (clockNow() - startedAt) >= budgetMs) {
@@ -422,6 +448,17 @@ function cmdReconcile(flags, ctx) {
       parseRun();
     }
     const nativeTimeout = isNativeTimeoutRun(r, parsed);
+    if (parsed && parsed.ok) repoUnknown.clear(home, repoKey, repoUnknownScope(d));
+    if (!(parsed && parsed.ok) && repoUnknown.isRepoUnknownText(parsed && parsed.error, parsed && parsed.reason, r && r.stderr)) {
+      const rec = repoUnknown.record(home, repoKey, repoUnknownScope(d), (parsed && (parsed.error || parsed.reason)) || (r && r.stderr), sweepNow);
+      if (rec.first) {
+        alog.logEvent('devswarm-reconcile', 'repo-unknown', 'info',
+          'hivecontrol does not know this worktree\'s repository (terminal for the row) — recorded once, its native pull suppressed until a periodic recheck',
+          { repoKey, id: d.id, worktreePath: d.worktreePath });
+      }
+      pushRepoUnknownSkip(d);
+      continue;
+    }
     results.push({
       id: d.id,
       worktreePath: d.worktreePath,
@@ -582,6 +619,7 @@ function cmdReconcile(flags, ctx) {
     ok: allRowsOkOrBenign, action: 'reconcile', repoKey,
     count: results.length, imported, lost, rejected, results,
     budgetMs, processed, skippedMissingWorktree, skippedNotGitRoot, deferred: deferredIds.length,
+    repoUnknown: repoUnknownSkipped,
     namesRefreshed,
     elapsedMs: clockNow() - startedAt,
   };

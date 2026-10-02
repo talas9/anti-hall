@@ -553,9 +553,11 @@ test('main() as a real entry-script process: reconcile-sweep runs, persists cool
     // spawns the real `hivecontrol` binary, which is not on CI runners. This
     // proves the entry-script/circular-require wiring, not native hivecontrol
     // behavior.
-    assert.strictEqual(typeof out1.reconcile.results[0].result.ok, 'boolean');
-    assert.strictEqual(out1.reconcile.results[0].result.count, 1, 'the real registered descriptor must actually be visited by this real subprocess run');
-    assert.strictEqual(out1.reconcile.results[0].result.results[0].id, 'entry-ws');
+    // The stdout line carries the COMPACT reconcile shape (per-project counts +
+    // only real failures; compactReconcileForLog), not every raw row.
+    assert.strictEqual(typeof out1.reconcile.results[0].ok, 'boolean');
+    assert.strictEqual(out1.reconcile.results[0].count, 1, 'the real registered descriptor must actually be visited by this real subprocess run');
+    assert.ok(out1.reconcile.failures === 0 || Array.isArray(out1.reconcile.failures), 'failures reported as a count/list, never the raw rows');
 
     // Cooldown must be REAL and durable across process invocations (this is
     // launchd/cron's actual usage pattern — a fresh process every tick).

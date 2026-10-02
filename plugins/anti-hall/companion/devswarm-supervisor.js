@@ -39,6 +39,7 @@ const {
   DEFAULT_IDLE_MS, DEFAULT_COOLDOWN_MS, DEFAULT_NUDGE_WINDOW_MS,
 } = require('./lib/liveness.js');
 const { pokeOrEscalate, notifyParentEscalation, drainEscalationIntents, DEFAULT_NUDGE_MAX_ATTEMPTS, DEFAULT_NUDGE_COOLDOWN_MS } = require('./lib/recovery.js');
+const repoUnknown = require('./lib/devswarm-repo-unknown.js'); // leaf (fs/path only)
 const alog = require('./lib/anti-hall-log.js'); // leaf module (fs/os/path only) — safe at top level, no cycle risk
 // devswarm-archived-cache: leaf-ish (fs/path + liveness.js, which this file
 // already loads). It lazy-requires THIS module for the sweep interval, so the
@@ -1037,11 +1038,30 @@ function reconcileSweepIfDue(opts) {
       // writeActiveCache refuses it a second time independently.
       // The first failure is remembered so it can be logged ONCE per sweep
       // (not once per project).
+      // "Repository not found" for this probe cwd is terminal (devswarm-repo-
+      // unknown.js): recorded once, then not re-run (nor re-reported) every
+      // sweep until its periodic recheck. Contributes nothing — fail-open.
       let active = null;
-      try {
-        active = runActiveList(t.worktreePath);
-      } catch (e) {
-        active = { ok: false, reason: 'probe-threw', error: String(e && e.message || e) };
+      const listSuppressed = repoUnknown.isSuppressed(home, t.repoKey, 'list', now);
+      if (!listSuppressed) {
+        try {
+          active = runActiveList(t.worktreePath);
+        } catch (e) {
+          active = { ok: false, reason: 'probe-threw', error: String(e && e.message || e) };
+        }
+        if (active && active.ok) {
+          repoUnknown.clear(home, t.repoKey, 'list');
+        } else if (active && repoUnknown.isRepoUnknownText(active.error, active.stderr)) {
+          const rec = repoUnknown.record(home, t.repoKey, 'list', active.error || active.stderr, now);
+          if (rec.first) {
+            try {
+              alog.logEvent('devswarm-supervisor', 'repo-unknown', 'info',
+                'hivecontrol does not know this project\'s repository (terminal for the repoKey) — recorded once; the active-workspace probe is suppressed until a periodic recheck',
+                { repoKey: t.repoKey, worktreePath: t.worktreePath });
+            } catch (_) { /* logging must never break the sweep */ }
+          }
+          active = { ok: false, reason: 'repo-unknown' };
+        }
       }
       if (active && active.ok && Array.isArray(active.records) && active.records.length) {
         // D12b item 2: SCOPE the (possibly global) answer to records this
@@ -1097,7 +1117,7 @@ function reconcileSweepIfDue(opts) {
             } catch (_) { /* logging must never break the sweep */ }
           }
         }
-      } else if (active && !active.ok && !activeProbeFailure) {
+      } else if (active && !active.ok && active.reason !== 'repo-unknown' && !activeProbeFailure) {
         // D12b item 3: carry the real diagnostic fields fetchActiveWorkspaceRecords
         // now supplies on failure — error (message/code), status, signal, and the
         // first 200 chars of stderr (stdout/`raw` deliberately excluded) — so a
@@ -1343,6 +1363,54 @@ function rotateSupervisorLogIfNeeded(opts) {
   }
 }
 
+// compactReconcileForLog(reconcile, prevSig) -> { line, sig } — the shape the
+// sweep's stdout (launchd) line carries for the reconcile pass. The raw result
+// embeds every row of every project plus the whole global hivecontrol record
+// list (9 MB / 674 lines in the field), and re-logged the same failures on
+// every run. Compact it to per-project counts plus only the REAL failures (a
+// row that is ok:false and not a recognised skip — archived/pruned, repo-
+// unknown, locked, missing hivecontrol, native timeout — and a failing fold or
+// probe). The failure set is signed: the first time a signature appears the
+// failures are listed in full; while it stays identical the line carries only
+// "N unchanged failures (same as last run)". Pure; never throws.
+function compactReconcileForLog(reconcile, prevSig) {
+  try {
+    if (!reconcile || !reconcile.ran || !Array.isArray(reconcile.results)) return { line: reconcile, sig: null };
+    const failures = [];
+    const results = reconcile.results.map((r) => {
+      const res = (r && r.result) || {};
+      const rows = Array.isArray(res.results) ? res.results : [];
+      let skipped = 0;
+      for (const x of rows) {
+        if (x && x.skipped) skipped++;
+        else if (x && x.ok === false && !x.locked && !x.hivecontrolMissing && !x.nativeTimeout) {
+          failures.push({ repoKey: r.repoKey, id: x.id, error: String(x.error || 'unknown error').replace(/\u001b\[[0-9;]*m/g, '').slice(0, 200) });
+        }
+      }
+      if (res.ok === false && !rows.length) failures.push({ repoKey: r.repoKey, error: String(res.error || res.reason || 'reconcile failed').slice(0, 200) });
+      const fold = r && r.fold;
+      if (fold && fold.ok === false) failures.push({ repoKey: r.repoKey, error: 'fold: ' + String(fold.error || fold.reason || 'failed').slice(0, 200) });
+      const act = r && r.active;
+      return {
+        repoKey: r.repoKey, ok: !!res.ok, count: res.count || 0, imported: res.imported || 0, lost: res.lost || 0,
+        skipped, repoUnknown: res.repoUnknown || 0,
+        fold: fold ? { ok: !!fold.ok, folded: fold.folded || 0, retired: Array.isArray(fold.retired) ? fold.retired.length : (fold.retired || 0), forwarded: fold.forwarded || 0, pending: fold.pending || 0 } : null,
+        active: act ? { ok: !!act.ok, reason: act.reason || null, records: Array.isArray(act.records) ? act.records.length : 0 } : null,
+      };
+    });
+    const pf = reconcile.activeProbe && reconcile.activeProbe.failure;
+    if (pf) failures.push({ repoKey: pf.repoKey, error: 'active-probe: ' + String(pf.error || pf.reason).replace(/\u001b\[[0-9;]*m/g, '').slice(0, 200) });
+    const sig = failures.map((x) => [x.repoKey, x.id || '', x.error].join('|')).sort().join('\n');
+    const line = Object.assign({}, reconcile, { results });
+    if (!failures.length) line.failures = 0;
+    else if (sig === prevSig) line.failures = { unchanged: failures.length, note: failures.length + ' unchanged failures (same as last run)' };
+    else line.failures = failures;
+    return { line, sig };
+  } catch (_) { return { line: reconcile, sig: null }; }
+}
+
+function reconcileLogSigPath(home) { return path.join(devswarmRoot(home), 'reconcile-log-sig.json'); }
+
 function main() {
   let release = null;
   try {
@@ -1396,7 +1464,24 @@ function main() {
     // worktreePath through sweepOnce's per-result shape.
     let sweepFamilies = results.length;
     try { sweepFamilies = collapsedDescriptorFamilies(readDescriptors(home)).length; } catch (_) { /* fail-open: keep raw count */ }
-    process.stdout.write(JSON.stringify({ ts: new Date().toISOString(), sweep: results.length, sweepFamilies, reconcile, deferredSweep, appSync, autoArchive, retention, housekeeping, logRotate }) + '\n');
+    // Compact + signature-dedupe the reconcile pass (see compactReconcileForLog).
+    let reconcileForLog = reconcile;
+    try {
+      let prevSig = null;
+      try { prevSig = JSON.parse(fs.readFileSync(reconcileLogSigPath(home), 'utf8')).sig; } catch (_) { prevSig = null; }
+      const c = compactReconcileForLog(reconcile, prevSig);
+      reconcileForLog = c.line;
+      if (c.sig !== null && c.sig !== prevSig) {
+        try {
+          const p = reconcileLogSigPath(home);
+          fs.mkdirSync(path.dirname(p), { recursive: true });
+          const tmp = p + '.tmp-' + process.pid;
+          fs.writeFileSync(tmp, JSON.stringify({ sig: c.sig }));
+          fs.renameSync(tmp, p);
+        } catch (_) { /* fail-open: worst case the next run re-lists the failures */ }
+      }
+    } catch (_) { reconcileForLog = reconcile; }
+    process.stdout.write(JSON.stringify({ ts: new Date().toISOString(), sweep: results.length, sweepFamilies, reconcile: reconcileForLog, deferredSweep, appSync, autoArchive, retention, housekeeping, logRotate }) + '\n');
   } catch (_) {
     // absolute fail-safe: never throw out of the sweep
   } finally {
@@ -1674,7 +1759,7 @@ function appDbSyncIfDue(opts) {
 module.exports = {
   workspacesDir, readDescriptors, collapsedDescriptorFamilies, supervisorEnabled, sweepLockPath, acquireSweepLock, sweepOnce,
   parseEnvNum, resolveThresholdsFromEnv, readMeshUrgency, isUrgentMesh, URGENT_TIERS,
-  reconcileSweepIfDue, reconcileSweepEnabled, resolveReconcileCooldownMs, distinctRepoKeys,
+  reconcileSweepIfDue, compactReconcileForLog, reconcileSweepEnabled, resolveReconcileCooldownMs, distinctRepoKeys,
   reconcileSweepStatePath, readReconcileSweepState, writeReconcileSweepState,
   DEFAULT_RECONCILE_SWEEP_COOLDOWN_MS, MAX_RECONCILE_PROJECTS_PER_TICK,
   // DEFECT 17685a91b783
