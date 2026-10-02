@@ -151,13 +151,31 @@ function emitVerdictAndExit() {
 // like the statusline check), so rewriting each one to special-case a null/
 // SIGTERM result would be a much larger, out-of-scope change for a failure
 // mode this fix already makes far less likely to occur.
-function runHook(file, payload, env) {
+//
+// HOME ISOLATION: the hooks read ~/.anti-hall state (skip.json, codex-availability.json,
+// settings, ...), so with the caller's real HOME an unexpired user skip or an exhausted
+// Codex quota made a working guard's self-test report FAILED. By default each self-test
+// runs against ONE empty temp home per doctor run (removed at exit). `realHome` (the
+// context-footprint measurements) keeps the real home on purpose: injected size depends
+// on the user's real settings. An explicit HOME/USERPROFILE in `env` still wins.
+let selfTestHome = null;
+function getSelfTestHome() {
+  if (!selfTestHome) {
+    try {
+      selfTestHome = fs.mkdtempSync(path.join(os.tmpdir(), 'anti-hall-doctor-'));
+      process.on('exit', () => { try { fs.rmSync(selfTestHome, { recursive: true, force: true }); } catch (_) { /* best effort */ } });
+    } catch (_) { selfTestHome = null; }
+  }
+  return selfTestHome;
+}
+function runHook(file, payload, env, realHome) {
   try {
+    const h = realHome ? null : getSelfTestHome();
     const res = cp.spawnSync(process.execPath, [path.join(HOOKS, file)], {
       input: JSON.stringify(payload || {}),
       encoding: 'utf8',
       timeout: 30000,
-      env: Object.assign({}, process.env, env || {}),
+      env: Object.assign({}, process.env, h ? { HOME: h, USERPROFILE: h } : {}, env || {}),
     });
     return { code: res.status, out: (res.stdout || '') + (res.stderr || '') };
   } catch (e) {
@@ -622,7 +640,7 @@ if (!fs.existsSync(slScript)) {
 // the guardrail is visible (bloated context is the exact failure it warns of).
 head('Context footprint (injected text)');
 function ctxBytes(file, payload, picker, env) {
-  const r = runHook(file, payload || {}, env);
+  const r = runHook(file, payload || {}, env, true);
   let txt = '';
   try {
     const o = JSON.parse((r.out || '').split('\n').find(Boolean) || '{}');
@@ -679,7 +697,7 @@ const ttB = ctxBytes('task-tracker.js', ttPayload);
 const perTurnB = vfB + ttB;
 // Per-Stop cost: the block reason text a Stop hook surfaces (decision.reason).
 function stopReasonBytes(file, payload) {
-  const r = runHook(file, payload || {});
+  const r = runHook(file, payload || {}, undefined, true);
   let txt = '';
   try {
     const o = JSON.parse((r.out || '').split('\n').find(Boolean) || '{}');

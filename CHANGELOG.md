@@ -12,6 +12,10 @@ the update.
 
 - **command-guard "allow plain push" accepts `-u` / `--set-upstream`.** A session pushing its own branch with `git push -u origin <branch> [2>&1 | tail -N]` was blocked only because of the upstream flag. The flag is the single allowed flag slot (never combined with `-q` or any other flag) and requires an explicit remote AND ref; remote/ref vetting, the output-sink rules and the chain allow-list are unchanged (`rev-parse`/`ls-remote`/`node`/`echo` after a push stay blocked). `git-guard.js` is untouched.
 
+### Fixed
+
+- `doctor`: the live guard self-tests now run against an isolated temp home instead of the caller's `~/.anti-hall`, so an unexpired user skip or an exhausted Codex quota no longer makes a working guard's self-test report FAILED. The temp home is removed when the run ends; the context-footprint measurements keep the real home on purpose.
+
 ## 0.122.0 (2026-10-03)
 
 ### Added
