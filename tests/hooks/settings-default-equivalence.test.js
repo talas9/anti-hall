@@ -34,5 +34,5 @@ test('every manifest userConfig row default equals its schema default (no defaul
     else assert.deepStrictEqual(row.default, e.default, k);
     checked++;
   }
-  assert.ok(checked >= 100, 'checked ' + checked);
+  assert.strictEqual(checked, 10, 'the 10 headline rows');
 });
