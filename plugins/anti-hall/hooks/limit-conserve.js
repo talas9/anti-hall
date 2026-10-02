@@ -62,6 +62,21 @@ const ACCOUNT_STATE_FILE = path.join(os.homedir(), '.anti-hall', 'limit-conserve
 
 const STALE_MS = 15 * 60 * 1000;
 
+// pathsFor(home): the three home-derived files. No `home` -> the module-load
+// constants above (byte-identical to the historical behaviour).
+// An explicit `home` (a DevSwarm ctx.home / a test fixture home) resolves all
+// three under THAT home, so an in-process caller with an isolated home never
+// reads the real ~/.claude.json / usage cache or writes the real
+// ~/.anti-hall/limit-conserve-account.json.
+function pathsFor(home) {
+  if (!home) return { cache: CACHE_FILE, claudeJson: CLAUDE_JSON, accountState: ACCOUNT_STATE_FILE };
+  return {
+    cache: path.join(home, '.claude', 'plugins', 'oh-my-claudecode', '.usage-cache-anthropic.json'),
+    claudeJson: path.join(home, '.claude.json'),
+    accountState: path.join(home, '.anti-hall', 'limit-conserve-account.json'),
+  };
+}
+
 // MAX_STALE_MS: snapshot-age bound backstopping buckets with no usable
 // resetsAt (see STALENESS BOUND above). Longer than the 5h window itself, so
 // a snapshot this old means any window it describes has definitely reset.
@@ -76,9 +91,9 @@ const THRESHOLD = settings.get('limitConserve', 'threshold');
 
 // readCurrentUserID(): bounded read of ~/.claude.json's top-level `userID`
 // field only. Never touches the keychain or any token. null on any error.
-function readCurrentUserID() {
+function readCurrentUserID(p) {
   try {
-    const raw = fs.readFileSync(CLAUDE_JSON, 'utf8');
+    const raw = fs.readFileSync(p.claudeJson, 'utf8');
     const parsed = JSON.parse(raw);
     return (parsed && typeof parsed.userID === 'string') ? parsed.userID : null;
   } catch (_) {
@@ -87,17 +102,17 @@ function readCurrentUserID() {
 }
 
 // readCacheMtimeMs(): mtime of the usage cache file, or null if unreadable.
-function readCacheMtimeMs() {
+function readCacheMtimeMs(p) {
   try {
-    return fs.statSync(CACHE_FILE).mtimeMs;
+    return fs.statSync(p.cache).mtimeMs;
   } catch (_) {
     return null;
   }
 }
 
-function readAccountState() {
+function readAccountState(p) {
   try {
-    const raw = fs.readFileSync(ACCOUNT_STATE_FILE, 'utf8');
+    const raw = fs.readFileSync(p.accountState, 'utf8');
     const parsed = JSON.parse(raw);
     if (!parsed || typeof parsed !== 'object') return null;
     if (typeof parsed.userID !== 'string' || typeof parsed.usageCacheMtime !== 'number') return null;
@@ -109,10 +124,10 @@ function readAccountState() {
 
 // writeAccountState: best-effort; a write failure must never surface (state is
 // advisory, not load-bearing for the fail-open direction).
-function writeAccountState(userID, usageCacheMtime) {
+function writeAccountState(p, userID, usageCacheMtime) {
   try {
-    fs.mkdirSync(path.dirname(ACCOUNT_STATE_FILE), { recursive: true });
-    fs.writeFileSync(ACCOUNT_STATE_FILE, JSON.stringify({ userID, usageCacheMtime }), 'utf8');
+    fs.mkdirSync(path.dirname(p.accountState), { recursive: true });
+    fs.writeFileSync(p.accountState, JSON.stringify({ userID, usageCacheMtime }), 'utf8');
   } catch (_) {
     /* best-effort */
   }
@@ -123,17 +138,17 @@ function writeAccountState(userID, usageCacheMtime) {
 // mtime did not advance past what we last recorded) — i.e. the cache still
 // reflects the OLD account. Updates the stored state whenever a fresh
 // reading (matching account, or an advanced mtime post-switch) is observed.
-function isAccountSwitchStale(cacheMtimeMs) {
-  if (settings.get('limitConserve', 'accountCheck') === false) {
+function isAccountSwitchStale(p, sopts, cacheMtimeMs) {
+  if (settings.get('limitConserve', 'accountCheck', undefined, sopts) === false) {
     return false;
   }
 
-  const currentUserID = readCurrentUserID();
+  const currentUserID = readCurrentUserID(p);
   if (currentUserID === null) return false; // can't determine account -> no override
 
-  const stored = readAccountState();
+  const stored = readAccountState(p);
   if (!stored) {
-    writeAccountState(currentUserID, cacheMtimeMs);
+    writeAccountState(p, currentUserID, cacheMtimeMs);
     return false;
   }
 
@@ -143,14 +158,14 @@ function isAccountSwitchStale(cacheMtimeMs) {
       return true;
     }
     // Cache has advanced since the switch (or mtime is unavailable) -> trust it.
-    writeAccountState(currentUserID, cacheMtimeMs);
+    writeAccountState(p, currentUserID, cacheMtimeMs);
     return false;
   }
 
   // Same account: keep the recorded mtime current so a future switch compares
   // against the freshest reading we've seen.
   if (cacheMtimeMs !== null && cacheMtimeMs !== stored.usageCacheMtime) {
-    writeAccountState(currentUserID, cacheMtimeMs);
+    writeAccountState(p, currentUserID, cacheMtimeMs);
   }
   return false;
 }
@@ -168,7 +183,8 @@ const ABSENT = {
 };
 
 /**
- * isConserving() -> result object
+ * isConserving({ home }?) -> result object (optional `home` isolates every
+ * home-derived read/write; default = the process home)
  *
  * @returns {{
  *   active: boolean,
@@ -181,15 +197,19 @@ const ABSENT = {
  *   resetsAt: string|null
  * }}
  */
-function isConserving() {
+function isConserving(opts) {
   try {
+    const home = opts && opts.home;
+    const p = pathsFor(home);
+    const sopts = home ? { home } : undefined;
+    const threshold = home ? settings.get('limitConserve', 'threshold', undefined, sopts) : THRESHOLD;
     // Layer 1 & 2: explicit override — env > settings.json > default 'auto'
     // (v0.108.0 unified settings; see hooks/lib/settings.js). `source` still
     // reports 'env' only when the value actually came from the env var, so
     // existing env-driven assertions are unaffected; a settings.json-driven
     // override reports 'settings' instead.
-    const mode = settings.get('limitConserve', 'mode');
-    const modeSource = settings.source('limitConserve', 'mode') === 'env' ? 'env' : 'settings';
+    const mode = settings.get('limitConserve', 'mode', undefined, sopts);
+    const modeSource = settings.source('limitConserve', 'mode', sopts) === 'env' ? 'env' : 'settings';
 
     if (mode === 'on') {
       return {
@@ -219,7 +239,7 @@ function isConserving() {
     // --- Layer 3: cache path ---
     let raw;
     try {
-      raw = fs.readFileSync(CACHE_FILE, 'utf8');
+      raw = fs.readFileSync(p.cache, 'utf8');
     } catch (_) {
       return Object.assign({}, ABSENT);
     }
@@ -266,13 +286,13 @@ function isConserving() {
     const sonnetWeekly = effectivePct(d.sonnetWeeklyPercent, d.sonnetWeeklyResetsAt);
 
     const trips = [];
-    if (fiveHour >= THRESHOLD) trips.push('5h');
-    if (weekly >= THRESHOLD) trips.push('weekly');
-    if (sonnetWeekly >= THRESHOLD) trips.push('sonnetWeekly');
+    if (fiveHour >= threshold) trips.push('5h');
+    if (weekly >= threshold) trips.push('weekly');
+    if (sonnetWeekly >= threshold) trips.push('sonnetWeekly');
 
     // ACCOUNT-CHANGE GUARD: an account switch with a not-yet-refreshed cache
     // means these trips belong to the OLD account -> force inactive.
-    const accountSwitchStale = trips.length > 0 && isAccountSwitchStale(readCacheMtimeMs());
+    const accountSwitchStale = trips.length > 0 && isAccountSwitchStale(p, sopts, readCacheMtimeMs(p));
 
     const active = !accountSwitchStale && trips.length > 0;
 
@@ -280,9 +300,9 @@ function isConserving() {
     let resetsAt = null;
     if (active) {
       const candidates = [];
-      if (fiveHour >= THRESHOLD && d.fiveHourResetsAt) candidates.push(d.fiveHourResetsAt);
-      if (weekly >= THRESHOLD && d.weeklyResetsAt) candidates.push(d.weeklyResetsAt);
-      if (sonnetWeekly >= THRESHOLD && d.sonnetWeeklyResetsAt) candidates.push(d.sonnetWeeklyResetsAt);
+      if (fiveHour >= threshold && d.fiveHourResetsAt) candidates.push(d.fiveHourResetsAt);
+      if (weekly >= threshold && d.weeklyResetsAt) candidates.push(d.weeklyResetsAt);
+      if (sonnetWeekly >= threshold && d.sonnetWeeklyResetsAt) candidates.push(d.sonnetWeeklyResetsAt);
       if (candidates.length) {
         const finite = candidates.filter(s => Number.isFinite(new Date(s).getTime()));
         finite.sort((a, b) => new Date(a).getTime() - new Date(b).getTime());

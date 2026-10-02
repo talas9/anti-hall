@@ -11918,7 +11918,7 @@ function cmdInboxTick(id, flags, ctx) {
   let limitSkipped = false;
   if (!watcherArmed && isSafeId(id)) {
     try {
-      if (require('../hooks/limit-conserve.js').isConserving().active) {
+      if (require('../hooks/limit-conserve.js').isConserving({ home }).active) {
         watcherArmed = 'limit-skip';
         limitSkipped = true;
       }

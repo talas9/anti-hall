@@ -138,3 +138,63 @@ test('limit-skip: a --child caller ALSO gets limit-skip (unlike idle-skip, not g
     });
   } finally { rm(home); rm(repo); }
 });
+
+// ---- ctx.home isolation (isConserving({ home })) ---------------------------
+// `inbox tick` must evaluate limit conservation against ctx.home, never the
+// developer's real ~/.claude.json / usage cache, and must never write the real
+// ~/.anti-hall/limit-conserve-account.json.
+
+function withoutLimitEnv(fn) {
+  const keys = ['ANTIHALL_LIMIT_CONSERVE', 'ANTIHALL_LIMIT_THRESHOLD', 'ANTIHALL_LIMIT_ACCOUNT_CHECK'];
+  const prev = keys.map((k) => process.env[k]);
+  keys.forEach((k) => { delete process.env[k]; });
+  try { fn(); }
+  finally { keys.forEach((k, i) => { if (prev[i] !== undefined) process.env[k] = prev[i]; }); }
+}
+
+function realAccountStateSnapshot() {
+  // passwd home (immune to HOME overrides); read-only stat.
+  const f = path.join(os.userInfo().homedir, '.anti-hall', 'limit-conserve-account.json');
+  try { return String(fs.statSync(f).mtimeMs); } catch (_) { return 'absent'; }
+}
+
+test('limit-skip home isolation: no cache under ctx.home -> NOT limit-skip, real account-state file untouched', () => {
+  const home = tmpHome();
+  const repo = makeGitRepo('iso-none');
+  const child = makeChildWorktree(repo, 'iso-none');
+  try {
+    register(home, repo, 'primary1');
+    register(home, child, 'child1');
+    const before = realAccountStateSnapshot();
+    withoutLimitEnv(() => {
+      const ticked = cli.run(['inbox', 'tick', 'primary1'], ctx(home, { cwd: repo })).result;
+      assert.strictEqual(ticked.watcherArmed, false, 'a fixture home with no usage cache must never read as conserving');
+    });
+    assert.strictEqual(realAccountStateSnapshot(), before, 'real limit-conserve-account.json must be untouched');
+  } finally { rm(home); rm(repo); }
+});
+
+test('limit-skip home isolation: hot usage cache under ctx.home -> limit-skip; account state lands under ctx.home only', () => {
+  const home = tmpHome();
+  const repo = makeGitRepo('iso-hot');
+  const child = makeChildWorktree(repo, 'iso-hot');
+  try {
+    register(home, repo, 'primary1');
+    register(home, child, 'child1');
+    const cacheDir = path.join(home, '.claude', 'plugins', 'oh-my-claudecode');
+    fs.mkdirSync(cacheDir, { recursive: true });
+    fs.writeFileSync(path.join(cacheDir, '.usage-cache-anthropic.json'), JSON.stringify({
+      timestamp: Date.now(),
+      data: { fiveHourPercent: 99, fiveHourResetsAt: new Date(Date.now() + 3600e3).toISOString() },
+    }));
+    fs.writeFileSync(path.join(home, '.claude.json'), JSON.stringify({ userID: 'fixture-user' }));
+    const before = realAccountStateSnapshot();
+    withoutLimitEnv(() => {
+      const ticked = cli.run(['inbox', 'tick', 'primary1'], ctx(home, { cwd: repo })).result;
+      assert.strictEqual(ticked.watcherArmed, 'limit-skip', 'the usage cache under ctx.home must be the one consulted');
+    });
+    const state = JSON.parse(fs.readFileSync(path.join(home, '.anti-hall', 'limit-conserve-account.json'), 'utf8'));
+    assert.strictEqual(state.userID, 'fixture-user');
+    assert.strictEqual(realAccountStateSnapshot(), before, 'real limit-conserve-account.json must be untouched');
+  } finally { rm(home); rm(repo); }
+});
