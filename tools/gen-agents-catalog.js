@@ -53,13 +53,6 @@ function llmsTable(title) {
   return rows;
 }
 
-function shortPurpose(s) {
-  let t = String(s || '').replace(/\\\|/g, '|').replace(/`/g, '');
-  const cut = t.search(/[.;](\s|$)/);
-  if (cut > 0) t = t.slice(0, cut);
-  return t.length > 52 ? t.slice(0, 50).trimEnd() + '…' : t;
-}
-
 function switchVerbs(rel, header) {
   const src = read(rel);
   const a = src.indexOf(header);
@@ -87,15 +80,14 @@ function build() {
   // Hooks
   const claude = hookEvents(P('hooks', 'hooks.json'));
   const codex = hookEvents(P('codex', 'hooks', 'hooks.json'));
-  const purpose = new Map(llmsTable('## Hooks (').map((r) => [r[1], r[2]]));
-  out.push('**Hooks** by event (script [C]=also on Codex: purpose):');
+  out.push('**Hooks** by event ([C]=also on Codex; purposes: llms.txt "Hooks" table):');
   const byEvent = new Map();
   for (const n of [...new Set([...claude.keys(), ...codex.keys()])]) {
     const ev = (claude.get(n) || codex.get(n)).join('+');
     if (!byEvent.has(ev)) byEvent.set(ev, []);
-    byEvent.get(ev).push(n.replace(/\.js$/, '') + (codex.has(n) ? ' [C]' : '') + ': ' + shortPurpose(purpose.get(n) || ''));
+    byEvent.get(ev).push(n.replace(/\.js$/, '') + (codex.has(n) ? ' [C]' : ''));
   }
-  for (const [ev, items] of byEvent) out.push('- ' + ev + ' — ' + items.join('; '));
+  for (const [ev, items] of byEvent) out.push('- ' + ev + ' — ' + items.join(', '));
   out.push('');
   // Skills
   const dirs = (d) => fs.readdirSync(d, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name).sort();
@@ -104,7 +96,7 @@ function build() {
   out.push('');
   // CLI verbs
   out.push('**CLI verbs**:');
-  out.push('- `scripts/devswarm.js`: ' + switchVerbs('plugins/anti-hall/scripts/devswarm.js', 'function runArmed(').map((v) => '`' + v + '`').join(', ') + ' (`help <verb>` for detail).');
+  out.push('- `scripts/devswarm.js`: ' + switchVerbs('plugins/anti-hall/scripts/devswarm.js', 'function runArmed(').map((v) => '`' + v + '`').join(', ') + ' (`help <verb>`).');
   out.push('- `scripts/settings.js`: ' + switchVerbs('plugins/anti-hall/scripts/settings.js', 'function main(').map((v) => '`' + v + '`').join(', ') + '; `scripts/auto-handover-config.js`: '
     + usageVerbs('plugins/anti-hall/scripts/auto-handover-config.js', /usage: auto-handover-config\.js ([^']+)'/).map((v) => '`' + v + '`').join(', ') + '.');
   out.push('- `scripts/jev-setup.js`: ' + usageVerbs('plugins/anti-hall/scripts/jev-setup.js', /usage: jev-setup\.js ([^'"`\n]+)/).map((v) => '`' + v + '`').join(', ')
@@ -113,11 +105,16 @@ function build() {
   out.push('');
   // Settings
   const schema = require(P('hooks', 'lib', 'settings-schema.js'));
-  out.push('**Settings** (`~/.anti-hall/settings.json`; env > file > /config > legacy > default; key=default; advanced keys after `|`, defaults via `settings.js show --all`):');
+  out.push('**Settings** (`~/.anti-hall/settings.json`; env > file > /config > legacy > default; bare key = default true, else key=default; advanced keys after `|`, defaults via `settings.js show --all`):');
   for (const sec of schema.SECTIONS) {
-    const head = sec.settings.filter((x) => !x.advanced).map((x) => x.key + '=' + fmt(x.default));
+    const vis = sec.settings.filter((x) => !x.advanced);
+    // Tri-state sections (on/shadow/off) group keys by mode instead of repeating it per key.
+    const tri = vis.length > 0 && vis.every((x) => ['on', 'shadow', 'off'].includes(x.default));
+    const head = tri
+      ? ['on', 'shadow', 'off'].filter((m) => vis.some((x) => x.default === m)).map((m) => m + ': ' + vis.filter((x) => x.default === m).map((x) => x.key).join(' '))
+      : vis.map((x) => (x.default === true ? x.key : x.key + '=' + fmt(x.default)));
     const adv = sec.settings.filter((x) => x.advanced).map((x) => x.key);
-    out.push('- ' + sec.key + ': ' + head.join(', ') + (adv.length ? ' | ' + adv.join(', ') : ''));
+    out.push('- ' + sec.key + ': ' + head.join(tri ? '; ' : ', ') + (adv.length ? ' | ' + adv.join(', ') : ''));
   }
   out.push('');
   // State files
