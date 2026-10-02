@@ -20,6 +20,9 @@ the update.
 - **Roster counter survives non-quiet ticks:** a non-quiet `inbox tick` rewrote the wake-tick marker without its `seq`, resetting the `devswarm.tickRosterEvery` counter; the previous `seq` is now carried over.
 - **Cron tick prompt wording:** the prompt now says to decide on the FIRST printed line only and treats any lines after it (the optional `devswarm.tickRosterEvery` roster) as informational.
 - **Edit-guard and command-guard advice in no-workspace repos:** the block message shown to a DevSwarm Primary no longer recommends spawning a child workspace when the repo forbids workspaces for real work (or `devswarm.dispatchTierText` is off); it goes through the same `primary-tier.js` gate as the other Primary tier text. Advice text only: the same edits and commands are blocked.
+- **agent-scan:** a teammate report is recognised only as the harness-injected record. Typed or pasted text, a peer's cross-session message, a tool result, an assistant message, a report for a teammate this session never spawned, prose before the block, and an inner timestamp in the future of the record's own all no longer count, so a forged report cannot hide a running teammate. A teammate spawned outside the scanned window is "unknown", never "finished". A teammate named like a background agent id no longer replaces that agent's row or clears its terminal state.
+- **silent-agent-nudge:** a teammate whose only running evidence is an unanswered message never causes a Stop block, at any `guards.silentAgentNudgeMin`.
+- **Codex:** documented that `stale-agent-stop-note` is Claude-only (no agent-stop tool matcher is documented for Codex).
 
 ### Changed
 
