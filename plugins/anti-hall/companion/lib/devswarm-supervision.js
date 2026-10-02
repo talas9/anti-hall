@@ -126,8 +126,8 @@ function evaluateChild(d, verdict, opts) {
   // Same rule the roster label uses (one derivation, so they cannot disagree).
   let dormant = false;
   try {
-    const rowState = deps.rowLivenessState || require('./liveness.js').rowLivenessState;
-    dormant = rowState({ id: d.id, worktreePath: d.worktreePath || plan.worktreePath, sessionId: d.sessionId }, home,
+    const livenessOf = deps.rowLivenessState || require('./liveness.js').rowLivenessState;
+    dormant = livenessOf({ id: d.id, worktreePath: d.worktreePath || plan.worktreePath, sessionId: d.sessionId }, home,
       { now, env, lastOutboundTs: verdict && verdict.lastOutboundTs }) === 'dormant';
   } catch (_) { dormant = false; }
   let signals = deterministicSignals(plan, verdict, { now, stallMs, worktreePath: d.worktreePath || plan.worktreePath, deps,
