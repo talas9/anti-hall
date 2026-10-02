@@ -704,6 +704,37 @@ test('ALREADY-REPORTED window: block -> continuation report -> next turn with NO
   }
 });
 
+// The cap message must be true: the budget is NOT gone for good — a report
+// resets it, and a later stop with no newer report is blocked again.
+test('CAP MESSAGE: cap reached -> one honest message, no block; a report resets the budget; a later stop without a newer report blocks again', () => {
+  const h = makeHome();
+  seedAllTestDescriptors(h.home);
+  try {
+    const stop = (expectJson) => testHook(HOOK, stopPayload({ cwd: REPO_CWD }), { home: h.home, expectJson, env: REPORTED_ENV });
+    // No report: blocks up to the cap (2), then the third stop yields with ONE message.
+    const first = stop(true);
+    assert.strictEqual(first.json && first.json.decision, 'block', 'first stop blocks');
+    const second = stop(true);
+    assert.strictEqual(second.json && second.json.decision, 'block', 'second stop blocks');
+    const capped = stop(false);
+    assert.strictEqual(capped.stdout, '', 'at the cap there is no block');
+    assert.match(capped.stderr, /block cap reached for this reason; not blocking again until you send a report/);
+    assert.match(capped.stderr, /the limit starts over, so send a fresh heartbeat before each stop/);
+    assert.ok(!/no further Stop blocks/.test(capped.stderr), 'the old over-promise must be gone');
+    const again = stop(false);
+    assert.strictEqual(again.stdout, '', 'still no block, and the message is not repeated');
+    assert.ok(!/block cap reached/.test(again.stderr), 'the cap message prints once');
+    // A real report lands after the last Stop check: the budget resets.
+    seedOutboundReport(h.home, 'child-ar', Date.now());
+    assert.strictEqual(stop(false).stdout, '', 'a stop right after a report is allowed');
+    // Next stop with no report newer than the previous check: blocks again.
+    const next = stop(true);
+    assert.strictEqual(next.json && next.json.decision, 'block', 'after the reset, a stop without a newer report blocks again');
+  } finally {
+    h.cleanup();
+  }
+});
+
 test('ALREADY-REPORTED: an outbound row from a DIFFERENT sender does not satisfy -> still blocks', () => {
   const h = makeHome();
   seedAllTestDescriptors(h.home);

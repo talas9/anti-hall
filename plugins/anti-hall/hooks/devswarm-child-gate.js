@@ -1112,7 +1112,8 @@ function main() {
       try {
         process.stderr.write('[anti-hall] devswarm-child-gate: forced-ack cap (' + MAX_BLOCKS
           + ' per kind) reached for session ' + JSON.stringify(sessionId)
-          + ' — no further Stop blocks until the condition clears (a report lands / inbox drained).\n');
+          + ' — block cap reached for this reason; not blocking again until you send a report.'
+          + ' After that the limit starts over, so send a fresh heartbeat before each stop.\n');
       } catch (_) { /* best-effort diagnostic only */ }
     } else {
       writeState(stateFile, state); // still persist lastCheckAt on this allow path
