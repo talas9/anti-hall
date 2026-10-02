@@ -18,6 +18,8 @@ Include, as far as you can:
 
 anti-hall runs local Node hooks that read and write files under `~/.anti-hall/` and the project's `.anti-hall/` directory. Reports about a guard that can be bypassed, a hook that executes untrusted input, or state that leaks secrets are in scope.
 
+Opening an untrusted repository in Claude Code can apply that repository's own settings and hooks; this is a property of the host, not of this plugin, so open only repositories you trust.
+
 A guard that blocks something legitimate (a false positive) is not a security issue; use the false-positive issue template.
 
 ## Supported versions
