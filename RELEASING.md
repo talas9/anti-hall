@@ -17,7 +17,7 @@ Every behavioral or shipped-content change bumps the version and follows this ch
    - `git tag rc-v<version>` then `git push origin rc-v<version>`
    - `gh run list --commit <sha>` → wait for the run at that sha to finish; `gh run view <id> --json jobs` → all 4 matrix jobs `success`.
    - Red → fix, amend the LOCAL commit (it was never on `main`), tag it `rc-v<version>.2`, and repeat. Never move `main` on a red run.
-   - The `rc-v*` tags stay in place (cheap audit markers; removing one is a deletion and needs the owner).
+   - Tag retention (owner policy, 2026-10-02): once the release this candidate gated is published (step 7), delete its `rc-v*` tags (local and `origin`). Keep only the newest `vX.Y.Z` tag and its GitHub Release page — the update check needs at least one version tag. Release notes live in `CHANGELOG.md`, not in old tags.
 7. - [ ] Only after the candidate run is green: `git push origin main`, then TAG (manual, by agent): `git tag v<version>` then `git push origin v<version>`. Create a GitHub Release from the tag with that version's CHANGELOG section.
 8. - [ ] Propagate to the live marketplace dir only (`~/.claude/plugins/marketplaces/anti-hall/plugins/anti-hall/`); do NOT overwrite version-pinned `cache/.../<ver>/` snapshots.
 9. - [ ] Consider publish venues (see below) for notable releases.
