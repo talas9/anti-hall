@@ -396,7 +396,7 @@ test('SWITCH maintenance.sessionEndReaper: off returns before reading the Sessio
 });
 
 // ---------------------------------------------------------- (4) safety lock
-test('SAFETY: every locked key is exactly the expected set and is a /config row', () => {
+test('SAFETY: every locked key is exactly the expected set; non-advanced ones are a /config row', () => {
   const locked = schema.allSettings().filter((s) => s.locked).map((s) => s.section + '.' + s.key).sort();
   assert.deepStrictEqual(locked, [...LOCKED_KEYS, ...HOME_ONLY_LOCKED_KEYS].sort());
   for (const k of HOME_ONLY_LOCKED_KEYS) {
@@ -407,7 +407,9 @@ test('SAFETY: every locked key is exactly the expected set and is a /config row'
   for (const k of LOCKED_KEYS) {
     const [sec, key] = split(k);
     const e = schema.findSetting(sec, key);
-    assert.ok(e.pluginOption && uc[e.pluginOption], k + ' must be a /config row so the human can change it natively');
+    // Non-advanced keys are /config rows; advanced ones (pluginOptionLegacy) live in /anti-hall:settings only.
+    if (e.pluginOptionLegacy) assert.ok(e.pluginOption && !uc[e.pluginOption], k + ' is advanced: no /config row, legacy read source only');
+    else assert.ok(e.pluginOption && uc[e.pluginOption], k + ' must be a /config row so the human can change it natively');
     assert.ok(e.env, k + ' must keep an env override (Codex has no /config)');
   }
 });

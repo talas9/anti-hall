@@ -77,19 +77,24 @@ test('pluginOption keys are unique across the whole schema (they map 1:1 to plug
   assert.strictEqual(new Set(keys).size, keys.length, 'duplicate pluginOption keys: ' + JSON.stringify(keys));
 });
 
-test('every plugin.json userConfig key maps to a schema entry\'s pluginOption', () => {
+test('plugin.json userConfig keys == non-advanced pluginOption keys + sensitive keys (advanced settings are not /config rows)', () => {
   const pluginJson = require('../../plugins/anti-hall/.claude-plugin/plugin.json');
-  const userConfigKeys = Object.keys(pluginJson.userConfig || {});
+  const uc = pluginJson.userConfig || {};
+  const userConfigKeys = Object.keys(uc);
   assert.ok(userConfigKeys.length > 0, 'plugin.json should declare at least one userConfig entry');
-  const schemaKeys = new Set(SCHEMA.pluginOptionEntries().map((o) => o.pluginOption));
-  for (const k of userConfigKeys) {
-    // Sensitive credential options (OS credential store) are read by hooks/lib/credentials.js, not by the settings schema.
-    if (pluginJson.userConfig[k].sensitive === true) continue;
-    assert.ok(schemaKeys.has(k), 'plugin.json userConfig key "' + k + '" has no matching settings-schema.js pluginOption');
-  }
-  // and the reverse: every schema pluginOption is actually declared in plugin.json
-  for (const k of schemaKeys) {
-    assert.ok(userConfigKeys.includes(k), 'settings-schema.js pluginOption "' + k + '" is missing from plugin.json userConfig');
+  // Sensitive credential options (OS credential store) are read by hooks/lib/credentials.js, not by the settings schema.
+  const sensitive = userConfigKeys.filter((k) => uc[k].sensitive === true);
+  assert.deepStrictEqual(sensitive.sort(), ['anthropic_api_key', 'jev_api_key', 'jev_typesafe_api_key', 'jev_vercel_api_key']);
+  const expected = SCHEMA.pluginOptionEntries().filter((o) => !o.advanced).map((o) => o.pluginOption).concat(sensitive).sort();
+  assert.deepStrictEqual(userConfigKeys.slice().sort(), expected);
+  // advanced settings are NOT in the manifest, and every advanced pluginOption is an explicit legacy read source
+  for (const e of SCHEMA.pluginOptionEntries()) {
+    if (e.advanced) {
+      assert.ok(e.pluginOptionLegacy, e.pluginOption + ' is advanced with a pluginOption: it must be flagged pluginOptionLegacy');
+      assert.ok(!(e.pluginOption in uc), e.pluginOption + ' is advanced and must not be a userConfig row');
+    } else {
+      assert.ok(!e.pluginOptionLegacy, e.pluginOption + ' is non-advanced: pluginOptionLegacy is for advanced settings only');
+    }
   }
 });
 
@@ -125,7 +130,7 @@ test('plugin.json userConfig entries match their schema entries (type/default/mi
   for (const sec of SCHEMA.SECTIONS) {
     const prefix = sec.label.replace(/\s*\(.*\)$/, '') + ' · ';
     for (const e of sec.settings) {
-      if (!e.pluginOption) continue;
+      if (!e.pluginOption || e.pluginOptionLegacy) continue;
       const u = uc[e.pluginOption];
       const id = e.pluginOption + ' (' + sec.key + '.' + e.key + ')';
       assert.ok(u, id + ' missing from userConfig');

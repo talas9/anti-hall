@@ -471,6 +471,47 @@ function migrateJevIntegrationsSection(home) {
   return { migrated, errors };
 }
 
+// migrateLegacyPluginOptions(home) -> {migrated, errors}. Advanced settings
+// (schema pluginOptionLegacy) no longer have a /config row, but a value an
+// older version let the person store under ~/.claude/settings.json
+// pluginConfigs["anti-hall"].options is copied into ~/.anti-hall/settings.json
+// under the setting's real key — only when that value differs from the schema
+// default (a default-equal option is Claude Code's own seeded value, not a
+// choice) and the key is not already set there. Idempotent, fail-open, never
+// writes ~/.claude/settings.json and never deletes the stored option (it stays
+// readable as the legacy source). A missing/unparseable Claude settings file or
+// an invalid stored value is skipped, not an error.
+function migrateLegacyPluginOptions(home) {
+  const settingsLib = require('../../hooks/lib/settings.js');
+  const schemaLib = require('../../hooks/lib/settings-schema.js');
+  let migrated = 0;
+  let errors = 0;
+  let opt;
+  try {
+    const raw = JSON.parse(fs.readFileSync(path.join(home, '.claude', 'settings.json'), 'utf8'));
+    opt = raw && raw.pluginConfigs && raw.pluginConfigs['anti-hall'] && raw.pluginConfigs['anti-hall'].options;
+  } catch (_) { return { migrated, errors }; }
+  if (!opt || typeof opt !== 'object') return { migrated, errors };
+  try {
+    const store = settingsLib.load({ home });
+    for (const entry of schemaLib.allSettings()) {
+      if (!entry.pluginOptionLegacy || entry.homeOnly) continue;
+      if (!Object.prototype.hasOwnProperty.call(opt, entry.pluginOption)) continue;
+      const stored = opt[entry.pluginOption];
+      if (String(stored) === String(entry.default)) continue;
+      if (settingsLib.lookup(store[entry.section], entry.key) !== undefined) continue;
+      try {
+        const v = settingsLib.validate(entry, stored);
+        if (!v.ok) continue;
+        // confirmed: carrying over a value that was already in force is not a widening.
+        const r = settingsLib.set(entry.section, entry.key, v.value, { home, confirmed: true });
+        if (r.ok) migrated++; else errors++;
+      } catch (_) { errors++; }
+    }
+  } catch (_) { errors++; }
+  return { migrated, errors };
+}
+
 function migrateSettingsFromLegacy(home, opts) {
   const o = opts || {};
   const settingsLib = require('../../hooks/lib/settings.js');
@@ -507,6 +548,9 @@ function migrateSettingsFromLegacy(home, opts) {
       } catch (_) { errors++; }
     }
   } catch (_) { errors++; }
+  const pluginOpts = migrateLegacyPluginOptions(home);
+  migrated += pluginOpts.migrated;
+  errors += pluginOpts.errors;
   return { ok: errors === 0, migrated, errors };
 }
 
@@ -690,6 +734,6 @@ module.exports = {
   MIGRATIONS, defaultMigrations, byId, runMigrations,
   isRunComplete, incompleteReasons, recordRun, TERMINAL_LEFT_REASONS, runBudgetMs, DEFAULT_RUN_BUDGET_MS,
   markerPath, readMarkers, writeMarkers, isApplied, markApplied, pluginVersion,
-  migrateSettingsFromLegacy, runSettingsMigration, migrateJevIntegrationsSection,
+  migrateSettingsFromLegacy, runSettingsMigration, migrateJevIntegrationsSection, migrateLegacyPluginOptions,
   migrateLegacyKeyOptIn, runLegacyKeyOptInMigration,
 };

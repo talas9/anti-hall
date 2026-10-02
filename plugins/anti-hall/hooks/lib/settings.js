@@ -225,11 +225,16 @@ function pluginManifestDefault(entry, opts) {
 // manifest's own declared default is treated as UNSET here — only a value
 // that actually DIFFERS from the manifest default counts as a real /config
 // choice.
+//
+// pluginOptionLegacy entries (advanced settings dropped from the manifest, so
+// there is no manifest default): the SCHEMA default stands in for it. A stale
+// stored option that equals the default is therefore still "unset", exactly as
+// it was while the row existed.
 function readPluginOption(entry, opts) {
   if (!entry.pluginOption || entry.homeOnly) return undefined; // homeOnly: never from /config
   const env = (opts && opts.env) || process.env;
   const envName = 'CLAUDE_PLUGIN_OPTION_' + entry.pluginOption.toUpperCase();
-  const manifestDefault = pluginManifestDefault(entry, opts);
+  const manifestDefault = entry.pluginOptionLegacy ? entry.default : pluginManifestDefault(entry, opts);
   const isManifestDefault = (raw) => manifestDefault !== undefined && String(raw) === String(manifestDefault);
 
   if (env[envName] !== undefined) {

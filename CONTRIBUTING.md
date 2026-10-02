@@ -38,7 +38,7 @@ Tests must never touch the real home directory or the real `~/.anti-hall`. Anyth
 
 1. Implement the hook in `plugins/anti-hall/hooks/<name>.js`, pure Node, and register it in `plugins/anti-hall/hooks/hooks.json`.
 2. Register the Codex twin in `plugins/anti-hall/codex/hooks/hooks.json` (and `plugins/anti-hall/codex/install-codex.js` where it lists hooks), or state in the PR why Codex does not apply. `tests/codex/codex-hook-parity.test.js` checks the two stay in step.
-3. Add the user-facing setting to `plugins/anti-hall/hooks/lib/settings-schema.js`. `tests/hooks/settings-schema.test.js` keeps the `userConfig` block in `plugins/anti-hall/.claude-plugin/plugin.json` in step with the non-advanced settings.
+3. Add the user-facing setting to `plugins/anti-hall/hooks/lib/settings-schema.js`. `tests/hooks/settings-schema.test.js` keeps the `userConfig` block in `plugins/anti-hall/.claude-plugin/plugin.json` in step with the non-advanced settings (plus the sensitive credential keys). Advanced settings get no `userConfig` row; they live in `/anti-hall:settings` only.
 4. Document it: a row in the hook table and the settings table of `docs/GUIDE.md`, the hook in `llms.txt`, and the operator guide `plugins/anti-hall/skills/system-briefing/SKILL.md` (plus its Codex mirror).
 5. `tests/hygiene/docs-coverage.test.js` derives these lists from the code and fails, naming what is undocumented and where it belongs. `tests/hygiene/docs-links.test.js` and `tests/hygiene/readme-doc-links.test.js` check links.
 6. Add a regression test in `tests/hooks/`. For a guard that blocks, include the dangerous forms that must stay blocked, not only the allowed one.

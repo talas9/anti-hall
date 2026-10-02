@@ -967,9 +967,13 @@ wired resolver.
   ("Auto Handover · Threshold %"). `plugin.json` `userConfig` is hand-kept and
   `tests/hooks/settings-schema.test.js` fails if it drifts from the schema's non-advanced
   set (key, type, default, min/max, title prefix) or if any field declares `options`.
-  Advanced/tuning knobs stay off `/config` (use the CLI below), except the two safety
-  advanced knobs (`guards.editGuardAllow`, `guards.allowSubagentMailbox`), which keep a
-  `/config` row as one way to change them (any change still needs `--confirmed`).
+  Advanced/tuning knobs have no `/config` row; they live in `/anti-hall:settings` (the CLI below)
+  only, including the two safety advanced knobs (`guards.editGuardAllow`,
+  `guards.allowSubagentMailbox`; any change still needs `--confirmed`). The 25 advanced
+  settings that used to have a row keep their old option name as a read-only legacy source, so
+  a value already stored under Claude Code's `pluginConfigs` still applies, and
+  `migrateSettingsFromLegacy` (update / `doctor --repair`) copies a non-default one into
+  `~/.anti-hall/settings.json` without touching or deleting the Claude Code file.
 - **Ask for it** — say "turn off the merge gate" or "set auto-handover to 80%" and the
   `settings` skill applies it with one `set` (no table dump); "show my anti-hall settings"
   prints the tables only when you ask.
@@ -984,13 +988,13 @@ wired resolver.
   Every subcommand takes `--json` for scripting.
 - **Precedence** (highest to lowest): an `ANTIHALL_*` env var override → a value in
   `~/.anti-hall/settings.json` → a value set via Claude Code's native `/config` panel
-  (every non-advanced setting, plus the DevSwarm auto-archive tuning pair, is declared in
-  `plugin.json`'s `userConfig` so it shows up there; shown as Source `/config`) → a legacy per-feature config file
+  (every non-advanced setting is declared in
+  `plugin.json`'s `userConfig` so it shows up there; advanced settings only read a value stored there by an older version; shown as Source `/config`) → a legacy per-feature config file
   (e.g. `~/.anti-hall/jev.json`) → the schema default. (Transitional exception, `settings.js` `resolveBelowFile`: until the one-time legacy forward-migration is stamped for the installed plugin version, a legacy `jev.json` value ranks ABOVE a `/config` value, so a pre-existing `jev.json` is not masked by `/config`'s own manifest default; after the stamp the order is as written.) `show`'s Source column tells you
   which tier answered a given row. Safety keys read through this SAME chain — there is
   no special-cased ignore rule for them (see below).
 - **Known limitation (`/config`):** a `/config` value that equals the manifest default
-  (`plugin.json` `userConfig` default) is indistinguishable from "never set", so it counts as
+  (`plugin.json` `userConfig` default; the schema default for a retired advanced row) is indistinguishable from "never set", so it counts as
   unset and a lower tier (a legacy file, the schema default) answers. To pin a value that
   equals the default, set it in `settings.json` (`/anti-hall:settings`) instead.
 - **Safety guards need a confirmed change, not a hard refusal ("safety" in the table

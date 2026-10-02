@@ -25,8 +25,8 @@ says "anti-hall settings" / "change my settings", tell them that in one or two l
 > Change settings in `/config` (the anti-hall rows) — arrow keys, no model; or tell me
 > "set X to Y".
 
-Do not run `show` or print tables for this. Advanced/tuning knobs are NOT in `/config`;
-for those, use a direct change below (`show --section <key> --all` lists them if asked).
+Do not run `show` or print tables for this. Advanced/tuning knobs (including the two safety
+allow-lists) are NOT in `/config`; they live in `/anti-hall:settings` only. For those, use a direct change below (`show --section <key> --all` lists them if asked).
 
 ## Direct named changes: one `set`, no table
 
