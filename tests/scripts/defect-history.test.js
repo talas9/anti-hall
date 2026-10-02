@@ -378,3 +378,51 @@ test('report/rule accept the optional new fields and validate cause/regressionOf
     assert.equal(shown.fixCommit, 'deadbeef');
   } finally { rm(home); }
 });
+
+// ---------------------------------------------------------------------------
+// tag pruning: only the newest vX.Y.Z tag may remain (owner policy), so
+// releaseMap/backfill must degrade — never throw — with one tag or none.
+// ---------------------------------------------------------------------------
+test('releaseMap and backfill degrade (no crash) with a single tag and with no tags', () => {
+  const gh = tmpDir('anti-hall-dh-githome2-');
+  const repo = tmpDir('anti-hall-dh-repo2-');
+  const home = tmpDir('anti-hall-dh-home2-');
+  const g = (args) => cp.execFileSync('git', ['-C', repo, ...args], {
+    encoding: 'utf8',
+    env: Object.assign({}, process.env, {
+      HOME: gh, USERPROFILE: gh, GIT_CONFIG_NOSYSTEM: '1',
+      GIT_AUTHOR_NAME: 'Fixture', GIT_AUTHOR_EMAIL: 'fixture@example.invalid',
+      GIT_COMMITTER_NAME: 'Fixture', GIT_COMMITTER_EMAIL: 'fixture@example.invalid',
+    }),
+  }).trim();
+  const fixCommit = (file, msg) => {
+    fs.writeFileSync(path.join(repo, file), msg);
+    g(['add', '-A']); g(['commit', '-q', '--no-verify', '-m', msg]);
+    return g(['rev-parse', 'HEAD']);
+  };
+  try {
+    g(['init', '-q']); g(['config', 'commit.gpgsign', 'false']); g(['config', 'tag.gpgsign', 'false']);
+    const pre = fixCommit('a.js', 'fix(alpha): early fix');
+    const named = fixCommit('b.js', 'fix: v0.1.0 - names its own release');
+
+    // NO tags at all.
+    assert.equal(hist.releaseMap(repo).size, 0);
+    let res = hist.backfill({ repo, home, dryRun: true });
+    assert.equal(res.records.length, 2);
+    assert.equal(res.records.find((r) => r.fixCommit === pre).fixedIn, null);
+    assert.equal(res.records.find((r) => r.fixCommit === named).fixedIn, '0.1.0',
+      'with no tag the subject-named release is the fallback');
+
+    // ONE tag (the newest only): ancestors map to it, later commits stay null.
+    g(['tag', 'v0.5.0']);
+    const post = fixCommit('c.js', 'fix(alpha): after the only tag');
+    const m = hist.releaseMap(repo);
+    assert.equal(m.get(pre), '0.5.0');
+    assert.equal(m.has(post), false);
+    res = hist.backfill({ repo, home, dryRun: true });
+    const by = Object.fromEntries(res.records.map((r) => [r.fixCommit, r]));
+    assert.equal(by[pre].fixedIn, '0.5.0');
+    assert.equal(by[named].fixedIn, '0.1.0', 'subject-named release is preferred when earlier than the lone tag');
+    assert.equal(by[post].fixedIn, null, 'commit after the only tag is unreleased');
+  } finally { rm(gh); rm(repo); rm(home); }
+});
