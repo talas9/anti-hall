@@ -1115,7 +1115,7 @@ function main() {
   if (kinds.length === 0) {
     // nothing owed (heartbeat satisfied, inbound cleared) -> allow, and re-open the budgets of the
     // kinds just satisfied, like the other allow paths (a stale count must not cap a later episode).
-    stopPolicy.clear(os.homedir(), sessionId, 'child-gate', ['heartbeat-report', 'inbox', 'inbox-unknown']);
+    stopPolicy.clear(testHomeGuard.resolveHome(null, process.env), sessionId, 'child-gate', ['heartbeat-report', 'inbox', 'inbox-unknown']);
     writeState(stateFile, state);
     return;
   }
