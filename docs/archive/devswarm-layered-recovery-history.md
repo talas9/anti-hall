@@ -408,7 +408,7 @@ default): `ANTIHALL_DEVSWARM_IDLE_SEC` (900), `ANTIHALL_DEVSWARM_COOLDOWN_SEC` (
 `ANTIHALL_DEVSWARM_NUDGE_MAX_ATTEMPTS` (2), `ANTIHALL_DEVSWARM_NUDGE_WINDOW_SEC` (180),
 `ANTIHALL_DEVSWARM_NUDGE_COOLDOWN_SEC` (120); the on-demand CLI resolves its own
 `ANTIHALL_DEVSWARM_MAX_RECOVERIES` (3) and `ANTIHALL_DEVSWARM_GRACE_SEC` (5). See
-[`plugins/anti-hall/README.md`](../../plugins/anti-hall/README.md#opt-in-companion-devswarm-layered-recovery-macos--linux-full-windows-detection-only).
+[`GUIDE.md`](../GUIDE.md#opt-in-companion-devswarm-layered-recovery-macos--linux-full-windows-detection-only).
 **v0.100.0** adds three more, all on the per-turn parent-inbox injection:
 `ANTIHALL_ROSTER_HIDE_ARCHIVED` (default on; `0` shows archived rows in the roster table
 again), `ANTIHALL_ROSTER_MAX_ROWS` (default 12, the roster table cap), and

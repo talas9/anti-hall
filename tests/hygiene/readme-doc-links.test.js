@@ -1,6 +1,7 @@
 'use strict';
 // Hygiene (owner requirement, 2026-09-25): every docs/*.md file tracked by git
-// must be linked from BOTH README.md (the root doc index) AND docs/KB.md (the
+// must be linked from BOTH docs/README.md (the doc start page the slim root README
+// points to) AND docs/KB.md (the
 // canonical KB index) — not just docs/README.md (see docs-links.test.js for the
 // weaker OR check). Also asserts every relative docs/ link in README.md
 // resolves to a file that actually exists, so a stale/typo'd link is caught
@@ -30,11 +31,24 @@ function isLinked(text, docRelPath) {
   return linkTargetRe(base).test(text) || linkTargetRe(rel).test(text) || linkTargetRe(docRelPath).test(text);
 }
 
-test('every git-tracked docs/*.md is linked from README.md', () => {
-  const readme = read('README.md');
+// The root README is deliberately short: its only documentation link is the start page
+// docs/README.md, which must link every doc (docs/*.md and the root meta docs).
+test('the root README links the docs start page', () => {
+  assert.ok(isLinked(read('README.md'), 'docs/README.md'), 'README.md must link docs/README.md');
+});
+
+test('every git-tracked docs/*.md is linked from the docs start page (docs/README.md)', () => {
+  const index = read('docs/README.md');
   const docs = trackedDocsFiles().filter((f) => f !== 'docs/README.md');
-  const missing = docs.filter((f) => !isLinked(readme, f));
-  assert.deepStrictEqual(missing, [], 'not linked from README.md: ' + missing.join(', '));
+  const missing = docs.filter((f) => !isLinked(index, f));
+  assert.deepStrictEqual(missing, [], 'not linked from docs/README.md: ' + missing.join(', '));
+});
+
+test('the docs start page links every root meta doc', () => {
+  const index = read('docs/README.md');
+  const meta = ['PRIVACY.md', 'CONTRIBUTING.md', 'SECURITY.md', 'CODE_OF_CONDUCT.md', 'CHANGELOG.md', 'RELEASING.md'];
+  const missing = meta.filter((f) => !isLinked(index, f));
+  assert.deepStrictEqual(missing, [], 'not linked from docs/README.md: ' + missing.join(', '));
 });
 
 test('every git-tracked docs/*.md is linked from docs/KB.md', () => {

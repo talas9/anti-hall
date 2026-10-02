@@ -113,6 +113,29 @@ prints, logs, or stores the key anywhere but that key file. Under the hood it
 drives `plugins/anti-hall/scripts/jev-setup.js` (`status`/`enable`/`disable`/
 `set-key`/`test`/`mode <integration> on|shadow|off`).
 
+### Enable Jev
+
+The full recommendation text. The READMEs carry only a short form that links here; the
+session-start reminder points at the README "Enable Jev" heading and
+[PRIVACY.md](../PRIVACY.md). A test (`tests/hooks/jev-recommend.test.js`) pins this
+block's facts, the banned-superlative list, and the measured figure against its constant.
+
+<!-- jev-recommend:start -->
+> **Recommended: enable Jev, the optional classifier, for more accurate guards.**
+>
+> Without it, guards such as the speculation check rely on pattern matching alone. With Jev on, they also get a model's second opinion: by default it can only add blocks the patterns miss (it never removes one), and nine integrations are on by default once it is enabled (speculation, message triage, duplicate-finding grouping, dispatch-tier hints, five DevSwarm supervision labels). The same shared hook shows this notice on Codex.
+>
+> Measured so far: one offline check (2026-09, 65 deadly-loop finding pairs from 3 projects) had Jev's duplicate-finding judgments 65/65 correct at confidence >= 0.85, against 45% precision for a same-file proximity heuristic. That is one narrow task; no end-to-end accuracy figure exists for the other guards yet (section 7 below).
+>
+> **Costs:** optional and off by default; needs your own Vercel AI Gateway or TypeSafe API key; sends the text a guard judges (prompts, assistant messages, test output, commit text; up to 8000 characters per call, known secret shapes redacted on a best-effort basis) to the provider you choose; uses provider credits. Details: [PRIVACY.md](../PRIVACY.md).
+>
+> Enable: say "activate jev" (runs the `jev` skill: stores your key, enables, tests). Silence the session-start reminder: set `jev.recommendNotice` to false.
+<!-- jev-recommend:end -->
+
+**On Codex** the enable step is the `anti-hall-jev` skill instead. Codex has no plugin
+options, so the key file is read only after you opt in with `jev.allowLegacyKeyRead`; the
+skill walks you through it.
+
 ## 4. Fallback semantics (asymmetric trust)
 
 Order inside `speculation-guard.js`:

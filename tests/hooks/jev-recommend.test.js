@@ -38,7 +38,7 @@ test('shown on first run when Jev is off, bold, with costs and enable path', () 
   const ctx = runHook(home);
   assert.ok(ctx.length <= 600, 'session notice is ' + ctx.length + ' chars');
   assert.ok(ctx.split('\n').length <= 5, 'directive + at most 4 lines');
-  assert.doesNotMatch(ctx, /65\/65|45%/); // measured figure lives in README/doctor only
+  assert.doesNotMatch(ctx, /65\/65|45%/); // measured figure lives in the KB/doctor only
   assert.match(ctx, /\*\*Recommended: enable Jev/);
   assert.match(ctx, /Tell the user now/);
   assert.match(ctx, /off by default/);
@@ -96,9 +96,12 @@ test('hook run is fast (under 100 ms of own work)', () => {
 });
 
 const BANNED = [/massive/i, /dramatic/i, /guarantee/i, /100%/];
-function jevBlocks() {
+// The READMEs carry the SHORT form; the FULL text (with the measured figure) lives in
+// docs/KB-jev-classifier.md "Enable Jev". Both are pinned below.
+const KB_DOC = 'docs/KB-jev-classifier.md';
+function jevBlocks(files = ['README.md', 'plugins/anti-hall/README.md', 'plugins/anti-hall/codex/README.md', KB_DOC]) {
   const out = [];
-  for (const rel of ['README.md', 'plugins/anti-hall/README.md', 'plugins/anti-hall/codex/README.md']) {
+  for (const rel of files) {
     const s = fs.readFileSync(path.join(REPO, rel), 'utf8');
     const m = s.match(/<!-- jev-recommend:start -->([\s\S]*?)<!-- jev-recommend:end -->/);
     assert.ok(m, rel + ' lacks the jev-recommend block');
@@ -120,8 +123,19 @@ test('"activate jev" maps to the jev skills and the README heading exists', () =
   }
 });
 
-test('README blocks carry the same facts as the notice', () => {
-  for (const [rel, b] of jevBlocks()) {
+test('README blocks (short form) carry the headline, costs, privacy link and enable path', () => {
+  for (const [rel, b] of jevBlocks(['README.md', 'plugins/anti-hall/README.md', 'plugins/anti-hall/codex/README.md'])) {
+    assert.match(b, /Recommended: enable Jev/, rel);
+    assert.match(b, /off by default/, rel);
+    assert.match(b, /own Vercel AI Gateway or TypeSafe API key/, rel);
+    assert.match(b, /sends the text a guard judges/, rel);
+    assert.match(b, /PRIVACY\.md/, rel);
+    assert.match(b, /activate jev/, rel);
+  }
+});
+
+test('the full Enable Jev block in the KB carries the same facts as the notice', () => {
+  for (const [rel, b] of jevBlocks([KB_DOC])) {
     assert.match(b, /Recommended: enable Jev/, rel);
     assert.match(b, /65\/65/, rel);
     assert.match(b, /45%/, rel);

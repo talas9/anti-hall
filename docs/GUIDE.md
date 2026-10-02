@@ -15,6 +15,13 @@ owner-approved prune and message retention. Per-component detail is in the
 [Features table](#hook-reference--plugin-features-table-detailed-per-hook).
 
 ## Contents
+- [What it is, and why it exists](#what-it-is-and-why-it-exists)
+- [What it blocks, and how to turn it off](#what-it-blocks-and-how-to-turn-it-off)
+- [Network and data](#network-and-data)
+- [Install, verify and uninstall](#install-verify-and-uninstall)
+- [Requirements](#requirements)
+- [Capabilities at a glance](#capabilities-at-a-glance)
+- [What's inside and updating](#whats-inside-and-updating)
 - [Hook reference (detailed)](#hook-reference-detailed) — how it works, per mechanism
 - [Skills reference (detailed)](#skills-reference-detailed)
 - [DevSwarm (current state)](#devswarm-current-state)
@@ -25,6 +32,154 @@ owner-approved prune and message retention. Per-component detail is in the
 - [Configuration / tuning](#configuration--tuning)
 - [Troubleshooting / FAQ](#troubleshooting--faq)
 - [Test locally](#test-locally)
+
+## What it is, and why it exists
+
+anti-hall is a Claude Code **marketplace + plugin**, plus a separate Codex-native port,
+that keeps coding assistants from acting before they verify. It ships always-on Node
+hooks (mechanical guards no prompt can talk around), a set of evidence-driven workflow
+skills, and a live two-line statusline. Pure Node.js, no dependencies, **macOS · Linux**
+(Node ≥ 22 on `PATH` is the only prerequisite; Windows is not supported).
+
+It targets four predictable failure modes: **eagerness** (acting before investigating),
+**hallucination** (stating unverified facts as truth), **fix-before-diagnosis** (patching
+a symptom before proving the cause), and **fake completion** ("done" without running the
+check). See [why it exists, and what's proven vs. not](#hook-reference-detailed) for the
+eval behind that claim.
+
+**Before and after.** An assistant, mid-task, runs a force-push to `main`. Without anti-hall, the published history is rewritten. With it, the command never runs and the assistant is told:
+
+> anti-hall git-guard: BLOCKED. Force push detected. Rewriting published history is a deliberate human action - do it manually with explicit owner confirmation, never from an automated push.
+
+The Claude plugin is the authoritative package; the Codex port
+(`plugins/anti-hall/codex/`) is a separate, intentionally non-1:1 mirror (different
+`hooks.json`, different skill set (`anti-hall-*`), same underlying guards where payload
+contracts are verified for Codex) — see
+[plugins/anti-hall/codex/README.md](../plugins/anti-hall/codex/README.md) for hook parity
+and [Codex / cross-tool](#codex--cross-tool) for the Codex/OMX detail.
+
+## What it blocks, and how to turn it off
+
+The main guards. Every one can be switched off with its setting (`/anti-hall:settings`, the `/config` panel, or `node plugins/anti-hall/scripts/settings.js set <key> false`). The four `safety.*` keys are locked: changing them needs `--confirmed`. Separately, you can tell the assistant to skip a guard for a short time; it records that in `~/.anti-hall/skip.json` (per guard name, expires after 15 minutes by default; `"all"` never covers `git-guard`, which must be named).
+
+| Guard | What it stops | Why | Turn off |
+|---|---|---|---|
+| `git-guard` | Force-push and AI self-credit in commits and `gh` PR/issue/release text | Rewriting published history and AI co-author trailers are human decisions | `safety.gitGuard`; skip name `git-guard` |
+| `command-guard` | The main session running heavy commands (build, test, deploy, push) itself | Keeps the main conversation free; helpers do the long work | `safety.commandGuard`; skip name `command-guard` |
+| `edit-guard` | The main session editing files outside its own plan/state/handover files | Edits go through a helper that can be checked | `safety.editGuard`; skip name `edit-guard` |
+| `swarm-guard` | Agent spawns past the spawn-rate cap or under critical memory pressure | Prevents a fork-bomb of agents overloading the machine | `safety.swarmGuard`; skip name `swarm-guard` |
+| `api-guard` | Written code that calls a standard-library or built-in API that does not exist | Catches invented functions before they land | `guards.apiGuard`; skip name `api-guard` |
+| `speculation-guard` | A turn that ends on unverified, hedged claims | Claims need evidence, not "probably" | `guards.speculationGuard`; skip name `speculation-guard` |
+| `output-verify-guard` | Unverified completion claims | "Done" needs a check that was actually run | `guards.outputVerifyGuard` |
+| `task-guard` / `tasklist-guard` | Stopping while tracked tasks are open; multi-step work with no task list or progress file | Stops half-finished work being reported as finished | `guards.taskGuard` / `guards.tasklistGuard`; skip names `task-guard` / `tasklist-guard` |
+
+Everything else, with the exact behaviour of each hook: the
+[Features table](#hook-reference--plugin-features-table-detailed-per-hook).
+
+## Network and data
+
+The short form is in the README; the full table is [PRIVACY.md](../PRIVACY.md). Nothing
+here goes beyond it: no telemetry; one default-on update check (a tag-list request to
+`github.com/talas9/anti-hall`, no project data; off via `versionAlerts.antiHall` or
+`ANTIHALL_VERSION_ALERT=off`); the Jev classifier, the semantic judge
+(`ANTIHALL_SEMANTIC_JUDGE=1`) and mesh message triage are off by default and send the
+text they judge only to the provider you configure. API keys come from sensitive plugin
+options; reading a key from the environment or a key file is opt-in
+(`jev.allowLegacyKeyRead`, `guards.allowAnthropicEnvKey`), and the Jev endpoint override
+is loopback-only. Everything else (logs, handovers, defect reports) stays in
+`~/.anti-hall/` and `<repo>/.anti-hall/`. `gh`, `codex` and `hivecontrol` run under your
+own accounts; the plugin does not spawn `gh` or `codex`.
+
+## Install, verify and uninstall
+
+Prerequisite: **Node.js >= 22** on `PATH` (check with `node --version`).
+
+**Claude Code:**
+
+```bash
+/plugin marketplace add talas9/anti-hall
+/plugin install anti-hall@anti-hall
+```
+
+To try it without installing: `claude --plugin-dir /path/to/anti-hall`. The hooks apply
+globally once enabled; the statusline is a separate one-command install
+([Statusline](#statusline-opt-in-one-command)).
+
+**Codex** (from scratch; the installer lives in the repo, so clone it first):
+
+```bash
+git clone https://github.com/talas9/anti-hall.git
+cd anti-hall
+node plugins/anti-hall/codex/install-codex.js            # project-local: writes ./.codex/hooks.json
+node plugins/anti-hall/codex/install-codex.js --global   # or user-wide: writes ~/.codex/hooks.json
+```
+
+Add `--dry-run` to preview. The installer merges into an existing `hooks.json`, backs up any file it changes (`.bak-<timestamp>`), and enables `[features] hooks = true` in the matching `config.toml`.
+
+**Git-ignore the state directory:** anti-hall writes per-project session notes (progress, history, handovers, reports) under `.anti-hall/` in your repo, and never edits your tracked files. Add `.anti-hall/` to your project's `.gitignore` so a `git add .` can't commit them (or run `/anti-hall:doctor --repair`, which appends it to the untracked `.git/info/exclude`).
+
+**Verify it worked:** in Claude Code, ask "is anti-hall working" (runs the `doctor` skill: live self-tests on every guard), or run `/anti-hall:settings` to see the active settings. From a clone you can also run `node plugins/anti-hall/hooks/doctor.js --check`.
+
+### Uninstall
+
+**Claude Code:**
+
+```bash
+claude plugin uninstall anti-hall@anti-hall
+claude plugin marketplace remove anti-hall   # optional: also drop the marketplace
+```
+
+If you installed the statusline, remove it first with the `install-statusline` skill's uninstall, or run `node statusline/uninstall-statusline.js` from the plugin directory (it restores your previous `statusLine`).
+
+**Codex:** the installer has no uninstall flag. Open `.codex/hooks.json` (project) or `~/.codex/hooks.json` (global) and delete the hook groups whose command path contains `/plugins/anti-hall/hooks/`; the installer's `.bak-<timestamp>` copies hold your prior file. The `[features] hooks = true` line it added to `config.toml` is left alone.
+
+**Optional companions** (only if you installed them; run from `plugins/anti-hall/companion/` in a clone or the plugin directory):
+
+```bash
+node install-reaper.js --uninstall                # MCP orphan reaper (macOS LaunchAgent com.anti-hall.mcp-reaper / Linux systemd --user timer)
+node install-devswarm-supervisor.js --uninstall   # DevSwarm liveness supervisor (com.anti-hall.devswarm-supervisor)
+node install-devswarm-ingest.js --uninstall       # DevSwarm ingest daemon (com.anti-hall.devswarm-ingest)
+```
+
+`~/.anti-hall/` holds your settings, skip file and logs; it is not removed automatically. Delete it yourself only if you want that state gone.
+
+## Requirements
+
+**Node.js ≥ 22 on `PATH`.** Every hook and the statusline are pure Node (built-ins
+only), launched as `node <hook>.js`. No `node` on the hook shell's `PATH` means Claude
+Code silently skips every anti-hall hook — verify with `node --version`. No npm
+install, no native deps, no other config. There is intentionally no shell-based
+preflight. Install Node from <https://nodejs.org>.
+
+**`/config` rows need Claude Code ≥ 2.1.269; older versions still work via the skill.**
+The plugin's `userConfig` never declares `options` (a public plugin can't require v2.1.271+
+just for its settings UI — per the Claude Code plugin docs, an `options` picker would break
+loading on older versions), so every version can load the plugin; enum settings just render
+as a plain string field describing the allowed values instead of a picker.
+
+## Capabilities at a glance
+
+Terms used below: **DevSwarm** is a multi-workspace orchestration app with a `hivecontrol` CLI; anti-hall's integration is optional and dormant unless you use it. **Jev** is TypeSafe's "System One" decision model, used as an opt-in classifier. **deadly-loop** is a parallel Reviewer + Auditor + Critic debate with fix waves, run before merging risky changes.
+
+| Area | What it does |
+|---|---|
+| **Guards** | Mechanical, always-on Node hooks — block AI self-credit/force-push (`git-guard`), fabricated stdlib/builtin APIs (`api-guard`), un-delegated heavy commands (`command-guard`), un-delegated direct edits (`edit-guard`), spawn-rate/memory fork-bombs (`swarm-guard`), stopping with open tasks (`task-guard`/`tasklist-guard`), cheapest-fitting-model routing (`model-routing-guard`), opt-in `merge-gate`/`ship-it-guard`, and more. |
+| **Verify-first discipline** | Injects the full Iron-Law + rationalization-table protocol at session start (survives compaction) and a rotating one-line nudge every turn, plus the always-on scope-fidelity + anti-sycophancy rules; enforced, not just suggested. |
+| **Orchestration** | Non-blocking coordinator discipline: delegate heavy/broad work to subagents, verify delegated "done" claims against ground truth, live phase progress on the statusline. |
+| **Auto-handover** | On by default: at 85% context the agent writes a handover itself, tells you, and suggests `/compact` or `/clear`; short follow-up reminders after that. Configure via `/anti-hall:settings`. |
+| **DevSwarm mesh** | Optional, dormant unless a DevSwarm session is active — layered wake/recovery (self-report → poke → escalate, never auto-kill), one mailbox per session, per-turn mesh status. The DevSwarm app's own database is the ground truth for workspace state; done workspaces are auto-archived (DevSwarm ≥ 2.5.3), old message bodies are archived then pruned. See [`KB-devswarm-hivecontrol.md`](KB-devswarm-hivecontrol.md) and [`KB-devswarm-app-db.md`](KB-devswarm-app-db.md). |
+| **Jev classifier** | Optional LLM-backed speculation classifier ([`KB-jev-classifier.md`](KB-jev-classifier.md)) — per-integration on/shadow/off modes, metrics + `jev report` KEEP/REVIEW/REMOVE calls. |
+| **Statusline** | Live two-line statusline: git/model/context/cost on line 1, live orchestration/context gauge on line 2. Installable globally or per-repo, consolidates with an existing statusline (e.g. OMC HUD). |
+| **doctor / update** | `doctor` runs live behavioral self-tests on every guard and repairs safe drift; `update` pulls the latest release and shows the changelog delta. Repairs also run by themselves after a plugin reload or on a new version. |
+| **Settings** | One place for every setting — `~/.anti-hall/settings.json`, every non-advanced setting is an arrow-key row in Claude Code's native `/config` panel (anti-hall rows, section-prefixed titles); or tell `/anti-hall:settings` "set X to Y". See [Settings](#settings-anti-hallsettings). |
+
+## What's inside and updating
+
+Repo layout, the `AGENTS.md` cross-tool mirror, the `node --test` suite, and the
+`/anti-hall:update` flow are documented in this guide ([Codex / cross-tool](#codex--cross-tool),
+[Test locally](#test-locally), the `update` skill under [Skills reference](#skills-reference-detailed)).
+The full plugin component reference is [plugins/anti-hall/README.md](../plugins/anti-hall/README.md).
+Release notes: [CHANGELOG.md](../CHANGELOG.md).
 
 ## Hook reference (detailed)
 
@@ -1136,6 +1291,18 @@ Generated from `hooks/lib/settings-schema.js` (a hygiene test keeps this table a
   (`xargs` / aliases / interactive-editor commits with no `-m`/`-F` are out of scope
   by design; `bash -c`/`sh -c`
   wrappers are unwrapped and inspected, not a bypass).
+- **Guard blocking something legitimate?** Most guards fail open and have a skip hatch
+  (`~/.anti-hall/skip.json`, per-guard, TTL'd) — `git-guard` must be named explicitly.
+- **Statusline not showing?** Restart Claude Code once after installing — `statusLine`
+  is only read at startup.
+- **Update didn't take effect?** Run `/reload-plugins` after `/anti-hall:update`. Restart
+  Claude Code only if a hook or skill path still shows the old version afterwards (or to
+  re-run SessionStart-only injections).
+- **Upgrading from 0.107.x or earlier?** Run `claude plugin update anti-hall@anti-hall`
+  once, then restart Claude Code — the old `update` cannot register 0.108.0 with the
+  harness. Later updates do this themselves.
+- **Anything else?** [KB.md](KB.md) is the doc index; file a defect with
+  `/anti-hall:defects`.
 - **Using Codex too?** Copy `AGENTS.md` (repo root) into your own repo root — it is
   not bundled by `/plugin install`. Verify with
   `codex --ask-for-approval never "Summarize current instructions"`.

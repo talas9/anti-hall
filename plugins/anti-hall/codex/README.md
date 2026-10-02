@@ -26,13 +26,9 @@ node plugins/anti-hall/codex/install-codex.js --dry-run
 <!-- jev-recommend:start -->
 > **Recommended: enable Jev, the optional classifier, for more accurate guards.**
 >
-> Without it, guards such as the speculation check rely on pattern matching alone. With Jev on, they also get a model's second opinion: by default it can only add blocks the patterns miss (it never removes one), and nine integrations are on by default once it is enabled (speculation, message triage, duplicate-finding grouping, dispatch-tier hints, five DevSwarm supervision labels). The same shared hook shows this notice on Codex.
+> It gives guards such as the speculation check a model's second opinion on top of pattern matching, and it can only add blocks, never remove one. **Costs:** optional and off by default; needs your own Vercel AI Gateway or TypeSafe API key; sends the text a guard judges to the provider you choose; uses provider credits. Details: [PRIVACY.md](https://github.com/talas9/anti-hall/blob/main/PRIVACY.md).
 >
-> Measured so far: one offline check (2026-09, 65 deadly-loop finding pairs from 3 projects) had Jev's duplicate-finding judgments 65/65 correct at confidence >= 0.85, against 45% precision for a same-file proximity heuristic. That is one narrow task; no end-to-end accuracy figure exists for the other guards yet ([`KB-jev-classifier.md`](https://github.com/talas9/anti-hall/blob/main/docs/KB-jev-classifier.md), section 7).
->
-> **Costs:** optional and off by default; needs your own Vercel AI Gateway or TypeSafe API key; sends the text a guard judges (prompts, assistant messages, test output, commit text; up to 8000 characters per call, known secret shapes redacted on a best-effort basis) to the provider you choose; uses provider credits. Details: [PRIVACY.md](https://github.com/talas9/anti-hall/blob/main/PRIVACY.md).
->
-> Enable: say "activate jev" (runs the `anti-hall-jev` skill). Codex has no plugin options, so the key file is read only after you opt in with `jev.allowLegacyKeyRead`; the skill walks you through it. Silence the session-start reminder: set `jev.recommendNotice` to false.
+> Enable: say "activate jev" (runs the `anti-hall-jev` skill). Codex has no plugin options, so the key file is read only after you opt in with `jev.allowLegacyKeyRead`; the skill walks you through it. The full text and the measured result are in the Jev page of the documentation (linked at the end of this file).
 <!-- jev-recommend:end -->
 
 anti-hall writes per-project session notes under `.anti-hall/`. Add `.anti-hall/` to your project's `.gitignore` so a `git add .` can't commit them (or run `doctor --repair`, which appends it to the untracked `.git/info/exclude`). Doctor warns while it is not ignored.
@@ -125,3 +121,8 @@ Codex-safe behavior:
 - anti-hall does **not** inject an unsupported `anti-hall-version` footer item
 - `anti-hall-install-statusline` documents the supported Codex/OMX HUD path
 - the Claude statusline installer remains unchanged for Claude Code
+
+## Documentation
+
+Everything else starts at the
+[documentation start page](https://github.com/talas9/anti-hall/blob/main/docs/README.md).

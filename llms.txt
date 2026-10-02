@@ -41,10 +41,10 @@ Update with `/anti-hall:update` (Claude) or the `anti-hall-update` skill (Codex)
 
 ## Docs
 
-- [README.md](https://github.com/talas9/anti-hall/blob/main/README.md): overview, the four failure modes, quickstart.
-- [plugins/anti-hall/README.md](https://github.com/talas9/anti-hall/blob/main/plugins/anti-hall/README.md): component reference, configuration, troubleshooting.
+- [README.md](https://github.com/talas9/anti-hall/blob/main/README.md): short landing page (what it does, install, Jev, data).
+- [plugins/anti-hall/README.md](https://github.com/talas9/anti-hall/blob/main/plugins/anti-hall/README.md): the plugin directory page (what it does, install, data sent).
 - [plugins/anti-hall/codex/README.md](https://github.com/talas9/anti-hall/blob/main/plugins/anti-hall/codex/README.md): the Codex port, hook subset, skills, OMX mapping.
-- [docs/README.md](https://github.com/talas9/anti-hall/blob/main/docs/README.md): index of every doc.
+- [docs/README.md](https://github.com/talas9/anti-hall/blob/main/docs/README.md): the documentation start page, a grouped index of every doc.
 - [docs/KB.md](https://github.com/talas9/anti-hall/blob/main/docs/KB.md): knowledge-base ground truth.
 - [docs/GUIDE.md](https://github.com/talas9/anti-hall/blob/main/docs/GUIDE.md): extended guide and per-hook reference.
 - [docs/KB-devswarm-hivecontrol.md](https://github.com/talas9/anti-hall/blob/main/docs/KB-devswarm-hivecontrol.md): DevSwarm hivecontrol CLI and the mesh.
