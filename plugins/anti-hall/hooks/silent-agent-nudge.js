@@ -44,11 +44,14 @@
 // continues/stops cleanly.
 //
 // BOUNDED READ: the transcript can be tens of thousands of lines on a long
-// session, so only the last MAX_TAIL_BYTES (shared hooks/lib/transcript-tail.js
-// cap, 1.5MB) is scanned — same trade-off transcript-tail.js's other
-// consumers (context-pct.js, auto-handover-pause-nag.js) already accept: an
-// agent launched/resolved further back than the tail window is invisible to
-// this scan, degrading gracefully (advisory only, never a hard gate).
+// session, so only the last NUDGE_SCAN_BYTES (64MB — NOT the shared 1.5MB
+// transcript-tail.js cap, which hid launches 1.8MB+ back) is scanned: an agent
+// launched further back than that is invisible to this scan, degrading
+// gracefully (advisory only, never a hard gate).
+//
+// RESUME: an agent resumed via SendMessage is running from the resume time —
+// staleness is measured from the latest of the output file, its sidechain
+// transcript and the resume, and the one-nudge cap is per (agent, resume).
 //
 // DEDUP / CAP: one nudge per stale SNAPSHOT — transcript source keyed by
 // (agentId, output_file mtime or 'missing'); heartbeat source keyed by
@@ -99,11 +102,33 @@ function oneLine(s, max) {
 // task-guard + task-tracker so the running-agent parse never drifts).
 const { scanTranscript } = require('./lib/agent-scan.js');
 
+// The shared 1.5MB tail is far too short for THIS hook: a long-running agent's
+// launch record sits before it as soon as the coordinator's turns carry large
+// attachments (field, 2026-10-02: launches 1.8MB and 2.6MB back, agents silent
+// 57+ min, never seen). Read a much wider window for this one Stop-time scan;
+// the scanner only JSON-parses pre-filtered lines, so cost is the read + split.
+const NUDGE_SCAN_BYTES = 64 * 1024 * 1024;
+
+// sidechainMtimeMs(transcriptPath, id) -> mtime of the agent's own sidechain
+// transcript (<dir>/<session>/subagents/agent-<id>.jsonl), NaN when absent.
+// The harness's output_file is normally a symlink to it (statSync follows), but
+// when the output file is missing this is still the fresher/true liveness signal.
+function sidechainMtimeMs(transcriptPath, id) {
+  try {
+    const dir = path.join(path.dirname(transcriptPath), path.basename(transcriptPath, '.jsonl'), 'subagents');
+    return fs.statSync(path.join(dir, 'agent-' + id + '.jsonl')).mtimeMs;
+  } catch (_) { return NaN; }
+}
+
 
 // transcriptCandidates(transcriptPath, now, thresholdMs) -> [{ key, id, label, age, snapshot }]
 // `snapshot` is the dedupe key: output_file mtime in ms, or 'missing'.
 function transcriptCandidates(transcriptPath, now, thresholdMs) {
-  const scan = transcriptPath ? scanTranscript(transcriptPath) : null;
+  let scan = null;
+  if (transcriptPath) {
+    const { readTail } = require('./lib/transcript-tail.js');
+    scan = scanTranscript(transcriptPath, readTail(transcriptPath, NUDGE_SCAN_BYTES) || undefined);
+  }
   if (!scan) return [];
   const out = [];
   for (const [id, rec] of scan.launched) {
@@ -135,12 +160,22 @@ function transcriptCandidates(transcriptPath, now, thresholdMs) {
       snapshot = 'missing';
     }
 
+    // Staleness runs from the LATEST sign of life: output file / launch time,
+    // the sidechain transcript, and — for an agent resumed via SendMessage —
+    // the resume itself (a resumed agent is running from the resume time).
+    const sc = sidechainMtimeMs(transcriptPath, id);
+    if (Number.isFinite(sc) && !(sc <= referenceMs)) referenceMs = sc;
+    const resumedAtMs = Number.isFinite(rec.resumedAtMs) ? rec.resumedAtMs : 0;
+    if (resumedAtMs > referenceMs) referenceMs = resumedAtMs;
+    if (resumedAtMs) snapshot += '@r' + resumedAtMs;
+
     const age = now - referenceMs;
     if (!(age >= thresholdMs)) continue; // fresh, or unparseable reference -> nothing
 
     out.push({
       key: 't:' + id,
       id,
+      resumedAtMs,
       label: rec.description ? oneLine(rec.description, 60) : oneLine(id, 60),
       age,
       snapshot,
@@ -282,7 +317,8 @@ function main() {
   // a repeat). Keyed by sessionId + agentId so two different sessions with a
   // coincidentally equal agent id never share a cap, and TTL-pruned (30 days)
   // so the map does not grow unbounded across many past sessions.
-  const everKey = (id) => sessionId + '::' + id;
+  // A resume starts a new life for the agent: the cap is per (agent, resume).
+  const everKey = (id, resumedAtMs) => sessionId + '::' + id + (resumedAtMs ? '@r' + resumedAtMs : '');
   const EVER_NUDGED_TTL_MS = 30 * 24 * 60 * 60 * 1000;
   const nextEverNudged = {};
   for (const k of Object.keys(everNudged)) {
@@ -292,7 +328,7 @@ function main() {
   // Without a session id there is nothing safe to scope the hard cap to —
   // fall back to snapshot-only dedup rather than caping across unrelated
   // sessions.
-  const hardCapped = sessionId ? stale.filter((c) => !Object.prototype.hasOwnProperty.call(nextEverNudged, everKey(c.id))) : stale;
+  const hardCapped = sessionId ? stale.filter((c) => !Object.prototype.hasOwnProperty.call(nextEverNudged, everKey(c.id, c.resumedAtMs))) : stale;
 
   function persist() {
     try {
@@ -309,6 +345,18 @@ function main() {
     persist();
     process.exit(0);
   }
+
+  // STALE-BUILD DOWNGRADE (peer complaint #2): a newer anti-hall version was
+  // already re-registered (installed_plugins.json) than this running hook
+  // process — the fix, if any, may already be on disk waiting on a restart.
+  // Skip the block WITHOUT persisting: a suppressed nudge must not burn the
+  // once-per-agent cap, or the fixed build that loads after /reload-plugins
+  // could never nudge for that agent.
+  try {
+    if (require('./lib/stop-version-gate.js').isStale(path.join(__dirname, '..'), { env: process.env, home })) {
+      process.exit(0);
+    }
+  } catch (_) { /* fail-open: block normally on any error */ }
 
   for (const c of stale) nextNudged[c.key] = c.snapshot;
 
@@ -333,19 +381,9 @@ function main() {
   // explicitly since the hard cap above is what makes that hold true across
   // repeated Stops for the SAME agent too, not just within one Stop.
   if (sessionId) {
-    for (const c of shownCandidates) nextEverNudged[everKey(c.id)] = now;
+    for (const c of shownCandidates) nextEverNudged[everKey(c.id, c.resumedAtMs)] = now;
   }
   persist();
-
-  // STALE-BUILD DOWNGRADE (peer complaint #2): a newer anti-hall version was
-  // already re-registered (installed_plugins.json) than this running hook
-  // process — the fix, if any, may already be on disk waiting on a restart.
-  // Skip the block; state above is already persisted normally.
-  try {
-    if (require('./lib/stop-version-gate.js').isStale(path.join(__dirname, '..'), { env: process.env, home })) {
-      process.exit(0);
-    }
-  } catch (_) { /* fail-open: block normally on any error */ }
 
   const MAX_NAMED = 3;
   const shown = shownCandidates.slice(0, MAX_NAMED).map((c) => {

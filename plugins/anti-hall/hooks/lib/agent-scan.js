@@ -42,7 +42,21 @@ const OUTPUT_FILE_RE = /output_file:\s*(\S+)/;
 // again, until its NEXT completion notification — not as still-terminal from
 // whatever ended it before the resume. The harness's own SendMessage
 // tool_result reads "Resuming agent <id> ...".
+//
+// REAL SHAPE (verified against a live transcript, 2026-10-02): the result is
+// JSON, {"success":true,"message":"Resuming agent a180b19","resumedAgentId":
+// "a180b191000d7a82e",...} — the message quotes only a SHORT id PREFIX, the
+// full id is in `resumedAgentId`. The terminal/launched maps are keyed by the
+// FULL id, so a prefix is resolved against them (resumeTargets below).
 const RESUME_RE = /Resuming\s+agent\s+([0-9a-fA-F]{6,40})/i;
+// SendMessage to a STILL-RUNNING agent: {"success":true,"message":"Message
+// queued for delivery to <full id> at its next tool round.","pin":{...}} — the
+// coordinator talking TO the agent, never the agent's result delivered. It
+// quotes the full id on a non-"running" line, so without this it tripped the
+// delivered-but-unnotified safety net and marked a live agent terminal (field,
+// 2026-10-02: a background agent messaged 4x was never nudged).
+const QUEUED_MSG_RE = /Message queued for delivery to\s/i;
+const RESUMED_ID_RE = /"resumedAgentId"\s*:\s*"([0-9a-fA-F]{6,40})"/;
 // A single transcript text leaf can hold SEVERAL <task-notification> blocks
 // (several agents can finish in the same turn) — TASK_NOTIFICATION_BLOCK_RE
 // (global) splits the leaf into each individual block first, and TASK_ID_RE/
@@ -99,6 +113,8 @@ function scanTranscript(transcriptPath, preLines) {
   // pass below can tell which happened last.
   const terminalSeq = new Map();
   const resumeSeq = new Map();
+  const resumeFull = new Set(); // resume ids that came from resumedAgentId (full ids)
+  const resumeTs = new Map(); // id-or-prefix -> entry timestamp ms of its newest resume
   let seq = 0;
 
   for (const raw of lines) {
@@ -205,9 +221,14 @@ function scanTranscript(transcriptPath, preLines) {
         // quotes its own id). Record it separately instead.
         const resumeMatch = RESUME_RE.exec(text);
         if (resumeMatch) {
-          resumeSeq.set(resumeMatch[1], seq);
+          const fullm = RESUMED_ID_RE.exec(text);
+          const rid = fullm ? fullm[1] : resumeMatch[1];
+          if (fullm) resumeFull.add(rid);
+          resumeSeq.set(rid, seq);
+          if (Number.isFinite(entryTs)) resumeTs.set(rid, entryTs);
           continue;
         }
+        if (QUEUED_MSG_RE.test(text)) continue;
         if (isToolResult) otherToolResultTexts.push({ toolUseId, text, seq });
       }
     }
@@ -242,10 +263,25 @@ function scanTranscript(transcriptPath, preLines) {
   // again. A terminal notification/evidence that arrives LATER than the
   // resume (the agent's actual next completion) still correctly marks it
   // terminal — this only reverses an ordering where the resume is newer.
-  for (const [id, rSeq] of resumeSeq) {
-    if (!terminal.has(id)) continue;
-    const tSeq = terminalSeq.has(id) ? terminalSeq.get(id) : -1;
-    if (rSeq > tSeq) terminal.delete(id);
+  // A resume names the agent by its full id (resumedAgentId) or only a short
+  // prefix (message text); resolve the key against every id seen so far.
+  const knownIds = new Set([...launched.keys(), ...terminal]);
+  for (const [rid, rSeq] of resumeSeq) {
+    const targets = [];
+    for (const k of knownIds) if (k === rid || k.startsWith(rid)) targets.push(k);
+    // Launch record outside the scanned window but the resume names the full
+    // id: adopt it as running from the resume time (output file unknown).
+    if (!targets.length && resumeFull.has(rid) && resumeTs.has(rid)) {
+      launched.set(rid, { adopted: true, outputFile: '', description: '', launchedAtMs: resumeTs.get(rid) });
+      targets.push(rid);
+    }
+    for (const id of targets) {
+      const rec = launched.get(id);
+      if (rec && resumeTs.has(rid)) rec.resumedAtMs = Math.max(rec.resumedAtMs || 0, resumeTs.get(rid));
+      if (!terminal.has(id)) continue;
+      const tSeq = terminalSeq.has(id) ? terminalSeq.get(id) : -1;
+      if (rSeq > tSeq) terminal.delete(id);
+    }
   }
 
   return { launched, terminal };

@@ -742,3 +742,175 @@ test('ADOPTED: task_status agent with an old entry timestamp and no output file 
     assert.ok(isBlock(r), 'old entry timestamp is the launch time: ' + JSON.stringify(r.json));
   } finally { h.cleanup(); }
 });
+
+// ---------------------------------------------------------------------------
+// SendMessage RESUME / queued-message / wide window (field, 2026-10-02: two
+// background agents hung 45 and 88 minutes with no nudge). Synthetic ids only.
+// ---------------------------------------------------------------------------
+
+// resumeResultLine(fullId, isoTs) -> the REAL SendMessage-resume tool_result
+// shape: JSON text whose message quotes only a SHORT id prefix, with the full
+// id in resumedAgentId.
+function resumeResultLine(fullId, isoTs) {
+  const payload = { success: true, message: 'Resuming agent ' + fullId.slice(0, 7), resumedAgentId: fullId, pin: { id: fullId, name: fullId, ref: 'abc123' } };
+  return {
+    type: 'user',
+    message: { role: 'user', content: [{ tool_use_id: 'toolu_r' + fullId.slice(-4), type: 'tool_result', content: [{ type: 'text', text: JSON.stringify(payload) }] }] },
+    timestamp: isoTs,
+  };
+}
+
+// queuedResultLine(fullId, isoTs) -> SendMessage to a STILL-RUNNING agent.
+function queuedResultLine(fullId, isoTs) {
+  const payload = { success: true, message: 'Message queued for delivery to ' + fullId + ' at its next tool round.', pin: { id: fullId, name: fullId, ref: 'abc123' } };
+  return {
+    type: 'user',
+    message: { role: 'user', content: [{ tool_use_id: 'toolu_q' + fullId.slice(-4), type: 'tool_result', content: [{ type: 'text', text: JSON.stringify(payload) }] }] },
+    timestamp: isoTs,
+  };
+}
+
+test('RESUME: completed -> resumed (short-prefix message + resumedAgentId) -> silent 25m -> nudged', () => {
+  const h = makeHome();
+  try {
+    const id = 'aaaa111122223333c';
+    const out = writeOutputFile(h, 'resume-a.output', 25 * 60 * 1000);
+    const tp = h.writeTranscript([
+      agentToolUseLine('toolu_ra', 'Resumed worker', isoMinutesAgo(120)),
+      agentLaunchResultLine(id, out, 'toolu_ra', isoMinutesAgo(120)),
+      notificationLine(id, 'completed', isoMinutesAgo(60)),
+      resumeResultLine(id, isoMinutesAgo(40)),
+    ]);
+    const r = testHook(HOOK, stopPayload(tp), { home: h.home });
+    assert.ok(isBlock(r), 'a resumed agent silent past the threshold must nudge: ' + JSON.stringify(r.json));
+    assert.match(r.json.reason, /Resumed worker/);
+  } finally { h.cleanup(); }
+});
+
+test('RESUME: completed -> resumed -> completes AGAIN -> not nudged', () => {
+  const h = makeHome();
+  try {
+    const id = 'aaaa111122223334c';
+    const out = writeOutputFile(h, 'resume-b.output', 90 * 60 * 1000);
+    const tp = h.writeTranscript([
+      agentLaunchResultLine(id, out, 'toolu_rb', isoMinutesAgo(200)),
+      notificationLine(id, 'completed', isoMinutesAgo(120)),
+      resumeResultLine(id, isoMinutesAgo(100)),
+      notificationLine(id, 'completed', isoMinutesAgo(30)),
+    ]);
+    const r = testHook(HOOK, stopPayload(tp), { home: h.home });
+    assert.ok(!isBlock(r), 'a re-completed resumed agent is terminal: ' + JSON.stringify(r.json));
+  } finally { h.cleanup(); }
+});
+
+test('RESUME: completed -> resumed -> output still fresh -> not nudged', () => {
+  const h = makeHome();
+  try {
+    const id = 'aaaa111122223335c';
+    const out = writeOutputFile(h, 'resume-c.output', 60 * 1000);
+    const tp = h.writeTranscript([
+      agentLaunchResultLine(id, out, 'toolu_rc', isoMinutesAgo(200)),
+      notificationLine(id, 'completed', isoMinutesAgo(120)),
+      resumeResultLine(id, isoMinutesAgo(40)),
+    ]);
+    const r = testHook(HOOK, stopPayload(tp), { home: h.home });
+    assert.ok(!isBlock(r), 'fresh output after a resume is working, not silent: ' + JSON.stringify(r.json));
+  } finally { h.cleanup(); }
+});
+
+test('RESUME: staleness runs from the resume time when the output file is older than the resume', () => {
+  const h = makeHome();
+  try {
+    const id = 'aaaa111122223336c';
+    const out = writeOutputFile(h, 'resume-d.output', 120 * 60 * 1000);
+    const tp = h.writeTranscript([
+      agentLaunchResultLine(id, out, 'toolu_rd', isoMinutesAgo(200)),
+      notificationLine(id, 'completed', isoMinutesAgo(150)),
+      resumeResultLine(id, isoMinutesAgo(5)),
+    ]);
+    const r = testHook(HOOK, stopPayload(tp), { home: h.home });
+    assert.ok(!isBlock(r), 'just resumed (5m ago) is running from the resume, whatever the old output mtime: ' + JSON.stringify(r.json));
+  } finally { h.cleanup(); }
+});
+
+test('RESUME: the once-per-agent cap resets when the agent is resumed again', () => {
+  const h = makeHome();
+  try {
+    const id = 'aaaa111122223337c';
+    const out = writeOutputFile(h, 'resume-e.output', 90 * 60 * 1000);
+    const first = h.writeTranscript([
+      agentLaunchResultLine(id, out, 'toolu_re', isoMinutesAgo(200)),
+    ]);
+    assert.ok(isBlock(testHook(HOOK, stopPayload(first), { home: h.home })), 'first silence nudges');
+    assert.ok(!isBlock(testHook(HOOK, stopPayload(first), { home: h.home })), 'cap holds without a resume');
+    const second = h.writeTranscript([
+      agentLaunchResultLine(id, out, 'toolu_re', isoMinutesAgo(200)),
+      notificationLine(id, 'completed', isoMinutesAgo(80)),
+      resumeResultLine(id, isoMinutesAgo(60)),
+    ]);
+    assert.ok(isBlock(testHook(HOOK, stopPayload(second), { home: h.home })), 'a resumed agent that goes silent again is a new life and nudges again');
+  } finally { h.cleanup(); }
+});
+
+test('QUEUED MESSAGE: SendMessage "queued for delivery" to a running agent is not delivery evidence -> still nudged', () => {
+  const h = makeHome();
+  try {
+    const id = 'aaaa111122223338c';
+    const out = writeOutputFile(h, 'queued.output', 60 * 60 * 1000);
+    const tp = h.writeTranscript([
+      agentToolUseLine('toolu_qa', 'Messaged worker', isoMinutesAgo(90)),
+      agentLaunchResultLine(id, out, 'toolu_qa', isoMinutesAgo(90)),
+      queuedResultLine(id, isoMinutesAgo(80)),
+      queuedResultLine(id, isoMinutesAgo(79)),
+    ]);
+    const r = testHook(HOOK, stopPayload(tp), { home: h.home });
+    assert.ok(isBlock(r), 'messaging a running agent must not mark it terminal: ' + JSON.stringify(r.json));
+    assert.match(r.json.reason, /Messaged worker/);
+  } finally { h.cleanup(); }
+});
+
+test('WINDOW: launch record more than 1.5MB before the end of the transcript is still seen', () => {
+  const h = makeHome();
+  try {
+    const id = 'aaaa111122223339c';
+    const out = writeOutputFile(h, 'wide.output', 60 * 60 * 1000);
+    const filler = [];
+    for (let i = 0; i < 4; i++) filler.push({ type: 'attachment', attachment: { type: 'note', text: 'x'.repeat(600 * 1024) }, timestamp: isoMinutesAgo(50) });
+    const tp = h.writeTranscript([
+      agentToolUseLine('toolu_wa', 'Far-back worker', isoMinutesAgo(90)),
+      agentLaunchResultLine(id, out, 'toolu_wa', isoMinutesAgo(90)),
+      ...filler,
+    ]);
+    const r = testHook(HOOK, stopPayload(tp), { home: h.home });
+    assert.ok(isBlock(r), 'a launch outside the shared 1.5MB tail must still be scanned: ' + JSON.stringify(r.json));
+  } finally { h.cleanup(); }
+});
+
+test('SIDECHAIN: a fresh sidechain transcript keeps an agent with a stale output file from being nudged', () => {
+  const h = makeHome();
+  try {
+    const id = 'aaaa11112222333ac';
+    const out = writeOutputFile(h, 'side.output', 60 * 60 * 1000);
+    const tp = h.writeTranscript([agentLaunchResultLine(id, out, 'toolu_sa', isoMinutesAgo(90))]);
+    const subDir = path.join(path.dirname(tp), path.basename(tp, '.jsonl'), 'subagents');
+    fs.mkdirSync(subDir, { recursive: true });
+    fs.writeFileSync(path.join(subDir, 'agent-' + id + '.jsonl'), '{}\n');
+    const r = testHook(HOOK, stopPayload(tp), { home: h.home });
+    assert.ok(!isBlock(r), 'sidechain written just now means the agent is working: ' + JSON.stringify(r.json));
+  } finally { h.cleanup(); }
+});
+
+test('STALE-BUILD DOWNGRADE does not burn the once-per-agent cap', () => {
+  const h = makeHome();
+  try {
+    const id = 'aaaa11112222333bc';
+    const out = writeOutputFile(h, 'stalegate.output', 60 * 60 * 1000);
+    const tp = h.writeTranscript([agentLaunchResultLine(id, out, 'toolu_sg', isoMinutesAgo(90))]);
+    const installed = path.join(h.home, '.claude', 'plugins', 'installed_plugins.json');
+    fs.mkdirSync(path.dirname(installed), { recursive: true });
+    fs.writeFileSync(installed, JSON.stringify({ plugins: { 'anti-hall@anti-hall': { version: '999.0.0', scope: 'user' } } }));
+    assert.ok(!isBlock(testHook(HOOK, stopPayload(tp), { home: h.home })), 'stale build downgrades the block');
+    fs.unlinkSync(installed);
+    assert.ok(isBlock(testHook(HOOK, stopPayload(tp), { home: h.home })), 'once the build is current the suppressed nudge still fires');
+  } finally { h.cleanup(); }
+});
