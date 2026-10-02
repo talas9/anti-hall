@@ -693,6 +693,94 @@ test('V5b DOCTOR WIRING: a family safety refusal is NOT reported as "nothing to 
 });
 
 // ---------------------------------------------------------------------------
+// GATED TWINS ARE NOT A FAILURE. Before: the dry-run counted a twin as pending
+// that apply refused (archived copy exists at a different inode), so `doctor
+// --repair` reported FAILED on every run; `left` also counted one twin once per
+// tombstone that named it.
+// ---------------------------------------------------------------------------
+const migrationsLib = require('../../plugins/anti-hall/companion/lib/migrations.js');
+
+test('GATED-a: gone worktree + archived/<twin>.json at a DIFFERENT inode/bytes -> dry-run `left` (archived-tombstone-differs), 0 pending, doctor row not failed and names the id', () => {
+  const home = tmpHome();
+  const W = makeGitRepo('gateda');
+  try {
+    writeArchivedDesc(home, SLUG, { id: SLUG, worktreePath: '/gone/wt', sessionId: UUID });
+    const twin = { id: UUID, worktreePath: '/gone/wt/skyfb', sessionId: 'ec774c7f' };
+    writeDesc(home, UUID, twin);
+    // A pre-existing, independently written archived copy (different inode AND bytes).
+    // NB: written under a different id key would be a candidate; UUID has a live
+    // descriptor so it is not scanned as a tombstone itself.
+    fs.writeFileSync(archivedPathOf(home, UUID), JSON.stringify({ id: UUID, other: 'bytes' }));
+
+    const dry = cli.foldArchivedFamilyDescriptors(home, { dryRun: true });
+    assert.deepStrictEqual(dry.left, [{ id: UUID, reason: 'archived-tombstone-differs' }], JSON.stringify(dry));
+    assert.deepStrictEqual(dry.retired, []);
+    assert.strictEqual(dry.pending, 0, 'detect must agree with apply');
+    const r = cli.foldArchivedFamilyDescriptors(home, {});
+    assert.deepStrictEqual(r.left, [{ id: UUID, reason: 'archived-tombstone-differs' }]);
+    assert.deepStrictEqual(r.retired, []);
+
+    const env = { HOME: home, ANTIHALL_DEVSWARM_STORE_BACKEND: BACKEND, PATH: process.env.PATH };
+    const row = doctorRepair.runRepairs({ cwd: W, env, home, dryRun: false })
+      .find((x) => x.id === 'fold-archived-family-descriptors');
+    assert.ok(row, 'doctor wires the repair');
+    assert.notStrictEqual(row.status, 'failed', JSON.stringify(row));
+    assert.match(row.msg, new RegExp(UUID.slice(0, 8) + ' \\(archived-tombstone-differs\\)'), row.msg);
+    assert.match(row.msg, /untouched on purpose/, row.msg);
+    assert.match(row.msg, /worktree still exists|already exists and differs/, row.msg);
+    assert.strictEqual(liveDesc(home, UUID), true, 'nothing retired, moved or deleted');
+    assert.deepStrictEqual(JSON.parse(fs.readFileSync(archivedPathOf(home, UUID), 'utf8')), { id: UUID, other: 'bytes' }, 'archived copy untouched');
+  } finally { rm(home); rm(W); }
+});
+
+test('GATED-b: ONE live twin named by 12 tombstones -> `left` has exactly one entry (dry-run and apply)', () => {
+  const home = tmpHome();
+  const liveWt = fs.mkdtempSync(path.join(os.tmpdir(), 'anti-hall-livewt-12-'));
+  try {
+    for (let i = 1; i <= 12; i++) {
+      const tid = 'tomb-' + String(i).padStart(2, '0');
+      writeArchivedDesc(home, tid, { id: tid, worktreePath: '/gone/wt/' + i, sessionId: UUID });
+    }
+    writeDesc(home, UUID, { id: UUID, worktreePath: liveWt, sessionId: 'live-session' });
+    const dry = cli.foldArchivedFamilyDescriptors(home, { dryRun: true });
+    assert.deepStrictEqual(dry.left, [{ id: UUID, reason: 'live-or-unprovable-worktree' }], JSON.stringify(dry));
+    assert.strictEqual(dry.scanned, 12);
+    const r = cli.foldArchivedFamilyDescriptors(home, {});
+    assert.deepStrictEqual(r.left, [{ id: UUID, reason: 'live-or-unprovable-worktree' }]);
+    assert.strictEqual(liveDesc(home, UUID), true);
+  } finally { rm(home); rm(liveWt); }
+});
+
+test('GATED-c (regression): gone worktree and NO archived copy is still retired exactly as before', () => {
+  const home = tmpHome();
+  try {
+    writeArchivedDesc(home, SLUG, { id: SLUG, worktreePath: '/gone/wt', sessionId: UUID });
+    const twin = { id: UUID, worktreePath: '/gone/wt/skyfb', sessionId: 'ec774c7f' };
+    writeDesc(home, UUID, twin);
+    const dry = cli.foldArchivedFamilyDescriptors(home, { dryRun: true });
+    assert.deepStrictEqual(dry.retired, [UUID]);
+    assert.deepStrictEqual(dry.left, []);
+    assert.strictEqual(dry.pending, 1);
+    const r = cli.foldArchivedFamilyDescriptors(home, {});
+    assert.deepStrictEqual(r.retired, [UUID]);
+    assert.strictEqual(liveDesc(home, UUID), false);
+    assert.deepStrictEqual(JSON.parse(fs.readFileSync(archivedPathOf(home, UUID), 'utf8')), twin);
+  } finally { rm(home); }
+});
+
+test('GATED-d: a genuinely pending twin that apply could not clear still yields FAILED', () => {
+  const home = tmpHome();
+  try {
+    // Stub pass: dry-run keeps reporting 1 pending (apply "errored" and cleared nothing).
+    const dw = { foldArchivedFamilyDescriptors: () => ({ ok: true, pending: 1, retired: [UUID], left: [], errors: 0 }) };
+    const row = migrationsLib.runMigrations({ home, env: { HOME: home }, cwd: process.cwd(), version: '9.9.9', dryRun: false, devswarm: dw })
+      .find((x) => x.id === 'fold-archived-family-descriptors');
+    assert.strictEqual(row.status, 'failed', JSON.stringify(row));
+    assert.match(row.msg, /still pending after migrate/);
+  } finally { rm(home); }
+});
+
+// ---------------------------------------------------------------------------
 // P1 (writer half) — descriptors persist an ABSOLUTE worktreePath.
 //
 // A relative value is only meaningful against the cwd it was registered from, a

@@ -187,7 +187,11 @@ reconcile-dual-partition-acks) are listed once in `companion/lib/migrations.js` 
 supervisor. Each is stamped done per plugin version in `~/.anti-hall/update-sweep-state.json`
 after one clean pass, so a repeat `--repair` skips it with a single marker read instead of
 re-scanning every store. Deletion-class repairs (`--repair-resurrected`) are never in that
-set — opting into `--repair` is not opting into row removal.
+set — opting into `--repair` is not opting into row removal. A twin descriptor the
+`fold-archived-family-descriptors` pass deliberately refuses to retire (its worktree still
+exists, or an archived copy already exists and differs) is not a failure: the row is
+`skipped`, lists each twin (8-char id + reason, first 10 then `+N more`) and says it was left
+untouched on purpose — check those two things if you want to resolve it by hand.
 
 **Plugin cache prune (opt-in, never automatic).** `doctor --prune-cache` lists the old
 `~/.claude/plugins/cache/anti-hall/anti-hall/<semver>/` dirs it would remove and their total

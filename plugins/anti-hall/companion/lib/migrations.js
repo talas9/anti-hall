@@ -117,7 +117,9 @@ const TERMINAL_LEFT_REASONS = new Set([
 
 function isRetryableLeft(x) {
   if (x == null || typeof x !== 'object') return false; // bare id: terminal
-  return !TERMINAL_LEFT_REASONS.has(String(x.reason || ''));
+  // An entry carrying several distinct reasons (`reasons`) is terminal only if EVERY one is.
+  const all = Array.isArray(x.reasons) && x.reasons.length ? x.reasons : [x.reason];
+  return all.some((r) => !TERMINAL_LEFT_REASONS.has(String(r || '')));
 }
 
 function countOf(v) {
@@ -270,8 +272,12 @@ const MIGRATIONS = [
       // set `pending` (apply cannot clear them).
       const leftN = Array.isArray(r.left) ? r.left.length : 0;
       const errN = r.errors || 0;
-      const notice = (leftN ? leftN + ' twin descriptor(s) left in place (safety-gated: '
-          + r.left.map((x) => (x && x.reason) || 'unknown').join(', ') + ')' : '')
+      // Name each distinct twin (8-char id + reason), capped, so a human can review.
+      const shown = (leftN ? r.left.slice(0, 10).map((x) => String((x && x.id) || '?').slice(0, 8)
+          + ' (' + (x && Array.isArray(x.reasons) && x.reasons.length ? x.reasons.join(', ') : ((x && x.reason) || 'unknown')) + ')') : [])
+        .join(', ') + (leftN > 10 ? ', +' + (leftN - 10) + ' more' : '');
+      const notice = (leftN ? leftN + ' twin descriptor(s) left in place (safety-gated, untouched on purpose; nothing was retired, moved or deleted): '
+          + shown + '. To review: check whether the twin\'s worktree still exists, or whether archived/<id>.json already exists and differs from the active descriptor' : '')
         + (errN ? (leftN ? '; ' : '') + errN + ' error(s)' : '')
         + (r.ok === false ? ((leftN || errN) ? '; ' : '') + 'pass did NOT complete: ' + (r.error || 'unknown') : '');
       return {

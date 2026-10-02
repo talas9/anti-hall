@@ -3331,7 +3331,13 @@ a run that raised reports `ok:false`. Reporting only the retire count made every
 refusal indistinguishable from "nothing to migrate" — the same success-while-dropping-part-
 of-the-job shape §28 names as the worst failure mode. Refusals do NOT set `pending`, since
 apply cannot clear them and claiming otherwise would report "still pending after migrate"
-forever.
+forever. The dry-run classification therefore applies the SAME never-clobber check as apply
+(`archivedTombstoneDiffers` in `fold.js`): a twin whose `archived/<id>.json` already exists
+at a different inode is `left` (`archived-tombstone-differs`), never counted pending. `left`
+is de-duplicated per twin id (one live twin named by N tombstones is one entry; distinct
+reasons are kept in `reasons[]`), and the doctor row lists up to 10 ids (8-char form) with
+their reason, then `+N more` — a skipped/needs-review row, never `failed`. `failed` is
+reserved for a twin that is still pending after apply.
 
 ---
 

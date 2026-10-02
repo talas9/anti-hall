@@ -6,6 +6,12 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## Unreleased
+
+### Fixed
+
+- `doctor --repair` no longer reports `fold-archived-family-descriptors` as FAILED on every run when leftover twin descriptors are deliberately left alone for safety (their worktree still exists, or an archived copy already exists and differs). The row now lists each such twin once (short id + reason), says it was left untouched on purpose and what to check, and nothing is retired, moved or deleted.
+
 ## 0.121.3 (2026-10-02)
 
 ### Fixed

@@ -1801,6 +1801,22 @@ function foldArchivedFamilyDescriptors(home, ctx0) {
       for (const x of r.retired) out.retired.push(String(x));
       for (const x of r.left) out.left.push(x);
     }
+    // ONE twin is reachable from many tombstones (a live descriptor named by 12
+    // archived ones was counted 12 times). Report per twin id: first-seen order,
+    // each distinct reason kept; an id retired via any tombstone is not `left`.
+    out.retired = Array.from(new Set(out.retired));
+    const retiredSet = new Set(out.retired);
+    const leftById = new Map();
+    for (const x of out.left) {
+      const id = String((x && x.id) != null ? x.id : x);
+      if (retiredSet.has(id)) continue;
+      const reason = String((x && x.reason) || 'unknown');
+      const prev = leftById.get(id);
+      if (!prev) leftById.set(id, { id, reasons: [reason] });
+      else if (!prev.reasons.includes(reason)) prev.reasons.push(reason);
+    }
+    out.left = Array.from(leftById.values(), (e) => (e.reasons.length > 1
+      ? { id: e.id, reason: e.reasons[0], reasons: e.reasons } : { id: e.id, reason: e.reasons[0] }));
     if (!budgetExhausted) writeFoldArchivedFamilyResume(home, []);
     out.pending = out.retired.length;
     return out;

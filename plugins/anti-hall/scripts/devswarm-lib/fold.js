@@ -2257,6 +2257,20 @@ function foldMeshDuplicates(home, ctx) {
 // be retired land in `retired`, nothing is linked, unlinked, or locked.
 // `opts.requireWorktreeGone` (P0-3): demand POSITIVE liveness evidence before
 // retiring. Used by the MIGRATION path only — see foldArchivedFamilyDescriptors.
+// archivedTombstoneDiffers(activePath, archivedPath) — the ONE never-clobber
+// predicate, shared by the apply path and the dry-run classification so detect()
+// can never count as pending a twin that apply will refuse. True iff an archived
+// copy already exists at a DIFFERENT inode than the active descriptor (equal
+// bytes at another inode is equally not ours to clobber). No archived copy at
+// all is false (apply would hardlink one). Throws on any other fs error.
+function archivedTombstoneDiffers(activePath, archivedPath) {
+  let b;
+  try { b = fs.lstatSync(archivedPath); }
+  catch (e) { if (e && e.code === 'ENOENT') return false; throw e; }
+  const a = fs.lstatSync(activePath);
+  return a.dev !== b.dev || a.ino !== b.ino;
+}
+
 function retireIdentityFamilyDescriptors(home, archivedId, desc, opts) {
   const dryRun = !!(opts && opts.dryRun);
   const requireWorktreeGone = !!(opts && opts.requireWorktreeGone);
@@ -2300,9 +2314,17 @@ function retireIdentityFamilyDescriptors(home, archivedId, desc, opts) {
         out.left.push({ id: tid, reason: 'live-or-unprovable-worktree' });
         continue;
       }
-      if (dryRun) { out.retired.push(tid); continue; }
       const activePath = descriptorPath(home, tid);
       const archivedPath = path.join(archiveDirState.path, tid + '.json');
+      if (dryRun) {
+        // Same never-clobber gate apply enforces below: a twin apply would refuse
+        // is `left`, never `retired` (else detect() reports it pending forever).
+        let differs = false;
+        try { differs = archivedTombstoneDiffers(activePath, archivedPath); } catch (_) { differs = false; }
+        if (differs) out.left.push({ id: tid, reason: 'archived-tombstone-differs' });
+        else out.retired.push(tid);
+        continue;
+      }
       const before = scanFp.get(tid);
       const r = withIdLock(tid, home, () => {
         try {
@@ -2320,8 +2342,7 @@ function retireIdentityFamilyDescriptors(home, archivedId, desc, opts) {
           try { fs.linkSync(activePath, archivedPath); }
           catch (e) { if (!e || e.code !== 'EEXIST') throw e; }
           const a = fs.lstatSync(activePath);
-          const b = fs.lstatSync(archivedPath);
-          if (a.dev !== b.dev || a.ino !== b.ino) {
+          if (archivedTombstoneDiffers(activePath, archivedPath)) {
             // A pre-existing tombstone holding DIFFERENT bytes — or the SAME bytes
             // at a DIFFERENT inode, which is equally not ours to clobber. Never
             // overwrite and never unlink — leave the twin live and say so.
