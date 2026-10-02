@@ -22,6 +22,7 @@ Other `git` requests happen only when you run them: `/anti-hall:update` pulls fr
 
 - `~/.anti-hall/`: settings, skip file, caches, and logs. The Jev decision log holds hashes and verdicts, not prompt text. Optional redacted snippets (at most 200 characters) are off unless you enable `jev.audit.snippets`. The decision log rotates at 2 MB, and per-session state files are pruned after 7 days. Defect reports stay local.
 - `<repo>/.anti-hall/`: progress notes, history ledgers and handovers, which can quote your session.
+- Your account email: the optional statusline reads it from Claude Code's own `~/.claude.json` to show it in the status bar. It is displayed only, never sent anywhere. Hide it with `statusline.noEmail` (`ANTIHALL_STATUSLINE_NO_EMAIL=1`).
 
 ## Jev fallback transport
 
