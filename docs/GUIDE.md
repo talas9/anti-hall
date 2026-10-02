@@ -660,8 +660,8 @@ Moved from plugins/anti-hall/README.md "Contributing" (v0.107.0 doc sweep).
   authority (the marketplace entry carries no `version`); without a bump, installed
   users do not receive the update. Add a `CHANGELOG.md` entry.
 - **Keep hooks pure Node (built-ins only)** and fail-open, so they run unchanged on
-  macOS and Linux (CI-tested) and never wedge a turn. Windows is untested and not
-  officially supported (v0.69.0 dropped it from the CI matrix); avoid POSIX-only calls
+  macOS and Linux (CI-tested) and never wedge a turn. Windows is not
+  supported (v0.69.0 dropped it from the CI matrix); avoid POSIX-only calls
   regardless, since pure-Node code may still work there.
 
 ### Recommended optional: oh-my-claudecode (OMC)
