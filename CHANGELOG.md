@@ -6,6 +6,24 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.121.1 (2026-10-02)
+
+### Added
+
+- **Jev: an optional backup vendor, `jev.fallbackTransport` (`none|vercel|typesafe`).** It retries once when the primary times out, returns a server error, or is rate-limited or out of balance. It never retries on a rejected key. A per-vendor circuit breaker skips a failing vendor; when both vendors are failing, Jev is skipped. The docs note that the two vendors likely share a backend, so this is not full redundancy.
+- **jev-setup `enable --fallback`.**
+- **Jev reporting:** every decision records the vendor that served it, and whether the backup was used. The report and the weekly scorecard break down per vendor. The Vercel per-request cost is read.
+
+### Changed
+
+- **Jev keys are vendor-bound:** `jev_vercel_api_key` and `jev_typesafe_api_key`. The legacy `jev_api_key` is bound to the vendor in the home-only setting `jev.genericKeyVendor` (default vercel), which is changed with `jev-setup bind-generic-key`. A key is never sent to a vendor it was not entered for. **Behaviour change:** a generic key used with the typesafe transport is no longer sent until it is bound, or re-entered as the vendor key.
+- **Jev: requests refuse redirects.** Secret redaction now happens once, inside the client. Error bodies are never logged.
+- **jev-setup reads and writes the effective configuration.** `enable` previously wrote a file that a newer settings file overrode. `status` warns when the two config files disagree, and doctor checks it. The balance is shown per vendor ("n/a" where a vendor has no balance endpoint). `set-key` no longer prints the key length.
+
+### Fixed
+
+- **Silent-agent warning:** agents launched far back in a long transcript are now seen. A queued follow-up message no longer counts as the agent having finished. A resumed agent is tracked from the time of the resume.
+
 ## 0.121.0 (2026-10-02)
 
 ### Changed
