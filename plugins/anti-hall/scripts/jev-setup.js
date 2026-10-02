@@ -129,8 +129,8 @@ function resolveTransport(cfg, override) {
 // the transport's own default path.
 function resolveKeyFilePath(cfg, transport) {
   // The explicit jev.keyFile is ambiguous (not named for a vendor), so it counts
-  // only for the vendor the legacy generic key is bound to (settings.json
-  // jev.transport, home-only); every other vendor uses its own default path.
+  // only for the vendor the legacy generic key is bound to (the home-only
+  // setting jev.genericKeyVendor); every other vendor uses its own default path.
   if (typeof cfg.keyFile === 'string' && cfg.keyFile.trim()
     && require('../hooks/lib/credentials.js').genericKeyVendor() === transport) {
     return expandHome(cfg.keyFile.trim());
