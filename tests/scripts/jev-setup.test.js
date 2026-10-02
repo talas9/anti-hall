@@ -465,12 +465,12 @@ test('enable --fallback records the backup; equal-to-primary reads as none; bad 
 test('status shows primary + fallback and key presence for each (yes/no only)', () => {
   const { home } = makeHome();
   run(['enable', '--transport', 'typesafe', '--fallback', 'vercel'], { home });
-  let r = run(['status'], { home, env: { CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'primary-secret' } });
+  let r = run(['status'], { home, env: { CLAUDE_PLUGIN_OPTION_JEV_TYPESAFE_API_KEY: 'primary-secret' } });
   assert.match(r.stdout, /transport: typesafe/);
   assert.match(r.stdout, /key present: yes/);
   assert.match(r.stdout, /fallback transport: vercel/);
   assert.match(r.stdout, /fallback key present: no/);
-  r = run(['status'], { home, env: { CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'primary-secret', CLAUDE_PLUGIN_OPTION_JEV_VERCEL_API_KEY: 'fb-secret' } });
+  r = run(['status'], { home, env: { CLAUDE_PLUGIN_OPTION_JEV_TYPESAFE_API_KEY: 'primary-secret', CLAUDE_PLUGIN_OPTION_JEV_VERCEL_API_KEY: 'fb-secret' } });
   assert.match(r.stdout, /fallback key present: yes/);
   assert.doesNotMatch(r.stdout, /primary-secret|fb-secret/);
 });
@@ -497,7 +497,7 @@ test('test: with a fallback configured, BOTH transports are tested on their own'
       const { execFile } = require('node:child_process');
       execFile(process.execPath, [SCRIPT, 'test'], {
         env: Object.assign({}, process.env, {
-          HOME: home, CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'k1', CLAUDE_PLUGIN_OPTION_JEV_VERCEL_API_KEY: 'k2',
+          HOME: home, CLAUDE_PLUGIN_OPTION_JEV_TYPESAFE_API_KEY: 'k1', CLAUDE_PLUGIN_OPTION_JEV_VERCEL_API_KEY: 'k2',
           ANTIHALL_JEV_TEST_ENDPOINT_TYPESAFE: ua, ANTIHALL_JEV_TEST_ENDPOINT_VERCEL: ub,
         }),
       }, (err, stdout) => resolve({ code: err ? err.code : 0, stdout }));

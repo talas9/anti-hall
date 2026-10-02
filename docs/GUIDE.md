@@ -835,7 +835,7 @@ wired resolver.
   `~/.anti-hall/settings.json` → a value set via Claude Code's native `/config` panel
   (every non-advanced setting, plus the DevSwarm auto-archive tuning pair, is declared in
   `plugin.json`'s `userConfig` so it shows up there; shown as Source `/config`) → a legacy per-feature config file
-  (e.g. `~/.anti-hall/jev.json`) → the schema default. `show`'s Source column tells you
+  (e.g. `~/.anti-hall/jev.json`) → the schema default. (Transitional exception, `settings.js` `resolveBelowFile`: until the one-time legacy forward-migration is stamped for the installed plugin version, a legacy `jev.json` value ranks ABOVE a `/config` value, so a pre-existing `jev.json` is not masked by `/config`'s own manifest default; after the stamp the order is as written.) `show`'s Source column tells you
   which tier answered a given row. Safety keys read through this SAME chain — there is
   no special-cased ignore rule for them (see below).
 - **Known limitation (`/config`):** a `/config` value that equals the manifest default
@@ -975,6 +975,7 @@ Generated from `hooks/lib/settings-schema.js` (a hygiene test keeps this table a
 | `jev.judgeModel` | `claude-haiku-4-5` | `ANTIHALL_JUDGE_MODEL` | Model used for speculation-judge / jev-triage LLM calls. |
 | `jev.semanticJudge` | `false` | `ANTIHALL_SEMANTIC_JUDGE` | Enable the semantic speculation-judge hook (off = hook no-ops). |
 | `jev.allowLegacyKeyRead` adv safety | `false` | — | SAFETY, home-settings only (`~/.anti-hall/settings.json`; no env or project override). Opt-in: read the Jev key from `AI_GATEWAY_API_KEY` / `TYPESAFE_API_KEY` env vars and the key file. Default off: only the `jev_api_key` plugin option is used. Needed for background tools and Codex (see "Where a stored key is visible"). |
+| `jev.genericKeyVendor` adv safety | `vercel` (vercel/typesafe) | — | SAFETY, home-settings only (`~/.anti-hall/settings.json`; no env, `/config` or legacy-file route). The ONE vendor the legacy generic `jev_api_key` plugin option and `jev.keyFile` are bound to: they carry no vendor name, so they are never sent to any other vendor, whatever `jev.transport` / `jev.fallbackTransport` say (`jev.transport` does NOT decide this, because `enable --transport` rewrites it). Vendor-named keys (`jev_vercel_api_key`, `jev_typesafe_api_key`) need no binding. Change only with `jev-setup.js bind-generic-key --vendor <v>` (a deliberate human command). An existing install with a typesafe transport and a generic key is never auto-bound: it stays on `vercel`, so the generic key is refused for typesafe, and a one-time notice says how to bind or to enter a typesafe key. |
 | `jev.keyFile` adv | — | — | Credential key-file path (default depends on transport). |
 | `jev.timeoutMs` adv | `1500` [1..3000] | — | Per-call timeout (ms), capped at 3000. |
 | `jev.confidenceThreshold` adv | `0.85` [0..1] | — | Minimum confidence for a Jev answer to be trusted by callers. |

@@ -91,19 +91,19 @@ function readKeyFile(keyPath, home) {
   }
 }
 
-// genericKeyVendor(opts) -> the ONE vendor the ambiguous generic jev_api_key
-// (shipped before keys were vendor-named) is bound to. Decided ONLY from the
-// home settings file (~/.anti-hall/settings.json jev.transport); no jev.transport
-// there -> the schema default. NEVER from env, a /config plugin option or a
-// project file: those can be flipped from outside, and the key must stay with
-// the vendor it was entered for.
+// genericKeyVendor(opts) -> the ONE vendor the ambiguous generic jev_api_key and
+// jev.keyFile (no vendor in their name) are bound to. Read ONLY from the
+// homeOnly setting jev.genericKeyVendor (~/.anti-hall/settings.json; default
+// vercel): never from env, a /config plugin option, a project file, and NEVER
+// from jev.transport, which a normal `enable --transport` rewrites and an
+// env/plugin-option flip can change. Only `jev-setup.js bind-generic-key`
+// re-binds it.
 function genericKeyVendor(o) {
   try {
     const opts = o || {};
     const home = opts.home || require('../../companion/lib/test-home-guard.js').resolveHome(undefined, opts.env);
-    const jev = require('./settings.js').load({ home }).jev;
-    const t = jev && typeof jev === 'object' ? jev.transport : undefined;
-    return (t === 'vercel' || t === 'typesafe') ? t : DEFAULT_VENDOR;
+    const v = require('./settings.js').get('jev', 'genericKeyVendor', DEFAULT_VENDOR, { home, env: {} });
+    return (v === 'vercel' || v === 'typesafe') ? v : DEFAULT_VENDOR;
   } catch (_) {
     return DEFAULT_VENDOR;
   }
@@ -131,7 +131,8 @@ function resolveKey(kind, o) {
     if (generic) {
       const bound = genericKeyVendor(opts);
       if (bound === vendor) return { key: generic, source: 'plugin-option' };
-      diagnostic = OPTION_NAME.jev + ' is bound to ' + bound + '; set ' + VENDOR_OPTION_NAME[vendor] + ' for ' + vendor;
+      diagnostic = OPTION_NAME.jev + ' is bound to ' + bound + '; set ' + VENDOR_OPTION_NAME[vendor] + ' for ' + vendor
+        + ' (or re-bind the generic key deliberately: jev-setup.js bind-generic-key --vendor ' + vendor + ')';
     }
   } else {
     const fromOption = nonEmpty(env[OPTION_ENV[kind]]);
@@ -236,15 +237,33 @@ function sessionNotice(o) {
       if (allowLegacyKeyRead(k, { home, env: opts.env })) continue;
       if (legacyKeyPresent(k, { env: opts.env, transport: cfg.transport, keyFile: cfg.keyFile || jc.defaultKeyFilePath(cfg.transport) })) pending.push(k);
     }
-    if (!pending.length) return null;
+    // One-time, report-only: a generic key (jev.keyFile, or the generic plugin
+    // option: presence only) on an install whose HOME jev.transport is typesafe
+    // while jev.genericKeyVendor was never recorded. We do NOT guess a binding
+    // (that would send a key to a vendor it may not belong to): the generic key
+    // stays bound to the default vendor until the user binds it explicitly.
+    let bindingNote = null;
+    if (jevOn && !shown.jevBinding) {
+      const store = settings.load({ home });
+      const jevStore = (store && store.jev && typeof store.jev === 'object') ? store.jev : {};
+      const env = opts.env || process.env;
+      if (jevStore.transport === 'typesafe' && jevStore.genericKeyVendor === undefined
+        && (cfg.keyFile || nonEmpty(env[OPTION_ENV.jev]))) {
+        bindingNote = 'your generic Jev key (jev_api_key / jev.keyFile) is bound to ' + DEFAULT_VENDOR + ' and is NOT sent to typesafe. '
+          + 'Enter a typesafe key (jev-setup.js set-key --transport typesafe, or jev_typesafe_api_key in /plugin config), '
+          + 'or, if that generic key is a typesafe key, bind it: jev-setup.js bind-generic-key --vendor typesafe.';
+      }
+    }
+    if (!pending.length && !bindingNote) return null;
 
     const next = { shown: Object.assign({}, shown) };
     for (const k of pending) next.shown[k] = Date.now();
+    if (bindingNote) next.shown.jevBinding = Date.now();
     fs.mkdirSync(path.dirname(stateFile), { recursive: true });
     const tmp = stateFile + '.' + process.pid + '.tmp';
     fs.writeFileSync(tmp, JSON.stringify(next) + '\n', 'utf8');
     fs.renameSync(tmp, stateFile);
-    return 'anti-hall (shown once): ' + pending.map((k) => migrationNotice(k)).join(' ');
+    return 'anti-hall (shown once): ' + pending.map((k) => migrationNotice(k)).concat(bindingNote ? [bindingNote] : []).join(' ');
   } catch (_) {
     return null;
   }

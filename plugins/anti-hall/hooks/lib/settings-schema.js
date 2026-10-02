@@ -45,7 +45,8 @@
 //                //   (turning a guard off); 'on' = risky when set to true
 //                //   (turning a bypass on); 'add' = risky when the new csv
 //                //   value adds a token the current value doesn't have
-//                //   (widening an allow-list).
+//                //   (widening an allow-list); 'change' = risky when the new
+//                //   value differs from the current one (re-targeting a credential).
 //   safetyNote,  // locked only: one plain sentence stating the CONSEQUENCE
 //                // of the risky change — "what stops happening" (off/on) or
 //                // what becomes possible (add) — used to build the warning
@@ -217,6 +218,7 @@ const SECTIONS = [
       { key: 'judgeModel', type: 'string', pluginOption: 'jev_judge_model', default: 'claude-haiku-4-5', env: 'ANTIHALL_JUDGE_MODEL', description: 'Model used for speculation-judge / jev-triage LLM calls.' },
       { key: 'semanticJudge', type: 'boolean', default: false, env: 'ANTIHALL_SEMANTIC_JUDGE', pluginOption: 'jev_semantic_judge', description: 'Enable the semantic speculation-judge hook (off = hook no-ops).' },
       { key: 'allowLegacyKeyRead', type: 'boolean', default: false, advanced: true, homeOnly: true, locked: true, safetyDirection: 'on', safetyNote: 'anti-hall would read the Jev gateway key (AI_GATEWAY_API_KEY / TYPESAFE_API_KEY env vars and the key file) from this machine instead of only the jev_api_key plugin option', description: 'SAFETY, home-settings only (no env / project override). Opt-in: let anti-hall read the Jev key from AI_GATEWAY_API_KEY / TYPESAFE_API_KEY env vars and the key file (jev.keyFile or the default path) — the only way background tools (CLI, finding-dedup, jev-report) and Codex (no plugin options) see a key. Default off: only the jev_api_key plugin option is used. [read by: hooks/lib/credentials.js]' },
+      { key: 'genericKeyVendor', type: 'enum', values: ['vercel', 'typesafe'], default: 'vercel', advanced: true, homeOnly: true, locked: true, safetyDirection: 'change', safetyNote: 'the generic jev_api_key plugin option and jev.keyFile would be sent to the other vendor (they carry no vendor name, so anti-hall sends them only to this one)', description: 'SAFETY, home-settings only (no env / plugin option / legacy file). The ONE vendor the legacy generic jev_api_key and jev.keyFile are bound to; they are never sent to any other vendor, whatever jev.transport or jev.fallbackTransport say. Vendor-named keys (jev_vercel_api_key / jev_typesafe_api_key) need no binding. Change it only with `jev-setup.js bind-generic-key --vendor <v>`.' },
       { key: 'keyFile', type: 'string', default: '', legacy: { file: 'jev.json', key: 'keyFile' }, advanced: true, description: 'Credential key-file path (default depends on transport).' },
       { key: 'timeoutMs', type: 'number', min: 1, max: 3000, default: 1500, legacy: { file: 'jev.json', key: 'timeoutMs' }, advanced: true, description: 'Per-call timeout (ms), capped at 3000.' },
       { key: 'confidenceThreshold', type: 'number', min: 0, max: 1, default: 0.85, legacy: { file: 'jev.json', key: 'confidenceThreshold' }, advanced: true, description: 'Minimum confidence for a Jev answer to be trusted by callers.' },

@@ -8,6 +8,7 @@
 //   node plugins/anti-hall/scripts/jev-setup.js enable [--transport vercel|typesafe] [--fallback vercel|typesafe|none]
 //   node plugins/anti-hall/scripts/jev-setup.js disable
 //   node plugins/anti-hall/scripts/jev-setup.js set-key [--transport vercel|typesafe] [--role fallback]   (key read from STDIN)
+//   node plugins/anti-hall/scripts/jev-setup.js bind-generic-key --vendor vercel|typesafe   (re-bind the legacy generic key / jev.keyFile)
 //   node plugins/anti-hall/scripts/jev-setup.js test
 //   node plugins/anti-hall/scripts/jev-setup.js mode <integration> on|shadow|off
 //
@@ -219,6 +220,7 @@ function parseArgs(argv) {
     if (a === '--transport') opts.transport = argv[++i];
     else if (a === '--fallback') opts.fallback = argv[++i];
     else if (a === '--role') opts.role = argv[++i];
+    else if (a === '--vendor') opts.vendor = argv[++i];
     else if (a === '--days') opts.days = argv[++i];
     else opts._.push(a);
   }
@@ -262,6 +264,9 @@ async function cmdStatus() {
     }
   } catch (_) { /* report-only */ }
   console.log(`key present: ${present ? 'yes' : 'no'}`);
+  if (cfg.keyFile || process.env.CLAUDE_PLUGIN_OPTION_JEV_API_KEY) {
+    console.log(`generic key (jev_api_key / jev.keyFile) bound to: ${require('../hooks/lib/credentials.js').genericKeyVendor()} (change only with bind-generic-key)`);
+  }
   const fallback = resolveFallback(cfg, transport);
   console.log(`fallback transport: ${fallback}`);
   if (fallback !== 'none') {
@@ -330,11 +335,36 @@ function cmdEnable(opts) {
   if (!setJev('enabled', true)) return;
   if (transportOverride && !setJev('transport', transportOverride)) return;
   if (opts.fallback !== undefined && !setJev('fallbackTransport', opts.fallback)) return;
+  // Never re-bind the generic key here: warn when the vendor just chosen has no
+  // key of its own and the generic key / jev.keyFile belongs to the other one.
+  for (const v of [transportOverride, opts.fallback]) warnUnboundVendor(v);
   const next = effectiveCfg();
   console.log(`jev enabled (transport: ${resolveTransport(next)}, fallback: ${resolveFallback(next, resolveTransport(next))})`);
   if (opts.fallback !== undefined && resolveFallback(next, resolveTransport(next)) === 'none' && opts.fallback !== 'none') {
     console.log('note: a fallback equal to the primary transport is treated as none');
   }
+}
+
+// warnUnboundVendor(v) — v was just chosen as primary/fallback. If no key bound
+// to v is visible to this process and the legacy generic key / jev.keyFile is
+// bound to the OTHER vendor, say so; the binding is never changed here.
+function warnUnboundVendor(v) {
+  if (!VALID_TRANSPORTS.has(v)) return;
+  const cr = require('../hooks/lib/credentials.js');
+  const bound = cr.genericKeyVendor();
+  if (bound === v || keyPresent(effectiveCfg(), v)) return;
+  console.log(`warning: no key for ${v} is visible to this process, and the stored generic key (jev_api_key / jev.keyFile) is bound to ${bound}, so it will NOT be sent to ${v}. `
+    + `Enter a key for ${v} with \`set-key --transport ${v}\`, or set ${cr.VENDOR_OPTION_NAME[v]} in /plugin config. (To deliberately re-bind the generic key: bind-generic-key --vendor ${v}.)`);
+}
+
+function cmdBindGenericKey(opts) {
+  if (!VALID_TRANSPORTS.has(opts.vendor)) {
+    fail('bind-generic-key: --vendor vercel|typesafe is required');
+    return;
+  }
+  const r = require('../hooks/lib/settings.js').set('jev', 'genericKeyVendor', opts.vendor, { confirmed: true });
+  if (!r.ok) { fail(`could not set jev.genericKeyVendor: ${r.error || r.warning || 'unknown error'}`); return; }
+  console.log(`jev.genericKeyVendor = ${opts.vendor}: the generic jev_api_key and jev.keyFile are now sent only to ${opts.vendor}, never to the other vendor (written to ~/.anti-hall/settings.json).`);
 }
 
 function cmdDisable() {
@@ -507,13 +537,14 @@ async function main() {
     case 'enable': return cmdEnable(opts);
     case 'disable': return cmdDisable();
     case 'set-key': return cmdSetKey(opts);
+    case 'bind-generic-key': return cmdBindGenericKey(opts);
     case 'test': return cmdTest();
     case 'mode': return cmdMode(opts);
     case 'review-due': return cmdReviewDue(opts);
     case 'reviewed': return cmdReviewed(opts);
     case 'snooze': return cmdSnooze(opts);
     default:
-      console.error('usage: jev-setup.js status|enable [--transport vercel|typesafe] [--fallback T]|disable|set-key [--transport vercel|typesafe] [--role fallback]|test|mode <integration> on|shadow|off|review-due [--json]|reviewed <integration>|snooze <integration> --days N');
+      console.error('usage: jev-setup.js status|enable [--transport vercel|typesafe] [--fallback T]|disable|set-key [--transport vercel|typesafe] [--role fallback]|bind-generic-key --vendor V|test|mode <integration> on|shadow|off|review-due [--json]|reviewed <integration>|snooze <integration> --days N');
       process.exitCode = 1;
   }
 }

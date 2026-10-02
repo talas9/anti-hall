@@ -14,7 +14,11 @@
 //                           pluginConfigs["anti-hall"].options (other
 //                           processes never get the env var reliably)
 //   4. legacy source      — the pre-settings.json config file this value used
-//                           to live in (e.g. ~/.anti-hall/jev.json)
+//                           to live in (e.g. ~/.anti-hall/jev.json). TRANSITIONAL
+//                           EXCEPTION: until the one-time legacy forward-migration is
+//                           stamped for this plugin version, tier 4 is read BEFORE
+//                           tier 3 (see resolveBelowFile) so an existing jev.json is
+//                           not masked by /config's own manifest default.
 //   5. default            — the `dflt` argument, else the schema's own default
 //
 // LOCKED (safety) keys read through this SAME chain, no special-casing —
@@ -303,6 +307,8 @@ function readLegacy(entry, opts) {
 //           boolean entry when `safetyDirection` is omitted.
 //   'on'  — risky when the new value is `true` (turning a bypass ON);
 //           turning it off needs no confirmation.
+//   'change' — risky when the new value differs from the current one (re-targeting
+//           a bound credential, e.g. jev.genericKeyVendor).
 //   'add' — risky when the new csv value ADDS at least one token not already
 //           in the current effective value (widening an allow-list); a
 //           removal-only or no-op change needs no confirmation.
@@ -329,6 +335,7 @@ function addedTokens(newValue, currentValue) {
 function isRiskyChange(entry, value, currentValue) {
   const dir = entry.safetyDirection || 'off';
   if (dir === 'on') return value === true;
+  if (dir === 'change') return value !== currentValue; // any re-targeting of a bound credential
   if (dir === 'add') return addedTokens(value, currentValue).length > 0;
   return value === false;
 }
@@ -340,6 +347,7 @@ function safetyWarning(entry, value, currentValue) {
     const list = added.length ? added.join(', ') : String(value);
     return 'Adding ' + list + ' to edit-guard\'s allow list means ' + note + '. Ask the user to confirm, then re-run with --confirmed.';
   }
+  if (dir === 'change') return 'Changing ' + guardNameFor(entry) + ' means ' + note + '. Ask the user to confirm, then re-run with --confirmed.';
   const verb = dir === 'on' ? 'on' : 'off';
   return 'Turning ' + verb + ' ' + guardNameFor(entry) + ' means ' + note + '. Ask the user to confirm, then re-run with --confirmed.';
 }

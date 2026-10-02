@@ -149,7 +149,7 @@ test('P1: a vendor-named key outranks the generic one and survives a transport f
 test('P1: credentials.resolveKey never returns the generic key for a vendor it is not bound to', () => {
   const h = makeHome();
   try {
-    h.writeState('settings.json', { jev: { transport: 'typesafe' } });
+    h.writeState('settings.json', { jev: { transport: 'vercel', genericKeyVendor: 'typesafe' } });
     for (const k of ENV_KEYS) delete process.env[k];
     const cred = fresh() && require(path.join(HOOKS, 'credentials.js'));
     const env = { CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'g' };
@@ -158,8 +158,8 @@ test('P1: credentials.resolveKey never returns the generic key for a vendor it i
     const other = cred.resolveKey('jev', { vendor: 'vercel', env, home: h.home });
     assert.strictEqual(other.key, null);
     assert.match(other.diagnostic, /bound to typesafe; set jev_vercel_api_key for vercel/);
-    // an env transport value never changes the binding
-    assert.strictEqual(cred.genericKeyVendor({ home: h.home, env: { CLAUDE_PLUGIN_OPTION_JEV_TRANSPORT: 'vercel', ANTIHALL_JEV_TRANSPORT: 'vercel' } }), 'typesafe');
+    // neither the home jev.transport nor an env/plugin-option value changes the binding
+    assert.strictEqual(cred.genericKeyVendor({ home: h.home, env: { CLAUDE_PLUGIN_OPTION_JEV_GENERIC_KEY_VENDOR: 'vercel', ANTIHALL_JEV_GENERIC_KEY_VENDOR: 'vercel' } }), 'typesafe');
   } finally { h.cleanup(); }
 });
 

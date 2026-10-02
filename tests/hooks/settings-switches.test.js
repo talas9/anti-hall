@@ -116,7 +116,7 @@ const LOCKED_KEYS = [
 // /config row on purpose (a project env block or a plugin option must never be
 // able to widen where a key is read from), so they are exempt from the
 // /config-row + env checks below.
-const HOME_ONLY_LOCKED_KEYS = ['guards.allowAnthropicEnvKey', 'jev.allowLegacyKeyRead'];
+const HOME_ONLY_LOCKED_KEYS = ['guards.allowAnthropicEnvKey', 'jev.allowLegacyKeyRead', 'jev.genericKeyVendor'];
 
 // Exact warning text per key (owner-specified wording, 2026-09-25 revision):
 // the template states the CONSEQUENCE of the risky change, not a generic

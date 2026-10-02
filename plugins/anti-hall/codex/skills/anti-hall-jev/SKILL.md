@@ -72,9 +72,12 @@ again (state: `~/.anti-hall/cache/jev-breaker.json`).
   `jev_vercel_api_key` and `jev_typesafe_api_key` plugin options (or, with `jev.allowLegacyKeyRead`,
   `jev-setup.js set-key --transport <vendor>` writing that vendor's key file, `~/.config/vercel/ai-gateway-key` or
   `~/.config/typesafe/key`; `--role fallback` is an alias for the fallback vendor). The older generic `jev_api_key`
-  still works but is bound to ONE vendor: the `jev.transport` in `~/.anti-hall/settings.json` (vercel when unset),
-  never an env or `/config` value; for any other vendor it is refused with a "jev_api_key is bound to X; set
-  jev_<Y>_api_key" diagnostic. So an env/plugin-option flip of `jev.transport` cannot redirect a key.
+  (and an explicit `jev.keyFile`) still work but are bound to ONE vendor: the home-only setting
+  `jev.genericKeyVendor` (default vercel; never `jev.transport`, never env or `/config`); for any other vendor they
+  are refused with a "jev_api_key is bound to X; set jev_<Y>_api_key" diagnostic. `enable --transport V` warns when
+  V has no key of its own and the generic key is bound elsewhere, and never re-binds. Re-bind deliberately with
+  `jev-setup.js bind-generic-key --vendor <v>`. So neither a transport change nor an env/plugin-option flip can
+  redirect a key.
 - `status` shows both transports and whether a key is visible for each (yes/no only); `test` tests each
   transport on its own.
 - NOT full redundancy: the two routes very likely reach the SAME TypeSafe model (inference from the model ids
