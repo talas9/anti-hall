@@ -6,6 +6,17 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.121.0 (2026-10-02)
+
+### Changed
+
+- **Internal: `scripts/devswarm.js` is split.** It is now a dispatcher (about 80 KB) plus 15 modules under `scripts/devswarm-lib/` (the largest is about 156 KB). It is a pure move: the export surface (198 names), the CLI behaviour and the help output are unchanged. Every file is now under 256 KiB, and a hygiene test enforces that.
+- **Note for anyone patching the plugin locally:** the verb implementations moved to `devswarm-lib/`.
+
+### Tests
+
+- The mutation kit and the source-text checks treat the dispatcher plus `devswarm-lib` as one source unit. An export-surface snapshot test was added.
+
 ## 0.120.15 (2026-10-02)
 
 ### Fixed
