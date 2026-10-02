@@ -120,11 +120,17 @@ Node, not a discovery root.)
 
 ## CI matrix
 
-`.github/workflows/test.yml` runs the suite on every push and pull request across
-the full matrix:
+`.github/workflows/test.yml` runs the suite on pull requests, on pushes to `main`
+and on `rc-v*` candidate tags; a `v*` release tag does not trigger it. The `rc-v*`
+run is the release gate and uses the full matrix; `main` and pull requests use a
+reduced one:
 
 - **OS:** `ubuntu-latest`, `macos-latest` (Windows is not supported)
 - **Node:** `22.x`, `24.x` (Node 22 is the minimum)
+- **rc-v\* tags:** ubuntu x Node 22/24 and macOS x Node 22/24, each cell split with
+  `node --test --test-shard=i/n` (3 shards per ubuntu cell, 2 per macOS cell).
+- **main and pull requests:** ubuntu x Node 22/24 plus macOS x Node 24 only, sharded
+  the same way.
 
-with `fail-fast: false` so one cell's failure does not mask the others. Each cell
-checks out, sets up Node, and runs `node --test`.
+with `fail-fast: false` so one shard's failure does not mask the others. Each shard
+checks out, sets up Node, and runs its slice of `node --test`.

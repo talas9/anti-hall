@@ -300,5 +300,5 @@ message bodies to gzip, then prunes them. Full reference:
 - [plugins/anti-hall/.codex-plugin/plugin.json](https://github.com/talas9/anti-hall/blob/main/plugins/anti-hall/.codex-plugin/plugin.json): the Codex manifest, bumped together with the Claude one.
 - [.claude-plugin/marketplace.json](https://github.com/talas9/anti-hall/blob/main/.claude-plugin/marketplace.json): the marketplace entry (carries no version).
 - [tests/](https://github.com/talas9/anti-hall/tree/main/tests/): zero-dependency `node --test`; v0.108.0 end-to-end scenarios in `tests/e2e/v0108/`.
-- [.github/workflows/test.yml](https://github.com/talas9/anti-hall/blob/main/.github/workflows/test.yml): CI, ubuntu + macOS x Node 22/24.
+- [.github/workflows/test.yml](https://github.com/talas9/anti-hall/blob/main/.github/workflows/test.yml): CI: full sharded matrix (ubuntu + macOS x Node 22/24) on `rc-v*` tags, a reduced matrix on `main` and pull requests; `v*` tags do not trigger it.
 - [RELEASING.md](https://github.com/talas9/anti-hall/blob/main/RELEASING.md): bump both manifests + CHANGELOG, commit, tag, GitHub Release.

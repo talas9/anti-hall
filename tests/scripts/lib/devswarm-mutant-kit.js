@@ -6,7 +6,7 @@
 // ROOT CAUSE this exists to fix: both callers used to mutate
 // plugins/anti-hall/scripts/devswarm.js ON DISK, IN PLACE — writing a
 // "buggy" variant, requiring it, running assertions, then writing the
-// original bytes back. `.github/workflows/test.yml` runs bare `node --test`,
+// original bytes back. `.github/workflows/test.yml` runs `node --test --test-shard=i/n` (a sharded `node --test`),
 // which parallelizes per FILE by default, and node:test files across a run
 // share the process's module cache and the real filesystem. There is no
 // cross-file lock over that one shared path, so two mutating test files (or
