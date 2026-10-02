@@ -69,6 +69,16 @@ test('every 2nd quiet tick appends the roster after the unchanged first line; ot
   } finally { rm(home); rm(repo); rm(child); }
 });
 
+test('a non-quiet (JSON) tick between quiet ticks does not reset the roster counter', () => {
+  const home = tmpHome(); const repo = makeGitRepo('s'); const child = makeChildWorktree(repo, 's');
+  try {
+    register(home, repo, 'primary1'); register(home, child, 'child1');
+    assert.strictEqual(quiet(home, repo, EVERY2).text, FIRST); // quiet tick 1
+    cli.run(['inbox', 'tick', 'primary1'], ctx(home, { cwd: repo, env: EVERY2 })); // JSON tick rewrites the marker
+    assert.ok(quiet(home, repo, EVERY2).text.includes('| workspace |'), 'quiet tick 2 still lands on the Nth tick');
+  } finally { rm(home); rm(repo); rm(child); }
+});
+
 test('setting 0 (default): never appended', () => {
   const home = tmpHome(); const repo = makeGitRepo('b'); const child = makeChildWorktree(repo, 'b');
   try {
@@ -119,11 +129,9 @@ test('unread > 0 on the Nth tick: no roster', () => {
   } finally { rm(home); rm(repo); rm(child); }
 });
 
-test('schema / manifest parity for devswarm.tickRosterEvery', () => {
+test('schema parity for devswarm.tickRosterEvery (settings file + env only, no /config row)', () => {
   const plugin = path.join(__dirname, '..', '..', 'plugins', 'anti-hall');
   const e = require(path.join(plugin, 'hooks', 'lib', 'settings-schema.js')).findSetting('devswarm', 'tickRosterEvery');
   assert.ok(e);
   assert.deepStrictEqual([e.default, e.env, e.min], [0, 'ANTIHALL_DEVSWARM_TICK_ROSTER_EVERY', 0]);
-  const m = JSON.parse(fs.readFileSync(path.join(plugin, '.claude-plugin', 'plugin.json'), 'utf8'));
-  assert.strictEqual(m.userConfig[e.pluginOption].default, 0);
 });

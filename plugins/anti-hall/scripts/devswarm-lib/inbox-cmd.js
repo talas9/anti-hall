@@ -261,14 +261,17 @@ function cmdInboxTick(id, flags, ctx) {
 
   // devswarm.tickRosterEvery (default 0 = off): every Nth `--quiet` Primary tick
   // appends the compact roster after the unchanged first line. The tick count is
-  // kept as `seq` in the wake-tick marker (written below only while the feature is on).
+  // kept as `seq` in the wake-tick marker. A tick that does not advance it (a
+  // non-quiet tick) rewrites the marker with the previous `seq` carried over, so
+  // the counter is never reset.
   let rosterEvery = 0;
   try { rosterEvery = Number(require('../../hooks/lib/settings.js').getWithEnv('devswarm', 'tickRosterEvery', 0, ctx.env)); } catch (_) { rosterEvery = 0; }
   const wantRoster = Number.isInteger(rosterEvery) && rosterEvery > 0 && hasFlag(flags, 'quiet') && !isChildFlag && isSafeId(id);
-  let tickSeq = 0;
-  if (wantRoster) {
-    try { tickSeq = (Number(JSON.parse(fs.readFileSync(wakeTickPathFor(id, home), 'utf8')).seq) || 0) + 1; } catch (_) { tickSeq = 1; }
+  let prevSeq = 0;
+  if (isSafeId(id)) {
+    try { prevSeq = Number(JSON.parse(fs.readFileSync(wakeTickPathFor(id, home), 'utf8')).seq) || 0; } catch (_) { prevSeq = 0; }
   }
+  const tickSeq = wantRoster ? prevSeq + 1 : prevSeq;
 
   // Effect 1: wake-tick marker.
   try {
