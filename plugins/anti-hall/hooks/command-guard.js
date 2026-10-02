@@ -2593,8 +2593,8 @@ function appendProjectCommandAllowAudit(entry) {
 // independent force-push and AI-credit checks; this carve-out never touches
 // or duplicates those.
 //
-// A push segment qualifies ONLY as the bare shape `git push [-q|--quiet]
-// [remote] [ref]` — no other flags, no `+refspec`, no `src:dst` (a `:` or
+// A push segment qualifies ONLY as the bare shape `git push [-q|--quiet|-u|
+// --set-upstream] [remote] [ref]` (`-u` needs an explicit remote AND ref) — no other flags, no `+refspec`, no `src:dst` (a `:` or
 // leading `+`/`-` token — other than the one recognized `-q`/`--quiet` slot
 // — disqualifies the whole chain, which then falls through to the ordinary
 // heavy-command block, i.e. no behavior CHANGE for --force/--mirror/
@@ -2641,10 +2641,10 @@ function appendProjectCommandAllowAudit(entry) {
 // A bare remote/ref token: no leading '-' or '+' (rules out every flag and
 // force-refspec form), and no ':' anywhere (rules out `src:dst`/delete
 // refspecs) — enforced by the character class simply never including ':'.
-// The one optional flag slot right after `push` matches ONLY `-q`/`--quiet`
-// verbatim (not a character class), so `--force`/`-f`/anything else there
+// The one optional flag slot right after `push` matches ONLY `-q`/`--quiet`/
+// `-u`/`--set-upstream` verbatim (not a character class), so `--force`/`-f`/anything else there
 // still fails the whole regex, same as before this carve-out was widened.
-const PLAIN_PUSH_SEGMENT_RE = /^git\s+push(?:\s+(-q|--quiet))?(?:\s+((?![-+])[A-Za-z0-9_.\/-]+))?(?:\s+((?![-+])[A-Za-z0-9_.\/-]+(?::[A-Za-z0-9_.\/-]+)?))?\s*$/;
+const PLAIN_PUSH_SEGMENT_RE = /^git\s+push(?:\s+(-q|--quiet|-u|--set-upstream))?(?:\s+((?![-+])[A-Za-z0-9_.\/-]+))?(?:\s+((?![-+])[A-Za-z0-9_.\/-]+(?::[A-Za-z0-9_.\/-]+)?))?\s*$/;
 // (d) The one accepted trailing output filter, piped from the last segment.
 const PLAIN_OUTPUT_FILTER_RE = /^(?:tail|head)(?:\s+(?:-n\s*)?-?\d+)?\s*$/;
 // (d) A trailing `2>&1` (stderr merged into stdout) - no other redirect.
@@ -2723,6 +2723,12 @@ function classifyPlainGitChainSegment(segment) {
     // itself pushes over ssh to host `evil.com`). Reject the segment outright
     // rather than let isPlainPushRefAllowed's ref-shaped check vouch for it.
     if (m[3] && m[3].indexOf(':') !== -1 && !m[2]) return null;
+    // `-u`/`--set-upstream` is the ONLY upstream flag accepted, and only with
+    // BOTH an explicit remote and an explicit ref (`git push -u origin
+    // <branch>`) - a bare `git push -u`/`-u origin` never qualifies. Remote/ref
+    // are then vetted exactly like the plain form. It shares the single flag
+    // slot, so `-q -u`/`-u -q`/`-uf` never match the regex.
+    if ((m[1] === '-u' || m[1] === '--set-upstream') && !(m[2] && m[3])) return null;
     return { kind: 'push', remote: m[2] || null, ref: m[3] || null };
   }
   if (PLAIN_LOG_SEGMENT_RE.test(trimmed)) return { kind: 'log' };

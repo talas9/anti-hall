@@ -728,3 +728,97 @@ test('field replay: message text never flips the verdict; the push is what diffe
     fs.rmSync(repo, { recursive: true, force: true });
   }
 });
+
+// ---- `-u` / `--set-upstream` (0.121.9): the ONLY added flag. Field repro: a
+// session pushing its OWN branch with `git push -u origin <branch> 2>&1 | tail`
+// was blocked only because of the upstream flag. Same remote/ref vetting as the
+// plain form; never more permissive than it in any dimension.
+const UPSTREAM_FLAGS = ['-u', '--set-upstream'];
+
+test('allow-plain-push: `git push -u|--set-upstream origin <current>` (+ HEAD, HEAD:cur, bounded sink, 2>&1) is allowed', () => {
+  const repo = makeGitRepo();
+  try {
+    for (const f of UPSTREAM_FLAGS) {
+      for (const tail of ['', ' 2>&1', ' 2>&1 | tail -4', ' | head -5']) {
+        for (const ref of ['main', 'HEAD', 'HEAD:main']) {
+          const cmd = 'git push ' + f + ' origin ' + ref + tail;
+          assert.notStrictEqual(run(cmd, { cwd: repo }).status, 2, cmd);
+        }
+      }
+    }
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('allow-plain-push: `-u` on a slash-named feature branch is allowed only for that branch', () => {
+  const repo = makeGitRepo();
+  try {
+    cp.spawnSync('git', ['-C', repo, 'checkout', '-q', '-b', 'web/fix-pack']);
+    assert.notStrictEqual(run('git push -u origin web/fix-pack 2>&1 | tail -4', { cwd: repo }).status, 2);
+    assert.strictEqual(run('git push -u origin main', { cwd: repo }).status, 2);
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('allow-plain-push: `-u` combined with anything else stays blocked (never more permissive than the plain form)', () => {
+  const repo = makeGitRepo();
+  try {
+    const shapes = [
+      '{U} --force origin main', '{U} -f origin main', '{U} --force-with-lease origin main', '{U} --force-if-includes origin main',
+      '{U} origin +main', '{U} origin main:other', '{U} origin src:dst', '{U} origin :main',
+      '{U} --delete origin main', '{U} -d origin main', '{U} --mirror origin', '{U} --all origin', '{U} --tags origin',
+      '{U} --no-verify origin main', '{U} origin upstream main', '{U} origin main extra',
+      '{U}', '{U} origin', '{U} main', '{U} origin other', '{U} origin -main',
+      '{U} -q origin main', '-q {U} origin main', '{U} {U} origin main',
+      '{U}f origin main', '-fu origin main', '-uq origin main', '-uu origin main', '{U}=origin main',
+      "{U} 'origin' main", '{U} "origin" main', '{U} orig\\in main', '{U} origin ma\\in main',
+      '{U} ../evil main', '{U} https://x.y/z main',
+    ];
+    for (const f of UPSTREAM_FLAGS) {
+      for (const shape of shapes) {
+        const cmd = 'git push ' + shape.split('{U}').join(f);
+        assert.strictEqual(run(cmd, { cwd: repo }).status, 2, cmd);
+      }
+    }
+    for (const cmd of ['git push -fu origin main', 'git push --set-upstream=origin main']) {
+      assert.strictEqual(run(cmd, { cwd: repo }).status, 2, cmd);
+    }
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('allow-plain-push: `-u` push with an appended substitution/chain/redirect/env-prefix/-c/-C stays blocked', () => {
+  const repo = makeGitRepo();
+  try {
+    const tails = [
+      'git push {U} origin main $(id)', 'git push {U} origin main `id`', 'git push {U} origin main; id',
+      'git push {U} origin main && id', 'git push {U} origin main || id', 'git push {U} origin main\nid',
+      'git push {U} origin main <<EOF\nx\nEOF',
+      // chained after the push: rev-parse / ls-remote / node / echo stay outside the tail allow-list
+      'git push {U} origin main; git rev-parse HEAD', 'git push {U} origin main && git ls-remote origin',
+      'git push {U} origin main; node x.js', 'git push {U} origin main; echo done',
+      'GIT_SSH_COMMAND=x git push {U} origin main', 'git -c core.sshCommand=x push {U} origin main',
+      'git -C /tmp push {U} origin main', 'git push {U} origin main > /tmp/x',
+    ];
+    for (const f of UPSTREAM_FLAGS) {
+      for (const t of tails) {
+        const cmd = t.split('{U}').join(f);
+        assert.strictEqual(run(cmd, { cwd: repo }).status, 2, cmd);
+      }
+    }
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('allow-plain-push: `-u` push is gated by the same kill-switch', () => {
+  const repo = makeGitRepo();
+  try {
+    assert.strictEqual(run('git push -u origin main', { cwd: repo, settings: { guards: { allowPlainPush: false } } }).status, 2);
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+});
