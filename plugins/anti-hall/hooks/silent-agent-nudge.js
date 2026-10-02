@@ -173,6 +173,10 @@ function transcriptCandidates(transcriptPath, now, thresholdMs) {
   const out = [];
   for (const [id, rec] of scan.launched) {
     if (scan.terminal.has(id)) continue; // already resolved -> nothing
+    // A teammate whose only running evidence is an unanswered message is an
+    // inference, not proof of silence: it stays visible in running lists and
+    // the stop-note, but never causes a block (whatever the threshold).
+    if (rec.pendingMessage) continue;
 
     let referenceMs = NaN;
     let snapshot = 'missing';

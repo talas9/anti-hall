@@ -588,6 +588,20 @@ test('TEAMMATE: finished, never-woken and freshly-messaged teammates never produ
   }
 });
 
+test('TEAMMATE: a pending-message row never blocks, at any silentAgentNudgeMin (1, 5, 10, 20, 30)', () => {
+  const tm = require('../helpers/teammate-fixtures.js');
+  // Messaged 15 min ago, report not in the transcript: running per agent-scan
+  // (an inference), older than the 1/5/10 min thresholds.
+  const groups = [tm.spawn('tm-p', isoMinutesAgo(90)), tm.idle('tm-p', isoMinutesAgo(80)), tm.send('tm-p', isoMinutesAgo(15))];
+  for (const min of ['1', '5', '10', '20', '30']) {
+    const h = makeHome();
+    try {
+      const r = testHook(HOOK, stopPayload(h.writeTranscript(groups.flat())), { home: h.home, env: { ANTIHALL_SILENT_AGENT_NUDGE_MIN: min } });
+      assert.ok(!isBlock(r), 'min=' + min + ': ' + JSON.stringify(r.json));
+    } finally { h.cleanup(); }
+  }
+});
+
 // ---------------------------------------------------------------------------
 // Settings / skip / fail-open
 // ---------------------------------------------------------------------------
