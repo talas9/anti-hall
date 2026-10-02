@@ -20,7 +20,7 @@ const CLIENT = path.join(PLUGIN, 'hooks', 'lib', 'jev-client.js');
 
 function envFor(home, extra) {
   const env = Object.assign({}, process.env, { HOME: home, USERPROFILE: home, ANTIHALL_INGEST_DRY_RUN: '1' }, extra);
-  for (const k of ['ANTIHALL_JEV', 'CLAUDE_PLUGIN_OPTION_JEV_API_KEY', 'CLAUDE_PLUGIN_OPTION_JEV_FALLBACK_API_KEY', 'AI_GATEWAY_API_KEY', 'TYPESAFE_API_KEY', 'ANTIHALL_JEV_TEST_ENDPOINT', 'ANTIHALL_JEV_TEST_ENDPOINT_VERCEL', 'ANTIHALL_JEV_TEST_ENDPOINT_TYPESAFE']) {
+  for (const k of ['ANTIHALL_JEV', 'CLAUDE_PLUGIN_OPTION_JEV_API_KEY', 'CLAUDE_PLUGIN_OPTION_JEV_VERCEL_API_KEY', 'CLAUDE_PLUGIN_OPTION_JEV_TYPESAFE_API_KEY', 'CLAUDE_PLUGIN_OPTION_JEV_TRANSPORT', 'CLAUDE_PLUGIN_OPTION_JEV_FALLBACK_TRANSPORT', 'AI_GATEWAY_API_KEY', 'TYPESAFE_API_KEY', 'ANTIHALL_JEV_TEST_ENDPOINT', 'ANTIHALL_JEV_TEST_ENDPOINT_VERCEL', 'ANTIHALL_JEV_TEST_ENDPOINT_TYPESAFE']) {
     if (!(extra && k in extra)) delete env[k];
   }
   return env;
@@ -111,7 +111,7 @@ test('status balance: typesafe primary says "not available", never a vercel numb
   const { server, url } = await mockVercelCredits('55.50');
   try {
     seed(home, 'settings.json', { jev: { enabled: true, transport: 'typesafe', fallbackTransport: 'vercel' } });
-    const both = await runAsync(home, ['status'], { CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'k', CLAUDE_PLUGIN_OPTION_JEV_FALLBACK_API_KEY: 'k2', ANTIHALL_JEV_TEST_ENDPOINT_VERCEL: url });
+    const both = await runAsync(home, ['status'], { CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'k', CLAUDE_PLUGIN_OPTION_JEV_VERCEL_API_KEY: 'k2', ANTIHALL_JEV_TEST_ENDPOINT_VERCEL: url });
     assert.match(both, /credit balance \(typesafe\): not available/);
     assert.match(both, /credit balance \(vercel\): \$55\.50/);
     assert.doesNotMatch(both, /21\.10/, 'the untagged (pre-fix) cache entry is not served');

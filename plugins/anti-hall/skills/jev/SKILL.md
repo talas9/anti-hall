@@ -99,9 +99,13 @@ again (state: `~/.anti-hall/cache/jev-breaker.json`).
 
 - Set: `node "${CLAUDE_PLUGIN_ROOT}/scripts/jev-setup.js" enable --transport typesafe --fallback vercel`
   (`--fallback none` turns it off; a fallback equal to the primary is treated as none).
-- Keys: the backup is a different vendor, so it needs its OWN key: the `jev_fallback_api_key` plugin option, or
-  (with `jev.allowLegacyKeyRead`) `jev-setup.js set-key --role fallback` writing its default key file
-  (`~/.config/vercel/ai-gateway-key` or `~/.config/typesafe/key`). `jev_api_key` is always the PRIMARY's key.
+- Keys are VENDOR-BOUND: a key is never sent to a vendor it was not entered for. Store one per vendor: the
+  `jev_vercel_api_key` and `jev_typesafe_api_key` plugin options (or, with `jev.allowLegacyKeyRead`,
+  `jev-setup.js set-key --transport <vendor>` writing that vendor's key file, `~/.config/vercel/ai-gateway-key` or
+  `~/.config/typesafe/key`; `--role fallback` is an alias for the fallback vendor). The older generic `jev_api_key`
+  still works but is bound to ONE vendor: the `jev.transport` in `~/.anti-hall/settings.json` (vercel when unset),
+  never an env or `/config` value; for any other vendor it is refused with a "jev_api_key is bound to X; set
+  jev_<Y>_api_key" diagnostic. So an env/plugin-option flip of `jev.transport` cannot redirect a key.
 - `status` shows both transports and whether a key is visible for each (yes/no only); `test` tests each
   transport on its own.
 - NOT full redundancy: the two routes very likely reach the SAME TypeSafe model (inference from the model ids
@@ -546,6 +550,6 @@ with hook/event/API details.
   only. `jev-setup test`/`status`, `jev-report` and `finding-dedup` run from a shell see no plugin option and
   print a one-line "no Jev key visible to this process" reason; enabling `jev.allowLegacyKeyRead`
   (home settings only, `--confirmed`; env cannot set it) with a key file makes the key available to them.
-- Preferred: the user stores the key via `/plugin config` (anti-hall -> `jev_api_key`). The key file
+- Preferred: the user stores the key via `/plugin config` (anti-hall -> `jev_vercel_api_key` or `jev_typesafe_api_key`, one per vendor). The key file
   that the jev-setup script's set-key command writes is read only when
   `jev.allowLegacyKeyRead` is on; never store the key anywhere else.

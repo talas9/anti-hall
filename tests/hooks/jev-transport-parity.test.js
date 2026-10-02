@@ -29,7 +29,7 @@ const RESPONSES = {
 };
 const MODELS = { typesafe: 'jev-latest', vercel: 'typesafe-ai/jev' };
 const Q = { type: 'noul', instructions: 'x', criteria: { true: 't', false: 'f' } };
-const ENV_KEYS = ['HOME', 'ANTIHALL_JEV', 'CLAUDE_PLUGIN_OPTION_JEV_API_KEY', 'ANTIHALL_JEV_TEST_ENDPOINT', 'ANTIHALL_JEV_TEST_ENDPOINT_VERCEL', 'ANTIHALL_JEV_TEST_ENDPOINT_TYPESAFE'];
+const ENV_KEYS = ['HOME', 'ANTIHALL_JEV', 'CLAUDE_PLUGIN_OPTION_JEV_API_KEY', 'CLAUDE_PLUGIN_OPTION_JEV_VERCEL_API_KEY', 'CLAUDE_PLUGIN_OPTION_JEV_TYPESAFE_API_KEY', 'ANTIHALL_JEV_TEST_ENDPOINT', 'ANTIHALL_JEV_TEST_ENDPOINT_VERCEL', 'ANTIHALL_JEV_TEST_ENDPOINT_TYPESAFE'];
 async function withEnv(o, fn) {
   const saved = {}; for (const k of ENV_KEYS) saved[k] = process.env[k];
   try { for (const k of ENV_KEYS) delete process.env[k]; Object.assign(process.env, o); return await fn(); }
@@ -46,7 +46,7 @@ async function run(transport, mode, fn) {
   try {
     h.writeState('jev.json', { enabled: true, transport, timeoutMs: 3000, integrations: { speculation: mode } });
     await withEnv({
-      HOME: h.home, CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'k',
+      HOME: h.home, ['CLAUDE_PLUGIN_OPTION_JEV_' + transport.toUpperCase() + '_API_KEY']: 'k',
       ['ANTIHALL_JEV_TEST_ENDPOINT_' + transport.toUpperCase()]: `http://127.0.0.1:${server.address().port}/m`,
     }, () => fn({ home: h.home, bodies }));
   } finally { await new Promise((r) => server.close(r)); h.cleanup(); }
@@ -140,7 +140,7 @@ test('no error path returns or logs a response body (typesafe 422 echoes the sub
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   try {
     h.writeState('jev.json', { enabled: true, transport: 'typesafe', integrations: { speculation: 'on' } });
-    await withEnv({ HOME: h.home, CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT_TYPESAFE: `http://127.0.0.1:${server.address().port}/m` }, async () => {
+    await withEnv({ HOME: h.home, CLAUDE_PLUGIN_OPTION_JEV_TYPESAFE_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT_TYPESAFE: `http://127.0.0.1:${server.address().port}/m` }, async () => {
       const r = await fresh('jev-client.js').jevDecide({ question: Q, state: echo });
       assert.strictEqual(r.reason, 'http-422');
       assert.ok(!JSON.stringify(r).includes(echo));

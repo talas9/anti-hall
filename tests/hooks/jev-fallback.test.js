@@ -19,7 +19,7 @@ function fresh(name) {
 
 const ENV_KEYS = [
   'HOME', 'ANTIHALL_JEV', 'AI_GATEWAY_API_KEY', 'TYPESAFE_API_KEY',
-  'CLAUDE_PLUGIN_OPTION_JEV_API_KEY', 'CLAUDE_PLUGIN_OPTION_JEV_FALLBACK_API_KEY',
+  'CLAUDE_PLUGIN_OPTION_JEV_API_KEY', 'CLAUDE_PLUGIN_OPTION_JEV_VERCEL_API_KEY', 'CLAUDE_PLUGIN_OPTION_JEV_TYPESAFE_API_KEY', 'CLAUDE_PLUGIN_OPTION_JEV_TRANSPORT', 'CLAUDE_PLUGIN_OPTION_JEV_FALLBACK_TRANSPORT',
   'ANTIHALL_JEV_TEST_ENDPOINT', 'ANTIHALL_JEV_TEST_ENDPOINT_VERCEL', 'ANTIHALL_JEV_TEST_ENDPOINT_TYPESAFE',
 ];
 async function withEnv(overrides, fn) {
@@ -64,8 +64,8 @@ async function scenario({ primary, fallback, cfg, env }, fn) {
     h.writeState('jev.json', Object.assign({ enabled: true, transport: 'typesafe', fallbackTransport: 'vercel', timeoutMs: 1500 }, cfg));
     await withEnv(Object.assign({
       HOME: h.home,
-      CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'primary-key',
-      CLAUDE_PLUGIN_OPTION_JEV_FALLBACK_API_KEY: 'fallback-key',
+      CLAUDE_PLUGIN_OPTION_JEV_TYPESAFE_API_KEY: 'primary-key',
+      CLAUDE_PLUGIN_OPTION_JEV_VERCEL_API_KEY: 'fallback-key',
       ANTIHALL_JEV_TEST_ENDPOINT_TYPESAFE: p.url,
       ANTIHALL_JEV_TEST_ENDPOINT_VERCEL: f.url,
     }, env), () => fn({ p, f, home: h.home }));
@@ -130,7 +130,7 @@ test('primary 400/403 whose body names insufficient balance IS eligible', async 
 });
 
 test('no fallback key -> the primary error surfaces and the fallback is never contacted', async () => {
-  await scenario({ primary: status(500), env: { CLAUDE_PLUGIN_OPTION_JEV_FALLBACK_API_KEY: '' } }, async ({ f }) => {
+  await scenario({ primary: status(500), env: { CLAUDE_PLUGIN_OPTION_JEV_VERCEL_API_KEY: '' } }, async ({ f }) => {
     const r = await fresh('jev-client.js').jevDecide({ question: Q, state: 's' });
     assert.strictEqual(r.ok, false);
     assert.strictEqual(r.reason, 'http-500');

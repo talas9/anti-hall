@@ -36,7 +36,7 @@ function assertClean(body, label) {
   assert.ok(body.includes('[REDACTED'), `${label}: placeholder present`);
 }
 
-const ENV_KEYS = ['HOME', 'ANTIHALL_JEV', 'CLAUDE_PLUGIN_OPTION_JEV_API_KEY', 'AI_GATEWAY_API_KEY', 'ANTIHALL_JEV_TEST_ENDPOINT'];
+const ENV_KEYS = ['HOME', 'ANTIHALL_JEV', 'CLAUDE_PLUGIN_OPTION_JEV_API_KEY', 'CLAUDE_PLUGIN_OPTION_JEV_VERCEL_API_KEY', 'CLAUDE_PLUGIN_OPTION_JEV_TYPESAFE_API_KEY', 'AI_GATEWAY_API_KEY', 'ANTIHALL_JEV_TEST_ENDPOINT'];
 async function withEnv(o, fn) {
   const saved = {};
   for (const k of ENV_KEYS) saved[k] = process.env[k];
@@ -194,7 +194,7 @@ test('the fallback request body is scrubbed too', async () => {
     try {
       await withServer(capture(bodies), async (fbEndpoint) => {
         await withEnv({
-          HOME: h.home, CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'k', CLAUDE_PLUGIN_OPTION_JEV_FALLBACK_API_KEY: 'k2',
+          HOME: h.home, CLAUDE_PLUGIN_OPTION_JEV_TYPESAFE_API_KEY: 'k', CLAUDE_PLUGIN_OPTION_JEV_VERCEL_API_KEY: 'k2',
           ANTIHALL_JEV_TEST_ENDPOINT_TYPESAFE: `http://127.0.0.1:${primary.address().port}/p`,
           ANTIHALL_JEV_TEST_ENDPOINT_VERCEL: fbEndpoint,
         }, async () => {

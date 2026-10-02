@@ -24,6 +24,7 @@ function enableLegacy(home) {
 function run(args, { home, input, env: extraEnv } = {}) {
   const env = Object.assign({}, process.env, { HOME: home });
   delete env.CLAUDE_PLUGIN_OPTION_JEV_API_KEY;
+  for (const k of ['VERCEL', 'TYPESAFE']) delete env['CLAUDE_PLUGIN_OPTION_JEV_' + k + '_API_KEY'];
   delete env.CLAUDE_PLUGIN_OPTION_ANTHROPIC_API_KEY;
   delete env.AI_GATEWAY_API_KEY;
   delete env.TYPESAFE_API_KEY;
@@ -82,7 +83,8 @@ test('set-key: writes key from stdin, mode 0600, atomic, never printed', () => {
   const { home } = makeHome();
   const r = run(['set-key'], { home, input: 'sk-real-secret-value-123\n' });
   assert.strictEqual(r.code, 0);
-  assert.match(r.stdout, /^key saved \(24 chars\)/);
+  assert.match(r.stdout, /^key saved for vercel\n/);
+  assert.doesNotMatch(r.stdout, /chars/, 'the key length is never printed');
   assert.doesNotMatch(r.stdout, /sk-real-secret-value-123/);
 
   const keyPath = path.join(home, '.config', 'vercel', 'ai-gateway-key');
@@ -468,7 +470,7 @@ test('status shows primary + fallback and key presence for each (yes/no only)', 
   assert.match(r.stdout, /key present: yes/);
   assert.match(r.stdout, /fallback transport: vercel/);
   assert.match(r.stdout, /fallback key present: no/);
-  r = run(['status'], { home, env: { CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'primary-secret', CLAUDE_PLUGIN_OPTION_JEV_FALLBACK_API_KEY: 'fb-secret' } });
+  r = run(['status'], { home, env: { CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'primary-secret', CLAUDE_PLUGIN_OPTION_JEV_VERCEL_API_KEY: 'fb-secret' } });
   assert.match(r.stdout, /fallback key present: yes/);
   assert.doesNotMatch(r.stdout, /primary-secret|fb-secret/);
 });
@@ -495,7 +497,7 @@ test('test: with a fallback configured, BOTH transports are tested on their own'
       const { execFile } = require('node:child_process');
       execFile(process.execPath, [SCRIPT, 'test'], {
         env: Object.assign({}, process.env, {
-          HOME: home, CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'k1', CLAUDE_PLUGIN_OPTION_JEV_FALLBACK_API_KEY: 'k2',
+          HOME: home, CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'k1', CLAUDE_PLUGIN_OPTION_JEV_VERCEL_API_KEY: 'k2',
           ANTIHALL_JEV_TEST_ENDPOINT_TYPESAFE: ua, ANTIHALL_JEV_TEST_ENDPOINT_VERCEL: ub,
         }),
       }, (err, stdout) => resolve({ code: err ? err.code : 0, stdout }));

@@ -127,7 +127,11 @@ function resolveTransport(cfg, override) {
 // (regardless of transport, matching the existing config contract); otherwise
 // the transport's own default path.
 function resolveKeyFilePath(cfg, transport) {
-  if (typeof cfg.keyFile === 'string' && cfg.keyFile.trim()) {
+  // The explicit jev.keyFile is ambiguous (not named for a vendor), so it counts
+  // only for the vendor the legacy generic key is bound to (settings.json
+  // jev.transport, home-only); every other vendor uses its own default path.
+  if (typeof cfg.keyFile === 'string' && cfg.keyFile.trim()
+    && require('../hooks/lib/credentials.js').genericKeyVendor() === transport) {
     return expandHome(cfg.keyFile.trim());
   }
   return defaultKeyFilePath(transport);
@@ -138,13 +142,10 @@ function resolveKeyFilePath(cfg, transport) {
 // env/key file ONLY with jev.allowLegacyKeyRead on. NOTE: this CLI runs as a
 // plain process, which Claude Code does NOT hand CLAUDE_PLUGIN_OPTION_* — a
 // key stored via /plugin config is visible to the hooks but not here.
-function keyPresent(cfg, transport, role) {
-  const fb = role === 'fallback';
+function keyPresent(cfg, transport) {
   return require('../hooks/lib/credentials.js').resolveKey('jev', {
-    transport,
-    role: fb ? 'fallback' : 'primary',
-    // the explicit jev.keyFile belongs to the primary; the fallback uses its own default path
-    keyFile: fb ? defaultKeyFilePath(transport) : resolveKeyFilePath(cfg, transport),
+    vendor: transport,
+    keyFile: resolveKeyFilePath(cfg, transport),
   }).key !== null;
 }
 
@@ -264,14 +265,19 @@ async function cmdStatus() {
   const fallback = resolveFallback(cfg, transport);
   console.log(`fallback transport: ${fallback}`);
   if (fallback !== 'none') {
-    console.log(`fallback key present: ${keyPresent(cfg, fallback, 'fallback') ? 'yes' : 'no'}`);
+    console.log(`fallback key present: ${keyPresent(cfg, fallback) ? 'yes' : 'no'}`);
     console.log('  note: with a fallback, text can be sent to the second vendor when the primary fails');
   }
   if (!present) console.log('  ' + require('../hooks/lib/credentials.js').backgroundNoKeyNotice());
   try {
     const cr = require('../hooks/lib/credentials.js');
-    const rr = cr.resolveKey('jev', { transport, keyFile: resolveKeyFilePath(cfg, transport) });
+    const rr = cr.resolveKey('jev', { vendor: transport, keyFile: resolveKeyFilePath(cfg, transport) });
     if (rr.rejected) console.log('  ' + cr.rejectedNotice(rr.rejected));
+    if (rr.diagnostic) console.log('  ' + rr.diagnostic);
+    if (fallback !== 'none') {
+      const fr = cr.resolveKey('jev', { vendor: fallback, keyFile: resolveKeyFilePath(cfg, fallback) });
+      if (fr.diagnostic) console.log('  fallback: ' + fr.diagnostic);
+    }
   } catch (_) { /* best-effort */ }
   try {
     for (const n of require('../hooks/lib/credentials.js').legacyNotices({
@@ -365,14 +371,14 @@ function cmdSetKey(opts) {
     return;
   }
 
-  const keyPath = isFallback ? defaultKeyFilePath(transport) : resolveKeyFilePath(cfg, transport);
+  const keyPath = resolveKeyFilePath(cfg, transport);
   writeKeyFileAtomic(keyPath, key + '\n');
 
   if (transportOverride && !isFallback && !setJev('transport', transportOverride)) return;
 
-  console.log(`key saved (${key.length} chars)`);
+  console.log(`key saved for ${transport}`);
   if (!require('../hooks/lib/credentials.js').allowLegacyKeyRead('jev')) {
-    console.log('note: the hooks only read this key file when jev.allowLegacyKeyRead is on (currently off). Preferred: store the key via /plugin config (anti-hall -> ' + (isFallback ? 'jev_fallback_api_key' : 'jev_api_key') + '), or enable the setting.');
+    console.log('note: the hooks only read this key file when jev.allowLegacyKeyRead is on (currently off). Preferred: store the key via /plugin config (anti-hall -> ' + 'jev_' + transport + '_api_key' + '), or enable the setting.');
   }
 }
 

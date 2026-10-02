@@ -28,7 +28,7 @@
 //   ANTIHALL_JEV=1        force-enable (even without jev.json)
 //   ANTIHALL_JEV=0         force-disable (overrides jev.json enabled:true)
 //   CLAUDE_PLUGIN_OPTION_JEV_API_KEY  the key stored via /plugin config (jev_api_key); read first
-//   CLAUDE_PLUGIN_OPTION_JEV_FALLBACK_API_KEY  the fallback vendor's key (jev_fallback_api_key)
+//   CLAUDE_PLUGIN_OPTION_JEV_VERCEL_API_KEY / ..._JEV_TYPESAFE_API_KEY  vendor-bound keys (jev_<vendor>_api_key)
 //   AI_GATEWAY_API_KEY / TYPESAFE_API_KEY (+ keyFile)  legacy sources, read ONLY when
 //                          the jev.allowLegacyKeyRead setting is on (default off)
 
@@ -263,25 +263,32 @@ function defaultKeyFilePath(transport) {
     : path.join(os.homedir(), '.config', 'vercel', 'ai-gateway-key');
 }
 
-// resolveCredential(cfg, role) — plugin option env first (jev_api_key for the
-// primary, jev_fallback_api_key for role 'fallback': two vendors, two keys);
-// the legacy env var / keyFile are read ONLY when jev.allowLegacyKeyRead is on
-// (see credentials.js). The explicit jev.keyFile belongs to the primary; the
-// fallback always uses its own transport's default key file. Returns the
-// trimmed key string or null. Never logs.
+// resolveCredential(cfg, role) — resolved BY VENDOR (the primary's or, for role
+// 'fallback', the fallback's): that vendor's own plugin option first
+// (jev_vercel_api_key / jev_typesafe_api_key), then the legacy generic
+// jev_api_key ONLY if it is bound to this vendor, then (jev.allowLegacyKeyRead)
+// this vendor's env var / key file (see credentials.js). A key is never sent to
+// a vendor it was not entered for, whatever flips jev.transport. The explicit
+// jev.keyFile is ambiguous too, so it applies only to the vendor the generic
+// key is bound to; every other vendor uses its own default path. Returns the
+// trimmed key or null (a one-line diagnostic names the missing option, once per
+// process). Never logs a key.
 let keyFileRejectionReported = false;
+const diagnosticsReported = new Set();
 function resolveCredential(cfg, role) {
   const cred = require('./credentials.js');
-  const fb = role === 'fallback';
-  const transport = fb ? cfg.fallbackTransport : cfg.transport;
+  const vendor = role === 'fallback' ? cfg.fallbackTransport : cfg.transport;
   const r = cred.resolveKey('jev', {
-    transport,
-    role: fb ? 'fallback' : 'primary',
-    keyFile: (!fb && cfg.keyFile) || defaultKeyFilePath(transport),
+    vendor,
+    keyFile: (cfg.keyFile && cred.genericKeyVendor() === vendor) ? cfg.keyFile : defaultKeyFilePath(vendor),
   });
   if (r.rejected && !keyFileRejectionReported) {
     keyFileRejectionReported = true; // one line per process, never the content
     try { process.stderr.write('anti-hall: ' + cred.rejectedNotice(r.rejected) + '\n'); } catch (_) { /* best-effort */ }
+  }
+  if (!r.key && r.diagnostic && !diagnosticsReported.has(r.diagnostic)) {
+    diagnosticsReported.add(r.diagnostic);
+    try { process.stderr.write('anti-hall jev: ' + r.diagnostic + '\n'); } catch (_) { /* best-effort */ }
   }
   return r.key;
 }
@@ -339,9 +346,14 @@ function readBreakers() {
 }
 function breakerEntry(all, transport) {
   const e = all[transport];
-  return (e && Number.isFinite(e.fails) && e.fails >= 0)
-    ? { fails: e.fails, openUntil: Number.isFinite(e.openUntil) ? e.openUntil : 0 }
-    : { fails: 0, openUntil: 0 };
+  if (!(e && Number.isFinite(e.fails) && e.fails >= 0)) return { fails: 0, openUntil: 0 };
+  // A corrupt/tampered openUntil can never hold a vendor open: a value the
+  // breaker could not have written (non-finite, negative, or further out than
+  // one cooldown from now) reads as closed. A clamp to now+cooldown would not
+  // do: every read would re-extend it, holding the vendor open forever.
+  const now = Date.now();
+  const ou = (Number.isFinite(e.openUntil) && e.openUntil > 0 && e.openUntil <= now + BREAKER_COOLDOWN_MS) ? e.openUntil : 0;
+  return { fails: e.fails, openUntil: ou };
 }
 function breakerOpen(transport) {
   const e = breakerEntry(readBreakers(), transport);
@@ -395,6 +407,7 @@ async function postSystemone({ endpoint, apiKey, body, timeoutMs }) {
         headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
         body,
         signal: controller.signal,
+        redirect: 'error', // never follow a redirect: the key and the text must not leave the vendor endpoint
       });
     } catch (err) {
       return { ok: false, reason: isAbort(err) ? 'timeout' : 'network-error', ms: Date.now() - start };
@@ -475,7 +488,11 @@ async function runWithFallback(cfg, totalMs, bodyFor, parse, only) {
     primaryRes = await attemptTransport(cfg, cfg.transport, 'primary', primaryKey, bodyFor, parse, totalMs - reserve);
     if (primaryRes.ok) { breakerRecord(cfg.transport, true); return primaryRes; }
     if (!fallbackEligible(primaryRes)) return primaryRes;
-    breakerRecord(cfg.transport, false);
+    // A timeout under the SHORTENED primary budget (reserve > 0) proves nothing
+    // about the vendor: still fall back for THIS call, but do not count it, or a
+    // merely slow primary would trip the breaker and divert text to the second
+    // vendor for a whole cooldown.
+    if (!(primaryRes.reason === 'timeout' && reserve > 0)) breakerRecord(cfg.transport, false);
     if (fallbackOpen) return primaryRes;
   }
 
@@ -688,6 +705,7 @@ async function getCreditBalance({ timeoutMs } = {}) {
         method: 'GET',
         headers: { Authorization: `Bearer ${apiKey}` },
         signal: controller.signal,
+        redirect: 'error', // never follow a redirect with the key attached
       });
     } catch (err) {
       const ms = Date.now() - start;
