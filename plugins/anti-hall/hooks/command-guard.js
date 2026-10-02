@@ -2271,6 +2271,10 @@ function isReadOnlyFilterSegment(segment) {
   const verb = effectiveVerb(segment);
   if (!verb) return false;
   const raw = segment.trim();
+  // ANY unquoted output redirect (`>`, `>>`, `>|`, `&>`, `n>`, `>&n`) makes the
+  // stage a writer, whatever the target (even a tmp/scratchpad path). Only the
+  // stderr->pipe merge `2>&1` is harmless.
+  if (/>/.test(neutralizeQuotedContents(raw).replace(/(^|\s)2>&1(?=\s|$)/g, ' '))) return false;
   const tokens = tokenizeQuoted(raw);
   const args = tokens.slice(1);
   if (verb === 'grep') return true;

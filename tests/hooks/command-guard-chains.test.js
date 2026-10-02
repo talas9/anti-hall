@@ -96,6 +96,9 @@ test('addendum: pipeline ending in a bounded sink is bounded through read-only f
     assert.ok(b(`${t} 2>&1 | xargs rm | head -5`));
     assert.ok(b(`${t} 2>&1 | sh | head -5`));
     assert.ok(b(`${t} 2>&1 | grep FAIL > out.txt | head -5`));
+    // redirect target inside a tmp root (always true on Linux for proj) must not make it a filter, on any OS
+    assert.ok(b(`${t} 2>&1 | grep FAIL > /tmp/out.txt | head -5`));
+    for (const r of ['>> o', '>| o', '&> o', '1> o', '>&2']) assert.ok(b(`${t} 2>&1 | grep FAIL ${r} | head -5`), r);
     assert.ok(b(`${t} 2>&1 | awk '{system("rm x")}' | head -5`));
     assert.ok(b(`${t} 2>&1 | awk '{print > "f"}' | head -5`));
     assert.ok(b(`${t} 2>&1 | sed -i s/a/b/ f | head -5`));
