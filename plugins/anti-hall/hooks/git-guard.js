@@ -2172,7 +2172,12 @@ function gitVerdict(ev, d, cmd, heredocBodies, lastCdDir, useJev) {
         'flag past static inspection. Run the push with literal arguments (no ' +
         '$( ) or backticks) so the force-push guard can verify it. If this is ' +
         'message text (e.g. inside printf/echo written to a file), write that ' +
-        'file with the Write tool instead.'
+        'file with the Write tool instead.' +
+        (/<<-?[ \t]*['"\\]?[A-Za-z_]/.test(currentRawCommand)
+          ? ' Heredoc bodies are scanned as shell even when a script only reads ' +
+            'them as text: write the script or note with the Write tool, then ' +
+            'run or reference the file.'
+          : '')
       );
     }
   }

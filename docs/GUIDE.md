@@ -87,6 +87,15 @@ flags (`git push "--force"`), bundled `-f`, `+refspec` pushes, and a trailing
 `sh -c` / `zsh -c` / `dash -c` / `ksh -c` / `ash -c` shell wrappers and re-inspects
 the payload, so `bash -c "git push --force"` and `bash -c '...Co-Authored-By:
 Claude...'` cannot smuggle either block past it that way.
+**Known limitation:** text inside a heredoc is scanned as if it were shell, even
+when the consumer is python, node or `cat` and the text is only data. A script or
+note that merely MENTIONS `git push` with backticks or `$(...)` can therefore be
+blocked as "argument produced by a command substitution". This is deliberate
+(a static scanner cannot tell prose from a shell-exec string inside an
+interpreter body, and several exemptions were bypassed in review); the
+workaround is to write the content with the Write tool, then run or reference
+the file. `tests/hooks/git-guard-heredoc-bypass.test.js` pins the forms that
+must stay blocked.
 It scans commit messages both INLINE (`-m` / `--message` / `--trailer`) and via
 `-F -` / `--file=-` / `-F /dev/stdin` fed by a heredoc on the same command
 line, or via `-F <path>` naming a real, readable file (a relative path
