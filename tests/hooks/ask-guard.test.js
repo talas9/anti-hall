@@ -219,7 +219,7 @@ test('hooks.json registers the guard under PreToolUse with matcher AskUserQuesti
   assert.strictEqual(groups[0].hooks.length, 1);
   assert.deepStrictEqual(groups[0].hooks[0], {
     type: 'command',
-    command: 'node "${CLAUDE_PLUGIN_ROOT}/hooks/ask-guard.js"',
+    command: 'node --no-concurrent-recompilation --no-concurrent-sparkplug "${CLAUDE_PLUGIN_ROOT}/hooks/ask-guard.js"',
     timeout: 10,
   });
   assert.ok(!/hooks\/ask-guard\.js/.test(fs.readFileSync(path.join(PLUGIN, 'codex', 'hooks', 'hooks.json'), 'utf8')), 'no Codex registration');

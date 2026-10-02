@@ -313,6 +313,13 @@ try {
 } catch (e) {
   bad(`hooks.json invalid or unreadable: ${e.message}`);
 }
+// Every hook command passes these V8 flags; a Node that rejects one would fail every hook.
+{
+  const { NODE_HOOK_FLAGS } = require('./lib/node-hook-flags.js');
+  const fl = cp.spawnSync(process.execPath, [...NODE_HOOK_FLAGS, '-e', '0'], { encoding: 'utf8' });
+  if (fl.status === 0) ok(`node ${process.version} accepts the hook flags (${NODE_HOOK_FLAGS.join(' ')})`);
+  else bad(`node ${process.version} rejects the hook flags — every hook would fail: ${(fl.stderr || '').split('\n')[0]}`);
+}
 for (const f of registered) {
   const p = path.join(HOOKS, f);
   if (!fs.existsSync(p)) { bad(`${f} — REGISTERED BUT MISSING`); continue; }
