@@ -1233,8 +1233,8 @@ function broadcastKey(r) {
   // fromLabel (v0.108.0): an aliased entry keys on its ORIGINAL label so a
   // broadcast already seen before the alias existed is not re-shown.
   const who = r && r.fromLabel != null ? r.fromLabel : (r && r.from != null ? r.from : '?');
-  return who + ' ' + (r && r.ts != null ? r.ts : '')
-    + ' ' + (r && r.summary != null ? r.summary : '');
+  return who + '\0' + (r && r.ts != null ? r.ts : '')
+    + '\0' + (r && r.summary != null ? r.summary : '');
 }
 
 // broadcastSeenPath(home, sessionId) -> per-session dedup state file:

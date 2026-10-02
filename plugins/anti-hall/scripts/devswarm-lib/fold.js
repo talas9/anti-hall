@@ -206,7 +206,7 @@ function logicalDeliveryKey(row) {
   const ts = row.ts != null ? String(row.ts) : '';
   const body = stripArchivedForwardPrefix(row.body).body;
   if (from === '' && ts === '' && body === '') return null;
-  return from + ' ' + ts + ' ' + body;
+  return from + '\0' + ts + '\0' + body;
 }
 
 // CONSUMED_HASH_SEED_CAP — how many of the caller's OWN already-consumed rows
