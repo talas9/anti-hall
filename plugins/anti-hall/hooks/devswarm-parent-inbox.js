@@ -1035,7 +1035,47 @@ function buildInformationalNote(informational) {
   );
 }
 
-function buildOwnUnreadSegment(count, id, urgencyMax, unanswered, informational) {
+// buildAwaitingLine(unansweredList, titleFor, now) -> string ('' when nothing is
+// unanswered). ONE urgency line built from the same unanswered set the segment
+// below nags on: "QUESTIONS AWAITING YOUR REPLY: N (oldest Xm) — <workspace
+// title>: <first 80 chars of that question>". Age is from the question timestamp
+// (the newest unanswered question per asker — the oldest of those is shown). The
+// preview has control chars/newlines removed and is secret-scrubbed; it is
+// omitted when the projection carries no text (older summary.json).
+function buildAwaitingLine(unansweredList, titleFor, now, previews) {
+  if (!unansweredList.length) return '';
+  let oldest = null;
+  for (const q of unansweredList) {
+    if (q && Number.isFinite(q.ts) && (oldest === null || q.ts < oldest.ts)) oldest = q;
+  }
+  if (oldest === null) oldest = unansweredList[0];
+  let line = 'QUESTIONS AWAITING YOUR REPLY: ' + unansweredList.length;
+  if (oldest && Number.isFinite(oldest.ts)) line += ' (oldest ' + Math.max(0, Math.floor((now - oldest.ts) / 60000)) + 'm)';
+  let who = '';
+  try {
+    const from = oldest && oldest.from != null ? String(oldest.from) : '';
+    const t = typeof titleFor === 'function' ? titleFor(from) : null;
+    who = (typeof t === 'string' && t.trim()) ? truncateTitle(t.replace(/\s+/g, ' ').trim()) : (from ? names.shortId(from) : '');
+  } catch (_) { who = ''; }
+  let preview = '';
+  try {
+    const raw = oldest && previews && Number.isFinite(oldest.seq) ? previews[oldest.seq] : null;
+    if (typeof raw === 'string') {
+      // \x00-\x1f and \x7f-\x9f are the control chars; \s also folds U+2028/U+2029.
+      const clean = raw.replace(/[\x00-\x1f\x7f-\x9f]+/g, ' ').replace(/\s+/g, ' ').trim();
+      preview = require('./lib/secret-scrub.js').scrubSecrets(clean).slice(0, 80);
+    }
+  } catch (_) { preview = ''; }
+  if (who || preview) line += ' — ' + who + (preview ? (who ? ': ' : '') + preview : '');
+  return line + '\n';
+}
+
+function buildOwnUnreadSegment(count, id, urgencyMax, unanswered, informational, titleFor, previews) {
+  const unansweredList = Array.isArray(unanswered) ? unanswered : [];
+  return buildAwaitingLine(unansweredList, titleFor, Date.now(), previews) + buildOwnUnreadSegmentBody(count, id, urgencyMax, unanswered, informational);
+}
+
+function buildOwnUnreadSegmentBody(count, id, urgencyMax, unanswered, informational) {
   const unansweredList = Array.isArray(unanswered) ? unanswered : [];
   const informationalList = Array.isArray(informational) ? informational : [];
   const prefix = isHighUrgency(urgencyMax) ? 'DEVSWARM OWN INBOX — URGENT PRIORITY: ' : 'DEVSWARM OWN INBOX — PRIORITY: ';
@@ -2146,6 +2186,7 @@ function main() {
   // (companion/lib/devswarm-store.js's computeSummary — always present, `[]`
   // when none). Default `[]` on absence/malformed shape.
   let ownPendingQuestions = [];
+  let ownQuestionPreviews = {}; // { <seq>: text } sibling projection; absent on older summaries
   try {
     if (primaryId) {
       const ownEntry = summaryEntry(summary, primaryId);
@@ -2169,6 +2210,9 @@ function main() {
       }
       if (ownEntry && Array.isArray(ownEntry.pendingQuestions)) {
         ownPendingQuestions = ownEntry.pendingQuestions;
+        if (ownEntry.pendingQuestionPreviews && typeof ownEntry.pendingQuestionPreviews === 'object') {
+          ownQuestionPreviews = ownEntry.pendingQuestionPreviews;
+        }
       }
     }
   } catch (_) { ownUnread = 0; ownUrgencyMax = null; ownPendingQuestions = []; }
@@ -2600,7 +2644,14 @@ function main() {
   // unanswered question, and that state must keep surfacing every turn just
   // as much as a plain unread backlog does.
   if ((ownUnread > 0 || ownUnanswered.length > 0 || ownUnansweredInformational.length > 0) && primaryId) {
-    segments.push(buildOwnUnreadSegment(ownUnread, primaryId, ownUrgencyMax, ownUnanswered, ownUnansweredInformational));
+    // Title source = the workspace table's own (summary label, else the cached name file).
+    const titleFor = (wid) => {
+      try {
+        const row = summary && summary.workspaces && summary.workspaces[wid];
+        return (row && row.label) || names.readName(home, wid);
+      } catch (_) { return null; }
+    };
+    segments.push(buildOwnUnreadSegment(ownUnread, primaryId, ownUrgencyMax, ownUnanswered, ownUnansweredInformational, titleFor, ownQuestionPreviews));
   }
   // Escalation notices the supervisor could NOT deliver to this Primary (not
   // registered in the mesh store, or its lock busy) are parked — surfaced here

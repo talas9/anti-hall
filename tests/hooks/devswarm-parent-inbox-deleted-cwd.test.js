@@ -43,7 +43,7 @@ function segment(c, banner) {
   return c.split('\n\n').find((s) => s.startsWith(banner)) || '';
 }
 function ownSegment(c) {
-  return segment(c, 'DEVSWARM OWN INBOX');
+  return segment(c, 'DEVSWARM OWN INBOX') || segment(c, 'QUESTIONS AWAITING YOUR REPLY');
 }
 
 function writeSharedSummary(home, repoKey, ownId, unread) {

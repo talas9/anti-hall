@@ -53,6 +53,7 @@ const SWITCHES = {
   'task-lifecycle-log.js': 'maintenance.taskLifecycleLog',
   'session-end-mcp-reaper.js': 'maintenance.sessionEndReaper',
   'model-routing-guard.js': 'guards.modelRouting',
+  'ask-guard.js': 'guards.noBlockingQuestions',
   'api-guard.js': 'guards.apiGuard',
   'speculation-guard.js': 'guards.speculationGuard',
   'claim-ledger.js': 'guards.claimLedger',

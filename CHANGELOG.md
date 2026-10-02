@@ -24,6 +24,12 @@ the update.
 
 - The plugin no longer ships an image: the `icon` key is removed from the Claude manifest and `icon.png` moved to `assets/anti-hall-icon.png` (the listing icon is uploaded in the directory portal). A hygiene test asserts no image or font file is tracked under the plugin folder.
 
+### Added
+
+- **Optional "no blocking questions" guard (off by default):** the new setting `guards.noBlockingQuestions` (`off`, `advise` or `block`; env `ANTIHALL_NO_BLOCKING_QUESTIONS`) watches the `AskUserQuestion` tool. `advise` lets the question through and reminds the agent to take the recommended option, say which one, and carry on; `block` refuses the call. A question whose first entry starts with `DESTRUCTIVE:` or `CREDENTIAL:` (in the header or at the start of the question text) is always allowed and noted in `~/.anti-hall/logs/ask-guard.ndjson`. In a DevSwarm child workspace the message also says to send the question to the parent instead. Claude only (Codex has no ask tool). In block mode the skills that deliberately ask the user (`settings`, `deadly-loop`, `ship-it`, `flutter-debug`, `devswarm`) need that marker, or the setting turned off.
+- **Pending child questions are harder to miss:** when a Primary has unanswered child questions, the per-prompt "own inbox" notice now starts with one line, `QUESTIONS AWAITING YOUR REPLY: N (oldest Xm) — <workspace title>: <first 80 characters of the question>`. The preview is cleaned of control characters and has secrets redacted; it is left out when the stored summary has no question text yet.
+- **`devswarm.js spawn` note:** when `--source` names a branch other than the default branch and the DevSwarm app already has a workspace (active or archived) on it, the result carries one line in `warnings` saying the app may show the new workspace nested under it. Output only; nothing else changes, and a failed lookup stays silent.
+
 ## 0.121.8 (2026-10-03)
 
 ### Fixed

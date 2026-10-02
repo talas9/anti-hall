@@ -90,6 +90,7 @@ const CLAUDE_ONLY_ALLOWLIST = [
   { event: 'PreToolUse', file: 'edit-guard.js', reason: 'Write/Edit/MultiEdit/NotebookEdit matcher — Codex hook runtime does not hard-run PreToolUse for edits (install-codex.js header)' },
   // PreToolUse Read: Read is a Claude Code tool name; Codex has no equivalent
   // matcher wired.
+  { event: 'PreToolUse', file: 'ask-guard.js', reason: 'AskUserQuestion matcher — Codex has no ask tool, so there is no PreToolUse event to match' },
   { event: 'PreToolUse', file: 'inbox-read-guard.js', reason: 'Read-tool matcher — no Codex Read-tool PreToolUse matcher exists today' },
   // PreToolUse Agent/Task matchers: Claude Code subagent-dispatch tool names,
   // not present in the Codex tool surface.

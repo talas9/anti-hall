@@ -262,6 +262,37 @@ function extractFlagValue(rest, shortFlag, longFlag) {
   return null;
 }
 
+// sourceWorkspaceNote(rest, ctx) -> string | null. OUTPUT ONLY (no behaviour change).
+// When `--source <branch>` names a branch other than the repository's default branch
+// AND the DevSwarm app already holds a workspace (builder row, active or archived) on
+// that branch in the same repository, the new workspace may be shown nested under it in
+// the app's tree view. The "may" is deliberate: the nesting was reported from the app's
+// tree view and is not verified from the app's data. Any lookup failure -> null (say
+// nothing). `ctx.io.appSnapshot()` is the test seam for the app-DB snapshot.
+function sourceWorkspaceNote(rest, ctx) {
+  try {
+    const source = extractFlagValue(rest, '-s', '--source');
+    if (!source) return null;
+    const cwd = ctx.cwd || process.cwd();
+    const remoteRef = gitTruth.defaultBranchRef(cwd); // 'origin/<default>' | null
+    if (!remoteRef) return null; // default unknown -> cannot tell, say nothing
+    if (source === remoteRef.slice('origin/'.length)) return null;
+    const appDb = require('../../companion/lib/devswarm-app-db.js');
+    const snap = (ctx.io && typeof ctx.io.appSnapshot === 'function')
+      ? ctx.io.appSnapshot()
+      : appDb.snapshot({ home: ctx.home, env: ctx.env || process.env });
+    if (!snap || !Array.isArray(snap.workspaces)) return null;
+    const repo = appDb.repositoryForWorktree(snap, cwd);
+    if (!repo || repo.id == null) return null; // cannot scope to this repository -> say nothing
+    const held = snap.workspaces.some((w) => w && w.branchName === source && String(w.repositoryId) === String(repo.id));
+    return held
+      ? 'note: --source ' + source + ' already has a workspace; the DevSwarm app may show the new workspace nested under it.'
+      : null;
+  } catch (_) {
+    return null;
+  }
+}
+
 // deriveTitleFromBrief(brief) -> string | null. Owner-approved derivation
 // rule: take the first non-empty line of the brief, strip ONE leading
 // markdown marker (heading/bullet/quote) so a line like "# own the API layer"
@@ -1128,6 +1159,7 @@ function cmdSpawn(rest, ctx) {
       + ') — this may be why no session ever started; this was NOT auto-repaired.'
     : '';
 
+  const sourceNote = sourceWorkspaceNote(rest, ctx);
   timings.totalMs = Date.now() - spawnWallStart;
   try {
     alog.logEvent('devswarm-cli', 'spawn', 'info', 'spawn timings', {
@@ -1172,7 +1204,8 @@ function cmdSpawn(rest, ctx) {
         + (submoduleRepaired.length && submoduleRepaired[0].sha ? ' (' + submoduleRepaired[0].sha + ')' : '')
         + ', not the submodule\'s default branch.'
       : undefined,
-    warnings: (submoduleFailures.length || submoduleRepaired.length) ? [].concat(
+    warnings: (submoduleFailures.length || submoduleRepaired.length || sourceNote) ? [].concat(
+      sourceNote ? [sourceNote] : [],
       submoduleRepaired.length ? [
         submoduleRepaired.length + ' submodule worktree(s) failed at create (a pre-copied worktreeInclude file made the path '
         + 'non-empty) and were repaired by spawn — see submoduleRepaired.',
@@ -1276,5 +1309,5 @@ module.exports = {
   spawnLaunchWaitMs, checkSpawnLaunch, SPAWN_FETCH_TIMEOUT_MS, SPAWN_FETCH_TTL_SEC_DEFAULT,
   gitCommonDirFor, remoteRefAgeSec, spawnSourceFreshness, SPAWN_CREATE_TIMEOUT_MS_DEFAULT,
   submodulePathsFor, parseSubmoduleWorktreeFailures, repairSubmoduleWorktrees, SPAWN_VALUE_FLAGS,
-  spawnFlagValueError, cmdSpawn, cmdMergeVerb,
+  spawnFlagValueError, cmdSpawn, cmdMergeVerb, sourceWorkspaceNote,
 };

@@ -275,6 +275,7 @@ feature/KB touches this area:
 - PreToolUse(Read) — inbox-read-guard
 - PreToolUse(Agent)+PreToolUse(Task) — model-routing-guard, swarm-guard, phase-tracker
 - PreToolUse(SendMessage) — devswarm-comms-guard
+- PreToolUse(AskUserQuestion) — ask-guard
 - PostToolUse(Bash) — output-verify-guard, devswarm-parent-reply-tracker [C], devswarm-child-drain [C]
 - PostToolUse(Agent) — codex-quota-detect
 - PostToolUse(TaskCreate|TaskUpdate) — dispatch-tier
@@ -293,7 +294,7 @@ Codex `anti-hall-<name>`: activate, context-conserve, deadly-loop, debt, defects
 
 **Settings** (`~/.anti-hall/settings.json`; env > file > /config > legacy > default; bare key = default true, else key=default; advanced keys after `|`, defaults via `settings.js show --all`):
 - autoHandover: enabled, pct=85, maxTokens=0, nag, nagStepPct=5, nagQuietMin=15, gateNewWork, gateBudgetPct=5, decisivePrompt | gateHousekeepingMarkers
-- guards: mergeGate=false, shipitGate=false, outputVerifyGuard, failureRootCauseNudge, repoSelfDrift, stashGuard=false, handoverCommitGuard, gitignoreHint, emitDedupe, codexQuotaDetect, allowReadOnlyVerify, allowReadOnlyVerifyScripts, projectCommandAllow, projectEditAllow, allowPlainPush, allowGcloudReads, allowBackgroundScratchScripts, modelRouting=strict, updateInSession, modelRoutingDeployFloor=sonnet, apiGuard, speculationGuard, claimLedger, taskGuard, tasklistGuard, scanThrottle, silentAgentNudge, compactAdviceGuard, compactAdviceRecentTurns=10, compactDeclarationGuard | allowAnthropicEnvKey, injectionRepeatEvery, editGuardAllow, allowSubagentMailbox, reaperMatch, reaperExclude, reaperCodexBroker, reaperCodexBrokerMinAgeS, tasklistWorkThreshold, pruneCompletedTasksAfter, progressFreshMs, apiGuardThirdparty, taskGuardOwnerBlockedMarker, dispatchDemand, idleNeglectMinPriority, maxParallelDispatch, silentAgentNudgeMin, compactAdviceMarginPct, stopHookVersionDowngrade, stopAck
+- guards: mergeGate=false, shipitGate=false, outputVerifyGuard, failureRootCauseNudge, repoSelfDrift, stashGuard=false, handoverCommitGuard, gitignoreHint, emitDedupe, codexQuotaDetect, allowReadOnlyVerify, allowReadOnlyVerifyScripts, projectCommandAllow, projectEditAllow, allowPlainPush, allowGcloudReads, allowBackgroundScratchScripts, modelRouting=strict, noBlockingQuestions=off, updateInSession, modelRoutingDeployFloor=sonnet, apiGuard, speculationGuard, claimLedger, taskGuard, tasklistGuard, scanThrottle, silentAgentNudge, compactAdviceGuard, compactAdviceRecentTurns=10, compactDeclarationGuard | allowAnthropicEnvKey, injectionRepeatEvery, editGuardAllow, allowSubagentMailbox, reaperMatch, reaperExclude, reaperCodexBroker, reaperCodexBrokerMinAgeS, tasklistWorkThreshold, pruneCompletedTasksAfter, progressFreshMs, apiGuardThirdparty, taskGuardOwnerBlockedMarker, dispatchDemand, idleNeglectMinPriority, maxParallelDispatch, silentAgentNudgeMin, compactAdviceMarginPct, stopHookVersionDowngrade, stopAck
 - safety: gitGuard, commandGuard, editGuard, swarmGuard
 - context: verifyFirstSession, verifyFirstOrchestration, verifyFirstTurn, verifyFirstSubagent, taskTracker, handoverResume, defectNudge | dedupeWindowMin
 - maintenance: repairOnReload, progressPrune, precompactSnapshot, taskLifecycleLog, sessionEndReaper

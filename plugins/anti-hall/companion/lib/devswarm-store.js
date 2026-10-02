@@ -569,6 +569,9 @@ function mergeSplitBackendStoresAllStores(home, opts) {
 // deriveSummary explicitly skips it if it were ever (mis-)registered.
 const BROADCAST_PARTITION_ID = '*mesh-broadcast*';
 const URGENCY_RANK = { low: 0, normal: 1, high: 2, urgent: 3 };
+// PREVIEW_MAX — chars of a pending question's text kept in the summary projection
+// (pendingQuestions[].preview), so a Primary's per-prompt line can show what it asks.
+const PREVIEW_MAX = 120;
 const DEFAULT_RECENT_CAP = 50; // O-D8 (broadcast retention) UNRESOLVED — sane default, overridable via opts.recentCap.
 // DEFAULT_PENDING_QUESTIONS_CAP — a BACKSTOP on the per-workspace pendingQuestions
 // array, overridable via opts.pendingQuestionsCap. It should be UNREACHABLE in
@@ -1325,6 +1328,19 @@ function openSqlite(home, workspaceId, opts) {
       }
       return out;
     },
+    // needsReplyPreviews(id, storeSeqs) -> { <storeSeq>: <first PREVIEW_MAX chars of body> }
+    // for ONLY the named needs_reply rows of a workspace (a roster-sized set), so a
+    // pending question can be shown with a snippet without materializing history.
+    needsReplyPreviews(id, storeSeqs) {
+      const out = {};
+      const stmt = db.prepare("SELECT substr(body, 1, " + PREVIEW_MAX + ") AS b FROM messages WHERE workspace_id = ? AND seq = ? AND needs_reply = 1 AND mtype = 'direct' LIMIT 1;");
+      for (const s of storeSeqs || []) {
+        if (!Number.isFinite(s)) continue;
+        const r = stmt.get(String(id), Number(s));
+        if (r && typeof r.b === 'string') out[s] = r.b;
+      }
+      return out;
+    },
     cursorValue(id) {
       const r = db.prepare('SELECT value FROM cursors WHERE workspace_id = ?;').get(String(id));
       return r ? Number(r.value) : 0;
@@ -2010,6 +2026,18 @@ function openJournal(home, workspaceId, fsi, lockOpts, opts) {
           ts: Number.isFinite(row.ts) ? row.ts : null,
           storeSeq: Number.isFinite(row.seq) ? Number(row.seq) : null,
         });
+      }
+      return out;
+    },
+    // needsReplyPreviews — journal twin of the sqlite method (same shape, same bound).
+    needsReplyPreviews(id, storeSeqs) {
+      const wid = String(id);
+      const want = new Set((storeSeqs || []).filter((s) => Number.isFinite(s)).map(Number));
+      const out = {};
+      if (!want.size) return out;
+      for (const row of readAll(files.messages)) {
+        if (String(row.workspaceId) !== wid || row.mtype !== 'direct' || !row.needsReply) continue;
+        if (want.has(Number(row.seq)) && typeof row.body === 'string' && !(row.seq in out)) out[row.seq] = row.body.slice(0, PREVIEW_MAX);
       }
       return out;
     },
@@ -2819,6 +2847,17 @@ function computeSummary(store, opts) {
       ? collapsedQuestions.slice(0, pendingQuestionsCap)
       : collapsedQuestions;
     const pendingQuestionsDropped = collapsedQuestions.length - pendingQuestions.length;
+    // pendingQuestionPreviews (additive sibling of pendingQuestions, which stays
+    // byte-identical): { <seq>: <question text, <= PREVIEW_MAX chars> } for the
+    // surviving (roster-sized) entries — the question each entry's `ts` dates.
+    // Best-effort; any failure leaves it off.
+    let pendingQuestionPreviews = null;
+    if (pendingQuestions.length && typeof store.needsReplyPreviews === 'function') {
+      try {
+        const previews = store.needsReplyPreviews(d.id, pendingQuestions.map((e) => e.seq));
+        if (previews && Object.keys(previews).length) pendingQuestionPreviews = previews;
+      } catch (_) { pendingQuestionPreviews = null; }
+    }
 
     // jevQuestionCandidates (JEV ADVISORY CANDIDATES for the `parentGateQuestion`
     // integration — see hooks/devswarm-parent-gate.js): a child message can ask
@@ -2968,6 +3007,7 @@ function computeSummary(store, opts) {
     // Emitted ONLY when the backstop actually bit, so an untruncated workspace stays
     // byte-identical for existing readers (same convention as orphans/recent's
     // occurrences). `dropped` is how many DISTINCT SENDERS' questions are missing.
+    if (pendingQuestionPreviews) workspaces[d.id].pendingQuestionPreviews = pendingQuestionPreviews;
     if (pendingQuestionsDropped > 0) {
       workspaces[d.id].pendingQuestionsTruncated = {
         cap: pendingQuestionsCap,

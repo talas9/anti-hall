@@ -1429,7 +1429,8 @@ test('H4 x failed: status:"failed" + EMPTY store -> non-destructive guard preven
 // workspaces[primary-<hash>].unread this hook already reads for children.
 const OWN_ID = 'primary-' + REPO_HASH;
 function ownSegment(c) {
-  return segment(c, 'DEVSWARM OWN INBOX');
+  // The segment may now lead with the "QUESTIONS AWAITING YOUR REPLY" line.
+  return segment(c, 'DEVSWARM OWN INBOX') || segment(c, 'QUESTIONS AWAITING YOUR REPLY');
 }
 
 test('OWN UNREAD: Primary\'s own summary-projected unread -> imperative PRIORITY segment (parity with child wording)', () => {
@@ -1947,7 +1948,7 @@ test('OWN UNREAD DECIDE+REPLY WORDING: unansweredList.length === 1 -> correct si
     assert.strictEqual(r.status, 0);
     const own = ownSegment(ctx(r));
     assert.match(own, /1 of these is an unanswered QUESTION /, `singular grammar; own=${own}`);
-    assert.ok(!/QUESTIONS/.test(own), `must not pluralize the noun for count 1; own=${own}`);
+    assert.ok(!/unanswered QUESTIONS/.test(own), `must not pluralize the noun for count 1; own=${own}`);
   } finally { h.cleanup(); }
 });
 
