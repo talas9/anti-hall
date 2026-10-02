@@ -165,6 +165,21 @@ test('migration/notice: an existing typesafe install with a generic key and no r
   } finally { if (savedHome === undefined) delete process.env.HOME; else process.env.HOME = savedHome; h.cleanup(); }
 });
 
+test('notice: keyed on the EFFECTIVE transport, so a typesafe transport from the plugin option (not home settings) still gets the one-time binding notice', () => {
+  const h = makeHome();
+  const savedHome = process.env.HOME;
+  try {
+    h.writeState('settings.json', { jev: { enabled: true } }); // no transport in home settings
+    for (const k of ENV_KEYS) delete process.env[k];
+    process.env.HOME = h.home;
+    const cred = fresh() && require(path.join(HOOKS, 'credentials.js'));
+    const env = { CLAUDE_PLUGIN_OPTION_JEV_TRANSPORT: 'typesafe', CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'generic-secret' };
+    const n = cred.sessionNotice({ home: h.home, env });
+    assert.match(n, /generic Jev key[^\n]*bound to vercel and is NOT sent to typesafe/);
+    assert.strictEqual(cred.sessionNotice({ home: h.home, env }), null, 'shown once');
+  } finally { if (savedHome === undefined) delete process.env.HOME; else process.env.HOME = savedHome; h.cleanup(); }
+});
+
 test('notice: silent for a vercel install, with no generic key, or once a binding is recorded', () => {
   for (const [settings, env] of [
     [{ jev: { enabled: true, transport: 'vercel' } }, { CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'g' }],

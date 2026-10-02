@@ -238,8 +238,9 @@ function sessionNotice(o) {
       if (legacyKeyPresent(k, { env: opts.env, transport: cfg.transport, keyFile: cfg.keyFile || jc.defaultKeyFilePath(cfg.transport) })) pending.push(k);
     }
     // One-time, report-only: a generic key (jev.keyFile, or the generic plugin
-    // option: presence only) on an install whose HOME jev.transport is typesafe
-    // while jev.genericKeyVendor was never recorded. We do NOT guess a binding
+    // option: presence only) on an install whose EFFECTIVE jev.transport (env >
+    // home settings > plugin option > default, the same resolver the client
+    // uses) is typesafe while jev.genericKeyVendor was never recorded. We do NOT guess a binding
     // (that would send a key to a vendor it may not belong to): the generic key
     // stays bound to the default vendor until the user binds it explicitly.
     let bindingNote = null;
@@ -247,7 +248,8 @@ function sessionNotice(o) {
       const store = settings.load({ home });
       const jevStore = (store && store.jev && typeof store.jev === 'object') ? store.jev : {};
       const env = opts.env || process.env;
-      if (jevStore.transport === 'typesafe' && jevStore.genericKeyVendor === undefined
+      const transport = settings.get('jev', 'transport', DEFAULT_VENDOR, { home, env });
+      if (transport === 'typesafe' && jevStore.genericKeyVendor === undefined
         && (cfg.keyFile || nonEmpty(env[OPTION_ENV.jev]))) {
         bindingNote = 'your generic Jev key (jev_api_key / jev.keyFile) is bound to ' + DEFAULT_VENDOR + ' and is NOT sent to typesafe. '
           + 'Enter a typesafe key (jev-setup.js set-key --transport typesafe, or jev_typesafe_api_key in /plugin config), '
