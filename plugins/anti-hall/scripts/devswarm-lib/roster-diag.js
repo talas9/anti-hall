@@ -1579,6 +1579,17 @@ function rosterRelative(ts, now) {
   return h < 24 ? h + 'h' : Math.floor(h / 24) + 'd';
 }
 
+// rosterUnreadCell(row) -> the compact table's unread cell. `unread` means DIRECT
+// unread — the same fact `inbox tick` / `read-primary` report (the summary's
+// directUnread is already the union-math value). Broadcasts past the reader's
+// cursor are shown separately, only when non-zero: "0 (+3 bcast)". Unknown read
+// position (directUnread null) stays "—".
+function rosterUnreadCell(w) {
+  if (!w || !Number.isFinite(w.directUnread)) return '—';
+  const b = Number.isFinite(w.broadcastUnread) && w.broadcastUnread > 0 ? w.broadcastUnread : 0;
+  return b ? w.directUnread + ' (+' + b + ' bcast)' : String(w.directUnread);
+}
+
 // rosterHumanText(result, { all, home, now }) -> string. The compact default
 // rendering of plain `roster` (the full JSON stays behind `--json`): the same
 // columns as the per-turn parent-inbox table (workspace, status, finish, unread,
@@ -1599,8 +1610,7 @@ function rosterHumanText(result, opts) {
       const hints = Array.isArray(w.hints) ? w.hints : [];
       const status = hints.length ? hints.slice(0, 3).map((h) => String(h).split(':')[0]).join(', ') : 'active';
       const finish = (w.plan && w.plan.label) || (w.app && w.app.finish) || '—';
-      const nums = [w.directUnread, w.broadcastUnread].filter((n) => Number.isFinite(n));
-      const unread = nums.length ? nums.reduce((a, b) => a + b, 0) : '—';
+      const unread = rosterUnreadCell(w);
       const last = o.home && w.id != null ? rosterLastOutboundTs(o.home, w.id) : null;
       const name = names.displayName(w.id, w.wsName).replace(/\|/g, '\\|');
       lines.push('| ' + name + ' | ' + status + ' | ' + finish + ' | ' + unread + ' | ' + rosterRelative(last, now) + ' |');
@@ -1613,7 +1623,7 @@ function rosterHumanText(result, opts) {
 }
 
 module.exports = {
-  rosterHumanText, rosterIsArchivedRow,
+  rosterHumanText, rosterUnreadCell, rosterIsArchivedRow,
   LIST_CHILDREN_TIMEOUT_MS, parseChildrenList, fetchTrustedRepositoryId, fetchNativeChildren,
   fetchActiveWorkspaceRecords, rosterLastOutboundTs, rosterIdleDays,
   INSTANCE_SPLIT_CONCURRENT_GAP_MS, computeInstanceNonceCounts, rosterHints, cmdRoster,

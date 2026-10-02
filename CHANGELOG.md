@@ -21,6 +21,10 @@ the update.
 - task-guard IDLE NEGLECT and the DISPATCH NOW line no longer demand dispatch for a task a running agent already covers when the agent was launched before the task row existed: a running agent whose description shares >=2 meaningful words (and >=50% of the shorter side) with a task subject now attends that task (one task per agent, best match). Both messages now say to set the task's owner to the running agent.
 - the idle-neglect message now says how to mark a task an agent already covers (set the task's owner to the running agent).
 - **Heavy-command block message leads with the path that works:** every variant of the `command-guard.js` block text (plain, DevSwarm child, DevSwarm Primary with and without the workspace advice) now starts with one line, to run or re-check the command yourself write it to a scratchpad script and run `<interpreter> <script>` with `run_in_background`, then the rest, tightened (about 15% shorter for the plain text). Message only: what is blocked and what is allowed are unchanged, proven by a before/after exit-code table over 49 commands.
+- The compact `roster` unread column summed direct and broadcast unread, so a Primary with no
+  direct mail showed e.g. `34` while `inbox tick` / `read-primary` said 0. It now shows direct
+  unread only (the tick's definition) and appends `(+N bcast)` only when broadcasts are unseen.
+  `--json` is unchanged (`directUnread` stays direct-only; `broadcastUnread` stays separate).
 
 ## 0.122.0 (2026-10-03)
 
