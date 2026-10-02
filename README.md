@@ -77,6 +77,12 @@ These are the notable things it runs and writes outside the project. Hook state 
 
 **[Documentation start page](docs/README.md)**: install and uninstall, what each guard blocks and how to turn it off, settings, Jev, DevSwarm, troubleshooting, contributing, security and the changelog.
 
+## Links
+
+- [Documentation](https://github.com/talas9/anti-hall/blob/main/docs/README.md)
+- [Support](https://github.com/talas9/anti-hall/issues)
+- [Privacy](https://github.com/talas9/anti-hall/blob/main/PRIVACY.md)
+
 ## License
 
 MIT © Mohammed Talas. See [LICENSE](LICENSE).

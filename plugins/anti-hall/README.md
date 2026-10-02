@@ -61,6 +61,12 @@ Codex port, contributing) starts at the
 This README uses absolute GitHub URLs because it ships inside the plugin cache, where
 `../../docs/` does not exist.
 
+## Links
+
+- [Documentation](https://github.com/talas9/anti-hall/blob/main/docs/README.md)
+- [Support](https://github.com/talas9/anti-hall/issues)
+- [Privacy](https://github.com/talas9/anti-hall/blob/main/PRIVACY.md)
+
 ## License
 
 MIT © Mohammed Talas. See [LICENSE](https://github.com/talas9/anti-hall/blob/main/LICENSE).
