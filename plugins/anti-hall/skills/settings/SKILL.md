@@ -149,7 +149,9 @@ default 10, 0 = every turn; `guards.codexQuotaDetect` — record a Codex
 quota/rate-limit exhaustion seen in a `codex:codex-rescue` result so other
 sessions stop rediscovering it independently, default on),
 and `devswarm.*` (parentGate, childGate, parentInbox, childTurn, childRole, childDrain,
-parentReplyTracker, commsGuard, inboxReadGuard, wakeWatch, appSync, screenshotSync, spawnFromOrigin).
+parentReplyTracker, commsGuard, inboxReadGuard, wakeWatch, appSync, screenshotSync, spawnFromOrigin;
+`dispatchTierText` turns the Primary dispatch-tier text off everywhere, `inlineWorkNudge` the once-per-session
+nudge to spin a child workspace after `inlineWorkNudgeThreshold` inline edits).
 Settings are read when each hook runs, so a change applies from the next hook call.
 
 ## `show` only when asked

@@ -707,6 +707,22 @@ function main() {
   const { isCoordinator } = require('./coordinator-detect.js');
   if (!isCoordinator(payload)) process.exit(0);
 
+  // Advisory inline-work nudge (devswarm.inlineWorkNudge, Primary only, once per
+  // session). Emitted only on an ALLOWED call (exit 0): a blocked call already
+  // carries its own redirect and must not print two JSON documents. Never blocks.
+  try {
+    const nudge = require('./lib/inline-work-nudge.js').evaluate(payload, process.env);
+    if (nudge) {
+      process.on('exit', (code) => {
+        if (code !== 0) return;
+        try {
+          fs.writeSync(1, JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: nudge.text } }) + '\n');
+          nudge.commit();
+        } catch (_) { /* fail-open */ }
+      });
+    }
+  } catch (_) { /* fail-open */ }
+
   // An allowlist match is honored ONLY when the path is honest (not a symlink /
   // reparse point, and not reached through one) — see allowlistIsHonest().
   // The project doc-edit allowlist file itself is never edited in the main

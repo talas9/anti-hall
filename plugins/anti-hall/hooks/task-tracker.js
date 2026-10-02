@@ -70,16 +70,10 @@ const DEVSWARM_PRIMARY =
   'pass) goes to a background subagent. A workspace-scale task handed to a subagent is the ' +
   'same failure as leaving it idle.';
 
-// isDevswarmPrimary(env) — DevSwarm active AND root/Primary (not a child workspace).
-// Fail-open to FALSE => the baseline directive only.
-function isDevswarmPrimary(env) {
-  try {
-    const { isDevswarmActive } = require('./lib/devswarm-detect.js');
-    const { isChildWorkspace } = require('./lib/devswarm-role.js');
-    return isDevswarmActive(env) && !isChildWorkspace(env);
-  } catch (_) {
-    return false;
-  }
+// isDevswarmPrimary(env, cwd) — the shared gate (hooks/lib/primary-tier.js): DevSwarm Primary, devswarm.dispatchTierText on,
+// and not a repo that forbids workspaces. Fail-open to FALSE => the baseline text only.
+function isDevswarmPrimary(env, cwd) {
+  return require('./lib/primary-tier.js').primaryTierTextOn(env, cwd);
 }
 
 // Re-inject the FULL directive at most once per this window (ms). Within the
@@ -369,7 +363,7 @@ try {
     // once per session / once after compact-clear / once every N turns,
     // independent of the live freshness note. guards.injectionRepeatEvery=0
     // restores every-turn injection.
-    if (isDevswarmPrimary(process.env)) {
+    if (isDevswarmPrimary(process.env, payload && payload.cwd)) {
       let emitPrimary = true;
       try {
         let repeatEvery = 10;

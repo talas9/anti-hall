@@ -60,12 +60,14 @@ function assertAll(c, table) {
   }
 }
 
+// A doctrine-free cwd (the real repo's CLAUDE.md/AGENTS.md may forbid workspaces, which suppresses rule W).
+const NEUTRAL_CWD = require('node:fs').mkdtempSync(require('node:path').join(require('node:os').tmpdir(), 'antihall-vfo-cwd-'));
 function sessionStart(env) {
   const h = makeHome();
   try {
     return testHook(
       HOOK,
-      { hook_event_name: 'SessionStart', source: 'startup', session_id: 't', cwd: process.cwd() },
+      { hook_event_name: 'SessionStart', source: 'startup', session_id: 't', cwd: NEUTRAL_CWD },
       { home: h.home, env, expectJson: true },
     );
   } finally {

@@ -20,8 +20,11 @@ const SHORT_MARKER = 'TASK-LIST: capture every request';
 // burst (covered in emit-dedupe.test.js) — disable it here.
 const NO_DEDUPE = { ANTIHALL_EMIT_DEDUPE: '0' };
 
+// A doctrine-free cwd: the real repo's CLAUDE.md/AGENTS.md may forbid workspaces, which
+// (correctly) suppresses the Primary dispatch-tier text these tests assert on.
+const NEUTRAL_CWD = require('node:fs').mkdtempSync(require('node:path').join(require('node:os').tmpdir(), 'antihall-tt-cwd-'));
 function promptPayload() {
-  return { hook_event_name: 'UserPromptSubmit', session_id: 't', prompt: 'hi', cwd: process.cwd() };
+  return { hook_event_name: 'UserPromptSubmit', session_id: 't', prompt: 'hi', cwd: NEUTRAL_CWD };
 }
 
 function ctx(r) {

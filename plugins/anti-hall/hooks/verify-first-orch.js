@@ -80,17 +80,10 @@ const BASELINE = [ORCH_HEADER, ...ORCH_LINES].join('\n');
 // (before rule A), so the tier-choice rule leads the primacy content.
 const DEVSWARM_PRIMARY = [ORCH_HEADER, ORCH_DEVSWARM_PRIMARY, ...ORCH_LINES].join('\n');
 
-// isDevswarmPrimary(env) — DevSwarm active AND this session is the root/Primary
-// (not a child workspace). Fail-open to FALSE => the baseline text, so any helper
-// error can only ever emit the pre-existing doctrine, never a wrong one.
-function isDevswarmPrimary(env) {
-  try {
-    const { isDevswarmActive } = require('./lib/devswarm-detect.js');
-    const { isChildWorkspace } = require('./lib/devswarm-role.js');
-    return isDevswarmActive(env) && !isChildWorkspace(env);
-  } catch (_) {
-    return false;
-  }
+// isDevswarmPrimary(env, cwd) — the shared gate (hooks/lib/primary-tier.js): DevSwarm Primary, devswarm.dispatchTierText on,
+// and not a repo that forbids workspaces. Fail-open to FALSE => the baseline text only.
+function isDevswarmPrimary(env, cwd) {
+  return require('./lib/primary-tier.js').primaryTierTextOn(env, cwd);
 }
 
 function main() {
@@ -106,8 +99,10 @@ function main() {
   // Parse the firing event (F-20: no brittle substring match). Registered ONLY on
   // SessionStart, so SessionStart is the expected value and the safe default.
   let event = 'SessionStart';
+  let cwd;
   try {
     const payload = JSON.parse(raw);
+    cwd = payload && payload.cwd;
     const name = payload && typeof payload.hook_event_name === 'string'
       ? payload.hook_event_name
       : '';
@@ -121,7 +116,7 @@ function main() {
   const out = {
     hookSpecificOutput: {
       hookEventName: event,
-      additionalContext: isDevswarmPrimary(process.env) ? DEVSWARM_PRIMARY : BASELINE,
+      additionalContext: isDevswarmPrimary(process.env, cwd) ? DEVSWARM_PRIMARY : BASELINE,
     },
   };
 

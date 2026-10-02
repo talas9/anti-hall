@@ -72,16 +72,10 @@ const DEVSWARM_PRIMARY_NUDGE =
   '`node scripts/devswarm.js spawn <branch> -p "<brief>"` - not a subagent. Subagents/Explore/Workflow ' +
   'are for lookups, single commands, scoped investigations and review passes.';
 
-// isDevswarmPrimary(env) — DevSwarm active AND root/Primary (not a child workspace).
-// Fail-open to FALSE => the baseline nudge only.
-function isDevswarmPrimary(env) {
-  try {
-    const { isDevswarmActive } = require('./lib/devswarm-detect.js');
-    const { isChildWorkspace } = require('./lib/devswarm-role.js');
-    return isDevswarmActive(env) && !isChildWorkspace(env);
-  } catch (_) {
-    return false;
-  }
+// isDevswarmPrimary(env, cwd) — the shared gate (hooks/lib/primary-tier.js): DevSwarm Primary, devswarm.dispatchTierText on,
+// and not a repo that forbids workspaces. Fail-open to FALSE => the baseline text only.
+function isDevswarmPrimary(env, cwd) {
+  return require('./lib/primary-tier.js').primaryTierTextOn(env, cwd);
 }
 
 function main() {
@@ -111,7 +105,9 @@ function main() {
   }
 
   let nudge = NUDGES[idx] || NUDGES[0];
-  if (isDevswarmPrimary(process.env)) nudge = nudge + ' ' + DEVSWARM_PRIMARY_NUDGE;
+  let cwd;
+  try { cwd = JSON.parse(input.toString('utf8')).cwd; } catch (_) { cwd = undefined; }
+  if (isDevswarmPrimary(process.env, cwd)) nudge = nudge + ' ' + DEVSWARM_PRIMARY_NUDGE;
 
   // Official schema: `hookEventName` is NESTED in `hookSpecificOutput` (a sibling
   // of `additionalContext`), not a top-level field. KB §1.4 documents
