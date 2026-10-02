@@ -55,7 +55,15 @@ const RESUME_RE = /Resuming\s+agent\s+([0-9a-fA-F]{6,40})/i;
 // quotes the full id on a non-"running" line, so without this it tripped the
 // delivered-but-unnotified safety net and marked a live agent terminal (field,
 // 2026-10-02: a background agent messaged 4x was never nudged).
-const QUEUED_MSG_RE = /Message queued for delivery to\s/i;
+// Anchored to the real shape: the leaf must be the JSON result whose `message`
+// field BEGINS with the phrase; a leaf that merely quotes it is not skipped.
+function isQueuedMessageResult(text) {
+  if (typeof text !== 'string' || text.indexOf('Message queued for delivery to') === -1) return false;
+  try {
+    const o = JSON.parse(text);
+    return !!o && typeof o.message === 'string' && /^Message queued for delivery to\s/.test(o.message);
+  } catch (_) { return false; }
+}
 const RESUMED_ID_RE = /"resumedAgentId"\s*:\s*"([0-9a-fA-F]{6,40})"/;
 // A single transcript text leaf can hold SEVERAL <task-notification> blocks
 // (several agents can finish in the same turn) — TASK_NOTIFICATION_BLOCK_RE
@@ -228,7 +236,7 @@ function scanTranscript(transcriptPath, preLines) {
           if (Number.isFinite(entryTs)) resumeTs.set(rid, entryTs);
           continue;
         }
-        if (QUEUED_MSG_RE.test(text)) continue;
+        if (isQueuedMessageResult(text)) continue;
         if (isToolResult) otherToolResultTexts.push({ toolUseId, text, seq });
       }
     }
@@ -269,6 +277,9 @@ function scanTranscript(transcriptPath, preLines) {
   for (const [rid, rSeq] of resumeSeq) {
     const targets = [];
     for (const k of knownIds) if (k === rid || k.startsWith(rid)) targets.push(k);
+    // A prefix-only resume (no resumedAgentId) may act only on a UNIQUE match;
+    // 0 or 2+ matches are ambiguous -> do nothing.
+    if (!resumeFull.has(rid) && targets.length !== 1) targets.length = 0;
     // Launch record outside the scanned window but the resume names the full
     // id: adopt it as running from the resume time (output file unknown).
     if (!targets.length && resumeFull.has(rid) && resumeTs.has(rid)) {

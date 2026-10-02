@@ -914,3 +914,49 @@ test('STALE-BUILD DOWNGRADE does not burn the once-per-agent cap', () => {
     assert.ok(isBlock(testHook(HOOK, stopPayload(tp), { home: h.home })), 'once the build is current the suppressed nudge still fires');
   } finally { h.cleanup(); }
 });
+
+test('RESUME: a prefix-only resume matching TWO completed agents un-terminates neither; a unique prefix does', () => {
+  const h = makeHome();
+  try {
+    const idA = 'bbbb111122223331c';
+    const idB = 'bbbb111122223332c';
+    const out = writeOutputFile(h, 'ambig.output', 60 * 1000);
+    const prefixOnly = (prefix, ts) => ({
+      type: 'user',
+      message: { role: 'user', content: [{ tool_use_id: 'toolu_p' + prefix, type: 'tool_result', content: [{ type: 'text', text: JSON.stringify({ success: true, message: 'Resuming agent ' + prefix }) }] }] },
+      timestamp: ts,
+    });
+    const base = [
+      agentLaunchResultLine(idA, out, 'toolu_pa', isoMinutesAgo(100)),
+      agentLaunchResultLine(idB, out, 'toolu_pb', isoMinutesAgo(100)),
+      notificationLine(idA, 'completed', isoMinutesAgo(60)),
+      notificationLine(idB, 'completed', isoMinutesAgo(60)),
+    ];
+    const { scanTranscript } = require('../../plugins/anti-hall/hooks/lib/agent-scan.js');
+    const ambiguous = scanTranscript(h.writeTranscript(base.concat([prefixOnly('bbbb1111', isoMinutesAgo(30))])));
+    assert.ok(ambiguous.terminal.has(idA) && ambiguous.terminal.has(idB), 'ambiguous prefix must un-terminate neither');
+    const none = scanTranscript(h.writeTranscript(base.concat([prefixOnly('cccc9999', isoMinutesAgo(30))])));
+    assert.ok(none.terminal.has(idA) && none.terminal.has(idB), 'a prefix matching nothing does nothing');
+    const unique = scanTranscript(h.writeTranscript(base.concat([prefixOnly('bbbb11112222333' + '1', isoMinutesAgo(30))])));
+    assert.ok(!unique.terminal.has(idA) && unique.terminal.has(idB), 'a prefix matching exactly one agent un-terminates only it');
+  } finally { h.cleanup(); }
+});
+
+test('QUEUED MESSAGE: a leaf that merely QUOTES the phrase (not the JSON message field) is still delivery evidence', () => {
+  const h = makeHome();
+  try {
+    const id = 'bbbb111122223333c';
+    const out = writeOutputFile(h, 'quote.output', 60 * 60 * 1000);
+    const quoting = {
+      type: 'user',
+      message: { role: 'user', content: [{ tool_use_id: 'toolu_qq', type: 'tool_result', content: [{ type: 'text', text: 'Agent ' + id + ' result: done. (log: Message queued for delivery to ' + id + ' earlier)' }] }] },
+      timestamp: isoMinutesAgo(10),
+    };
+    const tp = h.writeTranscript([
+      agentLaunchResultLine(id, out, 'toolu_qa2', isoMinutesAgo(90)),
+      quoting,
+    ]);
+    const r = testHook(HOOK, stopPayload(tp), { home: h.home });
+    assert.ok(!isBlock(r), 'a quoting leaf is not a SendMessage result and must still count as delivery: ' + JSON.stringify(r.json));
+  } finally { h.cleanup(); }
+});
