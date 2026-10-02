@@ -6,44 +6,26 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
-## Unreleased
-
-### Changed
-
-- One handover format. The only place a handover lives is
-  `.anti-hall/handovers/<date>/<session_id>/HANDOVER.md`, and handovers are never committed.
-- An archived DevSwarm child is now told the exact handover path (the Stop reason and the
-  turn banner), and a flat `.anti-hall/handovers/*.md` it already wrote is a "move this file"
-  instruction. The flat-file reader stays only so the "handover written" metric stays truthful.
-- `CONTINUE-HERE.md` and `*.continue-here.md` are no longer on the coordinator edit allowlist:
-  editing an existing one still works, creating a new one is blocked with the canonical path.
-- The deadly-loop skill keeps its round state in `.anti-hall/history/<date>/<feature>-loop-state.md`
-  (a "loop state record"), no longer in a `docs/` "session handoff" file.
-
-### Added
-
-- git-guard blocks a `git commit` whose paths include a handover (anything under
-  `.anti-hall/handovers/`, or `HANDOVER*.md`, `CONTINUE-HERE.md`, `*.continue-here.md` at the
-  repository root; templates and docs deeper in the tree are fine). `git add` is never blocked,
-  but `git add -A && git commit` in one command is checked. Removing a tracked handover
-  (`git rm --cached`) and concluding a merge, cherry-pick, revert or rebase are allowed. Setting `guards.handoverCommitGuard` (default on, `ANTIHALL_HANDOVER_COMMIT_GUARD`);
-  fails open if git cannot be queried.
-- doctor warns (report-only, nothing moved) about handover files tracked by git or sitting
-  outside the canonical layout, each with its canonical destination.
-- A hygiene test that no file tracked in this repository is a handover.
+## 0.121.6 (2026-10-02)
 
 ### Fixed
 
-- **task-guard / task-tracker no longer guess task state that lies before the transcript tail window.** A `TaskUpdate` for an id whose `TaskCreate` and earlier updates sit before the 1.5 MB window used to be rebuilt as `status: pending` with no `blockedOn`, so an owner-blocked (or even completed) task drew an "IDLE NEGLECT" nag. Such a task is now status-unknown, and the existing bounded backward pass (same 64 MB / 150 ms caps, fail-open, runs only when a task has an unknown field) recovers the latest status, `blockedOn`, `blockedBy`, owner and subject. Still-unknown tasks are neither listed as open nor nagged; tasks recovered as completed stay closed. `tasklist-guard` no longer counts an update-only id as pending either.
-- **The backward pass only stops at a real list reset.** Numbering restarting, a TaskList result starting "No tasks found", or an assistant TodoWrite tool_use. A line that merely quotes those phrases (assistant text, a tool input) no longer cuts the scan short; this also fixes the subject backfill. "Task not found" is per id (that id is closed, the failed update is not applied) and no longer resets the whole list, before or inside the window.
-- **Recovered tasks reach every consumer.** The task-tracker per-turn "open tasks" line, task-guard and tasklist-guard now share one open view (`openOf` in `lib/task-state.js`) recomputed after the backfill; tasklist-guard runs the same backfill. A task with a known open status always stays in the generic Stop block; if its block state could not be established it is only excluded from the idle-neglect "dispatch now" set. A status carried inside the window is the truth: completed before the window and re-opened inside it nags again.
-- **Unknown is no longer invisible.** When tasks end in an unknown state, task-guard (appended to a block reason, or a non-blocking advisory) and the task-tracker line add one throttled line: "N task(s) in an unknown state (their records are too far back to read) — re-state each with TaskUpdate (status) to refresh." Its throttle state (`last-unknown-*.json`) is swept by `lib/state-prune.js`.
-- **Parallel TaskCreate calls of one assistant message numbered in reverse are no longer mistaken for a numbering restart** (backward pass and the in-window parsers).
-- silent-agent-nudge / agent-scan: a resume now counts only from a genuine tool_result (the JSON result carrying `resumedAgentId`, or whose `message` begins "Resuming agent <id>"); a task-notification, assistant text, typed text or tool_use input that merely quotes "Resuming agent <id>" no longer re-opens a killed agent. A launch likewise counts only from a tool_result whose text begins with the harness launch phrase and which does not answer a non-Agent call (a Read/Bash result containing launch text is no longer a phantom running agent). A `<task-notification>` closes an agent only when the message leaf begins with the tag (or a leading system-reminder wrapper), not when a message quotes a block mid-text (also in `companion/lib/devswarm-idle.js` `notificationTexts`). The "result delivered" safety net counts only the answer to a TaskOutput/SendMessage call naming the agent, not a grep/cat result that merely contains the id. An assistant `TaskStop` tool_use is now terminal for that agent (a later genuine resume re-opens it).
-- fix(merge-gate): only a real typed user prompt after the hedge ("owner approved" / "owner signed off" / ...) clears it; the assistant can never clear its own hedge, and peer / cross-session / hook-injected user records do not count. Hedge phrases inside quotes / inline code / code fences / blockquotes no longer false-block (shared `hooks/lib/quote-mask.js`, test-pinned identical to speculation-guard's mask). Default stays OFF.
-- fix(compact-declaration-guard): the ALL-CAPS "SAFE TO COMPACT" keeps its wherever-it-sits coverage; the only newly ignored shape is a markdown table row/cell. Headings and standalone marker lines are also accepted.
-- fix(devswarm-idle): a typed (non-meta) user prompt is always real work; "Stop hook feedback:" / mailbox-wake text typed by a human no longer classifies the turn as a ping.
-- fix(tasklist-guard): reset-store detection uses the anchored `isTaskNotFoundText`, so a TaskGet result that merely quotes "Task not found" is not a reset.
+- **Stop-time task check:** it no longer guesses the state of a task whose records are far back in a long session (it wrongly nagged tasks marked as waiting on the owner and re-opened finished ones). It now recovers the real state, and says so in one line when it cannot.
+- **Stalled-agent check:** an agent that was stopped is no longer reported as silent. A resume, a launch and a finish now count only from real system records, not from text that merely quotes them.
+- **Quoted text is no longer mistaken for a real signal** in four other checks: the merge gate (only something the user types can sign off a hedge; the assistant can no longer clear its own), the "safe to compact" declaration (table rows are ignored), DevSwarm idle tracking, and the task-list reset check.
+- **Judge setting:** the `jev.semanticJudge` setting now actually enables the optional judge. Previously only the environment variable did.
+- **Docs corrected:** CI matrix, release guide, Codex hook-event count, Windows wording, activate skill.
+- A docs link check no longer fails on local, git-ignored files.
+
+### Added
+
+- **Handovers are never committed:** git-guard blocks a commit that includes a handover (setting `guards.handoverCommitGuard`, on by default). Doctor lists tracked or out-of-format handovers, and the archived-workspace message names the exact handover path.
+- The manifest declares the plugin icon. A code-owners file.
+
+### Changed
+
+- New files named `CONTINUE-HERE.md` are blocked (existing ones stay editable). The deadly-loop state record moves under `.anti-hall/`.
+- Historical plans and audit reports moved to `docs/archive/`. The test workflow pins its actions and declares read-only permissions.
 
 ## 0.121.5 (2026-10-02)
 
