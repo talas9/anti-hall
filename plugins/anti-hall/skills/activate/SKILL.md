@@ -92,7 +92,7 @@ These are NOT touched by activate — they remain opt-in and require explicit us
 | `ANTIHALL_API_GUARD_THIRDPARTY` | Set env var to `1` in project settings |
 | `ANTIHALL_SHIPIT_GATE` | Set env var to `1` in project settings |
 | `ANTIHALL_MERGE_GATE` | Set env var to `1` in project settings |
-| `ANTIHALL_SEMANTIC_JUDGE` | Set env var to `1` + store `anthropic_api_key` via `/plugin config` |
+| Semantic judge | Set `jev.semanticJudge` to true (or `ANTIHALL_SEMANTIC_JUDGE=1`) + store `anthropic_api_key` via `/plugin config` |
 
 ## Important constraints
 
