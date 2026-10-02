@@ -6,6 +6,32 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## Unreleased
+
+### Changed
+
+- One handover format. The only place a handover lives is
+  `.anti-hall/handovers/<date>/<session_id>/HANDOVER.md`, and handovers are never committed.
+- An archived DevSwarm child is now told the exact handover path (the Stop reason and the
+  turn banner), and a flat `.anti-hall/handovers/*.md` it already wrote is a "move this file"
+  instruction. The flat-file reader stays only so the "handover written" metric stays truthful.
+- `CONTINUE-HERE.md` and `*.continue-here.md` are no longer on the coordinator edit allowlist:
+  editing an existing one still works, creating a new one is blocked with the canonical path.
+- The deadly-loop skill keeps its round state in `.anti-hall/history/<date>/<feature>-loop-state.md`
+  (a "loop state record"), no longer in a `docs/` "session handoff" file.
+
+### Added
+
+- git-guard blocks a `git commit` whose paths include a handover (anything under
+  `.anti-hall/handovers/`, or `HANDOVER*.md`, `CONTINUE-HERE.md`, `*.continue-here.md` at the
+  repository root; templates and docs deeper in the tree are fine). `git add` is never blocked,
+  but `git add -A && git commit` in one command is checked. Removing a tracked handover
+  (`git rm --cached`) and concluding a merge, cherry-pick, revert or rebase are allowed. Setting `guards.handoverCommitGuard` (default on, `ANTIHALL_HANDOVER_COMMIT_GUARD`);
+  fails open if git cannot be queried.
+- doctor warns (report-only, nothing moved) about handover files tracked by git or sitting
+  outside the canonical layout, each with its canonical destination.
+- A hygiene test that no file tracked in this repository is a handover.
+
 ## 0.121.5 (2026-10-02)
 
 ### Fixed

@@ -1545,6 +1545,50 @@ if (REPAIR_INGEST_ORPHANS) {
   infol('fix: add `.anti-hall/` to .gitignore, or run `doctor --repair` (appends it to .git/info/exclude; .gitignore is never edited)');
 })();
 
+// --- 5m1. handover format (WARN only, read-only: no repair, no file moves) ---
+// One handover format: .anti-hall/handovers/<date>/<session_id>/HANDOVER.md, never
+// committed. Reports (i) handover-named files TRACKED by git (hooks/lib/
+// handover-find.js isHandoverPath over `git ls-files`) and (ii) handover-like files
+// on disk outside that layout (repo root, or flat under .anti-hall/handovers/;
+// INDEX.md excluded), each with the canonical destination. Bounded (one git call,
+// two readdirs, 10 rows per list); silent when clean; fail-open on any error.
+(function handoverFormatSection() {
+  try {
+    const find = require('./lib/handover-find.js');
+    const { spawnSync } = require('child_process');
+    const root = find.repoRoot(process.cwd()); // the canonical resolver; cwd itself when not a repo
+    let tracked = [];
+    const ls = spawnSync('git', ['-C', root, 'ls-files', '-z'], { encoding: 'utf8', timeout: 5000, maxBuffer: 64 * 1024 * 1024 });
+    if (ls.status === 0 && typeof ls.stdout === 'string') tracked = ls.stdout.split('\0').filter((p) => p && find.isHandoverPath(p));
+    const dest = (rel) => {
+      let day;
+      try { day = find.localDate(fs.statSync(path.join(root, rel)).mtime); } catch (_) { day = '<YYYY-MM-DD>'; }
+      return '.anti-hall/handovers/' + day + '/<session_id>/HANDOVER.md';
+    };
+    const stray = [];
+    const scan = (dirRel) => {
+      let names = [];
+      try { names = fs.readdirSync(path.join(root, dirRel), { withFileTypes: true }).filter((e) => e.isFile()).map((e) => e.name); } catch (_) { names = []; }
+      for (const n of names) {
+        const rel = dirRel ? dirRel + '/' + n : n;
+        if (n === 'INDEX.md' || !/\.md$/i.test(n) || tracked.includes(rel)) continue;
+        // flat under handovers/: any .md; at the repo root: only handover-like names
+        if (dirRel || find.isHandoverPath(rel) || /handover|handoff/i.test(n)) stray.push(rel);
+      }
+    };
+    scan('');
+    scan('.anti-hall/handovers');
+    if (!tracked.length && !stray.length) return;
+    head('handover format (report-only; handovers live ONLY under .anti-hall/handovers/<date>/<session_id>/ and are never committed)');
+    for (const rel of tracked.slice(0, 10)) {
+      warnl('tracked by git: ' + rel + ' - run `git rm --cached ' + rel + '` (keeps the file), keep .anti-hall/ git-ignored' + (/(?:^|\/)\.anti-hall\/handovers\/[^/]+\/[^/]+\//.test(rel) ? '' : '; canonical location: ' + dest(rel)));
+    }
+    for (const rel of stray.slice(0, 10)) warnl('outside the canonical layout: ' + rel + ' - move it to ' + dest(rel));
+    const more = Math.max(0, tracked.length - 10) + Math.max(0, stray.length - 10);
+    if (more) infol('(+' + more + ' more not listed)');
+  } catch (_) { /* fail-open: report-only */ }
+})();
+
 // --- 5m. identity-rekey-candidates (REPORT-ONLY, CONDITIONAL, check mode
 // included) ---------------------------------------------------------------------
 // Mesh redesign Phase 2 B1: stores written under a submodule's legacy repoKey

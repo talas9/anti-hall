@@ -28,6 +28,7 @@ changes nothing.
   no mechanical signals (exit 0); omc-detect.js (the OMC-deference shared helper consumed
   by task-guard / tasklist-guard) is checked for presence + syntax validity.
 - **Phantom Primary rows:** report-only detection of Primary registrations keyed by a submodule cwd; only `--repair` archives them (nothing is deleted).
+- **Handover format:** warns (report-only, nothing moved) about handover files tracked by git or sitting outside `.anti-hall/handovers/<date>/<session_id>/`, each with its canonical destination.
 - **Statusline:** whether a statusLine is installed and in which scope.
 - **DevSwarm RUNTIME health** (when the DevSwarm gate is active — same gate as the
   liveness supervisor section): store/journal health (sqlite `quick_check` via an

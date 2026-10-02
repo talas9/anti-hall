@@ -122,6 +122,10 @@ function newestWorktreeHandover(worktree, opts) {
 // BEFORE the archive; archive time = the marker's archivedAt, else its ctime
 // (the hardlink/unlink at archive). Shared by the archived-child Stop gate and
 // turn hook so both record the same `handoverWritten`.
+// LEGACY READER, NOT AN ACCEPTED FORMAT: the only handover format is
+// .anti-hall/handovers/<date>/<session>/HANDOVER.md. The flat-file read exists
+// only so `handoverWritten` stays truthful for a file an agent already wrote
+// in the wrong place; the archived-child messages tell the agent to MOVE it.
 const FLAT_HANDOVER_LOOKBACK_MS = 24 * 60 * 60 * 1000;
 function archivedChildHandover(worktree, home, id) {
   let sinceMs = null;

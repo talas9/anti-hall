@@ -432,7 +432,7 @@ function buildArchiveRequestSegment(id) {
 // only injects a message and refuses the descriptor rewrite below.
 const ARCHIVED_BANNER =
   'DEVSWARM CHILD ARCHIVED: this workspace was archived. Finish or abandon the '
-  + 'current step, write a handover (`/anti-hall:handover`), then stop — take no '
+  + 'current step, write a handover (`/anti-hall:handover`) in .anti-hall/handovers/<date>/<session_id>/HANDOVER.md, never a flat file, then stop — take no '
   + 'new work. Delete your own `inbox tick` cron (CronList, CronDelete); the mailbox watcher is already silent.';
 
 // resolveArchivedChildContext(env, sessionId, cwd, home) -> { id, worktreePath } |

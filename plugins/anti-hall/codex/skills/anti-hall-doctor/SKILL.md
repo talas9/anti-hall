@@ -31,6 +31,9 @@ node "$ANTI_HALL_ROOT/hooks/doctor.js" --dry-run # print what --repair would fix
 node "$ANTI_HALL_ROOT/hooks/doctor.js" --check   # read-only — the CI/scripting path
 ```
 
+Doctor also warns (report-only, nothing moved) about handover files tracked by git or
+outside `.anti-hall/handovers/<date>/<session_id>/`, each with its canonical destination.
+
 Repair flags (mirror the Claude `doctor` skill): plain doctor is read-only; `--repair` /
 `--fix` apply; `--dry-run` shows would-fix and writes nothing; `--check` is read-only;
 `--quiet` is the one-line verdict. When the user asks to repair/fix anti-hall, pass

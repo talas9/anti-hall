@@ -1702,6 +1702,49 @@ test('ARCHIVED CHILD-GATE: metrics record the block and (on the next Stop) the c
   } finally { h.cleanup(); }
 });
 
+// One handover format: the archived Stop reason names the exact canonical path
+// and never leaves the agent to invent a flat file; a flat file already written
+// is told to MOVE (both paths named), unless a canonical handover exists too.
+function archivedGateReason(wtOpt, prepare) {
+  const h = makeHome();
+  const wt = fs.mkdtempSync(path.join(os.tmpdir(), 'gate-archived-wt-'));
+  try {
+    const id = 'gate-archived-fmt';
+    seedArchivedGateWorkspace(h.home, id, wt, 's1');
+    writeGateArchivedMarker(h.home, id, wt, 's1');
+    if (prepare) prepare(wt);
+    const env = Object.assign({}, CHILD_ENV, { DEVSWARM_BUILDER_ID: id });
+    const r = testHook(HOOK, stopPayload({ cwd: wt }), { home: h.home, expectJson: true, env });
+    assert.strictEqual(r.json && r.json.decision, 'block', `got: ${r.stdout}`);
+    return r.json.reason;
+  } finally { h.cleanup(); fs.rmSync(wt, { recursive: true, force: true }); }
+}
+const todayLocal = () => require('../../plugins/anti-hall/hooks/lib/handover-find.js').localDate();
+
+test('ARCHIVED CHILD-GATE: reason names the exact canonical handover path, never a flat file', () => {
+  const reason = archivedGateReason();
+  assert.ok(reason.includes('.anti-hall/handovers/' + todayLocal() + '/s1/HANDOVER.md'), reason);
+  assert.match(reason, /never a flat file/);
+});
+
+test('ARCHIVED CHILD-GATE: a flat handovers/*.md with no canonical one -> told to MOVE it (both paths named)', () => {
+  const reason = archivedGateReason(null, (wt) => {
+    fs.mkdirSync(path.join(wt, '.anti-hall', 'handovers'), { recursive: true });
+    fs.writeFileSync(path.join(wt, '.anti-hall', 'handovers', '2026-10-02-web-ota-r2.md'), '# h\n');
+  });
+  assert.match(reason, /MOVE `\.anti-hall\/handovers\/2026-10-02-web-ota-r2\.md`/);
+  assert.ok(reason.includes('.anti-hall/handovers/' + todayLocal() + '/s1/HANDOVER.md'), reason);
+});
+
+test('ARCHIVED CHILD-GATE: flat file PLUS a canonical handover -> no MOVE instruction', () => {
+  const reason = archivedGateReason(null, (wt) => {
+    fs.mkdirSync(path.join(wt, '.anti-hall', 'handovers', '2026-10-01', 'sx'), { recursive: true });
+    fs.writeFileSync(path.join(wt, '.anti-hall', 'handovers', '2026-10-01', 'sx', 'HANDOVER.md'), '# h\n');
+    fs.writeFileSync(path.join(wt, '.anti-hall', 'handovers', 'flat-note.md'), '# h\n');
+  });
+  assert.doesNotMatch(reason, /MOVE/);
+});
+
 test('NON-ARCHIVED CHILD-GATE: unaffected — normal heartbeat-report forcing still applies', () => {
   const h = makeHome();
   seedAllTestDescriptors(h.home);

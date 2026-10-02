@@ -21,6 +21,19 @@ const UNKNOWN_SESSION = 'unknown-session';
 const HANDOVER_FILE_RE = /^HANDOVER(?:-(\d+))?\.md$/;
 const PRECOMPACT_FILE_RE = /^PRECOMPACT-(\d+)\.md$/;
 
+// isHandoverPath(repoRelPath) -> true when a repo-relative path is a session
+// handover that must never be committed: (a) anything under
+// `<anything>/.anti-hall/handovers/`, or (b) a file at the REPOSITORY ROOT named
+// HANDOVER[-*].md, CONTINUE-HERE.md or *.continue-here.md. Nothing else: a
+// docs/templates/HANDOVER.md or the plugin's own skills/handover/SKILL.md never
+// match. Shared by git-guard (commit block), doctor and the hygiene test.
+const ROOT_HANDOVER_RE = /^(?:HANDOVER(?:-[^/]*)?\.md|CONTINUE-HERE\.md|[^/]*\.continue-here\.md)$/;
+function isHandoverPath(p) {
+  const norm = String(p || '').replace(/\\/g, '/').replace(/^(?:\.\/)+/, '');
+  if (/(?:^|\/)\.anti-hall\/handovers\//.test(norm)) return true;
+  return !norm.includes('/') && ROOT_HANDOVER_RE.test(norm);
+}
+
 // sanitizeSessionId -- reused EXACTLY from tasklist-guard.js so session-id
 // comparisons line up with the directory names the handover skill (and
 // tasklist-guard's own progress/history dirs) already produce.
@@ -258,6 +271,7 @@ module.exports = {
   UNKNOWN_SESSION,
   HANDOVER_FILE_RE,
   PRECOMPACT_FILE_RE,
+  isHandoverPath,
   sanitizeSessionId,
   localDate,
   repoRoot,

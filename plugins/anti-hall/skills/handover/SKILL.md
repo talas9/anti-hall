@@ -49,6 +49,10 @@ Write/Edit never hit in the first place.
 
 ## Artifact layout
 
+**Handovers are never committed; the only format is the layout below** — no flat
+files, no `CONTINUE-HERE.md`, no copy under `docs/`. git-guard blocks a commit that
+includes one and doctor warns about strays.
+
 ```
 .anti-hall/handovers/
   INDEX.md                              # global index — one row per handover, appended, never rewritten

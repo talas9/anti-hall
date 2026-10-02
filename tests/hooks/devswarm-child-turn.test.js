@@ -1842,6 +1842,7 @@ test('ARCHIVED CHILD: descriptor is never rewritten, and the ARCHIVED banner is 
     assert.ok(ctx(r2).includes('DEVSWARM CHILD ARCHIVED'), `must surface the ARCHIVED banner; ctx=${ctx(r2)}`);
     assert.ok(ctx(r2).includes('/anti-hall:handover'), 'must direct the child to write a handover');
     assert.ok(ctx(r2).includes('stop'), 'must direct the child to stop');
+    assert.ok(ctx(r2).includes('.anti-hall/handovers/<date>/<session_id>/HANDOVER.md, never a flat file'), 'must name the one handover format');
   } finally { h.cleanup(); }
 });
 

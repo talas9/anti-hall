@@ -894,14 +894,27 @@ function main() {
     if (archivedStop && archivedStop.archived) {
       const decision = stopPolicy.consume(archivedGateHome, sessionId, 'child-gate', [ARCHIVED_STOP_KIND], ARCHIVED_STOP_CAP, now);
       let handoverWritten = false;
-      try { handoverWritten = !!require('../companion/lib/primary-seat.js').archivedChildHandover(archivedStop.worktreePath, archivedGateHome, archivedStop.id); } catch (_) { handoverWritten = false; }
+      let flatHandover = null; // a flat handovers/*.md (legacy reader) with no canonical handover beside it
+      try {
+        const seat = require('../companion/lib/primary-seat.js');
+        const found = seat.archivedChildHandover(archivedStop.worktreePath, archivedGateHome, archivedStop.id);
+        handoverWritten = !!found;
+        if (found && found.sessionId == null && !seat.newestWorktreeHandover(archivedStop.worktreePath)) flatHandover = found.path;
+      } catch (_) { handoverWritten = false; }
+      let canonicalPath = null;
+      try { canonicalPath = require('./lib/auto-handover-text.js').expectedHandoverPath({ cwd: archivedGateCwd, session_id: sessionId }); } catch (_) { canonicalPath = null; }
+      canonicalPath = canonicalPath || '.anti-hall/handovers/<YYYY-MM-DD>/<session_id>/HANDOVER.md';
+      const archivedHandoverAsk = flatHandover
+        ? 'A flat handover file is not the handover format: MOVE `.anti-hall/handovers/' + path.basename(flatHandover)
+          + '` to `' + canonicalPath + '` (never leave it flat)'
+        : 'Save a handover (`/anti-hall:handover`) to `' + canonicalPath + '` (never a flat file) if you have not already';
       try {
         const metrics = require('../companion/lib/archived-child-metrics.js');
         metrics.recordEvent(archivedGateHome, archivedStop.id, decision.block ? 'stop-blocked' : 'stop-cleared', { now, handoverWritten });
       } catch (_) { /* metrics only, never blocks */ }
       if (decision.block) {
-        emitBlock('DEVSWARM CHILD ARCHIVED: this workspace was archived. Save a handover '
-          + '(`/anti-hall:handover`) if you have not already, THEN stop — this workspace is '
+        emitBlock('DEVSWARM CHILD ARCHIVED: this workspace was archived. '
+          + archivedHandoverAsk + ', THEN stop — this workspace is '
           + 'no longer tracked and you will not be asked again. Delete your own `inbox tick` '
           + 'cron (CronList, CronDelete); the mailbox watcher is already silent.');
       }

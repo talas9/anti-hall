@@ -44,7 +44,7 @@ Use for (full three-lens round):
 Round structure:
 
 1. Snapshot branch/SHA and changed files.
-2. Create or update `docs/<date>-<topic>-session-handoff.md` with current state.
+2. Create or update the loop state record `.anti-hall/history/<date>/<topic>-loop-state.md` with current state.
 3. Run three independent review lenses:
    - Reviewer: correctness/architecture, **frontier** category
    - Auditor: regression/coupling, **frontier** category

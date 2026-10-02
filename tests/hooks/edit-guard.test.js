@@ -113,7 +113,7 @@ for (const p of NESTED_BARE_BLOCKED) {
   });
 }
 
-const ROOT_BARE_ALLOWED = ['CLAUDE.md', 'PLAN.md', 'STATE.json', 'CONTINUE-HERE.md'];
+const ROOT_BARE_ALLOWED = ['CLAUDE.md', 'PLAN.md', 'STATE.json'];
 for (const p of ROOT_BARE_ALLOWED) {
   test(`BARE-FILENAME ROOT-ANCHORED: cli + Edit on root ${p} -> ALLOWED`, () => {
     const r = runCoord(editPayload('Edit', { filePath: p }));
@@ -135,12 +135,44 @@ test("ALLOWLIST: env ANTIHALL_EDIT_GUARD_ALLOW='**/CLAUDE.md' still opts nested 
 // and the mandated regression checks (normal file still blocked with the
 // UNCHANGED reason string; a traversal/lookalike does not slip through).
 
-for (const tool of ['Write', 'Edit']) {
-  test(`CONTINUE-HERE.md ALLOWLIST: coordinator ${tool} on root CONTINUE-HERE.md -> ALLOWED`, () => {
-    const r = runCoord(editPayload(tool, { filePath: 'CONTINUE-HERE.md' }));
-    assert.strictEqual(r.status, 0, `stdout: ${r.stdout}`);
+// ONE HANDOVER FORMAT (0.122): CONTINUE-HERE.md / *.continue-here.md are no
+// longer allowlisted. An EXISTING root file stays editable (never strand a
+// user's file); a NEW one is blocked with the canonical path.
+const LEGACY_CONTINUE_NAMES = ['CONTINUE-HERE.md', 'session.continue-here.md', '.continue-here.md'];
+for (const name of LEGACY_CONTINUE_NAMES) {
+  test(`LEGACY CONTINUE-HERE: EXISTING root ${name} -> Edit stays ALLOWED`, () => {
+    const proj = makeProject();
+    try {
+      fs.writeFileSync(path.join(proj.dir, name), '# old\n', 'utf8');
+      const r = runIn(proj, 'Edit', name);
+      assert.strictEqual(r.status, 0, `stdout: ${r.stdout}`);
+    } finally { proj.cleanup(); }
   });
+  for (const tool of ['Write', 'Edit']) {
+    test(`LEGACY CONTINUE-HERE: NEW root ${name} (${tool}) -> BLOCKED, names the canonical path`, () => {
+      const proj = makeProject();
+      try {
+        const r = runIn(proj, tool, name);
+        assert.strictEqual(r.status, 2, `stdout: ${r.stdout}`);
+        assert.match(r.json.reason, /HANDOVER-LOCATION RULE/);
+        assert.match(r.json.reason, /\.anti-hall\/handovers\/<YYYY-MM-DD>\/<session-id>\/HANDOVER\.md/);
+      } finally { proj.cleanup(); }
+    });
+  }
 }
+
+test('LEGACY CONTINUE-HERE: EXISTING ./CONTINUE-HERE.md (leading ./) -> Edit stays ALLOWED; NEW one is still blocked', () => {
+  const proj = makeProject();
+  try {
+    const h = makeHome();
+    try {
+      const edit = () => testHook(HOOK, editPayload('Edit', { filePath: './CONTINUE-HERE.md', cwd: proj.dir }), { home: h.home, env: COORD });
+      assert.strictEqual(edit().status, 2, 'new file blocked');
+      fs.writeFileSync(path.join(proj.dir, 'CONTINUE-HERE.md'), '# old\n', 'utf8');
+      assert.strictEqual(edit().status, 0, 'existing file allowed');
+    } finally { h.cleanup(); }
+  } finally { proj.cleanup(); }
+});
 
 // The plain (non-DevSwarm) coordinator reason, WITH the skip-guard override
 // hint appended (papercut fix: the block message now names the documented
@@ -289,8 +321,6 @@ test('NO permission_mode field: src edit STILL BLOCKED (unchanged baseline)', ()
 
 const NEW_ARTIFACT_ALLOWED = [
   'plan.md',                       // lowercase plan file (ship-it-guard convention)
-  'session.continue-here.md',      // prefixed handover variant at root
-  '.continue-here.md',             // empty-prefix handover variant at root
 ];
 for (const p of NEW_ARTIFACT_ALLOWED) {
   test(`NEW ALLOWLIST: coordinator + Write on root ${p} -> ALLOWED`, () => {
@@ -447,7 +477,7 @@ test('SYMLINK BYPASS: a symlinked allowlisted file blocks with the UNCHANGED rea
 // FIRST-WRITE MUST STILL WORK: an ENOENT is the EXPECTED case (Write CREATES
 // these files), never an fs error — if this regressed, the coordinator could no
 // longer create its own handover/plan/state files at all.
-for (const name of ['CONTINUE-HERE.md', 'PLAN.md', 'STATE.json']) {
+for (const name of ['PLAN.md', 'STATE.json']) {
   test(`SYMLINK CHECK: NON-EXISTENT ${name} (first Write) -> still ALLOWED`, () => {
     const p = makeProject();
     try {
@@ -579,18 +609,21 @@ test('NON-DEVSWARM: block reason is the pre-fix baseline plus the skip-hint (no 
 
 // NOTE (owner amendment 2026-08-07, thread 3): a NEW handover-named .md write
 // OUTSIDE .anti-hall/handovers/** is now REDIRECTED (see WRONG-LOCATION
-// REDIRECT tests below) rather than silently allowed anywhere. Only
-// CONTINUE-HERE.md / .continue-here.md stay in this "always allowed" list —
-// they are matched by the separate DEFAULT_ALLOW bare-filename allowlist
-// (isAllowed), not by isHandoverDoc, so this specific change does not touch them.
-const HANDOVER_DOC_ALLOWED = [
-  'CONTINUE-HERE.md',
-  '.continue-here.md',
-];
-for (const p of HANDOVER_DOC_ALLOWED) {
-  test(`HANDOVER DOC: DevSwarm Primary Write on ${p} -> ALLOWED`, () => {
-    const r = runCoord(editPayload('Write', { filePath: p }), PRIMARY_ENV);
-    assert.strictEqual(r.status, 0, `stdout: ${r.stdout}`);
+// REDIRECT tests below) rather than silently allowed anywhere. The legacy
+// CONTINUE-HERE.md / .continue-here.md names follow the same rule (see the
+// LEGACY CONTINUE-HERE tests above).
+for (const p of ['CONTINUE-HERE.md', '.continue-here.md']) {
+  test(`HANDOVER DOC: DevSwarm Primary EXISTING ${p} -> Edit ALLOWED`, () => {
+    const proj = makeProject();
+    try {
+      fs.writeFileSync(path.join(proj.dir, p), '# old\n', 'utf8');
+      const h = makeHome();
+      try {
+        const r = testHook(HOOK, editPayload('Edit', { filePath: path.join(proj.dir, p), cwd: proj.dir }),
+          { home: h.home, env: Object.assign({}, COORD, PRIMARY_ENV) });
+        assert.strictEqual(r.status, 0, `stdout: ${r.stdout}`);
+      } finally { h.cleanup(); }
+    } finally { proj.cleanup(); }
   });
 }
 

@@ -69,20 +69,17 @@ const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
 
 // Default allow-globs: paths the coordinator is documented/expected to touch
 // directly (its own state/plan/docs), never delegated.
-// CONTINUE-HERE.md is the coordinator's own session-handover artifact — no
-// subagent has seen the coordinator's conversation, so delegating it produces
-// a worse handover than the coordinator writing it directly (same rationale
-// as PLAN.md/STATE.json below). Bare filename => root-anchored (see isAllowed).
+// CONTINUE-HERE.md / '*.continue-here.md' are NO LONGER allowlisted: the only
+// handover format is .anti-hall/handovers/<date>/<session>/HANDOVER.md. Editing
+// an EXISTING root file of that name stays allowed and a NEW one is blocked with
+// the canonical path — see isLegacyContinueHere() and the HANDOVER-LOCATION RULE
+// in main().
 //
 // ORCHESTRATOR ARTIFACTS (why each is coordinator-owned, never a source file):
 //   - 'plan.md' (lowercase): the plan file is a planning artifact, not code —
 //     ship-it-guard.js treats both 'PLAN.md' and 'plan.md' as the plan; the
 //     allowlist only had the uppercase form, so a Primary drafting a lowercase
 //     'plan.md' was wrongly blocked. Root-anchored bare filename.
-//   - '*.continue-here.md': prefixed handover variants (e.g.
-//     'session.continue-here.md') are the same class as root 'CONTINUE-HERE.md'
-//     — a coordinator's own synthesis of its own conversation. '.md' only and
-//     root-anchored (bare pattern), so no source file qualifies.
 //   - '**/.claude/projects/**/memory/**': Claude Code's per-project memory
 //     store (MEMORY.md + linked notes). It lives OUTSIDE the repo cwd (under
 //     ~/.claude/...), so a cwd-relative '.claude/**' glob does NOT reach it —
@@ -91,8 +88,7 @@ const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
 const DEFAULT_ALLOW = [
   'CLAUDE.md', 'AGENTS.md', 'GEMINI.md',
   '.claude/**', '.omc/**', '.anti-hall/**',
-  'PLAN.md', 'plan.md', 'STATE.json', 'CONTINUE-HERE.md',
-  '*.continue-here.md',
+  'PLAN.md', 'plan.md', 'STATE.json',
   '**/.claude/projects/**/memory/**',
 ];
 
@@ -391,6 +387,15 @@ function isHandoverDoc(filePath) {
   const base = basename(filePath);
   if (!/\.md$/i.test(base)) return false; // constraint (2): markdown docs ONLY
   return HANDOVER_DOC_RE.test(base);
+}
+
+// isLegacyContinueHere(filePath, cwd) -> true for a ROOT-level 'CONTINUE-HERE.md'
+// or '<prefix>.continue-here.md' (the old allowlisted handover names). Root only,
+// like the bare allowlist patterns they replace; nested ones were never allowed.
+function isLegacyContinueHere(filePath, cwd) {
+  if (!filePath) return false;
+  const rel = path.posix.normalize(toRelPath(filePath, cwd)); // './CONTINUE-HERE.md' -> root
+  return !rel.includes('/') && /^(?:CONTINUE-HERE\.md|[^/]*\.continue-here\.md)$/.test(rel);
 }
 
 // OWN-SESSION SCRATCHPAD EXEMPTION (P2 fp 385aa8beb602, widened for fp
@@ -769,7 +774,9 @@ function main() {
   // as before (allowed) since the redirect has nowhere reliable to check
   // existence against. Skippable via the existing skip.json mechanism (the
   // 'edit-guard' key), already honored at the top of main().
-  if (isHandoverDoc(filePath) && isWithinCwd(filePath, cwd) && allowlistIsHonest(filePath, cwd)) {
+  // Legacy CONTINUE-HERE names ride the same rule: an existing file stays
+  // editable (never strand a user's file), a NEW one is redirected.
+  if ((isHandoverDoc(filePath) || isLegacyContinueHere(filePath, cwd)) && isWithinCwd(filePath, cwd) && allowlistIsHonest(filePath, cwd)) {
     if (!cwd) {
       process.exit(0); // ambiguous cwd -> old broad-allow behavior, unchanged
     }
@@ -786,7 +793,7 @@ function main() {
       decision: 'block',
       reason:
         'HANDOVER-LOCATION RULE: a NEW session-handover doc belongs under ' +
-        '.anti-hall/handovers/<YYYY-MM-DD>/<session-id>/ (see the `handover` skill, ' +
+        '.anti-hall/handovers/<YYYY-MM-DD>/<session-id>/HANDOVER.md (see the `handover` skill, ' +
         'which computes <date>/<session-id> for you) — not at this path. Write ' +
         'handovers under .anti-hall/handovers/** (exempt); copy elsewhere afterwards ' +
         'if the project wants one. If this is an intentional exception, honor it via ' +

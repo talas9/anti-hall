@@ -1914,6 +1914,140 @@ function callLiteralCommands(cmd) {
 // into `eval <payload>` segments (depth-bounded) so force/trailer forms hidden
 // behind eval are still caught. Mirrors the wrapper-unwrapping already done for
 // command/sudo/env/timeout in effectiveVerb.
+// --- Rule 3: never commit a session handover (guards.handoverCommitGuard) ---
+// `git commit` whose to-be-committed paths include a handover (see
+// handover-find.js isHandoverPath) is blocked; `git add` never is. The paths
+// come from READ-ONLY `git diff` queries run in the commit's own directory
+// (the cwd, a preceding literal `cd`, and `git -C`, resolved like
+// commitRepoDirs). FAIL OPEN everywhere: an unknown/missing directory, a
+// --git-dir/--work-tree/--pathspec-from-file form, a failed or timed-out query,
+// or an unreadable setting never blocks. Deletions are excluded
+// (--diff-filter=d) so `git rm --cached <handover>` + commit is allowed, and a
+// repo mid merge / cherry-pick / revert / rebase is skipped (the incoming
+// history may legitimately carry a handover). When the same command also runs
+// `git add` (or `commit -a`), untracked / unstaged handovers the add would pick
+// up are checked with a read-only `git status`; an ignored `.anti-hall/` shows
+// nothing there, which is correct. Budget exhaustion is NOT silent: the skipped
+// commits are counted and main() adds one advisory line (no block).
+let handoverQueryBudget = 8; // distinct git queries per invocation (one process = one PreToolUse call)
+let handoverSkipped = 0; // commits not checked because a budget ran out
+const handoverQueryCache = new Map();
+const handoverAdds = []; // pathspecs of `git add` segments seen so far in this command ('.' = everything)
+const COMMIT_VALUE_OPTS = new Set(['-m', '-F', '-C', '-c', '-t', '--message', '--file', '--author', '--date',
+  '--template', '--reuse-message', '--reedit-message', '--fixup', '--squash', '--cleanup']);
+let handoverEvalBudget = 50; // evaluations per invocation; a 20000x-repeated commit must stay cheap
+let handoverGuardOn = null; // guards.handoverCommitGuard, read once per invocation
+function committedHandovers(ev, lastCdDir) {
+  const { sub, rest } = gitSubcommand(ev.args);
+  if (sub !== 'commit') return null;
+  let dir = lastCdDir || process.cwd();
+  for (let k = 0; k < ev.args.length; k++) {
+    const t = ev.args[k].text;
+    if (t === '-C' && k + 1 < ev.args.length) { dir = path.resolve(dir, ev.args[k + 1].text); k++; continue; }
+    if (t === '--git-dir' || t === '--work-tree' || t.startsWith('--git-dir=') || t.startsWith('--work-tree=')) return null;
+    if (t === '-c' || t === '--namespace' || t === '--config-env') { k++; continue; }
+    if (t.startsWith('-')) continue;
+    break; // reached the subcommand
+  }
+  let all = false;
+  const specs = [];
+  let afterDashDash = false;
+  for (let i = 0; i < rest.length; i++) {
+    const t = rest[i].text;
+    if (afterDashDash || !t.startsWith('-')) { specs.push(t); continue; }
+    if (t === '--') { afterDashDash = true; continue; }
+    if (t === '--all') { all = true; continue; }
+    if (t.startsWith('--pathspec-from-file')) return null;
+    if (t.startsWith('--')) { if (COMMIT_VALUE_OPTS.has(t)) i++; continue; }
+    // short-option cluster: `-a`, `-am msg`, `-sa`; stop at the first
+    // value-taking letter (the rest of the cluster is its value).
+    const cluster = t.slice(1);
+    for (let c = 0; c < cluster.length; c++) {
+      if (cluster[c] === 'a') all = true;
+      if ('mFCct'.includes(cluster[c])) { if (c === cluster.length - 1) i++; break; }
+      if ('Su'.includes(cluster[c])) break; // attached-value only
+    }
+  }
+  const { spawnSync } = require('child_process');
+  // Memoized + budgeted: one query per distinct (repo dir, shape), so a command
+  // repeating `git commit` thousands of times spawns one git process (PERF test).
+  // null = unknown (query failed/timed out) -> fail open; `undefined` = budget
+  // exhausted -> counted as skipped by the caller.
+  const query = (args, parse) => {
+    const key = dir + '\0' + args.join('\0');
+    if (handoverQueryCache.has(key)) return handoverQueryCache.get(key);
+    if (handoverQueryBudget <= 0) return undefined;
+    handoverQueryBudget--;
+    const r = spawnSync('git', ['-C', dir, '-c', 'diff.relative=false', ...args], { encoding: 'utf8', timeout: 3000 });
+    const out = r.status === 0 && typeof r.stdout === 'string' ? parse(r.stdout) : null;
+    handoverQueryCache.set(key, out);
+    return out;
+  };
+  const names = (s) => s.split('\0').filter(Boolean);
+  const diff = (args) => query(['diff', '--name-only', '--diff-filter=d', '-z', ...args], names);
+  let paths;
+  if (specs.length) {
+    // `git commit <pathspec>` commits only those paths (working tree vs HEAD).
+    paths = diff(['HEAD', '--', ...specs]);
+  } else {
+    paths = diff(['--cached']);
+    if (paths && all) {
+      const tracked = diff([]);
+      paths = tracked ? paths.concat(tracked) : tracked;
+    }
+  }
+  // `git add ...; git commit` in one command: the hook runs before the add, so
+  // also look at untracked / unstaged handovers the add would pick up.
+  // (`commit -a` alone only takes TRACKED changes, already covered by diff above.)
+  if (paths && !specs.length && handoverAdds.length) {
+    const st = query(['status', '--porcelain', '-z', '--untracked-files=all', '--',
+      ':(top,glob)**/.anti-hall/handovers/**', ':(top,glob)HANDOVER.md', ':(top,glob)HANDOVER-*.md',
+      ':(top,glob)CONTINUE-HERE.md', ':(top,glob)*.continue-here.md'],
+    (s) => names(s).filter((e) => !/^( D|D |.D)/.test(e)).map((e) => e.slice(3)));
+    if (st === undefined) paths = undefined;
+    else if (st) {
+      const covered = (p) => handoverAdds.some((a) => a === '.' || a === p || p.startsWith(a.replace(/\/+$/, '') + '/'));
+      paths = paths.concat(st.filter(covered));
+    }
+  }
+  if (paths === undefined) { handoverSkipped++; return null; }
+  if (!paths) return null;
+  const { isHandoverPath } = require('./lib/handover-find.js');
+  const hits = paths.filter(isHandoverPath);
+  if (!hits.length) return null;
+  // Mid merge / cherry-pick / revert / rebase: the incoming history may already
+  // carry a handover and concluding the operation must work. Fail open on error.
+  const gd = spawnSync('git', ['-C', dir, 'rev-parse', '--git-dir'], { encoding: 'utf8', timeout: 3000 });
+  if (gd.status !== 0 || !gd.stdout.trim()) return null;
+  const gitDir = path.resolve(dir, gd.stdout.trim());
+  for (const m of ['MERGE_HEAD', 'CHERRY_PICK_HEAD', 'REVERT_HEAD', 'rebase-merge', 'rebase-apply']) {
+    if (fs.existsSync(path.join(gitDir, m))) return null;
+  }
+  return hits;
+}
+
+function handoverCommitVerdict(ev, lastCdDir) {
+  if (!ev.args.some((t) => t.text === 'commit')) return null; // cheap pre-filter (aliases are not resolved: fail open)
+  if (handoverEvalBudget-- <= 0) { handoverSkipped++; return null; }
+  try {
+    if (handoverGuardOn === null) handoverGuardOn = require('./lib/settings.js').enabled('guards', 'handoverCommitGuard');
+    if (!handoverGuardOn) return null;
+    const hits = committedHandovers(ev, lastCdDir);
+    if (!hits) return null;
+    return (
+      'anti-hall git-guard: BLOCKED. This commit includes a session handover (' +
+      hits.slice(0, 3).join(', ') + (hits.length > 3 ? ', ...' : '') + '). Handovers are ' +
+      'local session state and are never committed. To unstage a NEW one: ' +
+      '`git restore --staged <path>`. If it is ALREADY tracked: `git rm --cached <path>` ' +
+      'and commit that removal (allowed). If the owner explicitly asked to commit this ' +
+      'file, the override is the ~/.anti-hall/skip.json git-guard escape hatch (direct ' +
+      'human instruction only).'
+    );
+  } catch (_) {
+    return null; // fail open
+  }
+}
+
 function scanCommand(cmd, depth, baseCwd) {
   const d = typeof depth === 'number' ? depth : 0;
   if (d === 0) launcherCmdText = cmd;
@@ -2056,6 +2190,17 @@ function scanCommand(cmd, depth, baseCwd) {
 
     const gv = gitVerdict(ev, d, cmd, heredocBodies, lastCdDir, true);
     if (gv) return gv;
+    if (handoverAdds.length < 50 && ev.args.some((t) => t.text === 'add')) {
+      const { sub: addSub, rest: addRest } = gitSubcommand(ev.args);
+      if (addSub === 'add') {
+        const specs = addRest.filter((t) => !t.text.startsWith('-') || t.text === '--').map((t) => t.text).filter((x) => x !== '--');
+        const broad = !specs.length || addRest.some((t) => /^-(?:[A-Za-z]*[Au][A-Za-z]*|-all|-update)$/.test(t.text));
+        if (broad) handoverAdds.push('.');
+        for (const s of specs) handoverAdds.push(s.replace(/^\.\//, '') || '.');
+      }
+    }
+    const hv = handoverCommitVerdict(ev, lastCdDir);
+    if (hv) return hv;
   }
   if (d === 0) {
     const lb = launcherBackstop(cmd, baseCwd);
@@ -2649,6 +2794,13 @@ function main() {
     return block(msg);
   }
 
+  // The handover-commit check ran out of budget for some commits: say so (no block).
+  if (handoverSkipped > 0) {
+    fs.writeSync(1, JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext:
+      'anti-hall git-guard: the handover-commit check was skipped for ' + handoverSkipped +
+      ' commit(s) in this command (too many distinct commits/repos to check). Make sure none of them ' +
+      'includes a session handover (.anti-hall/handovers/**, HANDOVER*.md, CONTINUE-HERE.md).' } }) + '\n');
+  }
   process.exit(0);
 }
 

@@ -226,6 +226,11 @@ gate; naming it is the difference between a handover and a claim.
 
 ## How anti-hall's handover skill applies this
 
+**Rule: handovers are never committed, and the only format is
+`.anti-hall/handovers/<YYYY-MM-DD>/<session_id>/HANDOVER.md`** (then `HANDOVER-2.md`, ...,
+`PRECOMPACT-<n>.md` and detail files beside it). git-guard blocks a commit that
+includes one; doctor warns about strays.
+
 The skill lives at `plugins/anti-hall/skills/handover/` and writes to a dated,
 session-scoped directory:
 

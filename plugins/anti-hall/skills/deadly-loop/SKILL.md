@@ -49,7 +49,7 @@ also edits a shell script), use the heavier row.
 
 Before invoking the deadly loop, ensure:
 1. The changes are **committed and pushed** (the loop audits remote state via `gh pr diff` etc.); local-only work can be audited against the working tree, but remote is preferred.
-2. A **canonical handoff doc** exists or will be created (e.g., `docs/<date>-<feature>-session-handoff.md`).
+2. A **loop state record** exists or will be created (e.g., `.anti-hall/history/<date>/<feature>-loop-state.md`; it is not a session handover, which lives only under `.anti-hall/handovers/`).
 3. The owner has authorized at least one full iteration (each round is ~5-30 min of agent compute).
 4. A verification preamble + branch/SHA check is in effect for every spawned agent (see Phase A3).
 5. The debate roster from `references/MODEL-POLICY.md` is resolved — read the `codex-availability` fact (`~/.anti-hall/codex-availability.json`) first; fall back to the live OS-agnostic Node probe in `references/MODEL-POLICY.md` only if that fact is absent/stale — so you know which row of the availability fallback matrix applies. When Codex is available, the Critic seat MUST spawn `agentType:'codex:codex-rescue'`, not degrade to Opus. (Fable routing is RE-ENABLED — see `references/MODEL-POLICY.md` — the Reviewer seat routes to `fable` when `args.fableAvailable === true`, falling back to Sonnet then Opus.)
@@ -72,12 +72,12 @@ Each wave = 1 orchestrator agent + N parallel children for parallel-safe fixes, 
 
 Before Round 1:
 
-### A1. Create / update the canonical handoff doc
+### A1. Create / update the loop state record
 
-`docs/<date>-<feature>-session-handoff.md` becomes the **authoritative state record**. Every round + wave updates it. Format:
+`.anti-hall/history/<date>/<feature>-loop-state.md` becomes the **authoritative state record**. Every round + wave updates it. Format:
 
 ```markdown
-# <Feature> — Session Handoff (<date>)
+# <Feature> — Loop State (<date>)
 
 **Status:** <one-line current state>
 
@@ -96,7 +96,7 @@ Before Round 1:
 <resume prompt for next session>
 ```
 
-The handoff is **how every spawned agent gets full prior history**. Without this, Round 7 doesn't know what Round 1 already verified, and re-runs the same audits.
+The loop state record is **how every spawned agent gets full prior history**. Without this, Round 7 doesn't know what Round 1 already verified, and re-runs the same audits.
 
 ### A2. Snapshot baseline
 
@@ -106,7 +106,7 @@ git -C <repo> rev-parse --short HEAD
 gh pr list --state open --json number,headRefName,headRefOid,mergeStateStatus
 ```
 
-Record these in the handoff. Compare every round to detect drift.
+Record these in the loop state record. Compare every round to detect drift.
 
 ### A3. Lock the verification preamble
 
@@ -165,7 +165,7 @@ These four requirements bind **all three** seats — the Reviewer, the Auditor, 
    - **EASY-WIN** — cheap, high-value cleanups worth doing while you're in there.
    Sort by heat, P0 first.
 
-4. **CARRY-FORWARD.** You are given the full prior-round history (handoff doc) + the exact fixes applied since. FIRST verify each prior finding's fix actually resolved it WITHOUT regression; THEN hunt genuinely NEW issues. Always distinguish NEW from REDISCOVERED.
+4. **CARRY-FORWARD.** You are given the full prior-round history (loop state record) + the exact fixes applied since. FIRST verify each prior finding's fix actually resolved it WITHOUT regression; THEN hunt genuinely NEW issues. Always distinguish NEW from REDISCOVERED.
 
 ### B1. Reviewer prompt skeleton
 
@@ -175,7 +175,7 @@ These four requirements bind **all three** seats — the Reviewer, the Auditor, 
 You are the Round N Reviewer for <feature>. Verify Wave-(N-1) commits resolve their parent Round-(N-1) findings without regression.
 
 CRITICAL READING:
-1. <handoff doc path> — covers Rounds 1 through N-1
+1. <loop state record path> — covers Rounds 1 through N-1
 2. PR diffs via `gh pr diff` and `gh pr view --json files,mergeStateStatus` (or the working-tree diff if not yet pushed)
 
 Wave-(N-1) commits to verify:
@@ -216,7 +216,7 @@ The Auditor (latest Opus, `model:"opus"`) runs a DIFFERENT Claude generation fro
 ```
 You are the Round N Auditor for <feature>. DIVERGENT lens: regression & coupling hunter. Do NOT duplicate the Reviewer's diff-verification — trace OUTWARD from the change.
 
-CRITICAL READING: same as Reviewer (handoff doc + PR diffs / working-tree diff).
+CRITICAL READING: same as Reviewer (loop state record + PR diffs / working-tree diff).
 
 Wave-(N-1) commits to trace the blast radius of:
 [same list as Reviewer]
@@ -292,11 +292,11 @@ Then dedup their findings → categorize, applying the **round governance** in `
 **Argument outcomes (dissent adjudication):** a **single-seat re-run** is allowed ONLY for evidence-adjudication with NO code/plan change in between (re-run the one dissenting seat to confirm/refute against the current state). **ANY fix wave ⇒ the FULL TRIO re-runs next round** — never a single-seat re-audit after code changed (preserves the anti-pattern below). Evidence-refuted dissent may be overridden, documented in the handoff.
 
 **Apply the round-discipline rules:**
-1. Each round has full history (handoff doc) AND focuses NEW analysis on the latest delta.
+1. Each round has full history (loop state record) AND focuses NEW analysis on the latest delta.
 2. If a round's findings RE-DISCOVER prior issues already verified clean, that's a process bug — narrow scope further.
 3. **Convergence test**: count of NEW (not rediscovered) confirmed P0s or P1s. Target: 0 → GO. The trend should monotonically decrease.
 
-Append round outputs to handoff. Commit + push.
+Append round outputs to the loop state record. Commit + push.
 
 ## Phase C — Wave N fix dispatch
 
@@ -308,7 +308,7 @@ One orchestrator agent + parallel children. The orchestrator handles:
 You are the Fix Wave N orchestrator for <feature>. Round N found <count> P0/P1 issues. Dispatch the fixes, handle sequencing, report back.
 
 CRITICAL READING:
-1. <handoff doc path>
+1. <loop state record path>
 2. The verification preamble (branch+SHA check, Phase A3)
 3. The round-discipline rules (focus NEW analysis on the latest delta; convergence counts NEW not rediscovered P0s/P1s)
 
