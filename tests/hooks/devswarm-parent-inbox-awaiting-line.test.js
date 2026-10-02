@@ -8,6 +8,7 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
+const { spawnSync } = require('node:child_process');
 const { testHook } = require('../helpers/spawn-hook.js');
 const { makeHome } = require('../helpers/fixtures.js');
 const installIngest = require('../../plugins/anti-hall/companion/install-devswarm-ingest.js');
@@ -37,7 +38,7 @@ function writeSummary(home, own, others) {
     working_on: null, gates: {}, archive_ready: false,
   };
   const workspaces = { [OWN_ID]: Object.assign({}, base, own) };
-  for (const id of others) workspaces[id] = Object.assign({}, base, { worktreePath: '/wt/' + id });
+  for (const id of others) workspaces[id] = Object.assign({}, base, { worktreePath: '/wt/' + id, sessionId: 'sess-' + id });
   fs.writeFileSync(path.join(dir, REPO_KEY + '.json'), JSON.stringify({
     generatedAt: Date.now(), requiredGates: [], workspaces, recent: [], archivedRegistryRows: [],
   }));
@@ -205,6 +206,12 @@ function mark(h, sub, id, body) {
   fs.mkdirSync(d, { recursive: true });
   fs.writeFileSync(path.join(d, id + '.json'), JSON.stringify(body || {}));
 }
+// A session record whose pid is dead: proof the archived child is NOT running.
+function deadSession(h, id) {
+  const dir = path.join(h.home, '.claude', 'sessions');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, id + '.json'), JSON.stringify({ pid: spawnSync(process.execPath, ['-e', '0']).pid, sessionId: 'sess-' + id, cwd: h.home, startedAt: Date.now() }));
+}
 function runEnv(home, env) {
   const r = testHook(HOOK, { hook_event_name: 'UserPromptSubmit', session_id: 't', prompt: 'hi', cwd: REPO_CWD },
     { home, env: Object.assign({}, PRIMARY_ENV, env || {}), expectJson: true });
@@ -217,6 +224,7 @@ test('archived sender is not listed; the live one is (mixed -> only the live one
   try {
     twoQuestions(h, 'arch-c');
     mark(h, 'archived', 'arch-c', { worktreePath: '/wt/arch-c' });
+    deadSession(h, 'arch-c');
     const l = lineOf(runEnv(h.home));
     assert.match(l, /: 1 \(oldest 10m\) — Live ws: live question$/, l);
     assert.ok(!/Bad ws|bad question/.test(l), l);
@@ -242,21 +250,17 @@ test('archive-ignored sender is not listed', () => {
   } finally { h.cleanup(); }
 });
 
-test('eligibility-unknown sender (descriptor only, absent from the summary rows) is left out', () => {
+test('descriptor-only sender (absent from the summary rows) is listed, exactly as the Stop gate counts it', () => {
   const h = makeHome();
   try {
-    twoQuestions(h, 'ghost-c');
-    // Remove the summary row for ghost-c but keep a descriptor so the question
-    // still survives the retired-sender partition (it is blocking, not informational).
+    twoQuestions(h, 'desc-c');
     const sp = path.join(swarmDir(h.home), 'summaries', REPO_KEY + '.json');
     const sum = JSON.parse(fs.readFileSync(sp, 'utf8'));
-    delete sum.workspaces['ghost-c'];
+    delete sum.workspaces['desc-c'];
     fs.writeFileSync(sp, JSON.stringify(sum));
-    mark(h, 'workspaces', 'ghost-c', { id: 'ghost-c', worktreePath: '/wt/ghost-c', sessionId: 'sess-ghost' });
-    const c = runEnv(h.home);
-    const l = lineOf(c);
-    assert.match(l, /: 1 \(oldest 10m\) — Live ws: live question$/, l);
-    assert.ok(!/ghost|Bad ws/.test(l), l);
+    mark(h, 'workspaces', 'desc-c', { id: 'desc-c', worktreePath: '/wt/desc-c', sessionId: 'sess-desc-c' });
+    const l = lineOf(runEnv(h.home));
+    assert.match(l, /: 2 \(oldest 60m\) — Bad ws: bad question$/, l);
   } finally { h.cleanup(); }
 });
 
@@ -270,6 +274,7 @@ test('only ineligible senders -> the line is absent (silent on doubt); the segme
       pendingQuestionPreviews: { 1: 'bad question' },
     }, ['arch-c']);
     mark(h, 'archived', 'arch-c', { worktreePath: '/wt/arch-c' });
+    deadSession(h, 'arch-c');
     const c = runEnv(h.home);
     assert.ok(!LINE_RE.test(c), c);
     assert.match(c, /DEVSWARM OWN INBOX/, 'pre-existing nag still shows');
