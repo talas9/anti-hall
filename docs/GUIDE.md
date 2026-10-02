@@ -60,7 +60,7 @@ and [Codex / cross-tool](#codex--cross-tool) for the Codex/OMX detail.
 
 ## What it blocks, and how to turn it off
 
-The main guards. Every one can be switched off with its setting (`/anti-hall:settings`, the `/config` panel, or `node plugins/anti-hall/scripts/settings.js set <key> false`). The four `safety.*` keys are locked: changing them needs `--confirmed`. Separately, you can tell the assistant to skip a guard for a short time; it records that in `~/.anti-hall/skip.json` (per guard name, expires after 15 minutes by default; `"all"` never covers `git-guard`, which must be named).
+The main guards. Every one can be switched off with its setting (`/anti-hall:settings` or `node plugins/anti-hall/scripts/settings.js set <key> false`); the `/config` panel only has the four `safety.*` switches among them. The four `safety.*` keys are locked: changing them needs `--confirmed`. Separately, you can tell the assistant to skip a guard for a short time; it records that in `~/.anti-hall/skip.json` (per guard name, expires after 15 minutes by default; `"all"` never covers `git-guard`, which must be named).
 
 | Guard | What it stops | Why | Turn off |
 |---|---|---|---|
@@ -151,7 +151,7 @@ Code silently skips every anti-hall hook — verify with `node --version`. No np
 install, no native deps, no other config. There is intentionally no shell-based
 preflight. Install Node from <https://nodejs.org>.
 
-**`/config` rows need Claude Code ≥ 2.1.269; older versions still work via the skill.**
+**The `/config` rows (14 options) need Claude Code ≥ 2.1.269; older versions still work via the skill.**
 The plugin's `userConfig` never declares `options` (a public plugin can't require v2.1.271+
 just for its settings UI — per the Claude Code plugin docs, an `options` picker would break
 loading on older versions), so every version can load the plugin; enum settings just render
@@ -171,7 +171,7 @@ Terms used below: **DevSwarm** is a multi-workspace orchestration app with a `hi
 | **Jev classifier** | Optional LLM-backed speculation classifier ([`KB-jev-classifier.md`](KB-jev-classifier.md)) — per-integration on/shadow/off modes, metrics + `jev report` KEEP/REVIEW/REMOVE calls. |
 | **Statusline** | Live two-line statusline: git/model/context/cost on line 1, live orchestration/context gauge on line 2. Installable globally or per-repo, consolidates with an existing statusline (e.g. OMC HUD). |
 | **doctor / update** | `doctor` runs live behavioral self-tests on every guard and repairs safe drift; `update` pulls the latest release and shows the changelog delta. Repairs also run by themselves after a plugin reload or on a new version. |
-| **Settings** | One place for every setting — `~/.anti-hall/settings.json`, every non-advanced setting is an arrow-key row in Claude Code's native `/config` panel (anti-hall rows, section-prefixed titles); or tell `/anti-hall:settings` "set X to Y". See [Settings](#settings-anti-hallsettings). |
+| **Settings** | One place for every setting — `~/.anti-hall/settings.json`, grouped by category and reachable through `/anti-hall:settings` (Claude Code's `/config` panel has only the headline switches, the safety guards and the keys); or tell `/anti-hall:settings` "set X to Y". See [Settings](#settings-anti-hallsettings). |
 
 ## What's inside and updating
 
@@ -959,29 +959,30 @@ from it (never `os.homedir()`), so a test's isolated HOME is always honored —
 `tests/hygiene/settings-home-injection.test.js` proves this mechanically for every
 wired resolver.
 
-- **`/config` (arrow keys, no model involved)** — every non-advanced setting is a row in
-  Claude Code's native `/config` panel (v2.1.269+). `userConfig` never declares `options`
-  (a public plugin can't require v2.1.271+ just for its settings UI — declaring `options`
-  on any field breaks plugin loading before v2.1.271, per the Claude Code plugin manifest
-  docs), so enum settings render as a plain string field whose description lists the
-  allowed values, not a picker; older Claude Code versions still work via the skill. There
-  is no grouping field, so each row's title is prefixed with its section
-  ("Auto Handover · Threshold %"). `plugin.json` `userConfig` is hand-kept and
-  `tests/hooks/settings-schema.test.js` fails if it drifts from the schema's non-advanced
-  set (key, type, default, min/max, title prefix) or if any field declares `options`.
-  Advanced/tuning knobs have no `/config` row; they live in `/anti-hall:settings` (the CLI below)
-  only, including the two safety advanced knobs (`guards.editGuardAllow`,
-  `guards.allowSubagentMailbox`; any change still needs `--confirmed`). The 25 advanced
-  settings that used to have a row keep their old option name as a read-only legacy source, so
-  a value already stored under Claude Code's `pluginConfigs` still applies, and
-  `migrateSettingsFromLegacy` (update / `doctor --repair`) copies a non-default one into
-  `~/.anti-hall/settings.json` without touching or deleting the Claude Code file. The copy now covers every plugin-option setting except the 10 headline switches, the safety/home-only keys and the credential options, and only when that stored value is already the effective one (it never changes what resolves). Both `pluginConfigs` key forms (`anti-hall@anti-hall`, `anti-hall`) are read. `/anti-hall:settings` is the place to see and change every setting.
+- **`/config` (arrow keys, no model involved)** — Claude Code's native `/config` panel
+  (v2.1.269+) shows only the headline switches (auto-handover on and threshold, Jev on,
+  DevSwarm supervisor mode, model routing, limit conservation), the four safety guards
+  and the API keys: 14 `userConfig` options in `plugin.json`. Every other setting has a
+  key in `~/.anti-hall/settings.json`, reachable through `/anti-hall:settings` and grouped by category.
+  `userConfig` never declares `options` (a public plugin can't require v2.1.271+
+  just for its settings UI — declaring `options` on any field breaks plugin loading before
+  v2.1.271, per the Claude Code plugin manifest docs), so enum switches render as a plain
+  string field whose description lists the allowed values; older Claude Code versions
+  still work via the skill. `tests/hooks/settings-schema.test.js` pins the manifest to exactly the 10
+  `headline: true` schema entries plus the 4 sensitive keys, and fails if any field declares `options`.
+  Every other setting that used to have a row keeps its old option name as a read-only
+  legacy source (`pluginOptionLegacy`), so a value already stored under Claude Code's
+  `pluginConfigs` (or still exported as `CLAUDE_PLUGIN_OPTION_*`) still applies, and
+  `migrateLegacyPluginOptions` (update / `doctor --repair`, shipped in 0.122.0) copied each
+  non-default one into `~/.anti-hall/settings.json` without touching or deleting the Claude Code file
+  (only when that stored value was already the effective one; never for the 10 headline switches, the safety/home-only keys and the credentials). Both `pluginConfigs` key forms
+  (`anti-hall@anti-hall`, `anti-hall`) are read. Downgrade is safe: the settings-file value outranks the stored option, so an older plugin version resolves the same effective values.
 - **Ask for it** — say "turn off the merge gate" or "set auto-handover to 80%" and the
   `settings` skill applies it with one `set` (no table dump); "show my anti-hall settings"
   prints the tables only when you ask.
 - **CLI directly**:
   ```bash
-  node plugins/anti-hall/scripts/settings.js show                      # every section, headline settings
+  node plugins/anti-hall/scripts/settings.js show                      # every category (one table each), non-advanced settings
   node plugins/anti-hall/scripts/settings.js show --section jev --all  # one section, including advanced/tuning knobs
   node plugins/anti-hall/scripts/settings.js get autoHandover.pct
   node plugins/anti-hall/scripts/settings.js set limitConserve.threshold 90
@@ -990,13 +991,13 @@ wired resolver.
   Every subcommand takes `--json` for scripting.
 - **Precedence** (highest to lowest): an `ANTIHALL_*` env var override → a value in
   `~/.anti-hall/settings.json` → a value set via Claude Code's native `/config` panel
-  (every non-advanced setting is declared in
-  `plugin.json`'s `userConfig` so it shows up there; advanced settings only read a value stored there by an older version; shown as Source `/config`) → a legacy per-feature config file
+  (only the 10 headline switches are declared in
+  `plugin.json`'s `userConfig`; every other setting only reads a value stored there by an older version; shown as Source `plugin-option`) → a legacy per-feature config file
   (e.g. `~/.anti-hall/jev.json`) → the schema default. (Transitional exception, `settings.js` `resolveBelowFile`: until the one-time legacy forward-migration is stamped for the installed plugin version, a legacy `jev.json` value ranks ABOVE a `/config` value, so a pre-existing `jev.json` is not masked by `/config`'s own manifest default; after the stamp the order is as written.) `show`'s Source column tells you
   which tier answered a given row. Safety keys read through this SAME chain — there is
   no special-cased ignore rule for them (see below).
 - **Known limitation (`/config`):** a `/config` value that equals the manifest default
-  (`plugin.json` `userConfig` default; the schema default for a retired advanced row) is indistinguishable from "never set", so it counts as
+  (`plugin.json` `userConfig` default for a headline row; the schema default for every other setting) is indistinguishable from "never set", so it counts as
   unset and a lower tier (a legacy file, the schema default) answers. To pin a value that
   equals the default, set it in `settings.json` (`/anti-hall:settings`) instead.
 - **Safety guards need a confirmed change, not a hard refusal ("safety" in the table

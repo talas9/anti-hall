@@ -14,21 +14,22 @@ switch on purpose, and why. `jevIntegrations` (v0.108.4) is a dedicated section 
 every per-integration Jev trust mode as its own row/setting — see the `jev` skill's
 "Per-integration modes" for the full table.
 
-## Default: point the user at `/config`
+## Default: grouped `show`, then the section
 
-Every non-advanced setting is a row in Claude Code's native **`/config`** panel
-(declared in `plugin.json`'s `userConfig`). Titles carry the section as a prefix
-("Auto Handover · Threshold %", "Guards · Merge-readiness gate"); enum settings are
-text fields whose description lists the allowed values; no model involved. When the user just
-says "anti-hall settings" / "change my settings", tell them that in one or two lines:
+`/config` (the plugin's options screen) has only the headline switches (auto-handover on/threshold,
+Jev on, DevSwarm supervisor mode, model routing, limit conservation), the four safety guards and
+the API keys. Every other setting lives in `~/.anti-hall/settings.json`, grouped by category
+(section). When the user says "anti-hall settings" / "change my settings":
 
-> Change settings in `/config` (the anti-hall rows) — arrow keys, no model; or tell me
-> "set X to Y".
+1. Run the grouped overview, one table per category, and tell them which categories exist:
+   `node "${CLAUDE_PLUGIN_ROOT}/scripts/settings.js" show`
+2. Then show only the category they care about:
+   `node "${CLAUDE_PLUGIN_ROOT}/scripts/settings.js" show --section <category> [--all]`
+3. Change with `set <section.key> <value>`, undo with `reset <section.key>` (below).
 
-Values you set in Claude Code's plugin options (`/config`) are copied into `~/.anti-hall/settings.json` on update (only when that value is already the one in effect, and never for the safety guards, which keep reading the plugin option); `/anti-hall:settings` is the place to see and change every setting.
-
-Do not run `show` or print tables for this. Advanced/tuning knobs (including the two safety
-allow-lists) are NOT in `/config`; they live in `/anti-hall:settings` only. For those, use a direct change below (`show --section <key> --all` lists them if asked).
+Values set in Claude Code's plugin options in earlier versions were copied into
+`~/.anti-hall/settings.json` on update and still resolve (a stored plugin option stays a
+read-only source below the settings file); `/anti-hall:settings` is the place to see and change every setting.
 
 ## Direct named changes: one `set`, no table
 
@@ -44,11 +45,11 @@ comes back as `{ok:false, error}` on `--json` or an `error:` line otherwise — 
 and ask for a valid value; never silently coerce or guess one. A safety key (see below)
 needs the extra `--confirmed` step instead of a plain `set`.
 
-A value set this way is stored in settings.json and WINS over `/config` from then on
-(env > file > `/config` > legacy > default); `reset <section.key>` removes the override
-so the `/config` row takes over again. Known limitation: a `/config` value equal to the
-manifest default counts as unset (a lower tier answers); to pin a default-valued
-setting, `set` it here.
+A value set this way is stored in settings.json and WINS over any stored plugin option
+(env > file > plugin option > legacy > default); `reset <section.key>` removes the override
+so the plugin option (headline rows only), the legacy source or the default takes over again.
+Known limitation: a plugin-option value equal to the default counts as unset (a lower tier
+answers); to pin a default-valued setting, `set` it here.
 
 ## Safety guards: a human direct command, or a confirmed warning — never inferred
 
@@ -76,7 +77,7 @@ factual, human-readable line (`{ok:false, needsConfirmation:true, warning}` on
   initiative to get past the warning — that is exactly the case this gate exists for.
 
 A value in `~/.anti-hall/settings.json` counts for these keys like any other (normal
-precedence: env > settings.json > `/config` > default). Nothing mechanically stops an
+precedence: env > settings.json > plugin option > default). Nothing mechanically stops an
 agent from writing that file directly; the owner chose consent over an extra guard, so
 the rule is the same as above — never hand-edit a safety key in settings.json to get
 around the confirmation.
@@ -155,7 +156,7 @@ parentReplyTracker, commsGuard, inboxReadGuard, wakeWatch, appSync, screenshotSy
 `dispatchTierText` turns the Primary dispatch-tier text off everywhere, `inlineWorkNudge` (independent of it) the once-per-session
 nudge to spin a child workspace after `inlineWorkNudgeThreshold` inline edits; `tickRosterEvery` N>0 appends the
 roster to every Nth `inbox tick --quiet`, default 0 = off). The new question/dispatch/nudge/roster keys have no
-/config row (settings file or env only).
+/config row (settings file or env only, like every non-headline setting).
 Settings are read when each hook runs, so a change applies from the next hook call.
 
 ## `show` only when asked
@@ -166,7 +167,7 @@ are my settings"), run:
 node "${CLAUDE_PLUGIN_ROOT}/scripts/settings.js" show            # or: show --section <key> [--all]
 ```
 and present the output as-is (per-section markdown tables; the Source column says
-which tier answered — `/config`, `file`, `env`, `legacy`, `default`).
+which tier answered — `plugin-option` (a stored plugin option), `file`, `env`, `legacy`, `default`).
 A question about ONE value ("what's the auto-handover threshold") is a single
 `get <section.key>`, not a `show`.
 
@@ -239,7 +240,7 @@ next to the handovers (it never blocks compaction).
 ## Resetting a setting
 
 `node "${CLAUDE_PLUGIN_ROOT}/scripts/settings.js" reset <section.key>` removes the
-settings.json override for that one key, so `/config` (if the key has a
+settings.json override for that one key, so the stored plugin option (if the key has a
 `pluginOption`), the legacy source, or the schema default takes over again.
 
 ## Scripting / non-interactive use

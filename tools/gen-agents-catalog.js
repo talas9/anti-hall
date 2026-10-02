@@ -105,7 +105,7 @@ function build() {
   out.push('');
   // Settings
   const schema = require(P('hooks', 'lib', 'settings-schema.js'));
-  out.push('**Settings** (`~/.anti-hall/settings.json`; env > file > /config > legacy > default; bare key = default true, else key=default; advanced keys after `|`, defaults via `settings.js show --all`):');
+  out.push('**Settings** (`~/.anti-hall/settings.json`; env > file > plugin option > legacy > default; bare key = default true, else key=default; advanced keys after `|`, defaults via `settings.js show --all`):');
   for (const sec of schema.SECTIONS) {
     const vis = sec.settings.filter((x) => !x.advanced);
     // Tri-state sections (on/shadow/off) group keys by mode instead of repeating it per key.

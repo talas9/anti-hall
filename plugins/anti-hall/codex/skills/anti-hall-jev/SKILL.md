@@ -148,8 +148,8 @@ again (state: `~/.anti-hall/cache/jev-breaker.json`).
   working and forward-migrates automatically, nothing deleted). In `on`,
   `tasklistTrivial`/`codexNudgeSubstantial` ask synchronously (1.5 s cap, fail-open)
   and a confident "trivial" verdict skips the nudge. Full per-id trust/hook/API table:
-  `docs/KB-jev-classifier.md` §10. Claude Code exposes each as its own `/config` row
-  ("Jev integration · <name>"); Codex has no `/config` equivalent — use
+  `docs/KB-jev-classifier.md` §10. Neither platform has a per-integration `/config` row (Claude
+  Code's panel carries only the headline switches; Codex has none) — use
   `settings.js show --section jevIntegrations` or the `anti-hall-settings` skill.
   **Claude/Codex parity**: `speculation`, `triage`, `claimLedger`, `mergeGateHedge`,
   `newRequest`, `gitGuardSelfCredit`, `parentGateQuestion`, `tasklistTrivial` run on

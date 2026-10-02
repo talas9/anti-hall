@@ -216,13 +216,15 @@ Shared libraries (not hooks): `verify-first-core.js`, `coordinator-detect.js`, `
 
 ## Settings (user-facing; `/anti-hall:settings`, `scripts/settings.js show --all` for advanced)
 
-Store: `~/.anti-hall/settings.json`. Precedence: env > settings.json > `/config`
-(plugin.json userConfig) > legacy file (e.g. `jev.json`) > default; legacy outranks `/config`
-until the one-time migration is stamped. Numbers clamp to schema bounds. Every non-advanced
-setting is a `/config` row (advanced settings are not: they live in `/anti-hall:settings` only; a value set in Claude Code's plugin options is copied into ~/.anti-hall/settings.json on update, and /anti-hall:settings is the place to see and change every setting) (section-prefixed title; enum fields are a string type whose
-description lists the allowed values, since `/config` requires Claude Code ≥ 2.1.269 for
-those rows — older versions still work via the skill); a drift test keeps userConfig ==
-the schema's non-advanced set plus the sensitive credential keys. Codex: no `/config`, use the skill.
+Store: `~/.anti-hall/settings.json`. Precedence: env > settings.json > stored plugin option
+(plugin.json userConfig, headline rows only) > legacy file (e.g. `jev.json`) > default; legacy outranks the plugin option
+until the one-time migration is stamped.
+Numbers clamp to schema bounds. Every feature has a settings key in ~/.anti-hall/settings.json, reachable through
+/anti-hall:settings and grouped by category; Claude Code's plugin options (`/config`) show only the 10 headline
+switches, the safety guards and the 4 keys (14 userConfig options; a drift test pins them). Older stored plugin
+options keep resolving as a read-only source and were copied into settings.json in 0.122.0. Enum switches are a string
+type whose description lists the allowed values, since `/config` requires Claude Code ≥ 2.1.269 for those rows.
+Codex: no `/config`, use the skill.
 
 | Setting | Default | Env |
 |---|---|---|

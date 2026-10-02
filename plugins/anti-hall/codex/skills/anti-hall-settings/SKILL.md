@@ -20,13 +20,14 @@ All commands below run as `node "$ANTI_HALL_ROOT/scripts/settings.js" <verb>`.
 
 ## No `/config` equivalent on Codex
 
-On Claude Code every non-advanced setting is an arrow-key row in the native `/config`
-panel (via `plugin.json`'s `userConfig`, section-prefixed titles). **Codex has no
-equivalent** — its plugin manifest has no `userConfig` and there is no plugin settings UI.
-On Codex this skill (over `scripts/settings.js`) is the ONLY way to see or change a
+On Claude Code the native `/config` panel (the plugin's options screen) carries only the
+headline switches, the safety guards and the API keys; every other setting is reached
+through this skill's `scripts/settings.js`. **Codex has no `/config` equivalent** — its plugin manifest has no `userConfig` and there is no plugin settings UI.
+On Codex, run `show` (one table per category), then `show --section <category> [--all]`;
+change with `set` / `reset`. This skill (over `scripts/settings.js`) is the ONLY way to see or change a
 setting. It is complete (every setting, advanced included), and a value set here lands
 in `~/.anti-hall/settings.json`, which both platforms read from the same `~/.anti-hall/` home.
-On Claude Code, values you set in Claude Code's plugin options (`/config`) are copied into `~/.anti-hall/settings.json` on update (only when that value is already the one in effect, and never for the safety guards, which keep reading the plugin option); `/anti-hall:settings` is the place to see and change every setting.
+On Claude Code, values stored in Claude Code's plugin options by earlier versions were copied into `~/.anti-hall/settings.json` on update and still resolve; `/anti-hall:settings` is the place to see and change every setting.
 
 ## Direct named changes: one `set`, no table
 
@@ -65,7 +66,7 @@ factual, human-readable line (`{ok:false, needsConfirmation:true, warning}` on
   past the warning.
 
 A value in `~/.anti-hall/settings.json` counts for these keys like any other (normal
-precedence: env > settings.json > `/config` > default). Nothing mechanically stops an
+precedence: env > settings.json > plugin option > default). Nothing mechanically stops an
 agent from writing that file directly; the owner chose consent over an extra guard, so
 the rule is the same as above — never hand-edit a safety key in settings.json to get
 around the confirmation.
