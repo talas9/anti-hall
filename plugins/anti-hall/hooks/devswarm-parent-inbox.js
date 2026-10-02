@@ -2248,9 +2248,10 @@ function main() {
   // out of ownUnanswered below. Never counted toward the blocking figure;
   // rendered once, informationally, by buildOwnUnreadSegment.
   let ownUnansweredInformational = [];
-  // Sender rows for the eligibility filter below (set inside the try; stays []
-  // if the registry could not be read -> nothing is nagged on doubt).
-  let askerRows = [];
+  // Sender inputs for the eligibility filter below (set inside the try; the
+  // defaults are the "nothing readable" shape, which keeps every question —
+  // the same fail-open posture as partitionUnanswered).
+  let askerSrc = { registryRows: [], descriptors: [], archivedKnown: false, home };
   try {
     const replyStateMod = require('../companion/lib/devswarm-reply-state.js');
     const replyState = replyStateMod.readReplyState(repoKey, home);
@@ -2323,7 +2324,7 @@ function main() {
         }
       }
     } catch (_) { registryRows = []; archivedKnown = false; }
-    askerRows = registryRows;
+    askerSrc = { registryRows, descriptors, archivedKnown, home };
     ownUnanswered = replyStateMod.familyAwareUnanswered({
       pendingQuestions: ownPendingQuestions, replyState, descriptors, resolveMeshId, registryRows,
       // The recipient of these questions — its own row and its twins can never
@@ -2346,12 +2347,11 @@ function main() {
   } catch (_) {
     ownUnanswered = ownPendingQuestions.slice();
   }
-  // QUESTIONS FROM ARCHIVED / HELD / ARCHIVE-IGNORED (or unknown-row) SENDERS
-  // never count toward the nag below or the awaiting-reply line: blocking and
-  // nagging hooks skip those rows (0.109.3/0.109.4). One shared filter with the
-  // Stop gate. Applied after the try so the fail-open fallback above cannot
-  // bypass it.
-  ownUnanswered = require('../companion/lib/devswarm-reply-state.js').filterLiveAskers(ownUnanswered, askerRows, elig.of, repoKey);
+  // QUESTIONS FROM ARCHIVED-and-dead / HELD / ARCHIVE-IGNORED SENDERS never
+  // count toward the nag below or the awaiting-reply line (an archived-but-live
+  // sender still does, R18). One shared filter + inputs with the Stop gate.
+  // Applied after the try so the fail-open fallback above cannot bypass it.
+  ownUnanswered = require('../companion/lib/devswarm-reply-state.js').filterLiveAskers(ownUnanswered, askerSrc, elig.of, repoKey);
 
   // Daemon-LIVENESS staleness banner (fail-open). Gated on `rows.length>0` (an
   // active workspace exists, i.e. a daemon is EXPECTED to be running) OR

@@ -1862,7 +1862,7 @@ test('ARCHIVED-BUT-LIVE SENDER: a question from a sender archived but still live
 // entirely (pre-R18-fix shape) must fail open TOWARD blocking, since the
 // reader cannot tell "genuinely retired" apart from "archived-but-live, just
 // not folded in on this stale summary".
-test('LEGACY SUMMARY (no archivedRegistryRows field): a sender with no row anywhere (eligibility unknown) is left out of the nag', () => {
+test('LEGACY SUMMARY (no archivedRegistryRows field): an unmatched sender stays in the blocking figure, not informational (fail-open)', () => {
   const h = makeHome();
   try {
     const askTs = Date.now() - 60000;
@@ -1875,7 +1875,9 @@ test('LEGACY SUMMARY (no archivedRegistryRows field): a sender with no row anywh
     const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
     assert.strictEqual(r.status, 0);
     const own = ownSegment(ctx(r));
-    assert.doesNotMatch(own, /DECIDE|ghost-sender/, `unknown-eligibility sender must not nag; own=${own}`);
+    assert.match(own, /DECIDE/, `a legacy summary must fail open toward blocking, never silently informational; own=${own}`);
+    assert.ok(own.includes('ghost-sender'));
+    assert.doesNotMatch(own, /INFORMATIONAL/i);
   } finally { h.cleanup(); }
 });
 

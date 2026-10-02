@@ -447,30 +447,51 @@ function partitionUnanswered(unanswered, descriptors, registryRows, opts) {
   return { blocking, informational };
 }
 
-// filterLiveAskers(unanswered, rows, eligOf, repoKey) -> the subset whose sender
-// is POSITIVELY a live row: found in `rows` ({id, worktreePath, sessionId}) AND
-// not archived, held or archive-ignored per row-eligibility.js (`eligOf` =
-// createContext(...).of). Archived/held/ignored rows are the project's "never
-// nag, never block" set; a sender with no row, or whose eligibility cannot be
-// projected, is also left out (a nag is advisory and a block needs positive
-// proof the asker is live). The ONE implementation for the Primary's every-turn
-// notice (hooks/devswarm-parent-inbox.js) and the Stop gate
-// (hooks/devswarm-parent-gate.js).
-function filterLiveAskers(unanswered, rows, eligOf, repoKey) {
+// filterLiveAskers(unanswered, src, eligOf, repoKey) -> the questions whose
+// sender may still be waiting on an answer. The ONE implementation for the
+// Primary's every-turn notice + awaiting line (hooks/devswarm-parent-inbox.js)
+// and the Stop gate (hooks/devswarm-parent-gate.js), so every surface gives
+// the same answer for the same sender.
+//   src = { registryRows, descriptors, archivedKnown, home }  (the SAME three
+//         inputs partitionUnanswered takes; descriptors count as rows here
+//         exactly as they do there)
+//   eligOf = row-eligibility createContext(...).of
+// Rule per sender row (row-eligibility.js):
+//   held or archive-ignored  -> dropped (explicit owner/operator choice, no
+//                               liveness consulted);
+//   archived                 -> dropped ONLY when its session is positively
+//                               dead (liveness.sessionPidAlive === false). A live
+//                               archived-but-live child keeps blocking (R18,
+//                               c81dc461), and so does "no opinion" (no session
+//                               file / no sessionId) — the pre-existing R18
+//                               posture, which never dropped an archived row on
+//                               missing evidence;
+//   otherwise                -> kept.
+// A sender with NO row: kept only when `archivedKnown` is false (legacy or
+// unreadable summary: the archived half of the registry was never computed, so
+// the sender may be archived-but-live — same fail-open partitionUnanswered
+// applies); with a fresh summary it is retired and dropped.
+function filterLiveAskers(unanswered, src, eligOf, repoKey) {
+  const s = src || {};
   const list = Array.isArray(unanswered) ? unanswered : [];
   const byId = new Map();
-  for (const r of (Array.isArray(rows) ? rows : [])) {
-    if (r && r.id != null && !byId.has(String(r.id))) byId.set(String(r.id), r);
-  }
+  const add = (r) => { if (r && r.id != null && !byId.has(String(r.id))) byId.set(String(r.id), { id: r.id, worktreePath: r.worktreePath || null, sessionId: r.sessionId || null }); };
+  for (const r of (Array.isArray(s.registryRows) ? s.registryRows : [])) add(r);
+  for (const r of (Array.isArray(s.descriptors) ? s.descriptors : [])) add(r);
   return list.filter((q) => {
     try {
       if (!q || q.from == null) return true; // malformed: no sender to judge -> kept unchanged, as partitionUnanswered does
       const from = String(q.from);
       const row = byId.get(from);
-      if (!row) return false;
-      const e = eligOf({ id: from, worktreePath: row.worktreePath || null, sessionId: row.sessionId || null, repoKey: repoKey || null });
-      return !!e && !e.archived && !e.held && !e.ignored;
-    } catch (_) { return false; }
+      if (!row) return !s.archivedKnown;
+      const e = eligOf({ id: from, worktreePath: row.worktreePath, sessionId: row.sessionId, repoKey: repoKey || null });
+      if (!e) return true;
+      if (e.held || e.ignored) return false;
+      if (!e.archived) return true;
+      let alive = null;
+      try { alive = require('./liveness.js').sessionPidAlive(row.sessionId, s.home); } catch (_) { alive = null; }
+      return alive !== false;
+    } catch (_) { return true; }
   });
 }
 
