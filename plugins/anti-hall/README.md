@@ -17,6 +17,20 @@ It fights four failure modes common to coding assistants:
 /plugin install anti-hall@anti-hall
 ```
 
+### Enable Jev
+
+<!-- jev-recommend:start -->
+> **Recommended: enable Jev, the optional classifier, for more accurate guards.**
+>
+> Without it, guards such as the speculation check rely on pattern matching alone. With Jev on, they also get a model's second opinion: by default it can only add blocks the patterns miss (it never removes one), and nine integrations are on by default once it is enabled (speculation, message triage, duplicate-finding grouping, dispatch-tier hints, five DevSwarm supervision labels).
+>
+> Measured so far: one offline check (2026-09, 65 deadly-loop finding pairs from 3 projects) had Jev's duplicate-finding judgments 65/65 correct at confidence >= 0.85, against 45% precision for a same-file proximity heuristic. That is one narrow task; no end-to-end accuracy figure exists for the other guards yet ([`KB-jev-classifier.md`](https://github.com/talas9/anti-hall/blob/main/docs/KB-jev-classifier.md), section 7).
+>
+> **Costs:** optional and off by default; needs your own Vercel AI Gateway or TypeSafe API key; sends the text a guard judges (prompts, assistant messages, test output, commit text; up to 8000 characters per call, known secret shapes redacted on a best-effort basis) to the provider you choose; uses provider credits. Details: [PRIVACY.md](https://github.com/talas9/anti-hall/blob/main/PRIVACY.md).
+>
+> Enable: say "activate jev" (runs the `jev` skill: stores your key, enables, tests). Silence the session-start reminder: set `jev.recommendNotice` to false.
+<!-- jev-recommend:end -->
+
 The hooks apply globally once enabled. The statusline is a separate one-command
 install (see [Statusline](#statusline)). To try it without installing:
 

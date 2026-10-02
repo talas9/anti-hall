@@ -1774,6 +1774,19 @@ if (REPAIR_RESURRECTED) {
   }
 })();
 
+// --- 5p2. recommend Jev (REPORT-ONLY, CONDITIONAL) ---------------------------
+// A clearly marked recommendation while Jev is OFF (jev.recommendNotice=false
+// silences it). Not a warning: it never touches pass/fail/warn.
+(function jevRecommendSection() {
+  try {
+    const rec = require('./lib/jev-recommend.js');
+    const home = require('../companion/lib/test-home-guard.js').resolveHome(undefined, process.env);
+    if (!rec.applicable({ home, env: process.env })) return;
+    head('jev recommendation');
+    rec.doctorLines().forEach((l, i) => lines.push(`  ${i === 0 ? C.b : ''}${l}${i === 0 ? C.x : ''}`));
+  } catch (_) { /* report-only */ }
+})();
+
 // --- 5q. legacy API-key notice (REPORT-ONLY, CONDITIONAL) --------------------
 // anti-hall reads Jev / Anthropic keys from the /plugin config options
 // (jev_api_key, anthropic_api_key) and no longer reads the machine's env vars

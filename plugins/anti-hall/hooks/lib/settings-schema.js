@@ -242,6 +242,7 @@ const SECTIONS = [
       { key: 'reviewAfterDays', type: 'number', min: 1, max: 365, default: 7, env: 'ANTIHALL_JEV_REVIEW_AFTER_DAYS', pluginOption: 'jev_review_after_days', description: 'Minimum days an integration must have sat in shadow mode before its shadow numbers are DUE for owner review (also the re-review cadence once reviewed). [read by: hooks/lib/jev-review.js computeReviewDue]' },
       { key: 'reviewMinDecisions', type: 'number', min: 0, default: 30, env: 'ANTIHALL_JEV_REVIEW_MIN_DECISIONS', pluginOption: 'jev_review_min_decisions', description: 'Minimum decisions logged for a shadow integration before its review is due — avoids nagging about a barely-used integration with too little data to judge. [read by: hooks/lib/jev-review.js computeReviewDue]' },
       { key: 'reviewReminder', type: 'boolean', default: true, env: 'ANTIHALL_JEV_REVIEW_REMINDER', pluginOption: 'jev_review_reminder', description: 'Durable "time to review the Jev shadow numbers" SessionStart/doctor nudge (on by default — owner opt-out only). [read by: hooks/jev-review-reminder.js, hooks/doctor.js]' },
+      { key: 'recommendNotice', type: 'boolean', default: true, env: 'ANTIHALL_JEV_RECOMMEND_NOTICE', pluginOption: 'jev_recommend_notice', description: 'Bold "Recommended: enable Jev" notice at SessionStart (once on first install, then at most every 30 days) and in doctor, shown only while Jev is NOT enabled. Set false to silence it. [read by: hooks/jev-review-reminder.js, hooks/lib/jev-recommend.js, hooks/doctor.js]' },
     ],
   },
   {

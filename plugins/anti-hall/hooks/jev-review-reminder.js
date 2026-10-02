@@ -7,7 +7,10 @@
 // on-disk state (~/.anti-hall/jev-review-state.json) — lives in the plugin
 // itself. See hooks/lib/jev-review.js for the due-date logic.
 //
-// ALSO carries the one-time legacy-key notice (credentials.js sessionNotice).
+// ALSO carries the one-time legacy-key notice (credentials.js sessionNotice) and
+// the "Recommended: enable Jev" notice (lib/jev-recommend.js; Jev OFF only,
+// once on first install then at most every 30 days, jev.recommendNotice=false
+// silences it).
 //
 // GATING of the review reminder (all silent, no output, when any apply):
 //   - Jev not enabled (`jev.json`/settings `enabled` !== true).
@@ -112,6 +115,10 @@ function main() {
   // before the Jev-enabled gate below: it has its own gating + dedupe.
   const keyNotice = require('./lib/credentials.js').sessionNotice({ home });
   if (keyNotice) lines.push(keyNotice);
+
+  // "Recommended: enable Jev" — only while Jev is OFF, deduped (jev-recommend.js).
+  const recommend = require('./lib/jev-recommend.js').sessionNotice({ home, env: process.env });
+  if (recommend) lines.push(recommend);
 
   const reviewLine = reviewDueLine(home);
   if (reviewLine) lines.push(reviewLine);

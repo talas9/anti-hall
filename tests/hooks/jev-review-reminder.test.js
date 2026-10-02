@@ -64,14 +64,16 @@ test('silent when nothing is due', () => {
   }
 });
 
-test('silent when Jev is not enabled', () => {
+test('no review line when Jev is not enabled (only the recommend notice, from jev-recommend.js)', () => {
   const h = makeHome();
   try {
     writeJevConfig(h.home, { enabled: false, integrations: { modelRouting: 'shadow' } });
     writeDecisionRows(h.home, 'modelRouting', 40, 10);
     const r = testHook(HOOK, sessionStartPayload(), { home: h.home });
     assert.strictEqual(r.status, 0);
-    assert.strictEqual(r.stdout.trim(), '');
+    const ctx = r.json.hookSpecificOutput.additionalContext;
+    assert.doesNotMatch(ctx, /JEV REVIEW DUE/);
+    assert.match(ctx, /Recommended: enable Jev/);
   } finally {
     h.cleanup();
   }
