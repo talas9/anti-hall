@@ -125,7 +125,7 @@ test('legacyNotices: names the option and the setting, never the key; silent onc
     const off = cred.legacyNotices({ home: h.home, env, keyFile, transport: 'vercel' });
     assert.strictEqual(off.length, 2);
     for (const n of off) {
-      assert.match(n, /re-enter your key via \/plugin config \(anti-hall -> (jev_api_key|anthropic_api_key)\), or enable (jev\.allowLegacyKeyRead|guards\.allowAnthropicEnvKey)/);
+      assert.match(n, /re-enter your key in the plugin's options screen \(anti-hall -> (jev_api_key|anthropic_api_key)\), or enable (jev\.allowLegacyKeyRead|guards\.allowAnthropicEnvKey)/);
       assert.doesNotMatch(n, /secret/);
     }
     assert.strictEqual(cred.legacyNotices({ home: h.home, env, keyFile, transport: 'vercel', kinds: ['jev'] }).length, 1);
@@ -156,7 +156,7 @@ test('doctor: surfaces the legacy-key notice (jev enabled, opt-in off), never th
     const doctor = path.join(__dirname, '..', '..', 'plugins', 'anti-hall', 'hooks', 'doctor.js');
     const r = spawnSync(process.execPath, [doctor], { env, encoding: 'utf8', timeout: 60000 });
     const out = (r.stdout || '') + (r.stderr || '');
-    assert.match(out, /re-enter your key via \/plugin config \(anti-hall -> anthropic_api_key\)/);
+    assert.match(out, /re-enter your key in the plugin's options screen \(anti-hall -> anthropic_api_key\)/);
     assert.doesNotMatch(out, /sk-ant-doctor-secret/);
     fs.writeFileSync(path.join(doctorHome, '.anti-hall', 'settings.json'), JSON.stringify({ guards: { allowAnthropicEnvKey: true } }));
     const r2 = spawnSync(process.execPath, [doctor], { env, encoding: 'utf8', timeout: 60000 });

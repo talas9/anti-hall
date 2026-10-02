@@ -640,7 +640,7 @@ function migrateLegacyKeyOptIn(home) {
     return {
       status: 'fixed',
       msg: 'ENABLED jev.allowLegacyKeyRead (Jev is on and a key file exists at ' + keyPath + ', so anti-hall keeps reading it; the key was not read or copied). '
-        + 'To turn it off: node scripts/settings.js set jev.allowLegacyKeyRead false (then store the key via /plugin config -> jev_api_key)',
+        + 'To turn it off: node scripts/settings.js set jev.allowLegacyKeyRead false (then store the key in the plugin\'s options screen -> jev_api_key)',
       stamp: true,
     };
   } catch (e) {

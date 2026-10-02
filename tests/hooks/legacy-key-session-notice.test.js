@@ -36,8 +36,8 @@ test('shows once per kind when a legacy key exists, Jev is on and the opt-in is 
     const env = { ANTHROPIC_API_KEY: SECRET };
     const first = additionalContext(runNode(HOOK, h.home, { env }));
     assert.match(first, /shown once/);
-    assert.match(first, /\/plugin config \(anti-hall -> jev_api_key\)/);
-    assert.match(first, /\/plugin config \(anti-hall -> anthropic_api_key\)/);
+    assert.match(first, /the plugin's options screen \(anti-hall -> jev_api_key\)/);
+    assert.match(first, /the plugin's options screen \(anti-hall -> anthropic_api_key\)/);
     assert.doesNotMatch(first, /secret/);
     const state = JSON.parse(fs.readFileSync(path.join(h.home, '.anti-hall', 'legacy-key-notice-state.json'), 'utf8'));
     assert.ok(state.shown.jev && state.shown.anthropic);

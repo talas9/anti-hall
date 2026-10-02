@@ -27,7 +27,7 @@
 // Env overrides:
 //   ANTIHALL_JEV=1        force-enable (even without jev.json)
 //   ANTIHALL_JEV=0         force-disable (overrides jev.json enabled:true)
-//   CLAUDE_PLUGIN_OPTION_JEV_API_KEY  the key stored via /plugin config (jev_api_key); read first
+//   CLAUDE_PLUGIN_OPTION_JEV_API_KEY  the key stored in the plugin's options screen (jev_api_key); read first
 //   CLAUDE_PLUGIN_OPTION_JEV_VERCEL_API_KEY / ..._JEV_TYPESAFE_API_KEY  vendor-bound keys (jev_<vendor>_api_key)
 //   AI_GATEWAY_API_KEY / TYPESAFE_API_KEY (+ keyFile)  legacy sources, read ONLY when
 //                          the jev.allowLegacyKeyRead setting is on (default off)

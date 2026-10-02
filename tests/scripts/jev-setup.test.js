@@ -380,7 +380,7 @@ test('test: no-key failure path is reported without hitting the network', async 
   const r = await runCmdTestInProcess(home);
   assert.notStrictEqual(r.code, 0);
   assert.match(r.out, /failed: no-key/);
-  assert.match(r.out, /\/plugin config/);
+  assert.match(r.out, /the plugin's options screen/);
 });
 
 test('test: http-401 failure suggests checking the provider/transport', async () => {
@@ -429,7 +429,7 @@ test('status: a legacy key file with the opt-in off -> notice naming jev_api_key
   run(['set-key'], { home, input: 'legacy-file-secret\n' });
   const r = run(['status'], { home });
   assert.match(r.stdout, /key present: no/);
-  assert.match(r.stdout, /notice: .*re-enter your key via \/plugin config \(anti-hall -> jev_api_key\), or enable jev\.allowLegacyKeyRead/);
+  assert.match(r.stdout, /notice: .*re-enter your key in the plugin's options screen \(anti-hall -> jev_api_key\), or enable jev\.allowLegacyKeyRead/);
   assert.doesNotMatch(r.stdout, /legacy-file-secret/);
 });
 

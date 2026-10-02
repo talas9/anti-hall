@@ -1852,7 +1852,7 @@ if (REPAIR_RESURRECTED) {
 })();
 
 // --- 5q. legacy API-key notice (REPORT-ONLY, CONDITIONAL) --------------------
-// anti-hall reads Jev / Anthropic keys from the /plugin config options
+// anti-hall reads Jev / Anthropic keys from the plugin options (set on the plugin's options screen)
 // (jev_api_key, anthropic_api_key) and no longer reads the machine's env vars
 // or key file unless jev.allowLegacyKeyRead is on. Tells the user when a legacy
 // key EXISTS (presence only, value never read) for a feature they enabled.

@@ -27,6 +27,7 @@ the update.
 - A "Repository not found" error from hivecontrol no longer silences a live workspace's mail for hours: live rows are always pulled and keep reporting the failure; archived, held or ignored rows (and a repo with no live row) are suppressed only after 3 identical sweeps in a row, and the match is limited to hivecontrol's own error line.
 - The workspace stop gate re-opens the stop budget for the kinds it just satisfied when nothing is owed any more.
 - The Primary gate says so (one non-blocking line) when it cannot determine its own unread count, instead of skipping its own row silently.
+- Key notices (hooks, `jev-setup`, migration) say "the plugin's options screen" instead of `/plugin config`.
 
 ### Changed
 

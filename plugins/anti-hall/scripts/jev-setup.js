@@ -142,7 +142,7 @@ function resolveKeyFilePath(cfg, transport) {
 // jev-client.js (credentials.js): the plugin option env first, the legacy
 // env/key file ONLY with jev.allowLegacyKeyRead on. NOTE: this CLI runs as a
 // plain process, which Claude Code does NOT hand CLAUDE_PLUGIN_OPTION_* — a
-// key stored via /plugin config is visible to the hooks but not here.
+// key stored in the plugin's options screen is visible to the hooks but not here.
 function keyPresent(cfg, transport) {
   return require('../hooks/lib/credentials.js').resolveKey('jev', {
     vendor: transport,
@@ -354,7 +354,7 @@ function warnUnboundVendor(v) {
   const bound = cr.genericKeyVendor();
   if (bound === v || keyPresent(effectiveCfg(), v)) return;
   console.log(`warning: no key for ${v} is visible to this process, and the stored generic key (jev_api_key / jev.keyFile) is bound to ${bound}, so it will NOT be sent to ${v}. `
-    + `Enter a key for ${v} with \`set-key --transport ${v}\`, or set ${cr.VENDOR_OPTION_NAME[v]} in /plugin config. (To deliberately re-bind the generic key: bind-generic-key --vendor ${v}.)`);
+    + `Enter a key for ${v} with \`set-key --transport ${v}\`, or set ${cr.VENDOR_OPTION_NAME[v]} in the plugin's options screen. (To deliberately re-bind the generic key: bind-generic-key --vendor ${v}.)`);
 }
 
 function cmdBindGenericKey(opts) {
@@ -408,7 +408,7 @@ function cmdSetKey(opts) {
 
   console.log(`key saved for ${transport}`);
   if (!require('../hooks/lib/credentials.js').allowLegacyKeyRead('jev')) {
-    console.log('note: the hooks only read this key file when jev.allowLegacyKeyRead is on (currently off). Preferred: store the key via /plugin config (anti-hall -> ' + 'jev_' + transport + '_api_key' + '), or enable the setting.');
+    console.log('note: the hooks only read this key file when jev.allowLegacyKeyRead is on (currently off). Preferred: store the key in the plugin\'s options screen (anti-hall -> ' + 'jev_' + transport + '_api_key' + '), or enable the setting.');
   }
 }
 

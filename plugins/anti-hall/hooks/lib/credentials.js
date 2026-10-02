@@ -2,7 +2,7 @@
 // credentials.js — the ONE place anti-hall resolves an API key.
 //
 // Resolution order (never logs, echoes or returns a key in any message):
-//   1. The plugin option the user stored via /plugin config (anti-hall ->
+//   1. The plugin option the user stored via the plugin's options screen (anti-hall ->
 //      jev_vercel_api_key / jev_typesafe_api_key (vendor-bound; the legacy
 //      generic jev_api_key counts only for the vendor it is bound to, see
 //      genericKeyVendor) / anthropic_api_key, sensitive: true). Claude Code exports
@@ -173,7 +173,7 @@ function legacyKeyPresent(kind, o) {
 // migrationNotice(kind) -> the one-line user notice (no key material).
 function migrationNotice(kind) {
   return 'a legacy ' + (kind === 'anthropic' ? 'ANTHROPIC_API_KEY env var' : 'Jev key file/env var')
-    + ' exists but anti-hall no longer reads credentials from this machine: re-enter your key via /plugin config (anti-hall -> '
+    + ' exists but anti-hall no longer reads credentials from this machine: re-enter your key in the plugin\'s options screen (anti-hall -> '
     + OPTION_NAME[kind] + '), or enable ' + OPT_IN_SETTING[kind] + ' to keep using the existing key.';
 }
 
@@ -186,7 +186,7 @@ function rejectedNotice(why) {
 // finding-dedup, jev-report, jev-setup) reports when it finds no Jev key.
 // Claude Code hands CLAUDE_PLUGIN_OPTION_* to hook processes only.
 function backgroundNoKeyNotice() {
-  return 'no Jev key visible to this process: a key stored as a plugin option (/plugin config -> jev_vercel_api_key / jev_typesafe_api_key) is only visible to hooks; '
+  return 'no Jev key visible to this process: a key stored as a plugin option (the plugin\'s options screen: jev_vercel_api_key / jev_typesafe_api_key) is only visible to hooks; '
     + 'enable ' + OPT_IN_SETTING.jev + ' with a key file to make it available to background tools (CLI, finding-dedup, jev-report).';
 }
 
@@ -252,7 +252,7 @@ function sessionNotice(o) {
       if (transport === 'typesafe' && jevStore.genericKeyVendor === undefined
         && (cfg.keyFile || nonEmpty(env[OPTION_ENV.jev]))) {
         bindingNote = 'your generic Jev key (jev_api_key / jev.keyFile) is bound to ' + DEFAULT_VENDOR + ' and is NOT sent to typesafe. '
-          + 'Enter a typesafe key (jev-setup.js set-key --transport typesafe, or jev_typesafe_api_key in /plugin config), '
+          + 'Enter a typesafe key (jev-setup.js set-key --transport typesafe, or jev_typesafe_api_key in the plugin\'s options screen), '
           + 'or, if that generic key is a typesafe key, bind it: jev-setup.js bind-generic-key --vendor typesafe.';
       }
     }
