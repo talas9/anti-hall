@@ -34,6 +34,10 @@ the update.
 - **Pending child questions are harder to miss:** when a Primary has unanswered child questions, the per-prompt "own inbox" notice now starts with one line, `QUESTIONS AWAITING YOUR REPLY: N (oldest Xm) — <workspace title>: <first 80 characters of the question>`. The preview is cleaned of control characters and has secrets redacted; it is left out when the stored summary has no question text yet.
 - **`devswarm.js spawn` note:** when `--source` names a branch other than the default branch and the DevSwarm app already has a workspace (active or archived) on it, the result carries one line in `warnings` saying the app may show the new workspace nested under it. Output only; nothing else changes, and a failed lookup stays silent.
 
+### Fixed
+
+- **"QUESTIONS AWAITING YOUR REPLY" no longer names archived, held or ignored children:** the line now lists only questions whose sender row is not archived, held or archive-ignored (the parent gate's policy, via `row-eligibility.js`); a sender whose eligibility cannot be determined is left out. The rest of the per-prompt notice is unchanged.
+
 ## 0.121.8 (2026-10-03)
 
 ### Fixed

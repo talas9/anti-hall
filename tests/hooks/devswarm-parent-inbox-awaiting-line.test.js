@@ -184,3 +184,94 @@ test('store: pendingQuestionPreviews is a sibling projection and pendingQuestion
     } finally { h.cleanup(); }
   }
 });
+
+// ---- sender eligibility: the line never names an archived / held / ignored /
+// ---- unknown-eligibility sender (parent-gate policy: archived||held||ignored = skip)
+function twoQuestions(h, badId) {
+  names.writeName(h.home, 'live-c', 'Live ws');
+  names.writeName(h.home, badId, 'Bad ws');
+  const now = Date.now();
+  writeSummary(h.home, {
+    total: 2, cursor: 0, unread: 2, directUnread: 2,
+    pendingQuestions: [
+      { from: badId, ts: now - 60 * 60000, seq: 1 },
+      { from: 'live-c', ts: now - 10 * 60000, seq: 2 },
+    ],
+    pendingQuestionPreviews: { 1: 'bad question', 2: 'live question' },
+  }, ['live-c', badId]);
+}
+function mark(h, sub, id, body) {
+  const d = path.join(swarmDir(h.home), sub);
+  fs.mkdirSync(d, { recursive: true });
+  fs.writeFileSync(path.join(d, id + '.json'), JSON.stringify(body || {}));
+}
+function runEnv(home, env) {
+  const r = testHook(HOOK, { hook_event_name: 'UserPromptSubmit', session_id: 't', prompt: 'hi', cwd: REPO_CWD },
+    { home, env: Object.assign({}, PRIMARY_ENV, env || {}), expectJson: true });
+  assert.strictEqual(r.status, 0);
+  return (r.json && r.json.hookSpecificOutput && r.json.hookSpecificOutput.additionalContext) || '';
+}
+
+test('archived sender is not listed; the live one is (mixed -> only the live one)', () => {
+  const h = makeHome();
+  try {
+    twoQuestions(h, 'arch-c');
+    mark(h, 'archived', 'arch-c', { worktreePath: '/wt/arch-c' });
+    const l = lineOf(runEnv(h.home));
+    assert.match(l, /: 1 \(oldest 10m\) — Live ws: live question$/, l);
+    assert.ok(!/Bad ws|bad question/.test(l), l);
+  } finally { h.cleanup(); }
+});
+
+test('held sender is not listed', () => {
+  const h = makeHome();
+  try {
+    twoQuestions(h, 'held-c');
+    const l = lineOf(runEnv(h.home, { ANTIHALL_DEVSWARM_HELD_PARTITIONS: 'held-c' }));
+    assert.match(l, /: 1 \(oldest 10m\) — Live ws: live question$/, l);
+  } finally { h.cleanup(); }
+});
+
+test('archive-ignored sender is not listed', () => {
+  const h = makeHome();
+  try {
+    twoQuestions(h, 'ign-c');
+    mark(h, 'archive-ignore', 'ign-c');
+    const l = lineOf(runEnv(h.home));
+    assert.match(l, /: 1 \(oldest 10m\) — Live ws: live question$/, l);
+  } finally { h.cleanup(); }
+});
+
+test('eligibility-unknown sender (descriptor only, absent from the summary rows) is left out', () => {
+  const h = makeHome();
+  try {
+    twoQuestions(h, 'ghost-c');
+    // Remove the summary row for ghost-c but keep a descriptor so the question
+    // still survives the retired-sender partition (it is blocking, not informational).
+    const sp = path.join(swarmDir(h.home), 'summaries', REPO_KEY + '.json');
+    const sum = JSON.parse(fs.readFileSync(sp, 'utf8'));
+    delete sum.workspaces['ghost-c'];
+    fs.writeFileSync(sp, JSON.stringify(sum));
+    mark(h, 'workspaces', 'ghost-c', { id: 'ghost-c', worktreePath: '/wt/ghost-c', sessionId: 'sess-ghost' });
+    const c = runEnv(h.home);
+    const l = lineOf(c);
+    assert.match(l, /: 1 \(oldest 10m\) — Live ws: live question$/, l);
+    assert.ok(!/ghost|Bad ws/.test(l), l);
+  } finally { h.cleanup(); }
+});
+
+test('only ineligible senders -> the line is absent (silent on doubt); the segment itself is unchanged', () => {
+  const h = makeHome();
+  try {
+    names.writeName(h.home, 'arch-c', 'Bad ws');
+    writeSummary(h.home, {
+      total: 1, cursor: 0, unread: 1, directUnread: 1,
+      pendingQuestions: [{ from: 'arch-c', ts: Date.now() - 60000, seq: 1 }],
+      pendingQuestionPreviews: { 1: 'bad question' },
+    }, ['arch-c']);
+    mark(h, 'archived', 'arch-c', { worktreePath: '/wt/arch-c' });
+    const c = runEnv(h.home);
+    assert.ok(!LINE_RE.test(c), c);
+    assert.match(c, /DEVSWARM OWN INBOX/, 'pre-existing nag still shows');
+  } finally { h.cleanup(); }
+});
