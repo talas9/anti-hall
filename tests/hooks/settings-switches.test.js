@@ -112,6 +112,12 @@ const LOCKED_KEYS = [
   'devswarm.maintainerNotice.post',
 ];
 
+// Credential opt-ins are locked AND home-settings-only: no env override and no
+// /config row on purpose (a project env block or a plugin option must never be
+// able to widen where a key is read from), so they are exempt from the
+// /config-row + env checks below.
+const HOME_ONLY_LOCKED_KEYS = ['guards.allowAnthropicEnvKey', 'jev.allowLegacyKeyRead'];
+
 // Exact warning text per key (owner-specified wording, 2026-09-25 revision):
 // the template states the CONSEQUENCE of the risky change, not a generic
 // "it is a safety guard" line, and 'guards.editGuardAllow' names the actual
@@ -392,7 +398,11 @@ test('SWITCH maintenance.sessionEndReaper: off returns before reading the Sessio
 // ---------------------------------------------------------- (4) safety lock
 test('SAFETY: every locked key is exactly the expected set and is a /config row', () => {
   const locked = schema.allSettings().filter((s) => s.locked).map((s) => s.section + '.' + s.key).sort();
-  assert.deepStrictEqual(locked, [...LOCKED_KEYS].sort());
+  assert.deepStrictEqual(locked, [...LOCKED_KEYS, ...HOME_ONLY_LOCKED_KEYS].sort());
+  for (const k of HOME_ONLY_LOCKED_KEYS) {
+    const e = schema.findSetting(...split(k));
+    assert.ok(e.homeOnly && !e.env && !e.pluginOption, k + ' must stay home-settings-only (no env override, no /config row)');
+  }
   const uc = require(path.join(PLUGIN, '.claude-plugin', 'plugin.json')).userConfig;
   for (const k of LOCKED_KEYS) {
     const [sec, key] = split(k);

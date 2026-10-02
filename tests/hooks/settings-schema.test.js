@@ -83,6 +83,8 @@ test('every plugin.json userConfig key maps to a schema entry\'s pluginOption', 
   assert.ok(userConfigKeys.length > 0, 'plugin.json should declare at least one userConfig entry');
   const schemaKeys = new Set(SCHEMA.pluginOptionEntries().map((o) => o.pluginOption));
   for (const k of userConfigKeys) {
+    // Sensitive credential options (OS credential store) are read by hooks/lib/credentials.js, not by the settings schema.
+    if (pluginJson.userConfig[k].sensitive === true) continue;
     assert.ok(schemaKeys.has(k), 'plugin.json userConfig key "' + k + '" has no matching settings-schema.js pluginOption');
   }
   // and the reverse: every schema pluginOption is actually declared in plugin.json
