@@ -118,7 +118,9 @@ function isQueuedMessageResult(text) {
 //            sent a message:" and holds a block
 //            <teammate-message teammate_id="<name>" ...>\n{"type":
 //            "idle_notification","from":"<name>","timestamp":"<ISO>",...}\n
-//            </teammate-message> (one entry can hold several). The INNER timestamp is when the teammate's
+//            </teammate-message> (one entry can hold several; the record carries
+//            none of the keys a typed/queued/peer record carries, see
+//            NOT_A_REPORT_KEYS). The INNER timestamp is when the teammate's
 //            turn ended; the entry is written only when the coordinator's own
 //            turn yields, minutes later in the field case.
 // A teammate ends a turn with one idle_notification. A message sent while it
@@ -135,21 +137,59 @@ function parseInboxSendResult(text) {
   const m = /^Message sent to (.+)'s inbox$/.exec(o.message);
   return m ? m[1] : null;
 }
-const TEAMMATE_IDLE_BLOCK_RE = /<teammate-message teammate_id="([^"]+)"[^>]*>\n(\{"type":"idle_notification"[^\n]*\})\n<\/teammate-message>/g;
-// teammateIdles(entry, entryTs) -> [{name, ts}] from a genuine teammate report:
-// a `user` entry whose content is a bare string that BEGINS with the harness
-// wrapper (the only carrier observed: 189 of 189 real reports). A tool_result,
-// a queued prompt or any text that merely quotes a block is not one.
-function teammateIdles(entry, entryTs) {
+const TEAMMATE_REPORT_PREFIX = 'Another Claude session sent a message:';
+// One <teammate-message> block, matched STICKY from the cursor so blocks are
+// consumed one after another from the start of the string; the body is taken
+// whole, so a block quoted INSIDE another block's body is never a block.
+const TEAMMATE_BLOCK_RE = /<teammate-message teammate_id="([^"]+)"[^>]*>\n([\s\S]*?)\n<\/teammate-message>/y;
+// Keys the harness stamps on records that originate from a person or a queue
+// (typed prompts, queued/mid-turn messages, task-notifications, scheduled
+// prompts) and on tool results, meta records and compaction summaries. Field
+// evidence, 2026-10-03 (40 transcripts, 3331 teammate reports, harness
+// 2.1.252..2.1.287): NO real teammate report carries any of them, and no
+// typed/queued/peer/tool_result/compaction/sidechain record lacks all of them
+// while starting with the report prefix. There is no positive structured field
+// on the report record, so the shape is anchored by the ABSENCE of these keys.
+// A harness that starts stamping them on reports makes reports unrecognised,
+// which fails safe (a pending message stays pending).
+const NOT_A_REPORT_KEYS = ['origin', 'promptSource', 'turnOrigin', 'permissionMode', 'isMeta', 'isCompactSummary',
+  'isSidechain', 'toolUseResult', 'sourceToolAssistantUUID', 'imagePasteIds', 'queuePriority', 'scheduledTaskId'];
+// A report's inner timestamp is its turn end, stamped before the entry is
+// written: observed never later than the entry (0 of 3374). Beyond this skew it
+// is forged or garbage.
+const REPORT_FUTURE_SKEW_MS = 5000;
+// teammateIdles(entry, entryTs, spawned) -> [{name, ts}] from a genuine teammate
+// report. ALL must hold: a `user` entry with a bare-string content; none of
+// NOT_A_REPORT_KEYS (isSidechain only when true); the string BEGINS with the
+// harness wrapper followed directly by a block (no prose before it) and the
+// blocks run on from there; the block's teammate was spawned by THIS session
+// (`spawned`, from a structured spawn record) and its JSON names the same
+// teammate; the inner timestamp is not in the future of the entry's own
+// timestamp (missing/invalid -> the entry timestamp). A typed or pasted text,
+// a tool_result, an assistant message, a peer's cross-session message or a
+// report for an unknown teammate is not one.
+function teammateIdles(entry, entryTs, spawned) {
   const out = [];
   const c = entry.type === 'user' && entry.message ? entry.message.content : null;
-  if (typeof c !== 'string' || !c.startsWith('Another Claude session sent a message:')) return out;
-  for (const m of c.matchAll(TEAMMATE_IDLE_BLOCK_RE)) {
+  if (typeof c !== 'string' || !c.startsWith(TEAMMATE_REPORT_PREFIX)) return out;
+  for (const k of NOT_A_REPORT_KEYS) {
+    if (k === 'isSidechain' ? entry[k] === true : entry[k] !== undefined) return out;
+  }
+  let at = TEAMMATE_REPORT_PREFIX.length;
+  while (at < c.length && /\s/.test(c.charAt(at))) at++;
+  for (;;) {
+    TEAMMATE_BLOCK_RE.lastIndex = at;
+    const m = TEAMMATE_BLOCK_RE.exec(c);
+    if (!m) break;
+    at = TEAMMATE_BLOCK_RE.lastIndex;
+    while (at < c.length && /\s/.test(c.charAt(at))) at++;
+    if (!spawned || !spawned.has(m[1]) || m[2].indexOf('\n') !== -1 || m[2].charAt(0) !== '{') continue;
     let o;
     try { o = JSON.parse(m[2]); } catch (_) { continue; }
     if (!o || o.type !== 'idle_notification' || o.from !== m[1]) continue;
     const inner = typeof o.timestamp === 'string' ? Date.parse(o.timestamp) : NaN;
-    out.push({ name: m[1], ts: Number.isFinite(inner) ? inner : entryTs });
+    if (Number.isFinite(inner) && Number.isFinite(entryTs) && inner > entryTs + REPORT_FUTURE_SKEW_MS) continue;
+    out.push({ name: m[1], ts: Number.isFinite(inner) && Number.isFinite(entryTs) ? inner : entryTs });
   }
   return out;
 }
@@ -370,7 +410,7 @@ function scanTranscript(transcriptPath, preLines, opts) {
       }
     }
 
-    if (hasIdle) for (const i of teammateIdles(entry, entryTs)) teamEvent(i.name, 'idle', i.ts, seq);
+    if (hasIdle) for (const i of teammateIdles(entry, entryTs, teamInfo)) teamEvent(i.name, 'idle', i.ts, seq);
 
     if (entry.type !== 'user') continue;
 
@@ -445,6 +485,10 @@ function scanTranscript(transcriptPath, preLines, opts) {
     }
   }
 
+  // Background-agent ids known from the walk (launch, adoption, notification).
+  // A teammate NAME equal to one is a collision: the teammate must not replace
+  // that agent's launched row or clear its terminal state.
+  const backgroundIds = new Set([...launched.keys(), ...terminal]);
   for (const s of taskStops) {
     if (erroredToolUseIds.has(s.toolUseId)) continue;
     if (opts && opts.ignoreUnansweredStops && !answeredToolUseIds.has(s.toolUseId)) continue;
@@ -549,6 +593,7 @@ function scanTranscript(transcriptPath, preLines, opts) {
     }
     const sentAtMs = Number.isFinite(queuedAt) ? queuedAt : pendingAt;
     if (!Number.isFinite(sentAtMs)) continue;
+    if (backgroundIds.has(name)) continue;
     const seenMs = teammateSidechainMtimeMs(transcriptPath, name);
     const lastSeenMs = seenMs > sentAtMs ? seenMs : sentAtMs;
     const live = nowMs - lastSeenMs < PENDING_MESSAGE_SILENCE_MS;

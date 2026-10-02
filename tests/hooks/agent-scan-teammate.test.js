@@ -97,10 +97,13 @@ test('multiple sends: one sent mid-turn needs its own later report', () => {
   assert.strictEqual(state(one.concat(lines(idle(NAME, T(19), T(20)))), 21).running, false);
 });
 
-test('spawn outside the window: the first idle after a send reads as consumption (silent)', () => {
+test('spawn outside the window: its reports are not trusted -> unknown (never running, never terminal)', () => {
   const seenBefore = lines(idle(NAME, T(8), T(9)), send(NAME, T(14)));
-  assert.strictEqual(state(seenBefore, 15).running, true, 'known teammate (it reported), sent a message');
-  assert.strictEqual(state(seenBefore.concat(lines(idle(NAME, T(16), T(17)))), 18).running, false);
+  const r = state(seenBefore, 15);
+  assert.strictEqual(r.running, false, 'no spawn record seen: the report proves nothing, the send alone is not a teammate');
+  assert.strictEqual(r.pending, undefined);
+  assert.strictEqual(r.terminal, false, 'unknown is never "finished"');
+  assert.strictEqual(state(seenBefore.concat(lines(idle(NAME, T(16), T(17)))), 18).terminal, false);
 });
 
 test('a peer session name (never spawned, never reported) is not a teammate', () => {
