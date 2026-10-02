@@ -32,6 +32,14 @@ the update.
   outside the canonical layout, each with its canonical destination.
 - A hygiene test that no file tracked in this repository is a handover.
 
+### Fixed
+
+- **task-guard / task-tracker no longer guess task state that lies before the transcript tail window.** A `TaskUpdate` for an id whose `TaskCreate` and earlier updates sit before the 1.5 MB window used to be rebuilt as `status: pending` with no `blockedOn`, so an owner-blocked (or even completed) task drew an "IDLE NEGLECT" nag. Such a task is now status-unknown, and the existing bounded backward pass (same 64 MB / 150 ms caps, fail-open, runs only when a task has an unknown field) recovers the latest status, `blockedOn`, `blockedBy`, owner and subject. Still-unknown tasks are neither listed as open nor nagged; tasks recovered as completed stay closed. `tasklist-guard` no longer counts an update-only id as pending either.
+- **The backward pass only stops at a real list reset.** Numbering restarting, a TaskList result starting "No tasks found", or an assistant TodoWrite tool_use. A line that merely quotes those phrases (assistant text, a tool input) no longer cuts the scan short; this also fixes the subject backfill. "Task not found" is per id (that id is closed, the failed update is not applied) and no longer resets the whole list, before or inside the window.
+- **Recovered tasks reach every consumer.** The task-tracker per-turn "open tasks" line, task-guard and tasklist-guard now share one open view (`openOf` in `lib/task-state.js`) recomputed after the backfill; tasklist-guard runs the same backfill. A task with a known open status always stays in the generic Stop block; if its block state could not be established it is only excluded from the idle-neglect "dispatch now" set. A status carried inside the window is the truth: completed before the window and re-opened inside it nags again.
+- **Unknown is no longer invisible.** When tasks end in an unknown state, task-guard (appended to a block reason, or a non-blocking advisory) and the task-tracker line add one throttled line: "N task(s) in an unknown state (their records are too far back to read) — re-state each with TaskUpdate (status) to refresh." Its throttle state (`last-unknown-*.json`) is swept by `lib/state-prune.js`.
+- **Parallel TaskCreate calls of one assistant message numbered in reverse are no longer mistaken for a numbering restart** (backward pass and the in-window parsers).
+
 ## 0.121.5 (2026-10-02)
 
 ### Fixed

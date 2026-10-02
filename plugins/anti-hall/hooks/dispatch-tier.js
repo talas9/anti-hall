@@ -39,7 +39,12 @@ function main() {
     let base = null;
     try {
       const lines = require('./lib/transcript-tail.js').readTail(payload.transcript_path);
-      if (lines) base = require('./lib/task-state.js').reconstructTasks({ data: lines.join('\n'), truncated: false }).taskMap.get(id) || null;
+      if (lines) {
+        const state = require('./lib/task-state.js').reconstructTasks({ data: lines.join('\n'), truncated: false });
+        // blockedOn/subject of a task created before the window (isOwnerBlocked below).
+        require('./lib/task-subject-backfill.js').backfillSubjects(state.taskMap, payload.transcript_path, state);
+        base = state.taskMap.get(id) || null;
+      }
     } catch (_) { base = null; }
     task = Object.assign({ content: '', description: '' }, base || {});
     if (typeof inp.subject === 'string' && inp.subject) task.content = inp.subject;

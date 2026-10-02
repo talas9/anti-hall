@@ -858,6 +858,12 @@ function scanTranscript(filePath, opts) {
 
   const provisionalMap = new Map(); // tool_use_id -> { content, status }
   const taskMap = new Map();        // id -> { id, content, status }
+  // For lib/task-subject-backfill.js (state of tasks created before this window):
+  // did a real reset happen inside the window, the first create id, the highest.
+  let windowReset = false;
+  let firstCreated = Infinity;
+  let maxCreated = 0;
+  const TS = require('./lib/task-state.js');
   const resultIdMap = new Map();    // tool_use_id -> "N"
 
   for (const line of lines) {
@@ -884,7 +890,13 @@ function scanTranscript(filePath, opts) {
               .join('\n');
           }
           const m = resultText.match(/^Task\s+#(\d+)\s+created\s+successfully/i);
-          if (m) resultIdMap.set(item.tool_use_id, m[1]);
+          if (m) {
+            const n = Number(m[1]);
+            if (n <= maxCreated) windowReset = true; // numbering restarted
+            if (firstCreated === Infinity) firstCreated = n;
+            maxCreated = Math.max(maxCreated, n);
+            resultIdMap.set(item.tool_use_id, m[1]);
+          }
           // T4(a): a TaskUpdate/TaskGet result reporting "Task not found" is
           // direct evidence the task store was reset out from under this
           // session (a stale id it already knew about no longer exists).
@@ -943,6 +955,7 @@ function scanTranscript(filePath, opts) {
         sawTaskActivity = true;
         const todos = tu.input && tu.input.todos;
         if (Array.isArray(todos)) {
+          windowReset = true;
           taskMap.clear();
           provisionalMap.clear();
           for (const todo of todos) {
@@ -981,7 +994,7 @@ function scanTranscript(filePath, opts) {
           : inp.task_id != null ? String(inp.task_id)
           : null;
         if (id != null) {
-          const existing = taskMap.get(id) || { id, content: id };
+          const existing = taskMap.get(id) || TS.unseenTask(id);
           const hasPriorityUpdate = inp.priority !== undefined ||
             (inp.metadata != null && inp.metadata.priority !== undefined);
           const updatedPriority = hasPriorityUpdate
@@ -993,8 +1006,12 @@ function scanTranscript(filePath, opts) {
           taskMap.set(id, {
             id: existing.id,
             content: existing.content,
-            status: inp.status || existing.status || 'pending',
+            // NEVER guess: an id first seen in a TaskUpdate keeps an UNKNOWN
+            // (undefined) status unless the update carries one, so a task whose
+            // create/status lie before the window is not counted as pending.
+            status: inp.status || existing.status,
             priority: updatedPriority,
+            unknown: TS.gapsAfterUpdate(existing.unknown, inp),
           });
         }
         continue;
@@ -1013,11 +1030,12 @@ function scanTranscript(filePath, opts) {
   // Flush provisional TaskCreate entries into the task map.
   for (const [toolUseId, rec] of provisionalMap) {
     const key = String(resultIdMap.get(toolUseId) || toolUseId);
-    const existing = taskMap.get(key);
+    let existing = taskMap.get(key);
+    if (existing && existing.unknown) { existing = Object.assign({}, existing, TS.fillFromCreate(existing, rec)); taskMap.set(key, existing); }
     if (!existing) {
       taskMap.set(key, { id: key, content: rec.content, status: rec.status, priority: rec.priority || null });
     } else if (!existing.content || existing.content === key) {
-      taskMap.set(key, { id: key, content: rec.content, status: existing.status, priority: existing.priority || rec.priority || null });
+      taskMap.set(key, { id: key, content: rec.content, status: existing.status || rec.status, priority: existing.priority || rec.priority || null });
     }
   }
 
@@ -1031,7 +1049,13 @@ function scanTranscript(filePath, opts) {
   // actively worked is fine — don't nag about low-priority backlog being in_progress.
   let inProgressCount = 0; // only P0/P1 in_progress for stale-multi check
   const openTaskIds = [];
+  // A task whose TaskCreate / status lie before this 512KB window is recovered by
+  // the same bounded backward pass task-guard uses (no-op without unknown fields).
+  if (tail.truncated) {
+    require('./lib/task-subject-backfill.js').backfillSubjects(taskMap, filePath, { windowReset, firstCreated, windowBytes: 512 * 1024 });
+  }
   for (const task of taskMap.values()) {
+    if (!TS.isOpenTask(task)) continue; // shared open view (unknown tasks never count)
     const s = (task.status || '').toLowerCase();
     if (s === 'in_progress' || s === 'in-progress') {
       // All in_progress go into openTaskIds (for dedup hash), but only P0/P1

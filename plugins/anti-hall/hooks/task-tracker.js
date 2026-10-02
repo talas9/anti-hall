@@ -38,7 +38,7 @@ const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
 const DD = require('./lib/dispatch-demand.js');
-const { reconstructTasks, classifyOpen } = require('./lib/task-state.js');
+const { reconstructTasks, classifyOpen, openOf, unknownNote } = require('./lib/task-state.js');
 
 const FULL =
   'TASK-LIST DISCIPLINE: capture EVERY user request as a task (TaskCreate) ' +
@@ -229,7 +229,8 @@ function freshnessNote(payload) {
     const state = reconstructTasks({ data: lines.join('\n'), truncated: false });
     // An open task whose TaskCreate lies before the 1.5MB window has no subject
     // here; one bounded extra pass recovers it (no-op when none is missing).
-    // Mutates the shared task objects, so state.open sees the subject too.
+    // It also recovers status / blockedOn, so `open` is RECOMPUTED from the task
+    // map after it (state.open was built before the pass and would be stale).
     require('./lib/task-subject-backfill.js').backfillSubjects(state.taskMap, tp, state);
     // dispatchTier outcome labels (actual dispatch vs recommendation, one-lane /
     // fan-out) — metrics only, fail-open.
@@ -237,8 +238,10 @@ function freshnessNote(payload) {
       const mh = metricsHome();
       if (mh) require('./lib/dispatch-tier.js').trackOutcomes({ home: mh, sessionId: payload.session_id, lines, taskMap: state.taskMap });
     } catch (_) {}
-    const open = state.open;
-    if (open.length === 0) return '';
+    const open = openOf(state.taskMap);
+    // One short throttled line when tasks are left in an unknown state.
+    const unk = unknownNote(state.taskMap, { sessionId: payload.session_id, tag: 'tracker' });
+    if (open.length === 0) return unk;
 
     let out = '';
 
@@ -286,7 +289,8 @@ function freshnessNote(payload) {
     const tail2 = inProg && subj ? ' (oldest in_progress subject: ' + JSON.stringify(subj) + ')' : '';
     const freshLine = 'open tasks: ' + open.length + tail2 + ' — update or close them.';
 
-    return out ? out + ' ' + freshLine : freshLine;
+    const base = out ? out + ' ' + freshLine : freshLine;
+    return unk ? base + ' ' + unk : base;
   } catch (_) {
     return '';
   }

@@ -138,18 +138,28 @@ function main() {
     }
   } catch (_) { /* advisory only, never blocks */ }
 
-  // Compute open tasks.
-  const openTasks = [];
-  for (const task of taskMap.values()) {
-    const s = (task.status || '').toLowerCase();
-    if (s === 'pending' || s === 'in_progress' || s === 'in-progress') {
-      openTasks.push(task);
-    }
-  }
+  // Compute open tasks (shared view, lib/task-state.js: excludes status-unknown
+  // tasks and pending tasks whose block state is unknown).
+  const TS = require('./lib/task-state.js');
+  const openTasks = TS.openOf(taskMap);
+
+  // Tasks left in an UNKNOWN state (records too far back to read) get ONE short,
+  // throttled line (set-change + max 3/session): appended to the block reason when
+  // this Stop blocks, else printed as an advisory. It never blocks by itself.
+  let unknownNoteLine = null;
+  const takeUnknownNote = () => {
+    if (unknownNoteLine === null) unknownNoteLine = TS.unknownNote(taskMap, { sessionId, tag: 'guard' });
+    return unknownNoteLine;
+  };
+  const quietExit = () => {
+    const n = takeUnknownNote();
+    if (n) { try { fs.writeSync(1, '[task-guard] ' + n + '\n'); } catch (_) {} }
+    process.exit(0);
+  };
 
   if (openTasks.length === 0) {
     try { fs.unlinkSync(stateFile); } catch (_) {}
-    process.exit(0);
+    quietExit();
   }
 
   // Classify: which open tasks are ACTIONABLE NOW (pending, unowned, no open
@@ -181,7 +191,7 @@ function main() {
   // nudge: the session is genuinely waiting, not neglecting work.
   const nudgeTasks = unblockedOpen(openTasks, taskMap);
   if (!idleNeglect && nudgeTasks.length === 0) {
-    process.exit(0);
+    quietExit();
   }
 
   // Hash basis differs per mode so the two block types dedupe independently:
@@ -224,7 +234,7 @@ function main() {
 
   // Loop-safety 1: if we already blocked on this exact set, don't block again.
   if (hash === lastHash) {
-    process.exit(0); // already nudged for this exact set; nothing changed
+    quietExit(); // already nudged for this exact set; nothing changed
   }
 
   // Loop-safety 2: hard cap on total blocks this session. The set legitimately
@@ -235,7 +245,7 @@ function main() {
   // changes, but can NEVER hard-loop (cap is absolute, counts both modes).
   const MAX_BLOCKS = 5;
   if (blocks >= MAX_BLOCKS) {
-    process.exit(0);
+    quietExit();
   }
 
   // OMC-awareness: if an autonomous OMC loop (ralph, ultrawork, autopilot, etc.)
@@ -348,6 +358,8 @@ function main() {
       'dependency, or metadata.blockedOn:\'owner\'/\'user\'/\'human\'/\'external\' for an ' +
       'outside wait — and it is no longer listed here.';
   }
+  const unkLine = takeUnknownNote();
+  if (unkLine) reason += ' ' + unkLine;
 
   // fs.writeSync(1): stdout.write races the async pipe flush with exit() on
   // macOS node 18/20 (repo-wide hook-output rule; R2-N1).
@@ -619,6 +631,7 @@ function classifyOpen(openTasks, taskMap) {
   for (const t of openTasks) {
     const s = (t.status || '').toLowerCase();
     if (s !== 'pending') continue; // in_progress => already being worked
+    if (t.blockUnknown) continue; // block state unproven: may be waiting on the owner (counted in the unknown note)
     const owner = normOwner(t.owner);
     // Owned by a subagent => not the main thread's to dispatch. Treat "main"/
     // "orchestrator"/"coordinator" owner labels as the main thread (still ours).
@@ -724,6 +737,8 @@ function parseTasksFromFile(filePath) {
   // result map: tool_use_id -> numeric string id ("1", "2", ...)
   const resultIdMap = new Map(); // tool_use_id -> "N"
   let maxCreatedId = 0; // highest "Task #N created" in the current list epoch
+  let groupMsg = null;  // assistant message id of the TaskCreate group being resolved
+  let groupBase = 0;    // highest created id BEFORE that message
   // For the subject backfill (lib/task-subject-backfill.js): did ANY reset
   // happen inside the window, and which id was created first in it.
   let windowReset = false;
@@ -775,7 +790,9 @@ function parseTasksFromFile(filePath) {
           } else if ((callName === 'TaskGet' || callName === 'TaskUpdate') && dd.isTaskNotFoundText(resultText)) {
             const badId = call && call.taskId != null ? String(call.taskId) : null;
             if (badId != null) {
-              windowReset = true;
+              // Per id ONLY (not a list reset): a mistyped id must not silence the
+              // rest. The epoch boundary is the numbering restart / TaskList
+              // "No tasks found" / TodoWrite handled elsewhere in this parser.
               taskMap.delete(badId);
               for (const [tid, nid] of [...resultIdMap]) {
                 if (nid === badId) { resultIdMap.delete(tid); provisionalMap.delete(tid); }
@@ -793,14 +810,21 @@ function parseTasksFromFile(filePath) {
             const n = Number(m[1]);
             // Max over created ids AND ids known only from a TaskUpdate (their
             // create can sit before the scan window).
-            if (n <= Math.max(maxCreatedId, require('./lib/dispatch-demand.js').maxNumericKey(taskMap))) {
+            // Creates of ONE assistant message (parallel calls may be numbered in
+            // reverse) are compared with the state BEFORE that message, never each
+            // other: a lower id inside the same message is not a restart.
+            const mid = call && call.msgId;
+            if (!(mid && mid === groupMsg)) { groupMsg = mid || null; groupBase = Math.max(maxCreatedId, require('./lib/dispatch-demand.js').maxNumericKey(taskMap)); }
+            if (n <= groupBase) {
               taskMap.clear();
               for (const tid of [...provisionalMap.keys()]) if (resultIdMap.has(tid)) provisionalMap.delete(tid);
               resultIdMap.clear();
               windowReset = true;
+              maxCreatedId = 0;
+              groupBase = 0;
             }
-            if (firstCreated === Infinity) firstCreated = n;
-            maxCreatedId = n;
+            firstCreated = Math.min(firstCreated, n);
+            maxCreatedId = Math.max(maxCreatedId, n);
             resultIdMap.set(item.tool_use_id, m[1]);
           }
         }
@@ -822,7 +846,7 @@ function parseTasksFromFile(filePath) {
                      : inp.id != null ? inp.id
                      : inp.task_id != null ? inp.task_id
                      : null;
-        toolCallInfo.set(tu.id, { name, taskId });
+        toolCallInfo.set(tu.id, { name, taskId, msgId: entry.message && typeof entry.message.id === 'string' ? entry.message.id : null });
       }
 
       if (name === 'TodoWrite') {
@@ -894,7 +918,8 @@ function parseTasksFromFile(filePath) {
                  : inp.task_id != null ? String(inp.task_id)
                  : null;
         if (id != null) {
-          const existing = taskMap.get(id) || { id, content: id };
+          const TS = require('./lib/task-state.js');
+          const existing = taskMap.get(id) || TS.unseenTask(id);
           // Priority: only overwrite when the update explicitly carries the field
           // (either inp.priority or inp.metadata.priority). A status-only update
           // must not clear a priority that was set at TaskCreate time.
@@ -918,7 +943,11 @@ function parseTasksFromFile(filePath) {
           taskMap.set(id, {
             id: existing.id,
             content: existing.content,
-            status: inp.status || existing.status || 'pending',
+            unknown: TS.gapsAfterUpdate(existing.unknown, inp),
+            // NEVER guess: an id first seen here stays status-unknown (undefined)
+            // unless the update carries one; lib/task-subject-backfill.js recovers
+            // it from before the window, else the task is neither open nor nagged.
+            status: inp.status || existing.status,
             // Only overwrite owner/blockedBy when the update actually carries the
             // field; an unrelated status-only update must not clear them.
             owner: inp.owner !== undefined ? normOwner(inp.owner) : (existing.owner || ''),
@@ -942,7 +971,11 @@ function parseTasksFromFile(filePath) {
     const key = String(numericId);
     // Merge: if taskMap already has this key (from a TaskUpdate that arrived
     // before we flushed), keep its status; otherwise use the provisional status.
-    const existing = taskMap.get(key);
+    let existing = taskMap.get(key);
+    if (existing && existing.unknown) {
+      existing = Object.assign({}, existing, require('./lib/task-state.js').fillFromCreate(existing, rec));
+      taskMap.set(key, existing);
+    }
     if (!existing) {
       taskMap.set(key, {
         id: key, content: rec.content, status: rec.status,
