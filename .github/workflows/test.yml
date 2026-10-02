@@ -1,20 +1,57 @@
 name: tests
 
+# One run per release: the rc-v* candidate tag is the release gate (RELEASING.md
+# step 6). A v* tag points at the same commit and is NOT a trigger.
 on:
   push:
     branches: [main]
     tags: ['rc-v*']
   pull_request:
 
+# Newer pushes cancel superseded branch/PR runs. Tag runs are never cancelled:
+# the rc run is the release gate.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
 jobs:
+  # rc-v* tags: full matrix (ubuntu + macos x node 22/24). main and PRs: ubuntu x
+  # node 22/24 plus macos x node 24 only. macOS is capped at 5 concurrent jobs
+  # per account, so macOS runs 2 shards per node version (4 jobs on rc).
+  plan:
+    name: plan matrix
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.m.outputs.matrix }}
+    steps:
+      - id: m
+        env:
+          FULL: ${{ startsWith(github.ref, 'refs/tags/rc-v') }}
+        run: |
+          node -e '
+            const full = process.env.FULL === "true";
+            const include = [];
+            const add = (os, node, total, timeout) => {
+              for (let shard = 1; shard <= total; shard++) {
+                include.push({ os, node, shard, total, timeout });
+              }
+            };
+            add("ubuntu-latest", "22.x", 3, 15);
+            add("ubuntu-latest", "24.x", 3, 15);
+            if (full) add("macos-latest", "22.x", 2, 25);
+            add("macos-latest", "24.x", 2, 25);
+            console.log("matrix=" + JSON.stringify({ include }));
+          ' >> "$GITHUB_OUTPUT"
+
   test:
-    name: node:test (${{ matrix.os }} / node ${{ matrix.node }})
+    needs: plan
+    name: node:test (${{ matrix.os }} / node ${{ matrix.node }} / shard ${{ matrix.shard }}/${{ matrix.total }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: ${{ matrix.timeout }}
     strategy:
       fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-        node: [22.x, 24.x]
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -37,4 +74,7 @@ jobs:
       # outside that kit's own scratch-copy writes). Measured: 126s wall /
       # 362% CPU parallel vs ~7-8 min per matrix cell serialized — the flag
       # cost ~4x CI minutes for a race this codebase no longer has.
-      - run: node --test
+      #
+      # `--test-shard=i/n` (built in, Node >=20.5) hands this job every n-th
+      # discovered test file, so the shards of one cell partition the suite.
+      - run: node --test --test-shard=${{ matrix.shard }}/${{ matrix.total }}
