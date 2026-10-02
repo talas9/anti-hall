@@ -6,6 +6,33 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.120.14 (2026-10-02)
+
+### Changed
+
+- **BEHAVIOUR CHANGE: API keys come from sensitive plugin options.** Jev and Anthropic keys are read from the plugin's sensitive options. Reading a key from the machine environment or a key file is now off by default and needs the home-only opt-in `jev.allowLegacyKeyRead` (Jev) or `guards.allowAnthropicEnvKey` (Anthropic env key), set in your home settings. An update migration enables the Jev opt-in once for existing installs that already have a key file, so those keep working. If you use an env-var key, or an Anthropic env key, set the matching opt-in or move the key into the plugin option. Key files must live under `~/.config` or `~/.anti-hall` and hold a single token.
+- Previous release's Jev endpoint change (loopback-only test override) was hardening; it is not a feature change.
+
+### Added
+
+- **`.anti-hall/` gitignore check.** Doctor warns when `.anti-hall/` is not git-ignored; `--repair` writes `.git/info/exclude`; a one-time reminder; setting `guards.gitignoreHint`.
+- **Community files.** Issue forms, PR template, code of conduct, expanded CONTRIBUTING, and an issue-triage workflow (inactive until a repo secret is set).
+
+### Security
+
+- Known secret shapes are redacted from text sent to the classifiers (best-effort, not a guarantee).
+
+### Docs
+
+- **Privacy.** PRIVACY.md, the README "Network and data" section, and manifest privacy, documentation and support URLs.
+- **Directory and validator.** No shipped text names input-rewrite or permission-decision fields; the Codex manifest no longer references the icon file; skills link out-of-plugin docs by URL; settings descriptions spell no shell pipeline; the Jev skills are reworded.
+- Demo GIF re-recorded. AGENTS.md compacted to about 27 KB, with a 30 KB soft-budget test.
+
+### Tests and internal
+
+- devswarm source-unit test helper (split stage 1); the migration test pins the old build by commit SHA.
+- CI runs once per release, on `rc-v*` tags, sharded; main and PRs run a reduced matrix.
+
 ## 0.120.13 (2026-10-02)
 
 ### Security
