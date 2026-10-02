@@ -762,8 +762,7 @@ pause during that handoff is expected (latency, not loss). A two-signal health c
 required) backs both the stale-data banner and a cooldown-bounded send-time self-heal that
 every `send`/`inbox pull`/`archive-request` call runs first. `doctor` additionally
 belt-and-suspenders sweeps any legacy per-worktree unit that is already orphaned (worktree
-gone) or redundant (its project's new per-project daemon is confirmed healthy). Windows: the
-ingest daemon itself remains a documented no-op there (mesh store + CLI work fine on Windows).
+gone) or redundant (its project's new per-project daemon is confirmed healthy). Windows is not supported.
 
 **Migration.** Old per-worktree `store/<hash>/` data is folded into the new
 `store/<repoKey>/` non-destructively — the legacy store is left byte-for-byte intact as a
@@ -1074,7 +1073,7 @@ automatically, with one deliberate relaxation:
   ones (`allowInteractive: true`, set only here) — naming the workspace id on the command
   line IS the deliberate human override that makes touching an interactive session safe.
   The automatic sweep never has this permission.
-- Windows: escalate-only, never kills (the cwd confirm-gate is unavailable there).
+- Windows is not supported.
 
 **Resume guardrail:** every resumed prompt is prepended with a fixed instruction
 (`RESUME_GUARDRAIL` in `companion/lib/recovery.js`) telling the resumed model to verify
@@ -1103,8 +1102,7 @@ node plugins/anti-hall/companion/install-devswarm-supervisor.js --uninstall
 - **macOS** → LaunchAgent (`launchd`, `StartInterval`).
 - **Linux** → `systemd --user` timer; cron fallback (coalesced by the supervisor's own
   single-flight sweep lock) if `systemctl` is absent.
-- **Windows** → detection-only, documented no-op for recovery. A running process's cwd
-  is not obtainable in pure Node on Windows, so the cwd confirm-gate cannot run there.
+- **Windows** → not supported.
 - **Autonomous refresh:** the `update` skill runs this installer's `how` command
   automatically (no offer, no ask) whenever an update happens inside an active DevSwarm
   session (`isDevswarmActive(process.env)`), so a fresh install always carries the
@@ -1128,8 +1126,7 @@ LaunchAgent with `KeepAlive`; Linux `systemd --user` `.service` with `Restart=al
 (cron fallback — every minute, restart-if-dead — when `systemctl` is absent, giving a
 cron-only Linux host up to ~60s of revive gap after a crash). Distinct label
 (`com.anti-hall.devswarm-ingest`) and log (`~/.anti-hall/devswarm-ingest.log`) from the
-supervisor. Windows: documented no-op (no pure-Node long-running user-level scheduler;
-run the daemon manually if needed). Same **autonomous refresh** as the supervisor
+supervisor. Windows is not supported. Same **autonomous refresh** as the supervisor
 installer: the `update` skill runs its `how` command automatically (no offer, no ask)
 inside an active DevSwarm session, so a fresh update always carries a running,
 current-build ingest daemon.
@@ -1261,7 +1258,7 @@ sweep's env — the automatic path no longer carries them at all since it never 
 - Targets headless **or** interactive sessions (see the relaxation above) — the only
   place in this feature where an interactive human takeover can be touched, and only
   because the operator named the id explicitly.
-- **Windows**: escalate-only, never kills. (Detection-only for recovery generally.)
+- **Windows**: not supported.
 
 ## Outputs to watch
 

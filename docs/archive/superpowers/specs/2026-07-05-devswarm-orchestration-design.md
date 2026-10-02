@@ -11,7 +11,7 @@ plan. History of R1-R4 fixes below. R3 fixes: corrected the inverted skip-guard
 (anti-spoof); reframed §7 merge safety on git atomicity (stale check-merge → surfaced conflict, not
 corruption) + atomic `children.json` write; added a total workspace cap + error-handling→needs-attention;
 documented the static-guard alias-evasion limit; lazy-require + cross-manifest parity test. **Task:** #5. **Brief:**
-[`docs/KB-devswarm-hivecontrol.md`](../../KB-devswarm-hivecontrol.md) §8 (DevSwarm facts verified —
+[`docs/KB-devswarm-hivecontrol.md`](../../../KB-devswarm-hivecontrol.md) §8 (DevSwarm facts verified —
 CLI v2.3.3 executed live; role detection probed on a real Primary + child).
 
 > **Round 1 fixes folded in (3/3 HOLD → this revision):** corrected the false "guards gate the

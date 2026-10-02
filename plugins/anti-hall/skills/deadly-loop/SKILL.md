@@ -111,7 +111,7 @@ Record these in the handoff. Compare every round to detect drift.
 ### A3. Lock the verification preamble
 
 Every spawned agent MUST run this before any read/write. It is pure Node
-(`child_process.execFileSync`), so it runs unchanged on Windows, macOS, and Linux —
+(`child_process.execFileSync`), so it runs unchanged on macOS and Linux —
 no POSIX shell, no `$(...)`, no `[ ... ]`. Save as `verify-branch.js` (or paste into
 `node -e`) and run `node verify-branch.js <expected_dir> <branch> <sha>`:
 

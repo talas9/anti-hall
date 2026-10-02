@@ -175,7 +175,7 @@ Flags:
   stale ExecStart script, the supervisor FIRST-install, and (**v0.58.1**) **`reconcile`**
   — draining every stranded per-worktree native hivecontrol queue into the shared store
   (`node scripts/devswarm.js reconcile`, previously a MANUAL-only verb). Unlike the
-  daemon fixes, `reconcile` never touches launchd/systemd, so it is not a Windows no-op.
+  daemon fixes, `reconcile` never touches launchd/systemd, so it needs no scheduler.
   When the gate is closed, doctor **reports the gap plus the exact manual command** and
   mutates nothing.
 - **REPORT-ONLY:** the MCP orphan reaper is never auto-installed (it kills orphans on a
@@ -217,9 +217,7 @@ the same idempotent installers under the same DevSwarm gate, so running both is 
 a double-refresh is a no-op. `update` refreshes on version change; `doctor` repairs on
 demand.
 
-Windows: the daemon fixes (ingest / supervisor) are documented no-ops (no built-in
-user-level scheduler / no safe cwd confirm-gate). `reconcile` is NOT a Windows no-op — it
-only spawns per-worktree Node subprocesses (no scheduler dependency), so it runs there too.
+Windows is not supported.
 
 ## How to run
 

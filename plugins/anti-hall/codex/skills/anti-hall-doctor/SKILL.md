@@ -54,9 +54,7 @@ reports the exact manual command (`node scripts/devswarm.js reconcile` for the r
 case). The **DevSwarm gate is effectively always closed for gpt-5.x Codex/OMX sessions**
 (the `DEVSWARM_*` env vars are set only for the `claude` child sessions hivecontrol
 spawns), so on Codex the daemon fixes report the manual command rather than acting —
-matching the liveness supervisor's Claude-only status. Windows daemon fixes are documented
-no-ops; `reconcile` is the one GATED fix that is NOT a Windows no-op (it only spawns
-per-worktree Node subprocesses, no scheduler dependency).
+matching the liveness supervisor's Claude-only status. Windows is not supported.
 
 `doctor.js` also carries the same DevSwarm **RUNTIME health checks** as the Claude side
 (`companion/lib/doctor-runtime.js`, same shared script): store/journal health across

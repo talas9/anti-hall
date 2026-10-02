@@ -697,9 +697,7 @@ impossible by construction. Recognizes Python MCPs too (`uvx`/`uv` + underscore
 unit / OS service shares init as a parent (like a leaked orphan) and can be reaped —
 exclude it via `ANTIHALL_REAPER_EXCLUDE='name|name'`. Env knobs: `MCP_REAP_DRYRUN=1`,
 `MCP_REAP_GRACE`, `ANTIHALL_REAPER_MATCH`, `ANTIHALL_REAPER_EXCLUDE`.
-**Windows is a documented no-op** — it has no parent-death
-reparenting and recycles PIDs, so external orphan detection is unsafe there; the correct
-fix is Job Objects set by the spawner. See [`plugins/anti-hall/companion/README.md`](../plugins/anti-hall/companion/README.md).
+**Windows is not supported.** See [`plugins/anti-hall/companion/README.md`](../plugins/anti-hall/companion/README.md).
 
 ### Meeseeks supervision — step plans, straying warnings, token burn (v0.117.0)
 
@@ -714,7 +712,7 @@ A child workspace is supervised against the brief it was given, not only for liv
 - **Jev recommendations** (`jevIntegrations.devswarmOnBrief`, `devswarmExtraSanctioned`, `devswarmWaitKind`, `devswarmLoop`, `devswarmStepMap`; default `on` = recommendation, `shadow` = logged only, `off`): asked detached from the sweep only when a deterministic precondition fires, answer read from the cache on the next sweep. The verdict and confidence ride on the warning as a recommendation; Jev never suppresses a warning, never blocks, never kills. The Primary makes the final call.
 - **Effectiveness.** `~/.anti-hall/logs/devswarm-supervision.ndjson` (bounded, 1 MB × 5, daily rollups in `devswarm-supervision-daily/`): warnings by signal, repeats, corrections followed by step progress within `stepStallMin`, extras tagged, time-to-done and steps done vs planned, tokens per workspace and per step, burn warnings and their corrected rate, per Jev integration its agreement with the deterministic signal plus how often the Primary followed or overrode it, and respawns (WIP parked or not, aborted, time to first step progress in the new workspace, finished). `supervision-report [--days N] [--json]` prints it; `doctor` adds a one-line 7-day summary.
 
-### Opt-in companion: DevSwarm layered recovery (macOS + Linux full, Windows detection-only)
+### Opt-in companion: DevSwarm layered recovery (macOS + Linux; Windows is not supported)
 
 `companion/devswarm-supervisor.js` is a second **opt-in interval companion** (not a
 hook) — a workaround for claude-code#39755, where a `claude` session can silently wedge
@@ -789,10 +787,7 @@ and — unlike the automatic path — targets an **interactive** `claude` sessio
 just headless (naming the id on the command line is the deliberate override). Capped at
 `ANTIHALL_DEVSWARM_MAX_RECOVERIES` (default `3`, clamped 1–20) auto-recoveries before
 escalating instead of restart-looping; `ANTIHALL_DEVSWARM_GRACE_SEC` (default `5`,
-clamped 1–60) is the SIGTERM→SIGKILL grace window. **Windows is a documented no-op for
-recovery** — a running process's cwd is not obtainable in pure Node on Windows, so the
-cwd confirm-gate that makes the kill safe cannot run; detection-only use from a session
-is still possible.
+clamped 1–60) is the SIGTERM→SIGKILL grace window. **Windows is not supported.**
 
 ### Codex / cross-tool
 

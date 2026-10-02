@@ -5,7 +5,7 @@
 A living map of what the Claude Code CLI/harness offers a plugin, what anti-hall
 currently uses, and the gaps — so feature-adoption decisions are evidence-based
 instead of vibes-based. Companion doc:
-[`docs/superpowers/specs/2026-08-01-harness-feature-adoption.md`](./superpowers/specs/2026-08-01-harness-feature-adoption.md)
+[`docs/archive/superpowers/specs/2026-08-01-harness-feature-adoption.md`](./archive/superpowers/specs/2026-08-01-harness-feature-adoption.md)
 turns the gaps below into a phased adoption plan.
 
 **Provenance:** every feature claim below was verified against the official

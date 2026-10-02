@@ -2,7 +2,7 @@
 
 **Status:** Fable-reviewed 2026-08-02; phased subset approved for build.
 Companion doc:
-[`docs/KB-claude-code-harness-features.md`](../../KB-claude-code-harness-features.md)
+[`docs/KB-claude-code-harness-features.md`](../../../KB-claude-code-harness-features.md)
 (the full feature-vs-usage audit this plan draws from).
 
 ## 1. Goal

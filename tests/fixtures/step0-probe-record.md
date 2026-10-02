@@ -1,6 +1,6 @@
 # Step-0 probe record — v0.32.0 (dated evidence, not assertions)
 
-Plan: `docs/2026-06-10-v0.32.0-fable5-model-routing-plan.md`. Each probe lists
+Plan: `docs/archive/2026-06-10-v0.32.0-fable5-model-routing-plan.md`. Each probe lists
 status, evidence, and what still gates on it. Raw transcript for the 2026-06-10
 observations lives in a local maintainer session transcript (not part of this
 repo).

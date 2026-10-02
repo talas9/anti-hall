@@ -121,27 +121,29 @@ Invoke any of these as `/anti-hall:<name>`. Full descriptions (arguments, env va
 | [`superpowers-planning.md`](./superpowers-planning.md) | Distillation of the superpowers skill set; Iron-Law + rationalization-table pattern. |
 | [`keynote-prompting-claude.md`](./keynote-prompting-claude.md) | Distilled notes from two Anthropic prompting talks. |
 | [`keynote-transcript.md`](./keynote-transcript.md) | Reconstructed transcript of the Prompting 101 talk. |
-| [`superpowers/specs/2026-07-05-devswarm-orchestration-design.md`](./superpowers/specs/2026-07-05-devswarm-orchestration-design.md) | Approved design — DevSwarm-aware workspace-tier orchestration. |
-| [`superpowers/plans/2026-07-06-devswarm-orchestration.md`](./superpowers/plans/2026-07-06-devswarm-orchestration.md) | Implementation plan for the design above. |
-| [`superpowers/specs/2026-07-08-devswarm-liveness-supervisor-design.md`](./superpowers/specs/2026-07-08-devswarm-liveness-supervisor-design.md) | Design — DevSwarm liveness supervisor (wedged-session recovery). |
-| [`superpowers/plans/2026-07-08-devswarm-liveness-supervisor.md`](./superpowers/plans/2026-07-08-devswarm-liveness-supervisor.md) | Implementation plan for the liveness supervisor. |
-| [`superpowers/specs/2026-08-01-harness-feature-adoption.md`](./superpowers/specs/2026-08-01-harness-feature-adoption.md) | Harness-feature adoption plan derived from `KB-claude-code-harness-features.md`. |
 
 ## Archive / history
 
 Frozen, dated records — never edited to match current code. Several are internal
 session artifacts (dated design plans, audits) kept for provenance only; read
 [`KB.md` §5](./KB.md#5-history--historical-artifacts) for context on each.
+Historical working documents live in [`archive/`](./archive/README.md); they may be out of date.
 
 | Doc | What it is |
 |---|---|
-| [`AUDIT-REPORT.md`](./AUDIT-REPORT.md) | 4-auditor review, `v0.7.0`-era. Superseded; findings applied. |
-| [`AUDIT-REPORT-2.md`](./AUDIT-REPORT-2.md) | Double deadly-loop final gate, `v0.11.1 → v0.11.2`. Superseded; findings applied. |
-| [`PLUGIN-REVIEW.md`](./PLUGIN-REVIEW.md) | KB-driven plugin audit that prescribed the cadence redesign. Superseded; shipped. |
-| [`ULTRAPLAN.md`](./ULTRAPLAN.md) | Single consolidated reconciliation plan, `v0.3.0`-era. Superseded; executed. |
-| [`2026-06-06-context-opt-test-design.md`](./2026-06-06-context-opt-test-design.md) | Dated context-optimization test-harness design. |
-| [`2026-06-10-v0.32.0-fable5-model-routing-plan.md`](./2026-06-10-v0.32.0-fable5-model-routing-plan.md) | Dated v0.32.0 design plan (Fable 5 support, model-routing guard). |
-| [`2026-06-10-v0.34.0-flutter-debug-plan.md`](./2026-06-10-v0.34.0-flutter-debug-plan.md) | Dated v0.34.0 design plan (flutter-debug agent + skill). |
+| [`archive/README.md`](./archive/README.md) | The archive folder: what it holds and why it may be out of date. |
+| [`archive/AUDIT-REPORT.md`](./archive/AUDIT-REPORT.md) | 4-auditor review, `v0.7.0`-era. Superseded; findings applied. |
+| [`archive/AUDIT-REPORT-2.md`](./archive/AUDIT-REPORT-2.md) | Double deadly-loop final gate, `v0.11.1 → v0.11.2`. Superseded; findings applied. |
+| [`archive/PLUGIN-REVIEW.md`](./archive/PLUGIN-REVIEW.md) | KB-driven plugin audit that prescribed the cadence redesign. Superseded; shipped. |
+| [`archive/ULTRAPLAN.md`](./archive/ULTRAPLAN.md) | Single consolidated reconciliation plan, `v0.3.0`-era. Superseded; executed. |
+| [`archive/2026-06-06-context-opt-test-design.md`](./archive/2026-06-06-context-opt-test-design.md) | Dated context-optimization test-harness design. |
+| [`archive/2026-06-10-v0.32.0-fable5-model-routing-plan.md`](./archive/2026-06-10-v0.32.0-fable5-model-routing-plan.md) | Dated v0.32.0 design plan (Fable 5 support, model-routing guard). |
+| [`2026-06-10-v0.34.0-flutter-debug-plan.md`](./2026-06-10-v0.34.0-flutter-debug-plan.md) | Dated v0.34.0 design plan (flutter-debug agent + skill). Kept here: `tests/hooks/flutter-debug.test.js` reads it by path. |
+| [`archive/superpowers/specs/2026-07-05-devswarm-orchestration-design.md`](./archive/superpowers/specs/2026-07-05-devswarm-orchestration-design.md) | Approved design — DevSwarm-aware workspace-tier orchestration. |
+| [`archive/superpowers/plans/2026-07-06-devswarm-orchestration.md`](./archive/superpowers/plans/2026-07-06-devswarm-orchestration.md) | Implementation plan for the design above. |
+| [`archive/superpowers/specs/2026-07-08-devswarm-liveness-supervisor-design.md`](./archive/superpowers/specs/2026-07-08-devswarm-liveness-supervisor-design.md) | Design — DevSwarm liveness supervisor (wedged-session recovery). |
+| [`archive/superpowers/plans/2026-07-08-devswarm-liveness-supervisor.md`](./archive/superpowers/plans/2026-07-08-devswarm-liveness-supervisor.md) | Implementation plan for the liveness supervisor. |
+| [`archive/superpowers/specs/2026-08-01-harness-feature-adoption.md`](./archive/superpowers/specs/2026-08-01-harness-feature-adoption.md) | Harness-feature adoption plan derived from `KB-claude-code-harness-features.md`. |
 | [`archive/devswarm-layered-recovery-history.md`](./archive/devswarm-layered-recovery-history.md) | DevSwarm layered-recovery version history (v0.54–v0.107), moved out of GUIDE in v0.108.0. |
 
 MIT © Mohammed Talas.

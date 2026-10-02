@@ -23,7 +23,7 @@
 //   round as a FRESH workflow run with round+1. Soft-cap-10 (AskUserQuestion) and
 //   hard-15 are owned by the coordinator BETWEEN runs; the hard-15 backstop below is
 //   a double-guard, not the primary cap. See Workstream E / E.1 in
-//   docs/2026-06-10-v0.32.0-fable5-model-routing-plan.md.
+//   docs/archive/2026-06-10-v0.32.0-fable5-model-routing-plan.md.
 //
 // COMMITS: this script NEVER commits and never touches git. Agents RETURN findings;
 //   the coordinator owns all git + fix dispatch on the main thread.

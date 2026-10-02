@@ -2282,8 +2282,8 @@ bounded `message-count`/`read-messages` pair).
   workspace-scale" and blocks it (deliberate: a false positive would break legitimate
   subagent use); the tier choice remains the model's. A DevSwarm **child** workspace and
   any **non-DevSwarm** session see byte-identical behaviour to before. The fuller
-  enforcement-layer design in `docs/superpowers/specs/2026-07-05-devswarm-orchestration-
-  design.md` + `docs/superpowers/plans/2026-07-06-devswarm-orchestration.md` remains
+  enforcement-layer design in `docs/archive/superpowers/specs/2026-07-05-devswarm-orchestration-
+  design.md` + `docs/archive/superpowers/plans/2026-07-06-devswarm-orchestration.md` remains
   unbuilt; resolving §8.6's open questions in a brainstorm/plan-mode pass is the
   prerequisite before any of that enforcement layer is coded.
 - **Idle self-wake (SHIPPED in v0.59.0).** §8's "Honest wake-mechanism caveat" gap: a DevSwarm workspace

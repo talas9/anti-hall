@@ -785,8 +785,8 @@ the script itself, only about what it targets. Naming the id on the command line
 deliberate override: unlike the automatic sweep, this CLI will also target an
 **interactive** `claude` session (not just headless), under the same confirm-gate safety
 (exactly-one-or-abstain, identity + cwd re-confirmed immediately before every signal,
-single-writer lock, a recovery cap before it escalates instead). Windows: escalate-only,
-never kills. Full detail (safety invariants, resume guardrail, env) lives in
+single-writer lock, a recovery cap before it escalates instead). Windows is not supported.
+Full detail (safety invariants, resume guardrail, env) lives in
 `plugins/anti-hall/skills/devswarm/SKILL.md` (the Claude mirror of this skill).
 
 ## Activation (Claude-side; for awareness)

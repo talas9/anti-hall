@@ -6,7 +6,7 @@ priority first): **phase progress bar** when an orchestration run is active →
 **"orchestrating · N agents" activity bar** when recent subagent spawns are
 detected (auto, no setup) → **context-window gauge** when idle.
 No emojis, no project-specific fields, degrades gracefully when optional files
-are absent.  Runs on **Windows, macOS, and Linux** via Node only
+are absent.  Runs on **macOS and Linux** (Windows is not supported) via Node only
 (no bash, no grep/sed/python3).
 
 ## Scripts
