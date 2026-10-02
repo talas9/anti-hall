@@ -223,7 +223,8 @@ test('Item 2 mutation check: reverting the gate to hasFreshHeartbeat-only reprod
   const liveBefore = devswarmSource.readAll();
   assert.ok(liveBefore.includes(oldStr), 'siblingAckGate\'s isSiblingPartitionLive call not found verbatim');
   const buggyStr = '    let hb = false;\n'
-    + '    try { hb = hasFreshHeartbeat(partId, home, { now }); } catch (_) { hb = true; }\n'
+    // siblingAckGate lives in devswarm-lib/cursors.js, which does not import hasFreshHeartbeat: reach it through liveness.js
+    + "    try { hb = require('../../companion/lib/liveness.js').hasFreshHeartbeat(partId, home, { now }); } catch (_) { hb = true; }\n"
     + '    live = hb;\n';
   withMutant(oldStr, buggyStr, (mutatedCli) => {
     const home = tmpHome();

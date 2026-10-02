@@ -410,7 +410,7 @@ test('G1 mutation check: reverting the ack target to plain deliveredCount reprod
       + '              : deliveredCount));\n'
       + '        const ackAnchor = Number.isFinite(part.sinceCursor) ? Math.max(part.cursor, part.sinceCursor) : part.cursor;\n'
       + '        const ackTarget = ackAnchor + physicalConsumed;';
-    assert.ok(fs.readFileSync(copy.devswarmPath, 'utf8').includes(oldStr), 'G1 fix block not found verbatim in cmdInboxMessages ack loop (under the null-preserving-maps mutant)');
+    assert.ok(devswarmSource.readAll(copy.dir).includes(oldStr), 'G1 fix block not found verbatim in cmdInboxMessages ack loop (under the null-preserving-maps mutant)');
     // physicalConsumed stays defined (the ack op's seenTarget reads it); only
     // the ack TARGET reverts to the buggy arithmetic.
     const buggyStr = 'const physicalConsumed = deliveredCount;\n        const ackTarget = part.cursor + deliveredCount;';

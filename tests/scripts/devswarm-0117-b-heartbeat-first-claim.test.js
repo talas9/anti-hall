@@ -280,7 +280,7 @@ test('MUTATION (item B round 2): reverting the app-DB ground-truth check reprodu
       + "          const rawCwd0 = cwd || process.cwd();\n"
       + "          const wt0 = resolveCallerWorktree(rawCwd0);\n"
       + "          if (wt0) {\n"
-      + "            const appDb = require('../companion/lib/devswarm-app-db.js');\n"
+      + "            const appDb = require('../../companion/lib/devswarm-app-db.js');\n"
       + "            const builder = appDb.builderForWorktree({ home, env, worktreePath: wt0, now: Date.now(), activeOnly: true });\n"
       + "            if (builder && String(builder.id) === target) return true;\n"
       + "          }",

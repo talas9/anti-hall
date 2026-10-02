@@ -554,12 +554,12 @@ test('F5 mutation check: removing the null-guard reproduces a thrown exception r
   const liveBefore = devswarmSource.readAll();
   assert.ok(liveBefore.includes(oldStr), 'F5 guard not found verbatim');
   const buggyStr = '';
-  const anchor = 'run, parseArgs, one, many, csvList,';
-  assert.ok(liveBefore.includes(anchor), 'module.exports anchor not found verbatim');
   const copy = mutantKit.createCopy('anti-hall-fixwave2-f5-nullguard');
   try {
-    mutantKit.mutateWith(copy.devswarmPath, (src) => src.replace(oldStr, buggyStr).replace(anchor, anchor + '\n  foldSiblingGapRows,'));
-    const mutatedCli = mutantKit.requireFresh(copy.devswarmPath);
+    mutantKit.mutateWith(copy.devswarmPath, (src) => src.replace(oldStr, buggyStr));
+    mutantKit.requireFresh(copy.devswarmPath);
+    // foldSiblingGapRows is not on the CLI's export surface; it lives in the fold module (which exports every declared name).
+    const mutatedCli = require(path.join(path.dirname(copy.devswarmPath), 'devswarm-lib', 'fold.js'));
     let threw = false;
     let thrownMessage = '';
     try {
