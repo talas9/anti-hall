@@ -50,6 +50,11 @@ const RESUME_RE = /Resuming\s+agent\s+([0-9a-fA-F]{6,40})/i;
 const TASK_NOTIFICATION_BLOCK_RE = /<task-notification>([\s\S]*?)<\/task-notification>/g;
 const TASK_ID_RE = /<task-id>([^<]*)<\/task-id>/;
 const STATUS_RE = /<status>([^<]*)<\/status>/;
+// A ListAgents-style row ("<id>  ·  <type>  ·  running  ·  started 20m ago")
+// states the agent is STILL RUNNING — the opposite of delivery evidence, so the
+// safety net below must not count the id appearing in such a row (field: the
+// coordinator's own status check silently disarmed silent-agent-nudge).
+const RUNNING_ROW_RE = /·\s*running\b/i;
 
 // notificationTexts(entry) -> string[] of this transcript entry's texts that
 // contain '<task-notification>', across all THREE real shapes the harness
@@ -105,11 +110,33 @@ function scanTranscript(transcriptPath, preLines) {
     const hasAgentToolUse = line.indexOf('"name":"Agent"') !== -1 || line.indexOf('"name": "Agent"') !== -1;
     const hasToolResult = line.indexOf('tool_result') !== -1;
     const hasResume = line.indexOf('Resuming agent') !== -1;
-    if (!hasLaunch && !hasNotif && !hasAgentToolUse && !hasToolResult && !hasResume) continue;
+    const hasTaskStatus = line.indexOf('"task_status"') !== -1;
+    if (!hasLaunch && !hasNotif && !hasAgentToolUse && !hasToolResult && !hasResume && !hasTaskStatus) continue;
 
     let entry;
     try { entry = JSON.parse(line); } catch (_) { continue; }
     if (!entry || typeof entry !== 'object') continue;
+
+    // (a0) compaction re-injects each live background agent as a
+    // `task_status` attachment (taskId, status, outputFilePath) — the launch
+    // tool_result may by then sit OUTSIDE the capped tail window (the
+    // compaction's own large attachments push it out), so adopt the agent here.
+    const att = entry.attachment;
+    if (att && att.type === 'task_status' && typeof att.taskId === 'string' && att.taskId) {
+      if (att.status === 'running') {
+        if (!launched.has(att.taskId)) {
+          const t = typeof entry.timestamp === 'string' ? Date.parse(entry.timestamp) : NaN;
+          launched.set(att.taskId, {
+            outputFile: typeof att.outputFilePath === 'string' ? att.outputFilePath : '',
+            description: typeof att.description === 'string' ? att.description : '',
+            launchedAtMs: Number.isFinite(t) ? t : NaN,
+          });
+        }
+      } else if (TERMINAL_NOTIFICATION_STATUS.test(String(att.status))) {
+        terminal.add(att.taskId);
+        terminalSeq.set(att.taskId, seq);
+      }
+    }
 
     const content = entry.message && entry.message.content;
     const entryTs = typeof entry.timestamp === 'string' ? Date.parse(entry.timestamp) : NaN;
@@ -202,7 +229,7 @@ function scanTranscript(transcriptPath, preLines) {
     if (terminal.has(id)) continue;
     for (const { toolUseId, text, seq: evidenceSeq } of otherToolResultTexts) {
       if (toolUseId !== undefined && toolUseId === rec.toolUseId) continue; // the launch's own result already named it — not "later" evidence
-      if (text.indexOf(id) !== -1) { terminal.add(id); terminalSeq.set(id, evidenceSeq); break; }
+      if (text.split('\n').some((ln) => ln.indexOf(id) !== -1 && !RUNNING_ROW_RE.test(ln))) { terminal.add(id); terminalSeq.set(id, evidenceSeq); break; }
     }
   }
 

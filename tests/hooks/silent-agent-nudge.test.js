@@ -337,6 +337,60 @@ test('SAFETY NET: output_file stale but a LATER tool_result references the agent
   } finally { h.cleanup(); }
 });
 
+test('SAFETY NET: a ListAgents result listing the agent as RUNNING is not delivery evidence -> still nudged', () => {
+  const h = makeHome();
+  try {
+    const out = writeOutputFile(h, 'worker-listed.output', THRESHOLD_MS + 60 * 60 * 1000);
+    const agentId = 'aaaf100000000001';
+    // The coordinator checks on the agent with ListAgents; that result quotes
+    // the id in a "running" row. That must not disarm the nudge (field bug).
+    const listAgentsResultLine = {
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [
+          {
+            tool_use_id: 'toolu_list', type: 'tool_result',
+            content: 'This session is demo-1 [abc123].\n\nSubagents (1):\n  ' + agentId + '  ·  general-purpose  ·  running  ·  started 25m ago\n\nPeer sessions (0):\n',
+          },
+        ],
+      },
+      timestamp: isoMinutesAgo(1),
+    };
+    const tp = h.writeTranscript([
+      agentToolUseLine('toolu_lst', 'Listed but silent', isoMinutesAgo(90)),
+      agentLaunchResultLine(agentId, out, 'toolu_lst', isoMinutesAgo(90)),
+      listAgentsResultLine,
+    ]);
+    const r = testHook(HOOK, stopPayload(tp), { home: h.home });
+    assert.ok(isBlock(r), 'a "running" listing row must not count as delivered: ' + JSON.stringify(r.json));
+  } finally { h.cleanup(); }
+});
+
+test('COMPACTION: launch record outside the capped tail window, agent re-injected as a running task_status attachment -> still nudged', () => {
+  const h = makeHome();
+  try {
+    const out = writeOutputFile(h, 'worker-compacted.output', THRESHOLD_MS + 60 * 60 * 1000);
+    const agentId = 'aaaf200000000001';
+    const taskStatusLine = {
+      type: 'attachment',
+      attachment: { type: 'task_status', taskId: agentId, taskType: 'local_agent', description: 'Compacted worker', status: 'running', outputFilePath: out },
+      timestamp: isoMinutesAgo(2),
+    };
+    // Filler larger than the 1.5MB tail window pushes the launch record out of it.
+    const filler = { type: 'attachment', attachment: { type: 'instructions', content: 'x'.repeat(2 * 1024 * 1024) }, timestamp: isoMinutesAgo(3) };
+    const tp = h.writeTranscript([
+      agentToolUseLine('toolu_cmp', 'Compacted worker', isoMinutesAgo(90)),
+      agentLaunchResultLine(agentId, out, 'toolu_cmp', isoMinutesAgo(90)),
+      filler,
+      taskStatusLine,
+    ]);
+    const r = testHook(HOOK, stopPayload(tp), { home: h.home });
+    assert.ok(isBlock(r), 'a running task_status attachment must restore the agent after the launch scrolls out: ' + JSON.stringify(r.json));
+    assert.match(r.json.reason, /Compacted worker/);
+  } finally { h.cleanup(); }
+});
+
 test('HARD CAP: 5 consecutive Stops for the same stale agent produce exactly 1 block, even when the snapshot keeps changing', () => {
   const h = makeHome();
   try {
