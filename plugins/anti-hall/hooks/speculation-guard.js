@@ -633,9 +633,18 @@ async function main() {
   // The Stop payload's `last_assistant_message` (the reply being stopped) wins;
   // the transcript tail can still end at the PREVIOUS turn at Stop time, so it
   // is only the fallback (lib/reply-text.js). Everything below judges this one text.
-  const { payloadReplyText, selectReplyText } = require('./lib/reply-text.js');
-  const payloadText = payloadReplyText(payload);
-  const lastText = selectReplyText(payload, () => extractLastAssistantTextLegacy(transcriptPath));
+  // If the helper cannot load or throws, fall back to the transcript reader
+  // (the pre-helper behaviour) rather than exiting 0 and allowing silently.
+  let payloadText = null;
+  let lastText = null;
+  try {
+    const { payloadReplyText, selectReplyText } = require('./lib/reply-text.js');
+    payloadText = payloadReplyText(payload);
+    lastText = selectReplyText(payload, () => extractLastAssistantTextLegacy(transcriptPath));
+  } catch (_) {
+    payloadText = null;
+    lastText = extractLastAssistantTextLegacy(transcriptPath);
+  }
   if (!lastText) {
     process.exit(0);
   }

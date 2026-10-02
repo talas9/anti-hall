@@ -795,3 +795,94 @@ for (const text of QUOTED_ALLOW) {
     assert.ok(!isBlock(r), `quoted hedge must not block; stdout: ${r.stdout}`);
   });
 }
+
+// ---- reply-text helper: load failure, unit behaviour, payload masking, tool_use shape ----
+const osSync = require('node:os');
+const { payloadReplyText, selectReplyText } = require('../../plugins/anti-hall/hooks/lib/reply-text.js');
+
+test('LAM load-failure: lib/reply-text.js missing -> guard falls back to the transcript and still blocks', () => {
+  const h = makeHome();
+  const copy = fsSync.mkdtempSync(pathSync.join(osSync.tmpdir(), 'antihall-spec-hooks-'));
+  try {
+    const src = pathSync.join(__dirname, '..', '..', 'plugins', 'anti-hall', 'hooks');
+    fsSync.cpSync(src, copy, { recursive: true });
+    fsSync.rmSync(pathSync.join(copy, 'lib', 'reply-text.js'));
+    const tp = h.writeTranscript([assistantMessage('This should be fine now.')]);
+    const r = testHook(pathSync.join(copy, HOOK), stopPayload(tp), { home: h.home });
+    assert.ok(isBlock(r), `missing helper must not silently allow; stdout: ${r.stdout}; stderr: ${r.stderr}`);
+  } finally {
+    fsSync.rmSync(copy, { recursive: true, force: true });
+    h.cleanup();
+  }
+});
+
+test('reply-text unit: payloadReplyText / selectReplyText', () => {
+  assert.strictEqual(payloadReplyText({ last_assistant_message: 'hello' }), 'hello');
+  assert.strictEqual(payloadReplyText({ last_assistant_message: '   ' }), null);
+  assert.strictEqual(payloadReplyText({ last_assistant_message: '' }), null);
+  assert.strictEqual(payloadReplyText({ last_assistant_message: 42 }), null);
+  assert.strictEqual(payloadReplyText({ last_assistant_message: { text: 'x' } }), null);
+  assert.strictEqual(payloadReplyText({}), null);
+  assert.strictEqual(payloadReplyText(null), null);
+  let called = 0;
+  const fb = () => { called += 1; return 'from transcript'; };
+  assert.strictEqual(selectReplyText({ last_assistant_message: 'own' }, fb), 'own');
+  assert.strictEqual(called, 0, 'transcript reader must not run when the payload has text');
+  assert.strictEqual(selectReplyText({ last_assistant_message: '  ' }, fb), 'from transcript');
+  assert.strictEqual(selectReplyText({}, fb), 'from transcript');
+  assert.strictEqual(selectReplyText({}, undefined), null);
+});
+
+test('LAM masking: hedge inside a quoted span in the payload + evidence -> allow', () => {
+  const h = makeHome();
+  try {
+    const tp = h.writeTranscript([assistantMessage('Working on it.')]);
+    const lam = 'The peer wrote: "the cache must be stale". I checked: cache mtime is 2 min old, so that claim is false.';
+    const r = testHook(HOOK, withLam(tp, lam), { home: h.home });
+    assert.ok(!isBlock(r), `quoted hedge in payload must not block; stdout: ${r.stdout}`);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('LAM masking: unquoted hedge in the payload -> block', () => {
+  const h = makeHome();
+  try {
+    const tp = h.writeTranscript([assistantMessage('Working on it.')]);
+    const r = testHook(HOOK, withLam(tp, 'This must be the cause.'), { home: h.home });
+    assert.ok(isBlock(r), `unquoted hedge in payload must block; stdout: ${r.stdout}`);
+  } finally {
+    h.cleanup();
+  }
+});
+
+// text -> tool_use -> text transcript shape: the payload still decides.
+function textToolText(first, last) {
+  return [
+    assistantMessage(first),
+    { type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id: 'tu1', name: 'Bash', input: { command: 'true' } }] } },
+    assistantMessage(last),
+  ];
+}
+
+test('LAM tool_use shape: hedged earlier text, clean payload -> allow', () => {
+  const h = makeHome();
+  try {
+    const tp = h.writeTranscript(textToolText('It must be the cache.', 'It must be the cache.'));
+    const r = testHook(HOOK, withLam(tp, 'Done. Tests pass 5/5.'), { home: h.home });
+    assert.ok(!isBlock(r), `clean payload must allow; stdout: ${r.stdout}`);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('LAM tool_use shape: clean transcript, hedged payload -> block', () => {
+  const h = makeHome();
+  try {
+    const tp = h.writeTranscript(textToolText('Running the test.', 'Tests pass 5/5.'));
+    const r = testHook(HOOK, withLam(tp, 'The failure is probably a stale lockfile.'), { home: h.home });
+    assert.ok(isBlock(r), `hedged payload must block; stdout: ${r.stdout}`);
+  } finally {
+    h.cleanup();
+  }
+});
