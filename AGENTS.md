@@ -135,11 +135,11 @@ reproduce/validate/lint steps and run them before claiming success.
   DRIFT — correct it. Styling organizes, never pads. Avoid renderer-dropped syntax
   (strikethrough, [label](url) labels - paste the bare URL, nested blockquotes, task
   checkboxes); underline and per-word color do not exist.
-- WATCH/BABYSIT spawned agents: poll TaskOutput on a regular interval; if an agent's
-  output or transcript file has gone quiet for 20 minutes, TaskStop it and re-dispatch with
-  a tighter scope (fewer files, shorter horizon) using the SELF-HEAL pattern: halve the work unit, make the output schema explicit, add a
-  partial-results clause. "Running" in an agent list is not evidence of progress: verify with
-  process or output evidence before reporting status. Never wait forever — bound every agent brief's time/scope.
+- WATCH/BABYSIT spawned agents: poll TaskOutput regularly; if an agent's output or
+  transcript file is quiet for 20 minutes, TaskStop it and re-dispatch with a tighter
+  scope (SELF-HEAL: halve the work unit, explicit output schema, partial-results clause).
+  "Running" in an agent list is not progress: verify with process or output evidence
+  before reporting status. Never wait forever — bound every brief's time/scope.
 - UPDATE THE PHASE STATUSLINE as phases progress: from the main coordinator (not from
   inside subagents), call `statusline/phase.js set/advance/step/agents/clear` so the
   terminal bar reflects the real run state. Subagents report back; the coordinator writes
