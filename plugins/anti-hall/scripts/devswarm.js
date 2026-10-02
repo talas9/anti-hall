@@ -4127,7 +4127,7 @@ function foldGroupIntoSurvivor(s, home, survivorId, candidates, opts) {
   // both must survive — same-realpath does NOT imply "not distinct". Blanket-
   // bypassing broke that legitimate case.
   //
-  // The REAL bug (ground-truth SkyCrew inspection): a descriptor can linger on
+  // The REAL bug (ground-truth a downstream project inspection): a descriptor can linger on
   // disk for a row whose session has ALREADY DIED — descriptor files are never
   // cleaned up on session exit — so "has a descriptor" alone is not proof of a
   // live distinct child either; cmdRegister writes one for every id, making the
@@ -6725,7 +6725,7 @@ function mergeSplitBackendStoresAllStores(home, ctx) {
 }
 
 // reRetireResurrectedRows(home, ctx) — item 6, defect df54edf54804 field
-// aftermath: SkyCrew's `roster --json` on 0.99.0 showed ~43 legacy-slug
+// aftermath: a downstream project's `roster --json` on 0.99.0 showed ~43 legacy-slug
 // registry rows the migration had resurrected (the four lost ids' twins plus
 // the control's twin) — the migration gate built above (companion/lib/
 // devswarm-archive-gate.js) PREVENTS this going forward, but a store already
@@ -13511,7 +13511,7 @@ function archivedTombstoneIsOrphaned(home, archivedStat) {
 // SCOPE — DESCRIPTORS ONLY, deliberately. The REGISTRY half already has an owner:
 // retireArchivedWorktreeGroup (above), which folds same-worktree registry rows in
 // THIS project's store. A twin can legitimately carry a DIFFERENT repoKey (the
-// live incident's pair did: `skycrew-a7a7a5` vs `modules-ba76c8`, a nested module
+// live incident's pair did: `projA-a7a7a5` vs `modules-ba76c8`, a nested module
 // worktree), and cmdArchive's own ID-DERIVED AUTHORITY GATE exists precisely to
 // refuse cross-project store mutation. So this pass never touches another
 // project's store — it retires the descriptor FILE, which is the artifact the
@@ -15774,7 +15774,7 @@ function resolveSendTarget(storeHandle, arg, home, opts) {
 // Forwards a message THIS caller already received (in its OWN inbox
 // partition, i.e. addressed to its own registered id) to `--to`, VERBATIM,
 // prefixed with a provenance header ("relayed from X, seq N, M bytes"). Peer
-// request (SkyCrew + tf3 Primaries): a Primary receiving mail meant to be
+// request (downstream-project Primaries): a Primary receiving mail meant to be
 // forwarded to a sibling/child had no verb for it — copy/pasting a body by
 // hand into a fresh `send` risks a silent partial-paste, which is exactly
 // what this verb's own byte-length verification below guards against.
@@ -18121,7 +18121,7 @@ function defaultSpawnReconcile(d, ctx) {
   // doctor-repair run inside a Primary session carry its
   // CLAUDE_CODE_SESSION_ID and DEVSWARM_BUILDER_ID). maybePromoteUnclaimed then
   // stamped the Primary's live session onto a child's `primary-<hash>` label
-  // (field: `unclaimed-session-promoted` primary-af7e82fd -> the SkyCrew
+  // (field: `unclaimed-session-promoted` primary-af7e82fd -> the downstream project
   // Primary's session, from a reconcile subprocess run by `update`). A sweep
   // drain speaks for no session: strip both identity vars and mark the process
   // so cmdInboxPull never promotes.
@@ -19602,7 +19602,7 @@ function submodulePathsFor(cwd) {
 // TEXT-based extraction (hivecontrol's `workspace create` does NOT document a
 // per-submodule failure JSON shape — the KB has no pinned field for it, and
 // inventing one here would be exactly the kind of guessed structure this
-// file's own comments warn against). Field evidence (SkyCrew,
+// file's own comments warn against). Field evidence (a downstream project,
 // fix/devswarm-spawn-local-submodules): `create` can report overall
 // `ok:true` even when ONE of several `git worktree add` calls it runs for a
 // multi-repo/submodule workspace fails ("fatal: '<path>' already exists"),
@@ -19658,7 +19658,7 @@ function parseSubmoduleWorktreeFailures(res, cwd) {
 }
 
 // repairSubmoduleWorktrees(failures, text, branch, cwd) -> { repaired, remaining }
-// (0.120.8, SkyCrew field defect, 3rd occurrence). ROOT CAUSE (proven from the
+// (0.120.8, a downstream project field defect, 3rd occurrence). ROOT CAUSE (proven from the
 // DevSwarm app's own source + its log): `workspace create` starts the
 // `worktreeInclude` copy (`.devswarm/config.json`, e.g. `skyflutter/.env`) in
 // the BACKGROUND (`copyUntrackedFiles`, not awaited) and then runs
@@ -21139,7 +21139,7 @@ module.exports = {
   runningAntiHallVersion,
   appendIntoPartition, isIdLockHeld, withIdLockHeld,
   run, parseArgs, one, many, csvList,
-  // peer request B/C/D/F (SkyCrew + tf3 Primaries, 2026-09-26) — exported for
+  // peer request B/C/D/F (downstream-project Primaries, 2026-09-26) — exported for
   // direct unit testing:
   cmdRelay, inboxReadPrimaryTextLines, sendQuietLine, inboxTickQuietLine,
   emitKnownWarning, resolveReadArgToId,

@@ -738,7 +738,7 @@ reminder), and `migrate`. `command-guard` carries a root-anchored `LIGHT_EXCEPTI
 > left to ever drain it, so it can never clear on its own; it still gets the existing
 > cooldown'd archive-ready nudge and still shows in the table.
 
-> **v0.108.4 — ARCHIVE-REQUEST-PENDING (SkyCrew field report 399105fe/e75cade3).** The
+> **v0.108.4 — ARCHIVE-REQUEST-PENDING (a downstream project field report 399105fe/e75cade3).** The
 > `archive_request_only_unread`-based quiet above was DEAD-SESSION ONLY: a still-live child
 > that simply had not yet acted on an already-sent `archive-request` kept getting the LOUD
 > CHILD NOT DRAINING nag AND the cooldown'd ARCHIVE-READY reminder re-instructing the
@@ -1206,7 +1206,7 @@ of the same project directly (all-to-all "mesh"), not just its own parent/child 
   `devswarm-parent-inbox.js` applies the SAME filter a second time (defense-in-depth) to
   entries it reads out of the live registry even though its summary file is already
   project-scoped. Net effect: a project only ever sees its OWN workspaces in the gate/inbox
-  hot paths, closing the confirmed cross-project bleed (#36; ToolFox3 gated on SkyCrew) the
+  hot paths, closing the confirmed cross-project bleed (#36; one downstream project gated on another) the
   earlier `DEVSWARM_REPO_ID` env filter never actually closed.
 - **Codex/OMX mesh support — DEFERRED, not shipped (v0.57.1, owner decision O-D3).** Every
   item above (`repoKey`, the per-project store, the mesh CLI, the per-project ingest daemon,
@@ -1713,7 +1713,7 @@ for, unconditionally — never consulting `archived/<id>.json` or the registry t
 had already appended. `removeRegistry` is NOT a permanent marker: the sqlite backend hard-DELETEs
 the row and the JSONL backend appends an unconditional `remove` op ("latest op per id wins" at
 read time), so a later `upsertRegistry` simply becomes the new latest write and revives the row.
-A field report (SkyCrew, 0.97.1 -> 0.99.0) had 4 archived workspaces come back
+A field report (a downstream project, 0.97.1 -> 0.99.0) had 4 archived workspaces come back
 `archivedInApp: false` and re-enter the parent-inbox table and parent gate after the update ran.
 
 **Why an active descriptor can still exist for an already-archived id.** `cmdArchive` tombstones
@@ -1861,7 +1861,7 @@ verified, not newly guarded.
 ### Field aftermath — re-retiring rows an already-run buggy migration resurrected
 
 The gate above stops the store migration resurrecting rows GOING FORWARD; an install that already
-ran the pre-fix migration once (SkyCrew: ~43 legacy-slug rows across a whole retired
+ran the pre-fix migration once (a downstream project: ~43 legacy-slug rows across a whole retired
 worktree-group family) is left holding the damage regardless. `scripts/devswarm.js`'s
 `reRetireResurrectedRows`/`reRetireResurrectedRowsAllStores` forward any unread mail into a
 same-worktree archived id, then remove ONLY the resurrected registry row (never a file).
@@ -3947,7 +3947,7 @@ older code path (or never touched since) is not silently orphaned.
 
 ## 42. Subagents never own the DevSwarm mailbox (defect f0958b13fe2b, v0.98.1)
 
-Field-measured by SkyCrew (2026-09-08): inside a DevSwarm child workspace, the
+Field-measured by a downstream project (2026-09-08): inside a DevSwarm child workspace, the
 child's OWN Task-tool subagents ran `node .../scripts/devswarm.js inbox pull
 <id> && ... inbox ack <id>` directly — 155 executions across 120 subagent
 transcripts in one workspace. Every `inbox pull`/`ack`/`read`/`read-primary`

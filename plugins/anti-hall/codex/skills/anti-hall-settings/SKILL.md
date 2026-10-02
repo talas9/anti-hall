@@ -44,8 +44,8 @@ extra `--confirmed` step instead of a plain `set`.
 ## Safety guards: a human direct command, or a confirmed warning — never inferred
 
 `safety.gitGuard`, `safety.commandGuard`, `safety.editGuard`, `safety.swarmGuard`,
-`guards.stashGuard`, `guards.editGuardAllow` and `guards.allowSubagentMailbox` are
-safety keys (owner decision: no hard refusal — a human direct command, or a
+`guards.stashGuard`, `guards.editGuardAllow`, `guards.allowSubagentMailbox` and
+`devswarm.maintainerNotice.post` are safety keys (owner decision: no hard refusal — a human direct command, or a
 confirmation after a clear, plain warning, is enough). `set` to the risky value (a guard off, a
 bypass on, a new allow-list path) needs `--confirmed`, and so does a `reset` whose
 fallback value is the risky one (e.g. resetting an armed `guards.stashGuard`, whose

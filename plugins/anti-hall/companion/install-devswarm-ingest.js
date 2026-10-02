@@ -964,7 +964,7 @@ function stopLegacyUnitEntry(entry, opts) {
     // unload: the plist file is present on disk, OR the label is currently
     // loaded in launchd (pre-fetched ONCE per reap pass into
     // opts.loadedLabels by reapLegacyUnitsForRepo — never re-probed per
-    // entry). Live evidence (SkyCrew workspace-spawn installer run): ~33
+    // entry). Live evidence (a downstream project workspace-spawn installer run): ~33
     // already-reaped legacy per-worktree labels, each spawning `launchctl
     // unload` anyway and printing "(not present)" for both the plist and the
     // lock — this installer runs on EVERY workspace spawn, so that overhead
@@ -1170,7 +1170,7 @@ function macInstallProject(mainWorktree, repoKey, opts) {
   // ALREADY-INSTALLED, UNCHANGED short-circuit: skip the write+unload+load
   // entirely when the plist already on disk is byte-identical to what this
   // call would write AND the label is currently loaded (a live pid). Live
-  // evidence (SkyCrew workspace-spawn installer run): this installer runs on
+  // evidence (a downstream project workspace-spawn installer run): this installer runs on
   // EVERY workspace spawn and, before this fix, unconditionally rewrote +
   // unloaded + reloaded an already-healthy daemon each time — restarting a
   // perfectly fine process for no reason, discarding its accumulated monitor

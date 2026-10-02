@@ -1,3 +1,5 @@
+> **Historical plan, not current behaviour.** This plan describes `devswarm-guard.js` and `devswarm-children.js`, which were **never built**. The shipped DevSwarm integration differs; see the `devswarm` skill (`plugins/anti-hall/skills/devswarm/SKILL.md`) for current behaviour.
+
 # DevSwarm-aware Workspace-Tier Orchestration Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.

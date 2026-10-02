@@ -39,7 +39,7 @@ const { isChildWorkspace } = require('./lib/devswarm-role.js');
 // its PROJECT WORKTREE, not the plugin root, so a relative path in emitted
 // text is unrunnable there). This is the version-pinned plugin-cache path —
 // correct right now, but stale-across-updates once baked into a cron/Monitor/
-// handover (peer report, SkyCrew Primary, 2026-09-26); it is only the
+// handover (peer report, downstream-project Primary, 2026-09-26); it is only the
 // FALLBACK for the stable launcher below.
 const RAW_CLI = path.join(__dirname, '..', 'scripts', 'devswarm.js');
 

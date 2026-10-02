@@ -1,7 +1,7 @@
 'use strict';
 // anti-hall :: devswarm-unread — the shared LOSS-FREE UNION unread primitive.
 //
-// ROOT CAUSE this closes (SkyCrew field incident, see this repo's fix-wave
+// ROOT CAUSE this closes (a downstream project field incident, see this repo's fix-wave
 // notes): a Primary's `send --to <id>` (scripts/devswarm.js cmdSend) is a
 // STORE-ONLY write — it never touches the target's durable NDJSON inbox,
 // which is populated ONLY by `inbox pull` draining the native hivecontrol

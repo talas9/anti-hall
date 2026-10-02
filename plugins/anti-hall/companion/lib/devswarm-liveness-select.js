@@ -3,11 +3,11 @@
 // selection primitive shared by scripts/devswarm.js (resolveMeshTarget,
 // pickSurvivor) and companion/lib/devswarm-store.js (resolveSenderRegistryId).
 // Extracted so all three call sites can never drift out of sync on what "the
-// live row a session actually drains" means (SkyCrew field defect, 0.73.x:
+// live row a session actually drains" means (a downstream project field defect, 0.73.x:
 // three independent copies of the same freshest-updatedAt loop disagreed on
 // which duplicate registry row won a `send --to meshId`).
 //
-// GROUND-TRUTH CORRECTION (live SkyCrew store inspected 2026-08-07): a DEAD
+// GROUND-TRUTH CORRECTION (live a downstream project store inspected 2026-08-07): a DEAD
 // registry row's updatedAt can be refreshed indefinitely by an unidentified
 // CLI-heartbeat caller (cmdHeartbeat invoked with no --session — heartbeat
 // schema source:'cli-heartbeat', sessionId:null). A recency window alone can

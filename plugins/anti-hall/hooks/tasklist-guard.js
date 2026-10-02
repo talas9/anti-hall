@@ -44,7 +44,7 @@ const { appendIndexLineIfAbsent } = require('./session-history-index.js');
 // Unlike handover-find's own repoRoot() (which keys on the LITERAL checkout at
 // cwd, submodule included), sessionProjectRoot() climbs a submodule cwd to its
 // git SUPERPROJECT toplevel -- a peer report (0.115.2) showed tasklist-guard
-// demanding a progress file inside a submodule (`cd skyfb` in skycrew) even
+// demanding a progress file inside a submodule (`cd <submodule>` in a parent repo) even
 // though the superproject's own current progress file already existed; the
 // session's progress/history belong to the project, not to whichever checkout
 // the shell happens to be cd'd into at Stop time.

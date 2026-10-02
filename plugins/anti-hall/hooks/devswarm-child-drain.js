@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // anti-hall :: devswarm-child-drain (PostToolUse, matcher Bash, CHILD-ONLY)
 //
-// THE OPERATIVE FIX (SkyCrew field incident): a DevSwarm child has NO mid-turn
+// THE OPERATIVE FIX (a downstream project field incident): a DevSwarm child has NO mid-turn
 // re-entry point. devswarm-child-turn.js fires on UserPromptSubmit — once per
 // USER PROMPT, never during a long autonomous task. Field evidence: a child's
 // mesh-direct unread rose 14 -> 15 WHILE the child was actively committing —

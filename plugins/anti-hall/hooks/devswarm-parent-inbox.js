@@ -1141,7 +1141,7 @@ function broadcastMaxAgeMs(env) {
 }
 
 // DEFAULT_ARCHIVE_REQUEST_RENAG_MS / resolveArchiveRequestRenagMs(env) —
-// SkyCrew field report (399105fe, e75cade3): with an archive-request already
+// a downstream project field report (399105fe, e75cade3): with an archive-request already
 // pending (computeSummary's archive_request_only_unread — the ENTIRE current
 // unread backlog for that workspace is the Primary's own not-yet-drained
 // archive-request send), both the CHILD NOT DRAINING nag and the ARCHIVE-
@@ -1168,7 +1168,7 @@ function resolveArchiveRequestRenagMs(env) {
   return Number.isFinite(n) && n > 0 ? n * 3600000 : DEFAULT_ARCHIVE_REQUEST_RENAG_MS;
 }
 
-// DEFAULT_INBOX_GRACE_MS / resolveInboxGraceMs(env) — SkyCrew report fix: a
+// DEFAULT_INBOX_GRACE_MS / resolveInboxGraceMs(env) — a downstream project report fix: a
 // direct send to a LIVE child lane was flagged "need attention" as little as
 // 4s after sending, before the child's own Stop-hook loop could realistically
 // have cycled once, let alone drained it. 120s default: generous enough to
@@ -1632,11 +1632,11 @@ function main() {
 
   // OWN-CHECKOUT ROW FOLD (P0 field bug): the DevSwarm app can self-register
   // its OWN "primary builder" row under an id other than anti-hall's own
-  // `primaryId` (e.g. an app builder id like `76cf862f…`, label "SkyCrew",
+  // `primaryId` (e.g. an app builder id like `76cf862f…`, label "<project>",
   // worktree === the Primary's own checkout) — owner-verified on the live
   // app DB: `builders.builderType === 'primary'` for exactly that row (5
   // primary vs 209 standard rows). Before this fix such a row fell through
-  // to the generic child path, producing a false "SkyCrew (76cf862f) N
+  // to the generic child path, producing a false "a downstream project (76cf862f) N
   // unread" nag with child-shaped wording ("messages YOU sent") for what is
   // actually the Primary's own inbound mail.
   //
@@ -1798,7 +1798,7 @@ function main() {
     }
     // ARCHIVE-REQUEST-PENDING (fix: CHILD NOT DRAINING / ARCHIVE-READY nag
     // re-instructing the Primary to poke/re-send an archive-request it
-    // already sent — SkyCrew field report 399105fe/e75cade3): unlike
+    // already sent — a downstream project field report 399105fe/e75cade3): unlike
     // archiveReadyQuiet above (dead session ONLY), this fires whenever the
     // workspace's ENTIRE currently-unread backlog is the Primary's own
     // archive-request send (archive_request_only_unread), regardless of
@@ -1827,7 +1827,7 @@ function main() {
     // hook has no way to tell provenance beyond the caller's own judgement,
     // so this is opt-in, per-id, user-controlled.
     const nagIgnored = isNagIgnored(home, id);
-    // GRACE WINDOW (SkyCrew report fix, see unreadIsGraced's header): computed
+    // GRACE WINDOW (a downstream project report fix, see unreadIsGraced's header): computed
     // BEFORE the attention-push gate below so a just-sent message to a live
     // child lane does not immediately count as "need attention" — stuck/
     // notDraining are independent liveness signals and are NEVER suppressed
@@ -2228,7 +2228,7 @@ function main() {
     // submodule-shape detector, falling back to the full spawn-based
     // canonicalMeshId ONLY when the fs walk couldn't confirm a non-submodule
     // toplevel — the perf fix that made this hook's dominant CPU cost,
-    // profiled 94% of sampled time, ToolFox3 2026-09-19). identity.js's
+    // profiled 94% of sampled time, a downstream project 2026-09-19). identity.js's
     // resolveContext IS that fast path (zero-spawn-first fs walk, submodule-
     // hop fallback only when genuinely needed) with correct submodule handling
     // built in rather than approximated, so both branches collapse to one call
@@ -2690,7 +2690,7 @@ module.exports = {
   // emit-dedupe normalizers + segment builders (tests/hooks/emit-dedupe.test.js):
   normalizeTableAges, normalizeInboxVolatile, buildUnreadSegment, buildOrphansSegment, logSegmentError,
   buildUrgentUnreadSegment, buildArchiveSegment, buildStaleRegistrySegment,
-  // inbox grace window (SkyCrew report fix) — exported for direct unit testing:
+  // inbox grace window (a downstream project report fix) — exported for direct unit testing:
   unreadIsGraced, resolveInboxGraceMs, DEFAULT_INBOX_GRACE_MS,
   // finish column (task #36b) — exported for direct unit testing:
   doneStateLabel,

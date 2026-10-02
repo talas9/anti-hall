@@ -5,7 +5,7 @@
 // handover/drain text) names as a literal `node <path>` command:
 // scripts/devswarm.js and companion/lib/devswarm-wake-watch.js.
 //
-// ROOT PROBLEM (peer report, SkyCrew Primary, 2026-09-26): every one of those
+// ROOT PROBLEM (peer report, downstream-project Primary, 2026-09-26): every one of those
 // paths was previously baked from the CURRENTLY RUNNING hook's own __dirname
 // — the version-pinned plugin-cache dir (e.g.
 // .../cache/anti-hall/anti-hall/0.109.1/scripts/devswarm.js). That path is

@@ -95,12 +95,12 @@ function repoRoot(cwd) {
 // (the literal nearest .git, which for a submodule cwd is the submodule's OWN
 // checkout).
 //
-// tasklist-guard bug (0.115.2, reported by a peer): after `cd skyfb` inside a
-// superproject that embeds skyfb as a submodule, the Stop hook's progress path
+// tasklist-guard bug (0.115.2, reported by a peer): after `cd <submodule>` inside a
+// superproject that embeds <submodule> as a submodule, the Stop hook's progress path
 // followed the shell cwd's raw toplevel INTO the submodule
-// (skycrew/skyfb/.anti-hall/progress/...), demanding a file there even though
+// (<repo>/<submodule>/.anti-hall/progress/...), demanding a file there even though
 // the superproject's own, current progress file already existed at
-// skycrew/.anti-hall/progress/.... A session's progress/history are a
+// <repo>/.anti-hall/progress/.... A session's progress/history are a
 // property of the PROJECT the session is working in, not of whichever git
 // checkout the shell happens to be cd'd into at Stop time — so this resolver
 // climbs submodules to the superproject the same way repoKey/meshId already

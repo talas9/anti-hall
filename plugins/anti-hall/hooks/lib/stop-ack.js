@@ -2,7 +2,7 @@
 // anti-hall :: stop-ack — ONE shared signature-ack mechanism for
 // advisory-only Stop-hook nudges (silent-agent-nudge.js, tasklist-guard.js).
 //
-// PEER COMPLAINT this addresses (SkyCrew + tf3 Primaries, 2026-09-26):
+// PEER COMPLAINT this addresses (downstream-project Primaries, 2026-09-26):
 // "When a blocking Stop hook fires on a condition I've already confirmed
 // false, let me ack that exact signature for the session." devswarm-parent-
 // gate.js already has an equivalent per-signature forced-ack (its own

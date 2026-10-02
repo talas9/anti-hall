@@ -1483,7 +1483,7 @@ function foldArchivedRowsPostUpdate(opts) {
  * reRetireResurrectedPostUpdate({ paths, env, cwd, home, devswarm, version }) →
  *   { attempted, candidates, reRetired, forwarded, skippedLive, errors, detail }
  *
- * Item 6, defect df54edf54804 field aftermath (SkyCrew, 2026-09-08): the store
+ * Item 6, defect df54edf54804 field aftermath (a downstream project, 2026-09-08): the store
  * migration's resurrection bug (fixed above via companion/lib/
  * devswarm-archive-gate.js) left already-upgraded installs holding registry
  * rows for a whole retired worktree-group family (~43 legacy-slug rows
@@ -2410,7 +2410,7 @@ function healRegistryPostUpdate(opts) {
  * repoKey from cwd) — an already-split registry sitting in a DIFFERENT
  * project's store on this same machine is never reached just because the
  * operator happened to run `/anti-hall:update` from project A instead of B
- * (the exact gap the SkyCrew field report's live store inspection surfaced:
+ * (the exact gap the downstream project field report's live store inspection surfaced:
  * the split was found by direct store inspection, not by update reaching it).
  * This sweeps EVERY store this machine has ever opened (devswarm.js's
  * foldMeshDuplicatesAllStores — same store.listStoreHashes(home) enumeration

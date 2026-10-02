@@ -114,7 +114,7 @@ function sameRegistryWorktree(existingPath, incomingPath) {
   try {
     // Canonical resolver, BOTH directions: a submodule/subdir path keys to its
     // outermost superproject's worktreeRoot (child-turn persists the literal
-    // toplevel, e.g. <ws>/skyfb, under the workspace-keyed id). Same worktree iff
+    // toplevel, e.g. <ws>/<submodule>, under the workspace-keyed id). Same worktree iff
     // either side's root is the other side's real path (or both share one root).
     const idn = require('./identity.js');
     const ra = idn.resolveContext(existingPath, { memo: false }).worktreeRoot;
@@ -367,7 +367,7 @@ function resolveStoreBackend(dir, opts) {
 // PREFERS sqlite when both exist). Used to detect a genuinely SPLIT store —
 // both physical forms present with real data — the owner-reported repair
 // target (9 real machines observed: 053f0040, 2e126d49, 2faeb4df, 38770daf,
-// 63f9261d, 958e44cc, a51ee0be, ae2758cd, skycrew-a7a7a5).
+// 63f9261d, 958e44cc, a51ee0be, ae2758cd, projA-a7a7a5).
 function hasBackendData(dir, backend) {
   if (backend === 'sqlite') {
     try { return fs.statSync(path.join(dir, 'devswarm.db')).size > 0; } catch (_) { return false; }

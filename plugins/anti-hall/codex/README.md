@@ -88,6 +88,7 @@ The Codex port exposes first-pass equivalents for the anti-hall skill surface:
 - `anti-hall-jev` — activate/configure/check the opt-in Jev classifier
 - `anti-hall-system-briefing` — live enumeration of every installed hook, skill and substrate
 - `anti-hall-settings` — show/change any anti-hall setting; numbered-choice menu fallback (Codex has no `AskUserQuestion`) and no `/config` panel equivalent — `scripts/settings.js` is the only front door
+- `deadly-loop-multi` (the double/triple/quadruple deadly loop) is intentionally **Claude-only, not ported** — it multiplies the Claude Sonnet/Opus/Codex trio, and there is no `anti-hall-deadly-loop-multi` Codex skill; use `anti-hall-deadly-loop` instead.
 - `anti-hall-handover` — comprehensive session handoff (index + per-session HANDOVER.md + detail files) so a fresh session can resume without re-deriving or guessing anything
 
 Context conservation is also wired as a `UserPromptSubmit` hook via `limit-conserve-inject.js`.

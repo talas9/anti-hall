@@ -3,7 +3,7 @@
 // to advisory (skip it) once `claude plugin update` has re-registered a newer
 // anti-hall version than the one THIS hook process is still executing.
 //
-// PEER COMPLAINT this addresses (SkyCrew + tf3 Primaries, 2026-09-26): about
+// PEER COMPLAINT this addresses (downstream-project Primaries, 2026-09-26): about
 // 40 Stops were blocked in one session by an already-fixed old nudge, because
 // `installed_plugins.json` (harness-owned) was re-registered at the newer
 // version but the running session's hooks kept executing the OLD build until

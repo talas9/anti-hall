@@ -122,7 +122,7 @@ function anchoredAntiHallCli(dir, script, tailSrc) {
 // anchoredAntiHallStableLauncher(scriptFile) -> RegExp for one of the two
 // version-independent ~/.anti-hall/bin/ stable launchers (hooks/lib/
 // stable-launcher.js: devswarm.js, wake-watch.js). ROOT CAUSE (peer report,
-// SkyCrew Primary, 2026-09-26): anchoredAntiHallCli('scripts', 'devswarm',
+// downstream-project Primary, 2026-09-26): anchoredAntiHallCli('scripts', 'devswarm',
 // '\\b') above only exempts the PLUGIN-RELATIVE `.../scripts/devswarm.js`
 // form. Since the devswarm.stableLauncher setting defaulted on (v0.109+),
 // every hook-emitted directive (mailbox wake cron, Monitor re-arm command,
@@ -473,7 +473,7 @@ function detectHivectlMessageSend(command, depth) {
 }
 
 // devswarm-subagent-mailbox-guard: defect f0958b13fe2b (P0, field-measured by
-// SkyCrew 2026-09-08). Inside a DevSwarm child workspace, the child's OWN
+// a downstream project 2026-09-08). Inside a DevSwarm child workspace, the child's OWN
 // subagents ran `node .../scripts/devswarm.js inbox pull <id> && ... inbox
 // ack <id>` — 155 executions across 120 subagent transcripts in one
 // workspace. Each ack ADVANCES THE SHARED CURSOR, so the workspace's own MAIN

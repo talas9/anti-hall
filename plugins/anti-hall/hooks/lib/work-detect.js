@@ -82,7 +82,7 @@ const BASH_WORK_RE = new RegExp(
 // its own path segment (see this file's own guidance to agents: "always use
 // [the scratchpad] ... instead of /tmp") — holds inter-agent message-passing
 // and scratch artifacts, never PROJECT work. In two independently-reproduced
-// SkyCrew Primary sessions, 70-90% of the Bash "work" counted between two
+// downstream-project Primary sessions, 70-90% of the Bash "work" counted between two
 // consecutive progress-staleness blocks was `cat >`/`mkdir`/`touch` traffic
 // into this exact scratchpad directory (message relaying to child agents),
 // not project edits. That churn shifts workBucket (floor(workCount/threshold))

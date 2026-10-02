@@ -580,7 +580,7 @@ function isBroadcastRow(row) {
 // ~30-540ms depending on OS-cache warmth (git binary/dynamic-linker cold
 // start under load can spike past 500ms for the FIRST spawn in a span with a
 // gap before it — v0.101.0 exists because exactly this class of git-spawn
-// cost blew a hook timeout under load, ToolFox3 8,935ms/10s). So this now
+// cost blew a hook timeout under load, a downstream project 8,935ms/10s). So this now
 // tries the ZERO-SPAWN `resolveWorktreeNoSpawn` (companion/lib/
 // devswarm-repokey.js) FIRST — a pure-fs walk-up that continues past a
 // submodule's `.git` FILE (detected via the SAME `.git/modules/<name>`

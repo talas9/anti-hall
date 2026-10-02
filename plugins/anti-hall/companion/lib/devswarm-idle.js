@@ -9,7 +9,7 @@
 // hook rewrites heartbeats/<id>.json (devswarm-child-turn.js writeHeartbeat),
 // `inbox tick` rewrites it again (scripts/devswarm.js cmdInboxTick effect 2),
 // and every line appends to the transcript. So both signals refresh every wake
-// and the idle clock never expires (field: SkyCrew workspace 1842f5f8 — wake
+// and the idle clock never expires (field: a downstream project workspace 1842f5f8 — wake
 // turns every ~10-30 min, each only `inbox tick` / `inbox read-primary` /
 // `heartbeat` / a Monitor re-arm).
 //

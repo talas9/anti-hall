@@ -11,7 +11,7 @@ jevIntegrations, limitConserve, devswarm, statusline, ...). `scripts/settings.js
 only thing that reads or writes it. Every hook anti-hall registers has an on/off switch
 (default = on, the old behaviour); `show` ends with the short list of parts that have no
 switch on purpose, and why. `jevIntegrations` (v0.108.4) is a dedicated section holding
-all 14 per-integration Jev trust modes as their own rows/settings — see the `jev` skill's
+every per-integration Jev trust mode as its own row/setting — see the `jev` skill's
 "Per-integration modes" for the full table.
 
 ## Default: point the user at `/config`
@@ -51,8 +51,8 @@ setting, `set` it here.
 ## Safety guards: a human direct command, or a confirmed warning — never inferred
 
 `safety.gitGuard`, `safety.commandGuard`, `safety.editGuard`, `safety.swarmGuard`,
-`guards.stashGuard`, `guards.editGuardAllow` and `guards.allowSubagentMailbox` are
-safety keys (owner decision: no hard refusal — a human direct command, or a
+`guards.stashGuard`, `guards.editGuardAllow`, `guards.allowSubagentMailbox` and
+`devswarm.maintainerNotice.post` are safety keys (owner decision: no hard refusal — a human direct command, or a
 confirmation after a clear, plain warning, is enough). `set` to the risky value (a guard off, a
 bypass on, a new allow-list path) needs `--confirmed`, and so does a `reset` whose
 fallback value is the risky one (e.g. resetting an armed `guards.stashGuard`, whose

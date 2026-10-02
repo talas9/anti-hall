@@ -1,3 +1,5 @@
+> **Historical plan, not current behaviour.** This design describes `devswarm-guard.js` and `devswarm-children.js`, which were **never built**. The shipped DevSwarm integration differs; see the `devswarm` skill (`plugins/anti-hall/skills/devswarm/SKILL.md`) for current behaviour.
+
 <!-- APPROVED 2026-07-06 (user) after a 5-round deadly-loop: R5 = GO(Sonnet Reviewer)+GO(Opus Auditor); Codex seat's concurrency concern independently reproduced+resolved by both flagships, residual routed to plan-phase §8. -->
 # Design — DevSwarm-aware workspace-tier orchestration for anti-hall
 

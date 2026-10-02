@@ -1624,7 +1624,7 @@ if (REPAIR_TEST_STORES) {
 // See doctor-repair.js's checkResurrectedRows for the full rationale (the
 // store migration's resurrection bug — fixed via companion/lib/
 // devswarm-archive-gate.js — left already-upgraded installs holding
-// registry rows for a whole retired worktree-group family; SkyCrew measured
+// registry rows for a whole retired worktree-group family; a downstream project measured
 // ~43 legacy-slug rows on one install). Delegated to that ONE helper (fully
 // defensive + fail-open there) so this call site can never crash doctor.js;
 // stays SILENT (no section at all) when nothing is flagged. Report-only: NO
@@ -1667,7 +1667,7 @@ if (REPAIR_RESURRECTED) {
     else infol('skipped ' + label);
   }
   // EARLY EXIT (0.99.2): see the REPAIR_INGEST_ORPHANS block's identical note
-  // — this is the flag SkyCrew field-reported burying its own verdict at
+  // — this is the flag a downstream project field-reported burying its own verdict at
   // line 562 of 571 total output lines.
   emitVerdictAndExit();
 }
