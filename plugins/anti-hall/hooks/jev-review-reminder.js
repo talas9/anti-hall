@@ -133,7 +133,7 @@ function main() {
 // reviewDueLine(home) -> the review directive line, or null when gated/nothing due.
 function reviewDueLine(home) {
   const cfg = readJevJson(home);
-  if (cfg.enabled !== true) return null; // Jev off entirely — nothing to review.
+  if (settingsGet('jev', 'enabled', cfg.enabled === true, home) !== true) return null; // Jev off entirely — nothing to review.
 
   const reminderOn = settingsGet('jev', 'reviewReminder', true, home) !== false;
   if (!reminderOn) return null; // explicit opt-out

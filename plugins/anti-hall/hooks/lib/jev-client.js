@@ -96,12 +96,13 @@ function expandHome(p) {
   return p;
 }
 
-// loadJevConfig() — resolve the effective config from settings.json (jev
-// section) + jev.json (legacy) + env. Never throws; missing/malformed config
-// is treated as {} (disabled). settings.json's jev.* values, when present,
-// win over jev.json's own fields (v0.108.0 unified settings — jev.json is
-// never deleted or written to, only read as a fallback; see
-// hooks/lib/settings.js / settings-schema.js).
+// loadJevConfig() — resolve the effective config through the unified settings
+// resolver (see EFFECTIVE_KEYS below). Never throws; missing/malformed config
+// is treated as {} (disabled). settings.json's jev.* values win over jev.json's
+// own fields (v0.108.0 unified settings — jev.json is only read as a legacy
+// fallback; see hooks/lib/settings.js / settings-schema.js).
+const EFFECTIVE_KEYS = ['enabled', 'transport', 'fallbackTransport', 'timeoutMs', 'confidenceThreshold', 'keyFile'];
+
 function loadJevConfig() {
   const fileCfg = readJevConfigFile();
   let settingsCfg = {};
@@ -109,6 +110,18 @@ function loadJevConfig() {
     settingsCfg = require('./settings.js').load().jev || {};
   } catch (_) { /* settings.js unavailable/corrupt -> fall back to jev.json only */ }
   const cfg = Object.assign({}, fileCfg, settingsCfg);
+  // The unified resolver (env > settings.json > /config plugin option >
+  // legacy jev.json > default) is THE authority for these keys, the same one
+  // jev-setup status/enable and `settings.js` use, so the CLI and the hooks can
+  // never disagree about the effective transport. The raw merge above only
+  // remains as the fail-open fallback if settings.js cannot be loaded.
+  try {
+    const S = require('./settings.js');
+    for (const k of EFFECTIVE_KEYS) {
+      const v = S.get('jev', k, undefined);
+      if (v !== undefined) cfg[k] = v;
+    }
+  } catch (_) { /* keep the raw merge */ }
 
   let enabled = cfg.enabled === true || process.env.ANTIHALL_JEV === '1';
   if (process.env.ANTIHALL_JEV === '0') enabled = false;
@@ -149,6 +162,27 @@ function loadJevConfig() {
   };
 
   return { enabled, transport, fallbackTransport, timeoutMs, confidenceThreshold, keyFile, endpointOverride, endpointOverrides };
+}
+
+// configDisagreements(opts) -> [{key, effective, source, legacy}] — every
+// transport/enabled/fallback key where the legacy ~/.anti-hall/jev.json holds a
+// DIFFERENT value than the effective one (settings.json, env or /config wins).
+// That is the split-brain that once made `jev-setup status` print a transport
+// the hooks were not using. Never throws.
+function configDisagreements(opts) {
+  const out = [];
+  try {
+    const S = require('./settings.js');
+    const legacy = readJevConfigFile();
+    for (const key of ['enabled', 'transport', 'fallbackTransport']) {
+      if (legacy[key] === undefined) continue;
+      const effective = S.get('jev', key, undefined, opts);
+      const source = S.source('jev', key, opts);
+      if (source === 'legacy' || source === 'default' || effective === legacy[key]) continue;
+      out.push({ key, effective, source, legacy: legacy[key] });
+    }
+  } catch (_) { /* report-only */ }
+  return out;
 }
 
 // extractCostAndUsage(json) -> {cost, tokensIn, tokensOut, model} —
@@ -613,7 +647,7 @@ async function getCreditBalance({ timeoutMs } = {}) {
   // fallback when THAT is vercel (the typical "TypeSafe primary, Vercel
   // backup" setup is exactly where the backup's balance matters).
   const role = cfg.transport === 'vercel' ? 'primary' : (cfg.fallbackTransport === 'vercel' ? 'fallback' : null);
-  if (!role) return { ok: false, reason: 'unsupported-transport' };
+  if (!role) return { ok: false, reason: 'unsupported-transport', transport: cfg.transport };
 
   const apiKey = resolveCredential(cfg, role);
   if (!apiKey) return { ok: false, reason: 'no-key' };
@@ -662,7 +696,7 @@ async function getCreditBalance({ timeoutMs } = {}) {
     const totalUsedUsd = Number(json && json.total_used);
     if (!Number.isFinite(balanceUsd)) return { ok: false, reason: 'bad-response', ms };
 
-    return { ok: true, balanceUsd, totalUsedUsd: Number.isFinite(totalUsedUsd) ? totalUsedUsd : null, ms };
+    return { ok: true, vendor: 'vercel', balanceUsd, totalUsedUsd: Number.isFinite(totalUsedUsd) ? totalUsedUsd : null, ms };
   } finally {
     clearTimeout(timer);
   }
@@ -701,14 +735,23 @@ function writeCreditsCache(entry) {
 // window cost zero extra requests. This function itself must ONLY ever be
 // called from a report/status/CLI path, never a hook.
 async function getCreditBalanceCached({ timeoutMs, forceRefresh } = {}) {
+  // Only a real Vercel balance is ever cached or served: the cache entry is
+  // tagged with its vendor, so an entry without the tag (written before the
+  // tag existed) or for another vendor is never shown as the current balance.
   if (!forceRefresh) {
     const cached = readCreditsCache();
-    if (cached && Number.isFinite(cached.fetchedAt) && (Date.now() - cached.fetchedAt) < CREDITS_CACHE_TTL_MS) {
+    if (cached && cached.vendor === 'vercel' && cached.result &&
+      Number.isFinite(cached.fetchedAt) && (Date.now() - cached.fetchedAt) < CREDITS_CACHE_TTL_MS) {
       return Object.assign({}, cached.result, { cached: true });
     }
   }
   const result = await getCreditBalance({ timeoutMs });
-  writeCreditsCache({ fetchedAt: Date.now(), result });
+  // 'unsupported-transport' / 'disabled' / 'no-key' are local config answers,
+  // not network results: caching them would keep reporting a stale "not
+  // available" for 15 minutes after the user fixes the config.
+  if (result.ok || !['unsupported-transport', 'disabled', 'no-key'].includes(result.reason)) {
+    writeCreditsCache({ fetchedAt: Date.now(), vendor: 'vercel', result });
+  }
   return Object.assign({}, result, { cached: false });
 }
 
@@ -720,6 +763,7 @@ module.exports = {
   defaultKeyFilePath,
   expandHome,
   extractCostAndUsage,
+  configDisagreements,
   getCreditBalance,
   getCreditBalanceCached,
   CREDITS_ENDPOINT,

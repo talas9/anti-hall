@@ -219,11 +219,20 @@ function schemaIntegrationSource(id, home) {
 }
 
 // getMode(id, fileCfg, home) -> 'on' | 'shadow' | 'off'. Never throws.
-function getMode(id, fileCfg, home) {
+// opts.assumeEnabled skips the Jev-enabled gate (jev-setup status shows the
+// configured modes even while Jev is off).
+function getMode(id, fileCfg, home, opts) {
   const cfg = fileCfg || {};
   let jevEnabled = cfg.enabled === true || process.env.ANTIHALL_JEV === '1';
+  // `enabled` resolves through the unified settings store (env > settings.json
+  // > /config > legacy jev.json > the caller's value), the same chain
+  // jev-client.js uses; the raw jev.json alone would ignore a settings.json
+  // value and the hooks would disagree with the client.
+  try {
+    jevEnabled = require('./settings.js').get('jev', 'enabled', cfg.enabled === true, { home: homeDir(home) }) === true;
+  } catch (_) { /* keep the raw value */ }
   if (process.env.ANTIHALL_JEV === '0') jevEnabled = false;
-  if (!jevEnabled) return 'off';
+  if (!jevEnabled && !(opts && opts.assumeEnabled)) return 'off';
 
   if (process.env[envNameFor(id)] === '0') return 'off';
 

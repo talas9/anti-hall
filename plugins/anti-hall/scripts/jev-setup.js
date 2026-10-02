@@ -91,6 +91,32 @@ function resolveFallback(cfg, primary) {
   return ((fb === 'vercel' || fb === 'typesafe') && fb !== (primary || resolveTransport(cfg))) ? fb : 'none';
 }
 
+// effectiveCfg() — jev.json's raw fields, with enabled/transport/fallbackTransport/
+// keyFile replaced by the EFFECTIVE value from the unified settings resolver
+// (env > ~/.anti-hall/settings.json > /config option > legacy jev.json >
+// default) — the very resolver jev-client.js uses, so `status` can never show a
+// transport the hooks are not using. jev.json alone is only the legacy tier.
+function effectiveCfg() {
+  const cfg = readJevJson();
+  try {
+    const S = require('../hooks/lib/settings.js');
+    for (const k of ['enabled', 'transport', 'fallbackTransport', 'keyFile']) {
+      const v = S.get('jev', k, undefined);
+      if (v !== undefined) cfg[k] = v;
+    }
+  } catch (_) { /* keep jev.json's own values */ }
+  return cfg;
+}
+
+// setJev(key, value) -> true on success. The WRITE goes to the store that
+// wins (settings.json) — writing jev.json would be masked by an existing
+// settings.json value and silently change nothing for the hooks.
+function setJev(key, value) {
+  const r = require('../hooks/lib/settings.js').set('jev', key, value);
+  if (!r.ok) fail(`could not set jev.${key}: ${r.error || r.warning || 'unknown error'}`);
+  return r.ok;
+}
+
 function resolveTransport(cfg, override) {
   if (override && VALID_TRANSPORTS.has(override)) return override;
   return cfg.transport === 'typesafe' ? 'typesafe' : 'vercel';
@@ -206,7 +232,7 @@ function fail(msg) {
 // --- verbs -----------------------------------------------------------------
 
 async function cmdStatus() {
-  const cfg = readJevJson();
+  const cfg = effectiveCfg();
   const enabled = cfg.enabled === true;
   const transport = resolveTransport(cfg);
   const present = keyPresent(cfg, transport);
@@ -219,7 +245,7 @@ async function cmdStatus() {
   for (const id of integrationIds) {
     // Same resolution the hooks use (settings.json > jev.json > default).
     let resolved;
-    try { resolved = require('../hooks/lib/jev-assist.js').getMode(id, Object.assign({}, cfg, { enabled: true })); } catch (_) { resolved = undefined; }
+    try { resolved = require('../hooks/lib/jev-assist.js').getMode(id, cfg, undefined, { assumeEnabled: true }); } catch (_) { resolved = undefined; }
     const configured = cfg.integrations && cfg.integrations[id];
     if (VALID_MODES.has(resolved)) modes[id] = resolved;
     else if (VALID_MODES.has(configured)) modes[id] = configured;
@@ -228,6 +254,12 @@ async function cmdStatus() {
 
   console.log(`enabled: ${enabled}`);
   console.log(`transport: ${transport}`);
+  try {
+    for (const d of require('../hooks/lib/jev-client.js').configDisagreements()) {
+      const winner = d.source === 'file' ? '~/.anti-hall/settings.json' : (d.source === 'env' ? 'the environment' : 'the /config plugin option');
+      console.log(`  warning: ~/.anti-hall/jev.json says ${d.key}=${JSON.stringify(d.legacy)} but ${winner} wins with ${JSON.stringify(d.effective)} (what the hooks use)`);
+    }
+  } catch (_) { /* report-only */ }
   console.log(`key present: ${present ? 'yes' : 'no'}`);
   const fallback = resolveFallback(cfg, transport);
   console.log(`fallback transport: ${fallback}`);
@@ -252,19 +284,30 @@ async function cmdStatus() {
   }
   console.log(`calls (last 24h): ${callCountLast24h()}`);
 
-  // Credit balance -- vercel transport only (TypeSafe's own API documents no
-  // equivalent endpoint, see jev-client.js's getCreditBalance doc comment),
-  // served from its own 15-min cache. Fail-open: never blocks `status`.
-  try {
-    const { getCreditBalanceCached } = require('../hooks/lib/jev-client.js');
-    const credit = await getCreditBalanceCached({});
-    if (credit.ok) {
-      console.log(`credit balance: $${credit.balanceUsd.toFixed(2)}${credit.cached ? ' (cached)' : ''}`);
-    } else if (credit.reason !== 'unsupported-transport' && credit.reason !== 'disabled' && credit.reason !== 'no-key') {
-      console.log(`credit balance: n/a (${credit.reason})`);
+  // Credit balance: only Vercel exposes one (TypeSafe's own API documents no
+  // balance endpoint — /v1/credits, /v1/balance, /v1/usage, /v1/account and
+  // /v1/me all 404). One line per configured vendor, labelled with the vendor,
+  // so one vendor's balance is never shown as another's. Vercel's is served
+  // from its own vendor-tagged 15-min cache; fail-open, never blocks `status`.
+  for (const t of [transport, fallback].filter((x) => x !== 'none')) {
+    if (t === 'typesafe') {
+      console.log('credit balance (typesafe): not available (TypeSafe has no balance endpoint)');
+      continue;
     }
-  } catch (_) {
-    // best-effort only -- status must never fail because of this
+    if (!enabled) continue;
+    try {
+      const { getCreditBalanceCached } = require('../hooks/lib/jev-client.js');
+      const credit = await getCreditBalanceCached({});
+      if (credit.ok) {
+        console.log(`credit balance (vercel): $${credit.balanceUsd.toFixed(2)}${credit.cached ? ' (cached)' : ''}`);
+      } else if (credit.reason === 'no-key') {
+        console.log('credit balance (vercel): n/a (no vercel key visible to this process)');
+      } else if (credit.reason !== 'unsupported-transport' && credit.reason !== 'disabled') {
+        console.log(`credit balance (vercel): n/a (${credit.reason})`);
+      }
+    } catch (_) {
+      // best-effort only -- status must never fail because of this
+    }
   }
 }
 
@@ -278,23 +321,18 @@ function cmdEnable(opts) {
     fail(`enable: invalid --fallback "${opts.fallback}" (expected vercel|typesafe|none)`);
     return;
   }
-  const next = writeJevJsonMerged((cfg) => {
-    cfg.enabled = true;
-    cfg.transport = resolveTransport(cfg, transportOverride);
-    if (opts.fallback !== undefined) cfg.fallbackTransport = opts.fallback;
-    return cfg;
-  });
-  console.log(`jev enabled (transport: ${next.transport}, fallback: ${resolveFallback(next, next.transport)})`);
-  if (opts.fallback !== undefined && resolveFallback(next, next.transport) === 'none' && opts.fallback !== 'none') {
+  if (!setJev('enabled', true)) return;
+  if (transportOverride && !setJev('transport', transportOverride)) return;
+  if (opts.fallback !== undefined && !setJev('fallbackTransport', opts.fallback)) return;
+  const next = effectiveCfg();
+  console.log(`jev enabled (transport: ${resolveTransport(next)}, fallback: ${resolveFallback(next, resolveTransport(next))})`);
+  if (opts.fallback !== undefined && resolveFallback(next, resolveTransport(next)) === 'none' && opts.fallback !== 'none') {
     console.log('note: a fallback equal to the primary transport is treated as none');
   }
 }
 
 function cmdDisable() {
-  writeJevJsonMerged((cfg) => {
-    cfg.enabled = false;
-    return cfg;
-  });
+  if (!setJev('enabled', false)) return;
   console.log('jev disabled');
 }
 
@@ -308,7 +346,7 @@ function cmdSetKey(opts) {
     fail(`set-key: invalid --role "${opts.role}" (expected fallback)`);
     return;
   }
-  const cfg = readJevJson();
+  const cfg = effectiveCfg();
   const isFallback = opts.role === 'fallback';
   const transport = isFallback ? resolveFallback(cfg) : resolveTransport(cfg, transportOverride);
   if (isFallback && transport === 'none') {
@@ -330,12 +368,7 @@ function cmdSetKey(opts) {
   const keyPath = isFallback ? defaultKeyFilePath(transport) : resolveKeyFilePath(cfg, transport);
   writeKeyFileAtomic(keyPath, key + '\n');
 
-  if (transportOverride && !isFallback) {
-    writeJevJsonMerged((c) => {
-      c.transport = transportOverride;
-      return c;
-    });
-  }
+  if (transportOverride && !isFallback && !setJev('transport', transportOverride)) return;
 
   console.log(`key saved (${key.length} chars)`);
   if (!require('../hooks/lib/credentials.js').allowLegacyKeyRead('jev')) {
@@ -344,7 +377,7 @@ function cmdSetKey(opts) {
 }
 
 async function cmdTest() {
-  const cfg = readJevJson();
+  const cfg = effectiveCfg();
   if (cfg.enabled !== true) {
     fail('test: jev is not enabled — run `enable` first');
     return;

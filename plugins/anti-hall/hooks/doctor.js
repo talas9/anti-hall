@@ -1761,7 +1761,9 @@ if (REPAIR_RESURRECTED) {
 (function jevReviewDueSection() {
   let cfg = null;
   try { cfg = JSON.parse(fs.readFileSync(path.join(require('../companion/lib/test-home-guard.js').resolveHome(undefined, process.env), '.anti-hall', 'jev.json'), 'utf8')); } catch (_) { cfg = null; }
-  if (!cfg || cfg.enabled !== true) return;
+  let jevOn = !!cfg && cfg.enabled === true;
+  try { jevOn = require('./lib/settings.js').get('jev', 'enabled', jevOn) === true; } catch (_) { /* keep jev.json's value */ }
+  if (!jevOn) return;
   let reminderOn = true;
   try { reminderOn = require('./lib/settings.js').get('jev', 'reviewReminder', true) !== false; } catch (_) { reminderOn = true; }
   if (!reminderOn) return;
@@ -1784,6 +1786,24 @@ if (REPAIR_RESURRECTED) {
     if (!rec.applicable({ home, env: process.env })) return;
     head('jev recommendation');
     rec.doctorLines().forEach((l, i) => lines.push(`  ${i === 0 ? C.b : ''}${l}${i === 0 ? C.x : ''}`));
+  } catch (_) { /* report-only */ }
+})();
+
+// --- 5p3. jev config split-brain (REPORT-ONLY, CONDITIONAL) -----------------
+// ~/.anti-hall/settings.json (or env / the /config option) outranks the legacy
+// ~/.anti-hall/jev.json. When jev.json holds a DIFFERENT enabled/transport/
+// fallbackTransport than the effective value, the hooks use the winner while
+// anything reading jev.json alone (older scripts, a hand edit) shows the
+// loser. Names both files; silent when they agree or jev.json is absent.
+(function jevConfigSplitBrainSection() {
+  try {
+    const diffs = require('./lib/jev-client.js').configDisagreements();
+    if (!diffs.length) return;
+    head('jev config');
+    for (const d of diffs) {
+      const winner = d.source === 'file' ? '~/.anti-hall/settings.json' : (d.source === 'env' ? 'the environment' : 'the /config plugin option');
+      warnl(`jev.${d.key}: ~/.anti-hall/jev.json says ${JSON.stringify(d.legacy)} but ${winner} wins with ${JSON.stringify(d.effective)} (the hooks use ${JSON.stringify(d.effective)}); jev.json is only the legacy tier, so correct whichever value you actually want via \`node scripts/jev-setup.js enable|disable\` or \`node scripts/settings.js set jev.${d.key} <value>\``);
+    }
   } catch (_) { /* report-only */ }
 })();
 

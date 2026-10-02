@@ -1377,22 +1377,26 @@ function printBudgetStatus(status) {
 }
 
 // printCredit(credit, lowCredit) — credit is a getCreditBalanceCached()
-// result; prints nothing at all when unsupported/disabled/no-key (the
-// common, expected case for "typesafe" transport or Jev off), since that is
-// not a warning-worthy condition, just "not applicable here".
+// result. Only Vercel exposes a balance, so the line is always labelled with
+// its vendor and a transport without one says so plainly (never hidden, never
+// another vendor's number). Silent only when Jev is off.
 function printCredit(credit, lowCredit) {
   if (!credit) return;
   if (!credit.ok) {
     if (credit.reason === 'no-key') {
-      try { console.log('\ncredit balance: n/a — ' + require('../hooks/lib/credentials.js').backgroundNoKeyNotice()); } catch (_) { /* notice is best-effort */ }
+      try { console.log('\ncredit balance (vercel): n/a — ' + require('../hooks/lib/credentials.js').backgroundNoKeyNotice()); } catch (_) { /* notice is best-effort */ }
       return;
     }
-    if (credit.reason === 'unsupported-transport' || credit.reason === 'disabled') return;
-    console.log(`\ncredit balance: n/a (${credit.reason})`);
+    if (credit.reason === 'disabled') return;
+    if (credit.reason === 'unsupported-transport') {
+      console.log(`\ncredit balance: not available on ${credit.transport || 'this transport'} (no balance endpoint)`);
+      return;
+    }
+    console.log(`\ncredit balance (vercel): n/a (${credit.reason})`);
     return;
   }
   const cachedNote = credit.cached ? ' (cached)' : '';
-  console.log(`\ncredit balance: $${credit.balanceUsd.toFixed(2)}${cachedNote}`);
+  console.log(`\ncredit balance (vercel): $${credit.balanceUsd.toFixed(2)}${cachedNote}`);
   if (lowCredit && lowCredit.belowThreshold) {
     console.log(`  LOW CREDIT: below configured minCreditUsd ($${lowCredit.minCreditUsd.toFixed(2)}) -- Jev is never auto-disabled by this.`);
   }

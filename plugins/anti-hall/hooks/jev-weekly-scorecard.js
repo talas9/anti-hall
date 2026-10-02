@@ -110,7 +110,9 @@ function main() {
 
   const home = os.homedir();
   const cfg = readJevJson(home);
-  if (cfg.enabled !== true) return; // Jev off entirely — nothing to check.
+  let jevOn = cfg.enabled === true;
+  try { jevOn = require('./lib/settings.js').get('jev', 'enabled', jevOn, { home }) === true; } catch (_) { /* keep jev.json's value */ }
+  if (!jevOn) return; // Jev off entirely — nothing to check.
   // Setting jev.weeklyNotice (default true; legacy jev.json weeklyNotice still read).
   let weekly = cfg.weeklyNotice !== false;
   try { weekly = require('./lib/settings.js').get('jev', 'weeklyNotice', true, { home }) !== false; } catch (_) { /* keep legacy */ }

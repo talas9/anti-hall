@@ -562,7 +562,7 @@ test('getCreditBalance: "typesafe" transport -> unsupported-transport, no HTTP c
           h.writeState('jev.json', { enabled: true, transport: 'typesafe' });
           const { getCreditBalance } = freshLib();
           const r = await getCreditBalance({});
-          assert.deepStrictEqual(r, { ok: false, reason: 'unsupported-transport' });
+          assert.deepStrictEqual(r, { ok: false, reason: 'unsupported-transport', transport: 'typesafe' });
         });
       }
     );

@@ -49,6 +49,12 @@ function readJevJson(home) {
   return JSON.parse(fs.readFileSync(path.join(home, '.anti-hall', 'jev.json'), 'utf8'));
 }
 
+// The authoritative store: enable/disable/--transport/--fallback write
+// ~/.anti-hall/settings.json (jev.json is only the legacy tier, never written).
+function readSettingsJev(home) {
+  try { return JSON.parse(fs.readFileSync(path.join(home, '.anti-hall', 'settings.json'), 'utf8')).jev || {}; } catch (_) { return {}; }
+}
+
 function withMockServer(handler, fn) {
   const server = http.createServer(handler);
   return new Promise((resolve, reject) => {
@@ -116,7 +122,7 @@ test('set-key: --transport typesafe writes the typesafe key path and records tra
   assert.strictEqual(r.code, 0);
   const keyPath = path.join(home, '.config', 'typesafe', 'key');
   assert.strictEqual(fs.readFileSync(keyPath, 'utf8').trim(), 'ts-key-value');
-  assert.strictEqual(readJevJson(home).transport, 'typesafe');
+  assert.strictEqual(readSettingsJev(home).transport, 'typesafe');
 });
 
 // ---------------------------------------------------------------------------
@@ -127,15 +133,15 @@ test('enable: sets enabled true, defaults transport to vercel', () => {
   const { home } = makeHome();
   const r = run(['enable'], { home });
   assert.strictEqual(r.code, 0);
-  const cfg = readJevJson(home);
+  const cfg = readSettingsJev(home);
   assert.strictEqual(cfg.enabled, true);
-  assert.strictEqual(cfg.transport, 'vercel');
+  assert.strictEqual(fs.existsSync(path.join(home, '.anti-hall', 'jev.json')), false, 'jev.json is not written');
 });
 
 test('enable: --transport typesafe is recorded', () => {
   const { home } = makeHome();
   run(['enable', '--transport', 'typesafe'], { home });
-  assert.strictEqual(readJevJson(home).transport, 'typesafe');
+  assert.strictEqual(readSettingsJev(home).transport, 'typesafe');
 });
 
 test('disable: sets enabled false without touching other fields', () => {
@@ -146,8 +152,8 @@ test('disable: sets enabled false without touching other fields', () => {
     JSON.stringify({ enabled: true, transport: 'typesafe', confidenceThreshold: 0.9, costPerCall: 0.001 }),
   );
   run(['disable'], { home });
-  const cfg = readJevJson(home);
-  assert.strictEqual(cfg.enabled, false);
+  assert.strictEqual(readSettingsJev(home).enabled, false);
+  const cfg = readJevJson(home); // legacy file untouched
   assert.strictEqual(cfg.transport, 'typesafe');
   assert.strictEqual(cfg.confidenceThreshold, 0.9);
   assert.strictEqual(cfg.costPerCall, 0.001);
@@ -325,7 +331,7 @@ test('status: shows the credit balance against a mock /v1/credits server (vercel
     },
     async (endpoint) => {
       const out = await runCmdStatusInProcess(home, { ANTIHALL_JEV_TEST_ENDPOINT: endpoint });
-      assert.match(out, /credit balance: \$42\.10/);
+      assert.match(out, /credit balance \(vercel\): \$42\.10/);
       assert.doesNotMatch(out, /mock-key-value/);
     },
   );
@@ -443,13 +449,13 @@ test('enable --fallback records the backup; equal-to-primary reads as none; bad 
   let r = run(['enable', '--transport', 'typesafe', '--fallback', 'vercel'], { home });
   assert.strictEqual(r.code, 0);
   assert.match(r.stdout, /transport: typesafe, fallback: vercel/);
-  assert.strictEqual(readJevJson(home).fallbackTransport, 'vercel');
+  assert.strictEqual(readSettingsJev(home).fallbackTransport, 'vercel');
   r = run(['enable', '--fallback', 'typesafe'], { home });
   assert.match(r.stdout, /fallback: none/);
   assert.match(r.stdout, /equal to the primary/);
   r = run(['enable', '--fallback', 'bogus'], { home });
   assert.notStrictEqual(r.code, 0);
-  assert.strictEqual(readJevJson(home).fallbackTransport, 'typesafe', 'a rejected value changes nothing');
+  assert.strictEqual(readSettingsJev(home).fallbackTransport, 'typesafe', 'a rejected value changes nothing');
   r = run(['enable', '--fallback', 'none'], { home });
   assert.match(r.stdout, /fallback: none/);
 });
