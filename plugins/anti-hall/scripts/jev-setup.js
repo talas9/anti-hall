@@ -5,9 +5,9 @@
 //
 // USAGE
 //   node plugins/anti-hall/scripts/jev-setup.js status
-//   node plugins/anti-hall/scripts/jev-setup.js enable [--transport vercel|typesafe]
+//   node plugins/anti-hall/scripts/jev-setup.js enable [--transport vercel|typesafe] [--fallback vercel|typesafe|none]
 //   node plugins/anti-hall/scripts/jev-setup.js disable
-//   node plugins/anti-hall/scripts/jev-setup.js set-key [--transport vercel|typesafe]   (key read from STDIN)
+//   node plugins/anti-hall/scripts/jev-setup.js set-key [--transport vercel|typesafe] [--role fallback]   (key read from STDIN)
 //   node plugins/anti-hall/scripts/jev-setup.js test
 //   node plugins/anti-hall/scripts/jev-setup.js mode <integration> on|shadow|off
 //
@@ -84,6 +84,13 @@ function writeJevJsonMerged(mutator) {
   return next;
 }
 
+// resolveFallback(cfg) -> 'none'|'vercel'|'typesafe'; a fallback equal to the
+// primary (or anything unrecognised) is 'none', as in jev-client.js.
+function resolveFallback(cfg, primary) {
+  const fb = cfg.fallbackTransport;
+  return ((fb === 'vercel' || fb === 'typesafe') && fb !== (primary || resolveTransport(cfg))) ? fb : 'none';
+}
+
 function resolveTransport(cfg, override) {
   if (override && VALID_TRANSPORTS.has(override)) return override;
   return cfg.transport === 'typesafe' ? 'typesafe' : 'vercel';
@@ -105,10 +112,13 @@ function resolveKeyFilePath(cfg, transport) {
 // env/key file ONLY with jev.allowLegacyKeyRead on. NOTE: this CLI runs as a
 // plain process, which Claude Code does NOT hand CLAUDE_PLUGIN_OPTION_* — a
 // key stored via /plugin config is visible to the hooks but not here.
-function keyPresent(cfg, transport) {
+function keyPresent(cfg, transport, role) {
+  const fb = role === 'fallback';
   return require('../hooks/lib/credentials.js').resolveKey('jev', {
     transport,
-    keyFile: resolveKeyFilePath(cfg, transport),
+    role: fb ? 'fallback' : 'primary',
+    // the explicit jev.keyFile belongs to the primary; the fallback uses its own default path
+    keyFile: fb ? defaultKeyFilePath(transport) : resolveKeyFilePath(cfg, transport),
   }).key !== null;
 }
 
@@ -180,6 +190,8 @@ function parseArgs(argv) {
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--transport') opts.transport = argv[++i];
+    else if (a === '--fallback') opts.fallback = argv[++i];
+    else if (a === '--role') opts.role = argv[++i];
     else if (a === '--days') opts.days = argv[++i];
     else opts._.push(a);
   }
@@ -217,6 +229,12 @@ async function cmdStatus() {
   console.log(`enabled: ${enabled}`);
   console.log(`transport: ${transport}`);
   console.log(`key present: ${present ? 'yes' : 'no'}`);
+  const fallback = resolveFallback(cfg, transport);
+  console.log(`fallback transport: ${fallback}`);
+  if (fallback !== 'none') {
+    console.log(`fallback key present: ${keyPresent(cfg, fallback, 'fallback') ? 'yes' : 'no'}`);
+    console.log('  note: with a fallback, text can be sent to the second vendor when the primary fails');
+  }
   if (!present) console.log('  ' + require('../hooks/lib/credentials.js').backgroundNoKeyNotice());
   try {
     const cr = require('../hooks/lib/credentials.js');
@@ -256,12 +274,20 @@ function cmdEnable(opts) {
     fail(`enable: invalid --transport "${transportOverride}" (expected vercel|typesafe)`);
     return;
   }
+  if (opts.fallback !== undefined && opts.fallback !== 'none' && !VALID_TRANSPORTS.has(opts.fallback)) {
+    fail(`enable: invalid --fallback "${opts.fallback}" (expected vercel|typesafe|none)`);
+    return;
+  }
   const next = writeJevJsonMerged((cfg) => {
     cfg.enabled = true;
     cfg.transport = resolveTransport(cfg, transportOverride);
+    if (opts.fallback !== undefined) cfg.fallbackTransport = opts.fallback;
     return cfg;
   });
-  console.log(`jev enabled (transport: ${next.transport})`);
+  console.log(`jev enabled (transport: ${next.transport}, fallback: ${resolveFallback(next, next.transport)})`);
+  if (opts.fallback !== undefined && resolveFallback(next, next.transport) === 'none' && opts.fallback !== 'none') {
+    console.log('note: a fallback equal to the primary transport is treated as none');
+  }
 }
 
 function cmdDisable() {
@@ -278,8 +304,17 @@ function cmdSetKey(opts) {
     fail(`set-key: invalid --transport "${transportOverride}" (expected vercel|typesafe)`);
     return;
   }
+  if (opts.role !== undefined && opts.role !== 'fallback') {
+    fail(`set-key: invalid --role "${opts.role}" (expected fallback)`);
+    return;
+  }
   const cfg = readJevJson();
-  const transport = resolveTransport(cfg, transportOverride);
+  const isFallback = opts.role === 'fallback';
+  const transport = isFallback ? resolveFallback(cfg) : resolveTransport(cfg, transportOverride);
+  if (isFallback && transport === 'none') {
+    fail('set-key --role fallback: no fallback transport is configured — run `enable --fallback vercel|typesafe` first');
+    return;
+  }
 
   const raw = readStdin();
   const key = raw.trim();
@@ -292,10 +327,10 @@ function cmdSetKey(opts) {
     return;
   }
 
-  const keyPath = resolveKeyFilePath(cfg, transport);
+  const keyPath = isFallback ? defaultKeyFilePath(transport) : resolveKeyFilePath(cfg, transport);
   writeKeyFileAtomic(keyPath, key + '\n');
 
-  if (transportOverride) {
+  if (transportOverride && !isFallback) {
     writeJevJsonMerged((c) => {
       c.transport = transportOverride;
       return c;
@@ -304,7 +339,7 @@ function cmdSetKey(opts) {
 
   console.log(`key saved (${key.length} chars)`);
   if (!require('../hooks/lib/credentials.js').allowLegacyKeyRead('jev')) {
-    console.log('note: the hooks only read this key file when jev.allowLegacyKeyRead is on (currently off). Preferred: store the key via /plugin config (anti-hall -> jev_api_key), or enable the setting.');
+    console.log('note: the hooks only read this key file when jev.allowLegacyKeyRead is on (currently off). Preferred: store the key via /plugin config (anti-hall -> ' + (isFallback ? 'jev_fallback_api_key' : 'jev_api_key') + '), or enable the setting.');
   }
 }
 
@@ -315,6 +350,7 @@ async function cmdTest() {
     return;
   }
   const transport = resolveTransport(cfg);
+  const fallback = resolveFallback(cfg, transport);
   const question = {
     type: 'noul',
     instructions: 'Is the sky typically blue on a clear day?',
@@ -322,23 +358,30 @@ async function cmdTest() {
   };
   const state = 'On a clear day, the sky appears blue.';
 
-  let r;
-  try {
-    r = await jevDecide({ question, state });
-  } catch (_) {
-    r = { ok: false, reason: 'error' };
-  }
+  // Each configured transport is tested ON ITS OWN (only: pins one vendor, so a
+  // working fallback can never mask a broken primary or the reverse).
+  const targets = [{ label: 'primary', transport, only: fallback === 'none' ? undefined : 'primary' }];
+  if (fallback !== 'none') targets.push({ label: 'fallback', transport: fallback, only: 'fallback' });
 
-  if (r.ok) {
-    console.log(`ok — latency ${r.ms}ms, confidence ${r.confidence.toFixed(2)} (transport: ${transport})`);
-  } else {
-    console.log(`failed: ${r.reason} (transport: ${transport})`);
-    if (r.reason === 'no-key') {
-      console.log(require('../hooks/lib/credentials.js').backgroundNoKeyNotice());
-    } else if (typeof r.reason === 'string' && /^http-401|^http-403/.test(r.reason)) {
-      console.log('the key was rejected — check the key is correct AND that the transport (vercel vs typesafe) matches where the key was issued');
+  for (const t of targets) {
+    let r;
+    try {
+      r = await jevDecide({ question, state, only: t.only });
+    } catch (_) {
+      r = { ok: false, reason: 'error' };
     }
-    process.exitCode = 1;
+    const tag = targets.length > 1 ? `${t.label}, transport: ${t.transport}` : `transport: ${t.transport}`;
+    if (r.ok) {
+      console.log(`ok — latency ${r.ms}ms, confidence ${r.confidence.toFixed(2)} (${tag})`);
+    } else {
+      console.log(`failed: ${r.reason} (${tag})`);
+      if (r.reason === 'no-key') {
+        console.log(require('../hooks/lib/credentials.js').backgroundNoKeyNotice());
+      } else if (typeof r.reason === 'string' && /^http-401|^http-403/.test(r.reason)) {
+        console.log('the key was rejected — check the key is correct AND that the transport (vercel vs typesafe) matches where the key was issued');
+      }
+      process.exitCode = 1;
+    }
   }
 }
 
@@ -431,7 +474,7 @@ async function main() {
     case 'reviewed': return cmdReviewed(opts);
     case 'snooze': return cmdSnooze(opts);
     default:
-      console.error('usage: jev-setup.js status|enable [--transport vercel|typesafe]|disable|set-key [--transport vercel|typesafe]|test|mode <integration> on|shadow|off|review-due [--json]|reviewed <integration>|snooze <integration> --days N');
+      console.error('usage: jev-setup.js status|enable [--transport vercel|typesafe] [--fallback T]|disable|set-key [--transport vercel|typesafe] [--role fallback]|test|mode <integration> on|shadow|off|review-due [--json]|reviewed <integration>|snooze <integration> --days N');
       process.exitCode = 1;
   }
 }
@@ -440,6 +483,7 @@ module.exports = {
   readJevJson,
   writeJevJsonMerged,
   resolveTransport,
+  resolveFallback,
   resolveKeyFilePath,
   keyPresent,
   isPrintable,

@@ -27,6 +27,8 @@ const OPTION_ENV = {
   anthropic: 'CLAUDE_PLUGIN_OPTION_ANTHROPIC_API_KEY',
 };
 const OPTION_NAME = { jev: 'jev_api_key', anthropic: 'anthropic_api_key' };
+// The Jev fallback transport is a DIFFERENT vendor, so it has its own key option.
+const FALLBACK_OPTION_ENV = 'CLAUDE_PLUGIN_OPTION_JEV_FALLBACK_API_KEY';
 const OPT_IN = { jev: ['jev', 'allowLegacyKeyRead'], anthropic: ['guards', 'allowAnthropicEnvKey'] };
 const OPT_IN_SETTING = { jev: 'jev.allowLegacyKeyRead', anthropic: 'guards.allowAnthropicEnvKey' };
 
@@ -84,13 +86,14 @@ function readKeyFile(keyPath, home) {
 // resolveKey(kind, {transport, keyFile, env, allowLegacy}) ->
 //   {key: string|null, source: 'plugin-option'|'legacy-env'|'legacy-file'|null,
 //    rejected?: why a present key file was refused (see readKeyFile)}
-// kind: 'jev' | 'anthropic'. keyFile: absolute path (jev only), already
+// kind: 'jev' | 'anthropic'. opts.role 'fallback' (jev only) reads the fallback
+// vendor's plugin option instead of jev_api_key. keyFile: absolute path (jev only), already
 // expanded by the caller. allowLegacy: tests/callers may pass a boolean;
 // default reads the settings key.
 function resolveKey(kind, o) {
   const opts = o || {};
   const env = opts.env || process.env;
-  const fromOption = nonEmpty(env[OPTION_ENV[kind]]);
+  const fromOption = nonEmpty(env[(kind === 'jev' && opts.role === 'fallback') ? FALLBACK_OPTION_ENV : OPTION_ENV[kind]]);
   if (fromOption) return { key: fromOption, source: 'plugin-option' };
 
   const allow = typeof opts.allowLegacy === 'boolean' ? opts.allowLegacy : allowLegacyKeyRead(kind, opts);
@@ -205,6 +208,6 @@ function sessionNotice(o) {
 }
 
 module.exports = {
-  OPTION_ENV, OPTION_NAME, OPT_IN_SETTING, readKeyFile, rejectedNotice,
+  OPTION_ENV, OPTION_NAME, FALLBACK_OPTION_ENV, OPT_IN_SETTING, readKeyFile, rejectedNotice,
   allowLegacyKeyRead, resolveKey, legacyKeyPresent, migrationNotice, backgroundNoKeyNotice, legacyNotices, sessionNotice,
 };

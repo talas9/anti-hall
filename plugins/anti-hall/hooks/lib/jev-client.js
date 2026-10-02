@@ -18,6 +18,7 @@
 //   {
 //     "enabled": false,               // default false
 //     "transport": "vercel",          // "vercel" (default) | "typesafe"
+//     "fallbackTransport": "none",    // "none" (default) | "vercel" | "typesafe" (backup vendor)
 //     "keyFile": "~/.config/vercel/ai-gateway-key",  // default depends on transport
 //     "timeoutMs": 1500,              // default 1500
 //     "confidenceThreshold": 0.85     // default 0.85 (consumed by callers, not enforced here)
@@ -27,6 +28,7 @@
 //   ANTIHALL_JEV=1        force-enable (even without jev.json)
 //   ANTIHALL_JEV=0         force-disable (overrides jev.json enabled:true)
 //   CLAUDE_PLUGIN_OPTION_JEV_API_KEY  the key stored via /plugin config (jev_api_key); read first
+//   CLAUDE_PLUGIN_OPTION_JEV_FALLBACK_API_KEY  the fallback vendor's key (jev_fallback_api_key)
 //   AI_GATEWAY_API_KEY / TYPESAFE_API_KEY (+ keyFile)  legacy sources, read ONLY when
 //                          the jev.allowLegacyKeyRead setting is on (default off)
 
@@ -71,7 +73,7 @@ function loopbackEndpointOrNull(raw) {
   if (ok) return val;
   if (!endpointRejectionLogged) {
     endpointRejectionLogged = true;
-    try { process.stderr.write('anti-hall jev: ANTIHALL_JEV_TEST_ENDPOINT ignored (non-loopback host); using the built-in endpoint\n'); } catch (_) { /* ignore */ }
+    try { process.stderr.write('anti-hall jev: ANTIHALL_JEV_TEST_ENDPOINT* ignored (non-loopback host); using the built-in endpoint\n'); } catch (_) { /* ignore */ }
   }
   return null;
 }
@@ -112,6 +114,9 @@ function loadJevConfig() {
   if (process.env.ANTIHALL_JEV === '0') enabled = false;
 
   const transport = cfg.transport === 'typesafe' ? 'typesafe' : 'vercel';
+  // A fallback equal to the primary (or anything unrecognised) is "none".
+  const fallbackTransport = ((cfg.fallbackTransport === 'vercel' || cfg.fallbackTransport === 'typesafe') &&
+    cfg.fallbackTransport !== transport) ? cfg.fallbackTransport : 'none';
 
   const timeoutMs = (Number.isFinite(cfg.timeoutMs) && cfg.timeoutMs > 0)
     ? Math.min(cfg.timeoutMs, MAX_TIMEOUT_MS)
@@ -135,7 +140,15 @@ function loadJevConfig() {
   // and the built-in vendor endpoint is used.
   const endpointOverride = loopbackEndpointOrNull(process.env.ANTIHALL_JEV_TEST_ENDPOINT);
 
-  return { enabled, transport, timeoutMs, confidenceThreshold, keyFile, endpointOverride };
+  // Per-transport variants (also loopback-only) so a test can point a primary
+  // and its fallback at two different mocks; the generic override above only
+  // ever applies to the primary.
+  const endpointOverrides = {
+    vercel: loopbackEndpointOrNull(process.env.ANTIHALL_JEV_TEST_ENDPOINT_VERCEL),
+    typesafe: loopbackEndpointOrNull(process.env.ANTIHALL_JEV_TEST_ENDPOINT_TYPESAFE),
+  };
+
+  return { enabled, transport, fallbackTransport, timeoutMs, confidenceThreshold, keyFile, endpointOverride, endpointOverrides };
 }
 
 // extractCostAndUsage(json) -> {cost, tokensIn, tokensOut, model} —
@@ -201,16 +214,21 @@ function defaultKeyFilePath(transport) {
     : path.join(os.homedir(), '.config', 'vercel', 'ai-gateway-key');
 }
 
-// resolveCredential(cfg) — plugin option env first (jev_api_key); the legacy
-// env var / keyFile (explicit or default for the transport) are read ONLY when
-// jev.allowLegacyKeyRead is on (see credentials.js). Returns the trimmed key
-// string or null. Never logs.
+// resolveCredential(cfg, role) — plugin option env first (jev_api_key for the
+// primary, jev_fallback_api_key for role 'fallback': two vendors, two keys);
+// the legacy env var / keyFile are read ONLY when jev.allowLegacyKeyRead is on
+// (see credentials.js). The explicit jev.keyFile belongs to the primary; the
+// fallback always uses its own transport's default key file. Returns the
+// trimmed key string or null. Never logs.
 let keyFileRejectionReported = false;
-function resolveCredential(cfg) {
+function resolveCredential(cfg, role) {
   const cred = require('./credentials.js');
+  const fb = role === 'fallback';
+  const transport = fb ? cfg.fallbackTransport : cfg.transport;
   const r = cred.resolveKey('jev', {
-    transport: cfg.transport,
-    keyFile: cfg.keyFile || defaultKeyFilePath(cfg.transport),
+    transport,
+    role: fb ? 'fallback' : 'primary',
+    keyFile: (!fb && cfg.keyFile) || defaultKeyFilePath(transport),
   });
   if (r.rejected && !keyFileRejectionReported) {
     keyFileRejectionReported = true; // one line per process, never the content
@@ -219,12 +237,204 @@ function resolveCredential(cfg) {
   return r.key;
 }
 
+// ---------------------------------------------------------------------------
+// Fallback transport (jev.fallbackTransport). ONE choke point: every decision
+// call goes through runWithFallback. The primary transport is tried first; on
+// a fallback-ELIGIBLE failure, and only when a key for the fallback transport
+// resolves, ONE retry goes to the fallback transport inside the SAME total
+// time budget (never longer than the caller asked for).
+//
+// ELIGIBLE (the primary vendor is unavailable / out of balance, not
+// misconfigured): timeout, network error, HTTP 5xx, HTTP 402, HTTP 429, and a
+// 400/403 whose body explicitly names insufficient balance/credits/quota.
+// NOT ELIGIBLE: every other 4xx. 401/403 are deliberately NOT eligible: a
+// rejected primary key is a configuration error the owner must see, and
+// silently masking it with the backup would hide it until the backup also
+// ran dry. parse-error / bad-response (the server answered 200) are not
+// eligible either. UNVERIFIED against real vendor responses: which status
+// each vendor returns for an exhausted balance (402 and 429 are both treated
+// as eligible because neither is known).
+// ---------------------------------------------------------------------------
+const BREAKER_THRESHOLD = 3;                 // consecutive eligible failures
+const BREAKER_COOLDOWN_MS = 5 * 60 * 1000;   // primary skipped this long, then probed
+const MIN_FALLBACK_MS = 150;                 // below this no real call can finish: skip the fallback
+const FALLBACK_RESERVE_MS = 600;             // time held back from the primary for the fallback
+const BALANCE_BODY_RE = /insufficient|credit|balance|quota|billing/i;
+
+function transportInfoFor(transport) {
+  return transport === 'typesafe' ? TYPESAFE : GATEWAY;
+}
+
+// endpointFor(cfg, transport, role) — built-in endpoint unless a loopback test
+// override applies: the per-transport one always, the generic one for the
+// primary only (so a primary and its fallback never share one mock).
+function endpointFor(cfg, transport, role) {
+  const per = cfg.endpointOverrides && cfg.endpointOverrides[transport];
+  if (per) return per;
+  if (role === 'primary' && cfg.endpointOverride) return cfg.endpointOverride;
+  return transportInfoFor(transport).endpoint;
+}
+
+function breakerPath() {
+  return path.join(require('../../companion/lib/test-home-guard.js').resolveHome(undefined), '.anti-hall', 'cache', 'jev-breaker.json');
+}
+// Breaker state: {primary, fails, openUntil}. Missing, corrupt or for another
+// primary transport -> fresh. Fail-open: any I/O error means "closed".
+function readBreaker(primary) {
+  try {
+    const j = JSON.parse(fs.readFileSync(breakerPath(), 'utf8'));
+    if (j && typeof j === 'object' && j.primary === primary && Number.isFinite(j.fails) && j.fails >= 0) {
+      return { fails: j.fails, openUntil: Number.isFinite(j.openUntil) ? j.openUntil : 0 };
+    }
+  } catch (_) { /* fresh */ }
+  return { fails: 0, openUntil: 0 };
+}
+function writeBreaker(primary, state) {
+  try {
+    const p = breakerPath();
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    const tmp = p + '.tmp.' + process.pid;
+    fs.writeFileSync(tmp, JSON.stringify({ primary, fails: state.fails, openUntil: state.openUntil }), 'utf8');
+    fs.renameSync(tmp, p);
+  } catch (_) { /* best-effort: a lost write only delays the breaker */ }
+}
+function breakerSkipsPrimary(primary) {
+  const s = readBreaker(primary);
+  return s.fails >= BREAKER_THRESHOLD && Date.now() < s.openUntil;
+}
+// Success closes the breaker; an eligible failure counts. At/after the
+// threshold every further failure (including a failed cooldown probe) re-opens
+// it for a fresh cooldown. Concurrent processes may lose an update (last
+// writer wins) — acceptable for a heuristic.
+function breakerRecord(primary, ok) {
+  const s = readBreaker(primary);
+  if (ok) {
+    if (s.fails === 0) return;
+    writeBreaker(primary, { fails: 0, openUntil: 0 });
+    return;
+  }
+  const fails = s.fails + 1;
+  writeBreaker(primary, { fails, openUntil: fails >= BREAKER_THRESHOLD ? Date.now() + BREAKER_COOLDOWN_MS : 0 });
+}
+
+function fallbackEligible(r) {
+  if (!r || r.ok) return false;
+  if (r.reason === 'timeout' || r.reason === 'network-error') return true;
+  const m = /^http-(\d{3})$/.exec(String(r.reason));
+  if (!m) return false;
+  const s = Number(m[1]);
+  return s >= 500 || s === 402 || s === 429 || ((s === 400 || s === 403) && r.balance === true);
+}
+
+// postSystemone — one HTTP attempt against one transport under ONE deadline
+// covering request, headers and body. -> {ok:true, json, ms} | {ok:false,
+// reason, ms, balance?}. Never throws; the key goes only into the header.
+async function postSystemone({ endpoint, apiKey, body, timeoutMs }) {
+  const start = Date.now();
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const isAbort = (err) => err && (err.name === 'AbortError' || /aborted/i.test(String(err.message || '')));
+  try {
+    let res;
+    try {
+      res = await fetch(endpoint, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+        body,
+        signal: controller.signal,
+      });
+    } catch (err) {
+      return { ok: false, reason: isAbort(err) ? 'timeout' : 'network-error', ms: Date.now() - start };
+    }
+
+    if (!res.ok) {
+      const out = { ok: false, reason: `http-${res.status}`, ms: Date.now() - start };
+      if (res.status === 400 || res.status === 403) {
+        // Only to classify an explicit balance error; the body is never logged.
+        try { out.balance = BALANCE_BODY_RE.test((await res.text()).slice(0, 2048)); } catch (_) { /* leave unset */ }
+      }
+      return out;
+    }
+
+    let text;
+    try {
+      text = await res.text();
+    } catch (err) {
+      return { ok: false, reason: isAbort(err) ? 'timeout' : 'parse-error', ms: Date.now() - start };
+    }
+    const ms = Date.now() - start;
+    let json;
+    try { json = JSON.parse(text); } catch (_) { return { ok: false, reason: 'parse-error', ms }; }
+    return { ok: true, json, ms };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function attemptTransport(cfg, transport, role, apiKey, bodyFor, parse, timeoutMs) {
+  const r = await postSystemone({
+    endpoint: endpointFor(cfg, transport, role),
+    apiKey,
+    body: bodyFor(transportInfoFor(transport).model),
+    timeoutMs,
+  });
+  const out = r.ok ? parse(r.json, r.ms) : { ok: false, reason: r.reason, ms: r.ms, balance: r.balance };
+  if (out.balance === undefined) delete out.balance;
+  out.transport = transport;
+  return out;
+}
+
+// runWithFallback(cfg, totalMs, bodyFor(model), parse(json, ms)) -> Result.
+// totalMs is the WHOLE budget for primary + fallback. With a fallback in play
+// the primary is held to totalMs - FALLBACK_RESERVE_MS (a primary timeout
+// would otherwise leave nothing for the backup); a fallback with less than
+// MIN_FALLBACK_MS left is skipped. While the breaker is open the primary is
+// skipped and the fallback gets the full budget. Results carry `transport`
+// (the one that answered / last tried); a fallback-served result also
+// carries fellBack:true, and a failure after both attempts reports the
+// PRIMARY's reason (+ fallbackReason).
+async function runWithFallback(cfg, totalMs, bodyFor, parse, only) {
+  const fbTransport = cfg.fallbackTransport;
+  // `only` pins ONE transport (jev-setup test): 'fallback' tries just the
+  // backup, 'primary' just the primary; no breaker, no retry.
+  if (only === 'fallback') {
+    if (fbTransport === 'none') return { ok: false, reason: 'no-fallback' };
+    const k = resolveCredential(cfg, 'fallback');
+    if (!k) return { ok: false, reason: 'no-key', transport: fbTransport };
+    return attemptTransport(cfg, fbTransport, 'fallback', k, bodyFor, parse, totalMs);
+  }
+  const primaryKey = resolveCredential(cfg);
+  if (!primaryKey) return { ok: false, reason: 'no-key', transport: cfg.transport };
+
+  const fbKey = (only !== 'primary' && fbTransport !== 'none') ? resolveCredential(cfg, 'fallback') : null;
+  if (!fbKey) return attemptTransport(cfg, cfg.transport, 'primary', primaryKey, bodyFor, parse, totalMs);
+
+  const t0 = Date.now();
+  let primaryRes = null;
+  if (!breakerSkipsPrimary(cfg.transport)) {
+    const reserve = Math.min(FALLBACK_RESERVE_MS, Math.floor(totalMs * 0.4));
+    primaryRes = await attemptTransport(cfg, cfg.transport, 'primary', primaryKey, bodyFor, parse, totalMs - reserve);
+    if (primaryRes.ok) { breakerRecord(cfg.transport, true); return primaryRes; }
+    if (!fallbackEligible(primaryRes)) return primaryRes;
+    breakerRecord(cfg.transport, false);
+  }
+
+  const remaining = totalMs - (Date.now() - t0);
+  if (remaining < MIN_FALLBACK_MS) return primaryRes || { ok: false, reason: 'timeout', transport: cfg.transport };
+
+  const fbRes = await attemptTransport(cfg, fbTransport, 'fallback', fbKey, bodyFor, parse, remaining);
+  if (fbRes.ok) { fbRes.fellBack = true; return fbRes; }
+  if (!primaryRes) return fbRes;
+  primaryRes.fallbackReason = fbRes.reason;
+  return primaryRes;
+}
 // jevDecide({question, state, timeoutMs}) -> Promise<Result>
 //   question: a native Jev question object, e.g.
 //     {type:'noul', instructions, criteria:{true, false}}   (yes/no)
 //     {type:'choice', instructions, criteria:{key: description, ...}}  (pick one; an array is rejected with HTTP 400)
 //   state: the text Jev evaluates (sent verbatim as the Jev "state" field).
 //   timeoutMs: optional per-call override of the configured timeout.
+//   only: 'primary' | 'fallback' pins one transport (jev-setup test only).
 //
 // Result (success):
 //   {ok:true, answer, confidence, ms}
@@ -236,7 +446,10 @@ function resolveCredential(cfg) {
 //   {ok:false, reason: 'disabled'|'no-key'|'timeout'|'network-error'|
 //                       'http-<status>'|'parse-error'|'bad-response'|
 //                       'bad-question'|'bad-state', ms?}
-async function jevDecide({ question, state, timeoutMs } = {}) {
+//   Failure/success results also carry `transport` (which vendor answered or was
+//   last tried); a fallback-served success carries fellBack:true. See
+//   runWithFallback.
+async function jevDecide({ question, state, timeoutMs, only } = {}) {
   if (!question || typeof question !== 'object' || (question.type !== 'choice' && question.type !== 'noul')) {
     return { ok: false, reason: 'bad-question' };
   }
@@ -249,103 +462,37 @@ async function jevDecide({ question, state, timeoutMs } = {}) {
     return { ok: false, reason: 'disabled' };
   }
 
-  const apiKey = resolveCredential(cfg);
-  if (!apiKey) {
-    return { ok: false, reason: 'no-key' };
-  }
-
-  const transportInfo = cfg.transport === 'typesafe' ? TYPESAFE : GATEWAY;
-  const endpoint = cfg.endpointOverride || transportInfo.endpoint;
-  const model = transportInfo.model;
   const effectiveTimeout = (Number.isFinite(timeoutMs) && timeoutMs > 0)
     ? Math.min(timeoutMs, MAX_TIMEOUT_MS)
     : cfg.timeoutMs;
 
-  const body = JSON.stringify({
-    state,
-    model,
-    questions: { decision: question },
-  });
-
-  const start = Date.now();
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), effectiveTimeout);
-
-  // The timer (and controller.signal) stays live across BOTH the request and
-  // the body read below — one deadline covers the whole call, not just time
-  // to first byte, so a server that sends headers then stalls the body can
-  // never run past effectiveTimeout. It is cleared exactly once, in the
-  // finally block, after the body has been fully read (or failed).
-  let res;
-  try {
-    try {
-      res = await fetch(endpoint, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          'Content-Type': 'application/json',
-        },
-        body,
-        signal: controller.signal,
-      });
-    } catch (err) {
-      const ms = Date.now() - start;
-      if (err && (err.name === 'AbortError' || /aborted/i.test(String(err.message || '')))) {
-        return { ok: false, reason: 'timeout', ms };
-      }
-      return { ok: false, reason: 'network-error', ms };
-    }
-
-    if (!res.ok) {
-      const ms = Date.now() - start;
-      return { ok: false, reason: `http-${res.status}`, ms };
-    }
-
-    let text;
-    try {
-      text = await res.text();
-    } catch (err) {
-      const ms = Date.now() - start;
-      if (err && (err.name === 'AbortError' || /aborted/i.test(String(err.message || '')))) {
-        return { ok: false, reason: 'timeout', ms };
-      }
-      return { ok: false, reason: 'parse-error', ms };
-    }
-    const ms = Date.now() - start;
-
-    let json;
-    try {
-      json = JSON.parse(text);
-    } catch (_) {
-      return { ok: false, reason: 'parse-error', ms };
-    }
-
-    const ans = json && json.answers && json.answers.decision;
-    if (!ans || typeof ans !== 'object') {
-      return { ok: false, reason: 'bad-response', ms };
-    }
-
-    const { cost, tokensIn, tokensOut, model: usageModel } = extractCostAndUsage(json);
-
-    if (question.type === 'choice') {
-      if (typeof ans.choice !== 'string' || !ans.choice) {
+  return runWithFallback(cfg, effectiveTimeout,
+    (model) => JSON.stringify({ state, model, questions: { decision: question } }),
+    (json, ms) => {
+      const ans = json && json.answers && json.answers.decision;
+      if (!ans || typeof ans !== 'object') {
         return { ok: false, reason: 'bad-response', ms };
       }
-      const confidence = Number.isFinite(ans.confidence) ? ans.confidence : 0;
-      return { ok: true, answer: ans.choice, confidence, ms, cost, tokensIn, tokensOut, model: usageModel };
-    }
 
-    // noul: a probability-like value in [0,1]; >=0.5 is "true".
-    if (!Number.isFinite(ans.noul)) {
-      return { ok: false, reason: 'bad-response', ms };
-    }
-    const noul = ans.noul;
-    const answer = noul >= 0.5;
-    const confidence = Math.abs(noul - 0.5) * 2;
-    return { ok: true, answer, confidence, ms, cost, tokensIn, tokensOut, model: usageModel };
-  } finally {
-    clearTimeout(timer);
-  }
+      const { cost, tokensIn, tokensOut, model: usageModel } = extractCostAndUsage(json);
+
+      if (question.type === 'choice') {
+        if (typeof ans.choice !== 'string' || !ans.choice) {
+          return { ok: false, reason: 'bad-response', ms };
+        }
+        const confidence = Number.isFinite(ans.confidence) ? ans.confidence : 0;
+        return { ok: true, answer: ans.choice, confidence, ms, cost, tokensIn, tokensOut, model: usageModel };
+      }
+
+      // noul: a probability-like value in [0,1]; >=0.5 is "true".
+      if (!Number.isFinite(ans.noul)) {
+        return { ok: false, reason: 'bad-response', ms };
+      }
+      const noul = ans.noul;
+      const answer = noul >= 0.5;
+      const confidence = Math.abs(noul - 0.5) * 2;
+      return { ok: true, answer, confidence, ms, cost, tokensIn, tokensOut, model: usageModel };
+    }, only);
 }
 
 // parseAnswerFor(question, ans) -> {ok, answer, confidence, reason?} — the SAME
@@ -409,71 +556,20 @@ async function jevDecideMulti({ questions, state, timeoutMs } = {}) {
     return { ok: false, reason: 'disabled' };
   }
 
-  const apiKey = resolveCredential(cfg);
-  if (!apiKey) {
-    return { ok: false, reason: 'no-key' };
-  }
-
-  const transportInfo = cfg.transport === 'typesafe' ? TYPESAFE : GATEWAY;
-  const endpoint = cfg.endpointOverride || transportInfo.endpoint;
-  const model = transportInfo.model;
   const effectiveTimeout = (Number.isFinite(timeoutMs) && timeoutMs > 0) ? timeoutMs : cfg.timeoutMs;
 
-  const body = JSON.stringify({ state, model, questions });
-
-  const start = Date.now();
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), effectiveTimeout);
-
-  let res;
-  try {
-    res = await fetch(endpoint, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body,
-      signal: controller.signal,
+  return runWithFallback(cfg, effectiveTimeout,
+    (model) => JSON.stringify({ state, model, questions }),
+    (json, ms) => {
+      if (!json || typeof json.answers !== 'object' || !json.answers) {
+        return { ok: false, reason: 'bad-response', ms };
+      }
+      const answers = {};
+      for (const key of Object.keys(questions)) {
+        answers[key] = parseAnswerFor(questions[key], json.answers[key]);
+      }
+      return { ok: true, ms, answers };
     });
-  } catch (err) {
-    clearTimeout(timer);
-    const ms = Date.now() - start;
-    if (err && (err.name === 'AbortError' || /aborted/i.test(String(err.message || '')))) {
-      return { ok: false, reason: 'timeout', ms };
-    }
-    return { ok: false, reason: 'network-error', ms };
-  }
-  clearTimeout(timer);
-  const ms = Date.now() - start;
-
-  if (!res.ok) {
-    return { ok: false, reason: `http-${res.status}`, ms };
-  }
-
-  let text;
-  try {
-    text = await res.text();
-  } catch (_) {
-    return { ok: false, reason: 'parse-error', ms };
-  }
-
-  let json;
-  try {
-    json = JSON.parse(text);
-  } catch (_) {
-    return { ok: false, reason: 'parse-error', ms };
-  }
-
-  if (!json || typeof json.answers !== 'object' || !json.answers) {
-    return { ok: false, reason: 'bad-response', ms };
-  }
-
-  const answers = {};
-  for (const key of Object.keys(questions)) {
-    answers[key] = parseAnswerFor(questions[key], json.answers[key]);
-  }
-  return { ok: true, ms, answers };
 }
 
 // CREDITS_ENDPOINT -- verified from Vercel's own docs:
@@ -500,9 +596,13 @@ const CREDITS_ENDPOINT = 'https://ai-gateway.vercel.sh/v1/credits';
 async function getCreditBalance({ timeoutMs } = {}) {
   const cfg = loadJevConfig();
   if (!cfg.enabled) return { ok: false, reason: 'disabled' };
-  if (cfg.transport !== 'vercel') return { ok: false, reason: 'unsupported-transport' };
+  // The balance endpoint is Vercel's: the primary when it is vercel, else the
+  // fallback when THAT is vercel (the typical "TypeSafe primary, Vercel
+  // backup" setup is exactly where the backup's balance matters).
+  const role = cfg.transport === 'vercel' ? 'primary' : (cfg.fallbackTransport === 'vercel' ? 'fallback' : null);
+  if (!role) return { ok: false, reason: 'unsupported-transport' };
 
-  const apiKey = resolveCredential(cfg);
+  const apiKey = resolveCredential(cfg, role);
   if (!apiKey) return { ok: false, reason: 'no-key' };
 
   const effectiveTimeout = (Number.isFinite(timeoutMs) && timeoutMs > 0)
@@ -515,7 +615,7 @@ async function getCreditBalance({ timeoutMs } = {}) {
   try {
     let res;
     try {
-      res = await fetch(cfg.endpointOverride || CREDITS_ENDPOINT, {
+      res = await fetch(cfg.endpointOverrides.vercel || (role === 'primary' && cfg.endpointOverride) || CREDITS_ENDPOINT, {
         method: 'GET',
         headers: { Authorization: `Bearer ${apiKey}` },
         signal: controller.signal,

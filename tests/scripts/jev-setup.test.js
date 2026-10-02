@@ -433,3 +433,71 @@ test('status: with the opt-in on there is no notice and the key counts as presen
   assert.match(r.stdout, /key present: yes/);
   assert.doesNotMatch(r.stdout, /notice:/);
 });
+
+// ---------------------------------------------------------------------------
+// fallback transport: enable --fallback, status, set-key --role, test (both)
+// ---------------------------------------------------------------------------
+
+test('enable --fallback records the backup; equal-to-primary reads as none; bad value rejected', () => {
+  const { home } = makeHome();
+  let r = run(['enable', '--transport', 'typesafe', '--fallback', 'vercel'], { home });
+  assert.strictEqual(r.code, 0);
+  assert.match(r.stdout, /transport: typesafe, fallback: vercel/);
+  assert.strictEqual(readJevJson(home).fallbackTransport, 'vercel');
+  r = run(['enable', '--fallback', 'typesafe'], { home });
+  assert.match(r.stdout, /fallback: none/);
+  assert.match(r.stdout, /equal to the primary/);
+  r = run(['enable', '--fallback', 'bogus'], { home });
+  assert.notStrictEqual(r.code, 0);
+  assert.strictEqual(readJevJson(home).fallbackTransport, 'typesafe', 'a rejected value changes nothing');
+  r = run(['enable', '--fallback', 'none'], { home });
+  assert.match(r.stdout, /fallback: none/);
+});
+
+test('status shows primary + fallback and key presence for each (yes/no only)', () => {
+  const { home } = makeHome();
+  run(['enable', '--transport', 'typesafe', '--fallback', 'vercel'], { home });
+  let r = run(['status'], { home, env: { CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'primary-secret' } });
+  assert.match(r.stdout, /transport: typesafe/);
+  assert.match(r.stdout, /key present: yes/);
+  assert.match(r.stdout, /fallback transport: vercel/);
+  assert.match(r.stdout, /fallback key present: no/);
+  r = run(['status'], { home, env: { CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'primary-secret', CLAUDE_PLUGIN_OPTION_JEV_FALLBACK_API_KEY: 'fb-secret' } });
+  assert.match(r.stdout, /fallback key present: yes/);
+  assert.doesNotMatch(r.stdout, /primary-secret|fb-secret/);
+});
+
+test('set-key --role fallback writes the FALLBACK vendor default key file, not the primary one', () => {
+  const { home } = makeHome();
+  run(['enable', '--transport', 'typesafe', '--fallback', 'vercel'], { home });
+  const r = run(['set-key', '--role', 'fallback'], { home, input: 'vc-key-123\n' });
+  assert.strictEqual(r.code, 0);
+  assert.strictEqual(fs.readFileSync(path.join(home, '.config', 'vercel', 'ai-gateway-key'), 'utf8').trim(), 'vc-key-123');
+  assert.ok(!fs.existsSync(path.join(home, '.config', 'typesafe', 'key')));
+  const none = makeHome().home;
+  const bad = run(['set-key', '--role', 'fallback'], { home: none, input: 'k\n' });
+  assert.notStrictEqual(bad.code, 0);
+});
+
+test('test: with a fallback configured, BOTH transports are tested on their own', async () => {
+  const { home } = makeHome();
+  run(['enable', '--transport', 'typesafe', '--fallback', 'vercel'], { home });
+  const hit = (n) => (req, res) => { n.c++; req.resume(); req.on('end', () => { res.writeHead(200); res.end(JSON.stringify({ answers: { decision: { noul: 0.9 } } })); }); };
+  const a = { c: 0 }; const b = { c: 0 };
+  await withMockServer(hit(a), async (ua) => withMockServer(hit(b), async (ub) => {
+    const r = await new Promise((resolve) => {
+      const { execFile } = require('node:child_process');
+      execFile(process.execPath, [SCRIPT, 'test'], {
+        env: Object.assign({}, process.env, {
+          HOME: home, CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'k1', CLAUDE_PLUGIN_OPTION_JEV_FALLBACK_API_KEY: 'k2',
+          ANTIHALL_JEV_TEST_ENDPOINT_TYPESAFE: ua, ANTIHALL_JEV_TEST_ENDPOINT_VERCEL: ub,
+        }),
+      }, (err, stdout) => resolve({ code: err ? err.code : 0, stdout }));
+    });
+    assert.strictEqual(r.code, 0);
+    assert.match(r.stdout, /primary, transport: typesafe/);
+    assert.match(r.stdout, /fallback, transport: vercel/);
+    assert.strictEqual(a.c, 1);
+    assert.strictEqual(b.c, 1);
+  }));
+});

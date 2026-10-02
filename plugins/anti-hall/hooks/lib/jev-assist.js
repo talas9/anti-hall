@@ -574,7 +574,8 @@ function pctile(sorted, p) {
 // per id x backend x mode: n rows, fresh (non-cache) rows, changed = distinct
 // fresh hashes whose trust rule moved the baseline (`changed` for mode on,
 // `wouldChange` otherwise; label-only string answers excluded, as in
-// jev-report), timeouts, failures (baseline-only with a reason), costUsd (sum
+// jev-report), timeouts, fellBack (rows served by the fallback transport; the
+// day also gets `transports`: rows per vendor), failures (baseline-only with a reason), costUsd (sum
 // of reported cost, null when none reported), p50/p95 of `ms`. Outcome rows
 // are counted per id x outcome. Other row types are skipped.
 function buildDailyRollups(rows) {
@@ -584,7 +585,7 @@ function buildDailyRollups(rows) {
     const t = Date.parse(r.ts);
     if (!Number.isFinite(t)) continue;
     const day = new Date(t).toISOString().slice(0, 10);
-    if (!days.has(day)) days.set(day, { groups: new Map(), outcomes: new Map() });
+    if (!days.has(day)) days.set(day, { groups: new Map(), outcomes: new Map(), transports: {} });
     const d = days.get(day);
     if (r.type === 'outcome') {
       const k = r.id + '\u0001' + String(r.outcome);
@@ -592,11 +593,12 @@ function buildDailyRollups(rows) {
       continue;
     }
     if (r.type) continue;
+    if (r.transport === 'vercel' || r.transport === 'typesafe') d.transports[r.transport] = (d.transports[r.transport] || 0) + 1;
     const backend = r.backend || 'unknown';
     const mode = r.mode || 'unknown';
     const k = r.id + '\u0001' + backend + '\u0001' + mode;
     if (!d.groups.has(k)) {
-      d.groups.set(k, { id: r.id, backend, mode, n: 0, fresh: 0, changedHashes: new Set(), timeouts: 0, failures: 0, cost: 0, costKnown: false, ms: [] });
+      d.groups.set(k, { id: r.id, backend, mode, n: 0, fresh: 0, changedHashes: new Set(), timeouts: 0, failures: 0, fellBack: 0, cost: 0, costKnown: false, ms: [] });
     }
     const g = d.groups.get(k);
     g.n++;
@@ -604,6 +606,7 @@ function buildDailyRollups(rows) {
     const dir = r.mode === 'on' ? r.changed : r.wouldChange;
     if (dir && typeof r.jev !== 'string' && backend !== 'cache' && r.h) g.changedHashes.add(r.h);
     if (r.reason === 'timeout') g.timeouts++;
+    if (r.fellBack === true) g.fellBack++;
     if (backend === 'baseline-only' && r.reason) g.failures++;
     if (Number.isFinite(r.costUsd)) { g.cost += r.costUsd; g.costKnown = true; }
     if (Number.isFinite(r.ms)) g.ms.push(r.ms);
@@ -614,7 +617,7 @@ function buildDailyRollups(rows) {
       const ms = g.ms.sort((a, b) => a - b);
       return {
         id: g.id, backend: g.backend, mode: g.mode, n: g.n, fresh: g.fresh,
-        changed: g.changedHashes.size, timeouts: g.timeouts, failures: g.failures,
+        changed: g.changedHashes.size, timeouts: g.timeouts, failures: g.failures, fellBack: g.fellBack,
         costUsd: g.costKnown ? Math.round(g.cost * 1e8) / 1e8 : null,
         p50Ms: pctile(ms, 0.5), p95Ms: pctile(ms, 0.95),
       };
@@ -623,7 +626,7 @@ function buildDailyRollups(rows) {
       const [id, outcome] = k.split('\u0001');
       return { id, outcome, n };
     });
-    out.set(day, { v: 1, day, groups, outcomes });
+    out.set(day, { v: 1, day, groups, outcomes, transports: d.transports });
   }
   return out;
 }
@@ -846,6 +849,11 @@ function finalize({ id, home, hash, mode, trust, baseline, judge, threshold, r, 
   // same omitted-not-null convention as sessionId/compare.
   if (typeof turnRef === 'string' && turnRef) entry.turnRef = turnRef;
   if (r && !r.ok && r.reason) entry.reason = r.reason;
+  // transport: which vendor served (or last failed) a FRESH call; fellBack:
+  // true when the fallback transport answered after the primary failed. Both
+  // omitted for cache hits / skipped calls (no network call happened).
+  if (r && !cachedFlag && (r.transport === 'vercel' || r.transport === 'typesafe')) entry.transport = r.transport;
+  if (r && !cachedFlag && r.fellBack === true) entry.fellBack = true;
   // costUsd/costSource are only written when a decision was actually
   // evaluated (r truthy) -- an 'off'/skipped call logs no cost fields at
   // all, matching how it already logs no jev/conf. See computeCostUsd above.

@@ -56,6 +56,28 @@ itself.
    - Tip: if the owner knows their per-call rate, set `costPerCall` in
      `~/.anti-hall/jev.json` now so `jev-report.js` can estimate spend.
 
+## Backup transport ("jev fallback")
+
+`jev.fallbackTransport` (`none` default | `vercel` | `typesafe`) makes the OTHER vendor an automatic
+backup: when the primary times out, has a network error, returns 5xx (incl. 529), 402 or 429, or a
+400/403 whose body names insufficient balance/credits, ONE retry goes to the backup inside the SAME time
+budget (a retry with under ~150 ms left is skipped; the primary is held back ~600 ms of the budget for it).
+401/403 and other 4xx never fall back, on purpose: a rejected primary key must surface, not be masked.
+After 3 consecutive eligible failures a circuit breaker skips the primary for 5 minutes, then probes it
+again (state: `~/.anti-hall/cache/jev-breaker.json`).
+
+- Set: `node "$ANTI_HALL_ROOT/scripts/jev-setup.js" enable --transport typesafe --fallback vercel`
+  (`--fallback none` turns it off; a fallback equal to the primary is treated as none).
+- Keys: the backup is a different vendor, so it needs its OWN key: the `jev_fallback_api_key` plugin option, or
+  (with `jev.allowLegacyKeyRead`) `jev-setup.js set-key --role fallback` writing its default key file
+  (`~/.config/vercel/ai-gateway-key` or `~/.config/typesafe/key`). `jev_api_key` is always the PRIMARY's key.
+- `status` shows both transports and whether a key is visible for each (yes/no only); `test` tests each
+  transport on its own.
+- Privacy: with a backup on, the same (secret-scrubbed) decision text can reach the second vendor.
+- Decision rows in `jev-assist.ndjson` carry `transport` (and `fellBack: true` when the backup served it).
+- UNVERIFIED: which status each vendor returns for an exhausted balance (Vercel `402` per community
+  reports; TypeSafe undocumented), so both 402 and 429 are treated as eligible.
+
 ## Other verbs
 
 - `status` — enabled/transport/key-present(yes/no only)/integration modes/24h

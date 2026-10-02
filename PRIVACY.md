@@ -23,13 +23,17 @@ Other `git` requests happen only when you run them: `/anti-hall:update` pulls fr
 - `~/.anti-hall/`: settings, skip file, caches, and logs. The Jev decision log holds hashes and verdicts, not prompt text. Optional redacted snippets (at most 200 characters) are off unless you enable `jev.audit.snippets`. The decision log rotates at 2 MB, and per-session state files are pruned after 7 days. Defect reports stay local.
 - `<repo>/.anti-hall/`: progress notes, history ledgers and handovers, which can quote your session.
 
+## Jev fallback transport
+
+If you set `jev.fallbackTransport`, a Jev call that fails on the primary vendor (timeout, network error, 5xx, 402, 429) is retried once on the second vendor (`ai-gateway.vercel.sh` or `api.typesafe.ai`). The same secret-scrubbed text then goes to that second vendor under its own terms. Default off.
+
 ## Third-party tools
 
 The plugin does not run `gh` or `codex` itself; it only checks whether `codex` is on your `PATH`. When you or the assistant run `git`, `gh`, `codex` or DevSwarm's `hivecontrol`, they act under your own accounts and their own privacy policies.
 
 ## Your keys
 
-Keys come from the sensitive plugin options you set in `/plugin config` (`jev_api_key`, `anthropic_api_key`). The plugin reads a key from your machine's environment or key file only if you opt in through a home-settings-only key (`jev.allowLegacyKeyRead` for the Jev key; `guards.allowAnthropicEnvKey` for `ANTHROPIC_API_KEY`); with the opt-in off it only checks whether such a key exists, without reading its value. A Jev key file must be a regular file under `~/.config` or `~/.anti-hall`. Each key is sent only to its vendor as a bearer token: the Jev key to the Jev host, `ANTHROPIC_API_KEY` to `api.anthropic.com`. The Jev endpoint override used by tests is honoured only for a loopback host; any other value is ignored, so a project setting cannot redirect your key. The client code does not log keys. What those vendors retain is set by their own policies.
+Keys come from the sensitive plugin options you set in `/plugin config` (`jev_api_key`, `jev_fallback_api_key`, `anthropic_api_key`). The plugin reads a key from your machine's environment or key file only if you opt in through a home-settings-only key (`jev.allowLegacyKeyRead` for the Jev key; `guards.allowAnthropicEnvKey` for `ANTHROPIC_API_KEY`); with the opt-in off it only checks whether such a key exists, without reading its value. A Jev key file must be a regular file under `~/.config` or `~/.anti-hall`. Each key is sent only to its vendor as a bearer token: the Jev key to the Jev host (the optional `jev_fallback_api_key` only to the fallback transport's host), `ANTHROPIC_API_KEY` to `api.anthropic.com`. The Jev endpoint override used by tests is honoured only for a loopback host; any other value is ignored, so a project setting cannot redirect your key. The client code does not log keys. What those vendors retain is set by their own policies.
 
 ## Changes to this policy
 
