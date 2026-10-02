@@ -882,7 +882,7 @@ function scanForeignConflicts(opts) {
   const seen = new Set();
   const deduped = [];
   for (const r of results) {
-    const key = r.status + ' ' + r.message;
+    const key = r.status + '\x00' + r.message;
     if (seen.has(key)) continue;
     seen.add(key);
     deduped.push(r);
