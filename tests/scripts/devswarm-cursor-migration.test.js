@@ -225,13 +225,14 @@ test('migration: the baseline is monotonic — it can never be lowered', () => {
 // (a) The installed marketplace cache, laid out as `<version>/scripts/devswarm.js`
 //     — NOT `<version>/plugins/anti-hall/...`. An earlier cut used the wrong path,
 //     resolved to null, and took an `assert.ok(true)` branch: a VACUOUS PASS.
-// (b) The git tag, extracted into a temp dir. CI has no plugin cache, so a hard
+// (b) The pinned commit SHA, extracted into a temp dir. CI has no plugin cache, so a hard
 //     assert on (a) fails on every runner (reproduced with a clean HOME) — the
 //     over-correction for the vacuous pass. A shallow checkout may lack the tag,
-//     so a bounded `git fetch` is attempted and its failure is never fatal.
+//     so a bounded `git fetch` of the SHA is attempted and its failure is never fatal.
 // (c) Otherwise SKIP WITH A REASON. Never a vacuous pass, never a hard fail on
 //     an environment that legitimately cannot supply the old build.
 const OLD_VERSION = '0.98.3';
+const OLD_SHA = '5a47e8d9ab3c4878d0049f744366157cbdad273e'; // v0.98.3
 let oldBuildTemp = null;
 function tryPluginCache() {
   const p = path.join(os.homedir(), '.claude', 'plugins', 'cache', 'anti-hall', 'anti-hall', OLD_VERSION);
@@ -239,17 +240,20 @@ function tryPluginCache() {
 }
 function tryGitTag() {
   const repoRoot = path.join(__dirname, '..', '..');
-  const tag = 'v' + OLD_VERSION;
+  // Pinned by full commit SHA (the commit v0.98.3 pointed to), NOT by tag name:
+  // release tags get pruned, the commit stays reachable from main. Full SHA on
+  // purpose — `git fetch origin <rev>` only accepts a full object id.
+  const tag = OLD_SHA;
   const has = () => {
-    const r = cp.spawnSync('git', ['-C', repoRoot, 'rev-parse', '-q', '--verify', tag + '^{commit}'],
+    const r = cp.spawnSync('git', ['-C', repoRoot, 'cat-file', '-e', tag + '^{commit}'],
       { encoding: 'utf8', timeout: 20000 });
     return r.status === 0;
   };
   if (!has()) {
     // Shallow CI checkout: try once, bounded, and ignore every failure mode
-    // (no network, no remote, no such tag).
+    // (no network, no remote, unreachable SHA).
     try {
-      cp.spawnSync('git', ['-C', repoRoot, 'fetch', '--depth=1', 'origin', 'tag', tag],
+      cp.spawnSync('git', ['-C', repoRoot, 'fetch', '--quiet', '--depth=1', 'origin', tag],
         { encoding: 'utf8', timeout: 20000, stdio: 'ignore' });
     } catch (_) { /* offline is not a test failure */ }
     if (!has()) return null;
@@ -266,7 +270,7 @@ function tryGitTag() {
   const root = path.join(dest, 'plugins', 'anti-hall');
   if (!fs.existsSync(path.join(root, 'scripts', 'devswarm.js'))) { rm(dest); return null; }
   oldBuildTemp = dest;
-  return { root, source: 'git tag ' + tag };
+  return { root, source: 'git commit ' + tag + ' (v' + OLD_VERSION + ')' };
 }
 // Resolved once; the temp extraction is reused by every test below.
 let OLD_BUILD;
@@ -279,7 +283,7 @@ test.after(() => { if (oldBuildTemp) rm(oldBuildTemp); });
 test('migration: a REAL 0.98.3 caller and a 0.99 caller each receive the full backlog', (t) => {
   const found = oldBuild();
   if (!found) {
-    t.skip('shipped ' + OLD_VERSION + ' unavailable: no plugin cache, no v' + OLD_VERSION + ' tag');
+    t.skip('shipped ' + OLD_VERSION + ' unavailable: no plugin cache, commit ' + OLD_SHA + ' not obtainable');
     return;
   }
   // Say WHICH source was used, so a green run is never ambiguous about what it exercised.
@@ -334,7 +338,7 @@ test('migration: a REAL 0.98.3 caller and a 0.99 caller each receive the full ba
 test('migration: the old build keeps working after 0.99 writes instance/baseline files', (t) => {
   const found = oldBuild();
   if (!found) {
-    t.skip('shipped ' + OLD_VERSION + ' unavailable: no plugin cache, no v' + OLD_VERSION + ' tag');
+    t.skip('shipped ' + OLD_VERSION + ' unavailable: no plugin cache, commit ' + OLD_SHA + ' not obtainable');
     return;
   }
   const oldCli = require(path.join(found.root, 'scripts', 'devswarm.js'));
