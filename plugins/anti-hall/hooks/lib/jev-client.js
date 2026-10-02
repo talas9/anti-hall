@@ -278,43 +278,47 @@ function endpointFor(cfg, transport, role) {
 function breakerPath() {
   return path.join(require('../../companion/lib/test-home-guard.js').resolveHome(undefined), '.anti-hall', 'cache', 'jev-breaker.json');
 }
-// Breaker state: {primary, fails, openUntil}. Missing, corrupt or for another
-// primary transport -> fresh. Fail-open: any I/O error means "closed".
-function readBreaker(primary) {
+// Breaker state, per VENDOR (not per role): {<transport>: {fails, openUntil}}.
+// Missing, corrupt or malformed -> {} (closed). Fail-open: any I/O error means
+// "closed".
+function readBreakers() {
   try {
     const j = JSON.parse(fs.readFileSync(breakerPath(), 'utf8'));
-    if (j && typeof j === 'object' && j.primary === primary && Number.isFinite(j.fails) && j.fails >= 0) {
-      return { fails: j.fails, openUntil: Number.isFinite(j.openUntil) ? j.openUntil : 0 };
-    }
+    if (j && typeof j === 'object' && !Array.isArray(j)) return j;
   } catch (_) { /* fresh */ }
-  return { fails: 0, openUntil: 0 };
+  return {};
 }
-function writeBreaker(primary, state) {
+function breakerEntry(all, transport) {
+  const e = all[transport];
+  return (e && Number.isFinite(e.fails) && e.fails >= 0)
+    ? { fails: e.fails, openUntil: Number.isFinite(e.openUntil) ? e.openUntil : 0 }
+    : { fails: 0, openUntil: 0 };
+}
+function breakerOpen(transport) {
+  const e = breakerEntry(readBreakers(), transport);
+  return e.fails >= BREAKER_THRESHOLD && Date.now() < e.openUntil;
+}
+// Success closes a vendor's breaker; an eligible failure counts. At/after the
+// threshold every further failure (including a failed cooldown probe) re-opens
+// it for a fresh cooldown. Concurrent processes may lose an update (last
+// writer wins) — acceptable for a heuristic. Atomic tmp+rename write.
+function breakerRecord(transport, ok) {
   try {
+    const all = readBreakers();
+    const e = breakerEntry(all, transport);
+    if (ok) {
+      if (e.fails === 0) return;
+      all[transport] = { fails: 0, openUntil: 0 };
+    } else {
+      const fails = e.fails + 1;
+      all[transport] = { fails, openUntil: fails >= BREAKER_THRESHOLD ? Date.now() + BREAKER_COOLDOWN_MS : 0 };
+    }
     const p = breakerPath();
     fs.mkdirSync(path.dirname(p), { recursive: true });
     const tmp = p + '.tmp.' + process.pid;
-    fs.writeFileSync(tmp, JSON.stringify({ primary, fails: state.fails, openUntil: state.openUntil }), 'utf8');
+    fs.writeFileSync(tmp, JSON.stringify(all), 'utf8');
     fs.renameSync(tmp, p);
   } catch (_) { /* best-effort: a lost write only delays the breaker */ }
-}
-function breakerSkipsPrimary(primary) {
-  const s = readBreaker(primary);
-  return s.fails >= BREAKER_THRESHOLD && Date.now() < s.openUntil;
-}
-// Success closes the breaker; an eligible failure counts. At/after the
-// threshold every further failure (including a failed cooldown probe) re-opens
-// it for a fresh cooldown. Concurrent processes may lose an update (last
-// writer wins) — acceptable for a heuristic.
-function breakerRecord(primary, ok) {
-  const s = readBreaker(primary);
-  if (ok) {
-    if (s.fails === 0) return;
-    writeBreaker(primary, { fails: 0, openUntil: 0 });
-    return;
-  }
-  const fails = s.fails + 1;
-  writeBreaker(primary, { fails, openUntil: fails >= BREAKER_THRESHOLD ? Date.now() + BREAKER_COOLDOWN_MS : 0 });
 }
 
 function fallbackEligible(r) {
@@ -388,11 +392,13 @@ async function attemptTransport(cfg, transport, role, apiKey, bodyFor, parse, ti
 // totalMs is the WHOLE budget for primary + fallback. With a fallback in play
 // the primary is held to totalMs - FALLBACK_RESERVE_MS (a primary timeout
 // would otherwise leave nothing for the backup); a fallback with less than
-// MIN_FALLBACK_MS left is skipped. While the breaker is open the primary is
-// skipped and the fallback gets the full budget. Results carry `transport`
-// (the one that answered / last tried); a fallback-served result also
-// carries fellBack:true, and a failure after both attempts reports the
-// PRIMARY's reason (+ fallbackReason).
+// MIN_FALLBACK_MS left is skipped. Breakers are per vendor: an open primary is
+// skipped (the fallback gets the full budget), an open fallback is not tried,
+// and when BOTH are open Jev is skipped entirely ({reason:'circuit-open'}) so a
+// double outage costs no timeouts. Results carry `transport` (the one that
+// answered / last tried); a fallback-served result also carries fellBack:true,
+// and a failure after both attempts reports the PRIMARY's reason (+
+// fallbackReason).
 async function runWithFallback(cfg, totalMs, bodyFor, parse, only) {
   const fbTransport = cfg.fallbackTransport;
   // `only` pins ONE transport (jev-setup test): 'fallback' tries just the
@@ -409,25 +415,32 @@ async function runWithFallback(cfg, totalMs, bodyFor, parse, only) {
   const fbKey = (only !== 'primary' && fbTransport !== 'none') ? resolveCredential(cfg, 'fallback') : null;
   if (!fbKey) return attemptTransport(cfg, cfg.transport, 'primary', primaryKey, bodyFor, parse, totalMs);
 
+  const primaryOpen = breakerOpen(cfg.transport);
+  const fallbackOpen = breakerOpen(fbTransport);
+  if (primaryOpen && fallbackOpen) return { ok: false, reason: 'circuit-open', transport: cfg.transport };
+
   const t0 = Date.now();
   let primaryRes = null;
-  if (!breakerSkipsPrimary(cfg.transport)) {
-    const reserve = Math.min(FALLBACK_RESERVE_MS, Math.floor(totalMs * 0.4));
+  if (!primaryOpen) {
+    const reserve = fallbackOpen ? 0 : Math.min(FALLBACK_RESERVE_MS, Math.floor(totalMs * 0.4));
     primaryRes = await attemptTransport(cfg, cfg.transport, 'primary', primaryKey, bodyFor, parse, totalMs - reserve);
     if (primaryRes.ok) { breakerRecord(cfg.transport, true); return primaryRes; }
     if (!fallbackEligible(primaryRes)) return primaryRes;
     breakerRecord(cfg.transport, false);
+    if (fallbackOpen) return primaryRes;
   }
 
   const remaining = totalMs - (Date.now() - t0);
   if (remaining < MIN_FALLBACK_MS) return primaryRes || { ok: false, reason: 'timeout', transport: cfg.transport };
 
   const fbRes = await attemptTransport(cfg, fbTransport, 'fallback', fbKey, bodyFor, parse, remaining);
-  if (fbRes.ok) { fbRes.fellBack = true; return fbRes; }
+  if (fbRes.ok) { breakerRecord(fbTransport, true); fbRes.fellBack = true; return fbRes; }
+  if (fallbackEligible(fbRes)) breakerRecord(fbTransport, false);
   if (!primaryRes) return fbRes;
   primaryRes.fallbackReason = fbRes.reason;
   return primaryRes;
 }
+
 // jevDecide({question, state, timeoutMs}) -> Promise<Result>
 //   question: a native Jev question object, e.g.
 //     {type:'noul', instructions, criteria:{true, false}}   (yes/no)

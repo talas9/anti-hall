@@ -195,8 +195,10 @@ test('circuit breaker: opens after 3 eligible failures, skips the primary, probe
     // cooldown elapsed (state file aged) -> one probe of the primary
     const file = path.join(home, '.anti-hall', 'cache', 'jev-breaker.json');
     const st = JSON.parse(fs.readFileSync(file, 'utf8'));
-    assert.strictEqual(st.primary, 'typesafe');
-    fs.writeFileSync(file, JSON.stringify(Object.assign(st, { openUntil: Date.now() - 1 })));
+    assert.strictEqual(st.typesafe.fails, 3);
+    assert.strictEqual(st.vercel, undefined, 'a healthy fallback is not tracked');
+    st.typesafe.openUntil = Date.now() - 1;
+    fs.writeFileSync(file, JSON.stringify(st));
     await lib.jevDecide({ question: Q, state: 's' });
     assert.strictEqual(p.hits, 4, 'probed once after the cooldown');
     // the probe failed -> re-opened immediately
@@ -279,5 +281,40 @@ test('decision log + rollup record transport and fellBack', async () => {
     const day = lib.buildDailyRollups(rows).values().next().value;
     assert.strictEqual(day.transports.vercel, 1);
     assert.strictEqual(day.groups[0].fellBack, 1);
+  });
+});
+
+test('breaker covers the both-fail case: primary AND fallback open -> Jev skipped entirely, then both probed after the cooldown', async () => {
+  await scenario({ primary: status(500), fallback: status(503) }, async ({ p, f, home }) => {
+    const lib = fresh('jev-client.js');
+    for (let i = 0; i < 3; i++) await lib.jevDecide({ question: Q, state: 's' });
+    assert.strictEqual(p.hits, 3);
+    assert.strictEqual(f.hits, 3);
+    const t0 = Date.now();
+    const r = await lib.jevDecide({ question: Q, state: 's' });
+    assert.strictEqual(r.ok, false);
+    assert.strictEqual(r.reason, 'circuit-open');
+    assert.strictEqual(p.hits, 3, 'no request to either vendor while both are open');
+    assert.strictEqual(f.hits, 3);
+    assert.ok(Date.now() - t0 < 100, 'no timeouts paid');
+    const file = path.join(home, '.anti-hall', 'cache', 'jev-breaker.json');
+    const st = JSON.parse(fs.readFileSync(file, 'utf8'));
+    st.typesafe.openUntil = Date.now() - 1; st.vercel.openUntil = Date.now() - 1;
+    fs.writeFileSync(file, JSON.stringify(st));
+    await lib.jevDecide({ question: Q, state: 's' });
+    assert.strictEqual(p.hits, 4);
+    assert.strictEqual(f.hits, 4);
+  });
+});
+
+test('breaker: an open fallback is not tried (primary gets the full budget); primary still counts', async () => {
+  await scenario({ primary: status(500) }, async ({ p, f, home }) => {
+    const file = path.join(home, '.anti-hall', 'cache', 'jev-breaker.json');
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify({ vercel: { fails: 3, openUntil: Date.now() + 60000 } }));
+    const r = await fresh('jev-client.js').jevDecide({ question: Q, state: 's' });
+    assert.strictEqual(r.reason, 'http-500');
+    assert.strictEqual(p.hits, 1);
+    assert.strictEqual(f.hits, 0);
   });
 });
