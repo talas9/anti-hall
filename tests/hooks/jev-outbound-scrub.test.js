@@ -147,3 +147,93 @@ test('triage worker: Jev request body has secrets redacted', async () => {
     assertClean(bodies[0], 'triage');
   } finally { h.cleanup(); }
 });
+
+// ---------------------------------------------------------------------------
+// The scrub lives in the client choke point: ANY caller of jevDecide /
+// jevDecideMulti is covered, on the primary AND the fallback request.
+// ---------------------------------------------------------------------------
+
+test('jevDecide(): a raw-text caller is scrubbed by the client itself', async () => {
+  const h = makeHome();
+  try {
+    h.writeState('jev.json', { enabled: true, timeoutMs: 3000 });
+    const bodies = [];
+    await withServer(capture(bodies), async (endpoint) => {
+      await withEnv({ HOME: h.home, CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
+        delete require.cache[CLIENT_LIB];
+        const r = await require(CLIENT_LIB).jevDecide({ question: NOUL_Q, state: STATE });
+        assert.strictEqual(r.ok, true);
+      });
+    });
+    assertClean(bodies[0], 'jevDecide');
+  } finally { h.cleanup(); }
+});
+
+test('jevDecideMulti(): a raw-text caller is scrubbed by the client itself', async () => {
+  const h = makeHome();
+  try {
+    h.writeState('jev.json', { enabled: true, timeoutMs: 3000 });
+    const bodies = [];
+    await withServer(capture(bodies), async (endpoint) => {
+      await withEnv({ HOME: h.home, CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
+        delete require.cache[CLIENT_LIB];
+        await require(CLIENT_LIB).jevDecideMulti({ questions: { decision: NOUL_Q }, state: STATE });
+      });
+    });
+    assertClean(bodies[0], 'jevDecideMulti');
+  } finally { h.cleanup(); }
+});
+
+test('the fallback request body is scrubbed too', async () => {
+  const h = makeHome();
+  try {
+    h.writeState('jev.json', { enabled: true, transport: 'typesafe', fallbackTransport: 'vercel', timeoutMs: 3000 });
+    const primary = http.createServer((req, res) => { req.resume(); req.on('end', () => { res.writeHead(500); res.end(); }); });
+    await new Promise((r) => primary.listen(0, '127.0.0.1', r));
+    const bodies = [];
+    try {
+      await withServer(capture(bodies), async (fbEndpoint) => {
+        await withEnv({
+          HOME: h.home, CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'k', CLAUDE_PLUGIN_OPTION_JEV_FALLBACK_API_KEY: 'k2',
+          ANTIHALL_JEV_TEST_ENDPOINT_TYPESAFE: `http://127.0.0.1:${primary.address().port}/p`,
+          ANTIHALL_JEV_TEST_ENDPOINT_VERCEL: fbEndpoint,
+        }, async () => {
+          delete require.cache[CLIENT_LIB];
+          const r = await require(CLIENT_LIB).jevDecide({ question: NOUL_Q, state: STATE });
+          assert.strictEqual(r.fellBack, true);
+        });
+      });
+    } finally { await new Promise((r) => primary.close(r)); }
+    assertClean(bodies[0], 'fallback');
+  } finally { h.cleanup(); }
+});
+
+test('scrubSecrets is idempotent: a second pass (caller scrubbed, client scrubs again) changes nothing', () => {
+  const { scrubSecrets } = require(HOOKS + '/lib/secret-scrub.js');
+  const corpus = [
+    STATE, PLAIN, '', 'api_key: "abcDEF123"', 'DB_PASSWORD=short', 'postgres://user:pass@host/db',
+    'a@b.co and eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.abc123 and ' + 'A'.repeat(40), 'Bearer abc.def-ghi=', 'token=[REDACTED]',
+  ];
+  for (const t of corpus) {
+    const once = scrubSecrets(t);
+    assert.strictEqual(scrubSecrets(once), once, JSON.stringify(t));
+  }
+});
+
+test('ask(): the log content hash is computed from the RAW text (two different secrets -> two hashes), not the scrubbed text', async () => {
+  const h = makeHome();
+  try {
+    h.writeState('jev.json', { enabled: true, timeoutMs: 3000 });
+    await withServer(capture([]), async (endpoint) => {
+      await withEnv({ HOME: h.home, CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
+        delete require.cache[LIB]; delete require.cache[CLIENT_LIB];
+        const a = require(LIB);
+        await a.ask({ id: 'speculation', question: NOUL_Q, state: 'x password=hunter2fake', trust: 'add-block', baseline: false });
+        await a.ask({ id: 'speculation', question: NOUL_Q, state: 'x password=otherfake99', trust: 'add-block', baseline: false });
+      });
+    });
+    const rows = fs.readFileSync(path.join(h.home, '.anti-hall', 'logs', 'jev-assist.ndjson'), 'utf8').trim().split('\n').map(JSON.parse);
+    assert.strictEqual(rows.length, 2);
+    assert.notStrictEqual(rows[0].h, rows[1].h);
+  } finally { h.cleanup(); }
+});

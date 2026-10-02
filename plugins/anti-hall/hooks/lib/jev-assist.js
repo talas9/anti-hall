@@ -771,7 +771,7 @@ const askSyncResultMemo = new Map();
 function jevDecideSync({ question, state, timeoutMs, home }) {
   const budget = (Number.isFinite(timeoutMs) && timeoutMs > 0) ? timeoutMs : DEFAULT_SYNC_TIMEOUT_MS;
   try {
-    const input = JSON.stringify({ question, state: scrubSecrets(state), timeoutMs: budget });
+    const input = JSON.stringify({ question, state, timeoutMs: budget }); // jev-client scrubs outbound text
     const env = Object.assign({}, process.env);
     if (home) env.HOME = home; // propagate a test fixture HOME to the worker
     const raw = execFileSync(process.execPath, [WORKER_PATH], {
@@ -944,7 +944,7 @@ async function ask(opts = {}) {
     cachedFlag = true;
   } else {
     try {
-      r = await jevDecide({ question, state: scrubSecrets(state), timeoutMs: budgetMs });
+      r = await jevDecide({ question, state, timeoutMs: budgetMs }); // jev-client scrubs outbound text
     } catch (_) {
       r = { ok: false, reason: 'error' };
     }

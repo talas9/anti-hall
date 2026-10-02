@@ -35,6 +35,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { scrubSecrets } = require('./secret-scrub.js');
 
 const GATEWAY = {
   endpoint: 'https://ai-gateway.vercel.sh/typesafe/v1/systemone',
@@ -479,7 +480,8 @@ async function runWithFallback(cfg, totalMs, bodyFor, parse, only) {
 //   question: a native Jev question object, e.g.
 //     {type:'noul', instructions, criteria:{true, false}}   (yes/no)
 //     {type:'choice', instructions, criteria:{key: description, ...}}  (pick one; an array is rejected with HTTP 400)
-//   state: the text Jev evaluates (sent verbatim as the Jev "state" field).
+//   state: the text Jev evaluates, sent as the Jev "state" field AFTER
+//     scrubSecrets() (the single outbound redaction point; see below).
 //   timeoutMs: optional per-call override of the configured timeout.
 //   only: 'primary' | 'fallback' pins one transport (jev-setup test only).
 //
@@ -513,8 +515,13 @@ async function jevDecide({ question, state, timeoutMs, only } = {}) {
     ? Math.min(timeoutMs, MAX_TIMEOUT_MS)
     : cfg.timeoutMs;
 
+  // The ONE outbound scrub: every request body (primary and fallback alike)
+  // carries the scrubbed text. Callers pass raw text; scrubSecrets is
+  // idempotent, so a caller that already scrubbed (e.g. before capping its
+  // length) is unaffected.
+  const outbound = scrubSecrets(state);
   return runWithFallback(cfg, effectiveTimeout,
-    (model) => JSON.stringify({ state, model, questions: { decision: question } }),
+    (model) => JSON.stringify({ state: outbound, model, questions: { decision: question } }),
     (json, ms) => {
       const ans = json && json.answers && json.answers.decision;
       if (!ans || typeof ans !== 'object') {
@@ -605,8 +612,9 @@ async function jevDecideMulti({ questions, state, timeoutMs } = {}) {
 
   const effectiveTimeout = (Number.isFinite(timeoutMs) && timeoutMs > 0) ? timeoutMs : cfg.timeoutMs;
 
+  const outbound = scrubSecrets(state); // see jevDecide: the one outbound scrub
   return runWithFallback(cfg, effectiveTimeout,
-    (model) => JSON.stringify({ state, model, questions }),
+    (model) => JSON.stringify({ state: outbound, model, questions }),
     (json, ms) => {
       if (!json || typeof json.answers !== 'object' || !json.answers) {
         return { ok: false, reason: 'bad-response', ms };
