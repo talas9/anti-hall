@@ -1335,6 +1335,10 @@ function main() {
     let unreadReason = null;
     let unreadReasonPath = null;
     let unreadReasonErrno = null;
+    // Own descriptor with no inboxPath: its count comes ONLY from the store union
+    // below. If that cannot run (dKey unresolved), say so instead of skipping silently.
+    let ownNoInboxPath = false;
+    let ownStoreCounted = false;
     // deadDescriptor: the un-clearable-axis rule below fired for this row (ENOENT
     // inbox AND a gone worktree). Carried out of the try so the UNION guard can
     // widen for exactly this row — see its own note there.
@@ -1370,6 +1374,7 @@ function main() {
         // unknown axis. Every other axis (unionUnread, staleOrEscalated) is
         // untouched, so nothing is silently hidden.
         if (isOwnDescriptor && reason === 'no-inbox-path') {
+          ownNoInboxPath = true;
           // The Primary's OWN descriptor carries no NDJSON inbox (its mailbox is the
           // store partition), so "no inboxPath" is not an unreadable mailbox: leave
           // unknown false and let the store UNION below (keyed to this reader) answer.
@@ -1561,6 +1566,7 @@ function main() {
             // behavior, only more precise when a row exists).
             const readerCursors = require('../companion/lib/reader-cursors.js');
             const union = readerCursors.countFor(storeHandle, { reader: isOwnDescriptor ? ownReaderKey : null, partition: d.id, inboxPath: d.inboxPath, cursorPath: d.cursorPath, home });
+            if (!union.unknown) ownStoreCounted = true;
             if (union.unknown) {
               unreadUnknown = true;
               unreadReason = union.reason || 'store-read-error';
@@ -1604,6 +1610,11 @@ function main() {
         unreadUnknown = true;
         unreadReason = 'store-read-threw';
       }
+    }
+
+    if (ownNoInboxPath && !ownStoreCounted && !unreadUnknown) {
+      // fail-open (never a block), but visible
+      try { fs.writeSync(2, 'anti-hall: workspace ' + d.id + ' (this Primary) unread count could not be determined (no resolvable project key) — not blocking\n'); } catch (_) {}
     }
 
     const verdict = foreignProject ? null : readVerdict(d.id, home);

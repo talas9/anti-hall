@@ -217,3 +217,21 @@ test('own descriptor with NO inboxPath + this reader genuinely behind -> still b
     assert.doesNotMatch(r.json.reason, /no inboxPath/);
   } finally { h.cleanup(); }
 });
+
+// When the own row's project key cannot be resolved (worktree path gone) the
+// store union cannot run: still fail-open (no block), but ONE visible line.
+test('own descriptor with NO inboxPath and an unresolvable worktree -> no block, one visible "could not be determined" line', () => {
+  const h = makeHome();
+  try {
+    writeGateSession(h.home, REPO_CWD, STARTED_AT);
+    seedOwnNoInbox(h.home, { total: 7, ownReaderValue: 7 });
+    const p = path.join(h.home, '.anti-hall', 'devswarm', 'workspaces', OWN_ID + '.json');
+    fs.writeFileSync(p, JSON.stringify({ id: OWN_ID, worktreePath: path.join(h.home, 'gone-worktree'), sessionId: 'sess-primary-own', repoKey: REPO_KEY }));
+    const r = testHookRaw(HOOK, JSON.stringify({ hook_event_name: 'Stop', session_id: 'sess-own-nokey' }), { home: h.home, env: PRIMARY_ENV });
+    assert.strictEqual(r.status, 0);
+    assert.strictEqual(r.json, null, `fail-open; stdout=${r.stdout}`);
+    const lines = r.stderr.split('\n').filter((l) => /unread count could not be determined/.test(l));
+    assert.strictEqual(lines.length, 1, `stderr=${r.stderr}`);
+    assert.match(lines[0], new RegExp(OWN_ID));
+  } finally { h.cleanup(); }
+});
