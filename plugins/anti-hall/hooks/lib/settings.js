@@ -266,8 +266,8 @@ function readStoredPluginOptions(opts) {
 // that actually DIFFERS from the manifest default counts as a real /config
 // choice.
 //
-// pluginOptionLegacy entries (advanced settings dropped from the manifest, so
-// there is no manifest default): the SCHEMA default stands in for it. A stale
+// Every non-headline pluginOption entry (all flagged pluginOptionLegacy: no
+// manifest row, so no manifest default): the SCHEMA default stands in for it. A stale
 // stored option that equals the default is therefore still "unset", exactly as
 // it was while the row existed.
 function readPluginOption(entry, opts) {
@@ -277,9 +277,9 @@ function readPluginOption(entry, opts) {
   // A null/undefined schema default (the Jev budget USD fields) means "no
   // default": every stored value is a real choice, as it was with a row that
   // declared no manifest default.
-  const manifestDefault = entry.pluginOptionLegacy
-    ? (entry.default === null ? undefined : entry.default)
-    : pluginManifestDefault(entry, opts);
+  const manifestDefault = entry.headline
+    ? pluginManifestDefault(entry, opts)
+    : (entry.default == null ? undefined : entry.default);
   const isManifestDefault = (raw) => manifestDefault !== undefined && String(raw) === String(manifestDefault);
 
   if (env[envName] !== undefined) {

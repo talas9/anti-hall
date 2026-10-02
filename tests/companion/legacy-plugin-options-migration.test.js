@@ -24,6 +24,8 @@ function seed(home, options, key, shape) {
 }
 const HEADLINE = ['safety.gitGuard', 'safety.commandGuard', 'safety.editGuard', 'safety.swarmGuard', 'autoHandover.enabled',
   'autoHandover.pct', 'jev.enabled', 'devswarm.supervisorMode', 'guards.modelRouting', 'limitConserve.mode'];
+const LOCKED_KEYS = ['devswarm.maintainerNotice.post', 'guards.allowAnthropicEnvKey', 'guards.allowSubagentMailbox', 'guards.editGuardAllow',
+  'guards.stashGuard', 'jev.allowLegacyKeyRead', 'jev.genericKeyVendor', 'safety.commandGuard', 'safety.editGuard', 'safety.gitGuard', 'safety.swarmGuard'];
 const eligible = () => SCHEMA.allSettings().filter((e) => e.pluginOption && !e.headline && !e.locked && !e.homeOnly);
 // n-th distinct valid non-default value for a setting (undefined when the type has no such value).
 function alt(e, n) {
@@ -42,13 +44,11 @@ function allStored(n) {
   return o;
 }
 
-test('25 advanced settings carry pluginOptionLegacy and none of them is in the manifest', () => {
+test('every non-headline pluginOption setting is flagged pluginOptionLegacy and none of them is in the manifest', () => {
   const legacy = SCHEMA.allSettings().filter((e) => e.pluginOptionLegacy);
-  assert.strictEqual(legacy.length, 25);
-  for (const e of legacy) {
-    assert.ok(e.advanced && e.pluginOption, e.key);
-    assert.strictEqual(manifest.userConfig[e.pluginOption], undefined, e.pluginOption);
-  }
+  assert.strictEqual(legacy.length, 140);
+  assert.deepStrictEqual(legacy.map((e) => e.pluginOption).sort(), SCHEMA.allSettings().filter((e) => e.pluginOption && !e.headline).map((e) => e.pluginOption).sort());
+  for (const e of legacy) assert.strictEqual(manifest.userConfig[e.pluginOption], undefined, e.pluginOption);
 });
 
 test('old value keeps working with NO migration: stored option is still read (source plugin-option)', () => {
@@ -93,7 +93,7 @@ test('headline: exactly the 10 headline keys are flagged, each keeps its manifes
 
 test('migration scope: every pluginOption key except headline, locked, homeOnly', () => {
   const keys = eligible();
-  assert.ok(keys.length >= 130, 'eligible count ' + keys.length);
+  assert.ok(keys.length >= 100, 'eligible count ' + keys.length);
   for (const e of keys) assert.ok(!HEADLINE.includes(e.section + '.' + e.key) && !e.locked && !e.homeOnly);
 });
 
@@ -291,5 +291,72 @@ test('wired: runSettingsMigration (update.js / doctor --repair path) performs it
     assert.strictEqual(r.status, 'fixed');
     assert.strictEqual(settings.load({ home: home.home }).guards.silentAgentNudgeMin, 45);
     assert.strictEqual(M.runSettingsMigration(home.home, { version: '9.9.9', env: {} }).status, 'skipped');
+  } finally { home.cleanup(); }
+});
+
+// PRECEDENCE for a setting whose manifest row was removed (a non-advanced one, guards.outputVerifyGuard):
+// env > ~/.anti-hall/settings.json > stored old plugin option (both key forms) > legacy > default;
+// a stored value equal to the schema default counts as unset.
+test('removed-row precedence: env > settings.json > stored option (flat/nested, both key forms) > default; default-equal stored = unset', () => {
+  const e = SCHEMA.findSetting('guards', 'outputVerifyGuard');
+  assert.ok(!e.advanced && e.pluginOptionLegacy && e.env);
+  const ho = () => makeHome();
+  for (const [key, shape] of [['anti-hall', 'nested'], ['anti-hall', 'flat'], ['anti-hall@anti-hall', 'nested'], ['anti-hall@anti-hall', 'flat']]) {
+    const home = ho();
+    try {
+      seed(home.home, { guards_output_verify_guard: false }, key, shape);
+      assert.strictEqual(settings.get('guards', 'outputVerifyGuard', undefined, { home: home.home, env: {} }), false, key + '/' + shape);
+      assert.strictEqual(settings.source('guards', 'outputVerifyGuard', { home: home.home, env: {} }), 'plugin-option');
+      settings.set('guards', 'outputVerifyGuard', true, { home: home.home, env: {} });
+      assert.strictEqual(settings.get('guards', 'outputVerifyGuard', undefined, { home: home.home, env: {} }), true, 'settings.json beats stored option');
+      assert.strictEqual(settings.get('guards', 'outputVerifyGuard', undefined, { home: home.home, env: { [e.env]: 'off' } }), false, 'env beats settings.json');
+    } finally { home.cleanup(); }
+  }
+  const home = ho();
+  try {
+    seed(home.home, { guards_output_verify_guard: true });
+    assert.strictEqual(settings.source('guards', 'outputVerifyGuard', { home: home.home, env: {} }), 'default');
+  } finally { home.cleanup(); }
+});
+
+test('removed-row null-default budget keys keep working: a stored value is real; absent resolves to null', () => {
+  for (const k of ['usdPerDay', 'usdPerWeek', 'minCreditUsd']) {
+    const e = SCHEMA.findSetting('jev', 'budget.' + k);
+    assert.ok(e.pluginOption && e.pluginOptionLegacy && e.default === null, k);
+    const home = makeHome();
+    try {
+      assert.strictEqual(settings.get('jev', 'budget.' + k, undefined, { home: home.home, env: {} }), null);
+      seed(home.home, { [e.pluginOption]: 5 });
+      assert.strictEqual(settings.get('jev', 'budget.' + k, undefined, { home: home.home, env: {} }), 5);
+    } finally { home.cleanup(); }
+  }
+});
+
+test('safety: locked set unchanged; homeOnly keys ignore stored options and env', () => {
+  const locked = SCHEMA.allSettings().filter((e) => e.locked).map((e) => e.section + '.' + e.key).sort();
+  assert.deepStrictEqual(locked, LOCKED_KEYS);
+  for (const e of SCHEMA.allSettings().filter((x) => x.homeOnly)) {
+    const home = makeHome();
+    try {
+      const env = {};
+      if (e.env) env[e.env] = e.type === 'boolean' ? String(!e.default) : 'x';
+      if (e.pluginOption) env['CLAUDE_PLUGIN_OPTION_' + e.pluginOption.toUpperCase()] = e.type === 'boolean' ? String(!e.default) : 'x';
+      if (e.pluginOption) seed(home.home, { [e.pluginOption]: e.type === 'boolean' ? !e.default : 'x' });
+      assert.deepStrictEqual(settings.get(e.section, e.key, undefined, { home: home.home, env }), e.default, e.section + '.' + e.key);
+    } finally { home.cleanup(); }
+  }
+});
+
+// DOWNGRADE: after migrateLegacyPluginOptions the value lives in settings.json, which outranks the stored plugin option,
+// so an older plugin version (that still has the row and reads settings.json first) resolves the same effective value.
+test('downgrade: after migration the settings-file value wins over the stored option', () => {
+  const home = makeHome();
+  try {
+    seed(home.home, { guards_silent_agent_nudge_min: 45 });
+    const o = { home: home.home, env: {} };
+    assert.strictEqual(settings.get('guards', 'silentAgentNudgeMin', undefined, o), 45);
+    M.migrateLegacyPluginOptions(home.home, { env: {} });
+    assert.strictEqual(settings.source('guards', 'silentAgentNudgeMin', o), 'file');
+    assert.strictEqual(settings.get('guards', 'silentAgentNudgeMin', undefined, o), 45);
   } finally { home.cleanup(); }
 });

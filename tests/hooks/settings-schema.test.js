@@ -77,38 +77,30 @@ test('pluginOption keys are unique across the whole schema (they map 1:1 to plug
   assert.strictEqual(new Set(keys).size, keys.length, 'duplicate pluginOption keys: ' + JSON.stringify(keys));
 });
 
-test('plugin.json userConfig keys == non-advanced pluginOption keys + sensitive keys (advanced settings are not /config rows)', () => {
-  const pluginJson = require('../../plugins/anti-hall/.claude-plugin/plugin.json');
-  const uc = pluginJson.userConfig || {};
-  const userConfigKeys = Object.keys(uc);
-  assert.ok(userConfigKeys.length > 0, 'plugin.json should declare at least one userConfig entry');
-  // Sensitive credential options (OS credential store) are read by hooks/lib/credentials.js, not by the settings schema.
-  const sensitive = userConfigKeys.filter((k) => uc[k].sensitive === true);
-  assert.deepStrictEqual(sensitive.sort(), ['anthropic_api_key', 'jev_api_key', 'jev_typesafe_api_key', 'jev_vercel_api_key']);
-  const expected = SCHEMA.pluginOptionEntries().filter((o) => !o.advanced).map((o) => o.pluginOption).concat(sensitive).sort();
-  assert.deepStrictEqual(userConfigKeys.slice().sort(), expected);
-  // advanced settings are NOT in the manifest, and every advanced pluginOption is an explicit legacy read source
+test('plugin.json userConfig == the 10 headline pluginOptions + the 4 sensitive keys (exactly 14); every other pluginOption is legacy and absent', () => {
+  const uc = require('../../plugins/anti-hall/.claude-plugin/plugin.json').userConfig || {};
+  const sensitive = ['anthropic_api_key', 'jev_api_key', 'jev_typesafe_api_key', 'jev_vercel_api_key'];
+  assert.deepStrictEqual(Object.keys(uc).filter((k) => uc[k].sensitive === true).sort(), sensitive);
+  const headline = SCHEMA.pluginOptionEntries().filter((o) => o.headline);
+  assert.strictEqual(headline.length, 10);
+  const expected = headline.map((o) => o.pluginOption).concat(sensitive).sort();
+  assert.strictEqual(expected.length, 14);
+  assert.deepStrictEqual(Object.keys(uc).sort(), expected);
   for (const e of SCHEMA.pluginOptionEntries()) {
-    if (e.advanced) {
-      assert.ok(e.pluginOptionLegacy, e.pluginOption + ' is advanced with a pluginOption: it must be flagged pluginOptionLegacy');
-      assert.ok(!(e.pluginOption in uc), e.pluginOption + ' is advanced and must not be a userConfig row');
+    if (e.headline) {
+      assert.ok(!e.pluginOptionLegacy, e.pluginOption + ' is headline: it keeps its row, not legacy');
     } else {
-      assert.ok(!e.pluginOptionLegacy, e.pluginOption + ' is non-advanced: pluginOptionLegacy is for advanced settings only');
+      assert.ok(e.pluginOptionLegacy, e.pluginOption + ' has no manifest row: it must be flagged pluginOptionLegacy');
+      assert.ok(!(e.pluginOption in uc), e.pluginOption + ' is legacy and must not be a userConfig row');
     }
   }
 });
 
-// DRIFT GUARD: every non-advanced setting is exposed in Claude Code's native
-// /config panel via plugin.json userConfig, and each userConfig entry's shape
-// is derived from its schema entry (type, options, default, min/max, a
-// section-prefixed title). Adding a headline setting without its userConfig
-// row, or letting the two drift, fails here.
-test('every non-advanced setting has a pluginOption (exposed in /config)', () => {
-  for (const sec of SCHEMA.SECTIONS) {
-    for (const e of sec.settings) {
-      if (e.advanced || e.type === 'object') continue;
-      assert.ok(e.pluginOption, sec.key + '.' + e.key + ' is non-advanced but has no pluginOption/userConfig row');
-    }
+test('the 4 safety guard rows stay in the manifest (locked keys must be natively changeable by the human)', () => {
+  const uc = require('../../plugins/anti-hall/.claude-plugin/plugin.json').userConfig;
+  for (const k of ['gitGuard', 'commandGuard', 'editGuard', 'swarmGuard']) {
+    const e = SCHEMA.findSetting('safety', k);
+    assert.ok(e.pluginOption && uc[e.pluginOption], 'safety.' + k + ' row missing');
   }
 });
 
