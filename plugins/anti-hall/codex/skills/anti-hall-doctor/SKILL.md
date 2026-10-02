@@ -82,7 +82,7 @@ and its heartbeat is fresh, so reinstalling would only interrupt it without maki
 `hivecontrol` respond any faster. The same shared predicate
 (`hooks/lib/doctor-repair.js`'s exported `monitorFaultFor()`) also drives the in-session
 hot-path banner on the Claude side (`companion/lib/ingest-health.js`'s `daemonHealth()`
-returns `status:'failed'`, distinct from `'healthy'`/`'stale'`) — and a no-other-consumer
+returns `status:'failed'`, distinct from `'healthy'`/`'stale'`; the banner shows once per fault episode, tells a timeout to check or restart the DevSwarm app, and keeps the doctor call to action for config faults only) — and a no-other-consumer
 scan for a stray `hivecontrol workspace monitor` process (report-only, never kills). Since
 the DevSwarm gate is effectively always closed on Codex sessions, these checks are
 effectively always silent there too (correct — DevSwarm liveness is a Claude-child-session

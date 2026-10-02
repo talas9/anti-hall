@@ -116,7 +116,11 @@ gated the same way):
    **in-session hot-path banner**: `companion/lib/ingest-health.js`'s
    `daemonHealth()` returns `status:'failed'` (distinct from `'healthy'` and
    `'stale'`) for either kind of monitor fault, and `buildMonitorFaultBanner()`
-   renders the one-line in-session warning — so a daemon that is
+   renders the one-line in-session warning (shown once per fault episode, not
+   on every prompt). For a config fault it says to run doctor; for a timeout it
+   says the daemon is healthy, the DevSwarm app's `hivecontrol` is not
+   answering, mesh messages are unaffected, and doctor cannot repair it — check
+   or restart the DevSwarm app — so a daemon that is
    alive-but-broken (of either kind) is never misreported as a mere staleness
    blip, and repair mode alone decides whether that means reinstall or just a
    status line.

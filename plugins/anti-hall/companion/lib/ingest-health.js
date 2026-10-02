@@ -332,11 +332,62 @@ function buildMonitorFaultBanner(fault, nowMs) {
   if (f.noOkSinceStart) what = 'no monitor poll has succeeded since the daemon started ' + formatRelative(f.startedAtMs, now) + ' ago';
   else if (f.okStale) what = 'the last successful monitor poll was ' + formatRelative(f.lastOkMs, now) + ' ago';
   else what = '`hivecontrol workspace monitor` has failed ' + consecutive + 'x in a row';
+  const dr = doctorRepairMod();
+  const configFault = typeof dr.isMonitorConfigFault === 'function' ? dr.isMonitorConfigFault(f) : !!f.code;
+  const err = f.error ? '; last error: ' + String(f.error).slice(0, 160) : '';
+  const beat = formatRelative(f.heartbeatTs, now);
+  if (!configFault) {
+    // A slow/timing-out hivecontrol (no permanent spawn code): the daemon is
+    // fine and doctor deliberately does nothing (monitorSlowReason), so do NOT
+    // point at doctor. Mesh messages travel through the shared store, not the
+    // native monitor queue, so they are unaffected.
+    return (
+      '⚠ DEVSWARM INGEST FAILING: the ingest daemon is healthy (heartbeat ' + beat + ' ago) but the DevSwarm app\'s '
+      + '`hivecontrol workspace monitor` is not answering (' + what + err + '). '
+      + 'Native-queue ingestion is paused until it answers; anti-hall mesh messages sent through the shared store are not affected. '
+      + '/anti-hall:doctor cannot repair this — check or restart the DevSwarm app.'
+    );
+  }
   return (
-    '⚠ DEVSWARM INGEST FAILING: the daemon is alive (heartbeat ' + formatRelative(f.heartbeatTs, now) + ' ago) but '
-    + what + (f.code ? ' (' + f.code + ')' : '') + (f.error ? '; last error: ' + String(f.error).slice(0, 160) : '')
+    '⚠ DEVSWARM INGEST FAILING: the daemon is alive (heartbeat ' + beat + ' ago) but '
+    + what + ' (' + f.code + ')' + err
     + ' — ingesting NOTHING. Run /anti-hall:doctor to repair the ingest daemon.'
   );
+}
+
+// normalizeMonitorFaultBanner(text) -> text with the volatile "<N>s/m/h/d ago"
+// ages and the "<N>x in a row" counter collapsed, so one continuing fault is
+// ONE episode for emit-dedupe.
+function normalizeMonitorFaultBanner(text) {
+  return String(text).replace(/(—|\d+[smhd]?) ago/g, 'N ago').replace(/\d+x in a row/g, 'Nx in a row');
+}
+
+const MONITOR_FAULT_DEDUPE_KEY = 'devswarm-ingest-monitor-fault';
+
+// monitorFaultBannerOnce(o) -> banner string | null. Same once-per-episode
+// contract as staleBannerOnce (own dedupe key): emits when the fault first
+// appears, then only on a keepalive; a recovery (`o.failed` false) forgets the
+// record so a later relapse announces again. Fail-open: any error -> emit.
+//   o: { failed, fault, now, home, sessionId, transcriptPath }
+function monitorFaultBannerOnce(o) {
+  let dd = null;
+  try { dd = require(path.join(__dirname, '..', '..', 'hooks', 'lib', 'emit-dedupe.js')); } catch (_) { dd = null; }
+  const base = { home: o.home, sessionId: o.sessionId, key: MONITOR_FAULT_DEDUPE_KEY };
+  if (!o.failed) {
+    try { if (dd) dd.forget(base); } catch (_) { /* fail-open */ }
+    return null;
+  }
+  const banner = buildMonitorFaultBanner(o.fault, o.now);
+  let emit = true;
+  try {
+    if (dd) {
+      emit = dd.shouldEmit(Object.assign({}, base, {
+        content: banner, transcriptPath: o.transcriptPath, now: o.now,
+        keepaliveTurns: STALE_KEEPALIVE_TURNS, normalize: normalizeMonitorFaultBanner,
+      }));
+    }
+  } catch (_) { emit = true; }
+  return emit ? banner : null;
 }
 
 module.exports = {
@@ -349,4 +400,6 @@ module.exports = {
   normalizeStaleBanner,
   staleBannerOnce,
   buildMonitorFaultBanner,
+  normalizeMonitorFaultBanner,
+  monitorFaultBannerOnce,
 };

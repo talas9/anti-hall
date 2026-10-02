@@ -694,6 +694,30 @@ test('CHILD MONITOR-FAULT: alive (fresh heartbeat + live lock) but monitor faili
   } finally { h.cleanup(); }
 });
 
+test('CHILD MONITOR-FAULT: timeout fault -> plain wording without a doctor call to action, once per episode, again after recover-then-relapse', { skip: process.platform === 'win32' }, () => {
+  const h = makeHome();
+  try {
+    const timeoutBeat = () => writeDaemonHeartbeatFull(h.home, REPO_KEY, {
+      ts: Date.now() - 5000, pid: process.pid,
+      consecutiveMonitorFailures: 5, lastMonitorOkMs: null, lastMonitorErrorCode: null,
+      lastMonitorError: 'monitor hivecontrol ETIMEDOUT after 40000ms',
+    });
+    const prompt = () => ctx(testHook(HOOK, promptPayload('sess-once', REPO_CWD), { home: h.home, expectJson: true, env: CHILD_ENV }));
+    writeDaemonLock(h.home, REPO_KEY, process.pid);
+    timeoutBeat();
+    const first = monitorFaultBanner(prompt());
+    assert.ok(/DEVSWARM INGEST FAILING/.test(first), first);
+    assert.ok(/healthy/.test(first) && /not answering/.test(first) && /mesh messages/.test(first) && /DevSwarm app/.test(first), first);
+    assert.ok(!/Run \/anti-hall:doctor/.test(first), `timeout must not tell the user to run doctor: ${first}`);
+    assert.strictEqual(monitorFaultBanner(prompt()), '', '2nd prompt in the same episode emits nothing');
+    assert.strictEqual(monitorFaultBanner(prompt()), '', '3rd prompt in the same episode emits nothing');
+    writeDaemonHeartbeatFull(h.home, REPO_KEY, { ts: Date.now() - 5000, pid: process.pid, consecutiveMonitorFailures: 0, lastMonitorOkMs: Date.now() });
+    assert.strictEqual(monitorFaultBanner(prompt()), '', 'recovered -> nothing');
+    timeoutBeat();
+    assert.ok(monitorFaultBanner(prompt()), 'a new failure after a successful poll is a NEW episode and emits again');
+  } finally { h.cleanup(); }
+});
+
 test('CHILD MONITOR-FAULT: healthy monitor (consecutiveMonitorFailures:0) -> neither banner renders', { skip: process.platform === 'win32' }, () => {
   const h = makeHome();
   try {

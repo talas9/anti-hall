@@ -6,6 +6,12 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## Unreleased
+
+### Fixed
+
+- **The "DEVSWARM INGEST FAILING" banner no longer repeats on every prompt and no longer sends you to doctor for a timeout.** When the DevSwarm app's `hivecontrol workspace monitor` stopped answering, every prompt got the banner and told you to run `/anti-hall:doctor`, which deliberately does nothing for a timeout. The banner now shows once per fault episode (again after the monitor recovers and fails again). For a timeout it says the ingest daemon is healthy, the DevSwarm app is not answering, native-queue ingestion is paused, mesh messages are not affected, and doctor cannot repair it, so check or restart the DevSwarm app. The doctor advice stays only for a real config fault (binary not found or not executable). Both the Primary and child hooks use one shared helper in `companion/lib/ingest-health.js`; the Codex port shares that lib.
+
 ## 0.121.2 (2026-10-02)
 
 ### Changed

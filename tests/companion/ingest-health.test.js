@@ -264,8 +264,39 @@ test('daemonHealth v0.66: win32 -> unchanged no-op regardless of monitor-fault f
 test('buildMonitorFaultBanner: null/malformed fault never throws, still names the remedy', () => {
   assert.doesNotThrow(() => {
     const banner = health.buildMonitorFaultBanner(null);
-    assert.ok(/anti-hall:doctor/.test(banner), banner);
+    assert.ok(/DevSwarm app/.test(banner), banner);
   });
+});
+
+test('buildMonitorFaultBanner: timeout (no spawn code) says the daemon is healthy and doctor cannot repair it; ENOENT keeps the doctor call to action', () => {
+  const now = Date.now();
+  const timeout = { consecutive: 5, code: null, okStale: true, lastOkMs: now - 31 * 60000, heartbeatTs: now, error: 'monitor hivecontrol ETIMEDOUT after 40000ms' };
+  const t = health.buildMonitorFaultBanner(timeout, now);
+  assert.ok(t.startsWith('⚠ DEVSWARM INGEST FAILING'), t);
+  assert.ok(/daemon is healthy/.test(t) && /not answering/.test(t) && /paused/.test(t) && /mesh messages/.test(t) && /cannot repair/.test(t) && /restart the DevSwarm app/.test(t), t);
+  assert.ok(!/Run \/anti-hall:doctor/.test(t), t);
+  const c = health.buildMonitorFaultBanner(Object.assign({}, timeout, { code: 'ENOENT' }), now);
+  assert.ok(/Run \/anti-hall:doctor to repair the ingest daemon/.test(c) && /\(ENOENT\)/.test(c), c);
+});
+
+test('monitorFaultBannerOnce: once per episode, "Nm ago" drift does not re-emit, recover-then-relapse emits again', () => {
+  const home = tmpHome();
+  try {
+    const t0 = Date.now();
+    const fault = { consecutive: 5, code: null, okStale: true, lastOkMs: t0 - 31 * 60000, heartbeatTs: t0, error: 'monitor ETIMEDOUT after 40000ms' };
+    const base = { home, sessionId: 'sess-mf', fault };
+    const at = (min, failed) => health.monitorFaultBannerOnce(Object.assign({}, base, {
+      failed, now: t0 + min * 60000, fault: Object.assign({}, fault, { heartbeatTs: t0 + min * 60000 - 5000 }),
+    }));
+    assert.ok(at(0, true), 'first prompt emits');
+    assert.strictEqual(at(0.5, true), null, 'second prompt suppressed');
+    assert.strictEqual(at(1, true), null, 'third prompt suppressed');
+    assert.strictEqual(at(7, true), null, 'only the "Nm ago" numbers changed -> same episode');
+    assert.strictEqual(at(8, false), null, 'recovered -> nothing');
+    assert.ok(at(9, true), 'relapse after recovery is a NEW episode and emits');
+    assert.strictEqual(at(9.5, true), null);
+    assert.ok(health.monitorFaultBannerOnce(Object.assign({}, base, { sessionId: 'other', failed: true, now: t0 })), 'dedupe is per-session');
+  } finally { rm(home); }
 });
 
 test('buildStaleBanner: renders a relative age and points to the remedy', () => {

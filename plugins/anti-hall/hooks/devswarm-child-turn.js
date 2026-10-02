@@ -1013,8 +1013,15 @@ function main() {
         // mutually-exclusive enum value (never both at once, see its own
         // comment), but the 'failed' check is still checked FIRST so precedence
         // is explicit and only ONE banner ever renders in this slot.
-        if (health.status === 'failed') staleBanner = ingestHealthMod.buildMonitorFaultBanner(health.monitorFault, now);
-        else {
+        // Once per fault episode; a recovery clears the record (monitorFaultBannerOnce).
+        const faultOnce = () => ingestHealthMod.monitorFaultBannerOnce({
+          failed: health.status === 'failed', fault: health.monitorFault, now, home,
+          sessionId: payload.session_id, transcriptPath: payload.transcript_path,
+        });
+        if (health.status === 'failed') {
+          try { staleBanner = faultOnce(); } catch (_) { staleBanner = ingestHealthMod.buildMonitorFaultBanner(health.monitorFault, now); }
+        } else {
+          try { faultOnce(); } catch (_) { /* fail-open */ }
           // Once per stale episode; a recovery clears the record (staleBannerOnce).
           try {
             staleBanner = ingestHealthMod.staleBannerOnce({
