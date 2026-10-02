@@ -399,6 +399,10 @@ function cmdInboxTick(id, flags, ctx) {
   // never the boolean `false` — this is what stops drainCmd's rearmClause
   // (hooks/lib/devswarm-wake.js) from firing its "re-arm it" instruction.
   // Fail-open: any error here leaves `watcherArmed` exactly as computed above.
+  // `idle-skip` only means "no child to hear from"; it does NOT assert a cron
+  // exists (this tick running proves one did a moment ago, nothing more). A
+  // Primary that later spawns children is told about a missing watcher/cron by
+  // companion/lib/devswarm-wake-coverage.js (per-prompt hook, spawn, Stop gate).
   let idleSkipped = false;
   if (!watcherArmed && !isChildFlag && isSafeId(id)) {
     try {

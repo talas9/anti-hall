@@ -1717,6 +1717,34 @@ Gated by `devswarm.archivedChildStop`. The archived Stop gate's `handoverWritten
 a flat `.anti-hall/handovers/*.md` whose mtime is at/after 24 h before the archive time
 (marker `archivedAt`, else its ctime — handovers are usually written just before archive); nested `<date>/<session>/HANDOVER*.md` is unchanged.
 
+### A Primary with live workspaces is told when it has no mailbox wake path (unreleased)
+
+**The gap.** A Primary is woken by two independent things: the session cron
+(`7,37 * * * *` running `inbox tick <primary-id> --quiet`) and the `wake-watch.js` Monitor.
+**Session crons do not survive a harness restart**, and the Monitor exits on purpose when no
+child is live (the harness also caps any Monitor at about 30 minutes, so keeping it alive on
+idle is not an option). A Primary restarted while its children were archived therefore had
+neither, spawned new workspaces, and nothing re-armed either path: the only re-arm cue lives in
+the `inbox tick` output, which only runs inside the cron turn that no longer existed.
+
+**One shared read.** `companion/lib/devswarm-wake-coverage.js` `wakeCoverage({home, cwd, id,
+now})` returns `{liveChildren, watcherLive, lastTickAgeMin, cronLikelyMissing}` (plus
+`watcherWanted`, false when `devswarm.wakeWatch` is off, and `unknown`, true on any error, in
+which case every caller stays silent). `watcherLive` is the same rule `inbox tick`'s
+`watcherArmed` uses (lock `ts` fresher than 2 minutes and a pid that is not dead). For a
+Primary only the cron runs the tick, so the `wake-tick/<id>.json` marker's age is the cron's
+liveness: older than `devswarm.cronMissingWarnMin` (default 60), or no marker, is
+`cronLikelyMissing`. The text comes from `hooks/lib/devswarm-wake.js` `noWakePathLine`.
+
+**Where it shows (Claude agents only; Codex has no CronCreate or Monitor).**
+
+| Surface | When | Throttle |
+|---|---|---|
+| `devswarm-parent-inbox.js` (every prompt) | live child and the watcher is not live and/or the cron is likely missing; both missing gives `NO MAILBOX WAKE PATH`, one missing gives `NO MAILBOX WATCHER` or `NO MAILBOX TICK` | `emit-dedupe` once, then the `guards.injectionRepeatEvery` keepalive while the gap persists |
+| `devswarm.js spawn` from a Primary | coverage still incomplete after the spawn | in the result's `warnings` array on every such spawn |
+| `devswarm-parent-gate.js` (Stop) | live child and watcher not live AND cron likely missing, with no other block reason | blocks at most `devswarm.parentGateCap` times for the unchanged condition, then quiet; the budget resets when the gap closes |
+| `devswarm-wake-watch.js` idle-skip line | no live child | one stdout line; it states the tick age when the marker is fresh and otherwise says no recent tick was seen, never that a cron covers |
+
 ### The migration must never resurrect an archived id (v0.99.1, defect df54edf54804)
 
 **The defect.** The store migration (`devswarm-migrate.js`'s `migrateToStore`/`migrateOne`) called

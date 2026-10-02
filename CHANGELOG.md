@@ -6,6 +6,13 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## Unreleased
+
+### Fixed
+
+- A DevSwarm Primary that has live workspaces but no way to be woken by their messages (its session cron died with a restart and its watcher exited when no child was live) is now told so. Each prompt shows a `NO MAILBOX WAKE PATH` line (or a shorter one naming just the missing watcher or tick), `spawn` adds the same instruction to its `warnings`, and the Stop gate blocks once per cap when both are missing. Session crons do not survive a restart; the line says what to re-arm.
+- The wake watcher's idle-skip line no longer says the cron covers you. It reports how long ago the mailbox tick last ran, or says no recent tick was seen and to check `CronList`.
+
 ## 0.121.8 (2026-10-03)
 
 ### Fixed
@@ -3219,7 +3226,6 @@ addressed in the next phases of the mesh redesign.
   Bodies of quoted-delimiter heredocs are now skipped, as bash does; an unquoted `<<EOF` body
   still expands, so substitutions there are still checked. The guard also now sees heavy
   commands behind the `taskpolicy` and `xargs` wrappers.
-
 
 ## 0.103.0 (2026-09-23)
 

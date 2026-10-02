@@ -1643,7 +1643,18 @@ function main() {
             if (lines.length > 1000) lines = lines.slice(lines.length - 1000);
             fs.writeFileSync(p, lines.join('\n') + '\n');
           } catch (_) { /* fail-open: measurement only, never blocks the idle-skip itself */ }
-          emitLine('[wake-watch] idle-skip: no live child workspaces — not arming (cron fallback covers)');
+          // Never claim a cron we cannot verify: say what the tick marker shows.
+          // ONE stdout line (every stdout line of the watcher wakes the session).
+          let idleLine = '[wake-watch] idle-skip: no live child workspaces — not arming. No recent mailbox tick was seen: '
+            + 'check CronList and re-create the 7,37 tick; arm this watcher again after you spawn a workspace.';
+          try {
+            const cov = require('./devswarm-wake-coverage.js').wakeCoverage({ home, cwd: identity.cwd || cwd, id, env });
+            if (!cov.unknown && cov.lastTickAgeMin !== null && !cov.cronLikelyMissing) {
+              idleLine = '[wake-watch] idle-skip: no live child workspaces — not arming; the mailbox tick last ran '
+                + cov.lastTickAgeMin + 'm ago';
+            }
+          } catch (_) { /* keep the cautious stale-marker wording */ }
+          emitLine(idleLine);
           process.exitCode = 0;
           return;
         }

@@ -10,6 +10,7 @@ const {
   hcRun, heartbeatTs, identityContext, inst, names, os, path, planLib, readDescriptorFile, repokey,
   repoKeyForCwd, spawnSync, store, supervisionMetrics,
 } = require('./core.js');
+const core = require('./core.js'); // isChildWorkspace, wakeLib, stable launcher resolvers, CLI_PATH, PLUGIN_ROOT
 const {
   registrySnapshot, seatSessionId, senderIdentityDetailed,
 } = require('./identity.js');
@@ -1135,7 +1136,25 @@ function cmdSpawn(rest, ctx) {
     });
   } catch (_) { /* fail-open: logging must never break the verb */ }
 
-  return {
+  // WAKE COVERAGE after the spawn: a Primary whose cron died with its harness
+  // (and whose watcher idle-skipped) gets no wake cue anywhere else, so say it
+  // here, once, in `warnings`. Fail-open: any error -> no warning.
+  let wakeWarning = null;
+  try {
+    if (!core.isChildWorkspace(env)) {
+      const pid = require('../../companion/lib/identity.js').resolveContext(cwd, { home: ctx.home, missingPath: 'ancestor' }).meshId || null;
+      if (pid) {
+        const cov = require('../../companion/lib/devswarm-wake-coverage.js').wakeCoverage({ home: ctx.home, cwd, id: pid, env });
+        cov.liveChildren = !cov.unknown; // a workspace was just created
+        wakeWarning = core.wakeLib.noWakePathLine(cov, env,
+          core.resolveStableCliPath(ctx.home, core.CLI_PATH),
+          core.resolveStableLauncherPath('wakeWatch', ctx.home, path.join(core.PLUGIN_ROOT, 'companion', 'lib', 'devswarm-wake-watch.js')),
+          pid) || null;
+      }
+    }
+  } catch (_) { wakeWarning = null; }
+
+  const result = {
     ok: true, action: 'spawn', branch, created: true,
     worktreePath, meshId, registered, titled,
     // How the child's source branch was vetted against origin (0.108.5).
@@ -1191,6 +1210,8 @@ function cmdSpawn(rest, ctx) {
     plan: planInfo,
     raw: res.raw,
   };
+  if (wakeWarning) result.warnings = (result.warnings || []).concat(wakeWarning);
+  return result;
 }
 
 // cmdMergeVerb(rest, ctx) — PLAN.md "merge": THIN wrap of `hivecontrol

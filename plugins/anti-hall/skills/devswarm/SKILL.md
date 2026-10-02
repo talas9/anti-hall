@@ -488,6 +488,18 @@ pure data capture toward a future paused-workspace detector (`companion/lib/
 devswarm-startup-sampling.js`); no suppression or status change yet. `doctor --check`
 reports the captured-sample count as one INFO line.
 
+## Primary wake coverage — session crons do not survive a restart
+
+A Primary is woken by the session cron (`7,37 * * * *` running `inbox tick <primary-id> --quiet`)
+and by the `wake-watch.js` Monitor. A session cron is gone after a harness restart, and the
+Monitor exits on purpose when no child is live, so a Primary can end up with neither. When it has
+a live child and either path is missing, anti-hall says so: a `NO MAILBOX WAKE PATH` (or the
+shorter `NO MAILBOX WATCHER` / `NO MAILBOX TICK`) line on each prompt (repeated by the keepalive
+while the gap lasts), a `warnings` entry on `spawn`, and one Stop block (capped by
+`devswarm.parentGateCap`) when both are missing. Do what it says: `Monitor` on the watcher, and
+`CronList` then `CronCreate` the tick if absent. The watcher's idle-skip line only reports the
+last tick age; it never claims a cron covers you. Thresholds reuse `devswarm.cronMissingWarnMin`.
+
 ## Operating the mesh: daemon + CLI reference
 
 This is the complete operational reference for a workspace agent: the two background

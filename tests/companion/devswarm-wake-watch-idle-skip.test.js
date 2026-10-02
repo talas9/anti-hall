@@ -91,11 +91,47 @@ test('#39: Primary with 0 live children -> exactly the idle-skip line, exit 0, w
     };
     const res = spawnSync(process.execPath, [MODULE_PATH], { env, cwd: repo, encoding: 'utf8', timeout: 8000 });
     assert.strictEqual(res.status, 0, 'stdout=' + res.stdout + ' stderr=' + res.stderr);
-    assert.strictEqual(res.stdout, '[wake-watch] idle-skip: no live child workspaces — not arming (cron fallback covers)\n');
+    // No tick marker at all -> the truthful "cannot verify a cron" wording, never "cron fallback covers".
+    assert.strictEqual(res.stdout, '[wake-watch] idle-skip: no live child workspaces — not arming. No recent mailbox tick was seen: '
+      + 'check CronList and re-create the 7,37 tick; arm this watcher again after you spawn a workspace.\n');
     // The idle-skip decision must fire BEFORE any lock acquisition attempt.
     assert.strictEqual(fs.existsSync(path.dirname(lockPathFor(home, 'anything'))), false,
       'idle-skip must never create the locks directory');
   } finally { rm(home); rm(repo); }
+});
+
+// The tick marker for a Primary is written only by the cron's `inbox tick`, so
+// its age is the cron's liveness. Fresh -> report the age; stale/absent -> do
+// not claim a cron. Always exactly ONE stdout line (each line wakes the session).
+function idleSkipFor(markerAgeMin) {
+  const home = tmpHome();
+  const repo = makeGitRepo('marker');
+  try {
+    const env = { PATH: process.env.PATH, HOME: home, USERPROFILE: home, DEVSWARM_REPO_ID: 'r1' };
+    const id = require('../../plugins/anti-hall/companion/install-devswarm-ingest.js').primaryWorkspaceId(
+      require('../../plugins/anti-hall/companion/lib/identity.js').resolveContext(repo, { home, missingPath: 'ancestor' }).worktreeRoot);
+    if (markerAgeMin !== null) {
+      const dir = path.join(home, '.anti-hall', 'devswarm', 'wake-tick');
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, id + '.json'), JSON.stringify({ ts: Date.now() - markerAgeMin * 60000 }));
+    }
+    const res = spawnSync(process.execPath, [MODULE_PATH], { env, cwd: repo, encoding: 'utf8', timeout: 8000 });
+    assert.strictEqual(res.status, 0, 'stdout=' + res.stdout + ' stderr=' + res.stderr);
+    return res.stdout;
+  } finally { rm(home); rm(repo); }
+}
+
+test('idle-skip with a FRESH tick marker names the tick age and does not tell the agent to re-create the cron', () => {
+  const out = idleSkipFor(7);
+  assert.strictEqual(out, '[wake-watch] idle-skip: no live child workspaces — not arming; the mailbox tick last ran 7m ago\n');
+  assert.strictEqual(out.trim().split('\n').length, 1);
+});
+
+test('idle-skip with a STALE tick marker (older than devswarm.cronMissingWarnMin) does not claim a cron', () => {
+  const out = idleSkipFor(120);
+  assert.ok(out.includes('No recent mailbox tick was seen: check CronList and re-create the 7,37 tick'), out);
+  assert.ok(!out.includes('cron fallback covers') && !/last ran/.test(out), out);
+  assert.strictEqual(out.trim().split('\n').length, 1);
 });
 
 test('#39: devswarm.wakeWatchIdleSkip=false -> a Primary with 0 live children still arms normally', async () => {

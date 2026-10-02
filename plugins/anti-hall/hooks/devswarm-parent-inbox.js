@@ -191,6 +191,7 @@ const RAW_CLI = path.join(__dirname, '..', 'scripts', 'devswarm.js');
 // this read-path hook never installs it (parent-gate/child-role do) — and fall
 // back to RAW_CLI otherwise or when devswarm.stableLauncher is off. Fail-open.
 const CLI = require('./lib/stable-launcher.js').preferStableLauncher('devswarm', RAW_CLI);
+const RAW_WATCHER = path.join(__dirname, '..', 'companion', 'lib', 'devswarm-wake-watch.js');
 
 // A workspace whose supervisor verdict is one of these is idle/stuck (a wedged or
 // escalated child), independent of whether it still has unread backlog.
@@ -2400,6 +2401,22 @@ function main() {
   // and therefore the shared summary rows — may be unresolvable in exactly the
   // scenario that path exists for).
   if (staleBanner) segments.push(staleBanner);
+
+  // NO MAILBOX WAKE PATH: live workspaces but no watcher and/or no recent
+  // `inbox tick` (a session cron dies with its harness; the watcher exits when
+  // no child is live). Same dedupe idiom as the override line: shown once, then
+  // re-shown every guards.injectionRepeatEvery delivered turns while the gap
+  // persists. Fail-open: any error -> no line.
+  try {
+    if (primaryId && cwd) {
+      const cov = require('../companion/lib/devswarm-wake-coverage.js').wakeCoverage({ home, cwd, id: primaryId, now, env: process.env });
+      const watcher = require('./lib/stable-launcher.js').preferStableLauncher('wakeWatch', RAW_WATCHER);
+      const line = require('./lib/devswarm-wake.js').noWakePathLine(cov, process.env, CLI, watcher, primaryId);
+      if (line && dedupeEmit(home, sessionId, 'parent-inbox-no-wake-path', line, {
+        transcriptPath, keepaliveTurns: Number.isFinite(overrideRepeat) && overrideRepeat > 0 ? overrideRepeat : 0,
+      })) segments.push(line);
+    }
+  } catch (_) { /* fail-open */ }
 
   // Maintainer notice (0.117.0) — surfaced right after the staleness banner,
   // ahead of the routine roster/unread segments: a cross-project broadcast is

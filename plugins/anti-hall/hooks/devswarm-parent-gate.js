@@ -2153,6 +2153,38 @@ function main() {
   // waved through just because the visible `blocking`/`unanswered` happen to
   // be empty this pass.
   if (blocking.length === 0 && unanswered.length === 0 && !truncated && !parkedSegment) {
+    // NO MAILBOX WAKE PATH (alone, no other block reason): live children but no
+    // watcher AND no recent inbox tick. Same per-signature cap as every other
+    // block kind (parentGateCap forced-acks, then quiet); the state file is
+    // cleared by the clean pass below once the gap closes. Claude-only,
+    // fail-open, never fires without a live child.
+    let wakeText = '';
+    try {
+      const cov = require('../companion/lib/devswarm-wake-coverage.js').wakeCoverage({ home, cwd, id: own.id, env: process.env });
+      if (own.id && cov.watcherWanted !== false && !cov.watcherLive && cov.cronLikelyMissing) {
+        wakeText = require('./lib/devswarm-wake.js').noWakePathLine(cov, process.env, CLI, WATCHER, own.id);
+      }
+    } catch (_) { wakeText = ''; }
+    if (wakeText) {
+      const wsig = crypto.createHash('sha1').update(
+        'devswarm-parent:' + (stopPolicy ? stopPolicy.kindSignature(['wakepath']) : 'wakepath')
+      ).digest('hex');
+      let wblocks = 0;
+      try {
+        const prev = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+        if (prev && prev.sig === wsig && Number.isFinite(prev.blocks)) wblocks = prev.blocks;
+      } catch (_) { /* first time -> 0 */ }
+      if (wblocks >= resolveCap(process.env)) return; // budget spent for this unchanged condition: quiet
+      try {
+        fs.mkdirSync(path.dirname(stateFile), { recursive: true });
+        fs.writeFileSync(stateFile, JSON.stringify({
+          sig: wsig, blocks: wblocks + 1, escalated: false, qSig: '', qBlocks: 0, qEscalated: false,
+          intents: {}, intentAcks: 0,
+        }), 'utf8');
+      } catch (_) { return; } // can't persist -> fail-open, never loop
+      try { fs.writeSync(1, JSON.stringify({ decision: 'block', reason: wakeText }) + '\n'); } catch (_) {}
+      return;
+    }
     // F6: a pass that only DEFERRED unread mail (busy advisory) keeps the
     // loop-state untouched, so the forced-ack count and escalation carry on
     // once the child stops being busy. Only a truly clean pass clears it.

@@ -625,4 +625,29 @@ function wakeReassert(env, cli, isChild, watcher, explicitId) {
   }
 }
 
-module.exports = { WAKE_CRON_DEFAULT, wakeCron, rearmOnTickOnly, isClaudeAgent, wakeDirective, wakeReassert, drainCmd, resolvedId, ACK_AFTER_READ };
+// noWakePathLine(cov, env, cli, watcher, id) -> the "you have no way to be woken"
+// instruction (no leading space), or '' when nothing is missing / not Claude /
+// the coverage read was unknown. `cov` is companion/lib/devswarm-wake-coverage.js
+// wakeCoverage(). Used by the per-prompt Primary hook, the Stop gate and
+// `spawn`, so all three say the same thing. cli/watcher are the SAME stable
+// launcher paths the SessionStart directive embeds. Kept under 400 chars.
+function noWakePathLine(cov, env, cli, watcher, id) {
+  try {
+    if (!cov || cov.unknown || !cov.liveChildren || !isClaudeAgent(env)) return '';
+    const noWatcher = cov.watcherWanted !== false && !cov.watcherLive;
+    const noCron = !!cov.cronLikelyMissing;
+    if (!noWatcher && !noCron) return '';
+    const mon = 'Monitor: node ' + watcher;
+    const cron = 'CronList, then CronCreate "' + wakeCron(env) + '" running `node ' + cli + ' inbox tick ' + id + ' --quiet` if absent';
+    if (noWatcher && noCron) {
+      return 'NO MAILBOX WAKE PATH: you have live workspaces but no watcher and no recent mailbox tick. Do both now: (1) '
+        + mon + ' (2) ' + cron + '.';
+    }
+    if (noWatcher) return 'NO MAILBOX WATCHER: you have live workspaces but your wake watcher is not running. Arm it now: ' + mon + '.';
+    return 'NO MAILBOX TICK: you have live workspaces but no recent mailbox tick (session crons do not survive a restart). ' + cron + '.';
+  } catch (_) {
+    return '';
+  }
+}
+
+module.exports = { WAKE_CRON_DEFAULT, wakeCron, rearmOnTickOnly, isClaudeAgent, wakeDirective, wakeReassert, drainCmd, resolvedId, ACK_AFTER_READ, noWakePathLine };
