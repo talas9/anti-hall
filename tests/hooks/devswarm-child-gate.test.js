@@ -656,6 +656,36 @@ test('FRESH ZERO TICK + known durable unread: block names ONLY the inbox pull, n
   }
 });
 
+// The no-block-kinds allow path (heartbeat satisfied, inbound cleared between the two probes)
+// re-opens the budgets of the kinds it satisfied, like the gate's other allow paths.
+test('ALREADY-REPORTED + inbound clears between probes (nothing owed): allowed AND the spent budget for those kinds is cleared', () => {
+  const h = makeHome();
+  seedAllTestDescriptors(h.home);
+  const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'antihall-childgate-race-'));
+  try {
+    seedOutboundReport(h.home, 'child-ar', Date.now());
+    // fake hivecontrol: the FIRST message-count says 1 (so the early satisfaction path does not clear),
+    // every later one says 0 (so no block kind remains).
+    const counter = path.join(bin, 'calls');
+    const sh = path.join(bin, 'hivecontrol');
+    fs.writeFileSync(sh, '#!/bin/sh\nif [ -f "' + counter + '" ]; then echo 0; else echo x > "' + counter + '"; echo 1; fi\n');
+    fs.chmodSync(sh, 0o755);
+    const sp = require('../../plugins/anti-hall/hooks/lib/stop-policy.js');
+    sp.consume(h.home, 's1', 'child-gate', ['heartbeat-report', 'inbox'], 2, Date.now());
+    sp.consume(h.home, 's1', 'child-gate', ['heartbeat-report', 'inbox'], 2, Date.now());
+    const before = JSON.stringify(fs.readFileSync(sp.statePath(h.home, 's1'), 'utf8'));
+    assert.match(before, /heartbeat-report/, 'precondition: budget spent');
+    const env = Object.assign({}, CHILD_ENV, { DEVSWARM_BUILDER_ID: 'child-ar', PATH: bin + path.delimiter + GIT_ONLY_PATH });
+    const r = testHook(HOOK, stopPayload({ cwd: REPO_CWD }), { home: h.home, env });
+    assert.strictEqual(r.stdout, '', 'nothing owed -> allow; got: ' + r.stdout);
+    const after = fs.existsSync(sp.statePath(h.home, 's1')) ? fs.readFileSync(sp.statePath(h.home, 's1'), 'utf8') : '';
+    assert.doesNotMatch(after, /heartbeat-report|inbox/, 'satisfied kinds cleared: ' + after);
+  } finally {
+    h.cleanup();
+    fs.rmSync(bin, { recursive: true, force: true });
+  }
+});
+
 test('ALREADY-REPORTED window: an outbound row OLDER than this stop episode does NOT satisfy -> normal capped forced-ack', () => {
   const h = makeHome();
   seedAllTestDescriptors(h.home);

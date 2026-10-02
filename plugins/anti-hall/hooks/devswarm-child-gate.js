@@ -1112,7 +1112,13 @@ function main() {
   const kinds = (nativeOnlyUnknown || heartbeatSatisfied) ? [] : ['heartbeat-report'];
   if (unreadPendingPre === true) kinds.push('inbox');
   else if (durablePre.unknown || unreadPendingPre === 'unknown') kinds.push('inbox-unknown');
-  if (kinds.length === 0) { writeState(stateFile, state); return; } // nothing owed (inbound cleared between probes) -> allow
+  if (kinds.length === 0) {
+    // nothing owed (heartbeat satisfied, inbound cleared) -> allow, and re-open the budgets of the
+    // kinds just satisfied, like the other allow paths (a stale count must not cap a later episode).
+    stopPolicy.clear(os.homedir(), sessionId, 'child-gate', ['heartbeat-report', 'inbox', 'inbox-unknown']);
+    writeState(stateFile, state);
+    return;
+  }
   const decision = stopPolicy.consume(os.homedir(), sessionId, 'child-gate', kinds, nativeOnlyUnknown ? 1 : MAX_BLOCKS, now);
   if (!decision.block) {
     if (decision.persisted && !state.lifetimeCapLogged) {
