@@ -43,7 +43,12 @@ function wakeCoverage(opts) {
     if (!home || typeof id !== 'string' || !/^[A-Za-z0-9._-]+$/.test(id)) return unknown;
     const now = Number.isFinite(o.now) ? o.now : Date.now();
 
-    const liveChildren = require('./devswarm-live-children.js').hasLiveChild(home, o.cwd || process.cwd());
+    // Positive proof only: held / archive-ignored children are not live, and an
+    // undeterminable answer is `unknown` (never a live child).
+    const lc = require('./devswarm-live-children.js').liveChildState(home, o.cwd || process.cwd(),
+      { env: o.env, excludeHeldIgnored: true, ...(o.liveChildOpts || {}) });
+    if (!lc.known) return unknown;
+    const liveChildren = lc.live;
 
     // Watcher: fresh lock ts + a pid that is not provably dead.
     let watcherLive = false;

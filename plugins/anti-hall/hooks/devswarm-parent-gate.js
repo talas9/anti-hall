@@ -2160,8 +2160,9 @@ function main() {
     // fail-open, never fires without a live child.
     let wakeText = '';
     try {
-      const cov = require('../companion/lib/devswarm-wake-coverage.js').wakeCoverage({ home, cwd, id: own.id, env: process.env });
-      if (own.id && cov.watcherWanted !== false && !cov.watcherLive && cov.cronLikelyMissing) {
+      // A busy-advisory pass defers to the loop-state it already owns: no wake block.
+      const cov = busyAdvisoryHeld ? null : require('../companion/lib/devswarm-wake-coverage.js').wakeCoverage({ home, cwd, id: own.id, env: process.env });
+      if (cov && !cov.unknown && own.id && cov.watcherWanted !== false && !cov.watcherLive && cov.cronLikelyMissing) {
         wakeText = require('./lib/devswarm-wake.js').noWakePathLine(cov, process.env, CLI, WATCHER, own.id);
       }
     } catch (_) { wakeText = ''; }
@@ -2170,16 +2171,19 @@ function main() {
         'devswarm-parent:' + (stopPolicy ? stopPolicy.kindSignature(['wakepath']) : 'wakepath')
       ).digest('hex');
       let wblocks = 0;
+      let prevState = {};
       try {
         const prev = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+        if (prev && typeof prev === 'object') prevState = prev;
         if (prev && prev.sig === wsig && Number.isFinite(prev.blocks)) wblocks = prev.blocks;
       } catch (_) { /* first time -> 0 */ }
       if (wblocks >= resolveCap(process.env)) return; // budget spent for this unchanged condition: quiet
       try {
         fs.mkdirSync(path.dirname(stateFile), { recursive: true });
+        // Keep the other loop-state fields (intents, qSig, ...) a prior pass wrote.
         fs.writeFileSync(stateFile, JSON.stringify({
-          sig: wsig, blocks: wblocks + 1, escalated: false, qSig: '', qBlocks: 0, qEscalated: false,
-          intents: {}, intentAcks: 0,
+          qSig: '', qBlocks: 0, qEscalated: false, intents: {}, intentAcks: 0,
+          ...prevState, sig: wsig, blocks: wblocks + 1, escalated: false,
         }), 'utf8');
       } catch (_) { return; } // can't persist -> fail-open, never loop
       try { fs.writeSync(1, JSON.stringify({ decision: 'block', reason: wakeText }) + '\n'); } catch (_) {}

@@ -32,21 +32,26 @@
 
 const fs = require('fs');
 
-// hasLiveChild(home, cwd, opts) -> boolean.
-// opts: { readDescriptors, repoKeyForWorktree, rowEligibility, env, fsi } —
-// all injectable for tests; each defaults to the real module it wraps.
-function hasLiveChild(home, cwd, opts) {
+// liveChildState(home, cwd, opts) -> { live, known }.
+// known=false means liveness could not be determined (unresolvable repoKey or
+// a broken predicate); live is then false. Callers that need POSITIVE PROOF of
+// a live child (the wake-path warning / Stop gate) act only on known && live.
+// opts: { readDescriptors, repoKeyForWorktree, rowEligibility, env, fsi,
+//   excludeHeldIgnored } — all injectable for tests. excludeHeldIgnored also
+// skips children that are held (devswarm.heldPartitions) or archive-ignored,
+// matching the parent gate's `archived || held || ignored` policy.
+function liveChildState(home, cwd, opts) {
   const o = opts || {};
   const F = o.fsi || fs;
   try {
     const readDescriptors = o.readDescriptors || require('../devswarm-supervisor.js').readDescriptors;
     const descriptors = readDescriptors(home, F) || [];
-    if (!descriptors.length) return false;
+    if (!descriptors.length) return { live: false, known: true };
 
     const repoKeyForWorktree = o.repoKeyForWorktree || require('./devswarm-repokey.js').repoKeyForWorktree;
     let selfKey = null;
     try { selfKey = repoKeyForWorktree(cwd); } catch (_) { selfKey = null; }
-    if (!selfKey) return true; // can't scope to a project -> fail-open toward "has children"
+    if (!selfKey) return { live: false, known: false }; // can't scope to a project
 
     let selfReal = cwd;
     try { selfReal = F.realpathSync(cwd); } catch (_) { selfReal = cwd; }
@@ -65,21 +70,28 @@ function hasLiveChild(home, cwd, opts) {
       if (dKey !== selfKey) continue; // a different project's registered workspace
 
       let archived = true; // fail-open toward "archived" here so ONE unreadable
-      // row can never fabricate a live child; the outer catch below still
-      // fails open toward "has children" for a genuinely broken predicate.
+      // row can never fabricate a live child.
       try {
         const projected = rowEligibility(
           { id: d.id, worktreePath: d.worktreePath, sessionId: d.sessionId, repoKey: dKey },
           { home, env: o.env, fsi: F },
         );
-        archived = !!(projected && projected.archived);
+        archived = !!(projected && (projected.archived
+          || (o.excludeHeldIgnored && (projected.held || projected.ignored))));
       } catch (_) { archived = true; }
-      if (!archived) return true;
+      if (!archived) return { live: true, known: true };
     }
-    return false;
+    return { live: false, known: true };
   } catch (_) {
-    return true; // fail-open: any surprise here must never suppress a real watcher
+    return { live: false, known: false };
   }
 }
 
-module.exports = { hasLiveChild };
+// hasLiveChild(home, cwd, opts) -> boolean. Idle-skip semantics: FAIL-OPEN
+// toward "has a live child" whenever liveness is unknown (see header).
+function hasLiveChild(home, cwd, opts) {
+  const s = liveChildState(home, cwd, opts);
+  return s.known ? s.live : true;
+}
+
+module.exports = { hasLiveChild, liveChildState };

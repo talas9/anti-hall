@@ -899,3 +899,5 @@ tighter loop), not a genuine event-driven wake.
 Anti-hall does not replace OMX. Anti-hall supplies verify-first policy, the reference KB,
 and (for both agents) the mechanical per-turn recovery hooks; the liveness supervisor stays
 Claude-side. OMX supplies Codex-native orchestration/workflow runtime.
+
+The "no mailbox wake path" warning (per-prompt line, spawn warning, Stop-gate block) is Claude-only: Codex workspaces are never warned, because the check relies on Claude's CronCreate/Monitor.
