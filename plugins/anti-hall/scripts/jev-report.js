@@ -1383,7 +1383,11 @@ function printBudgetStatus(status) {
 function printCredit(credit, lowCredit) {
   if (!credit) return;
   if (!credit.ok) {
-    if (credit.reason === 'unsupported-transport' || credit.reason === 'disabled' || credit.reason === 'no-key') return;
+    if (credit.reason === 'no-key') {
+      try { console.log('\ncredit balance: n/a — ' + require('../hooks/lib/credentials.js').backgroundNoKeyNotice()); } catch (_) { /* notice is best-effort */ }
+      return;
+    }
+    if (credit.reason === 'unsupported-transport' || credit.reason === 'disabled') return;
     console.log(`\ncredit balance: n/a (${credit.reason})`);
     return;
   }

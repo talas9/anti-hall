@@ -2293,7 +2293,12 @@ function settingsMigratePostUpdate(opts) {
       return { attempted: false, detail: 'settings migrate skipped: this build has no runSettingsMigration' };
     }
     const r = lib.runSettingsMigration(home, { version: o.version });
-    return { attempted: true, status: r.status, detail: r.msg };
+    // One-time legacy Jev key-file opt-in (see migrations.js). Its row is
+    // appended so an ENABLED notice is printed on the settings-migrate line.
+    let keyRow = null;
+    try { keyRow = typeof lib.runLegacyKeyOptInMigration === 'function' ? lib.runLegacyKeyOptInMigration(home, {}) : null; } catch (_) { keyRow = null; }
+    const keyNote = keyRow && keyRow.status !== 'skipped' ? ' | legacy-key-opt-in ' + keyRow.status + ': ' + keyRow.msg : '';
+    return { attempted: true, status: r.status, detail: r.msg + keyNote };
   } catch (e) {
     return { attempted: false, error: (e && e.message) || String(e), detail: 'settings migrate raised: ' + ((e && e.message) || String(e)) };
   }
@@ -3659,6 +3664,7 @@ if (require.main === module) {
 
 module.exports = {
   resolvePaths,
+  settingsMigratePostUpdate,
   readJsonBounded,
   isSemver,
   parseVersion,

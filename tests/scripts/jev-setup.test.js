@@ -15,11 +15,16 @@ const { makeHome } = require('../helpers/fixtures.js');
 const SCRIPT = require.resolve('../../plugins/anti-hall/scripts/jev-setup.js');
 const setupLib = require(SCRIPT);
 
+// enableLegacy(home) — the opt-in lives ONLY in the home settings file.
+function enableLegacy(home) {
+  fs.mkdirSync(path.join(home, '.anti-hall'), { recursive: true });
+  fs.writeFileSync(path.join(home, '.anti-hall', 'settings.json'), JSON.stringify({ jev: { allowLegacyKeyRead: true } }));
+}
+
 function run(args, { home, input, env: extraEnv } = {}) {
   const env = Object.assign({}, process.env, { HOME: home });
   delete env.CLAUDE_PLUGIN_OPTION_JEV_API_KEY;
   delete env.CLAUDE_PLUGIN_OPTION_ANTHROPIC_API_KEY;
-  delete env.ANTIHALL_ALLOW_LEGACY_KEY_READ;
   delete env.AI_GATEWAY_API_KEY;
   delete env.TYPESAFE_API_KEY;
   delete env.ANTIHALL_JEV;
@@ -195,8 +200,9 @@ test('status: reports key present:no when nothing is configured', () => {
 
 test('status: reports key present:yes after set-key, never the value', () => {
   const { home } = makeHome();
+  enableLegacy(home);
   run(['set-key'], { home, input: 'a-real-key-value\n' });
-  const r = run(['status'], { home, env: { ANTIHALL_ALLOW_LEGACY_KEY_READ: '1' } });
+  const r = run(['status'], { home });
   assert.match(r.stdout, /key present: yes/);
   assert.doesNotMatch(r.stdout, /a-real-key-value/);
 });
@@ -308,6 +314,7 @@ async function runCmdStatusInProcess(home, envOverrides = {}) {
 
 test('status: shows the credit balance against a mock /v1/credits server (vercel transport)', async () => {
   const { home } = makeHome();
+  enableLegacy(home);
   run(['set-key'], { home, input: 'mock-key-value\n' });
   run(['enable'], { home });
 
@@ -317,7 +324,7 @@ test('status: shows the credit balance against a mock /v1/credits server (vercel
       res.end(JSON.stringify({ balance: '42.10', total_used: '7.90' }));
     },
     async (endpoint) => {
-      const out = await runCmdStatusInProcess(home, { ANTIHALL_JEV_TEST_ENDPOINT: endpoint, ANTIHALL_ALLOW_LEGACY_KEY_READ: '1' });
+      const out = await runCmdStatusInProcess(home, { ANTIHALL_JEV_TEST_ENDPOINT: endpoint });
       assert.match(out, /credit balance: \$42\.10/);
       assert.doesNotMatch(out, /mock-key-value/);
     },
@@ -332,6 +339,7 @@ test('status: no key configured -> no credit balance line at all (not a warning-
 
 test('test: ok path against a mock server returns confidence/latency, not the key', async () => {
   const { home } = makeHome();
+  enableLegacy(home);
   run(['set-key'], { home, input: 'mock-key-value\n' });
   run(['enable'], { home });
 
@@ -343,7 +351,7 @@ test('test: ok path against a mock server returns confidence/latency, not the ke
       res.end(JSON.stringify({ answers: { decision: { noul: 0.95 } } }));
     },
     async (endpoint) => {
-      const r = await runCmdTestInProcess(home, { ANTIHALL_JEV_TEST_ENDPOINT: endpoint, ANTIHALL_ALLOW_LEGACY_KEY_READ: '1' });
+      const r = await runCmdTestInProcess(home, { ANTIHALL_JEV_TEST_ENDPOINT: endpoint });
       assert.strictEqual(r.code, 0);
       assert.match(r.out, /^ok — latency \d+ms, confidence 0\.90/);
       assert.doesNotMatch(r.out, /mock-key-value/);
@@ -369,6 +377,7 @@ test('test: no-key failure path is reported without hitting the network', async 
 
 test('test: http-401 failure suggests checking the provider/transport', async () => {
   const { home } = makeHome();
+  enableLegacy(home);
   run(['set-key'], { home, input: 'wrong-key\n' });
   run(['enable'], { home });
 
@@ -378,7 +387,7 @@ test('test: http-401 failure suggests checking the provider/transport', async ()
       res.end(JSON.stringify({ error: 'unauthorized' }));
     },
     async (endpoint) => {
-      const r = await runCmdTestInProcess(home, { ANTIHALL_JEV_TEST_ENDPOINT: endpoint, ANTIHALL_ALLOW_LEGACY_KEY_READ: '1' });
+      const r = await runCmdTestInProcess(home, { ANTIHALL_JEV_TEST_ENDPOINT: endpoint });
       assert.notStrictEqual(r.code, 0);
       assert.match(r.out, /failed: http-401/);
       assert.match(r.out, /provider.*transport|transport.*provider|rejected/i);
@@ -418,8 +427,9 @@ test('status: a legacy key file with the opt-in off -> notice naming jev_api_key
 
 test('status: with the opt-in on there is no notice and the key counts as present', () => {
   const { home } = makeHome();
+  enableLegacy(home);
   run(['set-key'], { home, input: 'legacy-file-secret\n' });
-  const r = run(['status'], { home, env: { ANTIHALL_ALLOW_LEGACY_KEY_READ: '1' } });
+  const r = run(['status'], { home });
   assert.match(r.stdout, /key present: yes/);
   assert.doesNotMatch(r.stdout, /notice:/);
 });

@@ -61,14 +61,60 @@ test('opt-in ON: legacy env first, then key file; transport picks the env var', 
   } finally { h.cleanup(); }
 });
 
-test('the opt-in is read from settings.json (the Codex path) and defaults to off', () => {
+test('the opt-ins are read from the home settings file, default off, PER KIND', () => {
   const h = makeHome();
   try {
-    assert.strictEqual(cred.allowLegacyKeyRead({ home: h.home, env: {} }), false);
+    const o = { home: h.home, env: {} };
+    assert.strictEqual(cred.allowLegacyKeyRead('jev', o), false);
+    assert.strictEqual(cred.allowLegacyKeyRead('anthropic', o), false);
     h.writeState('settings.json', { jev: { allowLegacyKeyRead: true } });
-    assert.strictEqual(cred.allowLegacyKeyRead({ home: h.home, env: {} }), true);
-    assert.strictEqual(cred.allowLegacyKeyRead({ home: h.home, env: { ANTIHALL_ALLOW_LEGACY_KEY_READ: '0' } }), false);
+    assert.strictEqual(cred.allowLegacyKeyRead('jev', o), true);
+    assert.strictEqual(cred.allowLegacyKeyRead('anthropic', o), false, 'the Jev opt-in does not unlock the Anthropic key');
+    h.writeState('settings.json', { guards: { allowAnthropicEnvKey: true } });
+    assert.strictEqual(cred.allowLegacyKeyRead('jev', o), false, 'the Anthropic opt-in does not unlock the Jev key');
+    assert.strictEqual(cred.allowLegacyKeyRead('anthropic', o), true);
   } finally { h.cleanup(); }
+});
+
+test('an env var (or /config plugin option env) can NOT enable either opt-in', () => {
+  const h = makeHome();
+  try {
+    const keyFile = keyFileIn(h, 'file-key\n');
+    const env = {
+      ANTIHALL_ALLOW_LEGACY_KEY_READ: '1', ANTIHALL_ALLOW_ANTHROPIC_ENV_KEY: '1',
+      CLAUDE_PLUGIN_OPTION_JEV_ALLOW_LEGACY_KEY_READ: 'true', CLAUDE_PLUGIN_OPTION_GUARDS_ALLOW_ANTHROPIC_ENV_KEY: 'true',
+      AI_GATEWAY_API_KEY: 'gw', ANTHROPIC_API_KEY: 'sk-ant-x',
+    };
+    assert.strictEqual(cred.allowLegacyKeyRead('jev', { home: h.home, env }), false);
+    assert.strictEqual(cred.allowLegacyKeyRead('anthropic', { home: h.home, env }), false);
+    // end to end through the settings default path (no allowLegacy override):
+    assert.deepStrictEqual(cred.resolveKey('jev', { home: h.home, env, keyFile, transport: 'vercel' }), { key: null, source: null });
+    assert.deepStrictEqual(cred.resolveKey('anthropic', { home: h.home, env }), { key: null, source: null });
+    // the settings layer itself: homeOnly keys ignore every non-file tier
+    const settings = require('../../plugins/anti-hall/hooks/lib/settings.js');
+    assert.strictEqual(settings.get('jev', 'allowLegacyKeyRead', undefined, { home: h.home, env }), false);
+    assert.strictEqual(settings.get('guards', 'allowAnthropicEnvKey', undefined, { home: h.home, env }), false);
+  } finally { h.cleanup(); }
+});
+
+test('the opt-ins are schema homeOnly + locked(on) with no env name, and are not plugin options', () => {
+  const schema = require('../../plugins/anti-hall/hooks/lib/settings-schema.js');
+  const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', 'plugins', 'anti-hall', '.claude-plugin', 'plugin.json'), 'utf8'));
+  for (const [sec, key] of [['jev', 'allowLegacyKeyRead'], ['guards', 'allowAnthropicEnvKey']]) {
+    const e = schema.findSetting(sec, key);
+    assert.ok(e, sec + '.' + key + ' exists');
+    assert.strictEqual(e.default, false);
+    assert.strictEqual(e.homeOnly, true);
+    assert.strictEqual(e.locked, true);
+    assert.strictEqual(e.safetyDirection, 'on');
+    assert.strictEqual(e.env, undefined, 'no env mapping');
+    assert.strictEqual(e.pluginOption, undefined, 'no /config mapping (project-scoped config could flip it)');
+  }
+  for (const k of Object.keys(manifest.userConfig)) assert.doesNotMatch(k, /allow_legacy|allow_anthropic/);
+  for (const k of ['jev_api_key', 'anthropic_api_key']) {
+    assert.strictEqual(manifest.userConfig[k].sensitive, true);
+    assert.strictEqual(manifest.userConfig[k].default, undefined);
+  }
 });
 
 test('legacyNotices: names the option and the setting, never the key; silent once opted in', () => {
@@ -79,11 +125,15 @@ test('legacyNotices: names the option and the setting, never the key; silent onc
     const off = cred.legacyNotices({ home: h.home, env, keyFile, transport: 'vercel' });
     assert.strictEqual(off.length, 2);
     for (const n of off) {
-      assert.match(n, /re-enter your key via \/plugin config \(anti-hall -> (jev_api_key|anthropic_api_key)\), or enable jev\.allowLegacyKeyRead/);
+      assert.match(n, /re-enter your key via \/plugin config \(anti-hall -> (jev_api_key|anthropic_api_key)\), or enable (jev\.allowLegacyKeyRead|guards\.allowAnthropicEnvKey)/);
       assert.doesNotMatch(n, /secret/);
     }
     assert.strictEqual(cred.legacyNotices({ home: h.home, env, keyFile, transport: 'vercel', kinds: ['jev'] }).length, 1);
     h.writeState('settings.json', { jev: { allowLegacyKeyRead: true } });
+    const half = cred.legacyNotices({ home: h.home, env, keyFile, transport: 'vercel' });
+    assert.strictEqual(half.length, 1, 'only the still-locked Anthropic kind remains');
+    assert.match(half[0], /guards\.allowAnthropicEnvKey/);
+    h.writeState('settings.json', { jev: { allowLegacyKeyRead: true }, guards: { allowAnthropicEnvKey: true } });
     assert.deepStrictEqual(cred.legacyNotices({ home: h.home, env, keyFile, transport: 'vercel' }), []);
   } finally { h.cleanup(); }
 });
@@ -102,13 +152,13 @@ test('doctor: surfaces the legacy-key notice (jev enabled, opt-in off), never th
     fs.mkdirSync(path.join(doctorHome, '.anti-hall'), { recursive: true });
     fs.writeFileSync(path.join(doctorHome, '.anti-hall', 'jev.json'), JSON.stringify({ enabled: true }));
     const env = Object.assign({}, process.env, { HOME: doctorHome, USERPROFILE: doctorHome, ANTIHALL_INGEST_DRY_RUN: '1', ANTHROPIC_API_KEY: 'sk-ant-doctor-secret' });
-    for (const k of Object.keys(env)) if (k.startsWith('CLAUDE_PLUGIN_OPTION_') || k === 'ANTIHALL_ALLOW_LEGACY_KEY_READ') delete env[k];
+    for (const k of Object.keys(env)) if (k.startsWith('CLAUDE_PLUGIN_OPTION_')) delete env[k];
     const doctor = path.join(__dirname, '..', '..', 'plugins', 'anti-hall', 'hooks', 'doctor.js');
     const r = spawnSync(process.execPath, [doctor], { env, encoding: 'utf8', timeout: 60000 });
     const out = (r.stdout || '') + (r.stderr || '');
     assert.match(out, /re-enter your key via \/plugin config \(anti-hall -> anthropic_api_key\)/);
     assert.doesNotMatch(out, /sk-ant-doctor-secret/);
-    env.ANTIHALL_ALLOW_LEGACY_KEY_READ = '1';
+    fs.writeFileSync(path.join(doctorHome, '.anti-hall', 'settings.json'), JSON.stringify({ guards: { allowAnthropicEnvKey: true } }));
     const r2 = spawnSync(process.execPath, [doctor], { env, encoding: 'utf8', timeout: 60000 });
     assert.doesNotMatch((r2.stdout || '') + (r2.stderr || ''), /re-enter your key via/);
   } finally { fs.rmSync(doctorHome, { recursive: true, force: true }); }

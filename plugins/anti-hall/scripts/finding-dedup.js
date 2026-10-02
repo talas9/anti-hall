@@ -287,9 +287,22 @@ function printHuman(groups) {
   }
 }
 
+// noKeyNotice() — this CLI is not a hook, so it never gets the plugin-option
+// key. When Jev is on and no key is visible, say why on stderr (one line)
+// instead of silently returning no groups.
+function noKeyNotice() {
+  try {
+    const jc = require('../hooks/lib/jev-client.js');
+    if (jc.loadJevConfig().enabled && !jc.resolveCredential(jc.loadJevConfig())) {
+      console.error('finding-dedup: ' + require('../hooks/lib/credentials.js').backgroundNoKeyNotice());
+    }
+  } catch (_) { /* notice is best-effort */ }
+}
+
 async function main() {
   const opts = parseArgs(process.argv.slice(2));
   const findings = loadFindings(opts);
+  noKeyNotice();
   let result;
   try {
     result = await dedupe(findings, {});

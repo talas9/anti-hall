@@ -596,6 +596,7 @@ module.exports = {
   jevDecide,
   jevDecideMulti,
   loadJevConfig,
+  resolveCredential,
   defaultKeyFilePath,
   expandHome,
   extractCostAndUsage,

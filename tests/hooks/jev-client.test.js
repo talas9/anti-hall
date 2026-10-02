@@ -22,7 +22,7 @@ function freshLib() {
 
 const ENV_KEYS = [
   'HOME', 'ANTIHALL_JEV', 'AI_GATEWAY_API_KEY', 'TYPESAFE_API_KEY', 'CLAUDE_PLUGIN_OPTION_JEV_API_KEY', 'CLAUDE_PLUGIN_OPTION_ANTHROPIC_API_KEY',
-  'ANTIHALL_ALLOW_LEGACY_KEY_READ', 'ANTIHALL_JEV_TEST_ENDPOINT',
+  'ANTIHALL_JEV_TEST_ENDPOINT',
 ];
 
 // NOTE: awaits fn() INSIDE the try (matches jev-assist.test.js's sibling
@@ -513,6 +513,7 @@ test('jevDecide: credential from jev.json keyFile when env var absent', async ()
     const keyPath = path.join(h.home, 'my-jev-key');
     fs.writeFileSync(keyPath, 'secret-from-keyfile\n', 'utf8');
     h.writeState('jev.json', { enabled: true, keyFile: keyPath });
+    h.writeState('settings.json', { jev: { allowLegacyKeyRead: true } });
     let seenAuth = null;
     await withMockServer(async (req, res) => {
       seenAuth = req.headers['authorization'];
@@ -520,7 +521,7 @@ test('jevDecide: credential from jev.json keyFile when env var absent', async ()
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ answers: { decision: { noul: 0.9 } } }));
     }, async (endpoint) => {
-      await withEnv({ HOME: h.home, ANTIHALL_ALLOW_LEGACY_KEY_READ: '1', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
+      await withEnv({ HOME: h.home, ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
         const { jevDecide } = freshLib();
         const r = await jevDecide({ question: NOUL_QUESTION, state: 'hello' });
         assert.strictEqual(r.ok, true);

@@ -512,6 +512,10 @@ with hook/event/API details.
 - Never print, log, echo, or commit the key — not in this chat, not in a file,
   not in a script argument.
 - Never guess which provider a key belongs to from its shape — always ask.
+- Where a stored key is visible: a key saved via `/plugin config` reaches hooks and the workers they spawn
+  only. `jev-setup test`/`status`, `jev-report` and `finding-dedup` run from a shell see no plugin option and
+  print a one-line "no Jev key visible to this process" reason; enabling `jev.allowLegacyKeyRead`
+  (home settings only, `--confirmed`; env cannot set it) with a key file makes the key available to them.
 - Preferred: the user stores the key via `/plugin config` (anti-hall -> `jev_api_key`). The key file
   (`~/.config/vercel/ai-gateway-key` or `~/.config/typesafe/key` by default) is read only when
   `jev.allowLegacyKeyRead` is on; never store the key anywhere else.

@@ -366,7 +366,8 @@ function get(section, key, dflt, opts) {
   const entry = schema.findSetting(section, key);
   if (!entry) return dflt;
 
-  const envVal = readEnvOverride(entry, opts);
+  // homeOnly: skip the env tier — see settings-schema.js `homeOnly`.
+  const envVal = entry.homeOnly ? undefined : readEnvOverride(entry, opts);
   if (envVal !== undefined) return envVal;
 
   const store = load(opts);
@@ -382,6 +383,7 @@ function get(section, key, dflt, opts) {
 // falls through to it; reset() uses it to learn the effective value a key
 // will have once its settings.json override is removed.
 function resolveBelowFile(entry, dflt, opts) {
+  if (entry.homeOnly) return dflt !== undefined ? dflt : entry.default;
   // Until the one-time forward-migration is stamped for this plugin version,
   // legacy config (e.g. jev.json) outranks a /config plugin-option value —
   // otherwise a pre-existing jev.json {enabled:true} would be masked forever

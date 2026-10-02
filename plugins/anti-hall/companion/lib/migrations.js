@@ -524,6 +524,84 @@ function runSettingsMigration(home, opts) {
   return { id: 'migrate-settings-from-legacy', action: 'migrate-settings-from-legacy', status, msg };
 }
 
+// ---- legacy Jev key-file opt-in (one-time) ---------------------------------
+// 0.121: anti-hall stopped reading a Jev key from the machine unless
+// jev.allowLegacyKeyRead is on (home settings only). An EXISTING install that
+// has Jev enabled and a Jev key FILE would silently lose Jev, so this sets that
+// one flag ONCE for exactly that case and says so. Never touches the Anthropic
+// flag (guards.allowAnthropicEnvKey), never reads or copies the key (presence
+// check only), never overrides a value the user already set (true OR false),
+// and is marker-stamped under a fixed 'once' version so a later `settings.js
+// reset` is not undone by the next update. Fail-open; a corrupt settings.json
+// is left alone (reported failed, NOT stamped, retried next update).
+const LEGACY_KEY_OPT_IN_MARKER = 'migrateLegacyKeyOptIn';
+
+function jevKeyFilePresent(settingsLib, home) {
+  const get = (k, d) => settingsLib.get('jev', k, d, { home, env: {} });
+  let keyFile = get('keyFile', '');
+  if (typeof keyFile === 'string' && keyFile.trim()) {
+    keyFile = keyFile.trim();
+    if (keyFile === '~') keyFile = home;
+    else if (keyFile.startsWith('~/')) keyFile = path.join(home, keyFile.slice(2));
+  } else {
+    keyFile = get('transport', 'vercel') === 'typesafe'
+      ? path.join(home, '.config', 'typesafe', 'key')
+      : path.join(home, '.config', 'vercel', 'ai-gateway-key');
+  }
+  try {
+    const st = fs.statSync(keyFile);
+    return st.isFile() && st.size > 0 ? keyFile : null;
+  } catch (_) { return null; }
+}
+
+// -> { status: 'fixed'|'skipped'|'failed', msg, stamp: bool }
+function migrateLegacyKeyOptIn(home) {
+  const settingsLib = require('../../hooks/lib/settings.js');
+  try {
+    const file = settingsLib.path({ home });
+    let raw = null;
+    try { raw = fs.readFileSync(file, 'utf8'); } catch (_) { raw = null; }
+    if (raw !== null) {
+      let parsed;
+      try { parsed = JSON.parse(raw); } catch (_) { parsed = undefined; }
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        return { status: 'failed', msg: 'settings.json is unreadable — left untouched, retries next update', stamp: false };
+      }
+    }
+    const store = settingsLib.load({ home });
+    if (settingsLib.lookup(store.jev, 'allowLegacyKeyRead') !== undefined) {
+      return { status: 'skipped', msg: 'jev.allowLegacyKeyRead already set by the user — left as is', stamp: true };
+    }
+    if (settingsLib.get('jev', 'enabled', false, { home, env: {} }) !== true) {
+      return { status: 'skipped', msg: 'Jev is not enabled — nothing to carry over', stamp: true };
+    }
+    const keyPath = jevKeyFilePresent(settingsLib, home);
+    if (!keyPath) return { status: 'skipped', msg: 'no Jev key file found — nothing to carry over', stamp: true };
+    const r = settingsLib.set('jev', 'allowLegacyKeyRead', true, { home, confirmed: true });
+    if (!r.ok) return { status: 'failed', msg: 'could not write jev.allowLegacyKeyRead: ' + (r.error || r.warning || 'unknown'), stamp: false };
+    return {
+      status: 'fixed',
+      msg: 'ENABLED jev.allowLegacyKeyRead (Jev is on and a key file exists at ' + keyPath + ', so anti-hall keeps reading it; the key was not read or copied). '
+        + 'To turn it off: node scripts/settings.js set jev.allowLegacyKeyRead false (then store the key via /plugin config -> jev_api_key)',
+      stamp: true,
+    };
+  } catch (e) {
+    return { status: 'failed', msg: 'raised: ' + ((e && e.message) || String(e)), stamp: false };
+  }
+}
+
+function runLegacyKeyOptInMigration(home, opts) {
+  const o = opts || {};
+  const base = { id: 'migrate-legacy-key-opt-in', action: 'migrate-legacy-key-opt-in' };
+  const state = readMarkers(home);
+  if (isApplied(state, LEGACY_KEY_OPT_IN_MARKER, 'once')) {
+    return Object.assign(base, { status: 'skipped', msg: 'already applied (marker)' });
+  }
+  const r = migrateLegacyKeyOptIn(home);
+  if (r.stamp && !o.dryRun) markApplied(home, LEGACY_KEY_OPT_IN_MARKER, 'once');
+  return Object.assign(base, { status: r.status, msg: r.msg });
+}
+
 // runMigrations({ home, cwd, env, version, dryRun, devswarm, deadline, now }) -> [{id, action, status, msg}]
 // BUDGET: one run is bounded by runBudgetMs(env) (or an explicit `deadline`).
 // An entry that would START past the deadline is deferred whole (reported,
@@ -607,4 +685,5 @@ module.exports = {
   isRunComplete, incompleteReasons, recordRun, TERMINAL_LEFT_REASONS, runBudgetMs, DEFAULT_RUN_BUDGET_MS,
   markerPath, readMarkers, writeMarkers, isApplied, markApplied, pluginVersion,
   migrateSettingsFromLegacy, runSettingsMigration, migrateJevIntegrationsSection,
+  migrateLegacyKeyOptIn, runLegacyKeyOptInMigration,
 };

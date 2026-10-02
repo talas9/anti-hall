@@ -7,7 +7,9 @@
 // on-disk state (~/.anti-hall/jev-review-state.json) — lives in the plugin
 // itself. See hooks/lib/jev-review.js for the due-date logic.
 //
-// GATING (all silent, no output, when any of these apply):
+// ALSO carries the one-time legacy-key notice (credentials.js sessionNotice).
+//
+// GATING of the review reminder (all silent, no output, when any apply):
 //   - Jev not enabled (`jev.json`/settings `enabled` !== true).
 //   - `jev.reviewReminder` === false (default true — opt-out, not opt-in).
 //   - Not the main session (a subagent/sidechain payload, same defensive
@@ -104,23 +106,38 @@ function main() {
   if (isSubagentPayload(payload)) return; // main-thread only
 
   const home = require('../companion/lib/test-home-guard.js').resolveHome(undefined, process.env);
-  const cfg = readJevJson(home);
-  if (cfg.enabled !== true) return; // Jev off entirely — nothing to review.
+  const lines = [];
 
-  const reminderOn = settingsGet('jev', 'reviewReminder', true, home) !== false;
-  if (!reminderOn) return; // explicit opt-out
+  // One-time "legacy key present but unused" notice (credentials.js). Runs
+  // before the Jev-enabled gate below: it has its own gating + dedupe.
+  const keyNotice = require('./lib/credentials.js').sessionNotice({ home });
+  if (keyNotice) lines.push(keyNotice);
 
-  const review = require('./lib/jev-review.js');
-  const result = review.computeReviewDue(home);
-  if (!result.due || !result.due.length) return;
-
-  const additionalContext = buildLine(result.due);
-  review.recordReminderShown(home, result.due.map((d) => d.id));
+  const reviewLine = reviewDueLine(home);
+  if (reviewLine) lines.push(reviewLine);
+  if (!lines.length) return;
 
   const hookEventName = payload && typeof payload.hook_event_name === 'string' && payload.hook_event_name
     ? payload.hook_event_name
     : 'SessionStart';
-  emit(hookEventName, additionalContext);
+  emit(hookEventName, lines.join('\n'));
+}
+
+// reviewDueLine(home) -> the review directive line, or null when gated/nothing due.
+function reviewDueLine(home) {
+  const cfg = readJevJson(home);
+  if (cfg.enabled !== true) return null; // Jev off entirely — nothing to review.
+
+  const reminderOn = settingsGet('jev', 'reviewReminder', true, home) !== false;
+  if (!reminderOn) return null; // explicit opt-out
+
+  const review = require('./lib/jev-review.js');
+  const result = review.computeReviewDue(home);
+  if (!result.due || !result.due.length) return null;
+
+  const line = buildLine(result.due);
+  review.recordReminderShown(home, result.due.map((d) => d.id));
+  return line;
 }
 
 try {

@@ -7,23 +7,27 @@
 //      it to HOOK processes as CLAUDE_PLUGIN_OPTION_<KEY> (uppercased); the
 //      detached/sync workers anti-hall spawns inherit that env. Statusline,
 //      monitor and plain CLI/Bash-tool processes do NOT receive it.
-//   2. ONLY when the settings key jev.allowLegacyKeyRead is true (default
-//      false): the legacy machine sources — AI_GATEWAY_API_KEY /
-//      TYPESAFE_API_KEY / ANTHROPIC_API_KEY env vars, then the key file.
-//      This is the path the Codex port (no userConfig) enables via
-//      ~/.anti-hall/settings.json.
+//   2. ONLY behind a PER-KIND opt-in, each default false and HOME-SETTINGS
+//      ONLY (schema `homeOnly`: ~/.anti-hall/settings.json — never env, never a
+//      project .claude/settings.json, never /config):
+//        jev       -> jev.allowLegacyKeyRead: AI_GATEWAY_API_KEY /
+//                     TYPESAFE_API_KEY env vars, then the key file.
+//        anthropic -> guards.allowAnthropicEnvKey: ANTHROPIC_API_KEY env.
+//      The Codex port (no userConfig) enables them in that same file.
 // With the opt-in off the plugin never reads a credential from the machine;
 // it only reports that a legacy key EXISTS (presence check, value untouched)
 // so doctor / jev-setup can tell the user how to migrate.
 
 const fs = require('fs');
+const path = require('path');
 
 const OPTION_ENV = {
   jev: 'CLAUDE_PLUGIN_OPTION_JEV_API_KEY',
   anthropic: 'CLAUDE_PLUGIN_OPTION_ANTHROPIC_API_KEY',
 };
 const OPTION_NAME = { jev: 'jev_api_key', anthropic: 'anthropic_api_key' };
-const OPT_IN_SETTING = 'jev.allowLegacyKeyRead';
+const OPT_IN = { jev: ['jev', 'allowLegacyKeyRead'], anthropic: ['guards', 'allowAnthropicEnvKey'] };
+const OPT_IN_SETTING = { jev: 'jev.allowLegacyKeyRead', anthropic: 'guards.allowAnthropicEnvKey' };
 
 function legacyEnvName(kind, transport) {
   if (kind === 'anthropic') return 'ANTHROPIC_API_KEY';
@@ -34,12 +38,13 @@ function nonEmpty(v) {
   return typeof v === 'string' && v.trim() ? v.trim() : null;
 }
 
-// allowLegacyKeyRead() -> true only when the opt-in resolves to exactly true.
-// Any settings error -> false (fail-closed: never read a machine credential
-// because settings broke).
-function allowLegacyKeyRead(opts) {
+// allowLegacyKeyRead(kind, opts) -> true only when that kind's opt-in resolves
+// to exactly true (home settings file only). Any settings error -> false
+// (fail-closed: never read a machine credential because settings broke).
+function allowLegacyKeyRead(kind, opts) {
   try {
-    return require('./settings.js').get('jev', 'allowLegacyKeyRead', false, opts) === true;
+    const [sec, key] = OPT_IN[kind];
+    return require('./settings.js').get(sec, key, false, opts) === true;
   } catch (_) {
     return false;
   }
@@ -56,7 +61,7 @@ function resolveKey(kind, o) {
   const fromOption = nonEmpty(env[OPTION_ENV[kind]]);
   if (fromOption) return { key: fromOption, source: 'plugin-option' };
 
-  const allow = typeof opts.allowLegacy === 'boolean' ? opts.allowLegacy : allowLegacyKeyRead(opts);
+  const allow = typeof opts.allowLegacy === 'boolean' ? opts.allowLegacy : allowLegacyKeyRead(kind, opts);
   if (!allow) return { key: null, source: null };
 
   const fromEnv = nonEmpty(env[legacyEnvName(kind, opts.transport)]);
@@ -91,23 +96,79 @@ function legacyKeyPresent(kind, o) {
 function migrationNotice(kind) {
   return 'a legacy ' + (kind === 'anthropic' ? 'ANTHROPIC_API_KEY env var' : 'Jev key file/env var')
     + ' exists but anti-hall no longer reads credentials from this machine: re-enter your key via /plugin config (anti-hall -> '
-    + OPTION_NAME[kind] + '), or enable ' + OPT_IN_SETTING + ' to keep using the existing key.';
+    + OPTION_NAME[kind] + '), or enable ' + OPT_IN_SETTING[kind] + ' to keep using the existing key.';
 }
 
-// legacyNotices(opts) -> notice strings (opts.kinds limits which keys are checked) to show (doctor / jev-setup status).
-// Empty when the opt-in is on or no legacy key exists. Cannot know whether the
-// plugin option is already set (CLI processes do not receive it) — the notice
-// wording covers both cases.
+// backgroundNoKeyNotice() -> the one-line reason a NON-hook process (CLI,
+// finding-dedup, jev-report, jev-setup) reports when it finds no Jev key.
+// Claude Code hands CLAUDE_PLUGIN_OPTION_* to hook processes only.
+function backgroundNoKeyNotice() {
+  return 'no Jev key visible to this process: a key stored as a plugin option (/plugin config -> jev_api_key) is only visible to hooks; '
+    + 'enable ' + OPT_IN_SETTING.jev + ' with a key file to make it available to background tools (CLI, finding-dedup, jev-report).';
+}
+
+// legacyNotices(opts) -> notice strings (opts.kinds limits which keys are
+// checked). A kind whose opt-in is on, or with no legacy key present, yields
+// nothing. Cannot know whether the plugin option is already set (CLI processes
+// do not receive it) — the wording covers both cases.
 function legacyNotices(o) {
   const opts = o || {};
-  if (allowLegacyKeyRead(opts)) return [];
   const kinds = Array.isArray(opts.kinds) ? opts.kinds : ['jev', 'anthropic'];
   const out = [];
-  for (const k of kinds) if (legacyKeyPresent(k, opts)) out.push(migrationNotice(k));
+  for (const k of kinds) {
+    if (allowLegacyKeyRead(k, opts)) continue;
+    if (legacyKeyPresent(k, opts)) out.push(migrationNotice(k));
+  }
   return out;
+}
+
+// sessionNotice({home, env}) -> a one-line string or null: the ONE-TIME
+// SessionStart notice that a legacy key is present but unused. Presence-only
+// (never reads a value). Per-kind dedupe state lives in
+// ~/.anti-hall/legacy-key-notice-state.json ({shown: {jev, anthropic}}); a kind
+// is marked shown when its line is returned. Only for features the user turned
+// on (jev.enabled; the Anthropic key also for jev.semanticJudge). Fail-open: any
+// error -> null.
+function sessionNotice(o) {
+  try {
+    const opts = o || {};
+    const home = opts.home;
+    const settings = require('./settings.js');
+    const jevOn = settings.get('jev', 'enabled', false, { home, env: opts.env }) === true;
+    const judgeOn = settings.get('jev', 'semanticJudge', false, { home, env: opts.env }) === true;
+    const kinds = [];
+    if (jevOn) kinds.push('jev');
+    if (jevOn || judgeOn) kinds.push('anthropic');
+    if (!kinds.length) return null;
+
+    const stateFile = path.join(home, '.anti-hall', 'legacy-key-notice-state.json');
+    let state = {};
+    try { state = JSON.parse(fs.readFileSync(stateFile, 'utf8')) || {}; } catch (_) { state = {}; }
+    const shown = (state.shown && typeof state.shown === 'object') ? state.shown : {};
+
+    const jc = require('./jev-client.js');
+    const cfg = jc.loadJevConfig();
+    const pending = [];
+    for (const k of kinds) {
+      if (shown[k]) continue;
+      if (allowLegacyKeyRead(k, { home, env: opts.env })) continue;
+      if (legacyKeyPresent(k, { env: opts.env, transport: cfg.transport, keyFile: cfg.keyFile || jc.defaultKeyFilePath(cfg.transport) })) pending.push(k);
+    }
+    if (!pending.length) return null;
+
+    const next = { shown: Object.assign({}, shown) };
+    for (const k of pending) next.shown[k] = Date.now();
+    fs.mkdirSync(path.dirname(stateFile), { recursive: true });
+    const tmp = stateFile + '.' + process.pid + '.tmp';
+    fs.writeFileSync(tmp, JSON.stringify(next) + '\n', 'utf8');
+    fs.renameSync(tmp, stateFile);
+    return 'anti-hall (shown once): ' + pending.map((k) => migrationNotice(k)).join(' ');
+  } catch (_) {
+    return null;
+  }
 }
 
 module.exports = {
   OPTION_ENV, OPTION_NAME, OPT_IN_SETTING,
-  allowLegacyKeyRead, resolveKey, legacyKeyPresent, migrationNotice, legacyNotices,
+  allowLegacyKeyRead, resolveKey, legacyKeyPresent, migrationNotice, backgroundNoKeyNotice, legacyNotices, sessionNotice,
 };

@@ -83,7 +83,7 @@ Env vars (checked before `keyFile`):
 - `ANTIHALL_JEV=1` — force-enable, even with no `jev.json` at all.
 - `ANTIHALL_JEV=0` — force-disable, **overrides** `jev.json`'s `enabled:true`. Always wins.
 - `CLAUDE_PLUGIN_OPTION_JEV_API_KEY` — the key stored via `/plugin config` (`jev_api_key`, sensitive); exported to hook processes and inherited by the workers they spawn. Read first.
-- `AI_GATEWAY_API_KEY` / `TYPESAFE_API_KEY` — legacy credentials for `transport:"vercel"` / `"typesafe"`, read ONLY when `jev.allowLegacyKeyRead` is on (default off; the Codex port enables it in `~/.anti-hall/settings.json`).
+- `AI_GATEWAY_API_KEY` / `TYPESAFE_API_KEY` — legacy credentials for `transport:"vercel"` / `"typesafe"`, read ONLY when `jev.allowLegacyKeyRead` is on (default off, home settings file only — env cannot enable it; the Codex port enables it in `~/.anti-hall/settings.json`). Non-hook processes (CLI, finding-dedup, jev-report) never receive the plugin option env and say so in one line.
 
 **Transports:**
 

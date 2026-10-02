@@ -220,8 +220,8 @@ export ANTIHALL_SEMANTIC_JUDGE=1
 
 Then store the key via `/plugin config` (anti-hall -> `anthropic_api_key`, kept in the OS
 credential store; the judge is fail-open if it is absent). anti-hall no longer reads
-`ANTHROPIC_API_KEY` from your environment unless you also enable `jev.allowLegacyKeyRead`
-(the Codex port, which has no plugin options, needs that setting).
+`ANTHROPIC_API_KEY` from your environment unless you enable `guards.allowAnthropicEnvKey` in
+`~/.anti-hall/settings.json` (the Codex port, which has no plugin options, needs that setting).
 
 **To disable:** unset `ANTIHALL_SEMANTIC_JUDGE` (or set it to any value other than `"1"`).
 
@@ -233,6 +233,15 @@ unverified factual claims.
 
 **Fail-open:** any error (absent `anthropic_api_key`, API unavailable, timeout, bad
 JSON response) exits 0 without blocking. A failure here never wedges a session.
+
+**Where a stored key is visible.** A key stored via `/plugin config` (`jev_api_key`,
+`anthropic_api_key`) reaches **hook processes and the workers they spawn** only; Claude
+Code does not hand it to the Bash tool, the statusline, monitors or the companion daemons.
+So `jev-setup test`/`status`, `jev-report` (credit balance) and `finding-dedup` print a
+one-line "no Jev key visible to this process" reason when run from a shell. To make a key
+available to those background tools (and to Codex), save it with `jev-setup set-key` and
+enable `jev.allowLegacyKeyRead` in `~/.anti-hall/settings.json` (a safety setting: it takes
+`--confirmed`, and env or project settings cannot flip it).
 
 **Loop-safe:** hashes the last message text (with a `":judge"` suffix to keep the
 namespace separate from `speculation-guard`'s hashes). If the same message hash was
@@ -879,6 +888,7 @@ Generated from `hooks/lib/settings-schema.js` (a hygiene test keeps this table a
 | `guards.repoSelfDrift` | `true` | `ANTIHALL_REPO_SELF_DRIFT` | anti-hall's own repo-drift self-check hook. |
 | `guards.stashGuard` safety | `false` | `ANTIHALL_STASH_GUARD` | SAFETY (confirm to change — see settings.js set/reset). Arm the git-stash guard in command-guard: block mutating `git stash` (also armed per-repo via .anti-hall/protected-stashes). |
 | `guards.gitignoreHint` | `true` | `ANTIHALL_GITIGNORE_HINT` | One-time (per project, every 7 days) SessionStart reminder to git-ignore `.anti-hall/` when it exists in a git repo and is not ignored; doctor always reports it. |
+| `guards.allowAnthropicEnvKey` adv safety | `false` | — | SAFETY, home-settings only (no env or project override). Opt-in: let the speculation judge and Jev triage read `ANTHROPIC_API_KEY` from the environment. Default off: only the `anthropic_api_key` plugin option is used. |
 | `guards.emitDedupe` | `true` | `ANTIHALL_EMIT_DEDUPE` | Deduplicate repeated hook-emit output. |
 | `guards.editGuardAllow` adv safety | — | `ANTIHALL_EDIT_GUARD_ALLOW` | SAFETY (confirm to change — see settings.js set/reset). Extra allowed file globs for edit-guard (comma/colon separated). |
 | `guards.allowSubagentMailbox` adv safety | `false` | `ANTIHALL_ALLOW_SUBAGENT_MAILBOX` | SAFETY (confirm to change — see settings.js set/reset). One-off allow for the subagent-mailbox command pattern. |
@@ -952,7 +962,7 @@ Generated from `hooks/lib/settings-schema.js` (a hygiene test keeps this table a
 | `jev.transport` | `vercel` (vercel/typesafe) | — | Vercel AI Gateway passthrough (default) or a direct TypeSafe API call. |
 | `jev.judgeModel` | `claude-haiku-4-5` | `ANTIHALL_JUDGE_MODEL` | Model used for speculation-judge / jev-triage LLM calls. |
 | `jev.semanticJudge` | `false` | `ANTIHALL_SEMANTIC_JUDGE` | Enable the semantic speculation-judge hook (off = hook no-ops). |
-| `jev.allowLegacyKeyRead` | `false` | `ANTIHALL_ALLOW_LEGACY_KEY_READ` | Opt-in (default off): also read a Jev / Anthropic API key from this machine (`AI_GATEWAY_API_KEY`, `TYPESAFE_API_KEY`, `ANTHROPIC_API_KEY` env vars, the key file) when the `jev_api_key` / `anthropic_api_key` plugin option is not set. Codex has no plugin options: set it true in `~/.anti-hall/settings.json`. |
+| `jev.allowLegacyKeyRead` adv safety | `false` | — | SAFETY, home-settings only (`~/.anti-hall/settings.json`; no env or project override). Opt-in: read the Jev key from `AI_GATEWAY_API_KEY` / `TYPESAFE_API_KEY` env vars and the key file. Default off: only the `jev_api_key` plugin option is used. Needed for background tools and Codex (see "Where a stored key is visible"). |
 | `jev.keyFile` adv | — | — | Credential key-file path (default depends on transport). |
 | `jev.timeoutMs` adv | `1500` [1..3000] | — | Per-call timeout (ms), capped at 3000. |
 | `jev.confidenceThreshold` adv | `0.85` [0..1] | — | Minimum confidence for a Jev answer to be trusted by callers. |

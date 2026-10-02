@@ -217,7 +217,7 @@ async function cmdStatus() {
   console.log(`enabled: ${enabled}`);
   console.log(`transport: ${transport}`);
   console.log(`key present: ${present ? 'yes' : 'no'}`);
-  if (!present) console.log('  (a key stored via /plugin config -> jev_api_key reaches the hooks but is not visible to this CLI)');
+  if (!present) console.log('  ' + require('../hooks/lib/credentials.js').backgroundNoKeyNotice());
   try {
     for (const n of require('../hooks/lib/credentials.js').legacyNotices({
       kinds: ['jev'], transport, keyFile: resolveKeyFilePath(cfg, transport),
@@ -298,7 +298,7 @@ function cmdSetKey(opts) {
   }
 
   console.log(`key saved (${key.length} chars)`);
-  if (!require('../hooks/lib/credentials.js').allowLegacyKeyRead()) {
+  if (!require('../hooks/lib/credentials.js').allowLegacyKeyRead('jev')) {
     console.log('note: the hooks only read this key file when jev.allowLegacyKeyRead is on (currently off). Preferred: store the key via /plugin config (anti-hall -> jev_api_key), or enable the setting.');
   }
 }
@@ -329,7 +329,7 @@ async function cmdTest() {
   } else {
     console.log(`failed: ${r.reason} (transport: ${transport})`);
     if (r.reason === 'no-key') {
-      console.log('no key visible to this CLI — store it via /plugin config (anti-hall -> jev_api_key); hooks see that key, this CLI does not. To use `set-key` + the key file instead, enable jev.allowLegacyKeyRead');
+      console.log(require('../hooks/lib/credentials.js').backgroundNoKeyNotice());
     } else if (typeof r.reason === 'string' && /^http-401|^http-403/.test(r.reason)) {
       console.log('the key was rejected — check the key is correct AND that the transport (vercel vs typesafe) matches where the key was issued');
     }
