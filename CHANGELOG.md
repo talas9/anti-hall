@@ -6,6 +6,17 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## Unreleased
+
+### Fixed
+
+- limit-conserve honours the caller's home in `inbox tick`, so it no longer reads or writes the real home from in-process tests.
+- Hooks emit block JSON via a synchronous write.
+
+### Docs
+
+- Docs alignment: Jev mode count, hook table, monitors and `--auto`, `inbox tick` in llms.txt, the locked safety key, deadly-loop-multi marked Claude-only, the Windows snippet removed, private project names genericised, and a scratchpad volatility note in the orchestration skill.
+
 ## 0.120.10 (2026-10-02)
 
 ### Fixed
