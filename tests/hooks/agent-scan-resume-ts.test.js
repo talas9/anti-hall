@@ -74,3 +74,44 @@ test('RESUME-TS: a quoted "Resuming agent" phrase in text still does not re-open
   const quote = { type: 'user', message: { role: 'user', content: 'note: "Resuming agent ' + ID.slice(0, 7) + '"' }, timestamp: T(20) };
   assert.ok(scan([launch(T(0)), SHAPES['user bare string']('stopped', T(5)), quote]).terminal.has(ID));
 });
+
+// ---- skew slack boundary (RESUME_SKEW_SLACK_MS = 2000) ----------------------
+// Terminal evidence stamped <= 2000 ms before the resume is a genuine final
+// notice that raced the resume record (order decides -> terminal); stamped
+// MORE than 2000 ms before it describes the earlier run (ignored -> running).
+const RESUME_AT = Date.UTC(2026, 9, 3, 12, 10, 0);
+const at = (msBefore) => new Date(RESUME_AT - msBefore).toISOString();
+const BOUNDARY = [[1, true], [1999, true], [2000, true], [2001, false], [60000, false]];
+
+for (const [shape, mk] of Object.entries(SHAPES)) {
+  for (const [before, terminal] of BOUNDARY) {
+    test('RESUME-TS slack [' + shape + ']: notice ' + before + ' ms before resume (later in order) -> ' + (terminal ? 'terminal' : 'running'), () => {
+      const r = scan([launch(at(600000)), resume(at(0)), mk('stopped', at(before))]);
+      assert.strictEqual(r.terminal.has(ID), terminal);
+    });
+  }
+}
+
+// Delivery-like path: the answer to a TaskOutput call naming the agent (a
+// non-running row mentioning the id) is terminal evidence via otherToolResultTexts.
+const taskOutputCall = (ts) => ({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_o', name: 'TaskOutput', input: { task_id: ID } }] }, timestamp: ts });
+const delivery = (ts) => ({ type: 'user', message: { role: 'user', content: [{ tool_use_id: 'toolu_o', type: 'tool_result', content: [{ type: 'text', text: ID + ' completed: all done' }] }] }, timestamp: ts });
+
+for (const [before, terminal] of BOUNDARY) {
+  test('RESUME-TS slack [delivery tool_result]: ' + before + ' ms before resume (later in order) -> ' + (terminal ? 'terminal' : 'running'), () => {
+    const r = scan([launch(at(600000)), resume(at(0)), taskOutputCall(at(before)), delivery(at(before))]);
+    assert.strictEqual(r.terminal.has(ID), terminal);
+  });
+}
+
+test('RESUME-TS [delivery tool_result]: delivery BEFORE the resume by order -> running; AFTER the resume -> terminal', () => {
+  assert.ok(!scan([launch(T(0)), taskOutputCall(T(5)), delivery(T(5)), resume(T(10))]).terminal.has(ID));
+  assert.ok(scan([launch(T(0)), resume(T(10)), taskOutputCall(T(12)), delivery(T(12))]).terminal.has(ID));
+});
+
+test('RESUME-TS: a newer resume WITHOUT a timestamp clears the older resume stamp (order decides)', () => {
+  const noTs = rm(resume(T(11)), 'timestamp');
+  // Notice is 2 min before the stamped resume but after the newest (unstamped) resume by order.
+  const r = scan([launch(T(0)), resume(T(10)), noTs, SHAPES['user bare string']('stopped', T(8))]);
+  assert.ok(r.terminal.has(ID), 'stale stamp from the older resume must not veto order-based evidence');
+});

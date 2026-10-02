@@ -136,6 +136,11 @@ const RUNNING_ROW_RE = /·\s*running\b/i;
 // real sessions).
 const { notificationTexts: idleNotificationTexts } = require('../../companion/lib/devswarm-idle.js');
 
+// A genuine final notice can be stamped slightly BEFORE the resume record it
+// follows (transcript write lag / clock skew between writers). Terminal evidence
+// is dropped as stale only when stamped more than this far before the resume.
+const RESUME_SKEW_SLACK_MS = 2000;
+
 // scanTranscript(transcriptPath) -> { launched: Map<id, {outputFile, description, launchedAtMs}>, terminal: Set<id> } | null
 // preLines (optional): already-read tail lines, so a caller that also parses
 // the transcript for other reasons reads it only once.
@@ -391,11 +396,12 @@ function scanTranscript(transcriptPath, preLines) {
       if (rec && resumeTs.has(rid)) rec.resumedAtMs = Math.max(rec.resumedAtMs || 0, resumeTs.get(rid));
       if (!terminal.has(id)) continue;
       // Terminal evidence still stands only if it is AFTER the resume by order
-      // and not stamped earlier than the resume (a late-arriving record of the
-      // previous run). Missing/unparseable timestamps fall back to order alone.
+      // and not stamped MORE than RESUME_SKEW_SLACK_MS before the resume (a
+      // late-arriving record of the previous run). Inside the slack, and with
+      // missing/unparseable timestamps, transcript order alone decides.
       const rTs = resumeTs.get(rid);
       const stands = (terminalEv.get(id) || []).some((e) =>
-        e.seq > rSeq && !(Number.isFinite(e.ts) && Number.isFinite(rTs) && e.ts < rTs));
+        e.seq > rSeq && !(Number.isFinite(e.ts) && Number.isFinite(rTs) && e.ts < rTs - RESUME_SKEW_SLACK_MS));
       if (!stands) terminal.delete(id);
     }
   }
