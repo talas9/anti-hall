@@ -6,10 +6,13 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
-## Unreleased
+## 0.120.11 (2026-10-02)
 
 ### Fixed
 
+- silent-agent-nudge is no longer disarmed by an agent-list "running" row, and it survives compaction by adopting `task_status` attachments.
+- killed and cancelled agents are treated as terminal (notification and `task_status` shapes). An adopted agent with no timestamp and no output file is never nudged.
+- Orchestration rule I wording: no phantom heartbeat file, and "running" in an agent list is not progress.
 - limit-conserve honours the caller's home in `inbox tick`, so it no longer reads or writes the real home from in-process tests.
 - Hooks emit block JSON via a synchronous write.
 
