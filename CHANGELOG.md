@@ -20,6 +20,10 @@ the update.
 
 - Docs alignment: Jev mode count, hook table, monitors and `--auto`, `inbox tick` in llms.txt, the locked safety key, deadly-loop-multi marked Claude-only, the Windows snippet removed, private project names genericised, and a scratchpad volatility note in the orchestration skill.
 
+### Tests
+
+- LOCK LOST watcher test no longer races the watcher's own lock refresh (rare CI-only failure).
+
 ## 0.120.10 (2026-10-02)
 
 ### Fixed
