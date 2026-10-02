@@ -1204,7 +1204,62 @@ function buildReport(rows, opts = {}) {
     costPerCallKnown: Number.isFinite(opts.costPerCall),
     integrations,
     triageAnswers,
+    transports: buildTransportBreakdown(rows, opts.triageRows, cutoff),
   };
+}
+
+// buildTransportBreakdown(rows, triageRows, cutoff) -> [{transport, calls,
+// errors, avgMs, fellBack}] — per Jev VENDOR, over the decision rows that
+// actually reached a vendor (a cache hit or a mode-off/skipped row made no
+// call) plus triage rows served by Jev. `transport` is the vendor that served
+// (or last failed) the call; rows written before transport logging existed
+// carry none and are reported as 'unrecorded' (vercel was the default
+// transport then, so they are very likely vercel — but a user who had switched
+// is indistinguishable, hence "assumed", never merged into the vercel row).
+// avgMs is over successful calls only; fellBack counts calls the fallback
+// transport served after the primary failed.
+function buildTransportBreakdown(rows, triageRows, cutoff) {
+  const acc = new Map();
+  const slot = (row) => {
+    const key = (row.transport === 'vercel' || row.transport === 'typesafe') ? row.transport : 'unrecorded';
+    if (!acc.has(key)) acc.set(key, { transport: key, calls: 0, errors: 0, fellBack: 0, ms: [] });
+    return acc.get(key);
+  };
+  const inWindow = (row) => {
+    const ts = row.ts ? Date.parse(row.ts) : NaN;
+    return cutoff === null || cutoff === undefined || !Number.isFinite(ts) || ts >= cutoff;
+  };
+  for (const row of Array.isArray(rows) ? rows : []) {
+    if (!row || typeof row !== 'object' || row.type || !row.id || !inWindow(row)) continue;
+    const evaluated = row.backend === 'jev' || (row.backend === 'baseline-only' && row.reason);
+    if (!evaluated) continue;
+    const a = slot(row);
+    a.calls++;
+    if (row.backend === 'jev') { if (Number.isFinite(row.ms)) a.ms.push(row.ms); } else a.errors++;
+    if (row.fellBack === true) a.fellBack++;
+  }
+  for (const row of Array.isArray(triageRows) ? triageRows : []) {
+    if (!row || typeof row.hash !== 'string' || row.type === 'answered' || !inWindow(row)) continue;
+    if (row.backend !== 'jev' && row.backend !== 'jev+haiku') continue;
+    const a = slot(row);
+    a.calls++;
+    if (row.backend === 'jev' && Number.isFinite(row.ms)) a.ms.push(row.ms);
+    if (row.fellBack === true) a.fellBack++;
+  }
+  return [...acc.values()].map((a) => ({
+    transport: a.transport, calls: a.calls, errors: a.errors, fellBack: a.fellBack,
+    avgMs: a.ms.length ? Math.round(a.ms.reduce((x, y) => x + y, 0) / a.ms.length) : null,
+  })).sort((x, y) => y.calls - x.calls || x.transport.localeCompare(y.transport));
+}
+
+function printTransports(report) {
+  const t = report.transports || [];
+  if (!t.length) return;
+  console.log('\nby transport (calls that reached a vendor):');
+  for (const r of t) {
+    const label = r.transport === 'unrecorded' ? 'unrecorded (logged before transport tracking; vercel was the default, assumed)' : r.transport;
+    console.log(`  ${label}: ${r.calls} call(s), ${r.errors} error(s), avg ${r.avgMs === null ? 'n/a' : r.avgMs + 'ms'}, ${r.fellBack} fell back`);
+  }
 }
 
 function pct(n) {
@@ -1252,7 +1307,7 @@ function buildWeeklyScorecard(rows, opts = {}) {
     reason: weeklyReason(r),
     mode: getMode(r.id, cfg),
   }));
-  return { generatedAt: report.generatedAt, integrations };
+  return { generatedAt: report.generatedAt, integrations, transports: report.transports };
 }
 
 function printWeekly(scorecard) {
@@ -1264,6 +1319,7 @@ function printWeekly(scorecard) {
   for (const r of scorecard.integrations) {
     console.log(`  ${r.id} [${r.mode}]: ${r.suggestion} — ${r.reason} (${r.calls} calls)`);
   }
+  printTransports(scorecard);
 }
 
 function printTable(report) {
@@ -1562,6 +1618,7 @@ async function main() {
         console.log(`\n=== ${opts.by}: ${key} (${groupRows.length} row(s)) ===`);
         printTable(byGroup[key]);
         printHeadlines(byGroup[key]);
+        printTransports(byGroup[key]);
         // Real cost, per integration, WITHIN this project/session — sums
         // costUsd (see hooks/lib/jev-assist.js computeCostUsd) exactly like
         // the top-level printCostWindows, just scoped to this one group.
@@ -1600,6 +1657,7 @@ async function main() {
     printWindow(windowInfo);
     printTable(report);
     printHeadlines(report);
+    printTransports(report);
     printTriggers(triggers, report);
     printRollupHistory(rollupHistory);
     printCostWindows(costWindows);
@@ -1613,7 +1671,7 @@ module.exports = {
   buildCostWindows, COST_WINDOWS, readBudgetConfig, computeBudgetStatus,
   buildHeadline, labelsLogPath, readLabels, latestHumanLabelByHash, cmdLabel,
   auditLogPath, readAuditSnippet, cmdPruneAudit, maybeWarnLowCredit, budgetStatePath,
-  parseArgs, groupKeyOf, groupRowsBy, buildWeeklyScorecard, weeklyReason, readJevJson,
+  parseArgs, groupKeyOf, groupRowsBy, buildTransportBreakdown, buildWeeklyScorecard, weeklyReason, readJevJson,
   parseIsoMs, filterByTimeWindow, MIN_LABELED_FOR_VERDICT, printRealCostSummary,
   describeWindow, printWindow, readDailyRollups, buildRollupHistory, readTriggerRows, buildTriggerCounts,
 };

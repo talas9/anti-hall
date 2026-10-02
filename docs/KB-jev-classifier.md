@@ -689,3 +689,28 @@ port gets this integration for free with no separate implementation. `jev-assist
   a redacted ~200-char snippet for decisions that changed an outcome, in
   `~/.anti-hall/logs/jev-audit.ndjson` (mode 600); `jev-report.js prune-audit --days N`
   trims it (manual only).
+
+## 12. Transport differences (vercel vs typesafe) — measured 2026-10-02
+
+Both transports speak the same request shape (`{state, model, questions}`) and return the same answer shape
+(`answers.<key>` = `{type:'noul', noul}`); neither returns a `confidence` field (the client derives it from `noul`) or
+rate-limit headers. What differs, and what cannot be unified:
+
+| | typesafe (`api.typesafe.ai`) | vercel (`ai-gateway.vercel.sh/typesafe/...`) |
+|---|---|---|
+| request model | `jev-latest` (serves `jev-1.13.0`) | `typesafe-ai/jev` |
+| usage tokens | `usage.input_tokens/output_tokens` | same, plus `provider_metadata` |
+| per-request cost | none (jev-assist prices the tokens: `default-price` / `price-table`) | `provider_metadata.gateway.cost` (string; read as `costSource: gateway`) |
+| balance endpoint | none (`/v1/credits`, `/balance`, `/usage`, `/account`, `/me` all 404) | `GET /v1/credits` |
+| wrong key | 401 `{detail:{error_type:"authentication_error"}}` | 401 `{message,error_type}` |
+| malformed request | 422, FastAPI-style, **echoes the submitted state** in `detail[].input` | 400 |
+| bad model | 400 `api_usage_error` | 404 `model_not_found` |
+| exhausted balance | undocumented (UNVERIFIED) | 402 `insufficient_funds` (community reports, UNVERIFIED) |
+| latency (n=70) | p50 324 ms, p99 464 ms | p50 412 ms, p99 924 ms |
+
+Consequences in the code: the client never logs or returns an error body (the 422 echo); `jev.prices` entries are keyed by
+the response `model`, which differs per vendor (`jev-1.13.0` vs `typesafe-ai/jev`), so list both or use `default`;
+`jev-setup status`/`jev report` show a balance line per vendor (typesafe: "not available"); decision rows, daily rollups,
+triage rows and `jev report` ("by transport") carry the serving `transport` (rows from before this tracking read as
+"unrecorded", vercel being the default then, assumed). The gateway response routes to provider `typesafe-ai`, so the two
+transports very likely reach the same model (inference; unconfirmed): `jev.fallbackTransport` is not full redundancy.

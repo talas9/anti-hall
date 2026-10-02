@@ -220,6 +220,20 @@ function extractCostAndUsage(json) {
     if (Number.isFinite(json[key])) { out.cost = json[key]; break; }
   }
 
+  // MEASURED live (2026-10-02, vercel transport): the passthrough response DOES
+  // carry the per-request cost, as STRINGS, under
+  // provider_metadata.gateway.{cost, marketCost, gatewayCost, inferenceCost}
+  // (+ generationId, routing). `cost` is what was charged. The typesafe direct
+  // transport has no cost field (only usage tokens) -> cost stays null there
+  // and jev-assist prices the tokens instead (computeCostUsd).
+  const gw = json.provider_metadata && json.provider_metadata.gateway;
+  if (out.cost === null && gw && typeof gw === 'object') {
+    for (const key of ['cost', 'gatewayCost', 'marketCost']) {
+      const n = typeof gw[key] === 'string' && gw[key].trim() ? Number(gw[key]) : gw[key];
+      if (Number.isFinite(n)) { out.cost = n; break; }
+    }
+  }
+
   // Vercel "look up a generation" token field names -- defensive only.
   if (Number.isFinite(json.tokens_prompt)) out.tokensIn = json.tokens_prompt;
   if (Number.isFinite(json.tokens_completion)) out.tokensOut = json.tokens_completion;

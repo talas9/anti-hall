@@ -303,6 +303,8 @@ function triageMessagesSync(items, opts) {
           kind: label.kind || null,
           backend: label.backend || null,
           ms: Number.isFinite(label.ms) ? label.ms : null,
+          ...((label.transport === 'vercel' || label.transport === 'typesafe') ? { transport: label.transport } : {}),
+          ...(label.fellBack === true ? { fellBack: true } : {}),
         });
       } else {
         // no confident label from either backend -> cache the "no label"

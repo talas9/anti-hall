@@ -173,7 +173,7 @@ async function classifyOne(rawText, deadline, jevCfg, urgentThreshold, jevDecide
           }
         }
         out.ms = result.ms;
-        if (out.kind || out.urgency) backendUsed = 'jev';
+        if (out.kind || out.urgency) { backendUsed = 'jev'; out.transport = result.transport; out.fellBack = result.fellBack === true; }
       }
     } catch (_) {
       // fall through to haiku
@@ -205,7 +205,11 @@ async function classifyOne(rawText, deadline, jevCfg, urgentThreshold, jevDecide
   }
 
   if (!out.kind && !out.urgency) return null;
-  return { urgency: out.urgency, kind: out.kind, backend: backendUsed || 'unknown', ms: out.ms || 0 };
+  return {
+    urgency: out.urgency, kind: out.kind, backend: backendUsed || 'unknown', ms: out.ms || 0,
+    // which Jev vendor served the label (omitted when only Haiku answered)
+    ...(out.transport ? { transport: out.transport } : {}), ...(out.fellBack ? { fellBack: true } : {}),
+  };
 }
 
 async function main() {
