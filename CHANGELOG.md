@@ -6,12 +6,6 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
-## Unreleased
-
-### Changed
-
-- The plugin icon is back in the plugin at the directory's default path, `plugins/anti-hall/.claude-plugin/icon.png` (512x512 PNG, found without an `icon` key in the manifest, which the directory holds). The listing icon is whatever was uploaded in the directory portal; the repository copy is read only at first submission. `tests/hygiene/plugin-icon.test.js` replaces the no-image test.
-
 ## 0.122.0 (2026-10-03)
 
 ### Added
@@ -31,7 +25,7 @@ the update.
 - **Stored plugin-option values are copied into `~/.anti-hall/settings.json` on update:** plugin-option values are now migrated into `~/.anti-hall/settings.json` for every plugin-option setting except the 10 headline switches, locked/home-only keys and the credential options, and only when the stored value is already the effective one (the migration never changes what resolves; it re-checks "still unset" under the settings lock). Stored options are read under both `pluginConfigs` keys (`anti-hall@anti-hall`, `anti-hall`) and both shapes. The 10 headline keys are flagged `headline` in the schema. New permanent default-equivalence test.
 - Both READMEs end with a "Links" section naming Documentation, Support and Privacy; `documentationUrl` now points at the documentation start page (`docs/README.md`).
 - Eight over-200-character tokens (seven regex literals in `model-routing-guard.js`, `command-guard.js`, `claim-ledger.js`, plus the command list in `devswarm.js`'s unknown-command error) are rebuilt from short joined parts so the directory scanner can read them. Behaviour is unchanged; `tests/hygiene/regex-source-equality.test.js` pins each rebuilt `RegExp.source` and `.flags` to the original.
-- The plugin no longer ships an image: the `icon` key is removed from the Claude manifest and `icon.png` moved to `assets/anti-hall-icon.png` (the listing icon is uploaded in the directory portal). A hygiene test asserts no image or font file is tracked under the plugin folder.
+- The `icon` key is removed from the Claude manifest. The plugin icon ships at the directory's default path, `plugins/anti-hall/.claude-plugin/icon.png` (512x512 PNG, found without an `icon` key), and a copy is kept at `assets/anti-hall-icon.png`. The listing icon is whatever was uploaded in the directory portal; the repository copy is read only at first submission. `tests/hygiene/plugin-icon.test.js` checks the icon and that no other image or font file is tracked under the plugin folder.
 - Skill and model-policy documents refer to this repository's own docs by plain repository path (`docs/KB-….md`) instead of a full URL. Affected: the devswarm, jev, ship-it and update skills, their Codex counterparts (devswarm, doctor, jev, update) and both `MODEL-POLICY.md` copies. Vendor documentation URLs in the Jev skills are unchanged.
 - The devswarm skills point at the archived orchestration design and plan under `docs/archive/superpowers/` (the old path no longer existed).
 - The Jev skill leads with the plugin option for storing a key, marks the key file as an opt-in legacy path, and matches the real `set-key` output.
