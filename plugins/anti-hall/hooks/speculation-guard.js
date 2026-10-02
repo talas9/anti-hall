@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // anti-hall :: speculation-guard (Stop hook, loop-safe)
 //
-// Fires on Stop. Reads the transcript, extracts the LAST assistant message,
+// Fires on Stop. Takes the reply being stopped (payload `last_assistant_message`;
+// the transcript's LAST assistant message only when that field is absent/blank),
 // scans it for speculation markers (hedge words that assert without evidence),
 // and blocks ONCE if speculation markers are present and the message contains
 // no evidence/uncertainty acknowledgment that would make the hedging honest.
@@ -629,7 +630,12 @@ async function main() {
   // duplicated) text drives the regex path and the loop-safety hash so both
   // stay byte-identical to the pre-Jev hook. The deduplicated text is computed
   // lazily below and used ONLY as Jev's input.
-  const lastText = extractLastAssistantTextLegacy(transcriptPath);
+  // The Stop payload's `last_assistant_message` (the reply being stopped) wins;
+  // the transcript tail can still end at the PREVIOUS turn at Stop time, so it
+  // is only the fallback (lib/reply-text.js). Everything below judges this one text.
+  const { payloadReplyText, selectReplyText } = require('./lib/reply-text.js');
+  const payloadText = payloadReplyText(payload);
+  const lastText = selectReplyText(payload, () => extractLastAssistantTextLegacy(transcriptPath));
   if (!lastText) {
     process.exit(0);
   }
@@ -639,7 +645,9 @@ async function main() {
   // back to the unmasked text for marker matching -- the same rationale as
   // the allQuotedOrFenced short-circuit for `>`/fenced replies: a hedge
   // that has nowhere else to state itself still fires.
-  let markerText = extractLastAssistantMarkerText(transcriptPath) || '';
+  let markerText = (payloadText !== null
+    ? maskQuotedText(payloadText)
+    : extractLastAssistantMarkerText(transcriptPath)) || '';
   if (markerText.trim() === '') {
     markerText = lastText;
   }
@@ -749,7 +757,7 @@ async function main() {
     } else if (jevCfg.enabled) {
       const { ask } = require('./lib/jev-assist.js');
       // Dedup text only for Jev's input — see extractLastAssistantTextWith comment.
-      const jevText = extractLastAssistantTextDedup(transcriptPath) || lastText;
+      const jevText = payloadText !== null ? payloadText : (extractLastAssistantTextDedup(transcriptPath) || lastText);
       const result = await ask({
         id: 'speculation',
         question: JEV_QUESTION,
@@ -841,7 +849,7 @@ async function main() {
         // fired-but-gated one are otherwise indistinguishable (jev report: "triggers seen").
         appendJevLog({ ts: new Date().toISOString(), event: 'trigger', id: 'speculationFramed', outcome: 'seen' });
         const { ask, turnRefFromTranscript } = require('./lib/jev-assist.js');
-        const jevText = extractLastAssistantTextDedup(transcriptPath) || lastText;
+        const jevText = payloadText !== null ? payloadText : (extractLastAssistantTextDedup(transcriptPath) || lastText);
         const framedResult = await ask({
           id: 'speculationFramed',
           question: FRAMED_JEV_QUESTION,

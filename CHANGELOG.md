@@ -15,6 +15,7 @@ the update.
 - **A flat `.anti-hall/handovers/*.md` now counts as an archived child's handover** (doctor "handover NOT written" false alarm), when written at/after 24 h before the archive time; older flat files do not count. The archived banner/Stop text now also tells the child to delete its own `inbox tick` cron. Twin state (archived marker beside an active descriptor) and a new unregistered child never go silent.
 
 - **The wake-watch "handed off to <version>" line no longer reads as "the plugin update is installed".** When the harness registry still names an older version, the same single line now ends with "(cached only: the harness still registers <old>, so this session's hooks are unchanged until the plugin update is registered and plugins are reloaded)". The handoff itself is unchanged; the line is unchanged when the version is registered.
+- The speculation check now judges the reply actually being sent, not the previous one. It reads the Stop payload's `last_assistant_message` and only falls back to the transcript when that field is missing or empty.
 
 ## 0.121.3 (2026-10-02)
 

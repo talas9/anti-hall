@@ -110,6 +110,83 @@ test('FAIL-OPEN: malformed JSON -> no block', () => {
 });
 
 // ---------------------------------------------------------------------------
+// last_assistant_message: the Stop payload carries the reply being stopped; the
+// transcript tail may still end at the PREVIOUS turn. The payload wins; the
+// transcript is only the fallback (hooks/lib/reply-text.js).
+// ---------------------------------------------------------------------------
+const crypto = require('node:crypto');
+const fsSync = require('node:fs');
+const pathSync = require('node:path');
+
+function withLam(tp, lam) {
+  return Object.assign(stopPayload(tp), { last_assistant_message: lam });
+}
+
+test('LAM (a): older transcript hedge + clean payload reply -> allow', () => {
+  const h = makeHome();
+  try {
+    const tp = h.writeTranscript([assistantMessage('It must be the cache.')]);
+    const r = testHook(HOOK, withLam(tp, 'Done. Tests pass 5/5.'), { home: h.home });
+    assert.ok(!isBlock(r), `expected allow (payload is clean); stdout: ${r.stdout}`);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('LAM (b): clean transcript + hedged payload reply -> block naming the payload marker', () => {
+  const h = makeHome();
+  try {
+    const tp = h.writeTranscript([assistantMessage('I ran the test and it passed: 5/5.')]);
+    const r = testHook(HOOK, withLam(tp, 'The failure is probably a stale lockfile.'), { home: h.home });
+    assert.ok(isBlock(r), `expected block from payload text; stdout: ${r.stdout}`);
+    assert.match(r.json.reason, /probably/i, `block must name the payload marker; reason: ${r.json.reason}`);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('LAM (c): field absent -> judges the transcript tail as before', () => {
+  const h = makeHome();
+  try {
+    const tp = h.writeTranscript([assistantMessage('This should be fine now.')]);
+    const r = testHook(HOOK, stopPayload(tp), { home: h.home });
+    assert.ok(isBlock(r), `expected block from transcript; stdout: ${r.stdout}`);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('LAM (d): empty / blank / non-string field -> falls back to the transcript', () => {
+  for (const bad of ['', '   ', 42, null, { text: 'x' }]) {
+    const h = makeHome();
+    try {
+      const tp = h.writeTranscript([assistantMessage('This should be fine now.')]);
+      const r = testHook(HOOK, withLam(tp, bad), { home: h.home });
+      assert.ok(isBlock(r), `field ${JSON.stringify(bad)} must fall back to the transcript; stdout: ${r.stdout}`);
+    } finally {
+      h.cleanup();
+    }
+  }
+});
+
+test('LAM (e): dedupe state hash is computed from the payload text', () => {
+  const h = makeHome();
+  try {
+    const tp = h.writeTranscript([assistantMessage('I ran the test and it passed: 5/5.')]);
+    const lam = 'The failure is probably a stale lockfile.';
+    const r = testHook(HOOK, withLam(tp, lam), { home: h.home });
+    assert.ok(isBlock(r), `expected block; stdout: ${r.stdout}`);
+    const state = JSON.parse(fsSync.readFileSync(pathSync.join(h.antiHall, STATE_FILE), 'utf8'));
+    assert.strictEqual(state.hash, crypto.createHash('sha1').update(lam).digest('hex'));
+    // Same payload again: deduped (blocked once per distinct message).
+    const r2 = testHook(HOOK, withLam(tp, lam), { home: h.home });
+    assert.ok(!isBlock(r2), `same payload text must not re-block; stdout: ${r2.stdout}`);
+  } finally {
+    h.cleanup();
+  }
+});
+
+// ---------------------------------------------------------------------------
 // JEV integration (opt-in). A local mock HTTP server stands in for the Vercel
 // AI Gateway via ANTIHALL_JEV_TEST_ENDPOINT (jev-client.js's test-only hatch);
 // no test here touches the real network. Children are spawned async (not
