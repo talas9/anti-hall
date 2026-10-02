@@ -18,8 +18,8 @@ workspace too. What follows is what a Codex user needs to know about the four ad
 
 | Addon | Status | Where |
 |---|---|---|
-| **hivecontrol reference KB** | Reference doc | `https://github.com/talas9/anti-hall/blob/main/docs/KB-devswarm-hivecontrol.md` — the `hivecontrol` CLI surface, `.devswarm/config.json` schema, `DEVSWARM_*` env vars, and the parent/child async message-passing model. Includes a parallel OMC/OMX table for the workspace tier (§8.4 of the KB): the workspace-create/merge surface is CLI-identical either way; only the in-workspace fan-out engine differs (Workflow tool + subagents for Claude, `omx team`/workers for Codex). Repo-clone-only — does not ship with a plugin install. |
-| **Workspace-tier orchestration** | **Partially shipped: the DOCTRINE is live (both agents); mechanical enforcement is NOT built** | SHIPPED — a DevSwarm **Primary** is now proactively told that a **child workspace** is its top fan-out tier (above subagents) plus the choice rule, and the guard redirect names `node scripts/devswarm.js spawn <branch> -p "<brief>"` instead of "spawn a subagent". This reaches **Codex too**: the injecting hooks (`verify-first-orch.js` rule W, `verify-first.js`, `task-tracker.js`) and `command-guard.js` are the SAME files registered in `codex/hooks/hooks.json`. (`edit-guard.js` carries the same redirect but is Claude-only — it is not registered for Codex.) Gated on `isDevswarmActive() && !isChildWorkspace()`, so a CHILD workspace and any non-DevSwarm session are byte-identical to before. NOT BUILT — **no mechanical classifier** blocks a "workspace-scale" subagent spawn (deliberate: false positives would break legitimate subagent use), and the fuller design in `https://github.com/talas9/anti-hall/blob/main/docs/superpowers/specs/2026-07-05-devswarm-orchestration-design.md` + `https://github.com/talas9/anti-hall/blob/main/docs/superpowers/plans/2026-07-06-devswarm-orchestration.md` (`devswarm-guard.js`/`devswarm-children.js`) still does not exist. |
+| **hivecontrol reference KB** | Reference doc | `docs/KB-devswarm-hivecontrol.md` in the anti-hall source repository — the `hivecontrol` CLI surface, `.devswarm/config.json` schema, `DEVSWARM_*` env vars, and the parent/child async message-passing model. Includes a parallel OMC/OMX table for the workspace tier (§8.4 of the KB): the workspace-create/merge surface is CLI-identical either way; only the in-workspace fan-out engine differs (Workflow tool + subagents for Claude, `omx team`/workers for Codex). Repo-clone-only — does not ship with a plugin install. |
+| **Workspace-tier orchestration** | **Partially shipped: the DOCTRINE is live (both agents); mechanical enforcement is NOT built** | SHIPPED — a DevSwarm **Primary** is now proactively told that a **child workspace** is its top fan-out tier (above subagents) plus the choice rule, and the guard redirect names `node scripts/devswarm.js spawn <branch> -p "<brief>"` instead of "spawn a subagent". This reaches **Codex too**: the injecting hooks (`verify-first-orch.js` rule W, `verify-first.js`, `task-tracker.js`) and `command-guard.js` are the SAME files registered in `codex/hooks/hooks.json`. (`edit-guard.js` carries the same redirect but is Claude-only — it is not registered for Codex.) Gated on `isDevswarmActive() && !isChildWorkspace()`, so a CHILD workspace and any non-DevSwarm session are byte-identical to before. NOT BUILT — **no mechanical classifier** blocks a "workspace-scale" subagent spawn (deliberate: false positives would break legitimate subagent use), and the fuller design in `docs/archive/superpowers/specs/2026-07-05-devswarm-orchestration-design.md` + `docs/archive/superpowers/plans/2026-07-06-devswarm-orchestration.md` (`devswarm-guard.js`/`devswarm-children.js`) still does not exist. |
 | **Liveness supervisor (detect → poke → escalate, never kills)** | **Shipped — Claude-only** | `companion/devswarm-supervisor.js` + `install-devswarm-supervisor.js` + `companion/lib/{liveness,recovery,target-session,doctor-devswarm}.js`. The automatic background sweep. Recovers **wedged `claude` sessions specifically** (workaround for `claude-code#39755`) — it identity-binds to `claude -p --resume <uuid>` processes by argv, not Codex sessions. This section explains it for awareness; it is not a Codex-side capability. (`hooks/lib/devswarm-detect.js`/`hooks/lib/devswarm-role.js` are shared env-detection helpers, not supervisor-only — `hooks/devswarm-child-role.js`, the SessionStart child self-report hook, is now registered for **both** agents; see below.) |
 | **On-demand recovery CLI (the ONLY kill path)** | **Shipped — targets `claude` processes only** | `companion/devswarm-recover.js`, invoked explicitly per workspace id. Still Claude-only in what it targets (see below), but a Codex-side operator can run it. |
 
@@ -96,7 +96,7 @@ durable inbox exists, so it is now treated exactly like `monitor`. Non-destructi
 `message-count` is untouched — but as of v0.58, `message-parent`/`message-child` are
 **not** untouched anymore, see the next section. Own `devswarm-read-guard` skip name (in
 skip-guard's `DESTRUCTIVE` set — a blanket `all` skip does not cover it). Full detail:
-`https://github.com/talas9/anti-hall/blob/main/docs/KB-devswarm-hivecontrol.md` §8.5.
+`docs/KB-devswarm-hivecontrol.md` §8.5.
 
 A second guard closes the RAW-file-read hole (`cat`/`head`/`grep`/… of the durable
 inbox/store — doesn't drain the native queue, but desyncs the durable cursor and
@@ -104,7 +104,7 @@ violates the store's write/derive layering). The shell-verb form is caught by
 `command-guard.js` itself — **shared, so this fires on Codex too.** The dedicated
 `Read`-tool guard (`hooks/inbox-read-guard.js`) is **Claude-only** (not registered in
 `codex/hooks/hooks.json` — it guards Claude's own `Read` tool specifically). Full
-taxonomy: `https://github.com/talas9/anti-hall/blob/main/docs/KB-devswarm-hivecontrol.md` §8.5.
+taxonomy: `docs/KB-devswarm-hivecontrol.md` §8.5.
 
 ## command-guard's native-SEND block — v0.58 "mesh-only messaging" (applies to Codex too)
 
@@ -128,7 +128,7 @@ reason redirects to the mesh CLI: `node scripts/devswarm.js send --to-primary --
 the mesh top-of-mind (injected by `devswarm-child-role.js`/`devswarm-child-turn.js`/
 `devswarm-parent-inbox.js`) was previously undocumented for Codex on the premise that these
 hooks' gating `DEVSWARM_*` env vars were Claude-only. That premise was wrong —
-`https://github.com/talas9/anti-hall/blob/main/docs/KB-devswarm-hivecontrol.md` §6/§8.7 (live-verified env fingerprint) states
+`docs/KB-devswarm-hivecontrol.md` §6/§8.7 (live-verified env fingerprint) states
 `DEVSWARM_REPO_ID`/`DEVSWARM_SOURCE_BRANCH`/`DEVSWARM_BUILDER_ID` are set by hivecontrol
 per-workspace regardless of agent — `DEVSWARM_AI_AGENT` is the separate var naming
 claude vs codex — the same fact §8.5/§8.7 already established for `command-guard.js`'s own
@@ -137,7 +137,7 @@ the Stop-side `devswarm-parent-gate.js`/`devswarm-child-gate.js`) are now regist
 `codex/hooks/hooks.json`, unmodified, alongside the guard-block. A Codex agent inside an
 active DevSwarm workspace is therefore mechanically PREVENTED from sending a native message
 AND gets the same proactive mesh reminder every turn that a Claude session gets — see
-"Always-listening reception" below. Full detail: `https://github.com/talas9/anti-hall/blob/main/docs/KB-devswarm-hivecontrol.md` §8.5's
+"Always-listening reception" below. Full detail: `docs/KB-devswarm-hivecontrol.md` §8.5's
 v0.58 bullet and §8.7's "v0.58 mesh-only messaging" note.
 
 **Parent Stop-gate: count parity + busy-vs-neglect (v0.109.0).** `devswarm-parent-gate.js`
@@ -156,7 +156,7 @@ window, blocks (one waiting twin blocks its whole family); a busy child still bl
 oldest unread passes `devswarm.parentGateBusyMaxAgeMin` (default `60`); a busy pass keeps the
 forced-ack/escalation count. A NOT-busy child still blocks past
 `devswarm.parentGateNeglectMinUnread` (default `0`). Full detail:
-`https://github.com/talas9/anti-hall/blob/main/docs/KB-devswarm-hivecontrol.md`'s parent-gate section.
+`docs/KB-devswarm-hivecontrol.md`'s parent-gate section.
 
 ## Child-side reception — `devswarm.js inbox pull` (shipped, v0.54.2)
 
@@ -173,7 +173,7 @@ the native messages — the count-gate minimizes but cannot close it (hivecontro
 non-destructive full read); a failed append surfaces `ok:false`, no partial NDJSON. (2)
 Pull-not-push: reception latency = one turn (no background child drainer). The drain module
 (`companion/lib/devswarm-pull.js`) and the durable inbox are Claude-side companion state, but
-the CLI itself runs identically either way. Full detail: `https://github.com/talas9/anti-hall/blob/main/docs/KB-devswarm-hivecontrol.md`
+the CLI itself runs identically either way. Full detail: `docs/KB-devswarm-hivecontrol.md`
 (v0.54.2 note).
 
 **Subagents never own the mailbox (v0.98.1, defect f0958b13fe2b):** only the workspace
@@ -185,7 +185,7 @@ silently misses mail. The guard is registered in the shared `command-guard.js` h
 Codex code path. Its deny behavior depends on the harness supplying subagent markers
 (`agent_id`/`agent_type`) in the hook payload, which has been verified on Claude Code only.
 Blocks whenever the PreToolUse payload shows subagent context (skip via `ANTIHALL_ALLOW_SUBAGENT_MAILBOX=1` or
-the `devswarm-subagent-mailbox-guard` skip name); see `https://github.com/talas9/anti-hall/blob/main/docs/KB-devswarm-hivecontrol.md` §42. (Phase 5: `read-primary` / `messages --ack` are read-only — after handling the mail run the returned `ackCommand`, i.e. `inbox ack-primary <id> --receipt <rid>`.)
+the `devswarm-subagent-mailbox-guard` skip name); see `docs/KB-devswarm-hivecontrol.md` §42. (Phase 5: `read-primary` / `messages --ack` are read-only — after handling the mail run the returned `ackCommand`, i.e. `inbox ack-primary <id> --receipt <rid>`.)
 
 **One read-position table (mesh redesign Phase 3 — supersedes the per-instance files below).**
 Every read position is a row in the store's `reader_cursors` table: `'#floor'` (the stored,
@@ -290,7 +290,7 @@ row with a real (non-`unclaimed:`) `sessionId`, then the row whose `id` starts w
 `basename(worktreePath) + '-'` (the branch-slug row), then ascending lexical `id` as the final
 tiebreak — closing a bug (f3b8f326bfc3) where the old liveness-based picker could report a
 different sender for the SAME stored message across passes. Full rule and field case:
-`https://github.com/talas9/anti-hall/blob/main/docs/KB-devswarm-hivecontrol.md` §39.
+`docs/KB-devswarm-hivecontrol.md` §39.
 
 **(v0.94.0) Bounded reconcile.** `reconcile` now applies a total wall-clock budget across all
 its per-row drains — `ANTIHALL_RECONCILE_BUDGET_MS` (default `60000`; `0` = unlimited) or
@@ -312,7 +312,7 @@ Descriptor/registry divergence is repaired in both directions, and a registry wr
 during promotion is now reported as `promotion.registryWriteError` on `inbox pull`/
 `read-primary`/`inbox messages` JSON output (plus a stderr line) instead of being
 swallowed — the descriptor promotion itself already succeeded, and the next read repairs
-the registry from the descriptor's existing value. Full record: `https://github.com/talas9/anti-hall/blob/main/docs/KB-devswarm-hivecontrol.md` §40. (Phase 5: `read-primary` / `messages --ack` are read-only — after handling the mail run the returned `ackCommand`, i.e. `inbox ack-primary <id> --receipt <rid>`.)
+the registry from the descriptor's existing value. Full record: `docs/KB-devswarm-hivecontrol.md` §40. (Phase 5: `read-primary` / `messages --ack` are read-only — after handling the mail run the returned `ackCommand`, i.e. `inbox ack-primary <id> --receipt <rid>`.)
 
 ## Auto-archive and prune (v0.108.0; needs DevSwarm >= 2.5.3)
 
@@ -473,7 +473,7 @@ sent, the likely cause is a **second process** — outside anti-hall entirely �
 neither the Claude nor the Codex side of `command-guard.js` can see or block a process outside
 its own tool-call surface. **anti-hall CANNOT mechanically detect or kill an external
 non-tool-call consumer — identification + your own cleanup are the only levers.** Full
-identify → stop → verify recipe: `https://github.com/talas9/anti-hall/blob/main/docs/KB-devswarm-hivecontrol.md` §8.7.2 (`ps aux | grep
+identify → stop → verify recipe: `docs/KB-devswarm-hivecontrol.md` §8.7.2 (`ps aux | grep
 'hivecontrol.*monitor'` → kill the PID + remove its respawn config → re-run
 `node hooks/doctor.js`).
 
@@ -504,12 +504,12 @@ CLI proactively (that reminder is a Claude-only hook, per the section above). Un
 v0.57.1 formally ships, do not tell a Codex user `send`/`roster`/`mesh read`/`reconcile`/
 `spawn`/`merge` are RECOMMENDED for their workflow, and do not claim the per-project daemon
 covers a Codex-run workspace — but do NOT claim the native messaging path still works for
-them either; it does not. Full detail: `https://github.com/talas9/anti-hall/blob/main/docs/KB-devswarm-hivecontrol.md` §8.7's "v0.57 mesh
+them either; it does not. Full detail: `docs/KB-devswarm-hivecontrol.md` §8.7's "v0.57 mesh
 follow-up" and "v0.58 mesh-only messaging" notes.
 
 ## DevSwarm app database + screenshot sync (v0.108.0 — applies to Codex too)
 
-anti-hall reads the DevSwarm desktop app's own database. It is read-only, capability-gated and fail-open, and it is the ground truth for workspace state. Full field-by-field evidence is in `https://github.com/talas9/anti-hall/blob/main/docs/KB-devswarm-app-db.md`.
+anti-hall reads the DevSwarm desktop app's own database. It is read-only, capability-gated and fail-open, and it is the ground truth for workspace state. Full field-by-field evidence is in `docs/KB-devswarm-app-db.md`.
 
 What it gives you:
 - **Titles.** The roster and the per-turn table show the app's full title. Titles are no longer cut at 60 chars on spawn, and renames made in the app propagate. **(0.109.0)** the app-DB names-cache mirror never lets a label that is still the raw branch name (hivecontrol's create-time default, before spawn's own separate `update-title` call lands) clobber an already-cached, different title — closing a race that used to make a spawned workspace's title read as the branch name or the brief unpredictably.
@@ -569,7 +569,7 @@ Codex or Claude session (`node "$ANTI_HALL_ROOT/scripts/devswarm.js" <cmd> ...`,
 nothing here is ever improvised against raw sqlite/NDJSON. Every verb emits one JSON line
 on stdout, exit `0`=`ok:true`/`2`=`ok:false`; every `<id>` is `isSafeId`-gated
 (`^[A-Za-z0-9._-]+$`). Full narrative + source-line citations + a worked lifecycle example:
-`https://github.com/talas9/anti-hall/blob/main/docs/KB-devswarm-hivecontrol.md` §8.8 (or the identical fuller reference in
+`docs/KB-devswarm-hivecontrol.md` §8.8 (or the identical fuller reference in
 `plugins/anti-hall/skills/devswarm/SKILL.md`, the Claude mirror of this skill).
 
 ### The daemons
@@ -814,7 +814,7 @@ FROM, since `hivecontrol` itself resolves a workspace by walking up from the pro
 cwd, not by id. A mixed setup with multiple DevSwarm repos on one machine needs this
 installer run once per repo; a repo with no install of its own has zero ingest coverage,
 whether its workspaces run Claude or Codex agents. Full detail:
-`https://github.com/talas9/anti-hall/blob/main/docs/KB-devswarm-hivecontrol.md` §8.7.
+`docs/KB-devswarm-hivecontrol.md` §8.7.
 
 Outputs to watch either way: `~/.anti-hall/devswarm/liveness/<id>.json` (per-workspace
 verdict — `alive`/`stale`/`nudged`/`ambiguous`/`escalated`), `~/.anti-hall/devswarm/recovery.log`
@@ -858,10 +858,10 @@ projection file every 2s by default) is the primary path, with a **`CronCreate`
 mailbox-poll job retained permanently as the fallback** for every case where Monitor is
 unavailable (Bedrock/Vertex/Foundry, telemetry disabled, project-scope plugin installs,
 non-interactive sessions) — the fallback's own cadence is 30 minutes by default as of
-v0.97.0/D13 (was 5 minutes; see `https://github.com/talas9/anti-hall/blob/main/docs/KB-claude-monitor-tool.md` §7 for the field
+v0.97.0/D13 (was 5 minutes; see `docs/KB-claude-monitor-tool.md` §7 for the field
 measurement behind that change and the `inbox tick` one-command drain it uses). Full
 mechanics, the pure-reader watcher pattern, and why the watcher must never call a
-mutating CLI verb: `https://github.com/talas9/anti-hall/blob/main/docs/KB-claude-monitor-tool.md` §7.
+mutating CLI verb: `docs/KB-claude-monitor-tool.md` §7.
 
 **`Monitor` is a Claude Code CLI built-in with no verified Codex equivalent** [verified:
 Claude Code docs + tool schema are Claude-only for this tool; no `Monitor`-equivalent MCP

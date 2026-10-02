@@ -16,8 +16,8 @@ project is running DevSwarm, not to this plugin.
 
 | Addon | Status | Where |
 |---|---|---|
-| **hivecontrol reference KB** | Reference doc | `https://github.com/talas9/anti-hall/blob/main/docs/KB-devswarm-hivecontrol.md` — the `hivecontrol` CLI surface, `.devswarm/config.json` schema, `DEVSWARM_*` env vars, and the async message-passing coordination model. Repo-clone-only (like all `docs/`, it does not ship with `/plugin install`). |
-| **Workspace-tier orchestration** | **Partially shipped: the DOCTRINE is live; mechanical enforcement is NOT built** | SHIPPED — a DevSwarm **Primary** is now told, proactively and at every dispatch point, that a **child workspace** is its top fan-out tier (above subagent/Explore/Workflow) and given the choice rule: `hooks/verify-first-orch.js` (rule W, SessionStart), `hooks/verify-first.js` + `hooks/task-tracker.js` (per turn), and the two guard redirects — `hooks/edit-guard.js` / `hooks/command-guard.js` now name `node scripts/devswarm.js spawn <branch> -p "<brief>"` as the Primary's exit instead of "spawn a subagent". Gated on `isDevswarmActive() && !isChildWorkspace()`, so a CHILD workspace and any non-DevSwarm session see byte-identical output to before. NOT BUILT — there is **no mechanical classifier**: nothing detects "this Agent spawn is workspace-scale" and blocks it (deliberate: false positives would break legitimate subagent use), and the fuller design in `https://github.com/talas9/anti-hall/blob/main/docs/superpowers/specs/2026-07-05-devswarm-orchestration-design.md` + `https://github.com/talas9/anti-hall/blob/main/docs/superpowers/plans/2026-07-06-devswarm-orchestration.md` (a `devswarm-guard.js` / `devswarm-children.js` enforcement layer) does not exist. Enforcement today = the existing guard BLOCK + a corrected redirect; the tier choice itself is the model's. |
+| **hivecontrol reference KB** | Reference doc | `docs/KB-devswarm-hivecontrol.md` in the anti-hall source repository — the `hivecontrol` CLI surface, `.devswarm/config.json` schema, `DEVSWARM_*` env vars, and the async message-passing coordination model. Repo-clone-only (like all `docs/`, it does not ship with `/plugin install`). |
+| **Workspace-tier orchestration** | **Partially shipped: the DOCTRINE is live; mechanical enforcement is NOT built** | SHIPPED — a DevSwarm **Primary** is now told, proactively and at every dispatch point, that a **child workspace** is its top fan-out tier (above subagent/Explore/Workflow) and given the choice rule: `hooks/verify-first-orch.js` (rule W, SessionStart), `hooks/verify-first.js` + `hooks/task-tracker.js` (per turn), and the two guard redirects — `hooks/edit-guard.js` / `hooks/command-guard.js` now name `node scripts/devswarm.js spawn <branch> -p "<brief>"` as the Primary's exit instead of "spawn a subagent". Gated on `isDevswarmActive() && !isChildWorkspace()`, so a CHILD workspace and any non-DevSwarm session see byte-identical output to before. NOT BUILT — there is **no mechanical classifier**: nothing detects "this Agent spawn is workspace-scale" and blocks it (deliberate: false positives would break legitimate subagent use), and the fuller design in `docs/archive/superpowers/specs/2026-07-05-devswarm-orchestration-design.md` + `docs/archive/superpowers/plans/2026-07-06-devswarm-orchestration.md` (a `devswarm-guard.js` / `devswarm-children.js` enforcement layer) does not exist. Enforcement today = the existing guard BLOCK + a corrected redirect; the tier choice itself is the model's. |
 | **Liveness supervisor (detect → poke → escalate, never kills)** | **Shipped** | `companion/devswarm-supervisor.js`, `companion/install-devswarm-supervisor.js`, `companion/lib/{liveness,recovery,target-session,doctor-devswarm}.js`, `hooks/lib/devswarm-detect.js`, `hooks/lib/devswarm-role.js`, `hooks/devswarm-child-role.js`. The automatic background sweep. See "The layered recovery model" below. |
 | **On-demand recovery CLI (the ONLY kill path)** | **Shipped** | `companion/devswarm-recover.js`. Invoked explicitly, per workspace id, by an operator (or a parent orchestrator acting on an escalation). See "On-demand recovery" below. |
 
@@ -60,7 +60,7 @@ status. Fires on both platforms — `command-guard.js` is the single shared hook
 Codex Bash tool call is blocked identically — but the PROACTIVE per-turn reminder that
 keeps the mesh top-of-mind (below) is Claude-only; a Codex session only learns this
 reactively, at the moment it attempts a native send. Full detail:
-`https://github.com/talas9/anti-hall/blob/main/docs/KB-devswarm-hivecontrol.md` §8.5's v0.58 bullet.
+`docs/KB-devswarm-hivecontrol.md` §8.5's v0.58 bullet.
 
 A companion guard closes the same hole for RAW file reads of the durable inbox/store
 (`cat`/`head`/`grep`/… via Bash, or the `Read` tool) — those don't drain the native
@@ -73,7 +73,7 @@ read path exists to serve the same data (`inbox messages`, below — already shi
 Everything else under `~/.anti-hall/devswarm/` (`summary.json`, `cursors/**`,
 `workspaces/**`, `liveness/**`, `heartbeats/**`, `locks/**`) is unaffected. Full
 detail (including the exact taxonomy and why raw reads are blocked at all — the
-single-native-consumer invariant): `https://github.com/talas9/anti-hall/blob/main/docs/KB-devswarm-hivecontrol.md` §8.5/§8.7.1.
+single-native-consumer invariant): `docs/KB-devswarm-hivecontrol.md` §8.5/§8.7.1.
 
 ## Child-side reception — `devswarm.js inbox pull` (shipped, v0.54.2)
 
@@ -91,7 +91,7 @@ the durable append, so a crash in that window loses the native messages — the 
 minimizes but cannot close it (hivecontrol has no non-destructive full read); a failed append
 surfaces `ok:false` and writes no partial NDJSON. (2) It is pull-not-push: reception latency =
 one child turn (no background child drainer — a child cannot host the blocking `monitor`
-daemon). Full detail: `https://github.com/talas9/anti-hall/blob/main/docs/KB-devswarm-hivecontrol.md` (v0.54.2 note).
+daemon). Full detail: `docs/KB-devswarm-hivecontrol.md` (v0.54.2 note).
 
 **Subagents never own the mailbox (v0.98.1, defect f0958b13fe2b):** only the workspace
 main thread may run `inbox pull`/`ack`/`read`/`read-primary`/`tick`/`reap-orphans`,
@@ -100,7 +100,7 @@ or `roster --ack` — a subagent that does advances the shared cursor and the ma
 silently misses mail. `hooks/command-guard.js`'s `devswarm-subagent-mailbox-guard` blocks
 these verbs whenever the PreToolUse payload shows subagent context (skip via
 `ANTIHALL_ALLOW_SUBAGENT_MAILBOX=1` or the `devswarm-subagent-mailbox-guard` skip name);
-see `https://github.com/talas9/anti-hall/blob/main/docs/KB-devswarm-hivecontrol.md` §42. (Phase 5: `read-primary` / `messages --ack` are read-only — after handling the mail run the returned `ackCommand`, i.e. `inbox ack-primary <id> --receipt <rid>`.)
+see `docs/KB-devswarm-hivecontrol.md` §42. (Phase 5: `read-primary` / `messages --ack` are read-only — after handling the mail run the returned `ackCommand`, i.e. `inbox ack-primary <id> --receipt <rid>`.)
 
 **One read-position table (mesh redesign Phase 3 — supersedes the per-instance files below).**
 Every read position is a row in the store's `reader_cursors` table: `'#floor'` (the stored,
@@ -260,7 +260,7 @@ row with a real (non-`unclaimed:`) `sessionId`, then the row whose `id` starts w
 `basename(worktreePath) + '-'` (the branch-slug row), then ascending lexical `id` as the final
 tiebreak — closing a bug (f3b8f326bfc3) where the old liveness-based picker could report a
 different sender for the SAME stored message across passes. Full rule and field case:
-`https://github.com/talas9/anti-hall/blob/main/docs/KB-devswarm-hivecontrol.md` §39.
+`docs/KB-devswarm-hivecontrol.md` §39.
 
 **(v0.94.0) Bounded reconcile.** `reconcile` now applies a total wall-clock budget across all
 its per-row drains — `ANTIHALL_RECONCILE_BUDGET_MS` (default `60000`; `0` = unlimited) or
@@ -282,7 +282,7 @@ Descriptor/registry divergence is repaired in both directions, and a registry wr
 during promotion is now reported as `promotion.registryWriteError` on `inbox pull`/
 `read-primary`/`inbox messages` JSON output (plus a stderr line) instead of being
 swallowed — the descriptor promotion itself already succeeded, and the next read repairs
-the registry from the descriptor's existing value. Full record: `https://github.com/talas9/anti-hall/blob/main/docs/KB-devswarm-hivecontrol.md` §40. (Phase 5: `read-primary` / `messages --ack` are read-only — after handling the mail run the returned `ackCommand`, i.e. `inbox ack-primary <id> --receipt <rid>`.)
+the registry from the descriptor's existing value. Full record: `docs/KB-devswarm-hivecontrol.md` §40. (Phase 5: `read-primary` / `messages --ack` are read-only — after handling the mail run the returned `ackCommand`, i.e. `inbox ack-primary <id> --receipt <rid>`.)
 
 ## Auto-archive and prune (v0.108.0; needs DevSwarm >= 2.5.3)
 
@@ -436,7 +436,7 @@ a child mid-task that hit a decision point and still has other work it could be 
 
 ## DevSwarm app database + screenshot sync (v0.108.0)
 
-anti-hall reads the DevSwarm desktop app's own database. It is read-only, capability-gated and fail-open, and it is the ground truth for workspace state. Full field-by-field evidence is in `https://github.com/talas9/anti-hall/blob/main/docs/KB-devswarm-app-db.md`.
+anti-hall reads the DevSwarm desktop app's own database. It is read-only, capability-gated and fail-open, and it is the ground truth for workspace state. Full field-by-field evidence is in `docs/KB-devswarm-app-db.md`.
 
 What it gives you:
 - **Titles.** The roster and the per-turn table show the app's full title. Titles are no longer cut at 60 chars on spawn, and renames made in the app propagate. **(0.109.0)** the app-DB names-cache mirror never lets a label that is still the raw branch name (hivecontrol's create-time default, before spawn's own separate `update-title` call lands) clobber an already-cached, different title — closing a race that used to make a spawned workspace's title read as the branch name or the brief unpredictably.
@@ -506,7 +506,7 @@ This is the complete operational reference for a workspace agent: the two backgr
 daemons and every `scripts/devswarm.js` verb, so nothing here is ever improvised against
 raw sqlite/NDJSON. Every verb emits one JSON line on stdout, exit `0`=`ok:true`/
 `2`=`ok:false`; every `<id>` is `isSafeId`-gated (`^[A-Za-z0-9._-]+$`). Full narrative +
-source-line citations + a worked lifecycle example: `https://github.com/talas9/anti-hall/blob/main/docs/KB-devswarm-hivecontrol.md` §8.8.
+source-line citations + a worked lifecycle example: `docs/KB-devswarm-hivecontrol.md` §8.8.
 
 ### The daemons
 
@@ -786,7 +786,7 @@ backup — automatically as part of the existing `devswarm.js migrate` (and the 
 spoofable `DEVSWARM_REPO_ID` env-var filter — a project only ever sees its own workspaces.
 
 Full reference, source-line citations, and the exact schema:
-`https://github.com/talas9/anti-hall/blob/main/docs/KB-devswarm-hivecontrol.md` §8.7's "v0.57 mesh follow-up" note and §8.8's CLI table.
+`docs/KB-devswarm-hivecontrol.md` §8.7's "v0.57 mesh follow-up" note and §8.8's CLI table.
 
 ## v0.58 mesh-only messaging (SHIPPED in v0.58.0 — Claude-side, see the
 Codex-parity note below)
@@ -866,7 +866,7 @@ block is shared and fires identically for Codex (see above). A prior version of 
 claimed the five override/reassert hooks (`devswarm-child-role.js`, `devswarm-child-turn.js`,
 `devswarm-parent-inbox.js`, `devswarm-parent-gate.js`, `devswarm-child-gate.js`) were
 Claude-only because their gating `DEVSWARM_*` env vars were assumed Claude-specific — that
-premise was disproven: `https://github.com/talas9/anti-hall/blob/main/docs/KB-devswarm-hivecontrol.md` §6/§8.7's live-verified env
+premise was disproven: `docs/KB-devswarm-hivecontrol.md` §6/§8.7's live-verified env
 fingerprint states `DEVSWARM_REPO_ID`/`DEVSWARM_SOURCE_BRANCH`/`DEVSWARM_BUILDER_ID` are set
 by hivecontrol per-workspace regardless of agent (`DEVSWARM_AI_AGENT` is the separate var
 naming claude vs codex) — the exact same fact this doc already relies on for
@@ -915,7 +915,7 @@ is still pending (the inbound half of this gate is unaffected). Fail-open: any r
 never silently skips a required report.
 
 Full reference, source-line citations, and the exact worked example:
-`https://github.com/talas9/anti-hall/blob/main/docs/KB-devswarm-hivecontrol.md` §8.7's "v0.58 mesh-only messaging" note and §8.8's CLI
+`docs/KB-devswarm-hivecontrol.md` §8.7's "v0.58 mesh-only messaging" note and §8.8's CLI
 table/worked example.
 
 ## Migrating historical backlog without a false unread wall — `migrate-state.js --mark-read`
@@ -950,7 +950,7 @@ process may ever be the native consumer of a given queue — two concurrent cons
 the queue (each drains what the other doesn't see) with no error and no way to recover the split.
 **anti-hall cannot mechanically detect or kill an EXTERNAL, non-tool-call consumer** — that's
 outside any hook's reach. Detection + retirement is a manual, PARENT-role action:
-`https://github.com/talas9/anti-hall/blob/main/docs/KB-devswarm-hivecontrol.md` §8.7.2 has the full identify → stop → verify recipe
+`docs/KB-devswarm-hivecontrol.md` §8.7.2 has the full identify → stop → verify recipe
 (`ps aux | grep 'hivecontrol.*monitor'` → kill the PID + remove its respawn config → re-run
 `node hooks/doctor.js`). Do this BEFORE relying on `archive-request` or any reception flow above
 if you suspect a second consumer — the guard-redirect and the ingest daemon only protect against
@@ -1130,7 +1130,7 @@ node plugins/anti-hall/companion/install-devswarm-ingest.js --uninstall
 ```
 
 `devswarm-ingest.js` is the one supervised daemon wrapping `hivecontrol workspace
-monitor` into the substrate store (see `https://github.com/talas9/anti-hall/blob/main/docs/KB-devswarm-hivecontrol.md` §8.7) — it
+monitor` into the substrate store (see `docs/KB-devswarm-hivecontrol.md` §8.7) — it
 shipped in 0.54.0 but nothing auto-started it until this installer landed in 0.54.1.
 Unlike the supervisor (a periodic sweep on `StartInterval`/`.timer`), the ingest daemon
 runs **continuously**, so this installer schedules re-exec-on-exit instead: macOS

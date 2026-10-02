@@ -135,7 +135,7 @@ its own purposes).
      dedup — a re-run imports 0 new messages), lock-respecting (a worktree a live child
      is already draining is skipped via the per-id O_EXCL pull lock, never raced), and
      loss-free (a short-received batch fails loud rather than silently dropping
-     messages — see `https://github.com/talas9/anti-hall/blob/main/docs/KB-devswarm-hivecontrol.md` §8.8's `reconcile` row). Reported
+     messages — see `docs/KB-devswarm-hivecontrol.md` in the anti-hall source repository §8.8's `reconcile` row). Reported
      as `reconcile: {attempted, count, imported, results, detail}` on the JSON status
      line and as a per-worktree breakdown in the human summary. Gate-closed or an
      internal error are both reported and NEVER fatal to the update. The manual verb
@@ -145,7 +145,7 @@ its own purposes).
      v0.90.0):** every update run also sweeps every descriptor for the `unclaimed:`
      forward migration, promoting a row to its real session id wherever an independent
      source (a heartbeat's own recorded `sessionId`) proves one — see
-     `https://github.com/talas9/anti-hall/blob/main/docs/KB-devswarm-hivecontrol.md` §40 for the sourcing rules this is a forward
+     `docs/KB-devswarm-hivecontrol.md` §40 for the sourcing rules this is a forward
      migration of.
    - **Overall post-pull budget (v0.96.0, D11-C, defect e7307778b614 — `postPullBudgetMs`):**
      a single wall-clock budget (`ANTIHALL_UPDATE_POSTPULL_BUDGET_MS`, default 90000ms;

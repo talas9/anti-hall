@@ -14,7 +14,7 @@ description: Check or update anti-hall from the local marketplace clone. Use whe
 
 Codex does not expand `${PLUGIN_ROOT}` inside a skill's own instructions — that
 variable is only set for plugin-bundled hook commands (see
-`https://github.com/talas9/anti-hall/blob/main/docs/KB-codex-platform-hooks-plugins.md`). Codex does show you this skill's own
+`docs/KB-codex-platform-hooks-plugins.md` in the anti-hall source repository). Codex does show you this skill's own
 file path when it selects the skill ("Codex starts with each skill's name,
 description, and file path" — official Codex Skills doc). Resolve the plugin
 root from that path before running anything below:
@@ -111,7 +111,7 @@ outside an update.
 **Promote unclaimed sessions (auto, fail-open — `promoteUnclaimedPostUpdate`, v0.90.0):**
 every update run also sweeps every descriptor for the `unclaimed:` forward migration,
 promoting a row to its real session id wherever an independent source (a heartbeat's own
-recorded `sessionId`) proves one — see `https://github.com/talas9/anti-hall/blob/main/docs/KB-devswarm-hivecontrol.md` §40 for the
+recorded `sessionId`) proves one — see `docs/KB-devswarm-hivecontrol.md` §40 for the
 sourcing rules this is a forward migration of.
 
 **(v0.94.0) Bounded reconcile.** `reconcile` now applies a total wall-clock budget across all

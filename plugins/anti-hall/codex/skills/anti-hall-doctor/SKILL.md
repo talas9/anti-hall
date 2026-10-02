@@ -9,7 +9,7 @@ description: Check anti-hall's Codex installation and runtime posture. Use when 
 
 Codex does not expand `${PLUGIN_ROOT}` inside a skill's own instructions — that
 variable is only set for plugin-bundled hook commands (see
-`https://github.com/talas9/anti-hall/blob/main/docs/KB-codex-platform-hooks-plugins.md`). Codex does show you this skill's own
+`docs/KB-codex-platform-hooks-plugins.md` in the anti-hall source repository). Codex does show you this skill's own
 file path when it selects the skill ("Codex starts with each skill's name,
 description, and file path" — official Codex Skills doc). Resolve the plugin
 root from that path before running anything below:
