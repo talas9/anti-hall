@@ -205,6 +205,9 @@ function transcriptCandidates(transcriptPath, now, thresholdMs) {
     // the resume itself (a resumed agent is running from the resume time).
     const sc = sidechainMtimeMs(transcriptPath, id);
     if (Number.isFinite(sc) && !(sc <= referenceMs)) referenceMs = sc;
+    // A teammate with a pending message: its own sidechain transcript (found by
+    // name in agent-scan) is the sign of life.
+    if (Number.isFinite(rec.lastSeenMs) && rec.lastSeenMs > referenceMs) referenceMs = rec.lastSeenMs;
     const resumedAtMs = Number.isFinite(rec.resumedAtMs) ? rec.resumedAtMs : 0;
     if (resumedAtMs > referenceMs) referenceMs = resumedAtMs;
     if (resumedAtMs) snapshot += '@r' + resumedAtMs;

@@ -52,6 +52,7 @@ function namesAgent(input, id, launched) {
 const LAUNCH_TOOLS = new Set(['Agent', 'Task']);
 const RESUME_TOOLS = new Set(['SendMessage', 'Agent', 'Task']);
 const DELIVERY_TOOLS = new Set(['TaskOutput', 'SendMessage']);
+const SEND_TOOLS = new Set(['SendMessage']);
 const AGENT_ID_RE =/agentId:\s*([0-9a-fA-F]{6,40})/;
 const OUTPUT_FILE_RE = /output_file:\s*(\S+)/;
 // SendMessage-resumed agent (field report, 0.117): a background subagent that
@@ -107,6 +108,79 @@ function isQueuedMessageResult(text) {
     return !!o && typeof o.message === 'string' && /^Message queued for delivery to\s/.test(o.message);
   } catch (_) { return false; }
 }
+// NAMED IN-PROCESS TEAMMATES (field, 2026-10-02). Real record shapes:
+//   spawn  : the Agent tool_result entry carries toolUseResult
+//            {status:"teammate_spawned", name, agent_id:"<name>@<team>", ...}.
+//   send   : the SendMessage tool_result text IS the JSON {"success":true,
+//            "message":"Message sent to <name>'s inbox", ...}. The text is the
+//            same whether the teammate is idle or mid-turn.
+//   report : a user entry whose string content BEGINS "Another Claude session
+//            sent a message:" and holds a block
+//            <teammate-message teammate_id="<name>" ...>\n{"type":
+//            "idle_notification","from":"<name>","timestamp":"<ISO>",...}\n
+//            </teammate-message> (one entry can hold several). The INNER timestamp is when the teammate's
+//            turn ended; the entry is written only when the coordinator's own
+//            turn yields, minutes later in the field case.
+// A teammate ends a turn with one idle_notification. A message sent while it
+// is idle starts a new turn at once; a message sent mid-turn is delivered only
+// after that turn's idle_notification. So an idle_notification does not prove
+// the message was consumed: it must end a turn that began after the send.
+function parseInboxSendResult(text) {
+  if (typeof text !== 'string' || text.indexOf("'s inbox") === -1) return null;
+  const t = text.trim();
+  if (t.charAt(0) !== '{') return null;
+  let o;
+  try { o = JSON.parse(t); } catch (_) { return null; }
+  if (!o || typeof o !== 'object' || o.success !== true || typeof o.message !== 'string') return null;
+  const m = /^Message sent to (.+)'s inbox$/.exec(o.message);
+  return m ? m[1] : null;
+}
+const TEAMMATE_IDLE_BLOCK_RE = /<teammate-message teammate_id="([^"]+)"[^>]*>\n(\{"type":"idle_notification"[^\n]*\})\n<\/teammate-message>/g;
+// teammateIdles(entry, entryTs) -> [{name, ts}] from a genuine teammate report:
+// a `user` entry whose content is a bare string that BEGINS with the harness
+// wrapper (the only carrier observed: 189 of 189 real reports). A tool_result,
+// a queued prompt or any text that merely quotes a block is not one.
+function teammateIdles(entry, entryTs) {
+  const out = [];
+  const c = entry.type === 'user' && entry.message ? entry.message.content : null;
+  if (typeof c !== 'string' || !c.startsWith('Another Claude session sent a message:')) return out;
+  for (const m of c.matchAll(TEAMMATE_IDLE_BLOCK_RE)) {
+    let o;
+    try { o = JSON.parse(m[2]); } catch (_) { continue; }
+    if (!o || o.type !== 'idle_notification' || o.from !== m[1]) continue;
+    const inner = typeof o.timestamp === 'string' ? Date.parse(o.timestamp) : NaN;
+    out.push({ name: m[1], ts: Number.isFinite(inner) ? inner : entryTs });
+  }
+  return out;
+}
+// A pending message keeps a teammate "running" only while there is a sign of
+// life (the send itself, or the teammate's own sidechain transcript being
+// written) newer than this. 20 min = silent-agent-nudge's DEFAULT_MIN, the
+// repo's existing "quiet this long = stalled" threshold: past it the teammate
+// stops counting as running (a message to a dead teammate cannot hold it
+// "running" forever) and, being the same threshold, never becomes a silent-agent
+// Stop block at the default setting.
+const PENDING_MESSAGE_SILENCE_MS = 20 * 60 * 1000;
+// Newest mtime of a teammate's sidechain transcript,
+// <dir>/<session>/subagents/agent-a<name>-<hex>.jsonl (observed naming). NaN when absent.
+function teammateSidechainMtimeMs(transcriptPath, name) {
+  const fs = require('fs');
+  const path = require('path');
+  let best = NaN;
+  try {
+    const dir = path.join(path.dirname(transcriptPath), path.basename(transcriptPath, '.jsonl'), 'subagents');
+    const pre = 'agent-a' + name + '-';
+    for (const f of fs.readdirSync(dir)) {
+      if (!f.startsWith(pre) || !/^[0-9a-f]+\.jsonl$/.test(f.slice(pre.length))) continue;
+      try {
+        const m = fs.statSync(path.join(dir, f)).mtimeMs;
+        if (!(m <= best)) best = m;
+      } catch (_) { /* unreadable -> ignore */ }
+    }
+  } catch (_) { /* no subagents dir -> NaN */ }
+  return best;
+}
+
 // A single transcript text leaf can hold SEVERAL <task-notification> blocks
 // (several agents can finish in the same turn) — TASK_NOTIFICATION_BLOCK_RE
 // (global) splits the leaf into each individual block first, and TASK_ID_RE/
@@ -141,10 +215,15 @@ const { notificationTexts: idleNotificationTexts } = require('../../companion/li
 // is dropped as stale only when stamped more than this far before the resume.
 const RESUME_SKEW_SLACK_MS = 2000;
 
-// scanTranscript(transcriptPath) -> { launched: Map<id, {outputFile, description, launchedAtMs}>, terminal: Set<id> } | null
+// scanTranscript(transcriptPath) -> { launched: Map<id, {outputFile, description, launchedAtMs}>, terminal: Set<id>,
+//   pendingMessages: Map<teammate name, {sentAtMs, lastIdleMs, lastSeenMs, live, agentId}> } | null
 // preLines (optional): already-read tail lines, so a caller that also parses
 // the transcript for other reasons reads it only once.
-function scanTranscript(transcriptPath, preLines) {
+// opts.nowMs: clock for the pending-message bound (default Date.now()).
+// opts.ignoreUnansweredStops: skip a TaskStop tool_use with no tool_result yet
+// (a PreToolUse caller judging the state BEFORE the stop it is being asked about).
+function scanTranscript(transcriptPath, preLines, opts) {
+  const nowMs = opts && Number.isFinite(opts.nowMs) ? opts.nowMs : Date.now();
   const { readTail } = require('./transcript-tail.js');
   const lines = Array.isArray(preLines) ? preLines : readTail(transcriptPath);
   if (!lines) return null;
@@ -165,6 +244,14 @@ function scanTranscript(transcriptPath, preLines) {
   const toolUses = new Map();
   const taskStops = [];
   const erroredToolUseIds = new Set();
+  const answeredToolUseIds = new Set();
+  // Teammate lifecycle events, name -> [{kind:'spawn'|'send'|'idle'|'stop', ts, seq}].
+  const teamEvents = new Map();
+  const teamInfo = new Map(); // name -> { toolUseId, agentId } from its spawn record
+  const teamEvent = (name, kind, ts, evSeq) => {
+    if (!teamEvents.has(name)) teamEvents.set(name, []);
+    teamEvents.get(name).push({ kind, ts, seq: evSeq });
+  };
   const answersCall = (toolUseId, names) => {
     const c = toolUseId !== undefined ? toolUses.get(toolUseId) : undefined;
     return !c || names.has(c.name);
@@ -203,7 +290,8 @@ function scanTranscript(transcriptPath, preLines) {
     const hasTaskStop = line.indexOf('"name":"TaskStop"') !== -1 || line.indexOf('"name": "TaskStop"') !== -1;
     const hasTaskStatus = line.indexOf('"task_status"') !== -1;
     const hasToolUse = line.indexOf('"tool_use"') !== -1;
-    if (!hasLaunch && !hasNotif && !hasAgentToolUse && !hasToolResult && !hasToolUse && !hasTaskStop && !hasTaskStatus) continue;
+    const hasIdle = line.indexOf('idle_notification') !== -1;
+    if (!hasIdle && !hasLaunch && !hasNotif && !hasAgentToolUse && !hasToolResult && !hasToolUse && !hasTaskStop && !hasTaskStatus) continue;
 
     let entry;
     try { entry = JSON.parse(line); } catch (_) { continue; }
@@ -282,7 +370,19 @@ function scanTranscript(transcriptPath, preLines) {
       }
     }
 
+    if (hasIdle) for (const i of teammateIdles(entry, entryTs)) teamEvent(i.name, 'idle', i.ts, seq);
+
     if (entry.type !== 'user') continue;
+
+    // Teammate spawn: a structured field of the Agent/Task tool_result entry.
+    const tur = entry.toolUseResult;
+    if (tur && typeof tur === 'object' && tur.status === 'teammate_spawned' && typeof tur.name === 'string' && tur.name && Array.isArray(content)) {
+      const tr = content.find((b) => b && b.type === 'tool_result');
+      if (tr && answersCall(tr.tool_use_id, LAUNCH_TOOLS)) {
+        teamEvent(tur.name, 'spawn', entryTs, seq);
+        teamInfo.set(tur.name, { toolUseId: tr.tool_use_id, agentId: typeof tur.agent_id === 'string' ? tur.agent_id : '' });
+      }
+    }
 
     // Walk each content block (or the single string/object content itself)
     // so a launch tool_result's own tool_use_id can be correlated with its
@@ -294,6 +394,7 @@ function scanTranscript(transcriptPath, preLines) {
       const blockContent = block.content !== undefined ? block.content : block;
       const isToolResult = block.type === 'tool_result';
       if (isToolResult && block.is_error === true && toolUseId) erroredToolUseIds.add(toolUseId);
+      if (isToolResult && toolUseId) answeredToolUseIds.add(toolUseId);
       for (const text of extractTexts(blockContent)) {
         // Launch = a tool_result whose text BEGINS with the harness phrase; a
         // notification/typed text that merely quotes a launch result is not one.
@@ -327,6 +428,10 @@ function scanTranscript(transcriptPath, preLines) {
           continue;
         }
         if (isQueuedMessageResult(text)) continue;
+        // SendMessage to a teammate's inbox: the coordinator talking TO it —
+        // like the queued shape above, never delivery evidence for any agent.
+        const inboxName = isToolResult && answersCall(toolUseId, SEND_TOOLS) ? parseInboxSendResult(text) : null;
+        if (inboxName) { teamEvent(inboxName, 'send', entryTs, seq); continue; }
         if (isToolResult) otherToolResultTexts.push({ toolUseId, text, seq, ts: entryTs });
       }
     }
@@ -342,7 +447,11 @@ function scanTranscript(transcriptPath, preLines) {
 
   for (const s of taskStops) {
     if (erroredToolUseIds.has(s.toolUseId)) continue;
+    if (opts && opts.ignoreUnansweredStops && !answeredToolUseIds.has(s.toolUseId)) continue;
     markTerminal(s.id, s.seq, s.ts);
+    // A teammate is stopped by its name (observed) or its <name>@<team> agent id.
+    for (const [name, info] of teamInfo) if (s.id === info.agentId && !teamEvents.has(s.id)) teamEvent(name, 'stop', s.ts, s.seq);
+    if (teamEvents.has(s.id)) teamEvent(s.id, 'stop', s.ts, s.seq);
   }
 
   // SAFETY NET pass: for any launched-but-not-yet-terminal agent, check
@@ -406,18 +515,73 @@ function scanTranscript(transcriptPath, preLines) {
     }
   }
 
-  return { launched, terminal };
+  // PENDING TEAMMATE MESSAGES: replay each teammate's events in time order.
+  // An idle teammate that is sent a message is working from the send; a busy
+  // one works on it only after its current turn's idle_notification. Either
+  // way the message is consumed by the first idle_notification that ends a turn
+  // begun after it. A teammate whose spawn is outside the window starts as
+  // "idle" (unknown): the first idle after a send then reads as consumption,
+  // i.e. the scan stays silent rather than claim a pending message it cannot show.
+  const pendingMessages = new Map();
+  for (const [name, evs] of teamEvents) {
+    // Only names seen as teammates (spawned or reporting); "Message sent to
+    // X's inbox" is also the result text for a peer session.
+    if (!evs.some((e) => e.kind === 'spawn' || e.kind === 'idle')) continue;
+    // No usable clock on any event -> order between a send and a report's
+    // inner timestamp is unknowable -> silent.
+    if (evs.some((e) => !Number.isFinite(e.ts))) continue;
+    const ordered = evs.slice().sort((a, b) => (a.ts - b.ts) || (a.seq - b.seq));
+    let state = 'idle';
+    let queuedAt = NaN; // newest send waiting for the current turn to end
+    let pendingAt = NaN; // newest send the current turn is working on
+    let lastIdleMs = NaN;
+    for (const e of ordered) {
+      if (e.kind === 'spawn') { state = 'busy'; queuedAt = NaN; pendingAt = NaN; }
+      else if (e.kind === 'stop') { state = 'stopped'; queuedAt = NaN; pendingAt = NaN; }
+      else if (state === 'stopped') continue;
+      else if (e.kind === 'send') {
+        if (state === 'idle') { state = 'busy'; pendingAt = e.ts; } else queuedAt = e.ts;
+      } else { // idle
+        lastIdleMs = e.ts;
+        if (Number.isFinite(queuedAt)) { pendingAt = queuedAt; queuedAt = NaN; state = 'busy'; }
+        else { pendingAt = NaN; state = 'idle'; }
+      }
+    }
+    const sentAtMs = Number.isFinite(queuedAt) ? queuedAt : pendingAt;
+    if (!Number.isFinite(sentAtMs)) continue;
+    const seenMs = teammateSidechainMtimeMs(transcriptPath, name);
+    const lastSeenMs = seenMs > sentAtMs ? seenMs : sentAtMs;
+    const live = nowMs - lastSeenMs < PENDING_MESSAGE_SILENCE_MS;
+    const info = teamInfo.get(name) || {};
+    pendingMessages.set(name, { sentAtMs, lastIdleMs, lastSeenMs, live, agentId: info.agentId || '' });
+    if (!live) continue;
+    // Running, keyed by the teammate's name (the id TaskStop / SendMessage use).
+    launched.set(name, {
+      teammate: true,
+      outputFile: '',
+      description: (info.toolUseId && descByToolUseId.get(info.toolUseId)) || '',
+      launchedAtMs: sentAtMs,
+      resumedAtMs: sentAtMs,
+      lastSeenMs,
+      pendingMessage: { sentAtMs },
+    });
+    terminal.delete(name);
+  }
+
+  return { launched, terminal, pendingMessages };
 }
 
-// runningAgents(transcriptPath) -> [{ id, description, launchedAtMs }] —
+// runningAgents(transcriptPath) -> [{ id, description, launchedAtMs, pendingMessage? }] —
 // launched in this transcript and not yet terminal. null when unreadable.
-function runningAgents(transcriptPath, preLines) {
-  const scan = scanTranscript(transcriptPath, preLines);
+function runningAgents(transcriptPath, preLines, opts) {
+  const scan = scanTranscript(transcriptPath, preLines, opts);
   if (!scan) return null;
   const out = [];
   for (const [id, rec] of scan.launched) {
     if (scan.terminal.has(id)) continue;
-    out.push({ id, description: rec.description || '', launchedAtMs: rec.launchedAtMs });
+    const row = { id, description: rec.description || '', launchedAtMs: rec.launchedAtMs };
+    if (rec.pendingMessage) row.pendingMessage = true; // teammate sent a message it has not yet reported on
+    out.push(row);
   }
   return out;
 }
@@ -428,8 +592,8 @@ function runningAgents(transcriptPath, preLines) {
 // agent was found in it — a launch that sits BEFORE the window is invisible, so
 // an empty result there is "unknown", not "0 running" (L34 field: DISPATCH NOW
 // said "0 running" while a pre-window agent was still pending).
-function runningAgentsOrNull(transcriptPath, preLines) {
-  const out = runningAgents(transcriptPath, preLines);
+function runningAgentsOrNull(transcriptPath, preLines, opts) {
+  const out = runningAgents(transcriptPath, preLines, opts);
   if (out === null) return null;
   if (out.length === 0) {
     try {

@@ -567,6 +567,28 @@ test('SHARED DIR: legacy heartbeat with no session field at all -> no block (una
 });
 
 // ---------------------------------------------------------------------------
+// Named teammates with a pending message (agent-scan pendingMessage)
+// ---------------------------------------------------------------------------
+
+test('TEAMMATE: finished, never-woken and freshly-messaged teammates never produce a Stop block', () => {
+  const tm = require('../helpers/teammate-fixtures.js');
+  const cases = {
+    'reported after the message': [tm.spawn('tm-a', isoMinutesAgo(90)), tm.idle('tm-a', isoMinutesAgo(80)), tm.send('tm-a', isoMinutesAgo(70)), tm.idle('tm-a', isoMinutesAgo(40))],
+    'sent a message long ago, never woke': [tm.spawn('tm-b', isoMinutesAgo(90)), tm.idle('tm-b', isoMinutesAgo(80)), tm.send('tm-b', isoMinutesAgo(70))],
+    'sent a message just now': [tm.spawn('tm-c', isoMinutesAgo(90)), tm.idle('tm-c', isoMinutesAgo(80)), tm.send('tm-c', isoMinutesAgo(2))],
+    'stopped after the message': [tm.spawn('tm-d', isoMinutesAgo(90)), tm.send('tm-d', isoMinutesAgo(70)), tm.stop('tm-d', isoMinutesAgo(60))],
+    'spawned, working, no message': [tm.spawn('tm-e', isoMinutesAgo(90))],
+  };
+  for (const [label, groups] of Object.entries(cases)) {
+    const h = makeHome();
+    try {
+      const r = testHook(HOOK, stopPayload(h.writeTranscript(groups.flat())), { home: h.home });
+      assert.ok(!isBlock(r), label + ': ' + JSON.stringify(r.json));
+    } finally { h.cleanup(); }
+  }
+});
+
+// ---------------------------------------------------------------------------
 // Settings / skip / fail-open
 // ---------------------------------------------------------------------------
 
