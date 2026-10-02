@@ -35,7 +35,24 @@ function extractTexts(node) {
   return out;
 }
 
-const AGENT_ID_RE = /agentId:\s*([0-9a-fA-F]{6,40})/;
+// Does a tool_use input name this agent — by full id, or by a >=7-hex prefix
+// that matches exactly one launched id (SendMessage/TaskOutput accept prefixes).
+function namesAgent(input, id, launched) {
+  const s = JSON.stringify(input || {});
+  if (s.indexOf(id) !== -1) return true;
+  for (const m of s.matchAll(/[0-9a-fA-F]{7,40}/g)) {
+    if (!id.startsWith(m[0])) continue;
+    let n = 0;
+    for (const k of launched.keys()) if (k.startsWith(m[0])) n++;
+    if (n === 1) return true;
+  }
+  return false;
+}
+// Calls whose tool_result can be a launch / a resume / delivery of an agent's result.
+const LAUNCH_TOOLS = new Set(['Agent', 'Task']);
+const RESUME_TOOLS = new Set(['SendMessage', 'Agent', 'Task']);
+const DELIVERY_TOOLS = new Set(['TaskOutput', 'SendMessage']);
+const AGENT_ID_RE =/agentId:\s*([0-9a-fA-F]{6,40})/;
 const OUTPUT_FILE_RE = /output_file:\s*(\S+)/;
 // SendMessage-resumed agent (field report, 0.117): a background subagent that
 // stopped for a usage limit and was resumed via SendMessage counts as RUNNING
@@ -48,7 +65,33 @@ const OUTPUT_FILE_RE = /output_file:\s*(\S+)/;
 // "a180b191000d7a82e",...} — the message quotes only a SHORT id PREFIX, the
 // full id is in `resumedAgentId`. The terminal/launched maps are keyed by the
 // FULL id, so a prefix is resolved against them (resumeTargets below).
-const RESUME_RE = /Resuming\s+agent\s+([0-9a-fA-F]{6,40})/i;
+//
+// GENUINE RECORDS ONLY (field, 2026-10-02): a resume counts ONLY when the text of
+// a tool_result block IS that JSON result (success:true + a `message` that
+// BEGINS "Resuming agent <id>", and/or a structured `resumedAgentId`). A
+// task-notification / assistant text / user-typed text / tool_use input that
+// merely QUOTES "Resuming agent a180b19" is not a resume — it once re-opened an
+// agent killed hours earlier. parseResumeResult returns null for anything else.
+const RESUME_MESSAGE_RE = /^Resuming\s+agent\s+([0-9a-fA-F]{6,40})/i;
+const HEX_ID_RE = /^[0-9a-fA-F]{6,40}$/;
+function parseResumeResult(text) {
+  if (typeof text !== 'string') return null;
+  const t = text.trim();
+  // Older plain-text shape: the result text itself BEGINS "Resuming agent <id> (…".
+  if (t.charAt(0) !== '{') {
+    const pm0 = RESUME_MESSAGE_RE.exec(t);
+    return pm0 ? { id: pm0[1], full: false } : null;
+  }
+  if ((t.indexOf('Resuming') === -1 && t.indexOf('resumedAgentId') === -1)) return null;
+  let o;
+  try { o = JSON.parse(t); } catch (_) { return null; }
+  if (!o || typeof o !== 'object' || o.success !== true) return null;
+  const full = typeof o.resumedAgentId === 'string' && HEX_ID_RE.test(o.resumedAgentId) ? o.resumedAgentId : null;
+  const pm = typeof o.message === 'string' ? RESUME_MESSAGE_RE.exec(o.message) : null;
+  if (full) return { id: full, full: true };
+  if (pm) return { id: pm[1], full: false };
+  return null;
+}
 // SendMessage to a STILL-RUNNING agent: {"success":true,"message":"Message
 // queued for delivery to <full id> at its next tool round.","pin":{...}} — the
 // coordinator talking TO the agent, never the agent's result delivered. It
@@ -64,7 +107,6 @@ function isQueuedMessageResult(text) {
     return !!o && typeof o.message === 'string' && /^Message queued for delivery to\s/.test(o.message);
   } catch (_) { return false; }
 }
-const RESUMED_ID_RE = /"resumedAgentId"\s*:\s*"([0-9a-fA-F]{6,40})"/;
 // A single transcript text leaf can hold SEVERAL <task-notification> blocks
 // (several agents can finish in the same turn) — TASK_NOTIFICATION_BLOCK_RE
 // (global) splits the leaf into each individual block first, and TASK_ID_RE/
@@ -112,6 +154,16 @@ function scanTranscript(transcriptPath, preLines) {
   // TaskOutput result the coordinator triggered once it had already acted on
   // the agent's output), that counts as the result having been delivered.
   const otherToolResultTexts = [];
+  // tool_use id -> { name, input } for every assistant tool_use seen, so a
+  // tool_result can be judged by the call it answers (a Read/Bash/grep result
+  // that merely contains an agent id or launch text is not a harness record).
+  const toolUses = new Map();
+  const taskStops = [];
+  const erroredToolUseIds = new Set();
+  const answersCall = (toolUseId, names) => {
+    const c = toolUseId !== undefined ? toolUses.get(toolUseId) : undefined;
+    return !c || names.has(c.name);
+  };
   // SendMessage-resumed agent (field report, 0.117): a background subagent
   // resumed via SendMessage after a usage-limit stop counts as RUNNING again
   // — until its NEXT completion notification, not whatever marked it terminal
@@ -134,9 +186,10 @@ function scanTranscript(transcriptPath, preLines) {
     const hasNotif = line.indexOf('<task-notification>') !== -1;
     const hasAgentToolUse = line.indexOf('"name":"Agent"') !== -1 || line.indexOf('"name": "Agent"') !== -1;
     const hasToolResult = line.indexOf('tool_result') !== -1;
-    const hasResume = line.indexOf('Resuming agent') !== -1;
+    const hasTaskStop = line.indexOf('"name":"TaskStop"') !== -1 || line.indexOf('"name": "TaskStop"') !== -1;
     const hasTaskStatus = line.indexOf('"task_status"') !== -1;
-    if (!hasLaunch && !hasNotif && !hasAgentToolUse && !hasToolResult && !hasResume && !hasTaskStatus) continue;
+    const hasToolUse = line.indexOf('"tool_use"') !== -1;
+    if (!hasLaunch && !hasNotif && !hasAgentToolUse && !hasToolResult && !hasToolUse && !hasTaskStop && !hasTaskStatus) continue;
 
     let entry;
     try { entry = JSON.parse(line); } catch (_) { continue; }
@@ -168,6 +221,12 @@ function scanTranscript(transcriptPath, preLines) {
     const content = entry.message && entry.message.content;
     const entryTs = typeof entry.timestamp === 'string' ? Date.parse(entry.timestamp) : NaN;
 
+    if (hasToolUse && entry.type === 'assistant' && Array.isArray(content)) {
+      for (const block of content) {
+        if (block && block.type === 'tool_use' && typeof block.id === 'string') toolUses.set(block.id, { name: block.name, input: block.input });
+      }
+    }
+
     // (a) assistant Agent tool_use -> capture its description, keyed by the
     // tool_use id, so a later matching tool_result can be named.
     if (hasAgentToolUse && entry.type === 'assistant' && Array.isArray(content)) {
@@ -176,6 +235,19 @@ function scanTranscript(transcriptPath, preLines) {
           const inp = block.input && typeof block.input === 'object' ? block.input : {};
           const desc = typeof inp.description === 'string' ? inp.description : '';
           if (desc) descByToolUseId.set(block.id, desc);
+        }
+      }
+    }
+
+    // (a2) assistant TaskStop tool_use {task_id} = the coordinator stopped that
+    // agent: terminal, ordered by sequence like a notification (a later genuine
+    // resume re-opens it). A real harness field, not free text.
+    if (hasTaskStop && entry.type === 'assistant' && Array.isArray(content)) {
+      for (const block of content) {
+        if (block && block.type === 'tool_use' && block.name === 'TaskStop' && block.input && typeof block.input.task_id === 'string' && block.input.task_id) {
+          // Applied after the walk: an errored TaskStop (its paired tool_result
+          // is_error) stopped nothing. Result not visible -> still terminal.
+          taskStops.push({ id: block.input.task_id, seq, toolUseId: block.id });
         }
       }
     }
@@ -209,12 +281,19 @@ function scanTranscript(transcriptPath, preLines) {
       const toolUseId = typeof block.tool_use_id === 'string' ? block.tool_use_id : undefined;
       const blockContent = block.content !== undefined ? block.content : block;
       const isToolResult = block.type === 'tool_result';
+      if (isToolResult && block.is_error === true && toolUseId) erroredToolUseIds.add(toolUseId);
       for (const text of extractTexts(blockContent)) {
-        if (hasLaunch && text.indexOf('Async agent launched successfully') !== -1) {
+        // Launch = a tool_result whose text BEGINS with the harness phrase; a
+        // notification/typed text that merely quotes a launch result is not one.
+        // It must also answer an Agent/Task call: a seen tool_use of any other
+        // name (Read/Bash/grep of a notes file) is not a launch. A tool_use
+        // outside the scanned window is unseen -> judged on the text alone.
+        if (isToolResult && hasLaunch && answersCall(toolUseId, LAUNCH_TOOLS) && text.trimStart().startsWith('Async agent launched successfully')) {
           const idm = AGENT_ID_RE.exec(text);
-          if (idm) {
+          const sid = entry.toolUseResult && typeof entry.toolUseResult.agentId === 'string' && HEX_ID_RE.test(entry.toolUseResult.agentId) ? entry.toolUseResult.agentId : null;
+          if (idm || sid) {
             const ofm = OUTPUT_FILE_RE.exec(text);
-            launched.set(idm[1], {
+            launched.set(sid || idm[1], {
               outputFile: ofm ? ofm[1] : '',
               toolUseId,
               launchedAtMs: Number.isFinite(entryTs) ? entryTs : NaN,
@@ -227,11 +306,10 @@ function scanTranscript(transcriptPath, preLines) {
         // safety-net match below (which would otherwise immediately
         // re-mark a just-resumed agent terminal merely because this text
         // quotes its own id). Record it separately instead.
-        const resumeMatch = RESUME_RE.exec(text);
+        const resumeMatch = isToolResult && answersCall(toolUseId, RESUME_TOOLS) ? parseResumeResult(text) : null;
         if (resumeMatch) {
-          const fullm = RESUMED_ID_RE.exec(text);
-          const rid = fullm ? fullm[1] : resumeMatch[1];
-          if (fullm) resumeFull.add(rid);
+          const rid = resumeMatch.id;
+          if (resumeMatch.full) resumeFull.add(rid);
           resumeSeq.set(rid, seq);
           if (Number.isFinite(entryTs)) resumeTs.set(rid, entryTs);
           continue;
@@ -250,6 +328,12 @@ function scanTranscript(transcriptPath, preLines) {
     }
   }
 
+  for (const s of taskStops) {
+    if (erroredToolUseIds.has(s.toolUseId)) continue;
+    terminal.add(s.id);
+    terminalSeq.set(s.id, Math.max(s.seq, terminalSeq.get(s.id) || 0));
+  }
+
   // SAFETY NET pass: for any launched-but-not-yet-terminal agent, check
   // whether a tool_result OTHER than its own launch result later quotes its
   // agentId. Ordering note: completion can only come AFTER launch (the
@@ -261,6 +345,12 @@ function scanTranscript(transcriptPath, preLines) {
     if (terminal.has(id)) continue;
     for (const { toolUseId, text, seq: evidenceSeq } of otherToolResultTexts) {
       if (toolUseId !== undefined && toolUseId === rec.toolUseId) continue; // the launch's own result already named it — not "later" evidence
+      // Delivery evidence only from the answer to a TaskOutput/SendMessage call
+      // naming this agent; a Read/Bash/grep result that merely contains the id
+      // (a notes file, a log) is not. An unseen call (outside the window) is
+      // judged on the text alone.
+      const call = toolUseId !== undefined ? toolUses.get(toolUseId) : undefined;
+      if (call && !(DELIVERY_TOOLS.has(call.name) && namesAgent(call.input, id, launched))) continue;
       if (text.split('\n').some((ln) => ln.indexOf(id) !== -1 && !RUNNING_ROW_RE.test(ln))) { terminal.add(id); terminalSeq.set(id, evidenceSeq); break; }
     }
   }
@@ -280,6 +370,10 @@ function scanTranscript(transcriptPath, preLines) {
     // A prefix-only resume (no resumedAgentId) may act only on a UNIQUE match;
     // 0 or 2+ matches are ambiguous -> do nothing.
     if (!resumeFull.has(rid) && targets.length !== 1) targets.length = 0;
+    // KNOWN PRE-EXISTING LIMITATION (not a regression): a genuinely resumed
+    // agent whose launch record sits outside the tail window is only adopted
+    // below when the resume names the full id (resumedAgentId); a prefix-only
+    // resume of such an agent resolves to nothing and it reads as not running.
     // Launch record outside the scanned window but the resume names the full
     // id: adopt it as running from the resume time (output file unknown).
     if (!targets.length && resumeFull.has(rid) && resumeTs.has(rid)) {

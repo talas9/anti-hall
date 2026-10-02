@@ -960,3 +960,230 @@ test('QUEUED MESSAGE: a leaf that merely QUOTES the phrase (not the JSON message
     assert.ok(!isBlock(r), 'a quoting leaf is not a SendMessage result and must still count as delivery: ' + JSON.stringify(r.json));
   } finally { h.cleanup(); }
 });
+
+// ---------------------------------------------------------------------------
+// QUOTED RESUME / TaskStop (field, 2026-10-02: an agent killed hours earlier was
+// re-opened by an unrelated notification whose result text quoted "Resuming
+// agent <prefix>"). A resume counts only from a genuine tool_result.
+// ---------------------------------------------------------------------------
+const AGENT_SCAN = '../../plugins/anti-hall/hooks/lib/agent-scan.js';
+const QUOTE = (id) => 'Report: the harness prints "Resuming agent ' + id.slice(0, 7) + '" on a SendMessage resume.';
+
+function killedBase(h, id) {
+  const out = writeOutputFile(h, 'q-' + id + '.output', 3 * 60 * 60 * 1000);
+  return [
+    agentToolUseLine('toolu_k' + id.slice(-3), 'Killed worker', isoMinutesAgo(400)),
+    agentLaunchResultLine(id, out, 'toolu_k' + id.slice(-3), isoMinutesAgo(400)),
+    notificationLine(id, 'killed', isoMinutesAgo(300)),
+  ];
+}
+
+test('QUOTED RESUME: a later notification for ANOTHER agent whose result quotes "Resuming agent <prefix>" does not re-open the killed agent', () => {
+  const h = makeHome();
+  try {
+    const id = 'a180b191000d7a82e';
+    const other = 'cccc111122223333d';
+    const quoting = {
+      type: 'user',
+      message: { role: 'user', content: '<task-notification>\n<task-id>' + other + '</task-id>\n<status>completed</status>\n<result>' + QUOTE(id) + '</result>\n</task-notification>' },
+      timestamp: isoMinutesAgo(10),
+    };
+    const tp = h.writeTranscript(killedBase(h, id).concat([quoting]));
+    const scan = require(AGENT_SCAN).scanTranscript(tp);
+    assert.ok(scan.terminal.has(id), 'killed agent must stay terminal');
+    assert.ok(!isBlock(testHook(HOOK, stopPayload(tp), { home: h.home })), 'no nudge for a killed agent');
+  } finally { h.cleanup(); }
+});
+
+test('QUOTED RESUME: the quote inside assistant text, user-typed text, or a tool_use input does not re-open', () => {
+  const id = 'a180b191000d7a82f';
+  const shapes = {
+    assistant: { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: QUOTE(id) }] } },
+    typed: { type: 'user', message: { role: 'user', content: QUOTE(id) } },
+    typedBlocks: { type: 'user', message: { role: 'user', content: [{ type: 'text', text: QUOTE(id) }] } },
+    toolUseInput: { type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_zz', name: 'Bash', input: { command: 'echo ' + QUOTE(id) } }] } },
+    // a tool_result that only QUOTES the phrase (not the JSON result itself)
+    quotingToolResult: { type: 'user', message: { role: 'user', content: [{ tool_use_id: 'toolu_qr', type: 'tool_result', content: [{ type: 'text', text: 'grep hit: {"success":true,"message":"Resuming agent ' + id.slice(0, 7) + '"} in notes' }] }] } },
+  };
+  for (const [name, line] of Object.entries(shapes)) {
+    const h = makeHome();
+    try {
+      const tp = h.writeTranscript(killedBase(h, id).concat([Object.assign({ timestamp: isoMinutesAgo(10) }, line)]));
+      const scan = require(AGENT_SCAN).scanTranscript(tp);
+      assert.ok(scan.terminal.has(id), name + ': killed agent must stay terminal');
+      assert.ok(!isBlock(testHook(HOOK, stopPayload(tp), { home: h.home })), name + ': no nudge');
+    } finally { h.cleanup(); }
+  }
+});
+
+test('QUOTED LAUNCH: a notification/typed text quoting a launch result does not open an agent', () => {
+  const h = makeHome();
+  try {
+    const ghost = 'dddd111122223333e';
+    const launchText = agentLaunchResultLine(ghost, '/tmp/nope.output', 'toolu_g', isoMinutesAgo(90)).message.content[0].content[0].text;
+    const tp = h.writeTranscript([
+      { type: 'user', message: { role: 'user', content: '<task-notification>\n<task-id>x1</task-id>\n<status>completed</status>\n<result>' + launchText + '</result>\n</task-notification>' }, timestamp: isoMinutesAgo(90) },
+      { type: 'user', message: { role: 'user', content: launchText }, timestamp: isoMinutesAgo(90) },
+    ]);
+    assert.strictEqual(require(AGENT_SCAN).scanTranscript(tp).launched.size, 0, 'quoted launch text is not a launch');
+  } finally { h.cleanup(); }
+});
+
+test('QUOTED LAUNCH: a Read/Bash tool_result containing launch text is not a launch (no phantom running agent)', () => {
+  const h = makeHome();
+  try {
+    const ghost = 'dddd111122223333f';
+    const launchText = agentLaunchResultLine(ghost, '/tmp/nope.output', 'x', isoMinutesAgo(90)).message.content[0].content[0].text;
+    const readUse = { type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_rd', name: 'Read', input: { file_path: '/tmp/notes.md' } }] }, timestamp: isoMinutesAgo(90) };
+    const readResult = { type: 'user', message: { role: 'user', content: [{ tool_use_id: 'toolu_rd', type: 'tool_result', content: [{ type: 'text', text: launchText }] }] }, timestamp: isoMinutesAgo(89) };
+    const tp = h.writeTranscript([readUse, readResult]);
+    assert.strictEqual(require(AGENT_SCAN).scanTranscript(tp).launched.size, 0, 'a Read result is not a launch');
+    // the genuine launch (answering a seen Agent call) still counts
+    const real = h.writeTranscript([agentToolUseLine('toolu_ag', 'Real', isoMinutesAgo(90)), agentLaunchResultLine(ghost, '/tmp/nope.output', 'toolu_ag', isoMinutesAgo(90))]);
+    assert.ok(require(AGENT_SCAN).scanTranscript(real).launched.has(ghost), 'a launch answering an Agent call counts');
+  } finally { h.cleanup(); }
+});
+
+test('QUOTED NOTIFICATION: a user message quoting a completed block mid-text does not close a live agent; a real leading notice does', () => {
+  const h = makeHome();
+  try {
+    const id = '1234abcd5678ef901';
+    const out = writeOutputFile(h, 'qn.output', 60 * 60 * 1000);
+    const launch = [agentToolUseLine('toolu_qn', 'Live worker', isoMinutesAgo(90)), agentLaunchResultLine(id, out, 'toolu_qn', isoMinutesAgo(90))];
+    const quoted = { type: 'user', message: { role: 'user', content: 'FYI this is what a notice looks like:\n' + notificationText(id, 'completed') }, timestamp: isoMinutesAgo(5) };
+    const tp = h.writeTranscript(launch.concat([quoted]));
+    assert.deepStrictEqual(require(AGENT_SCAN).runningAgents(tp).map((a) => a.id), [id], 'quoted notice must not close it');
+    const tp2 = h.writeTranscript(launch.concat([notificationLine(id, 'completed', isoMinutesAgo(5))]));
+    assert.deepStrictEqual(require(AGENT_SCAN).runningAgents(tp2).map((a) => a.id), [], 'a real notice closes it');
+  } finally { h.cleanup(); }
+});
+
+test('DELIVERY NET: a Bash/Read result that merely contains the agent id does not close it; a TaskOutput result naming it does', () => {
+  const h = makeHome();
+  try {
+    const id = '99aa111122223333b';
+    const out = writeOutputFile(h, 'dn.output', 60 * 60 * 1000);
+    const launch = [agentToolUseLine('toolu_dn', 'Net worker', isoMinutesAgo(90)), agentLaunchResultLine(id, out, 'toolu_dn', isoMinutesAgo(90))];
+    const pair = (name, input, text) => [
+      { type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_p_' + name, name, input }] }, timestamp: isoMinutesAgo(10) },
+      { type: 'user', message: { role: 'user', content: [{ tool_use_id: 'toolu_p_' + name, type: 'tool_result', content: [{ type: 'text', text }] }] }, timestamp: isoMinutesAgo(9) },
+    ];
+    const grep = h.writeTranscript(launch.concat(pair('Bash', { command: 'grep -r worker notes/' }, 'notes/todo.md: check ' + id + ' later')));
+    assert.deepStrictEqual(require(AGENT_SCAN).runningAgents(grep).map((a) => a.id), [id], 'a grep result mentioning the id is not delivery');
+    const delivered = h.writeTranscript(launch.concat(pair('TaskOutput', { task_id: id }, 'agent ' + id + ' result: done')));
+    assert.deepStrictEqual(require(AGENT_SCAN).runningAgents(delivered).map((a) => a.id), [], 'a TaskOutput result for the id is delivery');
+  } finally { h.cleanup(); }
+});
+
+test('NOTIFICATION LEAF: a system-reminder-wrapped notice after other text is terminal; a sentence-quoted one is not', () => {
+  const id = '5555aaaa6666bbbb7';
+  const wrapped = notificationText(id, 'completed');
+  const cases = [
+    ['text before a system-reminder block', 'hello\n<system-reminder>\n' + wrapped + '\n</system-reminder>', true],
+    ['"Note:" before a system-reminder block (array text block)', [{ type: 'text', text: 'Note: <system-reminder>' + wrapped + '</system-reminder>' }], true],
+    ['quoted mid-sentence, no system-reminder wrapper', 'as the report said: ' + wrapped, false],
+  ];
+  for (const [name, content, closes] of cases) {
+    const h = makeHome();
+    try {
+      const out = writeOutputFile(h, 'nl.output', 60 * 60 * 1000);
+      const tp = h.writeTranscript([
+        agentToolUseLine('toolu_nl', 'Leaf worker', isoMinutesAgo(90)),
+        agentLaunchResultLine(id, out, 'toolu_nl', isoMinutesAgo(90)),
+        { type: 'user', message: { role: 'user', content }, timestamp: isoMinutesAgo(5) },
+      ]);
+      assert.strictEqual(require(AGENT_SCAN).scanTranscript(tp).terminal.has(id), closes, name);
+    } finally { h.cleanup(); }
+  }
+});
+
+test('DELIVERY NET: a TaskOutput call with a short unique id prefix whose result names the agent closes it; an ambiguous prefix does not', () => {
+  const h = makeHome();
+  try {
+    const idA = '77bb111122223333c';
+    const idB = '77bb111122223333d';
+    const out = writeOutputFile(h, 'dp.output', 60 * 60 * 1000);
+    const launches = [
+      agentToolUseLine('toolu_da', 'A', isoMinutesAgo(90)), agentLaunchResultLine(idA, out, 'toolu_da', isoMinutesAgo(90)),
+      agentToolUseLine('toolu_db', 'B', isoMinutesAgo(90)), agentLaunchResultLine(idB, out, 'toolu_db', isoMinutesAgo(90)),
+    ];
+    const pair = (prefix) => [
+      { type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_to', name: 'TaskOutput', input: { task_id: prefix } }] }, timestamp: isoMinutesAgo(10) },
+      { type: 'user', message: { role: 'user', content: [{ tool_use_id: 'toolu_to', type: 'tool_result', content: [{ type: 'text', text: 'agent ' + idA + ' result: done' }] }] }, timestamp: isoMinutesAgo(9) },
+    ];
+    const full = require(AGENT_SCAN).scanTranscript(h.writeTranscript(launches.concat(pair(idA))));
+    assert.ok(full.terminal.has(idA), 'full-id call closes A');
+    const ambiguous = require(AGENT_SCAN).scanTranscript(h.writeTranscript(launches.concat(pair('77bb1111'))));
+    assert.ok(!ambiguous.terminal.has(idA), 'a prefix matching two launches names neither');
+    const solo = require(AGENT_SCAN).scanTranscript(h.writeTranscript(launches.slice(0, 2).concat(pair('77bb1111'))));
+    assert.ok(solo.terminal.has(idA), 'a unique >=7-hex prefix names the agent');
+  } finally { h.cleanup(); }
+});
+
+test('TASKSTOP: an errored TaskStop (paired tool_result is_error) is not terminal; with no visible result it still is', () => {
+  const h = makeHome();
+  try {
+    const id = '8899aabb1122ccddd';
+    const out = writeOutputFile(h, 'te.output', 60 * 60 * 1000);
+    const base = [agentToolUseLine('toolu_te', 'Err worker', isoMinutesAgo(90)), agentLaunchResultLine(id, out, 'toolu_te', isoMinutesAgo(90))];
+    const stop = { type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_tse', name: 'TaskStop', input: { task_id: id } }] }, timestamp: isoMinutesAgo(10) };
+    const errResult = { type: 'user', message: { role: 'user', content: [{ tool_use_id: 'toolu_tse', type: 'tool_result', is_error: true, content: [{ type: 'text', text: 'No task found' }] }] }, timestamp: isoMinutesAgo(9) };
+    assert.ok(!require(AGENT_SCAN).scanTranscript(h.writeTranscript(base.concat([stop, errResult]))).terminal.has(id), 'errored TaskStop is not terminal');
+    assert.ok(require(AGENT_SCAN).scanTranscript(h.writeTranscript(base.concat([stop]))).terminal.has(id), 'no visible result -> terminal');
+  } finally { h.cleanup(); }
+});
+
+test('TASKSTOP: an assistant TaskStop tool_use for the agent id is terminal with no notification; a later genuine resume re-opens it', () => {
+  const h = makeHome();
+  try {
+    const id = 'eeee111122223333f';
+    const out = writeOutputFile(h, 'ts.output', 3 * 60 * 60 * 1000);
+    const stop = { type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_ts', name: 'TaskStop', input: { task_id: id } }] }, timestamp: isoMinutesAgo(200) };
+    const base = [
+      agentToolUseLine('toolu_tsa', 'Stopped worker', isoMinutesAgo(400)),
+      agentLaunchResultLine(id, out, 'toolu_tsa', isoMinutesAgo(400)),
+      stop,
+    ];
+    const tp = h.writeTranscript(base);
+    assert.ok(require(AGENT_SCAN).scanTranscript(tp).terminal.has(id), 'TaskStop is terminal');
+    assert.ok(!isBlock(testHook(HOOK, stopPayload(tp), { home: h.home })), 'no nudge after TaskStop');
+    const tp2 = h.writeTranscript(base.concat([resumeResultLine(id, isoMinutesAgo(100))]));
+    assert.ok(!require(AGENT_SCAN).scanTranscript(tp2).terminal.has(id), 'a later genuine resume re-opens it');
+  } finally { h.cleanup(); }
+});
+
+test('RESUME: killed -> real SendMessage resume tool_result (resumedAgentId) -> live again and flagged when silent', () => {
+  const h = makeHome();
+  try {
+    const id = 'ffff111122223333a';
+    const out = writeOutputFile(h, 'kr.output', 60 * 60 * 1000);
+    const tp = h.writeTranscript([
+      agentToolUseLine('toolu_kr', 'Revived worker', isoMinutesAgo(300)),
+      agentLaunchResultLine(id, out, 'toolu_kr', isoMinutesAgo(300)),
+      notificationLine(id, 'killed', isoMinutesAgo(200)),
+      resumeResultLine(id, isoMinutesAgo(100)),
+    ]);
+    assert.ok(!require(AGENT_SCAN).scanTranscript(tp).terminal.has(id), 'resumed agent is live');
+    const r = testHook(HOOK, stopPayload(tp), { home: h.home });
+    assert.ok(isBlock(r), 'resumed then silent -> flagged: ' + JSON.stringify(r.json));
+    assert.match(r.json.reason, /Revived worker/);
+  } finally { h.cleanup(); }
+});
+
+test('TERMINAL SHAPES: killed via user-string, queued attachment, and system-reminder-in-later-user-message are all terminal', () => {
+  const id = 'abab111122223333b';
+  const shapes = {
+    userString: (i) => notificationLine(i, 'killed', isoMinutesAgo(5)),
+    attachment: (i) => notificationAttachmentLine(i, 'killed', isoMinutesAgo(5)),
+    systemReminder: (i) => ({ type: 'user', message: { role: 'user', content: [{ type: 'text', text: '<system-reminder>\n' + notificationText(i, 'killed') + '\n</system-reminder>' }] }, timestamp: isoMinutesAgo(5) }),
+  };
+  for (const [name, mk] of Object.entries(shapes)) {
+    const h = makeHome();
+    try {
+      const out = writeOutputFile(h, 'sh-' + name + '.output', 3 * 60 * 60 * 1000);
+      const tp = h.writeTranscript([agentLaunchResultLine(id, out, 'toolu_sh', isoMinutesAgo(300)), mk(id)]);
+      assert.ok(require(AGENT_SCAN).scanTranscript(tp).terminal.has(id), name + ' must be terminal');
+      assert.ok(!isBlock(testHook(HOOK, stopPayload(tp), { home: h.home })), name + ': no nudge');
+    } finally { h.cleanup(); }
+  }
+});

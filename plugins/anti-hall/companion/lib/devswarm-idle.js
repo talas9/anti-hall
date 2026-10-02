@@ -151,7 +151,14 @@ function notificationTexts(e) {
   } else if (e.type === 'queue-operation' && typeof e.content === 'string') {
     out.push(e.content);
   }
-  return out.filter((t) => t.includes('<task-notification>'));
+  // A genuine notice BEGINS with the tag (every real shape — user string,
+  // queued attachment, queue-operation — observed at index 0), or sits directly
+  // inside a <system-reminder> block anywhere in the leaf. A message that merely QUOTES a block
+  // mid-text is not a completion.
+  return out.filter((t) => {
+    const s = t.trimStart();
+    return s.startsWith('<task-notification>') || /<system-reminder>\s*<task-notification>/.test(t);
+  });
 }
 function finishedTaskKeys(text) {
   const keys = [];
