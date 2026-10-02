@@ -471,45 +471,53 @@ function migrateJevIntegrationsSection(home) {
   return { migrated, errors };
 }
 
-// migrateLegacyPluginOptions(home) -> {migrated, errors}. Advanced settings
-// (schema pluginOptionLegacy) no longer have a /config row, but a value an
-// older version let the person store under ~/.claude/settings.json
-// pluginConfigs["anti-hall"].options is copied into ~/.anti-hall/settings.json
-// under the setting's real key — only when that value differs from the schema
-// default (a default-equal option is Claude Code's own seeded value, not a
-// choice) and the key is not already set there. Idempotent, fail-open, never
-// writes ~/.claude/settings.json and never deletes the stored option (it stays
-// readable as the legacy source). A missing/unparseable Claude settings file or
-// an invalid stored value is skipped, not an error.
-function migrateLegacyPluginOptions(home) {
+// migrateLegacyPluginOptions(home, opts?) -> {migrated, skipped, errors}. Copies
+// a value the person stored through Claude Code's plugin options
+// (~/.claude/settings.json pluginConfigs, read by settings.readStoredPluginOptions
+// in every accepted key/shape form) into ~/.anti-hall/settings.json under the
+// setting's real key, so the value survives its /config row leaving the manifest.
+//
+// INVARIANT: the migration never changes an effective value. settings.json
+// outranks the CLAUDE_PLUGIN_OPTION_* env tier, so a blind copy could let a
+// stored value override a different env value. A key is therefore migrated only
+// when resolving it NOW (current env, all tiers) already gives exactly the value
+// that would be written, i.e. the stored option IS the effective value. The
+// check runs again under the settings lock, together with "still unset".
+//
+// Scope: every pluginOption setting except the 10 headline keys (they keep their
+// rows), `locked` keys and `homeOnly` keys (safety/credential switches stay on
+// the legacy read tier, never copied), and the sensitive credential options
+// (not in the schema; never read from settings.json). A value equal to the
+// schema default is skipped (it is Claude Code's seeded default, not a choice);
+// a null schema default (jev.budget.usdPerDay/usdPerWeek/minCreditUsd) has no
+// default to equal, so any valid stored value counts as non-default.
+// Idempotent, fail-open, never writes or deletes anything under ~/.claude.
+function migrateLegacyPluginOptions(home, opts) {
   const settingsLib = require('../../hooks/lib/settings.js');
   const schemaLib = require('../../hooks/lib/settings-schema.js');
+  const o = Object.assign({}, opts, { home });
   let migrated = 0;
+  let skipped = 0;
   let errors = 0;
-  let opt;
+  const opt = settingsLib.readStoredPluginOptions(o);
+  if (!opt) return { migrated, skipped, errors };
   try {
-    const raw = JSON.parse(fs.readFileSync(path.join(home, '.claude', 'settings.json'), 'utf8'));
-    opt = raw && raw.pluginConfigs && raw.pluginConfigs['anti-hall'] && raw.pluginConfigs['anti-hall'].options;
-  } catch (_) { return { migrated, errors }; }
-  if (!opt || typeof opt !== 'object') return { migrated, errors };
-  try {
-    const store = settingsLib.load({ home });
     for (const entry of schemaLib.allSettings()) {
-      if (!entry.pluginOptionLegacy || entry.homeOnly) continue;
+      if (!entry.pluginOption || entry.headline || entry.locked || entry.homeOnly) continue;
       if (!Object.prototype.hasOwnProperty.call(opt, entry.pluginOption)) continue;
-      const stored = opt[entry.pluginOption];
-      if (String(stored) === String(entry.default)) continue;
-      if (settingsLib.lookup(store[entry.section], entry.key) !== undefined) continue;
       try {
+        const stored = opt[entry.pluginOption];
+        if (entry.default !== null && entry.default !== undefined && String(stored) === String(entry.default)) continue;
         const v = settingsLib.validate(entry, stored);
         if (!v.ok) continue;
-        // confirmed: carrying over a value that was already in force is not a widening.
-        const r = settingsLib.set(entry.section, entry.key, v.value, { home, confirmed: true });
-        if (r.ok) migrated++; else errors++;
+        const guard = (store) => settingsLib.lookup(store[entry.section], entry.key) === undefined
+          && settingsLib.get(entry.section, entry.key, undefined, o) === v.value;
+        const r = settingsLib.set(entry.section, entry.key, v.value, Object.assign({}, o, { guard }));
+        if (!r.ok) errors++; else if (r.skipped) skipped++; else migrated++;
       } catch (_) { errors++; }
     }
   } catch (_) { errors++; }
-  return { migrated, errors };
+  return { migrated, skipped, errors };
 }
 
 function migrateSettingsFromLegacy(home, opts) {
@@ -548,7 +556,7 @@ function migrateSettingsFromLegacy(home, opts) {
       } catch (_) { errors++; }
     }
   } catch (_) { errors++; }
-  const pluginOpts = migrateLegacyPluginOptions(home);
+  const pluginOpts = migrateLegacyPluginOptions(home, o.env ? { env: o.env } : undefined);
   migrated += pluginOpts.migrated;
   errors += pluginOpts.errors;
   return { ok: errors === 0, migrated, errors };

@@ -26,6 +26,7 @@ equivalent** — its plugin manifest has no `userConfig` and there is no plugin 
 On Codex this skill (over `scripts/settings.js`) is the ONLY way to see or change a
 setting. It is complete (every setting, advanced included), and a value set here lands
 in `~/.anti-hall/settings.json`, which both platforms read from the same `~/.anti-hall/` home.
+On Claude Code, values you set in Claude Code's plugin options (`/config`) are copied into `~/.anti-hall/settings.json` on update (only when that value is already the one in effect, and never for the safety guards, which keep reading the plugin option); `/anti-hall:settings` is the place to see and change every setting.
 
 ## Direct named changes: one `set`, no table
 

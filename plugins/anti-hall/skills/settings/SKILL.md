@@ -25,6 +25,8 @@ says "anti-hall settings" / "change my settings", tell them that in one or two l
 > Change settings in `/config` (the anti-hall rows) — arrow keys, no model; or tell me
 > "set X to Y".
 
+Values you set in Claude Code's plugin options (`/config`) are copied into `~/.anti-hall/settings.json` on update (only when that value is already the one in effect, and never for the safety guards, which keep reading the plugin option); `/anti-hall:settings` is the place to see and change every setting.
+
 Do not run `show` or print tables for this. Advanced/tuning knobs (including the two safety
 allow-lists) are NOT in `/config`; they live in `/anti-hall:settings` only. For those, use a direct change below (`show --section <key> --all` lists them if asked).
 

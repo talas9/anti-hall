@@ -973,7 +973,7 @@ wired resolver.
   settings that used to have a row keep their old option name as a read-only legacy source, so
   a value already stored under Claude Code's `pluginConfigs` still applies, and
   `migrateSettingsFromLegacy` (update / `doctor --repair`) copies a non-default one into
-  `~/.anti-hall/settings.json` without touching or deleting the Claude Code file.
+  `~/.anti-hall/settings.json` without touching or deleting the Claude Code file. The copy now covers every plugin-option setting except the 10 headline switches, the safety/home-only keys and the credential options, and only when that stored value is already the effective one (it never changes what resolves). Both `pluginConfigs` key forms (`anti-hall@anti-hall`, `anti-hall`) are read. `/anti-hall:settings` is the place to see and change every setting.
 - **Ask for it** — say "turn off the merge gate" or "set auto-handover to 80%" and the
   `settings` skill applies it with one `set` (no table dump); "show my anti-hall settings"
   prints the tables only when you ask.

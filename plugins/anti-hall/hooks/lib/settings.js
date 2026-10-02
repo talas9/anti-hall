@@ -210,6 +210,37 @@ function pluginManifestDefault(entry, opts) {
   }
 }
 
+// PLUGIN_CONFIG_KEYS: the keys Claude Code may store this plugin's answers
+// under in ~/.claude/settings.json pluginConfigs, lowest priority first. The
+// settings reference says the map is keyed by plugin ID ("anti-hall@anti-hall"
+// is this plugin's marketplace-qualified ID) and shows the value as the
+// answers object itself (flat: {"<option>": value}); earlier anti-hall code
+// read {"options": {"<option>": value}} under the bare name. All four forms
+// are read; the plugin-ID key outranks the bare name, flat outranks nested.
+const PLUGIN_CONFIG_KEYS = ['anti-hall', 'anti-hall@anti-hall'];
+
+// readStoredPluginOptions(opts) -> merged {<option>: value} object from
+// pluginConfigs, or undefined when none is reachable. Read-only; never writes
+// ~/.claude; any read/parse problem -> undefined (fail-open).
+function readStoredPluginOptions(opts) {
+  try {
+    const p = (opts && opts.claudeSettingsPath) || path.join(homeDir(opts), '.claude', 'settings.json');
+    const raw = JSON.parse(fs.readFileSync(p, 'utf8'));
+    const map = raw && raw.pluginConfigs;
+    if (!map || typeof map !== 'object') return undefined;
+    const isObj = (v) => v && typeof v === 'object' && !Array.isArray(v);
+    let out;
+    for (const k of PLUGIN_CONFIG_KEYS) {
+      const e = map[k];
+      if (!isObj(e)) continue;
+      out = out || {};
+      if (isObj(e.options)) Object.assign(out, e.options);
+      for (const name of Object.keys(e)) if (name !== 'options') out[name] = e[name];
+    }
+    return out;
+  } catch (_) { return undefined; }
+}
+
 // readPluginOption(entry, opts) -> value from CLAUDE_PLUGIN_OPTION_<KEY>
 // (hooks get this env var) or, when absent, a read-only scan of
 // ~/.claude/settings.json's pluginConfigs["anti-hall"].options[<key>] — the
@@ -234,22 +265,23 @@ function readPluginOption(entry, opts) {
   if (!entry.pluginOption || entry.homeOnly) return undefined; // homeOnly: never from /config
   const env = (opts && opts.env) || process.env;
   const envName = 'CLAUDE_PLUGIN_OPTION_' + entry.pluginOption.toUpperCase();
-  const manifestDefault = entry.pluginOptionLegacy ? entry.default : pluginManifestDefault(entry, opts);
+  // A null/undefined schema default (the Jev budget USD fields) means "no
+  // default": every stored value is a real choice, as it was with a row that
+  // declared no manifest default.
+  const manifestDefault = entry.pluginOptionLegacy
+    ? (entry.default === null ? undefined : entry.default)
+    : pluginManifestDefault(entry, opts);
   const isManifestDefault = (raw) => manifestDefault !== undefined && String(raw) === String(manifestDefault);
 
   if (env[envName] !== undefined) {
     if (isManifestDefault(env[envName])) return undefined;
     return coerceValue(entry, env[envName]);
   }
-  try {
-    const p = (opts && opts.claudeSettingsPath) || path.join(homeDir(opts), '.claude', 'settings.json');
-    const raw = JSON.parse(fs.readFileSync(p, 'utf8'));
-    const opt = raw && raw.pluginConfigs && raw.pluginConfigs['anti-hall'] && raw.pluginConfigs['anti-hall'].options;
-    if (opt && Object.prototype.hasOwnProperty.call(opt, entry.pluginOption)) {
-      if (isManifestDefault(opt[entry.pluginOption])) return undefined;
-      return coerceValue(entry, opt[entry.pluginOption]);
-    }
-  } catch (_) { /* fail-open: no /config value reachable */ }
+  const opt = readStoredPluginOptions(opts);
+  if (opt && Object.prototype.hasOwnProperty.call(opt, entry.pluginOption)) {
+    if (isManifestDefault(opt[entry.pluginOption])) return undefined;
+    return coerceValue(entry, opt[entry.pluginOption]);
+  }
   return undefined;
 }
 
@@ -512,6 +544,11 @@ function set(section, key, value, opts) {
   const backedUpCorruptTo = backupCorruptIfNeeded(opts);
   const store = load(opts);
 
+  // opts.guard(store): a caller's precondition, evaluated HERE under the lock
+  // against the store just read (a concurrent writer cannot slip in between
+  // the check and the write). false -> nothing is written, {ok:true, skipped}.
+  if (opts && typeof opts.guard === 'function' && !opts.guard(store)) return { ok: true, skipped: true };
+
   if (entry.locked) {
     const currentValue = get(section, key, undefined, opts);
     if (isRiskyChange(entry, v.value, currentValue) && !(opts && opts.confirmed)) {
@@ -608,4 +645,4 @@ function source(section, key, opts) {
   return 'default';
 }
 
-module.exports = { load, get, getWithEnv, enabled, set, reset, source, path: settingsPath, validate, lookup, safetyWarning };
+module.exports = { load, get, readStoredPluginOptions, getWithEnv, enabled, set, reset, source, path: settingsPath, validate, lookup, safetyWarning };

@@ -15,6 +15,10 @@ the update.
 - A transient lock-heartbeat failure (the lock's reclaim sidecar briefly busy) no longer makes a healthy wake watcher exit. The watcher skips that restamp and retries next tick; it exits as lost only on a genuine lost lock, or when transient failures outlast the lock's 2-minute stale threshold (with a log line).
 - Releasing a lock now checks ownership and unlinks under the reclaim sidecar (waiting at most ~40 ms for a busy one, then the old behaviour), so a stealer that publishes at that moment cannot have its lock deleted.
 
+### Changed
+
+- Settings: plugin-option values are now migrated into `~/.anti-hall/settings.json` for every plugin-option setting except the 10 headline switches, locked/home-only keys and the credential options, and only when the stored value is already the effective one (the migration never changes what resolves; it re-checks "still unset" under the settings lock). Stored options are read under both `pluginConfigs` keys (`anti-hall@anti-hall`, `anti-hall`) and both shapes. The 10 headline keys are flagged `headline` in the schema. New permanent default-equivalence test.
+
 ## 0.121.8 (2026-10-03)
 
 ### Fixed

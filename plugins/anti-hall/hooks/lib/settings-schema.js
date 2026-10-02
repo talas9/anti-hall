@@ -35,6 +35,11 @@
 //                // "equals default means unset" guard, and
 //                // migrateSettingsFromLegacy copies a non-default stored value
 //                // into settings.json. Must be paired with advanced: true.
+//   headline,    // true = one of the 10 headline switches that keep a native
+//                // /config row for good (4 safety guards, auto-handover on/pct,
+//                // jev.enabled, devswarm.supervisorMode, guards.modelRouting,
+//                // limitConserve.mode). Every other pluginOption setting is
+//                // migrated into settings.json and is slated to leave the manifest.
 //   advanced,    // true = hidden from the default `show` table (use --all)
 //   homeOnly,    // true = read ONLY from ~/.anti-hall/settings.json (then the
 //                // default): no env override, no /config plugin option, no legacy
@@ -78,8 +83,8 @@ const SECTIONS = [
     label: 'Auto Handover',
     description: 'Automatic session-handover writing as context fills up.',
     settings: [
-      { key: 'enabled', type: 'boolean', default: true, pluginOption: 'auto_handover_enabled', description: 'Write an automatic handover before context runs out.' },
-      { key: 'pct', type: 'number', min: 1, max: 99, default: 85, env: 'ANTIHALL_AUTO_HANDOVER_PCT', pluginOption: 'auto_handover_pct', description: 'Context-usage percent that triggers an automatic handover.' },
+      { key: 'enabled', type: 'boolean', default: true, pluginOption: 'auto_handover_enabled', headline: true, description: 'Write an automatic handover before context runs out.' },
+      { key: 'pct', type: 'number', min: 1, max: 99, default: 85, env: 'ANTIHALL_AUTO_HANDOVER_PCT', pluginOption: 'auto_handover_pct', headline: true, description: 'Context-usage percent that triggers an automatic handover.' },
       { key: 'maxTokens', type: 'number', pluginOption: 'auto_handover_max_tokens', min: 0, default: 0, env: 'ANTIHALL_AUTO_HANDOVER_MAX_TOKENS', description: 'Opt-in absolute context-token ceiling that also triggers the handover, whichever of pct/maxTokens fires first; 0 (the default) = no ceiling — the real per-session context window size (85% of it) is the only trigger unless a user explicitly sets this.' },
       { key: 'nag', type: 'boolean', default: true, pluginOption: 'auto_handover_nag', description: 'Nag (remind) the user when a handover is due but not yet written.' },
       { key: 'nagStepPct', type: 'number', pluginOption: 'auto_handover_nag_step_pct', min: 1, max: 100, default: 5, description: 'Percent increments between successive handover nags.' },
@@ -125,7 +130,7 @@ const SECTIONS = [
       { key: 'progressFreshMs', type: 'number', min: 0, default: 1800000, env: 'ANTIHALL_PROGRESS_FRESH_MS', advanced: true, description: 'Freshness window (ms) for the progress file in tasklist-guard. [verified: hooks/tasklist-guard.js:46 DEFAULT_PROGRESS_FRESH_MS = 30*60*1000]' },
       { key: 'apiGuardThirdparty', type: 'boolean', default: false, env: 'ANTIHALL_API_GUARD_THIRDPARTY', advanced: true, description: 'Also verify installed 3rd-party package APIs, not just stdlib/builtins. [verified: hooks/api-guard.js:84 — default off, =1/true/yes/on enables]' },
       // ---- 0.108.4: on/off switches for every remaining guard (default = current behaviour) ----
-      { key: 'modelRouting', type: 'enum', values: ['strict', 'advisory', 'off'], default: 'strict', env: 'ANTIHALL_MODEL_ROUTING', pluginOption: 'guards_model_routing', description: 'model-routing-guard (PreToolUse Agent/Task): strict blocks a mis-tiered spawn, advisory only warns, off disables the hook.' },
+      { key: 'modelRouting', type: 'enum', values: ['strict', 'advisory', 'off'], default: 'strict', env: 'ANTIHALL_MODEL_ROUTING', pluginOption: 'guards_model_routing', headline: true, description: 'model-routing-guard (PreToolUse Agent/Task): strict blocks a mis-tiered spawn, advisory only warns, off disables the hook.' },
       { key: 'updateInSession', type: 'boolean', default: true, env: 'ANTIHALL_UPDATE_IN_SESSION', pluginOption: 'guards_update_in_session', description: "model-routing-guard blocks a subagent spawn that runs anti-hall's own update (skills/update/scripts/update.js, or run /anti-hall:update): update.js runs migrations, so it runs in the main session, which judges the result. off allows delegating it. [verified: hooks/model-routing-guard.js runsAntiHallUpdate]" },
       { key: 'modelRoutingDeployFloor', type: 'enum', values: ['sonnet', 'opus', 'off'], default: 'sonnet', env: 'ANTIHALL_MODEL_ROUTING_DEPLOY_FLOOR', pluginOption: 'guards_model_routing_deploy_floor', description: 'model-routing-guard floor for deploy/migration/rollback/production/secret/credential-shaped spawns: such a spawn at or above the floor is never blocked, one below it (or with no explicit model) gets an advisory to use at least the floor. off restores the plain routing table. [verified: hooks/model-routing-guard.js DEPLOY_SHAPED_RE]' },
       { key: 'apiGuard', type: 'boolean', default: true, pluginOption: 'guards_api_guard', description: 'api-guard (PreToolUse Write/Edit): block fabricated stdlib/builtin APIs in written code.' },
@@ -153,10 +158,10 @@ const SECTIONS = [
     label: 'Safety Guards',
     description: 'Switches for the safety-critical guards (force-push / AI self-credit / heavy-command and edit delegation / runaway spawns). Normal precedence applies (env > ~/.anti-hall/settings.json > /config > default): a value in settings.json counts like any other. `settings.js set` to the risky value, and a `reset` whose fallback value is risky, need `--confirmed` (a human direct command, or the user saying yes after a one-line factual warning); re-arming a guard never does. Off = the guard\'s core check no-ops; the per-guard skip.json escape hatch is unchanged.',
     settings: [
-      { key: 'gitGuard', type: 'boolean', default: true, env: 'ANTIHALL_GIT_GUARD', pluginOption: 'safety_git_guard', locked: true, safetyDirection: 'off', safetyNote: 'force-pushes and AI credit lines in commits will no longer be stopped', description: 'git-guard: block force-push and AI self-credit in commits and gh pr/issue/release bodies.' },
-      { key: 'commandGuard', type: 'boolean', default: true, env: 'ANTIHALL_COMMAND_GUARD', pluginOption: 'safety_command_guard', locked: true, safetyDirection: 'off', safetyNote: 'heavy commands (builds, tests, deploys, pushes) will run directly in the main session instead of being handed to a helper', description: 'command-guard core: make the coordinator delegate heavy commands (build/test/deploy/push). Its data-safety sub-guards (DevSwarm read/send/mailbox, armed stash guard) stay on.' },
-      { key: 'editGuard', type: 'boolean', default: true, env: 'ANTIHALL_EDIT_GUARD', pluginOption: 'safety_edit_guard', locked: true, safetyDirection: 'off', safetyNote: 'edits to protected files like plugin config and secrets will no longer be stopped', description: 'edit-guard core: make the coordinator delegate file edits outside its own plan/state/handover files.' },
-      { key: 'swarmGuard', type: 'boolean', default: true, env: 'ANTIHALL_SWARM_GUARD', pluginOption: 'safety_swarm_guard', locked: true, safetyDirection: 'off', safetyNote: 'nothing will stop runaway agent spawning that can overload the machine', description: 'swarm-guard: block agent spawns past the spawn-rate cap or under critical memory pressure.' },
+      { key: 'gitGuard', type: 'boolean', default: true, env: 'ANTIHALL_GIT_GUARD', pluginOption: 'safety_git_guard', headline: true, locked: true, safetyDirection: 'off', safetyNote: 'force-pushes and AI credit lines in commits will no longer be stopped', description: 'git-guard: block force-push and AI self-credit in commits and gh pr/issue/release bodies.' },
+      { key: 'commandGuard', type: 'boolean', default: true, env: 'ANTIHALL_COMMAND_GUARD', pluginOption: 'safety_command_guard', headline: true, locked: true, safetyDirection: 'off', safetyNote: 'heavy commands (builds, tests, deploys, pushes) will run directly in the main session instead of being handed to a helper', description: 'command-guard core: make the coordinator delegate heavy commands (build/test/deploy/push). Its data-safety sub-guards (DevSwarm read/send/mailbox, armed stash guard) stay on.' },
+      { key: 'editGuard', type: 'boolean', default: true, env: 'ANTIHALL_EDIT_GUARD', pluginOption: 'safety_edit_guard', headline: true, locked: true, safetyDirection: 'off', safetyNote: 'edits to protected files like plugin config and secrets will no longer be stopped', description: 'edit-guard core: make the coordinator delegate file edits outside its own plan/state/handover files.' },
+      { key: 'swarmGuard', type: 'boolean', default: true, env: 'ANTIHALL_SWARM_GUARD', pluginOption: 'safety_swarm_guard', headline: true, locked: true, safetyDirection: 'off', safetyNote: 'nothing will stop runaway agent spawning that can overload the machine', description: 'swarm-guard: block agent spawns past the spawn-rate cap or under critical memory pressure.' },
     ],
   },
   {
@@ -213,7 +218,7 @@ const SECTIONS = [
     label: 'Limit Conservation',
     description: 'Auto-downshift behavior as usage approaches plan limits.',
     settings: [
-      { key: 'mode', type: 'enum', values: ['auto', 'on', 'off'], default: 'auto', env: 'ANTIHALL_LIMIT_CONSERVE', pluginOption: 'limit_conserve_mode', description: 'Force conservation mode on/off, or auto-detect from the OMC usage cache.' },
+      { key: 'mode', type: 'enum', values: ['auto', 'on', 'off'], default: 'auto', env: 'ANTIHALL_LIMIT_CONSERVE', pluginOption: 'limit_conserve_mode', headline: true, description: 'Force conservation mode on/off, or auto-detect from the OMC usage cache.' },
       { key: 'threshold', type: 'number', min: 1, max: 99, default: 85, env: 'ANTIHALL_LIMIT_THRESHOLD', pluginOption: 'limit_conserve_threshold', description: 'Usage percent that triggers conservation mode. [verified: hooks/limit-conserve.js:59 THRESHOLD = parseInt(...) || 85]' },
       { key: 'accountCheck', type: 'boolean', default: true, env: 'ANTIHALL_LIMIT_ACCOUNT_CHECK', advanced: true, description: 'Guard against stale usage-cache readings after an account switch. [verified: hooks/limit-conserve.js:111 — only the literal "off" disables it]' },
     ],
@@ -223,7 +228,7 @@ const SECTIONS = [
     label: 'Jev (semantic decision engine)',
     description: 'Opt-in Jev "System One" classifier for triage/decisions.',
     settings: [
-      { key: 'enabled', type: 'boolean', default: false, env: 'ANTIHALL_JEV', legacy: { file: 'jev.json', key: 'enabled' }, pluginOption: 'jev_enabled', description: 'Enable Jev (ANTIHALL_JEV=0 always force-disables regardless of this).' },
+      { key: 'enabled', type: 'boolean', default: false, env: 'ANTIHALL_JEV', legacy: { file: 'jev.json', key: 'enabled' }, pluginOption: 'jev_enabled', headline: true, description: 'Enable Jev (ANTIHALL_JEV=0 always force-disables regardless of this).' },
       { key: 'transport', type: 'enum', values: ['vercel', 'typesafe'], default: 'vercel', legacy: { file: 'jev.json', key: 'transport' }, pluginOption: 'jev_transport', description: 'Vercel AI Gateway passthrough (default) or a direct TypeSafe API call.' },
       { key: 'fallbackTransport', type: 'enum', values: ['none', 'vercel', 'typesafe'], default: 'none', legacy: { file: 'jev.json', key: 'fallbackTransport' }, pluginOption: 'jev_fallback_transport', description: 'Automatic backup transport: when the primary vendor times out, errors (5xx) or is out of balance (402/429), retry ONCE on this one, inside the same time budget. none = off; equal to jev.transport = off. Needs its own vendor-bound key (jev_vercel_api_key / jev_typesafe_api_key, or the key file of that vendor with jev.allowLegacyKeyRead). Text then reaches the second vendor.' },
       { key: 'judgeModel', type: 'string', pluginOption: 'jev_judge_model', default: 'claude-haiku-4-5', env: 'ANTIHALL_JUDGE_MODEL', description: 'Model used for speculation-judge / jev-triage LLM calls.' },
@@ -293,7 +298,7 @@ const SECTIONS = [
     description: 'Multi-workspace mesh orchestration, liveness, and supervisor tuning. Every consumer takes an explicit env parameter (for testability); settings.js routes these through getWithEnv() so a home derived from that SAME env is used, never os.homedir().',
     settings: [
       { key: 'hivecontrol', type: 'string', default: '', env: 'ANTIHALL_DEVSWARM_HIVECONTROL', pluginOption: 'devswarm_hivecontrol', description: 'Explicit path to the hivecontrol CLI binary (default: PATH lookup — no single default value; empty means "look it up").' },
-      { key: 'supervisorMode', type: 'enum', values: ['auto', 'on', 'off'], default: 'auto', env: 'ANTIHALL_DEVSWARM_SUPERVISOR', pluginOption: 'devswarm_supervisor_mode', description: 'Force the DevSwarm supervisor context on/off, or auto-detect. [verified: hooks/lib/devswarm-detect.js:33 — mode falsy/unset -> auto]' },
+      { key: 'supervisorMode', type: 'enum', values: ['auto', 'on', 'off'], default: 'auto', env: 'ANTIHALL_DEVSWARM_SUPERVISOR', pluginOption: 'devswarm_supervisor_mode', headline: true, description: 'Force the DevSwarm supervisor context on/off, or auto-detect. [verified: hooks/lib/devswarm-detect.js:33 — mode falsy/unset -> auto]' },
       { key: 'requiredGates', type: 'csv', pluginOption: 'devswarm_required_gates', default: 'done,merged,tests_passed', env: 'ANTIHALL_DEVSWARM_REQUIRED_GATES', description: 'Merge gates required for DevSwarm tasks. [verified: companion/lib/devswarm-store.js:214 requiredGatesFrom — literal default array]' },
       { key: 'inboxCmd', type: 'string', pluginOption: 'devswarm_inbox_cmd', default: '', env: 'ANTIHALL_DEVSWARM_INBOX_CMD', description: 'Consumer-configured command to read pending mesh messages (no built-in default). [verified: hooks/command-guard.js:765 buildDevswarmReason — hasInboxCmd only true when explicitly set]' },
       { key: 'heldPartitions', type: 'csv', default: '', env: 'ANTIHALL_DEVSWARM_HELD_PARTITIONS', advanced: true, description: 'Owner-held mesh partition ids (comma-separated). A held partition is exempt from the per-turn "ORPHANED MESH" warning and from `reap-orphans`; it still appears in `diagnose`/`doctor` as held by owner. [verified: companion/lib/devswarm-store.js heldPartitionIdsFrom]' },
