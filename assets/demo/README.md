@@ -17,29 +17,28 @@ a `.cast` file; [`agg`](https://github.com/asciinema/agg) renders it to a GIF.
 # Install asciinema and agg (if not already present)
 brew install asciinema agg
 
-# From the repo root, record the demo script:
-asciinema rec -c "bash assets/demo/demo.sh" assets/demo/anti-hall.cast
+# From the repo root. --window-size fixes the recorded terminal at 88x17
+# (asciinema 3.x; there is no --cols/--rows flag, and in headless mode it is
+# the only way to set the size).
+asciinema rec --window-size 88x17 -c "bash assets/demo/demo.sh" assets/demo/anti-hall.cast --overwrite
 
-# Then render the .cast to a GIF:
-agg assets/demo/anti-hall.cast assets/demo/anti-hall.gif
-# -> writes assets/demo/anti-hall.gif
+# Render at a large font so the text stays legible when GitHub scales it down:
+agg --font-size 22 --theme github-dark --speed 1 --last-frame-duration 3 \
+    assets/demo/anti-hall.cast assets/demo/anti-hall.gif
+# -> 1192x554 px, ~13 s, ~65 KB
 ```
 
-The script runs real hooks from this repo (relative paths from the repo root):
+`demo.sh` shows three beats: a title line, a force-push blocked by `git-guard`, and an AI
+self-credit commit trailer blocked by `git-guard`, then the install commands. The block
+messages are the hook's real stderr: the script pipes a PreToolUse JSON payload into
+`plugins/anti-hall/hooks/git-guard.js` with a throwaway `HOME` and prints what comes back
+(word-wrapped; truncated with an ellipsis only if longer than 3 lines). Nothing is
+hand-typed, so re-recording after a message change picks up the new wording.
 
-| Step | Command | Shows |
-|------|---------|-------|
-| 1 | `doctor.js --quiet` | `anti-hall ACTIVE — N checks passed` |
-| 2 | force-push piped to `git-guard.js` | `BLOCKED. Force push detected.` `exit=2` |
-| 3 | AI-credit trailer piped to `git-guard.js` | `BLOCKED. ... AI/assistant self-credit trailer` `exit=2` |
-| 4 | `npm run build` piped to `command-guard.js` | `decision":"block"` delegate-to-subagent, `exit=2` |
-| 5 | `statusline-rich.js` | the rich one-line statusline (line 1 only; full two-line in live sessions) |
-
-> The statusline reflects your local git/email config — it is read at runtime, nothing is hardcoded.
 
 ---
 
-## 2. Alternative: Generate `anti-hall.gif` (VHS)
+## 2. Alternative: Generate `anti-hall.gif` (VHS) — UNTESTED, not kept in sync with `demo.sh`
 
 [VHS](https://github.com/charmbracelet/vhs) renders a terminal script to a GIF directly.
 Use this if asciinema doesn't work for you; note that VHS requires headless Chrome + ttyd,
@@ -83,7 +82,7 @@ Once a good `anti-hall.gif` is recorded, add it to the **README hero** (top of t
 `README.md`):
 
 ```html
-<img src="assets/demo/anti-hall.gif" alt="anti-hall demo" width="720">
+<img src="assets/demo/anti-hall.gif" alt="anti-hall demo" width="820">
 ```
 
-Not embedded yet (by choice); include when a good GIF is ready.
+The root README already embeds it.

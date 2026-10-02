@@ -11,7 +11,7 @@
 </div>
 
 <p align="center">
-  <img src="assets/demo/anti-hall.gif" alt="Terminal demo: the doctor reports anti-hall active, then git-guard blocks a force-push and an AI self-credit trailer (exit 2), command-guard sends a build to a subagent, and the two-line statusline renders." width="720">
+  <img src="assets/demo/anti-hall.gif" alt="Terminal demo: git-guard blocks a force-push and an AI self-credit commit trailer (exit 2), then the plugin install commands for Claude Code." width="820">
 </p>
 
 ## What it does
