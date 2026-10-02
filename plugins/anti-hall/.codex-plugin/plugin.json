@@ -35,7 +35,7 @@
       "Write"
     ],
     "websiteURL": "https://github.com/talas9/anti-hall",
-    "privacyPolicyURL": "https://github.com/talas9/anti-hall",
+    "privacyPolicyURL": "https://github.com/talas9/anti-hall/blob/main/PRIVACY.md",
     "termsOfServiceURL": "https://github.com/talas9/anti-hall/blob/main/LICENSE",
     "defaultPrompt": [
       "Use anti-hall to verify this change before claiming it is done"
