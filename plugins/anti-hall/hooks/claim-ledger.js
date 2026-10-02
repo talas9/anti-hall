@@ -227,7 +227,14 @@ function numberInEvidence(tokenNum, evidence, evNums) {
 
 // The number must not be glued to a preceding identifier char: "V2-4 workspace"
 // is a name, not a count of 4 workspaces (a real false-positive mode).
-const RE_COUNT = /(?<![\w.-])(\d{1,6}(?:[.,]\d+)?)\s*(ms|s|sec|seconds|minutes|min|hours|days?|weeks?|workspaces?|rows?|files?|lines?|tests?|bytes?|KB|MB|chars?|items?|entries|messages?|hooks?|agents?|commits?|matches|unread|live)\b/gi;
+const RE_COUNT = new RegExp(
+  [
+    '(?<![\\w.-])(\\d{1,6}(?:[.,]\\d+)?)\\s*(ms|s|sec|seconds|minutes|min|hours|days?|weeks?|',
+    'workspaces?|rows?|files?|lines?|tests?|bytes?|KB|MB|chars?|items?|entries|messages?|hooks?|',
+    'agents?|commits?|matches|unread|live)\\b',
+  ].join(''),
+  'gi',
+);
 const RE_SHA = /\b[0-9a-f]{7,40}\b/g;
 const RE_STATE = /\b(?:still|currently)\s+(?:running|live|active|pending|blocked)\b/gi;
 const RE_TASK = /\btask\s+\d+\s+of\b/gi;

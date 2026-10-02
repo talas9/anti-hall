@@ -140,9 +140,18 @@ const { anchoredAntiHallStableLauncher } = require('./lib/stable-launcher.js');
 
 // Commands that look heavy by verb but are actually lightweight inspection commands.
 // We allow these even if the verb matches HEAVY_VERBS.
+const GIT_READONLY_RE = new RegExp(
+  [
+    '\\bgit\\s+(?:status|log|diff|show|branch(?:\\s+--list)?|rev-parse|config\\s+--get|config\\s+--list|',
+    'worktree\\s+list|remote\\s+-v|shortlog|stash\\s+list|tag\\s+-l|describe|ls-remote|ls-tree|',
+    'merge-base|reflog\\s+show)\\b',
+  ].join(''),
+  'i',
+);
+
 const LIGHT_EXCEPTIONS = [
   // git subcommands that are read-only / instant
-  /\bgit\s+(?:status|log|diff|show|branch(?:\s+--list)?|rev-parse|config\s+--get|config\s+--list|worktree\s+list|remote\s+-v|shortlog|stash\s+list|tag\s+-l|describe|ls-remote|ls-tree|merge-base|reflog\s+show)\b/i,
+  GIT_READONLY_RE,
   // git fetch alone only updates local remote-tracking refs/objects — it never
   // touches the working tree or any local branch, so it is read-only from the
   // working-tree's perspective (unlike push/pull, which stay gated below).
@@ -1273,8 +1282,15 @@ function blankPatternArgument(text, verb) {
 // <code>` form is recognized (matching the existing quoted LIGHT_EXCEPTIONS
 // entry's own scope) — an unrecognized shape is never exempted here, it is
 // simply left for the pre-existing checks.
-const NODE_EVAL_UNSAFE_RE =
-  /\b(?:writeFile(?:Sync)?|appendFile(?:Sync)?|unlink(?:Sync)?|rm(?:Sync)?|rmdir(?:Sync)?|mkdir(?:Sync)?|rename(?:Sync)?|truncate(?:Sync)?|chmod(?:Sync)?|chown(?:Sync)?|symlink(?:Sync)?|copyFile(?:Sync)?|spawn(?:Sync)?|exec(?:Sync)?|execFile(?:Sync)?|fork)\s*\(|child_process/;
+const NODE_EVAL_UNSAFE_RE = new RegExp(
+  [
+    '\\b(?:writeFile(?:Sync)?|appendFile(?:Sync)?|unlink(?:Sync)?|rm(?:Sync)?|rmdir(?:Sync)?|',
+    'mkdir(?:Sync)?|rename(?:Sync)?|truncate(?:Sync)?|chmod(?:Sync)?|chown(?:Sync)?|',
+    'symlink(?:Sync)?|copyFile(?:Sync)?|spawn(?:Sync)?|exec(?:Sync)?|execFile(?:Sync)?|fork)\\s*\\(|',
+    'child_process',
+  ].join(''),
+  '',
+);
 
 // P2 fix (`node -e "require('fs')['writeFileSync']('x','y')"`): bracket
 // member access (`obj['methodName']`) calls the SAME method as

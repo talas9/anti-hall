@@ -107,8 +107,14 @@ const HARD_EXECUTION = ['run script', 'install', 'build', 'run tests', 'git push
 // DEPLOY-SHAPED = one STRONG action signal (deploy/migrate/rollback/rotation/infra
 // tool), or TWO distinct WEAK context words (prod, production, secret, credential).
 // A single stray weak word ("grep for TODO, no secrets") is not enough.
-const DEPLOY_STRONG_RE =
-  /\b(deploy\w*|redeploy\w*|migrat\w*|rollbacks?|roll\s+back|token\s+rotation|rotat\w*\s+(?:the\s+|a\s+)?(?:api\s+)?(?:tokens?|keys?|secrets?|credentials?)|wrangler|terraform|kubectl\s+apply|helm\s+(?:install|upgrade)|firebase\s+deploy|db\s+migrate)\b/i;
+const DEPLOY_STRONG_RE = new RegExp(
+  [
+    '\\b(deploy\\w*|redeploy\\w*|migrat\\w*|rollbacks?|roll\\s+back|token\\s+rotation|',
+    'rotat\\w*\\s+(?:the\\s+|a\\s+)?(?:api\\s+)?(?:tokens?|keys?|secrets?|credentials?)|wrangler|',
+    'terraform|kubectl\\s+apply|helm\\s+(?:install|upgrade)|firebase\\s+deploy|db\\s+migrate)\\b',
+  ].join(''),
+  'i',
+);
 const DEPLOY_WEAK_RE = /\b(prod|production|secrets?|credentials?)\b/gi;
 function isDeployShaped(corpus) {
   if (DEPLOY_STRONG_RE.test(corpus)) return true;
@@ -158,15 +164,31 @@ const COMPLEX = [
 // that a read-only marker must not hide.
 // COMPLEX itself is UNCHANGED and still backs the Rows 1-3 veto (being generous
 // there only prevents a block, which is the safe direction).
-const PLANNING_INTENT_RE =
-  /\b(architect(?:ure)?|brainstorm|design\s+(?:a|the|an)\b|plan\s+(?:a|the|an|out)\b|deep\s+review|code\s+review|design\s+review|security\s+review|review\s+the\s+(?:code|design|architecture|plan)|review\s+(?:this|the|a)\s+(?:pr|pull\s+request|diff|patch|change(?:s|set)?)|audit\s+(?:the|this)\b|critique|debate|merge\s+order|workflow\s+analysis|root[- ]cause\s+analysis|(?:find|identify|determine|diagnose|trace)\s+(?:the\s+)?root[- ]cause|root[- ]cause\s+(?:why|how|the|this)|regression\s+analysis|security\s+audit)\b/i;
+const PLANNING_INTENT_RE = new RegExp(
+  [
+    '\\b(architect(?:ure)?|brainstorm|design\\s+(?:a|the|an)\\b|plan\\s+(?:a|the|an|out)\\b|',
+    'deep\\s+review|code\\s+review|design\\s+review|security\\s+review|review\\s+the\\s+(?:code|design|',
+    'architecture|plan)|review\\s+(?:this|the|a)\\s+(?:pr|pull\\s+request|diff|patch|change(?:s|set)?)|',
+    'audit\\s+(?:the|this)\\b|critique|debate|merge\\s+order|workflow\\s+analysis|',
+    'root[- ]cause\\s+analysis|(?:find|identify|determine|diagnose|trace)\\s+(?:the\\s+)?root[- ]cause|',
+    'root[- ]cause\\s+(?:why|how|the|this)|regression\\s+analysis|security\\s+audit)\\b',
+  ].join(''),
+  'i',
+);
 
 const READONLY_RE =
   /\b(verbatim|read[- ]?only|mechanical|append\s*only|run\s+exactly|do\s+nothing\s+else|nothing\s+else|no\s+other\s+file\s+edits|no\s+repo\s+edits|no\s+source\s+edits)\b/i;
 
 // Fixed-command / bounded-output shape: the caller already decided WHAT to do.
-const MECHANICAL_SHAPE_RE =
-  /\b(run\s+exactly|run\s+only|run\s+(?:this|these|the\s+following)\s+(?:exact\s+)?commands?|exactly\s+(?:this|these)\s+commands?|verbatim|append\s*only|do\s+nothing\s+else|nothing\s+else|return\s+(?:only\s+)?(?:at\s+most\s+|no\s+more\s+than\s+|under\s+|up\s+to\s+)?\d+\s+lines?)\b|return\s+(?:only\s+)?(?:≤|<=)\s*\d+\s+lines?\b/i;
+const MECHANICAL_SHAPE_RE = new RegExp(
+  [
+    '\\b(run\\s+exactly|run\\s+only|run\\s+(?:this|these|the\\s+following)\\s+(?:exact\\s+)?commands?|',
+    'exactly\\s+(?:this|these)\\s+commands?|verbatim|append\\s*only|do\\s+nothing\\s+else|nothing\\s+else|',
+    'return\\s+(?:only\\s+)?(?:at\\s+most\\s+|no\\s+more\\s+than\\s+|under\\s+|up\\s+to\\s+)?\\d+\\s+lines?)\\b|',
+    'return\\s+(?:only\\s+)?(?:≤|<=)\\s*\\d+\\s+lines?\\b',
+  ].join(''),
+  'i',
+);
 
 // A review/design/analysis verb anywhere (code spans stripped) keeps Row 4 live.
 const REVIEW_DESIGN_VERB_RE =
@@ -180,8 +202,14 @@ const REVIEW_DESIGN_VERB_RE =
 // verb still blocks them). A bare "read X"
 // is not enough — it needs a non-trivial source (document/pdf/paper/N-page/
 // "page by page"), so "read logs" and "run npm test and report" stay mechanical.
-const REASONING_RE =
-  /\b(analy[sz]\w*|synthesi[sz]\w*|summari[sz]\w*|reconcil\w*|evaluat\w*|interpret\w*|distill\w*|compare|comparison)\b|\bread\w*\b[^.\n]{0,60}\b(?:pdf|pdfs|pages?|papers?|documents?|specs?|transcripts?|articles?|books?|manuals?|whitepapers?)\b|\b\d+[- ]page\b|\bpage[- ]by[- ]page\b/i;
+const REASONING_RE = new RegExp(
+  [
+    '\\b(analy[sz]\\w*|synthesi[sz]\\w*|summari[sz]\\w*|reconcil\\w*|evaluat\\w*|interpret\\w*|distill\\w*|',
+    'compare|comparison)\\b|\\bread\\w*\\b[^.\\n]{0,60}\\b(?:pdf|pdfs|pages?|papers?|documents?|specs?|',
+    'transcripts?|articles?|books?|manuals?|whitepapers?)\\b|\\b\\d+[- ]page\\b|\\bpage[- ]by[- ]page\\b',
+  ].join(''),
+  'i',
+);
 function isReasoningShaped(corpus) {
   return REASONING_RE.test(stripCodeSpans(corpus));
 }
