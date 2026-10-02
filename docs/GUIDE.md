@@ -1082,7 +1082,7 @@ Generated from `hooks/lib/settings-schema.js` (a hygiene test keeps this table a
 | `guards.scanThrottle` | `true` | `ANTI_HALL_SCAN_THROTTLE` | scan-throttle (PreToolUse Bash): advise running heavy repo-wide scans at background priority (nice/taskpolicy); never rewrites the command. |
 | `guards.silentAgentNudge` | `true` | `ANTIHALL_SILENT_AGENT_NUDGE` | silent-agent-nudge (Stop): nudge once, advisory-only, when a background Agent launch has no terminal notification and a stale/missing output_file past `silentAgentNudgeMin`. Never kills anything. |
 | `guards.silentAgentNudgeMin` adv | `20` | `ANTIHALL_SILENT_AGENT_NUDGE_MIN` | Minutes of silence before silent-agent-nudge fires. |
-| `guards.staleAgentStopNote` | `true` | `ANTIHALL_STALE_AGENT_STOP_NOTE` | stale-agent-stop-note (PreToolUse TaskStop, never blocks): one advisory line when TaskStop names an agent that was sent a message, or resumed, after its last report and has not reported since. Settings file + env only. |
+| `guards.staleAgentStopNote` adv | `true` | `ANTIHALL_STALE_AGENT_STOP_NOTE` | stale-agent-stop-note (PreToolUse TaskStop, never blocks): one advisory line when TaskStop names an agent that was sent a message, or resumed, after its last report and has not reported since. Settings file + env only. |
 | `guards.compactAdviceGuard` | `true` | — | compact-advice-guard (Stop): block once when a reply recommends /compact at low context or within `compactAdviceRecentTurns` turns of a compact. |
 | `guards.compactAdviceRecentTurns` | `10` | — | Turns after a compact boundary during which a /compact recommendation is blocked; 0 = off. |
 | `guards.compactAdviceMarginPct` adv | `10` | — | Points below `autoHandover.pct` that count as low context for compact-advice-guard. |
