@@ -18,7 +18,9 @@
 //            fail-open at every layer.
 //
 // PRIVACY: never logs, prints, or echoes an API key. Only reads it via
-// jev-client.js's own resolveCredential (same key-hygiene contract).
+// credentials.js / jev-client.js's resolveCredential (same key-hygiene contract).
+// ENV: spawned by jev-triage.js via execFileSync with no env override, so it
+// inherits the hook's env incl. CLAUDE_PLUGIN_OPTION_*.
 
 'use strict';
 
@@ -178,7 +180,7 @@ async function classifyOne(text, deadline, jevCfg, urgentThreshold, jevDecideMul
   const needsHaiku = !out.kind || !out.urgency;
   if (needsHaiku) {
     const remaining2 = deadline - Date.now();
-    const apiKey = process.env.ANTHROPIC_API_KEY;
+    const apiKey = require('./credentials.js').resolveKey('anthropic').key;
     if (apiKey && typeof apiKey === 'string' && apiKey.trim() && remaining2 > 50) {
       try {
         const haiku = await callHaiku(text, apiKey.trim(), Math.max(50, remaining2));

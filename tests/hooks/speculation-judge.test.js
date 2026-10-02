@@ -42,7 +42,7 @@ test('SKIP-HATCH: skip.json {speculation-judge: future} -> exit 0, no block (jud
     const tp = h.writeTranscript([assistantMessage('The cause is the old build artifact.')]);
     const r = testHook(HOOK, stopPayload(tp), {
       home: h.home,
-      env: { ANTIHALL_SEMANTIC_JUDGE: '1', ANTHROPIC_API_KEY: 'sk-test-not-used' },
+      env: { ANTIHALL_SEMANTIC_JUDGE: '1', CLAUDE_PLUGIN_OPTION_ANTHROPIC_API_KEY: 'sk-test-not-used' },
     });
     assert.strictEqual(r.status, 0, `expected allow under skip; stdout: ${r.stdout}`);
     assert.ok(!(r.json && r.json.decision === 'block'), `skip must suppress any block; json: ${JSON.stringify(r.json)}`);
@@ -60,7 +60,7 @@ test('SKIP-HATCH: broad "all" skip also covers speculation-judge (non-destructiv
     const tp = h.writeTranscript([assistantMessage('The cause is the old build artifact.')]);
     const r = testHook(HOOK, stopPayload(tp), {
       home: h.home,
-      env: { ANTIHALL_SEMANTIC_JUDGE: '1', ANTHROPIC_API_KEY: 'sk-test-not-used' },
+      env: { ANTIHALL_SEMANTIC_JUDGE: '1', CLAUDE_PLUGIN_OPTION_ANTHROPIC_API_KEY: 'sk-test-not-used' },
     });
     assert.strictEqual(r.status, 0, `expected allow under "all" skip; stdout: ${r.stdout}`);
     assert.ok(!(r.json && r.json.decision === 'block'), `"all" skip must suppress any block; json: ${JSON.stringify(r.json)}`);
@@ -75,7 +75,7 @@ test('ANTIHALL_JUDGE_MODEL default: no override -> hook reaches API path, fails 
     const tp = h.writeTranscript([assistantMessage('The cause is the old build artifact.')]);
     const r = testHook(HOOK, stopPayload(tp), {
       home: h.home,
-      env: { ANTIHALL_SEMANTIC_JUDGE: '1', ANTHROPIC_API_KEY: 'sk-ant-fake-default' },
+      env: { ANTIHALL_SEMANTIC_JUDGE: '1', CLAUDE_PLUGIN_OPTION_ANTHROPIC_API_KEY: 'sk-ant-fake-default' },
     });
     // Network will fail (fake key) -> fail-open -> exit 0, no block
     assert.strictEqual(r.status, 0, `expected fail-open exit 0; stdout: ${r.stdout}`);
@@ -93,7 +93,7 @@ test('ANTIHALL_JUDGE_MODEL override: custom model env var -> hook accepts overri
       home: h.home,
       env: {
         ANTIHALL_SEMANTIC_JUDGE: '1',
-        ANTHROPIC_API_KEY: 'sk-ant-fake-override',
+        CLAUDE_PLUGIN_OPTION_ANTHROPIC_API_KEY: 'sk-ant-fake-override',
         ANTIHALL_JUDGE_MODEL: 'claude-test-model-override',
       },
     });

@@ -10,7 +10,7 @@
 // returns {ok:false, reason} instead of throwing — this module is fail-open
 // by contract; callers decide what to fall back to.
 //
-// The API key is read fresh on every call from env or a key file and is
+// The API key is read fresh on every call (credentials.js) and is
 // NEVER logged, echoed into a reason string, or included in any thrown/
 // returned error text.
 //
@@ -26,8 +26,9 @@
 // Env overrides:
 //   ANTIHALL_JEV=1        force-enable (even without jev.json)
 //   ANTIHALL_JEV=0         force-disable (overrides jev.json enabled:true)
-//   AI_GATEWAY_API_KEY     credential for transport:"vercel" (checked before keyFile)
-//   TYPESAFE_API_KEY       credential for transport:"typesafe" (checked before keyFile)
+//   CLAUDE_PLUGIN_OPTION_JEV_API_KEY  the key stored via /plugin config (jev_api_key); read first
+//   AI_GATEWAY_API_KEY / TYPESAFE_API_KEY (+ keyFile)  legacy sources, read ONLY when
+//                          the jev.allowLegacyKeyRead setting is on (default off)
 
 const fs = require('fs');
 const os = require('os');
@@ -200,20 +201,15 @@ function defaultKeyFilePath(transport) {
     : path.join(os.homedir(), '.config', 'vercel', 'ai-gateway-key');
 }
 
-// resolveCredential(cfg) — env var first, then keyFile (explicit or default
-// for the transport). Returns the trimmed key string or null. Never logs.
+// resolveCredential(cfg) — plugin option env first (jev_api_key); the legacy
+// env var / keyFile (explicit or default for the transport) are read ONLY when
+// jev.allowLegacyKeyRead is on (see credentials.js). Returns the trimmed key
+// string or null. Never logs.
 function resolveCredential(cfg) {
-  const envVar = cfg.transport === 'typesafe' ? 'TYPESAFE_API_KEY' : 'AI_GATEWAY_API_KEY';
-  const envVal = process.env[envVar];
-  if (typeof envVal === 'string' && envVal.trim()) return envVal.trim();
-
-  const keyPath = cfg.keyFile || defaultKeyFilePath(cfg.transport);
-  try {
-    const contents = fs.readFileSync(keyPath, 'utf8').trim();
-    return contents || null;
-  } catch (_) {
-    return null;
-  }
+  return require('./credentials.js').resolveKey('jev', {
+    transport: cfg.transport,
+    keyFile: cfg.keyFile || defaultKeyFilePath(cfg.transport),
+  }).key;
 }
 
 // jevDecide({question, state, timeoutMs}) -> Promise<Result>

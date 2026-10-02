@@ -1774,5 +1774,30 @@ if (REPAIR_RESURRECTED) {
   }
 })();
 
+// --- 5q. legacy API-key notice (REPORT-ONLY, CONDITIONAL) --------------------
+// anti-hall reads Jev / Anthropic keys from the /plugin config options
+// (jev_api_key, anthropic_api_key) and no longer reads the machine's env vars
+// or key file unless jev.allowLegacyKeyRead is on. Tells the user when a legacy
+// key EXISTS (presence only, value never read) for a feature they enabled.
+// Doctor is a plain process, so it cannot see whether the plugin option is
+// already set — the wording covers both cases. Silent when nothing applies.
+(function legacyKeyNoticeSection() {
+  try {
+    const settings = require('./lib/settings.js');
+    const kinds = [];
+    if (settings.get('jev', 'enabled', false) === true) kinds.push('jev');
+    if (settings.get('jev', 'semanticJudge', false) === true || settings.get('jev', 'enabled', false) === true) kinds.push('anthropic');
+    if (!kinds.length) return;
+    const jc = require('./lib/jev-client.js').loadJevConfig();
+    const notices = require('./lib/credentials.js').legacyNotices({
+      kinds, transport: jc.transport,
+      keyFile: jc.keyFile || require('./lib/jev-client.js').defaultKeyFilePath(jc.transport),
+    });
+    if (!notices.length) return;
+    head('api keys');
+    for (const n of notices) warnl(n);
+  } catch (_) { /* report-only */ }
+})();
+
 // --- 6. Summary --------------------------------------------------------------
 emitVerdictAndExit();

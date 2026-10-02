@@ -15,11 +15,15 @@ const { makeHome } = require('../helpers/fixtures.js');
 const SCRIPT = require.resolve('../../plugins/anti-hall/scripts/jev-setup.js');
 const setupLib = require(SCRIPT);
 
-function run(args, { home, input } = {}) {
+function run(args, { home, input, env: extraEnv } = {}) {
   const env = Object.assign({}, process.env, { HOME: home });
+  delete env.CLAUDE_PLUGIN_OPTION_JEV_API_KEY;
+  delete env.CLAUDE_PLUGIN_OPTION_ANTHROPIC_API_KEY;
+  delete env.ANTIHALL_ALLOW_LEGACY_KEY_READ;
   delete env.AI_GATEWAY_API_KEY;
   delete env.TYPESAFE_API_KEY;
   delete env.ANTIHALL_JEV;
+  Object.assign(env, extraEnv);
   try {
     const out = execFileSync(process.execPath, [SCRIPT, ...args], {
       input: input !== undefined ? input : '',
@@ -192,7 +196,7 @@ test('status: reports key present:no when nothing is configured', () => {
 test('status: reports key present:yes after set-key, never the value', () => {
   const { home } = makeHome();
   run(['set-key'], { home, input: 'a-real-key-value\n' });
-  const r = run(['status'], { home });
+  const r = run(['status'], { home, env: { ANTIHALL_ALLOW_LEGACY_KEY_READ: '1' } });
   assert.match(r.stdout, /key present: yes/);
   assert.doesNotMatch(r.stdout, /a-real-key-value/);
 });
@@ -238,6 +242,8 @@ async function runCmdTestInProcess(home, envOverrides = {}) {
   const savedHome = process.env.HOME;
   const savedGateway = process.env.AI_GATEWAY_API_KEY;
   const savedTypesafe = process.env.TYPESAFE_API_KEY;
+  const savedOpt = process.env.CLAUDE_PLUGIN_OPTION_JEV_API_KEY;
+  const savedLegacy = process.env.ANTIHALL_ALLOW_LEGACY_KEY_READ;
   const savedEndpoint = process.env.ANTIHALL_JEV_TEST_ENDPOINT;
   const savedExitCode = process.exitCode;
   const savedLog = console.log;
@@ -248,6 +254,8 @@ async function runCmdTestInProcess(home, envOverrides = {}) {
   process.env.HOME = home;
   delete process.env.AI_GATEWAY_API_KEY;
   delete process.env.TYPESAFE_API_KEY;
+  delete process.env.CLAUDE_PLUGIN_OPTION_JEV_API_KEY;
+  delete process.env.ANTIHALL_ALLOW_LEGACY_KEY_READ;
   delete process.env.ANTIHALL_JEV_TEST_ENDPOINT;
   Object.assign(process.env, envOverrides);
   process.exitCode = 0;
@@ -261,6 +269,8 @@ async function runCmdTestInProcess(home, envOverrides = {}) {
     if (savedHome === undefined) delete process.env.HOME; else process.env.HOME = savedHome;
     if (savedGateway === undefined) delete process.env.AI_GATEWAY_API_KEY; else process.env.AI_GATEWAY_API_KEY = savedGateway;
     if (savedTypesafe === undefined) delete process.env.TYPESAFE_API_KEY; else process.env.TYPESAFE_API_KEY = savedTypesafe;
+    if (savedOpt === undefined) delete process.env.CLAUDE_PLUGIN_OPTION_JEV_API_KEY; else process.env.CLAUDE_PLUGIN_OPTION_JEV_API_KEY = savedOpt;
+    if (savedLegacy === undefined) delete process.env.ANTIHALL_ALLOW_LEGACY_KEY_READ; else process.env.ANTIHALL_ALLOW_LEGACY_KEY_READ = savedLegacy;
     if (savedEndpoint === undefined) delete process.env.ANTIHALL_JEV_TEST_ENDPOINT; else process.env.ANTIHALL_JEV_TEST_ENDPOINT = savedEndpoint;
   }
 }
@@ -269,6 +279,8 @@ async function runCmdStatusInProcess(home, envOverrides = {}) {
   const savedHome = process.env.HOME;
   const savedGateway = process.env.AI_GATEWAY_API_KEY;
   const savedTypesafe = process.env.TYPESAFE_API_KEY;
+  const savedOpt = process.env.CLAUDE_PLUGIN_OPTION_JEV_API_KEY;
+  const savedLegacy = process.env.ANTIHALL_ALLOW_LEGACY_KEY_READ;
   const savedEndpoint = process.env.ANTIHALL_JEV_TEST_ENDPOINT;
   const savedLog = console.log;
   const lines = [];
@@ -276,6 +288,8 @@ async function runCmdStatusInProcess(home, envOverrides = {}) {
   process.env.HOME = home;
   delete process.env.AI_GATEWAY_API_KEY;
   delete process.env.TYPESAFE_API_KEY;
+  delete process.env.CLAUDE_PLUGIN_OPTION_JEV_API_KEY;
+  delete process.env.ANTIHALL_ALLOW_LEGACY_KEY_READ;
   delete process.env.ANTIHALL_JEV_TEST_ENDPOINT;
   Object.assign(process.env, envOverrides);
   try {
@@ -286,6 +300,8 @@ async function runCmdStatusInProcess(home, envOverrides = {}) {
     if (savedHome === undefined) delete process.env.HOME; else process.env.HOME = savedHome;
     if (savedGateway === undefined) delete process.env.AI_GATEWAY_API_KEY; else process.env.AI_GATEWAY_API_KEY = savedGateway;
     if (savedTypesafe === undefined) delete process.env.TYPESAFE_API_KEY; else process.env.TYPESAFE_API_KEY = savedTypesafe;
+    if (savedOpt === undefined) delete process.env.CLAUDE_PLUGIN_OPTION_JEV_API_KEY; else process.env.CLAUDE_PLUGIN_OPTION_JEV_API_KEY = savedOpt;
+    if (savedLegacy === undefined) delete process.env.ANTIHALL_ALLOW_LEGACY_KEY_READ; else process.env.ANTIHALL_ALLOW_LEGACY_KEY_READ = savedLegacy;
     if (savedEndpoint === undefined) delete process.env.ANTIHALL_JEV_TEST_ENDPOINT; else process.env.ANTIHALL_JEV_TEST_ENDPOINT = savedEndpoint;
   }
 }
@@ -301,7 +317,7 @@ test('status: shows the credit balance against a mock /v1/credits server (vercel
       res.end(JSON.stringify({ balance: '42.10', total_used: '7.90' }));
     },
     async (endpoint) => {
-      const out = await runCmdStatusInProcess(home, { ANTIHALL_JEV_TEST_ENDPOINT: endpoint });
+      const out = await runCmdStatusInProcess(home, { ANTIHALL_JEV_TEST_ENDPOINT: endpoint, ANTIHALL_ALLOW_LEGACY_KEY_READ: '1' });
       assert.match(out, /credit balance: \$42\.10/);
       assert.doesNotMatch(out, /mock-key-value/);
     },
@@ -327,7 +343,7 @@ test('test: ok path against a mock server returns confidence/latency, not the ke
       res.end(JSON.stringify({ answers: { decision: { noul: 0.95 } } }));
     },
     async (endpoint) => {
-      const r = await runCmdTestInProcess(home, { ANTIHALL_JEV_TEST_ENDPOINT: endpoint });
+      const r = await runCmdTestInProcess(home, { ANTIHALL_JEV_TEST_ENDPOINT: endpoint, ANTIHALL_ALLOW_LEGACY_KEY_READ: '1' });
       assert.strictEqual(r.code, 0);
       assert.match(r.out, /^ok — latency \d+ms, confidence 0\.90/);
       assert.doesNotMatch(r.out, /mock-key-value/);
@@ -348,7 +364,7 @@ test('test: no-key failure path is reported without hitting the network', async 
   const r = await runCmdTestInProcess(home);
   assert.notStrictEqual(r.code, 0);
   assert.match(r.out, /failed: no-key/);
-  assert.match(r.out, /run `set-key`/);
+  assert.match(r.out, /\/plugin config/);
 });
 
 test('test: http-401 failure suggests checking the provider/transport', async () => {
@@ -362,7 +378,7 @@ test('test: http-401 failure suggests checking the provider/transport', async ()
       res.end(JSON.stringify({ error: 'unauthorized' }));
     },
     async (endpoint) => {
-      const r = await runCmdTestInProcess(home, { ANTIHALL_JEV_TEST_ENDPOINT: endpoint });
+      const r = await runCmdTestInProcess(home, { ANTIHALL_JEV_TEST_ENDPOINT: endpoint, ANTIHALL_ALLOW_LEGACY_KEY_READ: '1' });
       assert.notStrictEqual(r.code, 0);
       assert.match(r.out, /failed: http-401/);
       assert.match(r.out, /provider.*transport|transport.*provider|rejected/i);
@@ -385,4 +401,25 @@ test('resolveTransport: defaults to vercel, honors override and stored config', 
   assert.strictEqual(setupLib.resolveTransport({}), 'vercel');
   assert.strictEqual(setupLib.resolveTransport({ transport: 'typesafe' }), 'typesafe');
   assert.strictEqual(setupLib.resolveTransport({ transport: 'typesafe' }, 'vercel'), 'vercel');
+});
+
+// ---------------------------------------------------------------------------
+// legacy-key migration notice (never the value; gone once opted in)
+// ---------------------------------------------------------------------------
+
+test('status: a legacy key file with the opt-in off -> notice naming jev_api_key and the setting, never the value', () => {
+  const { home } = makeHome();
+  run(['set-key'], { home, input: 'legacy-file-secret\n' });
+  const r = run(['status'], { home });
+  assert.match(r.stdout, /key present: no/);
+  assert.match(r.stdout, /notice: .*re-enter your key via \/plugin config \(anti-hall -> jev_api_key\), or enable jev\.allowLegacyKeyRead/);
+  assert.doesNotMatch(r.stdout, /legacy-file-secret/);
+});
+
+test('status: with the opt-in on there is no notice and the key counts as present', () => {
+  const { home } = makeHome();
+  run(['set-key'], { home, input: 'legacy-file-secret\n' });
+  const r = run(['status'], { home, env: { ANTIHALL_ALLOW_LEGACY_KEY_READ: '1' } });
+  assert.match(r.stdout, /key present: yes/);
+  assert.doesNotMatch(r.stdout, /notice:/);
 });

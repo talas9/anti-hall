@@ -40,7 +40,7 @@ function runCodexNudge(mode, endpoint) {
     const tp = h.writeTranscript([toolUse([edit('/x/a.ts'), edit('/x/b.ts')]), toolUse([edit('/x/c.py')])]);
     const t0 = Date.now();
     const r = testHook('codex-nudge.js', { hook_event_name: 'Stop', transcript_path: tp, session_id: 't' },
-      { home: h.home, env: { AI_GATEWAY_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint } });
+      { home: h.home, env: { CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint } });
     return { r, ms: Date.now() - t0 };
   } finally { h.cleanup(); }
 }
@@ -52,7 +52,7 @@ function runTasklist(mode, endpoint) {
     for (let i = 0; i < 4; i++) lines.push(toolUse([edit('/x/f' + i)]));
     const tp = h.writeTranscript(lines);
     const r = testHook('tasklist-guard.js', { hook_event_name: 'Stop', transcript_path: tp, cwd: h.home, session_id: 't' },
-      { home: h.home, env: { AI_GATEWAY_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint } });
+      { home: h.home, env: { CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint } });
     return r;
   } finally { h.cleanup(); }
 }

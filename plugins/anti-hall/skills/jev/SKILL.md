@@ -512,5 +512,6 @@ with hook/event/API details.
 - Never print, log, echo, or commit the key — not in this chat, not in a file,
   not in a script argument.
 - Never guess which provider a key belongs to from its shape — always ask.
-- Never store the key anywhere but the resolved key file
-  (`~/.config/vercel/ai-gateway-key` or `~/.config/typesafe/key` by default).
+- Preferred: the user stores the key via `/plugin config` (anti-hall -> `jev_api_key`). The key file
+  (`~/.config/vercel/ai-gateway-key` or `~/.config/typesafe/key` by default) is read only when
+  `jev.allowLegacyKeyRead` is on; never store the key anywhere else.

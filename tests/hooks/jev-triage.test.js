@@ -29,7 +29,7 @@ const { spawn } = require('node:child_process');
 // Object.assign({}, process.env, ...)) picks this up for free.
 for (const k of Object.keys(process.env)) {
   if (k === 'ANTIHALL_JEV' || k.startsWith('ANTIHALL_JEV_') ||
-    k === 'AI_GATEWAY_API_KEY' || k === 'TYPESAFE_API_KEY') {
+    k === 'AI_GATEWAY_API_KEY' || k === 'TYPESAFE_API_KEY' || k.startsWith('CLAUDE_PLUGIN_OPTION_')) {
     delete process.env[k];
   }
 }
@@ -172,7 +172,7 @@ test('enabled + confident Jev mock -> labels resolved, cached, logged (hash+labe
       const env = {
         HOME: home,
         ANTIHALL_JEV_TEST_ENDPOINT: endpoint,
-        AI_GATEWAY_API_KEY: 'test-key',
+        CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'test-key',
       };
       const secretText = 'Can you review this PR please? [SECRET_BODY_MARKER]';
       const { parsed } = await runTriageInSubprocess(home, env, [{ key: 'm1', text: secretText }]);
@@ -209,7 +209,7 @@ test('cache hit: a second call with the SAME text never issues a second request'
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(out));
     }, async (endpoint) => {
-      const env = { HOME: home, ANTIHALL_JEV_TEST_ENDPOINT: endpoint, AI_GATEWAY_API_KEY: 'k' };
+      const env = { HOME: home, ANTIHALL_JEV_TEST_ENDPOINT: endpoint, CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'k' };
       const items = [{ key: 'm1', text: 'status update, nothing needed' }];
       const r1 = await runTriageInSubprocess(home, env, items);
       const r2 = await runTriageInSubprocess(home, env, items);
@@ -232,7 +232,7 @@ test('low confidence + no ANTHROPIC_API_KEY -> no label at all (fail-open, neith
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(out));
     }, async (endpoint) => {
-      const env = { HOME: home, ANTIHALL_JEV_TEST_ENDPOINT: endpoint, AI_GATEWAY_API_KEY: 'k' };
+      const env = { HOME: home, ANTIHALL_JEV_TEST_ENDPOINT: endpoint, CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'k' };
       // deliberately no ANTHROPIC_API_KEY in env
       const { parsed } = await runTriageInSubprocess(home, env, [{ key: 'm1', text: 'ambiguous message' }]);
       assert.deepStrictEqual(parsed, [], 'no label should be attached when both backends are unusable');
@@ -255,7 +255,7 @@ test('urgent threshold is STRICTER than the ordinary confidence threshold (known
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(out));
     }, async (endpoint) => {
-      const env = { HOME: home, ANTIHALL_JEV_TEST_ENDPOINT: endpoint, AI_GATEWAY_API_KEY: 'k' };
+      const env = { HOME: home, ANTIHALL_JEV_TEST_ENDPOINT: endpoint, CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'k' };
       const { parsed } = await runTriageInSubprocess(home, env, [{ key: 'm1', text: 'borderline urgency' }]);
       assert.strictEqual(parsed.length, 1);
       assert.strictEqual(parsed[0][1].kind, 'status-report');
@@ -269,7 +269,7 @@ test('timeout: server never responds -> no label, run stays within the configure
   try {
     writeJevConfig(home, { enabled: true, timeoutMs: 500, triageBudgetMs: 800 });
     await withMockServer((req, res) => { /* never respond */ }, async (endpoint) => {
-      const env = { HOME: home, ANTIHALL_JEV_TEST_ENDPOINT: endpoint, AI_GATEWAY_API_KEY: 'k' };
+      const env = { HOME: home, ANTIHALL_JEV_TEST_ENDPOINT: endpoint, CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'k' };
       const start = Date.now();
       const { parsed } = await runTriageInSubprocess(home, env, [{ key: 'm1', text: 'will time out' }]);
       const elapsed = Date.now() - start;
@@ -357,7 +357,7 @@ test('full cache (seeded frozen state): a new label is RETAINED and served from 
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(out));
     }, async (endpoint) => {
-      const env = { HOME: home, ANTIHALL_JEV_TEST_ENDPOINT: endpoint, AI_GATEWAY_API_KEY: 'k' };
+      const env = { HOME: home, ANTIHALL_JEV_TEST_ENDPOINT: endpoint, CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'k' };
       const text = 'Should I merge this now or wait for review?';
       await runTriageInSubprocess(home, env, [{ key: 'q', text }]);
       const cache = JSON.parse(fs.readFileSync(path.join(home, '.anti-hall', 'cache', 'jev-triage.json'), 'utf8'));

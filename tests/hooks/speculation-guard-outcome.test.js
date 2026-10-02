@@ -116,7 +116,7 @@ test('outcome capture: Jev-added block -> next reply with evidence -> evidence-a
   try {
     h.writeState('jev.json', { enabled: true, timeoutMs: 3000 });
     const sessionId = 's1';
-    const env = { AI_GATEWAY_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: mock.endpoint };
+    const env = { CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: mock.endpoint };
 
     const tp1 = h.writeTranscript([assistantMessage(NO_HEDGE_SPEC)]);
     const r1 = await runAsync(stopPayload(tp1, sessionId), { home: h.home, env });

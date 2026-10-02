@@ -21,8 +21,8 @@ function freshLib() {
 }
 
 const ENV_KEYS = [
-  'HOME', 'ANTIHALL_JEV', 'AI_GATEWAY_API_KEY', 'TYPESAFE_API_KEY',
-  'ANTIHALL_JEV_TEST_ENDPOINT',
+  'HOME', 'ANTIHALL_JEV', 'AI_GATEWAY_API_KEY', 'TYPESAFE_API_KEY', 'CLAUDE_PLUGIN_OPTION_JEV_API_KEY', 'CLAUDE_PLUGIN_OPTION_ANTHROPIC_API_KEY',
+  'ANTIHALL_ALLOW_LEGACY_KEY_READ', 'ANTIHALL_JEV_TEST_ENDPOINT',
 ];
 
 // NOTE: awaits fn() INSIDE the try (matches jev-assist.test.js's sibling
@@ -181,7 +181,7 @@ test('jevDecide: unknown question.type ("multi") -> {ok:false, reason:"bad-quest
       },
       async (endpoint) => {
         await withEnv(
-          { HOME: h.home, ANTIHALL_JEV: '1', AI_GATEWAY_API_KEY: 'test-key', ANTIHALL_JEV_TEST_ENDPOINT: endpoint },
+          { HOME: h.home, ANTIHALL_JEV: '1', CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'test-key', ANTIHALL_JEV_TEST_ENDPOINT: endpoint },
           async () => {
             const { jevDecide } = freshLib();
             const r = await jevDecide({ question: { type: 'multi', instructions: 'x', criteria: [] }, state: 'hello' });
@@ -208,7 +208,7 @@ test('jevDecide: noul happy path, high confidence (noul=0.95 -> answer true)', a
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ answers: { decision: { noul: 0.95 } } }));
     }, async (endpoint) => {
-      await withEnv({ HOME: h.home, ANTIHALL_JEV: '1', AI_GATEWAY_API_KEY: 'jev-test-key-should-never-leak', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
+      await withEnv({ HOME: h.home, ANTIHALL_JEV: '1', CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'jev-test-key-should-never-leak', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
         const { jevDecide } = freshLib();
         const r = await jevDecide({ question: NOUL_QUESTION, state: 'The cause is X.' });
         assert.strictEqual(r.ok, true);
@@ -278,7 +278,7 @@ test('jevDecide: when the response happens to carry cost/usage fields, they pass
         total_cost: 0.0007, tokens_prompt: 42, tokens_completion: 7, model: 'typesafe-ai/jev',
       }));
     }, async (endpoint) => {
-      await withEnv({ HOME: h.home, ANTIHALL_JEV: '1', AI_GATEWAY_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
+      await withEnv({ HOME: h.home, ANTIHALL_JEV: '1', CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
         const { jevDecide } = freshLib();
         const r = await jevDecide({ question: NOUL_QUESTION, state: 'hello' });
         assert.strictEqual(r.cost, 0.0007);
@@ -300,7 +300,7 @@ test('jevDecide: real (observed) response shape with no cost/usage fields -> cos
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ answers: { decision: { noul: 0.95 } } }));
     }, async (endpoint) => {
-      await withEnv({ HOME: h.home, ANTIHALL_JEV: '1', AI_GATEWAY_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
+      await withEnv({ HOME: h.home, ANTIHALL_JEV: '1', CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
         const { jevDecide } = freshLib();
         const r = await jevDecide({ question: NOUL_QUESTION, state: 'hello' });
         assert.strictEqual(r.cost, null);
@@ -321,7 +321,7 @@ test('jevDecide: noul low confidence (noul=0.55 -> confidence 0.1)', async () =>
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ answers: { decision: { noul: 0.55 } } }));
     }, async (endpoint) => {
-      await withEnv({ HOME: h.home, ANTIHALL_JEV: '1', AI_GATEWAY_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
+      await withEnv({ HOME: h.home, ANTIHALL_JEV: '1', CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
         const { jevDecide } = freshLib();
         const r = await jevDecide({ question: NOUL_QUESTION, state: 'hello' });
         assert.strictEqual(r.ok, true);
@@ -341,7 +341,7 @@ test('jevDecide: choice happy path', async () => {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ answers: { decision: { choice: 'a', confidence: 0.77 } } }));
     }, async (endpoint) => {
-      await withEnv({ HOME: h.home, ANTIHALL_JEV: '1', AI_GATEWAY_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
+      await withEnv({ HOME: h.home, ANTIHALL_JEV: '1', CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
         const { jevDecide } = freshLib();
         const r = await jevDecide({ question: CHOICE_QUESTION, state: 'hello' });
         assert.strictEqual(r.ok, true);
@@ -366,7 +366,7 @@ test('jevDecide: HTTP 500 -> {ok:false, reason:"http-500"}', async () => {
       res.writeHead(500, { 'Content-Type': 'text/plain' });
       res.end('boom');
     }, async (endpoint) => {
-      await withEnv({ HOME: h.home, ANTIHALL_JEV: '1', AI_GATEWAY_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
+      await withEnv({ HOME: h.home, ANTIHALL_JEV: '1', CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
         const { jevDecide } = freshLib();
         const r = await jevDecide({ question: NOUL_QUESTION, state: 'hello' });
         assert.strictEqual(r.ok, false);
@@ -386,7 +386,7 @@ test('jevDecide: malformed JSON body -> {ok:false, reason:"parse-error"}', async
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end('{not valid json');
     }, async (endpoint) => {
-      await withEnv({ HOME: h.home, ANTIHALL_JEV: '1', AI_GATEWAY_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
+      await withEnv({ HOME: h.home, ANTIHALL_JEV: '1', CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
         const { jevDecide } = freshLib();
         const r = await jevDecide({ question: NOUL_QUESTION, state: 'hello' });
         assert.strictEqual(r.ok, false);
@@ -406,7 +406,7 @@ test('jevDecide: missing answers.decision shape -> {ok:false, reason:"bad-respon
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ answers: {} }));
     }, async (endpoint) => {
-      await withEnv({ HOME: h.home, ANTIHALL_JEV: '1', AI_GATEWAY_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
+      await withEnv({ HOME: h.home, ANTIHALL_JEV: '1', CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
         const { jevDecide } = freshLib();
         const r = await jevDecide({ question: NOUL_QUESTION, state: 'hello' });
         assert.strictEqual(r.ok, false);
@@ -424,7 +424,7 @@ test('jevDecide: timeout -> {ok:false, reason:"timeout"} (server never responds)
     await withMockServer((req, res) => {
       // never respond — the client's timeoutMs must fire first.
     }, async (endpoint) => {
-      await withEnv({ HOME: h.home, ANTIHALL_JEV: '1', AI_GATEWAY_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
+      await withEnv({ HOME: h.home, ANTIHALL_JEV: '1', CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
         const { jevDecide } = freshLib();
         const r = await jevDecide({ question: NOUL_QUESTION, state: 'hello', timeoutMs: 150 });
         assert.strictEqual(r.ok, false);
@@ -456,7 +456,7 @@ test('jevDecide: headers sent, body stalls -> returns within the timeout bound, 
       if (typeof res.flushHeaders === 'function') res.flushHeaders();
       // Deliberately never call res.write()/res.end().
     }, async (endpoint) => {
-      await withEnv({ HOME: h.home, ANTIHALL_JEV: '1', AI_GATEWAY_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
+      await withEnv({ HOME: h.home, ANTIHALL_JEV: '1', CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
         const { jevDecide } = freshLib();
         const timeoutMs = 200;
         const start = Date.now();
@@ -520,7 +520,7 @@ test('jevDecide: credential from jev.json keyFile when env var absent', async ()
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ answers: { decision: { noul: 0.9 } } }));
     }, async (endpoint) => {
-      await withEnv({ HOME: h.home, ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
+      await withEnv({ HOME: h.home, ANTIHALL_ALLOW_LEGACY_KEY_READ: '1', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
         const { jevDecide } = freshLib();
         const r = await jevDecide({ question: NOUL_QUESTION, state: 'hello' });
         assert.strictEqual(r.ok, true);
@@ -556,7 +556,7 @@ test('getCreditBalance: "typesafe" transport -> unsupported-transport, no HTTP c
     await withMockServer(
       (_req, res) => { assert.fail('no HTTP request should be made for the typesafe transport'); res.end(); },
       async (endpoint) => {
-        await withEnv({ HOME: h.home, ANTIHALL_JEV: '1', TYPESAFE_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
+        await withEnv({ HOME: h.home, ANTIHALL_JEV: '1', CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
           h.writeState('jev.json', { enabled: true, transport: 'typesafe' });
           const { getCreditBalance } = freshLib();
           const r = await getCreditBalance({});
@@ -593,7 +593,7 @@ test('getCreditBalance: happy path parses balance/total_used as numbers', async 
   const h = makeHome();
   try {
     await withMockServer(creditsHandler('95.50', '4.50'), async (endpoint) => {
-      await withEnv({ HOME: h.home, ANTIHALL_JEV: '1', AI_GATEWAY_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
+      await withEnv({ HOME: h.home, ANTIHALL_JEV: '1', CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
         const { getCreditBalance } = freshLib();
         const r = await getCreditBalance({});
         assert.strictEqual(r.ok, true);
@@ -609,7 +609,7 @@ test('getCreditBalance: HTTP failure -> http-<status>', async () => {
   const h = makeHome();
   try {
     await withMockServer((_req, res) => { res.writeHead(500); res.end('nope'); }, async (endpoint) => {
-      await withEnv({ HOME: h.home, ANTIHALL_JEV: '1', AI_GATEWAY_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
+      await withEnv({ HOME: h.home, ANTIHALL_JEV: '1', CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
         const { getCreditBalance } = freshLib();
         const r = await getCreditBalance({});
         assert.strictEqual(r.ok, false);
@@ -626,7 +626,7 @@ test('getCreditBalance: missing balance field -> bad-response, never fabricated'
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ total_used: '1.00' }));
     }, async (endpoint) => {
-      await withEnv({ HOME: h.home, ANTIHALL_JEV: '1', AI_GATEWAY_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
+      await withEnv({ HOME: h.home, ANTIHALL_JEV: '1', CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
         const { getCreditBalance } = freshLib();
         const r = await getCreditBalance({});
         assert.strictEqual(r.ok, false);
@@ -641,7 +641,7 @@ test('getCreditBalanceCached: caches the result for the TTL window -- one networ
   try {
     let calls = 0;
     await withMockServer((_req, res) => { calls++; creditsHandler('10.00', '1.00')(_req, res); }, async (endpoint) => {
-      await withEnv({ HOME: h.home, ANTIHALL_JEV: '1', AI_GATEWAY_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
+      await withEnv({ HOME: h.home, ANTIHALL_JEV: '1', CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
         const { getCreditBalanceCached } = freshLib();
         const r1 = await getCreditBalanceCached({});
         const r2 = await getCreditBalanceCached({});
@@ -659,7 +659,7 @@ test('getCreditBalanceCached: forceRefresh bypasses the cache', async () => {
   try {
     let calls = 0;
     await withMockServer((_req, res) => { calls++; creditsHandler('10.00', '1.00')(_req, res); }, async (endpoint) => {
-      await withEnv({ HOME: h.home, ANTIHALL_JEV: '1', AI_GATEWAY_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
+      await withEnv({ HOME: h.home, ANTIHALL_JEV: '1', CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
         const { getCreditBalanceCached } = freshLib();
         await getCreditBalanceCached({});
         await getCreditBalanceCached({ forceRefresh: true });
@@ -678,7 +678,7 @@ test('jevDecide: the API key never appears in a returned reason string, on any f
       res.writeHead(500, { 'Content-Type': 'text/plain' });
       res.end('server error, key was: ' + secret); // server "echoes" it; client must not propagate it
     }, async (endpoint) => {
-      await withEnv({ HOME: h.home, ANTIHALL_JEV: '1', AI_GATEWAY_API_KEY: secret, ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
+      await withEnv({ HOME: h.home, ANTIHALL_JEV: '1', CLAUDE_PLUGIN_OPTION_JEV_API_KEY: secret, ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
         const { jevDecide } = freshLib();
         const r = await jevDecide({ question: NOUL_QUESTION, state: 'hello' });
         const serialized = JSON.stringify(r);
@@ -704,7 +704,7 @@ test('endpoint override: non-loopback env override is ignored; built-in endpoint
   try {
     for (const bad of ['https://attacker.example/x', 'http://127.0.0.1.attacker.example/x', 'http://localhost@attacker.example/x', 'http://169.254.169.254/x', 'not a url']) {
       calls.length = 0;
-      await withEnv({ HOME: h.home, ANTIHALL_JEV: '1', AI_GATEWAY_API_KEY: SECRET, ANTIHALL_JEV_TEST_ENDPOINT: bad }, async () => {
+      await withEnv({ HOME: h.home, ANTIHALL_JEV: '1', CLAUDE_PLUGIN_OPTION_JEV_API_KEY: SECRET, ANTIHALL_JEV_TEST_ENDPOINT: bad }, async () => {
         const lib = freshLib();
         assert.strictEqual(lib.loadJevConfig().endpointOverride, null, bad);
         await lib.jevDecide({ question: { type: 'noul', instructions: 'x', criteria: [] }, state: 's' });
@@ -725,11 +725,11 @@ test('endpoint override: loopback hosts honoured; default endpoint unchanged whe
   const h = makeHome();
   try {
     for (const ok of ['http://127.0.0.1:1234/mock', 'http://localhost:1234/mock', 'http://[::1]:1234/mock']) {
-      await withEnv({ HOME: h.home, ANTIHALL_JEV: '1', AI_GATEWAY_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: ok }, async () => {
+      await withEnv({ HOME: h.home, ANTIHALL_JEV: '1', CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: ok }, async () => {
         assert.strictEqual(freshLib().loadJevConfig().endpointOverride, ok);
       });
     }
-    await withEnv({ HOME: h.home, ANTIHALL_JEV: '1', AI_GATEWAY_API_KEY: 'k' }, async () => {
+    await withEnv({ HOME: h.home, ANTIHALL_JEV: '1', CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'k' }, async () => {
       assert.strictEqual(freshLib().loadJevConfig().endpointOverride, null);
     });
   } finally {
@@ -743,5 +743,23 @@ test('endpoint override: ANTIHALL_JEV=1 from env enables the feature but credent
     const src = fs.readFileSync(path.join(root, f), 'utf8');
     assert.ok(/hostname: 'api\.anthropic\.com'/.test(src), f + ' pins the vendor host');
     assert.ok(!/process\.env\.[A-Z_]*(ENDPOINT|BASE_URL|HOST)/.test(src), f + ' has no env host override');
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Credential opt-in: legacy env/key file are NOT read unless allowed
+// ---------------------------------------------------------------------------
+
+test('jevDecide: legacy AI_GATEWAY_API_KEY env is ignored with the opt-in off (no-key, no network)', async () => {
+  const h = makeHome();
+  try {
+    h.writeState('jev.json', { enabled: true });
+    await withEnv({ HOME: h.home, AI_GATEWAY_API_KEY: 'legacy-env-key', ANTIHALL_JEV_TEST_ENDPOINT: 'http://127.0.0.1:1/unreachable' }, async () => {
+      const { jevDecide } = freshLib();
+      const r = await jevDecide({ question: NOUL_QUESTION, state: 'hello' });
+      assert.deepStrictEqual({ ok: r.ok, reason: r.reason }, { ok: false, reason: 'no-key' });
+    });
+  } finally {
+    h.cleanup();
   }
 });

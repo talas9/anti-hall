@@ -191,7 +191,7 @@ async function jevCase({ reply, respond, jevCfg = { enabled: true }, env = {}, s
     const tp = h.writeTranscript([assistantMessage(reply)]);
     const run = () => runAsync(stopPayload(tp), {
       home: h.home,
-      env: { AI_GATEWAY_API_KEY: 'jev-test-key-never-logged', ANTIHALL_JEV_TEST_ENDPOINT: mock.endpoint, ...env },
+      env: { CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'jev-test-key-never-logged', ANTIHALL_JEV_TEST_ENDPOINT: mock.endpoint, ...env },
     });
     const r = await run();
     return { r, run, mock, log: () => readLog(h.home), h };
@@ -299,7 +299,7 @@ test('JEV HTTP 500 -> regex result, logs reason:http-500', async () => {
 });
 
 test('JEV no credential -> regex result, logs reason:no-key', async () => {
-  const c = await jevCase({ reply: HEDGE_SPEC, env: { AI_GATEWAY_API_KEY: '' }, respond: noul(0.99) });
+  const c = await jevCase({ reply: HEDGE_SPEC, env: { CLAUDE_PLUGIN_OPTION_JEV_API_KEY: '' }, respond: noul(0.99) });
   try {
     assert.ok(isBlock(c.r));
     assert.strictEqual(c.mock.calls, 0);
@@ -314,7 +314,7 @@ test('JEV loop-safety: same message blocked once; re-run allows without a second
   try {
     h.writeState('jev.json', { enabled: true });
     const tp = h.writeTranscript([assistantMessage(NO_HEDGE_SPEC)]);
-    const opts = { home: h.home, env: { AI_GATEWAY_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: mock.endpoint } };
+    const opts = { home: h.home, env: { CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: mock.endpoint } };
     const r1 = await runAsync(stopPayload(tp), opts);
     const r2 = await runAsync(stopPayload(tp), opts);
     assert.ok(isBlock(r1));

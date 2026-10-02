@@ -216,19 +216,12 @@ latency, and zero network activity — it is as if it were not registered at all
 ```bash
 # Add to ~/.zshrc / ~/.bashrc / ~/.profile, then restart Claude Code:
 export ANTIHALL_SEMANTIC_JUDGE=1
-export ANTHROPIC_API_KEY=sk-ant-...    # required; judge is fail-open if absent
 ```
 
-Or set both variables in the `env` block of your `~/.claude/settings.json`:
-
-```json
-{
-  "env": {
-    "ANTIHALL_SEMANTIC_JUDGE": "1",
-    "ANTHROPIC_API_KEY": "sk-ant-..."
-  }
-}
-```
+Then store the key via `/plugin config` (anti-hall -> `anthropic_api_key`, kept in the OS
+credential store; the judge is fail-open if it is absent). anti-hall no longer reads
+`ANTHROPIC_API_KEY` from your environment unless you also enable `jev.allowLegacyKeyRead`
+(the Codex port, which has no plugin options, needs that setting).
 
 **To disable:** unset `ANTIHALL_SEMANTIC_JUDGE` (or set it to any value other than `"1"`).
 
@@ -238,7 +231,7 @@ acknowledgment. The judge prompt instructs the model to ALLOW honest hedging, qu
 text, hypotheticals, plans, and general software knowledge; it only blocks definitive
 unverified factual claims.
 
-**Fail-open:** any error (absent `ANTHROPIC_API_KEY`, API unavailable, timeout, bad
+**Fail-open:** any error (absent `anthropic_api_key`, API unavailable, timeout, bad
 JSON response) exits 0 without blocking. A failure here never wedges a session.
 
 **Loop-safe:** hashes the last message text (with a `":judge"` suffix to keep the
@@ -959,6 +952,7 @@ Generated from `hooks/lib/settings-schema.js` (a hygiene test keeps this table a
 | `jev.transport` | `vercel` (vercel/typesafe) | — | Vercel AI Gateway passthrough (default) or a direct TypeSafe API call. |
 | `jev.judgeModel` | `claude-haiku-4-5` | `ANTIHALL_JUDGE_MODEL` | Model used for speculation-judge / jev-triage LLM calls. |
 | `jev.semanticJudge` | `false` | `ANTIHALL_SEMANTIC_JUDGE` | Enable the semantic speculation-judge hook (off = hook no-ops). |
+| `jev.allowLegacyKeyRead` | `false` | `ANTIHALL_ALLOW_LEGACY_KEY_READ` | Opt-in (default off): also read a Jev / Anthropic API key from this machine (`AI_GATEWAY_API_KEY`, `TYPESAFE_API_KEY`, `ANTHROPIC_API_KEY` env vars, the key file) when the `jev_api_key` / `anthropic_api_key` plugin option is not set. Codex has no plugin options: set it true in `~/.anti-hall/settings.json`. |
 | `jev.keyFile` adv | — | — | Credential key-file path (default depends on transport). |
 | `jev.timeoutMs` adv | `1500` [1..3000] | — | Per-call timeout (ms), capped at 3000. |
 | `jev.confidenceThreshold` adv | `0.85` [0..1] | — | Minimum confidence for a Jev answer to be trusted by callers. |

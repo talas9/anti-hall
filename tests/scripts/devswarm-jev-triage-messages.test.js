@@ -33,7 +33,7 @@ const { spawn } = require('node:child_process');
 // time covers both — the spawned child then inherits a clean process.env.
 for (const k of Object.keys(process.env)) {
   if (k === 'ANTIHALL_JEV' || k.startsWith('ANTIHALL_JEV_') ||
-    k === 'AI_GATEWAY_API_KEY' || k === 'TYPESAFE_API_KEY') {
+    k === 'AI_GATEWAY_API_KEY' || k === 'TYPESAFE_API_KEY' || k.startsWith('CLAUDE_PLUGIN_OPTION_')) {
     delete process.env[k];
   }
 }
@@ -135,7 +135,7 @@ test('ENABLED + confident mock Jev: messages carry an advisory `triage` label; u
       const env = Object.assign({}, process.env, {
         HOME: home,
         ANTIHALL_JEV_TEST_ENDPOINT: endpoint,
-        AI_GATEWAY_API_KEY: 'test-key',
+        CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'test-key',
         // Match seedStore's explicit 'journal' backend — the spawned CLI (no
         // ctx0 override available from argv) otherwise defaults to whatever
         // devswarm-store.js auto-selects, which can differ from 'journal' and

@@ -19,7 +19,7 @@ function freshLib() {
 }
 
 const ENV_KEYS = [
-  'HOME', 'ANTIHALL_JEV', 'AI_GATEWAY_API_KEY', 'TYPESAFE_API_KEY',
+  'HOME', 'ANTIHALL_JEV', 'AI_GATEWAY_API_KEY', 'TYPESAFE_API_KEY', 'CLAUDE_PLUGIN_OPTION_JEV_API_KEY', 'CLAUDE_PLUGIN_OPTION_ANTHROPIC_API_KEY',
   'ANTIHALL_JEV_TEST_ENDPOINT', 'ANTIHALL_JEV_SPECULATION', 'ANTIHALL_JEV_MODEL_ROUTING',
 ];
 
@@ -475,7 +475,7 @@ test('ask(): mode off -> baseline-only, no network call, still logs to jev-assis
   const h = makeHome();
   try {
     await withMockServer(noulHandler(0.99), async (endpoint) => {
-      await withEnv({ HOME: h.home, AI_GATEWAY_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
+      await withEnv({ HOME: h.home, CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
         const { ask } = freshLib();
         const r = await ask({ id: 'speculation', question: NOUL_Q, state: 'hello', trust: 'add-block', baseline: false });
         assert.strictEqual(r.final, false);
@@ -491,7 +491,7 @@ test('ask(): add-block, confident true -> block added, mode on', async () => {
   try {
     h.writeState('jev.json', { enabled: true, timeoutMs: 3000 });
     await withMockServer(noulHandler(0.95), async (endpoint) => {
-      await withEnv({ HOME: h.home, AI_GATEWAY_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
+      await withEnv({ HOME: h.home, CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
         const { ask } = freshLib();
         const r = await ask({ id: 'speculation', question: NOUL_Q, state: 'hello', trust: 'add-block', baseline: false });
         assert.strictEqual(r.final, true);
@@ -519,7 +519,7 @@ test('ask(): audit.snippets:true + a changed decision -> writes a snippet of the
   try {
     h.writeState('jev.json', { enabled: true, timeoutMs: 3000, audit: { snippets: true } });
     await withMockServer(noulHandler(0.95), async (endpoint) => {
-      await withEnv({ HOME: h.home, AI_GATEWAY_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
+      await withEnv({ HOME: h.home, CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
         const { ask, auditLogPath } = freshLib();
         const r = await ask({ id: 'speculation', question: NOUL_Q, state: 'the plan is probably done', trust: 'add-block', baseline: false });
         assert.strictEqual(r.final, true);
@@ -542,7 +542,7 @@ test('ask(): shadow mode (default for a non-legacy id) + audit.snippets:true + a
     // exactly the decision the owner/agent needs to label.
     h.writeState('jev.json', { enabled: true, timeoutMs: 3000, audit: { snippets: true } });
     await withMockServer(noulHandler(0.95), async (endpoint) => {
-      await withEnv({ HOME: h.home, AI_GATEWAY_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
+      await withEnv({ HOME: h.home, CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
         const { ask, auditLogPath } = freshLib();
         const r = await ask({ id: 'newRequest', question: NOUL_Q, state: 'the user asked for a brand new feature', trust: 'add-block', baseline: false });
         assert.strictEqual(r.final, false, 'shadow mode never actually changes the outcome');
@@ -562,7 +562,7 @@ test('ask(): shadow mode + audit.snippets:true + NO would-change -> no snippet w
     h.writeState('jev.json', { enabled: true, timeoutMs: 3000, audit: { snippets: true } });
     // add-block baseline is already true -> nothing left to add, would-change is null.
     await withMockServer(noulHandler(0.95), async (endpoint) => {
-      await withEnv({ HOME: h.home, AI_GATEWAY_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
+      await withEnv({ HOME: h.home, CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
         const { ask, auditLogPath } = freshLib();
         await ask({ id: 'newRequest', question: NOUL_Q, state: 'already blocked either way', trust: 'add-block', baseline: true });
         assert.ok(!fs.existsSync(auditLogPath(h.home)));
@@ -578,7 +578,7 @@ test('ask(): label-only choice integration (advisory trust, string answer, shado
     // baseline:null, a 'choice' question with a string answer (not a bool).
     h.writeState('jev.json', { enabled: true, timeoutMs: 3000, audit: { snippets: true } });
     await withMockServer(choiceHandler('mechanical', 0.9), async (endpoint) => {
-      await withEnv({ HOME: h.home, AI_GATEWAY_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
+      await withEnv({ HOME: h.home, CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
         const { ask, auditLogPath } = freshLib();
         const r = await ask({ id: 'newRequest', question: CHOICE_Q, state: 'classify this prompt', trust: 'advisory', baseline: null });
         assert.strictEqual(r.final, null, 'shadow mode never actually changes the outcome');
@@ -598,7 +598,7 @@ test('ask(): `compare` is logged verbatim and never affects trust math', async (
   try {
     h.writeState('jev.json', { enabled: true, timeoutMs: 3000 });
     await withMockServer(noulHandler(0.95), async (endpoint) => {
-      await withEnv({ HOME: h.home, AI_GATEWAY_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
+      await withEnv({ HOME: h.home, CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
         const { ask } = freshLib();
         // baseline stays the hardcoded add-block constant (false); compare
         // carries the REAL independent heuristic verdict (true here) --
@@ -621,7 +621,7 @@ test('ask(): omitting `compare` writes no `compare` field (backward compatible)'
   try {
     h.writeState('jev.json', { enabled: true, timeoutMs: 3000 });
     await withMockServer(noulHandler(0.95), async (endpoint) => {
-      await withEnv({ HOME: h.home, AI_GATEWAY_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
+      await withEnv({ HOME: h.home, CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
         const { ask } = freshLib();
         const r = await ask({ id: 'speculation', question: NOUL_Q, state: 'hello', trust: 'add-block', baseline: false });
         assert.strictEqual(r.final, true);
@@ -637,7 +637,7 @@ test('ask(): sessionId is logged verbatim when the caller passes one', async () 
   try {
     h.writeState('jev.json', { enabled: true, timeoutMs: 3000 });
     await withMockServer(noulHandler(0.95), async (endpoint) => {
-      await withEnv({ HOME: h.home, AI_GATEWAY_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
+      await withEnv({ HOME: h.home, CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
         const { ask } = freshLib();
         const r = await ask({
           id: 'speculation', question: NOUL_Q, state: 'hello', trust: 'add-block',
@@ -656,7 +656,7 @@ test('ask(): omitting sessionId writes no sessionId field (backward compatible)'
   try {
     h.writeState('jev.json', { enabled: true, timeoutMs: 3000 });
     await withMockServer(noulHandler(0.95), async (endpoint) => {
-      await withEnv({ HOME: h.home, AI_GATEWAY_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
+      await withEnv({ HOME: h.home, CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
         const { ask } = freshLib();
         const r = await ask({ id: 'speculation', question: NOUL_Q, state: 'hello', trust: 'add-block', baseline: false });
         assert.strictEqual(r.final, true);
@@ -672,7 +672,7 @@ test('ask(): turnRef is logged verbatim when the caller passes one', async () =>
   try {
     h.writeState('jev.json', { enabled: true, timeoutMs: 3000 });
     await withMockServer(noulHandler(0.95), async (endpoint) => {
-      await withEnv({ HOME: h.home, AI_GATEWAY_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
+      await withEnv({ HOME: h.home, CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
         const { ask } = freshLib();
         const r = await ask({
           id: 'speculation', question: NOUL_Q, state: 'hello', trust: 'add-block',
@@ -728,7 +728,7 @@ test('ask(): logs costUsd:null/costSource:null when the response carries no cost
   try {
     h.writeState('jev.json', { enabled: true, timeoutMs: 3000 });
     await withMockServer(noulHandler(0.95), async (endpoint) => {
-      await withEnv({ HOME: h.home, AI_GATEWAY_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
+      await withEnv({ HOME: h.home, CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
         const { ask } = freshLib();
         await ask({ id: 'speculation', question: NOUL_Q, state: 'hello', trust: 'add-block', baseline: false });
         const log = readNdjson(path.join(h.home, '.anti-hall', 'logs', 'jev-assist.ndjson'));
@@ -744,7 +744,7 @@ test('ask(): a cache hit logs costUsd:0, costSource:"cache" on the SECOND call',
   try {
     h.writeState('jev.json', { enabled: true, timeoutMs: 3000 });
     await withMockServer(noulHandler(0.95), async (endpoint) => {
-      await withEnv({ HOME: h.home, AI_GATEWAY_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
+      await withEnv({ HOME: h.home, CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
         const { ask } = freshLib();
         await ask({ id: 'speculation', question: NOUL_Q, state: 'same text', trust: 'add-block', baseline: false });
         await ask({ id: 'speculation', question: NOUL_Q, state: 'same text', trust: 'add-block', baseline: false });
@@ -763,7 +763,7 @@ test('ask(): shadow mode calls Jev + logs but NEVER changes the outcome', async 
   try {
     h.writeState('jev.json', { enabled: true, timeoutMs: 3000, integrations: { modelRouting: 'shadow' } });
     await withMockServer(choiceHandler('authoring', 0.95), async (endpoint) => {
-      await withEnv({ HOME: h.home, AI_GATEWAY_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
+      await withEnv({ HOME: h.home, CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
         const { ask } = freshLib();
         const r = await ask({
           id: 'modelRouting', question: CHOICE_Q, state: 'spawn text', trust: 'relax-block',
@@ -792,7 +792,7 @@ test('ask(): relax-block skips the call entirely when baseline is not blocking',
     h.writeState('jev.json', { enabled: true, timeoutMs: 3000, integrations: { modelRouting: 'on' } });
     let calls = 0;
     await withMockServer((req, res) => { calls++; res.writeHead(200); res.end('{}'); }, async (endpoint) => {
-      await withEnv({ HOME: h.home, AI_GATEWAY_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
+      await withEnv({ HOME: h.home, CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
         const { ask } = freshLib();
         const r = await ask({
           id: 'modelRouting', question: CHOICE_Q, state: 'x', trust: 'relax-block',
@@ -810,7 +810,7 @@ test('ask(): fail-open to baseline on timeout', async () => {
   try {
     h.writeState('jev.json', { enabled: true, timeoutMs: 150 });
     await withMockServer(() => { /* never respond */ }, async (endpoint) => {
-      await withEnv({ HOME: h.home, AI_GATEWAY_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
+      await withEnv({ HOME: h.home, CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
         const { ask } = freshLib();
         const r = await ask({ id: 'speculation', question: NOUL_Q, state: 'x', trust: 'add-block', baseline: false });
         assert.strictEqual(r.final, false);
@@ -835,7 +835,7 @@ test('ask(): second call with the same id+state hits the cache (backend "cache")
         res.end(JSON.stringify({ answers: { decision: { noul: 0.95 } } }));
       });
     }, async (endpoint) => {
-      await withEnv({ HOME: h.home, AI_GATEWAY_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
+      await withEnv({ HOME: h.home, CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
         const { ask } = freshLib();
         const r1 = await ask({ id: 'speculation', question: NOUL_Q, state: 'same text', trust: 'add-block', baseline: false });
         const r2 = await ask({ id: 'speculation', question: NOUL_Q, state: 'same text', trust: 'add-block', baseline: false });
@@ -860,7 +860,7 @@ test('recordOutcome: appends an outcome line joinable by hash', async () => {
   try {
     h.writeState('jev.json', { enabled: true, timeoutMs: 3000 });
     await withMockServer(noulHandler(0.95), async (endpoint) => {
-      await withEnv({ HOME: h.home, AI_GATEWAY_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
+      await withEnv({ HOME: h.home, CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
         const { ask, recordOutcome } = freshLib();
         const r = await ask({ id: 'speculation', question: NOUL_Q, state: 'x', trust: 'add-block', baseline: false });
         recordOutcome({ id: 'speculation', h: r.h, outcome: 'evidence-added', home: h.home });
@@ -947,7 +947,7 @@ test('askSync(): relax-block via subprocess, confident non-mechanical relaxes th
     await withMockServer(choiceHandler('authoring', 0.95), async (endpoint) => {
       const env = {
         PATH: process.env.PATH, HOME: h.home,
-        AI_GATEWAY_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint,
+        CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint,
       };
       const r = await runAskSyncInChild({
         id: 'modelRouting', question: CHOICE_Q, state: 'write the report', trust: 'relax-block',
@@ -991,7 +991,7 @@ test('askDetached(): returns synchronously without waiting on the network call',
         }, 800);
       });
     }, async (endpoint) => {
-      await withEnv({ HOME: h.home, AI_GATEWAY_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
+      await withEnv({ HOME: h.home, CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
         const { askDetached } = freshLib();
         const t0 = Date.now();
         askDetached({ id: 'newRequest', question: CHOICE_Q, state: 'please fix the bug', trust: 'advisory', baseline: null });
@@ -1022,7 +1022,7 @@ test('askDetached(): default budget outlasts the 1500ms interactive default (200
         }, 2000);
       });
     }, async (endpoint) => {
-      await withEnv({ HOME: h.home, AI_GATEWAY_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
+      await withEnv({ HOME: h.home, CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
         const { askDetached } = freshLib();
         askDetached({ id: 'newRequest', question: CHOICE_Q, state: 'please fix the bug', trust: 'advisory', baseline: null });
         const p = path.join(h.home, '.anti-hall', 'logs', 'jev-assist.ndjson');
@@ -1063,7 +1063,7 @@ test('askDetached(): sessionId/turnRef ride along to the logged row via the deta
   try {
     h.writeState('jev.json', { enabled: true, integrations: { claimLedger: 'shadow' } });
     await withMockServer(noulHandler(0.9), async (endpoint) => {
-      await withEnv({ HOME: h.home, AI_GATEWAY_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
+      await withEnv({ HOME: h.home, CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
         const { askDetached } = freshLib();
         askDetached({
           id: 'claimLedger', question: NOUL_Q, state: 'hi', trust: 'relax-block',
@@ -1089,7 +1089,7 @@ test('ask()/askSync() shadow-log row: claimLedger and mergeGateHedge default to 
   try {
     h.writeState('jev.json', { enabled: true }); // no explicit integrations map -> both default "shadow"
     await withMockServer(noulHandler(0.99), async (endpoint) => {
-      await withEnv({ HOME: h.home, AI_GATEWAY_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
+      await withEnv({ HOME: h.home, CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
         const { ask, getMode } = freshLib();
         assert.strictEqual(getMode('claimLedger', { enabled: true }), 'shadow');
         assert.strictEqual(getMode('mergeGateHedge', { enabled: true }), 'shadow');
@@ -1141,7 +1141,7 @@ test('askDetached(): codexNudgeSubstantial in shadow logs a relax-block row that
   try {
     h.writeState('jev.json', { enabled: true, integrations: { codexNudgeSubstantial: 'shadow' } });
     await withMockServer(noulHandler(0.05), async (endpoint) => {
-      await withEnv({ HOME: h.home, AI_GATEWAY_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
+      await withEnv({ HOME: h.home, CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
         const { askDetached } = freshLib();
         askDetached({
           id: 'codexNudgeSubstantial', question: NOUL_Q, state: 'files: a.js, b.js\nedits: 3',
@@ -1163,7 +1163,7 @@ test('askDetached(): tasklistTrivial in mode "on" still cannot change the CALLER
   try {
     h.writeState('jev.json', { enabled: true, integrations: { tasklistTrivial: 'on' } });
     await withMockServer(noulHandler(0.05), async (endpoint) => {
-      await withEnv({ HOME: h.home, AI_GATEWAY_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
+      await withEnv({ HOME: h.home, CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
         const { askDetached } = freshLib();
         askDetached({
           id: 'tasklistTrivial', question: NOUL_Q, state: 'workCount=4 threshold=4',
@@ -1189,7 +1189,7 @@ test('askDetached(): codexNudgeSubstantial fails open to baseline when Jev is un
   try {
     h.writeState('jev.json', { enabled: true, timeoutMs: 150, integrations: { codexNudgeSubstantial: 'on' } });
     await withMockServer(() => { /* never respond */ }, async (endpoint) => {
-      await withEnv({ HOME: h.home, AI_GATEWAY_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
+      await withEnv({ HOME: h.home, CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
         const { askDetached } = freshLib();
         askDetached({
           id: 'codexNudgeSubstantial', question: NOUL_Q, state: 'files: a.js\nedits: 3',
@@ -1243,7 +1243,7 @@ test('ask(): full cache (seeded) -> a fresh process\'s new entry is retained, ne
     fs.mkdirSync(path.join(h.home, '.anti-hall', 'cache'), { recursive: true });
     fs.writeFileSync(path.join(h.home, '.anti-hall', 'cache', 'jev-assist.json'), JSON.stringify(frozen));
     await withMockServer(noulHandler(0.95), async (endpoint) => {
-      await withEnv({ HOME: h.home, AI_GATEWAY_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
+      await withEnv({ HOME: h.home, CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
         await freshLib().ask({ id: 'speculation', question: NOUL_Q, state: 'new text', trust: 'add-block', baseline: false });
         await freshLib().ask({ id: 'speculation', question: NOUL_Q, state: 'new text', trust: 'add-block', baseline: false });
         const log = readNdjson(path.join(h.home, '.anti-hall', 'logs', 'jev-assist.ndjson'));

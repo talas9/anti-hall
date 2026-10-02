@@ -82,8 +82,8 @@ Env vars (checked before `keyFile`):
 
 - `ANTIHALL_JEV=1` — force-enable, even with no `jev.json` at all.
 - `ANTIHALL_JEV=0` — force-disable, **overrides** `jev.json`'s `enabled:true`. Always wins.
-- `AI_GATEWAY_API_KEY` — credential for `transport:"vercel"`.
-- `TYPESAFE_API_KEY` — credential for `transport:"typesafe"`.
+- `CLAUDE_PLUGIN_OPTION_JEV_API_KEY` — the key stored via `/plugin config` (`jev_api_key`, sensitive); exported to hook processes and inherited by the workers they spawn. Read first.
+- `AI_GATEWAY_API_KEY` / `TYPESAFE_API_KEY` — legacy credentials for `transport:"vercel"` / `"typesafe"`, read ONLY when `jev.allowLegacyKeyRead` is on (default off; the Codex port enables it in `~/.anti-hall/settings.json`).
 
 **Transports:**
 
@@ -154,7 +154,7 @@ TypeSafe's own API (`api.typesafe.ai`), i.e. to Vercel and/or TypeSafe as third 
 No other transcript content, no tool output, no file contents, and no credentials are
 sent beyond that one message's text.
 
-The API key (`AI_GATEWAY_API_KEY` / `TYPESAFE_API_KEY` / the resolved `keyFile`
+The API key (the `jev_api_key` plugin option, or with `jev.allowLegacyKeyRead` on, `AI_GATEWAY_API_KEY` / `TYPESAFE_API_KEY` / the resolved `keyFile`
 contents) is read fresh on every call and is **never** logged, written to
 `jev-judge.ndjson`, echoed into a block/allow reason string, or included in any error
 message this module returns. This is enforced by construction (the key never enters any

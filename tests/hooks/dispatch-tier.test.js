@@ -90,7 +90,7 @@ test('JEV ERROR / no verdict: no annotation and the injected text equals the Jev
     const off = ctx(testHook(TRACKER, payload(tp, cwd), { home: h.home, env: NO_DEDUPE }));
     h.writeState('jev.json', { enabled: true });
     // Unreachable endpoint: the detached request fails; the line is unchanged.
-    const env = Object.assign({ AI_GATEWAY_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: 'http://127.0.0.1:9/none' }, NO_DEDUPE);
+    const env = Object.assign({ CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: 'http://127.0.0.1:9/none' }, NO_DEDUPE);
     const on = ctx(testHook(TRACKER, payload(tp, cwd), { home: h.home, env }));
     const line = (s) => s.slice(s.indexOf('DISPATCH NOW'));
     assert.doesNotMatch(on, /→|Jev recommendation/, on);
@@ -191,7 +191,7 @@ test('POSTTOOLUSE TaskCreate: asks Jev once (detached) and caches the verdict by
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   try {
     h.writeState('jev.json', { enabled: true });
-    const env = { AI_GATEWAY_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: 'http://127.0.0.1:' + server.address().port + '/mock' };
+    const env = { CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: 'http://127.0.0.1:' + server.address().port + '/mock' };
     const p = { hook_event_name: 'PostToolUse', tool_name: 'TaskCreate', tool_input: { subject: 'fix the matcher', description: 'one scoped fix' }, session_id: 't', cwd };
     const r = testHook(HOOK, p, { home: h.home, env });
     assert.strictEqual(r.status, 0);

@@ -266,5 +266,5 @@ itself.
 ## Never
 
 Never print/log/commit the key. Never guess the provider. Never store the key
-anywhere but the resolved key file (`~/.config/vercel/ai-gateway-key` or
+anywhere but the resolved key file (Codex has no plugin options, so enable `jev.allowLegacyKeyRead` in `~/.anti-hall/settings.json` for the key file to be read) (`~/.config/vercel/ai-gateway-key` or
 `~/.config/typesafe/key` by default).

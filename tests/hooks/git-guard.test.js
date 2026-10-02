@@ -1193,7 +1193,7 @@ function runWithJev(command, jevCfg, endpoint) {
     h.writeState('jev.json', jevCfg);
     const r = testHook(HOOK, bashPayload(command), {
       home: h.home,
-      env: { AI_GATEWAY_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint },
+      env: { CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint },
     });
     return r;
   } finally {
@@ -1265,7 +1265,7 @@ test('JEV unavailable (mode on, endpoint unreachable): fails open to baseline (a
     h.writeState('jev.json', { enabled: true, timeoutMs: 300, integrations: { gitGuardSelfCredit: 'on' } });
     const r = testHook(HOOK, bashPayload('git commit -m "written with help from an assistant"'), {
       home: h.home,
-      env: { AI_GATEWAY_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: 'http://127.0.0.1:1/unreachable' },
+      env: { CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: 'http://127.0.0.1:1/unreachable' },
     });
     assert.strictEqual(r.status, 0, `jev unavailable must fail open to today's behavior\nstderr: ${r.stderr}`);
   } finally {
@@ -1704,7 +1704,7 @@ test('PERF (R7A1-1): 8 distinct-text force-push repro against a hanging Jev endp
       const t0 = Date.now();
       const r = testHook(HOOK, bashPayload(cmd), {
         home: h.home,
-        env: { AI_GATEWAY_API_KEY: 'fake', ANTIHALL_JEV_TEST_ENDPOINT: server.endpoint },
+        env: { CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'fake', ANTIHALL_JEV_TEST_ENDPOINT: server.endpoint },
       });
       const elapsedMs = Date.now() - t0;
       assert.strictEqual(r.status, 2, `expected block (exit 2)\nstderr: ${r.stderr}`);

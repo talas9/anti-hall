@@ -152,7 +152,7 @@ test('buildPairs: an exact repeat (same id AND round) is never paired with itsel
 // jev-assist.ask() path — noul confidence = |noul-0.5|*2, see jev-client.js)
 // ---------------------------------------------------------------------------
 
-const ENV_KEYS = ['HOME', 'ANTIHALL_JEV', 'AI_GATEWAY_API_KEY', 'ANTIHALL_JEV_TEST_ENDPOINT', 'ANTIHALL_JEV_FINDING_DEDUP'];
+const ENV_KEYS = ['HOME', 'ANTIHALL_JEV', 'AI_GATEWAY_API_KEY', 'CLAUDE_PLUGIN_OPTION_JEV_API_KEY', 'ANTIHALL_JEV_TEST_ENDPOINT', 'ANTIHALL_JEV_FINDING_DEDUP'];
 
 async function withEnv(overrides, fn) {
   const saved = {};
@@ -217,7 +217,7 @@ test('the 0.85 threshold: noul=1.0 (confidence 1.0) IS grouped, noul=0.9 (confid
     const b2 = { id: 'b2', file: 'y.js', line: 2, text: 'leak restated' };
 
     await withMockServer(noulHandler(1.0), async (endpoint) => {
-      await withEnv({ HOME: h.home, AI_GATEWAY_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
+      await withEnv({ HOME: h.home, CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
         const { askPair } = freshAskPair();
         const edge = await askPair(a1, b1, { home: h.home });
         assert.deepStrictEqual(edge, { a: 'a1', b: 'b1', confidence: 1 });
@@ -225,7 +225,7 @@ test('the 0.85 threshold: noul=1.0 (confidence 1.0) IS grouped, noul=0.9 (confid
     });
 
     await withMockServer(noulHandler(0.9), async (endpoint) => {
-      await withEnv({ HOME: h.home, AI_GATEWAY_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
+      await withEnv({ HOME: h.home, CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
         const { askPair } = freshAskPair();
         const edge = await askPair(a2, b2, { home: h.home });
         assert.strictEqual(edge, null, 'confidence 0.8 is below the 0.85 floor');
@@ -250,7 +250,7 @@ test('mode off: getMode(findingDedup) !== on -> jev-assist never hits the networ
     const b = { id: 'b', file: 'x.js', line: 2, text: 'leak restated' };
 
     await withMockServer(noulHandler(1.0, hits), async (endpoint) => {
-      await withEnv({ HOME: h.home, AI_GATEWAY_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
+      await withEnv({ HOME: h.home, CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
         const { askPair } = freshAskPair();
         const edge = await askPair(a, b, { home: h.home });
         assert.strictEqual(edge, null);
@@ -272,7 +272,7 @@ test('mode off (Jev disabled entirely, default jev.json): dedupe() over a real p
       { id: 'b', file: 'x.js', line: 2, text: 'leak restated' },
     ];
     await withMockServer(noulHandler(1.0, hits), async (endpoint) => {
-      await withEnv({ HOME: h.home, AI_GATEWAY_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
+      await withEnv({ HOME: h.home, CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
         const { dedupe: freshDedupe } = freshAskPair();
         const result = await freshDedupe(findings, { home: h.home });
         assert.deepStrictEqual(result.groups, []);
@@ -293,7 +293,7 @@ test('Jev off: dedupe() over findings whose id recurs across rounds yields zero 
       { id: 'reviewer-1', file: 'x.js', line: 2, round: 2, text: 'leak restated' },
     ];
     await withMockServer(noulHandler(1.0, hits), async (endpoint) => {
-      await withEnv({ HOME: h.home, AI_GATEWAY_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
+      await withEnv({ HOME: h.home, CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
         const { dedupe: freshDedupe } = freshAskPair();
         const result = await freshDedupe(findings, { home: h.home });
         assert.deepStrictEqual(result.groups, []);
@@ -333,7 +333,7 @@ test('errors fail open: askPair itself never throws even when jev-assist.ask rej
     const a = { id: 'a', file: 'x.js', line: 1, text: 'leak' };
     const b = { id: 'b', file: 'x.js', line: 2, text: 'leak restated' };
     // No mock server listening at this endpoint -> the network call itself fails.
-    await withEnv({ HOME: h.home, AI_GATEWAY_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: 'http://127.0.0.1:1/unreachable' }, async () => {
+    await withEnv({ HOME: h.home, CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: 'http://127.0.0.1:1/unreachable' }, async () => {
       const { askPair } = freshAskPair();
       const edge = await askPair(a, b, { home: h.home });
       assert.strictEqual(edge, null);

@@ -14,8 +14,9 @@
 //     "The cause is the old build artifact." (zero hedging, unverified claim)
 //
 //   This semantic judge covers that gap by asking a Claude model to evaluate
-//   the last assistant message. It uses the ANTHROPIC_API_KEY environment
-//   variable. If that key is absent (or the API call fails for any reason),
+//   the last assistant message. It uses the anthropic_api_key plugin option
+//   (CLAUDE_PLUGIN_OPTION_ANTHROPIC_API_KEY; legacy ANTHROPIC_API_KEY only when
+//   jev.allowLegacyKeyRead is on). If that key is absent (or the API call fails for any reason),
 //   the hook exits 0 (fail-open) — it never blocks when it cannot verify.
 //
 // COST / LATENCY
@@ -333,7 +334,7 @@ async function main() {
   }
 
   // API key required — fail-open if absent.
-  const apiKey = process.env.ANTHROPIC_API_KEY;
+  const apiKey = require('./lib/credentials.js').resolveKey('anthropic').key;
   if (!apiKey || typeof apiKey !== 'string' || !apiKey.trim()) {
     process.exit(0);
   }

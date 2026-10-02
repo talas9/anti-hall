@@ -31,7 +31,7 @@ const repokey = require('../../plugins/anti-hall/companion/lib/devswarm-repokey.
 // suspenders against a future edit that spreads process.env into a child env.
 for (const k of Object.keys(process.env)) {
   if (k === 'ANTIHALL_JEV' || k.startsWith('ANTIHALL_JEV_') ||
-    k === 'AI_GATEWAY_API_KEY' || k === 'TYPESAFE_API_KEY') {
+    k === 'AI_GATEWAY_API_KEY' || k === 'TYPESAFE_API_KEY' || k.startsWith('CLAUDE_PLUGIN_OPTION_')) {
     delete process.env[k];
   }
 }
@@ -131,7 +131,7 @@ test('ENABLED + confident mock Jev: the row gains an advisory [kind] tag; row se
         home: h.home,
         env: Object.assign({}, PRIMARY_ENV, {
           ANTIHALL_JEV_TEST_ENDPOINT: endpoint,
-          AI_GATEWAY_API_KEY: 'test-key',
+          CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'test-key',
         }),
       });
       const c = ctx(r);
