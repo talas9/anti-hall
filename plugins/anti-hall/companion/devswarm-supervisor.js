@@ -1042,7 +1042,15 @@ function reconcileSweepIfDue(opts) {
       // unknown.js): recorded once, then not re-run (nor re-reported) every
       // sweep until its periodic recheck. Contributes nothing — fail-open.
       let active = null;
-      const listSuppressed = repoUnknown.isSuppressed(home, t.repoKey, 'list', now);
+      // Only a repoKey with NO live row may be suppressed: a live child's probe
+      // keeps running (and reporting its failure) every sweep.
+      const repoTerminal = () => !descriptors.some((x) => {
+        if (!x || !x.worktreePath) return false;
+        let k = null;
+        try { k = resolveRepoKeyCached(x.worktreePath); } catch (_) { k = null; }
+        return k === t.repoKey && !repoUnknown.rowTerminal(x, { home, env, now });
+      });
+      const listSuppressed = repoUnknown.isSuppressed(home, t.repoKey, 'list', now) && repoTerminal();
       if (!listSuppressed) {
         try {
           active = runActiveList(t.worktreePath);
@@ -1051,16 +1059,18 @@ function reconcileSweepIfDue(opts) {
         }
         if (active && active.ok) {
           repoUnknown.clear(home, t.repoKey, 'list');
-        } else if (active && repoUnknown.isRepoUnknownText(active.error, active.stderr)) {
+        } else if (active && !repoUnknown.isRepoUnknownText(active.error, active.stderr)) {
+          repoUnknown.clear(home, t.repoKey, 'list'); // a different error resets the streak
+        } else if (active && repoTerminal()) {
           const rec = repoUnknown.record(home, t.repoKey, 'list', active.error || active.stderr, now);
-          if (rec.first) {
+          if (rec.engaged) {
             try {
               alog.logEvent('devswarm-supervisor', 'repo-unknown', 'info',
-                'hivecontrol does not know this project\'s repository (terminal for the repoKey) — recorded once; the active-workspace probe is suppressed until a periodic recheck',
+                'hivecontrol does not know this project\'s repository (' + repoUnknown.SUPPRESS_AFTER + ' sweeps in a row, no live row) — the active-workspace probe is suppressed until a periodic recheck',
                 { repoKey: t.repoKey, worktreePath: t.worktreePath });
             } catch (_) { /* logging must never break the sweep */ }
           }
-          active = { ok: false, reason: 'repo-unknown' };
+          if (rec.suppressed) active = { ok: false, reason: 'repo-unknown' };
         }
       }
       if (active && active.ok && Array.isArray(active.records) && active.records.length) {

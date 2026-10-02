@@ -100,63 +100,144 @@ test('a LIVE row with a vanished worktree is still a real ok:false failure with 
   } finally { rm(home); rm(repo); }
 });
 
-// ---- (a) per-row pull: Repository not found is terminal ----------------------
-test('(a) pull "Repository not found": recorded once, not re-spawned until recheck, cleared on success, nothing deleted', () => {
+// ---- (a) per-row pull: Repository not found ---------------------------------
+// A LIVE row is never suppressed (the text can mean a wrong cwd or a transient
+// app-start failure); an ARCHIVED row is suppressed only after N identical hits.
+function pullHarness(home, repo, rows) {
+  const repoKey = repokey.repoKeyForWorktree(repo);
+  for (const r of rows) seedRegistry(home, repoKey, r);
+  const st = { spawns: [], mode: 'unknown', text: NOT_FOUND };
+  const io = {
+    spawnReconcile: (d) => {
+      st.spawns.push(d.id);
+      if (d.id === 'bad1' && st.mode === 'unknown') {
+        return { status: 1, stdout: JSON.stringify({ ok: false, error: st.text }), error: null };
+      }
+      return { status: 0, stdout: JSON.stringify({ ok: true, imported: 0, duplicate: 0, nativeCount: 0 }), error: null };
+    },
+  };
+  const T0 = 1_800_000_000_000;
+  const run = (now) => { st.spawns = []; return cli.run(['reconcile'], ctx(home, { cwd: repo, io, now })).result; };
+  return { repoKey, st, run, T0 };
+}
+
+test('(a) ARCHIVED row "Repository not found": suppressed only on the 3rd consecutive hit, rechecked after 6h, cleared on success, nothing deleted', () => {
   const home = tmpHome(); const repo = makeGitRepo('a'); const bad = makeGitRepo('a-bad'); const good = makeGitRepo('a-good');
   try {
-    const repoKey = repokey.repoKeyForWorktree(repo);
-    seedRegistry(home, repoKey, { id: 'bad1', worktreePath: bad, sessionId: 's' });
-    seedRegistry(home, repoKey, { id: 'good1', worktreePath: good, sessionId: 's' });
-    let spawns = [];
-    let mode = 'unknown';
-    const io = {
-      spawnReconcile: (d) => {
-        spawns.push(d.id);
-        if (d.id === 'bad1' && mode === 'unknown') {
-          return { status: 1, stdout: JSON.stringify({ ok: false, error: NOT_FOUND }), error: null };
-        }
-        return { status: 0, stdout: JSON.stringify({ ok: true, imported: 0, duplicate: 0, nativeCount: 0 }), error: null };
-      },
-    };
-    const T0 = 1_800_000_000_000;
-    const run = (now) => cli.run(['reconcile'], ctx(home, { cwd: repo, io, now })).result;
+    const { repoKey, st, run, T0 } = pullHarness(home, repo, [
+      { id: 'bad1', worktreePath: bad, sessionId: 's' }, { id: 'good1', worktreePath: good, sessionId: 's' }]);
+    writeArchivedMarker(home, 'bad1');
 
-    const r1 = run(T0);
-    const bad1 = r1.results.find((x) => x.id === 'bad1');
+    for (const i of [0, 1]) {
+      const r = run(T0 + i * 60_000);
+      const row = r.results.find((x) => x.id === 'bad1');
+      assert.strictEqual(row.ok, false, 'hit ' + (i + 1) + ' is still a reported failure');
+      assert.ok(!row.repoUnknown);
+      assert.ok(st.spawns.includes('bad1'));
+      assert.ok(!ru.isSuppressed(home, repoKey, 'pull:bad1', T0 + i * 60_000));
+    }
+    const r3 = run(T0 + 120_000);
+    const bad1 = r3.results.find((x) => x.id === 'bad1');
     assert.strictEqual(bad1.repoUnknown, true);
     assert.strictEqual(bad1.skipped, true);
     assert.strictEqual(bad1.ok, true);
-    assert.strictEqual(r1.ok, true, 'a terminal known state does not fail the sweep');
-    assert.strictEqual(r1.repoUnknown, 1);
-    assert.ok(r1.results.find((x) => x.id === 'good1').ok, 'a sibling row hivecontrol still knows is unaffected');
+    assert.strictEqual(r3.repoUnknown, 1);
+    assert.ok(r3.results.find((x) => x.id === 'good1').ok, 'a sibling row is unaffected');
     const marker = ru.read(home);
-    assert.strictEqual(Object.keys(marker).length, 1, 'recorded once');
+    assert.strictEqual(Object.keys(marker).length, 1);
     assert.match(Object.values(marker)[0].reason, /Repository not found/);
     assert.ok(!/\u001b/.test(Object.values(marker)[0].reason), 'ANSI stripped');
 
-    // second sweep: bad1 is NOT spawned again
-    spawns = [];
-    const r2 = run(T0 + 60_000);
-    assert.ok(!spawns.includes('bad1'), 'no retry while the marker is live');
-    assert.strictEqual(r2.results.find((x) => x.id === 'bad1').repoUnknown, true);
-    assert.strictEqual(Object.values(ru.read(home))[0].count, 1, 'idempotent: marker not rewritten while suppressed');
+    const r4 = run(T0 + 180_000);
+    assert.ok(!st.spawns.includes('bad1'), 'not spawned while suppressed');
+    assert.strictEqual(r4.results.find((x) => x.id === 'bad1').repoUnknown, true);
+    assert.strictEqual(Object.values(ru.read(home))[0].count, 3, 'idempotent while suppressed');
 
-    // recheck due, still unknown -> exactly one more attempt, marker refreshed
-    spawns = [];
-    run(T0 + ru.RECHECK_MS + 1000);
-    assert.deepStrictEqual(spawns.filter((x) => x === 'bad1'), ['bad1']);
-    assert.strictEqual(Object.values(ru.read(home))[0].count, 2);
+    run(T0 + ru.RECHECK_MS + 1_000_000);
+    assert.deepStrictEqual(st.spawns.filter((x) => x === 'bad1'), ['bad1'], 'one recheck once due');
+    assert.strictEqual(Object.values(ru.read(home))[0].count, 4);
 
-    // hivecontrol knows it again -> marker cleared
-    mode = 'known';
-    run(T0 + 2 * ru.RECHECK_MS + 2000);
+    st.mode = 'known';
+    run(T0 + 2 * ru.RECHECK_MS + 2_000_000);
     assert.deepStrictEqual(ru.read(home), {});
 
-    // never deletes/moves: both worktrees and the registry rows survive
     assert.ok(fs.existsSync(bad) && fs.existsSync(good));
     const s = storeLib.openStore({ home, hash: repoKey, backend: 'journal' });
     try { assert.strictEqual(s.listRegistry().length, 2); } finally { s.close(); }
   } finally { rm(home); rm(repo); rm(bad); rm(good); }
+});
+
+test('(a) LIVE row "Repository not found": never suppressed, never ok:true, no marker, pulled every sweep', () => {
+  const home = tmpHome(); const repo = makeGitRepo('live'); const bad = makeGitRepo('live-bad');
+  try {
+    const { repoKey, st, run, T0 } = pullHarness(home, repo, [{ id: 'bad1', worktreePath: bad, sessionId: 's' }]);
+    for (let i = 0; i < 5; i++) {
+      const r = run(T0 + i * 60_000);
+      const row = r.results.find((x) => x.id === 'bad1');
+      assert.strictEqual(row.ok, false);
+      assert.ok(!row.repoUnknown && !row.skipped);
+      assert.strictEqual(r.ok, false);
+      assert.ok(st.spawns.includes('bad1'), 'pulled again on sweep ' + (i + 1));
+    }
+    assert.deepStrictEqual(ru.read(home), {}, 'no marker for a live row');
+    fs.mkdirSync(path.dirname(ru.markerPath(home)), { recursive: true });
+    // an earlier-shape marker (no streak) must not silence a live row either
+    fs.writeFileSync(ru.markerPath(home), JSON.stringify({ version: 1, scopes: { [repoKey + ':pull:bad1']: { reason: 'r', firstSeen: T0, lastChecked: T0 + 5 * 60_000, count: 1 } } }));
+    const r = run(T0 + 6 * 60_000);
+    assert.ok(st.spawns.includes('bad1'));
+    assert.strictEqual(r.results.find((x) => x.id === 'bad1').ok, false);
+  } finally { rm(home); rm(repo); rm(bad); }
+});
+
+test('(a) an intervening success or a different error resets the consecutive count', () => {
+  const home = tmpHome(); const repo = makeGitRepo('reset'); const bad = makeGitRepo('reset-bad');
+  try {
+    const { repoKey, st, run, T0 } = pullHarness(home, repo, [{ id: 'bad1', worktreePath: bad, sessionId: 's' }]);
+    writeArchivedMarker(home, 'bad1');
+    run(T0); run(T0 + 1000);
+    st.mode = 'known'; run(T0 + 2000);
+    assert.deepStrictEqual(ru.read(home), {}, 'success clears');
+    st.mode = 'unknown'; run(T0 + 3000); run(T0 + 4000);
+    assert.ok(!ru.isSuppressed(home, repoKey, 'pull:bad1', T0 + 4000), 'only 2 in a row since the success');
+    st.text = 'hivecontrol workspace message-count exited 2: boom';
+    run(T0 + 5000);
+    assert.deepStrictEqual(ru.read(home), {}, 'a different error clears');
+    st.text = NOT_FOUND; run(T0 + 6000); run(T0 + 7000);
+    assert.ok(!ru.isSuppressed(home, repoKey, 'pull:bad1', T0 + 7000));
+    run(T0 + 8000);
+    assert.ok(ru.isSuppressed(home, repoKey, 'pull:bad1', T0 + 8000), '3 fresh hits in a row suppress');
+  } finally { rm(home); rm(repo); rm(bad); }
+});
+
+test('(a) an unrelated error that merely contains the phrase does not match; the real line shapes do', () => {
+  assert.strictEqual(ru.isRepoUnknownText('Repository not found in the object cache, retry later'), false);
+  assert.strictEqual(ru.isRepoUnknownText('hivecontrol x exited 1: could not clone: Repository not found. Check your remote'), false);
+  assert.strictEqual(ru.isRepoUnknownText('remote: Repository not found.\nfatal: unable to access'), false, 'a git remote error is a different message');
+  assert.strictEqual(ru.isRepoUnknownText('noise\nError: Repository not found. Make sure to pass the git root path.\n'), true, 'matched per line');
+  assert.strictEqual(ru.isRepoUnknownText(NOT_FOUND), true);
+  assert.strictEqual(ru.isRepoUnknownText('Error: Repository not found.'), true);
+  assert.strictEqual(ru.isRepoUnknownText(null, undefined, 5), false);
+  const home = tmpHome(); const repo = makeGitRepo('phr'); const bad = makeGitRepo('phr-bad');
+  try {
+    const { st, run, T0 } = pullHarness(home, repo, [{ id: 'bad1', worktreePath: bad, sessionId: 's' }]);
+    writeArchivedMarker(home, 'bad1');
+    st.text = 'hivecontrol workspace message-count exited 1: Repository not found in the object cache, retry later';
+    for (let i = 0; i < 4; i++) assert.strictEqual(run(T0 + i).results[0].ok, false);
+    assert.deepStrictEqual(ru.read(home), {});
+  } finally { rm(home); rm(repo); rm(bad); }
+});
+
+test('(a) an earlier-shape marker (no streak) still suppresses an ARCHIVED row for its 6h window', () => {
+  const home = tmpHome(); const repo = makeGitRepo('leg'); const bad = makeGitRepo('leg-bad');
+  try {
+    const { repoKey, st, run, T0 } = pullHarness(home, repo, [{ id: 'bad1', worktreePath: bad, sessionId: 's' }]);
+    writeArchivedMarker(home, 'bad1');
+    fs.mkdirSync(path.dirname(ru.markerPath(home)), { recursive: true });
+    fs.writeFileSync(ru.markerPath(home), JSON.stringify({ version: 1, scopes: { [repoKey + ':pull:bad1']: { reason: 'r', firstSeen: T0, lastChecked: T0, count: 1 } } }));
+    const r = run(T0 + 1000);
+    assert.strictEqual(r.results.find((x) => x.id === 'bad1').repoUnknown, true);
+    assert.ok(!st.spawns.includes('bad1'));
+  } finally { rm(home); rm(repo); rm(bad); }
 });
 
 test('a NEW, different pull failure is still reported as a real failure', () => {
@@ -174,42 +255,59 @@ test('a NEW, different pull failure is still reported as a real failure', () => 
 });
 
 // ---- (a) supervisor active probe ---------------------------------------------
-test('(a) supervisor `workspace list all` "Repository not found": probed once, suppressed, not reported as a probe failure; a new failure still is', () => {
+function supHarness(home, probeResultFn) {
+  const state = { probes: 0 };
+  const deps = {
+    readDescriptors: () => [{ id: 'x', worktreePath: '/wt/x' }],
+    repoKeyForWorktree: () => 'proj-key',
+    fs: Object.assign({}, fs, { existsSync: () => true }),
+    readReconcileSweepState: () => ({ lastRunAt: 0 }),
+    writeReconcileSweepState: () => {},
+    runReconcile: () => ({ ok: true, count: 0, imported: 0, lost: 0, results: [] }),
+    runFold: () => ({ ok: true }),
+    runActiveList: () => { state.probes++; return probeResultFn(); },
+    startupSampling: { runSamplingPass: () => {} },
+  };
+  const sweep = (now) => sup.reconcileSweepIfDue({ home, env: {}, now, cooldownMs: 0, deps });
+  return { state, sweep };
+}
+const NF_LIST = 'hivecontrol workspace list all exited 1: \u001b[31mError: Repository not found. Make sure to pass the git root path.\u001b[0m';
+
+test('(a) supervisor `workspace list all` "Repository not found", repoKey with NO live row: reported twice, suppressed on the 3rd, rechecked after 6h; a new failure still is reported', () => {
   const home = tmpHome();
   try {
-    const NF = 'hivecontrol workspace list all exited 1: \u001b[31mError: Repository not found. Make sure to pass the git root path.\u001b[0m';
-    let probes = 0; let probeResult = { ok: false, reason: 'hivecontrol-unavailable', error: NF, status: 1, stderr: 'Error: Repository not found.' };
-    const deps = {
-      readDescriptors: () => [{ id: 'x', worktreePath: '/wt/x' }],
-      repoKeyForWorktree: () => 'proj-key',
-      fs: Object.assign({}, fs, { existsSync: () => true }),
-      readReconcileSweepState: () => ({ lastRunAt: 0 }),
-      writeReconcileSweepState: () => {},
-      runReconcile: () => ({ ok: true, count: 0, imported: 0, lost: 0, results: [] }),
-      runFold: () => ({ ok: true }),
-      runActiveList: () => { probes++; return probeResult; },
-      startupSampling: { runSamplingPass: () => {} },
-    };
+    writeArchivedMarker(home, 'x');
+    let probeResult = { ok: false, reason: 'hivecontrol-unavailable', error: NF_LIST, status: 1, stderr: 'Error: Repository not found.' };
+    const { state, sweep } = supHarness(home, () => probeResult);
     const T0 = 1_800_000_000_000;
-    const sweep = (now) => sup.reconcileSweepIfDue({ home, env: {}, now, cooldownMs: 0, deps });
 
-    const s1 = sweep(T0);
-    assert.strictEqual(s1.ran, true);
-    assert.strictEqual(probes, 1);
-    assert.strictEqual(s1.activeProbe.failure, null, 'a terminal known state is not a probe failure');
-    assert.ok(ru.isSuppressed(home, 'proj-key', 'list', T0));
+    assert.ok(sweep(T0).activeProbe.failure, 'hit 1 is still a probe failure');
+    assert.ok(sweep(T0 + 1000).activeProbe.failure, 'hit 2 too');
+    const s3 = sweep(T0 + 2000);
+    assert.strictEqual(s3.activeProbe.failure, null, 'suppressed from the 3rd hit');
+    assert.ok(ru.isSuppressed(home, 'proj-key', 'list', T0 + 2000));
+    assert.strictEqual(state.probes, 3);
 
     sweep(T0 + 60_000);
-    assert.strictEqual(probes, 1, 'no re-probe while suppressed');
+    assert.strictEqual(state.probes, 3, 'no re-probe while suppressed');
+    sweep(T0 + ru.RECHECK_MS + 5000);
+    assert.strictEqual(state.probes, 4, 'one recheck once due');
 
-    sweep(T0 + ru.RECHECK_MS + 1000);
-    assert.strictEqual(probes, 2, 'one recheck once due');
-
-    // a different failure is still surfaced (after the recheck window)
     probeResult = { ok: false, reason: 'hivecontrol-unavailable', error: 'hivecontrol workspace list all exited 2: kaboom', status: 2 };
-    ru.clear(home, 'proj-key', 'list');
-    const s4 = sweep(T0 + 3 * ru.RECHECK_MS);
-    assert.ok(s4.activeProbe.failure && /kaboom/.test(s4.activeProbe.failure.error));
+    const s5 = sweep(T0 + 3 * ru.RECHECK_MS);
+    assert.ok(s5.activeProbe.failure && /kaboom/.test(s5.activeProbe.failure.error));
+    assert.deepStrictEqual(ru.read(home), {}, 'a different error clears the streak');
+  } finally { rm(home); }
+});
+
+test('(a) supervisor probe with a LIVE row in the repo: never suppressed, failure reported every sweep, no marker', () => {
+  const home = tmpHome();
+  try {
+    const { state, sweep } = supHarness(home, () => ({ ok: false, reason: 'hivecontrol-unavailable', error: NF_LIST, status: 1 }));
+    const T0 = 1_800_000_000_000;
+    for (let i = 0; i < 5; i++) assert.ok(sweep(T0 + i * 1000).activeProbe.failure, 'sweep ' + (i + 1));
+    assert.strictEqual(state.probes, 5);
+    assert.deepStrictEqual(ru.read(home), {});
   } finally { rm(home); }
 });
 

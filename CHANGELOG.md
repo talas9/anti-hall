@@ -24,6 +24,7 @@ the update.
 - **agent-scan:** a teammate report is recognised only as the harness-injected record. Typed or pasted text, a peer's cross-session message, a tool result, an assistant message, a report for a teammate this session never spawned, prose before the block, and an inner timestamp in the future of the record's own all no longer count, so a forged report cannot hide a running teammate. A teammate spawned outside the scanned window is "unknown", never "finished". A teammate named like a background agent id no longer replaces that agent's row or clears its terminal state.
 - **silent-agent-nudge:** a teammate whose only running evidence is an unanswered message never causes a Stop block, at any `guards.silentAgentNudgeMin`.
 - **Codex:** documented that `stale-agent-stop-note` is Claude-only (no agent-stop tool matcher is documented for Codex).
+- A "Repository not found" error from hivecontrol no longer silences a live workspace's mail for hours: live rows are always pulled and keep reporting the failure; archived, held or ignored rows (and a repo with no live row) are suppressed only after 3 identical sweeps in a row, and the match is limited to hivecontrol's own error line.
 
 ### Changed
 

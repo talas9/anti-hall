@@ -295,6 +295,12 @@ function cmdReconcile(flags, ctx) {
   // While the row's marker is live its native pull is not spawned.
   const sweepNow = Number.isFinite(ctx.now) ? ctx.now : Date.now();
   const repoUnknownScope = (d) => 'pull:' + d.id;
+  // Suppression applies only to archived/held/ignored rows (a LIVE child is
+  // always pulled and keeps reporting the failure) and only after the marker
+  // has seen N consecutive identical hits (see devswarm-repo-unknown.js).
+  const terminalRow = (d) => repoUnknown.rowTerminal(d, { home, env: ctx.env, now: ctx.now });
+  const repoUnknownSuppressed = (d) =>
+    repoUnknown.isSuppressed(home, repoKey, repoUnknownScope(d), sweepNow) && terminalRow(d);
   let repoUnknownSkipped = 0;
   const pushRepoUnknownSkip = (d) => {
     repoUnknownSkipped++;
@@ -380,7 +386,7 @@ function cmdReconcile(flags, ctx) {
       // ANTIHALL_REPOKEY_GIT_TIMEOUT_MS-bounded primitive gitCommonDir already
       // uses) rather than a second implementation.
       //
-      if (repoUnknown.isSuppressed(home, repoKey, repoUnknownScope(d), sweepNow)) { pushRepoUnknownSkip(d); continue; }
+      if (repoUnknownSuppressed(d)) { pushRepoUnknownSkip(d); continue; }
       // BUDGET-BEFORE-PROBE (D11-C2, root cause for reconcile escaping its own
       // budget): this probe is a real child-process spawn bounded only by
       // ANTIHALL_REPOKEY_GIT_TIMEOUT_MS (up to ~10s per broken worktree), NOT
@@ -421,7 +427,7 @@ function cmdReconcile(flags, ctx) {
       }
       if (gitRoot !== d.worktreePath) spawnTarget = Object.assign({}, d, { worktreePath: gitRoot });
     }
-    if (!usingDefaultSpawn && repoUnknown.isSuppressed(home, repoKey, repoUnknownScope(d), sweepNow)) { pushRepoUnknownSkip(d); continue; }
+    if (!usingDefaultSpawn && repoUnknownSuppressed(d)) { pushRepoUnknownSkip(d); continue; }
     // Budget check: only once we're about to actually spawn a child. A budget
     // of 0 means unlimited (never defers).
     if (budgetMs > 0 && (clockNow() - startedAt) >= budgetMs) {
@@ -449,16 +455,19 @@ function cmdReconcile(flags, ctx) {
     }
     const nativeTimeout = isNativeTimeoutRun(r, parsed);
     if (parsed && parsed.ok) repoUnknown.clear(home, repoKey, repoUnknownScope(d));
-    if (!(parsed && parsed.ok) && repoUnknown.isRepoUnknownText(parsed && parsed.error, parsed && parsed.reason, r && r.stderr)) {
+    else if (!repoUnknown.isRepoUnknownText(parsed && parsed.error, parsed && parsed.reason, r && r.stderr)) {
+      repoUnknown.clear(home, repoKey, repoUnknownScope(d)); // a different error resets the streak
+    } else if (terminalRow(d)) {
       const rec = repoUnknown.record(home, repoKey, repoUnknownScope(d), (parsed && (parsed.error || parsed.reason)) || (r && r.stderr), sweepNow);
-      if (rec.first) {
+      if (rec.engaged) {
         alog.logEvent('devswarm-reconcile', 'repo-unknown', 'info',
-          'hivecontrol does not know this worktree\'s repository (terminal for the row) — recorded once, its native pull suppressed until a periodic recheck',
+          'hivecontrol does not know this archived/held row\'s repository (' + repoUnknown.SUPPRESS_AFTER + ' sweeps in a row) — its native pull is suppressed until a periodic recheck',
           { repoKey, id: d.id, worktreePath: d.worktreePath });
       }
-      pushRepoUnknownSkip(d);
-      continue;
+      if (rec.suppressed) { pushRepoUnknownSkip(d); continue; }
     }
+    // else: a LIVE row — never suppressed, no marker; falls through as a normal
+    // failure (ok:false) and is retried next sweep.
     results.push({
       id: d.id,
       worktreePath: d.worktreePath,
