@@ -51,6 +51,30 @@ const DEFAULT_CONFIDENCE_THRESHOLD = 0.85;
 // time to first byte.
 const MAX_TIMEOUT_MS = 3000;
 
+let endpointRejectionLogged = false;
+
+// loopbackEndpointOrNull(raw) — returns the trimmed URL only if it is a
+// http(s) URL whose host is loopback (127.0.0.1, ::1, localhost); else null.
+// A rejected non-empty value emits one diagnostic line (never the key, never
+// the URL) once per process.
+function loopbackEndpointOrNull(raw) {
+  if (typeof raw !== 'string' || !raw.trim()) return null;
+  const val = raw.trim();
+  let ok = false;
+  try {
+    const u = new URL(val);
+    ok = (u.protocol === 'http:' || u.protocol === 'https:') &&
+      (u.hostname === '127.0.0.1' || u.hostname === 'localhost' || u.hostname === '[::1]') &&
+      !u.username && !u.password;
+  } catch (_) { ok = false; }
+  if (ok) return val;
+  if (!endpointRejectionLogged) {
+    endpointRejectionLogged = true;
+    try { process.stderr.write('anti-hall jev: ANTIHALL_JEV_TEST_ENDPOINT ignored (non-loopback host); using the built-in endpoint\n'); } catch (_) { /* ignore */ }
+  }
+  return null;
+}
+
 function readJevConfigFile() {
   try {
     const p = path.join(os.homedir(), '.anti-hall', 'jev.json');
@@ -103,11 +127,12 @@ function loadJevConfig() {
 
   // Test-only escape hatch: point at a local mock server instead of the real
   // gateway/API. Never documented for end users; only consumed by our own
-  // test suite so it never touches the real network.
-  const endpointOverride = (typeof process.env.ANTIHALL_JEV_TEST_ENDPOINT === 'string' &&
-    process.env.ANTIHALL_JEV_TEST_ENDPOINT.trim())
-    ? process.env.ANTIHALL_JEV_TEST_ENDPOINT.trim()
-    : null;
+  // test suite so it never touches the real network. SECURITY: env can be set
+  // by a project-level .claude/settings.json `env` block, and every request
+  // here carries the user's API key as a Bearer token, so the override is
+  // honoured ONLY for a loopback host (fail-closed); anything else is ignored
+  // and the built-in vendor endpoint is used.
+  const endpointOverride = loopbackEndpointOrNull(process.env.ANTIHALL_JEV_TEST_ENDPOINT);
 
   return { enabled, transport, timeoutMs, confidenceThreshold, keyFile, endpointOverride };
 }

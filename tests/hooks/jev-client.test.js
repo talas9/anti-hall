@@ -689,3 +689,59 @@ test('jevDecide: the API key never appears in a returned reason string, on any f
     h.cleanup();
   }
 });
+
+// ---------------------------------------------------------------------------
+// SECURITY: ANTIHALL_JEV_TEST_ENDPOINT is settable from a project-level
+// .claude/settings.json env block, so it must never redirect the API key to a
+// non-loopback host (fail-closed).
+// ---------------------------------------------------------------------------
+test('endpoint override: non-loopback env override is ignored; built-in endpoint used, key never sent there', async () => {
+  const h = makeHome();
+  const realFetch = global.fetch;
+  const calls = [];
+  const SECRET = 'jev-secret-should-never-leave';
+  global.fetch = async (url, opts) => { calls.push({ url: String(url), auth: opts && opts.headers && opts.headers.Authorization }); throw new Error('no network in test'); };
+  try {
+    for (const bad of ['https://attacker.example/x', 'http://127.0.0.1.attacker.example/x', 'http://localhost@attacker.example/x', 'http://169.254.169.254/x', 'not a url']) {
+      calls.length = 0;
+      await withEnv({ HOME: h.home, ANTIHALL_JEV: '1', AI_GATEWAY_API_KEY: SECRET, ANTIHALL_JEV_TEST_ENDPOINT: bad }, async () => {
+        const lib = freshLib();
+        assert.strictEqual(lib.loadJevConfig().endpointOverride, null, bad);
+        await lib.jevDecide({ question: { type: 'noul', instructions: 'x', criteria: [] }, state: 's' });
+        await lib.getCreditBalance();
+      });
+      assert.ok(calls.length >= 2, 'client still dials');
+      for (const c of calls) {
+        assert.ok(/^https:\/\/ai-gateway\.vercel\.sh\//.test(c.url), 'vendor endpoint only, got ' + c.url + ' for ' + bad);
+      }
+    }
+  } finally {
+    global.fetch = realFetch;
+    h.cleanup();
+  }
+});
+
+test('endpoint override: loopback hosts honoured; default endpoint unchanged when unset', async () => {
+  const h = makeHome();
+  try {
+    for (const ok of ['http://127.0.0.1:1234/mock', 'http://localhost:1234/mock', 'http://[::1]:1234/mock']) {
+      await withEnv({ HOME: h.home, ANTIHALL_JEV: '1', AI_GATEWAY_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: ok }, async () => {
+        assert.strictEqual(freshLib().loadJevConfig().endpointOverride, ok);
+      });
+    }
+    await withEnv({ HOME: h.home, ANTIHALL_JEV: '1', AI_GATEWAY_API_KEY: 'k' }, async () => {
+      assert.strictEqual(freshLib().loadJevConfig().endpointOverride, null);
+    });
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('endpoint override: ANTIHALL_JEV=1 from env enables the feature but credentials only go to vendor hosts (anthropic senders have no override)', () => {
+  const root = path.join(__dirname, '..', '..', 'plugins', 'anti-hall', 'hooks');
+  for (const f of ['speculation-judge.js', 'lib/jev-triage-worker.js']) {
+    const src = fs.readFileSync(path.join(root, f), 'utf8');
+    assert.ok(/hostname: 'api\.anthropic\.com'/.test(src), f + ' pins the vendor host');
+    assert.ok(!/process\.env\.[A-Z_]*(ENDPOINT|BASE_URL|HOST)/.test(src), f + ' has no env host override');
+  }
+});
