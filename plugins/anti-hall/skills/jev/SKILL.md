@@ -517,5 +517,5 @@ with hook/event/API details.
   print a one-line "no Jev key visible to this process" reason; enabling `jev.allowLegacyKeyRead`
   (home settings only, `--confirmed`; env cannot set it) with a key file makes the key available to them.
 - Preferred: the user stores the key via `/plugin config` (anti-hall -> `jev_api_key`). The key file
-  (`~/.config/vercel/ai-gateway-key` or `~/.config/typesafe/key` by default) is read only when
+  that the jev-setup script's set-key command writes is read only when
   `jev.allowLegacyKeyRead` is on; never store the key anywhere else.

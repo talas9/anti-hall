@@ -266,5 +266,4 @@ itself.
 ## Never
 
 Never print/log/commit the key. Never guess the provider. Never store the key
-anywhere but the resolved key file (Codex has no plugin options: enable `jev.allowLegacyKeyRead` in `~/.anti-hall/settings.json`, with `settings.js set … --confirmed`, for the key file to be read) (`~/.config/vercel/ai-gateway-key` or
-`~/.config/typesafe/key` by default).
+anywhere but the resolved key file (Codex has no plugin options: enable `jev.allowLegacyKeyRead` in `~/.anti-hall/settings.json`, with `settings.js set … --confirmed`, for the key file to be read) (the file the jev-setup script's set-key command writes).
