@@ -6,6 +6,21 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.120.15 (2026-10-02)
+
+### Fixed
+
+- **DevSwarm roster and plan display.** Shows "N/total done", plus "k doing" or "doing #i", instead of a last-touched step index that jumped backwards for plans worked in parallel. A re-opened or replaced plan shows the true count with "(plan changed)". Out-of-order completion no longer reads as all-done, which had silenced the stall, idle and burn signals.
+- **`archive`.** Completes the app-side archive for workspaces whose builder is closed but still listed. The branch-name fallback runs only when exactly one non-archived builder has that branch, and it is the one being archived. An empty target is never sent. Other builders on the same branch or worktree are snapshotted before and after, and any side effect is reported. `doctor --repair` matches by exact id only.
+
+### Added
+
+- **Jev recommendation.** A one-time recommendation notice when Jev is off (first session, then at most every 30 days; setting `jev.recommendNotice`), a doctor section, and a README "Enable Jev" block. The wording states only what is measured.
+
+### Security
+
+- **git-guard.** No verdict changes. 181 heredoc-scanning bypass forms are pinned as must-stay-blocked. The substitution block message now explains that heredoc bodies are scanned as shell, and suggests the Write tool. The GUIDE documents the limitation.
+
 ## 0.120.14 (2026-10-02)
 
 ### Changed
