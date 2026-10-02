@@ -185,6 +185,38 @@ test('(b) descriptor ALREADY archived, app live: `archive <branch>` archives the
   } finally { rm(t.W); rm(t.home); }
 });
 
+test('CLOSED builder (isActive=0, isHidden=0) + descriptor already archived: `archive <branch>` archives the app side, verified (no stale row left)', () => {
+  const t = setup('closedapponly', { effectDb: true });
+  try {
+    const { DatabaseSync } = require('node:sqlite');
+    const db = new DatabaseSync(t.dbPath); db.prepare('UPDATE builders SET isActive = 0, isHidden = 0 WHERE id = ?').run(ID_A); db.close();
+    assert.strictEqual(cli.cmdArchive(ID_A, t.ctx, { appArchive: false }).ok, true);
+    const r = cli.run(['archive', BRANCH], t.ctx);
+    assert.strictEqual(r.result.appOnly, true, JSON.stringify(r.result));
+    assert.strictEqual(r.result.appArchive.verified, true, JSON.stringify(r.result));
+    assert.deepStrictEqual(archiveCalls(t.fake).map((c) => c.argv[2]), [ID_A]);
+    assert.deepStrictEqual(dbRow(t.dbPath, ID_A), { isActive: 0, isHidden: 1 });
+  } finally { rm(t.W); rm(t.home); }
+});
+
+test('CLOSED builders: an AMBIGUOUS prefix matching two closed workspaces archives nothing', () => {
+  const t = setup('closedambig', { effectDb: true });
+  try {
+    const ID_B = ID_A.slice(0, 8) + '-2222-4000-8000-abcdef999999';
+    seedOne(t.home, t.W, ID_B);
+    const { DatabaseSync } = require('node:sqlite');
+    const db = new DatabaseSync(t.dbPath);
+    db.prepare('UPDATE builders SET isActive = 0 WHERE id = ?').run(ID_A);
+    db.prepare("INSERT INTO builders (id, isActive, isHidden, builderType, worktreePath, label, branchName, repositoryId) VALUES (?, 0, 0, 'standard', ?, 'b', 'qa/other', 'repo-1')").run(ID_B, t.top);
+    db.close();
+    cli.cmdArchive(ID_A, t.ctx, { appArchive: false }); cli.cmdArchive(ID_B, t.ctx, { appArchive: false });
+    const r = cli.run(['archive', ID_A.slice(0, 8)], t.ctx);
+    assert.strictEqual(r.result.ok, false, JSON.stringify(r.result));
+    assert.match(r.result.error, /ambiguous/);
+    assert.strictEqual(archiveCalls(t.fake).length, 0);
+  } finally { rm(t.W); rm(t.home); }
+});
+
 test('(b) the mesh id (primary-<hash>) and an id prefix resolve the same app-only archive; an unknown name archives nothing', () => {
   const t = setup('apponly2', { effectDb: true });
   try {

@@ -13665,7 +13665,7 @@ const APP_ARCHIVE_TIMEOUT_MS = 60000;
 // TARGET GATE (appBuilderGate, runs BEFORE the capability probe so a refused
 // target never spawns anything): hivecontrol is only ever called when the app
 // DB (read-only, fresh read) holds a builder with this EXACT full id that is
-// open (isActive) and whose builderType is known and not 'primary'. Unknown
+// not already archived (open OR closed) and whose builderType is known and not 'primary'. Unknown
 // builderType, an unreadable app DB, a truncated id, a `primary-<hash>` label
 // id, or any id the app DB does not hold verbatim -> not attempted. DevSwarm
 // 2.5.3's archive/delete verbs default to the CURRENT workspace when no id is
@@ -13683,7 +13683,10 @@ function appBuilderGate(id, ctx) {
   const bt = String(b.builderType || '').trim().toLowerCase();
   if (!bt) return { ok: false, reason: 'app builderType unknown' };
   if (bt === 'primary') return { ok: false, reason: 'primary builder' };
-  if (!b.active || b.archived) return { ok: false, reason: 'app builder is not open' };
+  // Only an ALREADY-archived builder (isActive=0 AND isHidden=1) is skipped. A CLOSED builder
+  // (isActive=0, not hidden — closing is NOT archiving, app-db.js) is still listed in the app, so
+  // it is archived like an open one: same exact-id + non-primary identity gate above.
+  if (b.archived === true) return { ok: false, reason: 'app builder is already archived' };
   return { ok: true, branch: b.branchName || null };
 }
 
@@ -13763,8 +13766,8 @@ function attemptAppArchive(id, desc, ctx) {
 
 // localArchivedAppLive(home, ctx) -> { appDb, rows:[{ id, appId, branch, label, worktreePath, repoKey, cmd }] }.
 // READ-ONLY. A workspace anti-hall's OWN `archive` verb tombstoned (archived/<id>.json
-// with no app-sourced archivedBy) whose DevSwarm app builder is STILL open
-// (isActive=1, not hidden, non-primary): the app side was never archived. App-sourced
+// with no app-sourced archivedBy) whose DevSwarm app builder is NOT archived in the app
+// (open isActive=1, or merely closed isActive=0/isHidden=0; non-primary): the app side was never archived. App-sourced
 // markers are excluded (retireStaleArchivedMarkers owns them: the app is right there).
 // A twin guard skips any row whose id or worktree has a live ACTIVE descriptor.
 // ctx.repoKey scopes to one project (owner key of the archived descriptor).
@@ -13791,7 +13794,7 @@ function localArchivedAppLive(home, ctx) {
     if (wt && activeWts.has(wt)) continue;
     if (c.repoKey && descriptorPhysicalOwnerKey(d) !== c.repoKey) continue;
     const w = appDb.workspaceFor(snap, { id, worktreePath: d.worktreePath || null });
-    if (!w || !w.active || w.archived || String(w.builderType || '').toLowerCase() === 'primary' || !w.builderType || seen.has(w.id)) continue;
+    if (!w || w.archived === true || String(w.builderType || '').toLowerCase() === 'primary' || !w.builderType || seen.has(w.id)) continue;
     seen.add(w.id);
     out.rows.push({
       id, appId: w.id, branch: w.branchName || d.branch || null, label: w.label || null,

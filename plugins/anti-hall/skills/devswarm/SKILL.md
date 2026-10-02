@@ -240,7 +240,7 @@ handoff:
   it (DevSwarm >= 2.5.3) also archives the workspace in the DevSwarm app itself via
   `hivecontrol workspace archive <id>` (explicit id always, retried once on a known-flaky
   transient error) — dormant/failed falls back to an accurate manual "run `hivecontrol
-  workspace archive <id>`" step instead.
+  workspace archive <id>`" step instead. A CLOSED app builder (isActive=0, not hidden — closing is not archiving) is archived in the app too, under the same exact-full-id, non-primary identity gate and DB verification; only an already-archived builder is skipped (`app builder is already archived`). Failure keeps the manual command.
 
 **(v0.93.0) App-side archive vs. informational-vs-blocking.** hivecontrol's `workspace list all`
 carries no archive field, so the supervisor sweep now detects an app-archive-in-the-DevSwarm-app

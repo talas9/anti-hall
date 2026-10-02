@@ -294,12 +294,12 @@ test('TARGET GATE: a PRIMARY builder (builderType primary) -> hivecontrol never 
   assert.deepStrictEqual(r.calls, []);
 });
 
-test('TARGET GATE: unknown builderType, a closed builder, a primary-<hash> label id, or no app DB -> hivecontrol never spawned', () => {
+test('TARGET GATE: unknown builderType, an already-archived builder, a primary-<hash> label id, or no app DB -> hivecontrol never spawned', () => {
   const unknown = gateCase('unk', { descId: ID_A, rows: [{ id: ID_A, builderType: null }] });
   assert.match(unknown.result.appArchive.reason, /builderType unknown/);
   assert.deepStrictEqual(unknown.calls, []);
   const closed = gateCase('closed', { descId: ID_A, rows: [{ id: ID_A, builderType: 'standard', isActive: 0, isHidden: 1 }] });
-  assert.match(closed.result.appArchive.reason, /not open/);
+  assert.match(closed.result.appArchive.reason, /already archived/);
   assert.deepStrictEqual(closed.calls, []);
   const label = gateCase('label', { descId: 'primary-0123456789ab', rows: [{ id: 'primary-0123456789ab', builderType: 'standard' }] });
   assert.match(label.result.appArchive.reason, /primary-<hash>/);
@@ -307,6 +307,48 @@ test('TARGET GATE: unknown builderType, a closed builder, a primary-<hash> label
   const noDb = gateCase('nodb', { descId: ID_A, rows: null });
   assert.match(noDb.result.appArchive.reason, /app DB unreadable/);
   assert.deepStrictEqual(noDb.calls, []);
+});
+
+test('CLOSED BUILDER (isActive=0, isHidden=0): app archive IS attempted, EXPLICIT full id, verified against the app DB', () => {
+  const home = tmpHome();
+  const W = makeGitRepo('closedok');
+  try {
+    seedOne(home, W, ID_A);
+    const dbPath = writeAppDb(home, [{ id: ID_A, builderType: 'standard', isActive: 0, isHidden: 0 }]);
+    const fake = fakeHivecontrol(path.join(home, 'bin'), { version: '2.5.3', workspaceHelp: HELP_253, verbHelp: { archive: ARCHIVE_253 }, effectDb: dbPath });
+    capsLib.resetCache();
+    const ctx = { home, cwd: W, env: { HOME: home, PATH: fake.dir, ANTIHALL_DEVSWARM_APP_DB: dbPath }, backend: BACKEND };
+    const r = cli.run(['archive', ID_A], ctx);
+    assert.strictEqual(r.result.ok, true, JSON.stringify(r.result));
+    assert.strictEqual(r.result.appArchive.attempted, true, JSON.stringify(r.result));
+    assert.strictEqual(r.result.appArchive.ok, true, JSON.stringify(r.result));
+    assert.strictEqual(r.result.appArchive.verified, true, JSON.stringify(r.result));
+    assert.deepStrictEqual(mutateCalls(fake).map((c) => c.argv), [['workspace', 'archive', ID_A]]);
+  } finally { rm(W); rm(home); }
+});
+
+test('CLOSED BUILDER: hivecontrol fails -> manualStep + manualCommand are preserved (not attempted-silently)', () => {
+  const home = tmpHome();
+  const W = makeGitRepo('closedfail');
+  try {
+    seedOne(home, W, ID_A);
+    const dbPath = writeAppDb(home, [{ id: ID_A, builderType: 'standard', isActive: 0, isHidden: 0 }]);
+    const fake = fakeHivecontrol(path.join(home, 'bin'), { version: '2.5.3', workspaceHelp: HELP_253, verbHelp: { archive: ARCHIVE_253 }, mutateExit: 1 });
+    capsLib.resetCache();
+    const ctx = { home, cwd: W, env: { HOME: home, PATH: fake.dir, ANTIHALL_DEVSWARM_APP_DB: dbPath }, backend: BACKEND };
+    const r = cli.run(['archive', ID_A], ctx);
+    assert.strictEqual(r.result.appArchive.attempted, true, JSON.stringify(r.result));
+    assert.strictEqual(r.result.appArchive.ok, false, JSON.stringify(r.result));
+    assert.match(r.result.appArchive.manualCommand, /^hivecontrol workspace archive /);
+    assert.match(r.result.manualStep, /hivecontrol workspace archive/);
+  } finally { rm(W); rm(home); }
+});
+
+test('CLOSED BUILDER: a truncated id (no exact app match) is still never attempted', () => {
+  const r = gateCase('closedtrunc', { descId: 'b3f1c2d4', rows: [{ id: ID_A, builderType: 'standard', isActive: 0, isHidden: 0 }] });
+  assert.strictEqual(r.result.appArchive.attempted, false, JSON.stringify(r.result));
+  assert.match(r.result.appArchive.reason, /no app builder with this exact id/);
+  assert.deepStrictEqual(r.calls, []);
 });
 
 test('TARGET GATE: a HOOK caller (appArchive:false) never spawns hivecontrol, even for a confirmed standard builder', () => {
