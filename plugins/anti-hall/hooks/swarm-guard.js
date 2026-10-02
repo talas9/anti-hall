@@ -192,9 +192,10 @@ function main() {
   // Never required for the block/allow logic itself — a parse failure simply
   // leaves toolLabel as 'unknown'.
   let toolLabel = 'unknown';
+  let payload = null;
   try {
     const raw = fs.readFileSync(0, 'utf8');
-    try { toolLabel = describeSpawn(JSON.parse(raw)); } catch (_) {}
+    try { payload = JSON.parse(raw); toolLabel = describeSpawn(payload); } catch (_) {}
   } catch (_) {}
 
   // Escape hatch: honor an explicit, user-consented skip (~/.anti-hall/skip.json).
@@ -279,6 +280,15 @@ function main() {
     process.stdout.write(JSON.stringify({ decision: 'block', reason: blockReason }) + '\n');
     process.exit(2);
   }
+
+  // Allowed spawn: advisory (never blocks) when it shares a working tree with
+  // another running write-capable agent (guards.sharedTreeAgentNote).
+  try {
+    const note = require('./lib/shared-tree-note.js').sharedTreeNote(payload);
+    if (note) {
+      fs.writeSync(1, JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: note } }) + '\n');
+    }
+  } catch (_) { /* fail-open */ }
 
   process.exit(0);
 }

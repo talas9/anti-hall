@@ -8,6 +8,10 @@ the update.
 
 ## Unreleased
 
+### Added
+
+- **Shared-tree agent note:** the new setting `guards.sharedTreeAgentNote` (default on; env `ANTIHALL_SHARED_TREE_AGENT_NOTE`; settings file and env only) makes `swarm-guard` add one advisory sentence when a write-capable subagent is spawned without `isolation: "worktree"` while another write-capable agent is still running in the same working tree (two such agents can commit each other's uncommitted changes). Read-only agent types, isolated spawns and unknown agent state stay silent. Never blocks.
+
 ### Changed
 
 - **command-guard "allow plain push" accepts `-u` / `--set-upstream`.** A session pushing its own branch with `git push -u origin <branch> [2>&1 | tail -N]` was blocked only because of the upstream flag. The flag is the single allowed flag slot (never combined with `-q` or any other flag) and requires an explicit remote AND ref; remote/ref vetting, the output-sink rules and the chain allow-list are unchanged (`rev-parse`/`ls-remote`/`node`/`echo` after a push stay blocked). `git-guard.js` is untouched.

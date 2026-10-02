@@ -483,6 +483,8 @@ function scanTranscript(transcriptPath, preLines, opts) {
     if (rec.toolUseId && descByToolUseId.has(rec.toolUseId)) {
       rec.description = descByToolUseId.get(rec.toolUseId);
     }
+    const spawn = rec.toolUseId ? toolUses.get(rec.toolUseId) : null;
+    if (spawn && spawn.input && typeof spawn.input === 'object') rec.spawnInput = spawn.input;
   }
 
   // Background-agent ids known from the walk (launch, adoption, notification).
@@ -625,6 +627,7 @@ function runningAgents(transcriptPath, preLines, opts) {
   for (const [id, rec] of scan.launched) {
     if (scan.terminal.has(id)) continue;
     const row = { id, description: rec.description || '', launchedAtMs: rec.launchedAtMs };
+    if (rec.spawnInput) row.spawnInput = rec.spawnInput; // the Agent/Task input that launched it (absent when its spawn is outside the window)
     if (rec.pendingMessage) row.pendingMessage = true; // teammate sent a message it has not yet reported on
     out.push(row);
   }

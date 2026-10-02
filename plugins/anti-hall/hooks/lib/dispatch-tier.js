@@ -111,8 +111,14 @@ function noWorkspaceRepo(cwd, home) {
     }
   } catch (_) { /* fall through to detection */ }
   if (settingsGet('dispatchTierDetectNoWorkspaces', true, home) === false) return false;
+  return repoDocsMatch(dir0, home, NO_WS_RE);
+}
+
+// repoDocsMatch(dir0, home, re) -> true when a CLAUDE.md / AGENTS.md between dir0 and
+// the repo root matches `re` (the shared walk behind noWorkspaceRepo).
+function repoDocsMatch(dir0, home, re) {
   // Walk up (bounded) to the repo root, reading CLAUDE.md / AGENTS.md at each
-  // level for the doctrine exception. The repo root is the OUTERMOST
+  // level for a rule matching `re`. The repo root is the OUTERMOST
   // superproject (companion/lib/identity.js#resolveContext's worktreeRoot),
   // not just the nearest `.git` entry — deadly-loop round-1 finding (4): a
   // hand-rolled `fs.existsSync(path.join(dir, '.git'))` walk stopped at a
@@ -127,7 +133,7 @@ function noWorkspaceRepo(cwd, home) {
     for (const f of ['CLAUDE.md', 'AGENTS.md']) {
       try {
         const txt = fs.readFileSync(path.join(dir, f), 'utf8');
-        if (NO_WS_RE.test(txt)) return true;
+        if (re.test(txt)) return true;
       } catch (_) { /* absent */ }
     }
     if (root && dir === root) break;
@@ -365,5 +371,5 @@ function summary(home) {
 
 module.exports = {
   ID, QUESTION, TIERS, TEXT_CAP, taskText, mode, verdict, request, annotator,
-  noWorkspaceRepo, dispatchEvidence, trackOutcomes, summary, hashFor, statePath,
+  noWorkspaceRepo, repoDocsMatch, dispatchEvidence, trackOutcomes, summary, hashFor, statePath,
 };
