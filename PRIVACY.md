@@ -13,8 +13,8 @@ anti-hall has no telemetry, analytics or usage reporting. It makes one network r
 | Update check | On | `github.com/talas9/anti-hall` (via `git ls-remote --tags`) | A tag-list request; no project data. Re-checked at most every 2 hours | `/anti-hall:settings` `versionAlerts.antiHall`, or `ANTIHALL_VERSION_ALERT=off` |
 | Jev classifier | Off | `ai-gateway.vercel.sh` or `api.typesafe.ai`, per your setting | Text the feature judges, with your Jev key. May include your prompts, the assistant's last message (up to 8000 characters), test output, commit or PR text, subagent briefs, file paths and DevSwarm message text; most calls send at most 4000 characters. Not redacted, except DevSwarm supervision text | `jev.enabled` off, or `ANTIHALL_JEV=0` |
 | Jev credit balance | Off | `ai-gateway.vercel.sh` | Your key only, when you run the Jev status or report commands | Same |
-| Semantic judge | Off | `api.anthropic.com` | The assistant's last message (up to 8000 characters), with `ANTHROPIC_API_KEY` | Unset `ANTIHALL_SEMANTIC_JUDGE` |
-| Mesh message triage | Off (needs Jev on) | Jev, then `api.anthropic.com` if `ANTHROPIC_API_KEY` is set | DevSwarm workspace message text, up to 4000 characters | `jevIntegrations.triage` off |
+| Semantic judge | Off | `api.anthropic.com` | The assistant's last message (up to 8000 characters), with your Anthropic key | Unset `ANTIHALL_SEMANTIC_JUDGE` |
+| Mesh message triage | Off (needs Jev on) | Jev, then `api.anthropic.com` if an Anthropic key is available | DevSwarm workspace message text, up to 4000 characters | `jevIntegrations.triage` off |
 
 Other `git` requests happen only when you run them: `/anti-hall:update` pulls from the plugin's GitHub clone, and DevSwarm spawn fetches your own `origin` (setting `devswarm.spawnFromOrigin`).
 
@@ -29,7 +29,7 @@ The plugin does not run `gh` or `codex` itself; it only checks whether `codex` i
 
 ## Your keys
 
-The Jev key is read from an environment variable or key file and sent only to its vendor as a bearer token; `ANTHROPIC_API_KEY` goes only to `api.anthropic.com`. The client code does not log keys. What those vendors retain is set by their own policies.
+Keys come from the sensitive plugin options you set in `/plugin config` (`jev_api_key`, `anthropic_api_key`). The plugin reads a key from your machine's environment or key file only if you opt in through a home-settings-only key (`jev.allowLegacyKeyRead` for the Jev key; `guards.allowAnthropicEnvKey` for `ANTHROPIC_API_KEY`); with the opt-in off it only checks whether such a key exists, without reading its value. A Jev key file must be a regular file under `~/.config` or `~/.anti-hall`. Each key is sent only to its vendor as a bearer token: the Jev key to the Jev host, `ANTHROPIC_API_KEY` to `api.anthropic.com`. The Jev endpoint override used by tests is honoured only for a loopback host; any other value is ignored, so a project setting cannot redirect your key. The client code does not log keys. What those vendors retain is set by their own policies.
 
 ## Changes to this policy
 

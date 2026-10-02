@@ -64,7 +64,9 @@ No telemetry or analytics. Full detail: [PRIVACY.md](PRIVACY.md).
 | Update check | On | github.com/talas9/anti-hall (`git ls-remote --tags`) | A tag-list request, no project data. Off: `versionAlerts.antiHall` or `ANTIHALL_VERSION_ALERT=off` |
 | Jev classifier | Off | ai-gateway.vercel.sh or api.typesafe.ai | May include prompts, assistant text, test output, commit text, file paths (4000-8000 chars per call); not redacted. Off: `jev.enabled` or `ANTIHALL_JEV=0` |
 | Semantic judge | Off | api.anthropic.com | Last assistant message (up to 8000 chars). Enabled only by `ANTIHALL_SEMANTIC_JUDGE=1` |
-| Mesh message triage | Off (needs Jev) | Jev, then api.anthropic.com if `ANTHROPIC_API_KEY` is set | DevSwarm message text |
+| Mesh message triage | Off (needs Jev) | Jev, then api.anthropic.com if an Anthropic key is available | DevSwarm message text |
+
+API keys come from sensitive plugin options; reading a key from the environment or a key file is opt-in (`jev.allowLegacyKeyRead`, `guards.allowAnthropicEnvKey`), and the Jev endpoint override is loopback-only.
 
 Everything else (logs, handovers, defect reports) stays in `~/.anti-hall/` and `<repo>/.anti-hall/`. `gh`, `codex` and `hivecontrol` run under your own accounts; the plugin does not spawn `gh` or `codex`.
 
