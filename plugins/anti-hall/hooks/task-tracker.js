@@ -227,6 +227,10 @@ function freshnessNote(payload) {
     const lines = require('./lib/transcript-tail.js').readTail(tp);
     if (!lines) return '';
     const state = reconstructTasks({ data: lines.join('\n'), truncated: false });
+    // An open task whose TaskCreate lies before the 1.5MB window has no subject
+    // here; one bounded extra pass recovers it (no-op when none is missing).
+    // Mutates the shared task objects, so state.open sees the subject too.
+    require('./lib/task-subject-backfill.js').backfillSubjects(state.taskMap, tp, state);
     // dispatchTier outcome labels (actual dispatch vs recommendation, one-lane /
     // fan-out) — metrics only, fail-open.
     try {

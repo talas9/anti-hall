@@ -12,6 +12,8 @@ the update.
 
 - **The "DEVSWARM INGEST FAILING" banner no longer repeats on every prompt and no longer sends you to doctor for a timeout.** When the DevSwarm app's `hivecontrol workspace monitor` stopped answering, every prompt got the banner and told you to run `/anti-hall:doctor`, which deliberately does nothing for a timeout. The banner now shows once per fault episode (again after the monitor recovers and fails again). For a timeout it says the ingest daemon is healthy, the DevSwarm app is not answering, native-queue ingestion is paused, mesh messages are not affected, and doctor cannot repair it, so check or restart the DevSwarm app. The doctor advice stays only for a real config fault (binary not found or not executable). Both the Primary and child hooks use one shared helper in `companion/lib/ingest-health.js`; the Codex port shares that lib.
 
+- **task-guard / task-tracker: an open task is no longer named `"(subject unknown)"` just because its TaskCreate fell outside the 1.5 MB transcript tail window.** Task state is still read from the window; only when an open task has no subject does one extra bounded backward scan (64 MB / 150 ms caps, fail-open) recover it from the earlier "Task #N created successfully" result. The subject is applied only if it is the latest creation of that id and no list reset lies between it and the window, otherwise it stays `(subject unknown)`. The Codex port shares these hooks.
+
 ## 0.121.2 (2026-10-02)
 
 ### Changed

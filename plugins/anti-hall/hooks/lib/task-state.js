@@ -19,6 +19,9 @@ function reconstructTasks(tail) {
   const taskMap = new Map();
   const resultIds = new Map();
   let maxCreated = 0;
+  // For lib/task-subject-backfill.js: a reset inside the window, first create id.
+  let windowReset = false;
+  let firstCreated = Infinity;
   // toolCallInfo: tool_use_id -> { name, taskId }, built from the assistant
   // tool_use entries (which precede their tool_result in transcript order).
   // Mirror task-guard.js: text content alone never proves WHICH tool
@@ -50,9 +53,11 @@ function reconstructTasks(tail) {
             provisional.clear();
             resultIds.clear();
             maxCreated = 0;
+            windowReset = true;
           } else if ((callName === 'TaskGet' || callName === 'TaskUpdate') && DD.isTaskNotFoundText(txt)) {
             const badId = call && call.taskId != null ? String(call.taskId) : null;
             if (badId != null) {
+              windowReset = true;
               taskMap.delete(badId);
               for (const [tid, nid] of [...resultIds]) {
                 if (nid === badId) { resultIds.delete(tid); provisional.delete(tid); }
@@ -71,7 +76,9 @@ function reconstructTasks(tail) {
               taskMap.clear();
               for (const tid of [...provisional.keys()]) if (resultIds.has(tid)) provisional.delete(tid);
               resultIds.clear();
+              windowReset = true;
             }
+            if (firstCreated === Infinity) firstCreated = n;
             maxCreated = n;
             resultIds.set(it.tool_use_id, m[1]);
           }
@@ -91,6 +98,7 @@ function reconstructTasks(tail) {
       if (name === 'TodoWrite') {
         const todos = tu.input && tu.input.todos;
         if (Array.isArray(todos)) {
+          windowReset = true;
           taskMap.clear(); provisional.clear();
           for (const todo of todos) {
             const id = todo.id || todo.content || String(taskMap.size);
@@ -158,7 +166,7 @@ function reconstructTasks(tail) {
     const s = (task.status || '').toLowerCase();
     if (s === 'pending' || s === 'in_progress' || s === 'in-progress') open.push(task);
   }
-  return { open, taskMap };
+  return { open, taskMap, windowReset, firstCreated };
 }
 
 // Normalize an owner field to a trimmed string ('' = unowned). Mirror task-guard.

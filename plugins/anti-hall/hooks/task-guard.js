@@ -724,6 +724,10 @@ function parseTasksFromFile(filePath) {
   // result map: tool_use_id -> numeric string id ("1", "2", ...)
   const resultIdMap = new Map(); // tool_use_id -> "N"
   let maxCreatedId = 0; // highest "Task #N created" in the current list epoch
+  // For the subject backfill (lib/task-subject-backfill.js): did ANY reset
+  // happen inside the window, and which id was created first in it.
+  let windowReset = false;
+  let firstCreated = Infinity;
   // toolCallInfo: tool_use_id -> { name, taskId } for EVERY tool_use seen so
   // far (built from the assistant entries, which precede their tool_result
   // in transcript order) — lets the tool_result handling below tell a real
@@ -767,9 +771,11 @@ function parseTasksFromFile(filePath) {
             provisionalMap.clear();
             resultIdMap.clear();
             maxCreatedId = 0;
+            windowReset = true;
           } else if ((callName === 'TaskGet' || callName === 'TaskUpdate') && dd.isTaskNotFoundText(resultText)) {
             const badId = call && call.taskId != null ? String(call.taskId) : null;
             if (badId != null) {
+              windowReset = true;
               taskMap.delete(badId);
               for (const [tid, nid] of [...resultIdMap]) {
                 if (nid === badId) { resultIdMap.delete(tid); provisionalMap.delete(tid); }
@@ -791,7 +797,9 @@ function parseTasksFromFile(filePath) {
               taskMap.clear();
               for (const tid of [...provisionalMap.keys()]) if (resultIdMap.has(tid)) provisionalMap.delete(tid);
               resultIdMap.clear();
+              windowReset = true;
             }
+            if (firstCreated === Infinity) firstCreated = n;
             maxCreatedId = n;
             resultIdMap.set(item.tool_use_id, m[1]);
           }
@@ -821,6 +829,7 @@ function parseTasksFromFile(filePath) {
         const todos = tu.input && tu.input.todos;
         if (Array.isArray(todos)) {
           // TodoWrite replaces the entire list — clear both maps.
+          windowReset = true;
           taskMap.clear();
           provisionalMap.clear();
           for (const todo of todos) {
@@ -951,6 +960,13 @@ function parseTasksFromFile(filePath) {
       });
     }
     // If existing already has a richer status from TaskUpdate, leave it.
+  }
+
+  // An open task whose TaskCreate lies before the window has no subject here
+  // (content === id). Backfill it from one bounded extra pass (no-op, no I/O,
+  // when every open task already has a subject); fail-open to "(subject unknown)".
+  if (tail.truncated) {
+    require('./lib/task-subject-backfill.js').backfillSubjects(taskMap, filePath, { windowReset, firstCreated });
   }
 
   return taskMap;
