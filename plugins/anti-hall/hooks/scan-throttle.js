@@ -3,11 +3,13 @@
 // prefix for heavy repo-wide scan commands.
 //
 // WHAT IT DOES
-//   Rewrites a matched command to run background-throttled (macOS:
-//   `taskpolicy -c utility nice -n 19 <cmd>`; Linux: `nice -n 19 <cmd>`,
-//   optionally preceded by `ionice -c 3 ` when available) via
-//   `hookSpecificOutput.updatedInput`. ADDITIVE ONLY: the prefix never
-//   changes what the command does, only its OS scheduling priority.
+//   ADVISORY ONLY. When a command matches a user-configured heavy-scan
+//   pattern, emits `hookSpecificOutput.additionalContext` recommending the
+//   background-throttled form (macOS: `taskpolicy -c utility nice -n 19 <cmd>`;
+//   Linux: `nice -n 19 <cmd>`, optionally preceded by `ionice -c 3 ` when
+//   available). It NEVER rewrites tool input (no `updatedInput`) and never
+//   grants or denies permission (no `permissionDecision`): the model decides
+//   whether to re-run the command throttled.
 //
 // SCOPE (generic — NO built-in patterns; entirely user-configured)
 //   - This hook ships with zero built-in allowlist entries. It matches
@@ -21,17 +23,15 @@
 //   1. Platform probe: the throttle tool must actually exist on PATH (a pure
 //      Node PATH scan, no subprocess spawn), computed once per process
 //      (module-level cache). No known tool for the platform (or the probe
-//      finds nothing) -> do nothing, silently — no rewrite, no note.
+//      finds nothing) -> do nothing, silently — no note.
 //   2. Idempotent: if the command already starts (after trimming leading
 //      whitespace) with one of this hook's own exact generated prefixes, it
 //      is left unchanged — never double-prefixed.
-//   3. Position safety: the match must be in the command's FIRST simple
-//      command (segment 0 of the quote/heredoc-aware split below). A match
-//      anywhere else in a compound command (`cd x && reindex-repo --full`) is
-//      NOT rewritten — fail-open — and only a short advisory
-//      `additionalContext` note is emitted instead. This hook does not
-//      attempt to rewrite an arbitrary mid-command segment in place: if it
-//      cannot position the prefix with total confidence, it does not guess.
+//   3. Position safety: when the match is in the command's FIRST simple
+//      command (segment 0 of the quote/heredoc-aware split below) the advisory
+//      quotes the exact throttled form. A match anywhere else in a compound
+//      command (`cd x && reindex-repo --full`) gets a generic advisory
+//      instead: this hook does not guess where a prefix would go.
 //   4. Heredoc bodies and quoted strings are never scanned as commands (the
 //      segment splitter below skips heredoc bodies as opaque data and is
 //      quote-aware), so a scan-looking command that only appears as literal
@@ -39,42 +39,14 @@
 //   5. Kill switch: ANTI_HALL_SCAN_THROTTLE=0, or setting guards.scanThrottle=false,
 //      disables this hook entirely.
 //
-// COMPOSITION WITH OTHER PreToolUse:Bash HOOKS — what was actually verified,
-// and where. docs/KB-claude-code-hooks.md does NOT document how multiple
-// hooks for the same event+matcher compose (confirmed by re-reading it — no
-// such row exists there), so the following is sourced separately, directly
-// from the live docs, NOT from the KB:
-//   A WebFetch of https://code.claude.com/docs/en/hooks on 2026-09-05 (tool
-//   fetches the page, converts to markdown, and has a small model summarize
-//   it against a prompt — this is a SUMMARY of that page, not a byte-exact
-//   HTML quote independently re-verified by this author) returned, under an
-//   "Execution Model" heading: "All matching hooks run in parallel. If you
-//   define the same handler in more than one settings file, it runs once."
-//   The same fetch's summary additionally stated, in its own words rather
-//   than as a further page quote: "if any hook blocks with exit code 2, the
-//   tool call is prevented regardless of what other hooks return."
-//   How multiple `updatedInput` outputs from parallel hooks are MERGED is
-//   explicitly UNDOCUMENTED — the same fetch's response states: "The
-//   documentation does not specify how multiple `updatedInput` outputs are
-//   combined. This is a gap in the reference documentation provided."
-//   Practical consequence for THIS hook, stated as best-effort reasoning
-//   from the above (not as a separately-verified fact): this hook is
-//   registered in hooks.json AFTER git-guard/command-guard/merge-gate for
-//   human readability only (deny-guards read first in the
-//   file); JSON-array order is not known to control actual precedence. If a
-//   block from another Bash PreToolUse hook and this hook's rewrite fire on
-//   the same call, this hook's own summarized understanding of the block
-//   behavior above says the block should still take effect — but the
-//   updatedInput-merge gap means this is not fully verified end-to-end for
-//   a case where BOTH a block and an updatedInput are returned in the same
-//   parallel batch. Re-verify directly against the live docs (not this
-//   comment, not the KB) before relying on this for anything safety-critical.
+// COMPOSITION WITH OTHER PreToolUse:Bash HOOKS: because this hook emits only
+// `additionalContext` (never `updatedInput` or a permission decision), it
+// cannot conflict with, override or mask a block from git-guard/command-guard/
+// merge-gate, however parallel hook outputs are merged.
 //
 // Contract (Claude Code PreToolUse hook):
 //   stdin  : JSON { tool_name, tool_input: { command }, ... }
 //   stdout : JSON { hookSpecificOutput: { hookEventName: "PreToolUse",
-//              updatedInput: { command: "<rewritten>" } } }   (rewrite)
-//          | JSON { hookSpecificOutput: { hookEventName: "PreToolUse",
 //              additionalContext: "..." } }                    (advisory only)
 //          | nothing                                            (no match /
 //              unavailable / killed / already prefixed)
@@ -355,34 +327,28 @@ function main() {
   const positionSafe = matchIndex === 0 && !looksLikeUnsafeInsertionPoint(rest);
 
   if (!positionSafe) {
-    // A scan command exists, but this hook cannot position the prefix with
-    // total confidence (mid-compound match, or wrapped in a subshell/brace
-    // group) — fail-open: leave it unmodified and only surface a short
-    // advisory note.
+    // A scan command exists, but the prefix position is not unambiguous
+    // (mid-compound match, or wrapped in a subshell/brace group): generic note.
     emit({
       additionalContext:
-        'SCAN-THROTTLE: a repo-wide scan command was detected but this hook ' +
-        'could not confidently position a throttle prefix for it (not the ' +
-        'first simple command, or wrapped in a subshell/brace group), so it ' +
-        'was left unmodified (fail-open — this hook never guesses a rewrite ' +
-        'position). Consider running it background-throttled manually, e.g. ' +
+        'SCAN-THROTTLE: a repo-wide scan command was detected in a compound or ' +
+        'grouped command (not the first simple command). The command was NOT ' +
+        'modified. Consider running the scan background-throttled, e.g. ' +
         '`' + prefix.trim() + ' <that command>`.',
     });
     return;
   }
 
-  // Safe case: the match is the command's first simple command, and the
-  // insertion point (right after any leading assignments) is plain command
-  // text, not a shell boundary token. RE-ATTACH any leading `NAME=value`
-  // assignments BEFORE the prefix (not after it) — a leading assignment on a
-  // simple command applies to that command's whole exec chain, including a
-  // wrapper program inserted before the real one, so
-  // `SCANENV=1 reindex-repo --full` becomes
-  // `SCANENV=1 taskpolicy -c utility nice -n 19 reindex-repo --full`
-  // (valid), never `taskpolicy ... SCANENV=1 reindex-repo --full`
-  // (invalid — `nice` would try to exec the literal string `SCANENV=1`).
-  const rewritten = leadingText + prefix + rest;
-  emit({ updatedInput: { command: rewritten } });
+  // Safe case: first simple command. Quote the throttled form (leading
+  // `NAME=value` assignments stay BEFORE the prefix — `nice` would otherwise
+  // try to exec the literal `NAME=value`). Advisory only; input is untouched.
+  const throttled = leadingText + prefix + rest;
+  emit({
+    additionalContext:
+      'SCAN-THROTTLE: this is a heavy repo-wide scan. The command was NOT ' +
+      'modified. To keep the machine responsive, consider re-running it ' +
+      'background-throttled: `' + throttled + '`.',
+  });
 }
 
 try {

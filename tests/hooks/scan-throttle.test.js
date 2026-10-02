@@ -1,7 +1,8 @@
 'use strict';
-// scan-throttle (PreToolUse Bash) — additive background-throttle prefix for
-// heavy repo-wide scan commands, via `hookSpecificOutput.updatedInput`. Never
-// blocks; never changes what a command does, only its OS scheduling priority.
+// scan-throttle (PreToolUse Bash) — ADVISORY recommendation of the background-
+// throttled form for heavy repo-wide scan commands, via
+// `hookSpecificOutput.additionalContext`. Never blocks, never rewrites tool
+// input (no updatedInput), never emits a permissionDecision.
 //
 // This hook ships with ZERO built-in scan patterns (graphify support was
 // retired) — every match in this suite is driven by ANTI_HALL_THROTTLE_PATTERNS.
@@ -54,6 +55,17 @@ function expectedFullPrefix() {
   return null; // unsupported platform in this test's own model
 }
 
+// Assert the hook emitted advisory-only output that recommends `expected`
+// and did NOT rewrite the input or decide permission.
+function assertAdvisory(r, expected) {
+  assert.ok(r.json, 'expected advisory JSON');
+  const o = r.json.hookSpecificOutput;
+  assert.strictEqual(o.hookEventName, 'PreToolUse');
+  assert.strictEqual(o.updatedInput, undefined, 'must never rewrite tool input');
+  assert.strictEqual(o.permissionDecision, undefined, 'must never decide permission');
+  assert.ok(o.additionalContext.includes('`' + expected + '`'), o.additionalContext);
+}
+
 const ALL_TOOLS = ['taskpolicy', 'nice', 'ionice'];
 
 function runAvailable(command, extraEnv) {
@@ -99,16 +111,12 @@ test('scan-throttle: with NO ANTI_HALL_THROTTLE_PATTERNS configured, nothing is 
 // Core rewrite: a command matching ANTI_HALL_THROTTLE_PATTERNS at segment 0
 // -> prefixed, updatedInput set.
 // ---------------------------------------------------------------------------
-test('scan-throttle: rewrites a command matching ANTI_HALL_THROTTLE_PATTERNS with the platform throttle prefix', () => {
+test('scan-throttle: advises throttling a command matching ANTI_HALL_THROTTLE_PATTERNS with the platform throttle prefix', () => {
   const prefix = expectedFullPrefix();
   if (!prefix) return; // unsupported platform for this test model — skip
   const r = runWithPattern('reindex-repo --full');
   assert.strictEqual(r.status, 0);
-  assert.ok(r.json, 'expected JSON output for a rewrite');
-  assert.strictEqual(
-    r.json.hookSpecificOutput.updatedInput.command,
-    prefix + 'reindex-repo --full'
-  );
+  assertAdvisory(r, prefix + 'reindex-repo --full');
   assert.strictEqual(r.json.hookSpecificOutput.hookEventName, 'PreToolUse');
 });
 
@@ -151,7 +159,7 @@ test('scan-throttle: MUTATION-CHECK idempotency is anchored, not a substring mat
   const command = 'reindex-repo --full # note: nice -n 19 is what this becomes';
   const r = runWithPattern(command);
   assert.ok(r.json, 'a command that only CONTAINS prefix-like text later must still be rewritten');
-  assert.strictEqual(r.json.hookSpecificOutput.updatedInput.command, prefix + command);
+  assertAdvisory(r, prefix + command);
 });
 
 // ---------------------------------------------------------------------------
@@ -276,10 +284,7 @@ test('scan-throttle: P1 — leading NAME=value assignment is re-attached BEFORE 
   if (!prefix) return;
   const r = runAvailable('SCANENV=1 reindex-repo --full', { ANTI_HALL_THROTTLE_PATTERNS: PREFIXED_PATTERN });
   assert.ok(r.json);
-  assert.strictEqual(
-    r.json.hookSpecificOutput.updatedInput.command,
-    'SCANENV=1 ' + prefix + 'reindex-repo --full'
-  );
+  assertAdvisory(r, 'SCANENV=1 ' + prefix + 'reindex-repo --full');
 });
 
 test('scan-throttle: P1 — multiple leading assignments (one quoted) are all re-attached, in order', () => {
@@ -287,10 +292,7 @@ test('scan-throttle: P1 — multiple leading assignments (one quoted) are all re
   if (!prefix) return;
   const r = runAvailable('FOO=1 BAR="baz" reindex-repo --full', { ANTI_HALL_THROTTLE_PATTERNS: PREFIXED_PATTERN });
   assert.ok(r.json);
-  assert.strictEqual(
-    r.json.hookSpecificOutput.updatedInput.command,
-    'FOO=1 BAR="baz" ' + prefix + 'reindex-repo --full'
-  );
+  assertAdvisory(r, 'FOO=1 BAR="baz" ' + prefix + 'reindex-repo --full');
 });
 
 // ---------------------------------------------------------------------------
@@ -301,7 +303,7 @@ test('scan-throttle: P1 — multiple leading assignments (one quoted) are all re
 // does not actually start at offset 0 of the raw string. Prefixing there
 // produces a bash syntax error (verified separately via `sh -c`).
 // ---------------------------------------------------------------------------
-test('scan-throttle: P1 — subshell-wrapped `( reindex-repo --full )` is never rewritten', () => {
+test('scan-throttle: P1 — subshell-wrapped `( reindex-repo --full )` is never advised with a prefixed form', () => {
   const r = runWithPattern('( reindex-repo --full )');
   assert.strictEqual(r.status, 0);
   assert.ok(r.json);
@@ -309,7 +311,7 @@ test('scan-throttle: P1 — subshell-wrapped `( reindex-repo --full )` is never 
   assert.ok(typeof r.json.hookSpecificOutput.additionalContext === 'string');
 });
 
-test('scan-throttle: P1 — brace-group-wrapped `{ reindex-repo --full ; }` is never rewritten', () => {
+test('scan-throttle: P1 — brace-group-wrapped `{ reindex-repo --full ; }` is never advised with a prefixed form', () => {
   const r = runWithPattern('{ reindex-repo --full ; }');
   assert.strictEqual(r.status, 0);
   assert.ok(r.json);
@@ -346,20 +348,20 @@ test('scan-throttle: P1 — leading assignment does not mask a mid-compound matc
 // start (`^reindex-repo`) will not match `time reindex-repo ...`. These two
 // tests use PREFIXED_PATTERN, tolerant of a leading wrapper word, matching
 // how an operator would actually configure this for a wrapped scan command.
-test('scan-throttle: regression — `time reindex-repo --full` still rewrites normally', () => {
+test('scan-throttle: regression — `time reindex-repo --full` still gets the throttle advisory', () => {
   const prefix = expectedFullPrefix();
   if (!prefix) return;
   const r = runAvailable('time reindex-repo --full', { ANTI_HALL_THROTTLE_PATTERNS: PREFIXED_PATTERN });
   assert.ok(r.json);
-  assert.strictEqual(r.json.hookSpecificOutput.updatedInput.command, prefix + 'time reindex-repo --full');
+  assertAdvisory(r, prefix + 'time reindex-repo --full');
 });
 
-test('scan-throttle: regression — `sudo reindex-repo --full` still rewrites normally', () => {
+test('scan-throttle: regression — `sudo reindex-repo --full` still gets the throttle advisory', () => {
   const prefix = expectedFullPrefix();
   if (!prefix) return;
   const r = runAvailable('sudo reindex-repo --full', { ANTI_HALL_THROTTLE_PATTERNS: PREFIXED_PATTERN });
   assert.ok(r.json);
-  assert.strictEqual(r.json.hookSpecificOutput.updatedInput.command, prefix + 'sudo reindex-repo --full');
+  assertAdvisory(r, prefix + 'sudo reindex-repo --full');
 });
 
 // ---------------------------------------------------------------------------
@@ -391,10 +393,7 @@ test('scan-throttle: ANTI_HALL_THROTTLE_PATTERNS drives the match', () => {
     ANTI_HALL_THROTTLE_PATTERNS: '^some-custom-scanner\\b',
   });
   assert.ok(r.json);
-  assert.strictEqual(
-    r.json.hookSpecificOutput.updatedInput.command,
-    prefix + 'some-custom-scanner --all'
-  );
+  assertAdvisory(r, prefix + 'some-custom-scanner --all');
 });
 
 test('scan-throttle: an invalid ANTI_HALL_THROTTLE_PATTERNS regex is skipped, fail-open', () => {
