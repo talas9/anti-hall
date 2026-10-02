@@ -2,7 +2,6 @@
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "anti-hall",
   "displayName": "Anti-Hall",
-  "icon": "./icon.png",
   "version": "0.121.8",
   "description": "Verify-first guardrails for Claude Code: hooks that block made-up APIs, force-push, AI commit credit and unverified \"done\" claims.",
   "author": {

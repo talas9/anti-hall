@@ -1,7 +1,7 @@
 'use strict';
 // Hygiene: EVERY file tracked under plugins/anti-hall stays at or below 256 KiB
 // (262,144 bytes) -- the plugin directory validator's per-file read limit. The
-// plugin icon was once 569,983 bytes and tripped it; it is now 512x512.
+// directory icon (no longer shipped) was once 569,983 bytes and tripped it; it is now 512x512.
 // A file that grows past the cap must be shrunk or split, not allowed to creep.
 
 const { test } = require('node:test');
