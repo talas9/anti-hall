@@ -36,7 +36,7 @@ function assertClean(body, label) {
   assert.ok(body.includes('[REDACTED'), `${label}: placeholder present`);
 }
 
-const ENV_KEYS = ['HOME', 'ANTIHALL_JEV', 'AI_GATEWAY_API_KEY', 'ANTIHALL_JEV_TEST_ENDPOINT'];
+const ENV_KEYS = ['HOME', 'ANTIHALL_JEV', 'CLAUDE_PLUGIN_OPTION_JEV_API_KEY', 'AI_GATEWAY_API_KEY', 'ANTIHALL_JEV_TEST_ENDPOINT'];
 async function withEnv(o, fn) {
   const saved = {};
   for (const k of ENV_KEYS) saved[k] = process.env[k];
@@ -77,7 +77,7 @@ test('ask(): outbound body has secrets redacted, plain text and question intact'
     h.writeState('jev.json', { enabled: true, timeoutMs: 3000 });
     const bodies = [];
     await withServer(capture(bodies), async (endpoint) => {
-      await withEnv({ HOME: h.home, AI_GATEWAY_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
+      await withEnv({ HOME: h.home, CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
         delete require.cache[LIB]; delete require.cache[CLIENT_LIB];
         const { ask } = require(LIB);
         await ask({ id: 'speculation', question: NOUL_Q, state: STATE, trust: 'add-block', baseline: false });
@@ -97,7 +97,7 @@ test('ask(): non-secret text is sent unchanged', async () => {
     h.writeState('jev.json', { enabled: true, timeoutMs: 3000 });
     const bodies = [];
     await withServer(capture(bodies), async (endpoint) => {
-      await withEnv({ HOME: h.home, AI_GATEWAY_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
+      await withEnv({ HOME: h.home, CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
         delete require.cache[LIB]; delete require.cache[CLIENT_LIB];
         await require(LIB).ask({ id: 'speculation', question: NOUL_Q, state: PLAIN, trust: 'add-block', baseline: false });
       });
@@ -119,7 +119,7 @@ test('askSync(): outbound body (via worker subprocess) has secrets redacted', as
       .listen(0,'127.0.0.1',function(){console.log(this.address().port);});`], { stdio: ['ignore', 'pipe', 'inherit'] });
     try {
       const port = await new Promise((res) => srv.stdout.once('data', (d) => res(String(d).trim())));
-      await withEnv({ HOME: h.home, AI_GATEWAY_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: `http://127.0.0.1:${port}/mock` }, async () => {
+      await withEnv({ HOME: h.home, CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: `http://127.0.0.1:${port}/mock` }, async () => {
         delete require.cache[LIB]; delete require.cache[CLIENT_LIB];
         require(LIB).askSync({ id: 'speculation', question: NOUL_Q, state: STATE, trust: 'add-block', baseline: false });
       });
@@ -137,7 +137,7 @@ test('triage worker: Jev request body has secrets redacted', async () => {
     const bodies = [];
     await withServer(capture(bodies), async (endpoint) => {
       await new Promise((resolve) => {
-        const env = Object.assign({}, process.env, { HOME: h.home, AI_GATEWAY_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint });
+        const env = Object.assign({}, process.env, { HOME: h.home, CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint });
         const p = spawn(process.execPath, [WORKER], { env, stdio: ['pipe', 'ignore', 'ignore'] });
         p.on('close', resolve);
         p.stdin.end(JSON.stringify({ items: [{ hash: 'h1', text: STATE }], timeoutMs: 3000 }));
