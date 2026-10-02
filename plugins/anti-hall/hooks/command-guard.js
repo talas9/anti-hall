@@ -3520,14 +3520,13 @@ function main() {
     '`node --test <1-2 files>`, `[npx] vitest run|jest <1-2 *.test|spec files>`, `ctest -R <name>`, `<cc> -fsyntax-only`, `git clone --depth 1 <https-url> <scratch/tmp dir>`, ' +
     'a non-heavy command with --check/--dry-run/--list, or `<python3|node|ruby|perl|php> <existing script> --check`. ' +
     'Everything else goes to a subagent.';
-  // One-line version of the scratchpad-script path, surfaced right after the
-  // first sentence so it is seen FIRST (fp: seen twice for scratchpad *.py
-  // repro scripts, once for our own scratchpad .js repro — the full detail
-  // used to be the LAST clause, easy to miss before the block gets read as
-  // "just delegate to a subagent"). TEXT ONLY: same rule, same inline-allowed
-  // set — just reordered.
+  // The path that WORKS comes first, in one line, in every variant (fp: agents
+  // re-checking a subagent's claim read the long delegate-only text and missed it).
+  // TEXT ONLY: same rule, same inline-allowed set. Rules clause keeps the exact
+  // shapes the carve-out accepts.
   const SCRATCHPAD_SCRIPT_HINT =
-    'Have a script to run? Write it to the scratchpad and run it with run_in_background (run it as `<interpreter> <script>` or an executable scratchpad path, in the background; no VAR=… prefix; use the literal absolute scratchpad path, not $VAR; chain only wc/head/tail/grep -c/grep -m N) — never inline: a scratchpad script piped to tail is STILL blocked in the foreground, it must be run_in_background. ';
+    'To run or re-check it yourself: write the command to a scratchpad script and run `<interpreter> <script>` with run_in_background (then read its output). ' +
+    'Also OK: an executable scratchpad path, in the background; no VAR=… prefix; literal absolute scratchpad path, not $VAR; chain only wc/head/tail/grep -c/grep -m N. A scratchpad script piped to tail is STILL blocked in the foreground. ';
   // A leading `cd <dir>;` leaves the cwd unknown (only an unconditional `&&`
   // cd is tracked), so a relative-path check fails ONLY because of the `;`.
   // Hint exactly then: the same command joined with `&&` would qualify.
@@ -3545,35 +3544,29 @@ function main() {
   let tierText = false;
   try { tierText = devswarmPrimary && require('./lib/primary-tier.js').primaryTierTextOn(process.env, (payload && payload.cwd) || process.cwd()); } catch (_) { tierText = false; }
   const reason = devswarmPrimary && !tierText
-    ? ('DEVSWARM COMMAND-DELEGATION RULE: the primary/main orchestrator never runs ' +
-       'heavy/long/state-changing commands inline — raw output floods the main thread. ' +
-       SCRATCHPAD_SCRIPT_HINT +
-       'DELEGATE to a subagent (cheap model: Haiku or similar) that runs it and returns ' +
-       'only a tight summary. ' + detected + (detail ? ' ' + detail : '') +
-       ' — delegate to a subagent. ' +
+    ? (SCRATCHPAD_SCRIPT_HINT +
+       'DEVSWARM COMMAND-DELEGATION RULE: the primary/main orchestrator never runs ' +
+       'heavy/long/state-changing commands inline (raw output floods the main thread); ' +
+       'otherwise DELEGATE to a subagent (cheap model: Haiku or similar) that returns ' +
+       'only a tight summary. ' + detected + (detail ? ' ' + detail : '') + ' — ' +
        INLINE_ALLOWED_HINT + cdJoinHint)
     : devswarmPrimary
-    ? ('DEVSWARM COMMAND-DELEGATION RULE: the primary/main orchestrator never runs ' +
-       'heavy/long/state-changing commands inline — raw output floods the main thread. ' +
-       SCRATCHPAD_SCRIPT_HINT +
-       'CHOOSE THE TIER: if this command belongs to a workspace-scale MATTER (a ' +
-       'feature/fix/deploy — multi-step, own branch, own review), spin a CHILD WORKSPACE ' +
-       'and let it own the work end-to-end: `node scripts/devswarm.js spawn <branch> ' +
-       '-p "<brief>"` (guard-exempt, run it inline). ALTERNATIVE, only for genuinely ' +
-       'small/scoped work (one command, a lookup, a scoped check): delegate to a subagent ' +
-       '(cheap model: Haiku or similar) that runs it and returns only a tight summary. Do ' +
-       'NOT hand a workspace-scale matter to a subagent. ' + detected + (detail ? ' ' + detail : '') +
-       ' — spin a workspace, or delegate to a subagent if it is genuinely small. ' +
+    ? (SCRATCHPAD_SCRIPT_HINT +
+       'DEVSWARM COMMAND-DELEGATION RULE: the primary/main orchestrator never runs ' +
+       'heavy/long/state-changing commands inline (raw output floods the main thread). ' +
+       'Otherwise CHOOSE THE TIER: if this belongs to a workspace-scale MATTER (a ' +
+       'feature/fix/deploy: multi-step, own branch, own review), spin a CHILD WORKSPACE ' +
+       'that owns it end-to-end: `node scripts/devswarm.js spawn <branch> ' +
+       '-p "<brief>"` (guard-exempt, run it inline). Only genuinely small/scoped work ' +
+       '(one command, a lookup, a scoped check) goes to a subagent (cheap model: Haiku or ' +
+       'similar) that returns a tight summary. Do NOT hand a workspace-scale matter to a ' +
+       'subagent. ' + detected + (detail ? ' ' + detail : '') + ' — ' +
        INLINE_ALLOWED_HINT + cdJoinHint)
-    : ('COMMAND-DELEGATION RULE: heavy/long/state-changing commands must NEVER run ' +
-       'inline in the main coordinator context — they fill the main thread with raw ' +
-       'output and the most counterproductive thing a coordinator can do. ' +
-       SCRATCHPAD_SCRIPT_HINT +
-       'DELEGATE to a subagent (cheap model: Haiku or similar): ' +
-       'spawn a subagent, pass the command, let it run and return only a tight ' +
-       'summary. The coordinator synthesizes the summary; raw output never reaches ' +
-       'the main thread. ' + detected + (detail ? ' ' + detail : '') +
-       ' — delegate to a subagent. ' +
+    : (SCRATCHPAD_SCRIPT_HINT +
+       'COMMAND-DELEGATION RULE: heavy/long/state-changing commands never run inline in ' +
+       'the main coordinator context (raw output floods the main thread). Otherwise ' +
+       'DELEGATE to a subagent (cheap model: Haiku or similar): pass the command, let it ' +
+       'run and return only a tight summary. ' + detected + (detail ? ' ' + detail : '') + ' — ' +
        INLINE_ALLOWED_HINT + cdJoinHint);
 
   fs.writeSync(1, JSON.stringify({ decision: 'block', reason }) + '\n');

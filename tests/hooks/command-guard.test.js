@@ -1174,14 +1174,12 @@ const CHILD_ENV = { DEVSWARM_REPO_ID: 'repo-x', DEVSWARM_SOURCE_BRANCH: 'feature
 
 // The exact pre-fix baseline reason (npm run build -> verb npm).
 const BASELINE_REASON =
-  'COMMAND-DELEGATION RULE: heavy/long/state-changing commands must NEVER run ' +
-  'inline in the main coordinator context — they fill the main thread with raw ' +
-  'output and the most counterproductive thing a coordinator can do. ' +
-  'Have a script to run? Write it to the scratchpad and run it with run_in_background (run it as `<interpreter> <script>` or an executable scratchpad path, in the background; no VAR=… prefix; use the literal absolute scratchpad path, not $VAR; chain only wc/head/tail/grep -c/grep -m N) — never inline: a scratchpad script piped to tail is STILL blocked in the foreground, it must be run_in_background. ' +
-  'DELEGATE to a subagent (cheap model: Haiku or similar): ' +
-  'spawn a subagent, pass the command, let it run and return only a tight ' +
-  'summary. The coordinator synthesizes the summary; raw output never reaches ' +
-  'the main thread. Heavy command detected (verb: npm) — delegate to a subagent. ' +
+  'To run or re-check it yourself: write the command to a scratchpad script and run `<interpreter> <script>` with run_in_background (then read its output). ' +
+  'Also OK: an executable scratchpad path, in the background; no VAR=… prefix; literal absolute scratchpad path, not $VAR; chain only wc/head/tail/grep -c/grep -m N. A scratchpad script piped to tail is STILL blocked in the foreground. ' +
+  'COMMAND-DELEGATION RULE: heavy/long/state-changing commands never run inline in ' +
+  'the main coordinator context (raw output floods the main thread). Otherwise ' +
+  'DELEGATE to a subagent (cheap model: Haiku or similar): pass the command, let it ' +
+  'run and return only a tight summary. Heavy command detected (verb: npm) — ' +
   'Inline-allowed ONLY when piped to tail/head/wc/grep -c/grep -m N: `python3 -m pytest -q <one file>`, ' +
   '`node --test <1-2 files>`, `[npx] vitest run|jest <1-2 *.test|spec files>`, `ctest -R <name>`, `<cc> -fsyntax-only`, `git clone --depth 1 <https-url> <scratch/tmp dir>`, ' +
   'a non-heavy command with --check/--dry-run/--list, or `<python3|node|ruby|perl|php> <existing script> --check`. ' +
