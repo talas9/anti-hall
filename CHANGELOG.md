@@ -14,6 +14,8 @@ the update.
 - **An archived DevSwarm child no longer keeps waking itself.** Its mailbox wake-watch stays silent while its descriptor is archived (resumes if restored), and `inbox tick --child` reports `watcherArmed archived-skip` instead of `false` so the cron prompt never re-arms the Monitor. Under the existing `devswarm.archivedChildStop` switch; no process is killed.
 - **A flat `.anti-hall/handovers/*.md` now counts as an archived child's handover** (doctor "handover NOT written" false alarm), when written at/after 24 h before the archive time; older flat files do not count. The archived banner/Stop text now also tells the child to delete its own `inbox tick` cron. Twin state (archived marker beside an active descriptor) and a new unregistered child never go silent.
 
+- **The wake-watch "handed off to <version>" line no longer reads as "the plugin update is installed".** When the harness registry still names an older version, the same single line now ends with "(cached only: the harness still registers <old>, so this session's hooks are unchanged until the plugin update is registered and plugins are reloaded)". The handoff itself is unchanged; the line is unchanged when the version is registered.
+
 ## 0.121.3 (2026-10-02)
 
 ### Fixed

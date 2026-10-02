@@ -252,7 +252,8 @@ function readInstalledPluginVersion() {
   } catch (_) { return null; }
 }
 
-// checkStaleVersion(ownVersion, env) -> { newestVersion, scriptPath: string|null, registered: bool } | null.
+// checkStaleVersion(ownVersion, env) -> { newestVersion, scriptPath: string|null, registered: bool, registeredVersion: string|null } | null.
+// (`registeredVersion` = the version installed_plugins.json names, or null.)
 // `registered` distinguishes two DISTINCT no-cache states (field repro
 // 2026-09-26: on-disk installed_plugins.json still named 0.110.0 while the
 // marketplace clone had already fast-forwarded to 0.111.0 with no cache dir
@@ -318,7 +319,12 @@ function checkStaleVersion(ownVersion, env) {
     // file, not just the version directory, before returning it.
     let scriptExists = false;
     try { scriptExists = fs.statSync(scriptPath).isFile(); } catch (_) { scriptExists = false; }
-    return { newestVersion: newest, scriptPath: scriptExists ? scriptPath : null, registered };
+    return {
+      newestVersion: newest,
+      scriptPath: scriptExists ? scriptPath : null,
+      registered,
+      registeredVersion: upd.isSemver(jsonVersion) ? jsonVersion : null,
+    };
   } catch (_) {
     return null; // fail-open: a resolution failure must never falsely exit a healthy watcher
   }
@@ -390,8 +396,16 @@ function formatUpdateAvailableLine(role, id, ownVersion, newestVersion, register
 // nothing happened except a version bump.
 const HANDOFF_ENV_VAR = 'ANTIHALL_WAKE_WATCH_HANDED_OFF';
 
-function formatHandoffLine(newestVersion) {
-  return '[wake-watch] handed off to ' + newestVersion;
+// `registered` (checkStaleVersion's flag): exactly false means the harness
+// registry still names an older build, so the handoff only moved THIS watcher
+// to the cached build — the session's hooks are unchanged. Said on the SAME
+// single line (every stdout line wakes the session); true/undefined keep the
+// original text.
+function formatHandoffLine(newestVersion, registered, registeredVersion) {
+  const base = '[wake-watch] handed off to ' + newestVersion;
+  if (registered !== false) return base;
+  const still = registeredVersion ? 'the harness still registers ' + registeredVersion : 'the harness has not registered it';
+  return base + ' (cached only: ' + still + ', so this session\'s hooks are unchanged until the plugin update is registered and plugins are reloaded)';
 }
 
 // canHandoff(ownVersion, newestVersion, env) -> bool. Two independent guards
@@ -479,7 +493,7 @@ function attemptHandoff(opts) {
   child.once('spawn', () => {
     if (settled) return;
     settled = true;
-    try { emitLine(formatHandoffLine(o.newestVersion)); } catch (_) {}
+    try { emitLine(formatHandoffLine(o.newestVersion, o.registered, o.registeredVersion)); } catch (_) {}
   });
   // Propagate the child's outcome as THIS process's exit, shell-style
   // (128+signo for a signal death). Never re-raise the signal on ourselves:
@@ -1850,6 +1864,7 @@ function main() {
       const child = attemptHandoff({
         ownVersion, newestVersion: staleVersion.newestVersion, scriptPath: staleVersion.scriptPath,
         role: watchedRole, id, env, release,
+        registered: staleVersion.registered, registeredVersion: staleVersion.registeredVersion,
       });
       if (child) {
         handoffChild = child;

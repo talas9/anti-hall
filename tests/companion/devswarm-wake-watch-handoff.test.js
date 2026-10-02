@@ -187,6 +187,27 @@ test('formatHandoffLine: names the version', () => {
   assert.strictEqual(formatHandoffLine('0.108.5'), '[wake-watch] handed off to 0.108.5');
 });
 
+test('formatHandoffLine: registered=false with a known registered version -> same single line, says cached only + both versions', () => {
+  const line = formatHandoffLine('0.121.3', false, '0.121.2');
+  assert.ok(!line.includes('\n'), 'must stay ONE line');
+  assert.ok(line.startsWith('[wake-watch] handed off to 0.121.3 (cached only: '), line);
+  assert.match(line, /the harness still registers 0\.121\.2/);
+  assert.match(line, /hooks are unchanged until the plugin update is registered and plugins are reloaded\)$/);
+});
+
+test('formatHandoffLine: registered=false without a known registered version -> cached only, no invented version', () => {
+  const line = formatHandoffLine('0.121.3', false);
+  assert.ok(!line.includes('\n'));
+  assert.match(line, /^\[wake-watch\] handed off to 0\.121\.3 \(cached only: the harness has not registered it/);
+  assert.doesNotMatch(line, /still registers/);
+});
+
+test('formatHandoffLine: registered=true or undefined -> the original text, unchanged', () => {
+  assert.strictEqual(formatHandoffLine('0.121.3', true, '0.121.3'), '[wake-watch] handed off to 0.121.3');
+  assert.strictEqual(formatHandoffLine('0.121.3', undefined), '[wake-watch] handed off to 0.121.3');
+  assert.strictEqual(formatHandoffLine('0.121.3', null), '[wake-watch] handed off to 0.121.3');
+});
+
 // ---------------------------------------------------------------------------
 // Integration: main() with a REAL newer cached watcher script -> the parent
 // prints the handoff line and the child genuinely runs (its own stdout
@@ -238,6 +259,46 @@ test('main(): a newer version is present on disk -> prints the ONE handoff line,
     assert.doesNotMatch(res.stdout, /STALE BUILD/, 'must never fall back to the old print-and-exit line when the handoff succeeds');
     assert.match(res.stdout, new RegExp(CHILD_MARKER.replace(/[[\]]/g, '\\$&')), 'the CHILD must have actually run (its own stdout visible via stdio:inherit); got stdout=' + JSON.stringify(res.stdout));
   } finally { rm(home); }
+});
+
+// Runs the real watcher against a fake HOME whose cache holds NEWER and whose
+// harness registry names `installedVersion`; resolves with the stdout.
+async function runHandoffWith(installedVersion, idSuffix) {
+  const home = tmpHome();
+  try {
+    const NEWER = '9.999.0';
+    layoutPlugins(home, {
+      installedVersion,
+      cacheVersions: [NEWER],
+      marketplaceVersion: NEWER,
+      cacheContent: 'process.stdout.write("[stub-child] alive\\n");\nsetInterval(() => {}, 1000);\n',
+    });
+    const env = {
+      PATH: process.env.PATH,
+      HOME: home,
+      USERPROFILE: home,
+      DEVSWARM_REPO_ID: 'r1',
+      DEVSWARM_SOURCE_BRANCH: 'main',
+      DEVSWARM_BUILDER_ID: 'handoff-word-' + idSuffix,
+      ANTIHALL_DEVSWARM_WAKE_WATCH_POLL_MS: '250',
+    };
+    return await waitForStdoutMatch([MODULE_PATH], { env }, /\[stub-child\] alive/, 8000);
+  } finally { rm(home); }
+}
+
+test('main(): registry still at an OLDER version -> exactly one handoff line, saying cached only, naming both versions', async () => {
+  const res = await runHandoffWith('9.998.0', 'cached');
+  const lines = res.stdout.split('\n').filter((l) => l.includes('handed off to'));
+  assert.strictEqual(lines.length, 1, 'exactly one handoff line; got stdout=' + JSON.stringify(res.stdout));
+  assert.match(lines[0], /^\[wake-watch\] handed off to 9\.999\.0 \(cached only: /);
+  assert.match(lines[0], /9\.998\.0/);
+  assert.match(res.stdout, /\[stub-child\] alive/, 'the handoff itself still happens');
+});
+
+test('main(): registry already at the newer version -> the original handoff text, no cached-only note', async () => {
+  const res = await runHandoffWith('9.999.0', 'registered');
+  const lines = res.stdout.split('\n').filter((l) => l.includes('handed off to'));
+  assert.deepStrictEqual(lines, ['[wake-watch] handed off to 9.999.0']);
 });
 
 test('main(): own version already the newest known -> no handoff, no STALE BUILD, watcher stays armed on itself', async () => {

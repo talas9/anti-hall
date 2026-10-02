@@ -108,6 +108,11 @@ its own purposes).
      field-verified (2026-10-01): after `claude plugin update`, a plain
      `/reload-plugins` (no restart) ran hooks and showed skill base directories
      from the new version dir and the wake-watch Monitor handed off to it.
+     (The watcher's own `[wake-watch] handed off to <version>` line only means
+     the watcher moved to the newer cached build. When the harness registry
+     still names an older version the same line ends with `(cached only: …)` —
+     the plugin update is then NOT registered and this session's hooks are
+     unchanged.)
      (History: `claude plugin update --help` says "restart required to apply" and
      a 2026-09-24 test saw a reload not suffice; superseded.) Restart Claude Code
      only as the fallback: if a hook or skill path still shows the old version
