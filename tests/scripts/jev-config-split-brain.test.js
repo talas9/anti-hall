@@ -9,6 +9,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
 const http = require('node:http');
+const os = require('node:os');
 const { execFileSync, spawnSync } = require('node:child_process');
 const { makeHome } = require('../helpers/fixtures.js');
 
@@ -30,6 +31,12 @@ function setup(home, args, extra) {
 function effectiveFromClient(home) {
   const out = execFileSync(process.execPath, ['-e', `const c=require(${JSON.stringify(CLIENT)}).loadJevConfig();process.stdout.write(JSON.stringify({t:c.transport,f:c.fallbackTransport,e:c.enabled}))`], { env: envFor(home), encoding: 'utf8' });
   return JSON.parse(out);
+}
+// doctor.js is spawned only with an isolated HOME; the default is a disposable
+// temp dir, never the real home (doctor-default-home-isolation convention).
+function runDoctor(home) {
+  const h = home || fs.mkdtempSync(path.join(os.tmpdir(), 'antihall-doctor-default-home-'));
+  return spawnSync(process.execPath, [DOCTOR], { env: envFor(h), encoding: 'utf8', timeout: 60000 });
 }
 function seed(home, file, obj) { fs.writeFileSync(path.join(home, '.anti-hall', file), JSON.stringify(obj)); }
 
@@ -73,11 +80,11 @@ test('doctor reports the same disagreement, and is silent when they agree', () =
   const { home } = makeHome();
   seed(home, 'settings.json', { jev: { enabled: true, transport: 'vercel' } });
   seed(home, 'jev.json', { enabled: true, transport: 'typesafe' });
-  const r = spawnSync(process.execPath, [DOCTOR], { env: envFor(home), encoding: 'utf8', timeout: 60000 });
+  const r = runDoctor(home);
   const out = r.stdout + r.stderr;
   assert.match(out, /jev\.transport: ~\/\.anti-hall\/jev\.json says "typesafe" but ~\/\.anti-hall\/settings\.json wins with "vercel"/);
   seed(home, 'jev.json', { enabled: true, transport: 'vercel' });
-  const r2 = spawnSync(process.execPath, [DOCTOR], { env: envFor(home), encoding: 'utf8', timeout: 60000 });
+  const r2 = runDoctor(home);
   assert.doesNotMatch(r2.stdout + r2.stderr, /jev\.json says/);
 });
 
