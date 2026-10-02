@@ -2,8 +2,9 @@
 // anti-hall :: silent-agent-nudge (Stop hook, ADVISORY ONLY, never kills)
 //
 // Orchestration rule I (verify-first-orch.js) already tells the coordinator:
-// "if an agent misses its heartbeat ... for ~20 min, TaskStop and
-// re-dispatch." Nothing mechanically ENFORCES that — a session can sit
+// "Output/transcript file quiet ~20 min = stalled: TaskStop, re-dispatch
+// tighter. 'running' in an agent list is not progress - verify via
+// process/output evidence." Nothing mechanically ENFORCES that — a session can sit
 // waiting on a dead background subagent forever with no reminder.
 //
 // PRIMARY SIGNAL: the harness ALWAYS produces this, unlike the
@@ -15,7 +16,7 @@
 // per-agent JSONL, which grows while the agent works). When that agent
 // finishes/fails/is stopped, a LATER transcript entry carries a
 // `<task-notification>` block with `<task-id>` (== the agentId) and
-// `<status>completed|failed|stopped</status>`. So:
+// `<status>completed|failed|stopped|killed|cancelled</status>`. So:
 //   SILENT = launched (seen in the transcript), no terminal notification for
 //   it yet, AND its output_file's mtime (or, if the file is missing, the
 //   launch line's own timestamp — "missing" counts as silent/dead too) is
@@ -127,6 +128,9 @@ function transcriptCandidates(transcriptPath, now, thresholdMs) {
       // immediately flagged; if the transcript carried no parseable
       // timestamp either, treat it as silent right away (fail toward
       // surfacing a dead-looking agent rather than hiding it forever).
+      // An agent adopted from a task_status attachment with no timestamp and
+      // no output file has no evidence of age at all -> never nudge it.
+      if (rec.adopted && !Number.isFinite(rec.launchedAtMs)) continue;
       referenceMs = Number.isFinite(rec.launchedAtMs) ? rec.launchedAtMs : 0;
       snapshot = 'missing';
     }

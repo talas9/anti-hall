@@ -9,8 +9,9 @@
 // ANY session/project refreshes.
 
 // Transcript notification statuses that mean the agent has actually ended
-// (observed values: completed/failed/stopped), case-insensitive.
-const TERMINAL_NOTIFICATION_STATUS = /^(completed|failed|stopped)$/i;
+// (observed values: completed/failed/stopped; killed/cancelled/canceled are
+// terminal too), case-insensitive.
+const TERMINAL_NOTIFICATION_STATUS = /^(completed|failed|stopped|killed|cancelled|canceled)$/i;
 
 // extractTexts(node) -> string[] — recursively collect every string leaf
 // under a message `content` value, which the harness renders in more than
@@ -125,8 +126,10 @@ function scanTranscript(transcriptPath, preLines) {
     if (att && att.type === 'task_status' && typeof att.taskId === 'string' && att.taskId) {
       if (att.status === 'running') {
         if (!launched.has(att.taskId)) {
-          const t = typeof entry.timestamp === 'string' ? Date.parse(entry.timestamp) : NaN;
+          const t = typeof entry.timestamp === 'string' ? Date.parse(entry.timestamp)
+            : (typeof att.timestamp === 'string' ? Date.parse(att.timestamp) : NaN);
           launched.set(att.taskId, {
+            adopted: true,
             outputFile: typeof att.outputFilePath === 'string' ? att.outputFilePath : '',
             description: typeof att.description === 'string' ? att.description : '',
             launchedAtMs: Number.isFinite(t) ? t : NaN,

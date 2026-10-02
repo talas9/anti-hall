@@ -695,3 +695,50 @@ test('SETTING OFF: guards.stopAck=false ignores an existing ack and blocks again
     assert.ok(isBlock(r), 'ANTIHALL_STOP_ACK=off must ignore the existing ack: ' + JSON.stringify(r.json));
   } finally { h.cleanup(); }
 });
+
+test('TERMINAL: killed/cancelled/canceled agents (notification and task_status shapes) are neither running nor silent', () => {
+  for (const status of ['killed', 'cancelled', 'canceled']) {
+    const h = makeHome();
+    try {
+      const out = writeOutputFile(h, 'worker-' + status + '.output', THRESHOLD_MS + 60 * 60 * 1000);
+      const idN = 'aaaf300000000001';
+      const idA = 'aaaf300000000002';
+      const tp = h.writeTranscript([
+        agentToolUseLine('toolu_k1', 'Ended via notification', isoMinutesAgo(90)),
+        agentLaunchResultLine(idN, out, 'toolu_k1', isoMinutesAgo(90)),
+        agentToolUseLine('toolu_k2', 'Ended via attachment', isoMinutesAgo(90)),
+        agentLaunchResultLine(idA, out, 'toolu_k2', isoMinutesAgo(90)),
+        notificationLine(idN, status, isoMinutesAgo(5)),
+        { type: 'attachment', attachment: { type: 'task_status', taskId: idA, taskType: 'local_agent', description: 'x', status, outputFilePath: out }, timestamp: isoMinutesAgo(4) },
+      ]);
+      const r = testHook(HOOK, stopPayload(tp), { home: h.home });
+      assert.ok(!isBlock(r), status + ' must be terminal, not silent: ' + JSON.stringify(r.json));
+      const scan = require('../../plugins/anti-hall/hooks/lib/agent-scan.js').runningAgents(tp);
+      assert.deepStrictEqual(scan.map((a) => a.id), [], status + ' must not be reported as running');
+    } finally { h.cleanup(); }
+  }
+});
+
+test('ADOPTED: task_status agent with no timestamp and no output file has no evidence of age -> not nudged', () => {
+  const h = makeHome();
+  try {
+    const agentId = 'aaaf400000000001';
+    const tp = h.writeTranscript([
+      { type: 'attachment', attachment: { type: 'task_status', taskId: agentId, taskType: 'local_agent', description: 'Ageless', status: 'running' } },
+    ]);
+    const r = testHook(HOOK, stopPayload(tp), { home: h.home });
+    assert.ok(!isBlock(r), 'no timestamp + no output file must not nudge: ' + JSON.stringify(r.json));
+  } finally { h.cleanup(); }
+});
+
+test('ADOPTED: task_status agent with an old entry timestamp and no output file is nudged from that timestamp', () => {
+  const h = makeHome();
+  try {
+    const agentId = 'aaaf400000000002';
+    const tp = h.writeTranscript([
+      { type: 'attachment', attachment: { type: 'task_status', taskId: agentId, taskType: 'local_agent', description: 'Old adopted', status: 'running' }, timestamp: isoMinutesAgo(90) },
+    ]);
+    const r = testHook(HOOK, stopPayload(tp), { home: h.home });
+    assert.ok(isBlock(r), 'old entry timestamp is the launch time: ' + JSON.stringify(r.json));
+  } finally { h.cleanup(); }
+});
