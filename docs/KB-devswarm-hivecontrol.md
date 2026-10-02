@@ -946,7 +946,7 @@ reminder), and `migrate`. `command-guard` carries a root-anchored `LIGHT_EXCEPTI
   archive-ready segment (above) already URGES the Primary to check merged/tested/deployed
   per its OWN repo policy; it now names the concrete follow-up command:
   `scripts/devswarm.js archive-request <childId|childBranch> [--reason TEXT]
-  [--child-branch B]` (`cmdArchiveRequest`, `plugins/anti-hall/scripts/devswarm.js:563`).
+  [--child-branch B]` (`cmdArchiveRequest`, `plugins/anti-hall/scripts/devswarm-lib/archive.js`).
   SEND-ONLY: resolves the child's branch (explicit `--child-branch` → the descriptor's own
   `branch` field, if one is ever set → a `hivecontrol workspace list children` lookup by
   branch/id/worktree → the positional id itself as a last resort — `resolveChildBranch`,
@@ -1996,6 +1996,8 @@ Journal-backend stores are skipped. Retention only counts `devswarm.db` and its 
 never touches backup files (`*.bak-*`) or other directories.
 
 ## 8.8 Full CLI reference — `scripts/devswarm.js`
+
+> **Layout (0.121):** `scripts/devswarm.js` is now the dispatcher only; the verb and helper code lives in `scripts/devswarm-lib/*.js`. Function names below are unchanged, but `devswarm.js:<line>` references elsewhere in this KB predate the split and no longer point at a line of that file; search `scripts/devswarm-lib/` for the function name instead.
 
 THE structured interface (CLI over MCP — owner preference; every subcommand below is a
 **thin wrapper reusing already-built primitives**, per the file's own header comment — it

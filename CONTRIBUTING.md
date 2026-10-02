@@ -9,6 +9,7 @@ Thanks for helping. anti-hall is pure Node (built-ins only, no dependencies) and
 | `plugins/anti-hall/hooks/` | The Claude hooks, `hooks.json` (registration), `doctor.js`, and `lib/` (including `settings-schema.js`) |
 | `plugins/anti-hall/codex/` | The Codex port: `hooks/hooks.json`, `skills/`, `scripts/`, `install-codex.js` |
 | `plugins/anti-hall/skills/`, `agents/`, `scripts/`, `companion/`, `monitors/`, `statusline/` | Claude skills, agents, CLIs, opt-in companions, monitors, statusline |
+| `plugins/anti-hall/scripts/devswarm.js`, `scripts/devswarm-lib/` | `devswarm.js` is only the CLI dispatcher (`run`, `runArmed`'s verb switch, `main`, help text, the export object). The verb and helper implementations live in `scripts/devswarm-lib/*.js` (core, identity, cursors, fold, register, send, repair, archive, misc-verbs, roster-diag, spawn, reconcile, inbox-read, inbox-cmd, heartbeat-plan). Every lib file must stay at or below 256 KiB (262,144 bytes); `tests/hygiene/devswarm-lib-size.test.js` enforces it. Tests that assert on the source text read the whole unit through `tests/scripts/lib/devswarm-source.js`. |
 | `tests/` | The suite: `hooks/`, `hygiene/`, `codex/`, `companion/`, `scripts/`, `skills/`, `statusline/`, `e2e/`, `helpers/`, `fixtures/` |
 | `docs/` | `GUIDE.md` (extended guide, hook and settings tables) and the knowledge-base files |
 | `README.md`, `llms.txt`, `AGENTS.md` | Public docs, the LLM-readable index, and the cross-tool agent protocol |
