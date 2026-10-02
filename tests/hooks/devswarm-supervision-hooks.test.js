@@ -86,6 +86,27 @@ test('parent-inbox: extras and straying ride on the plan cell; a plain plan row 
   } finally { h.cleanup(); }
 });
 
+test('parent-inbox: a dormant workspace never shows STRAYING; two renders of the same state agree', () => {
+  const h = makeHome();
+  try {
+    const mut = (p, now) => { planLib.applyStep(p, 1, 'done', now - 30 * 60000); planLib.applyStep(p, 2, 'doing', now - 20 * 60000); };
+    const old = Date.now() - 8 * 3600000; // 8h silent, past the 6h idle window
+    writeHeartbeat(h.home, 'wsDormant', { id: 'wsDormant', ts: old, progress_pct: 10 });
+    writeHeartbeat(h.home, 'wsLive', { id: 'wsLive', ts: Date.now(), progress_pct: 10 });
+    for (const id of ['wsDormant', 'wsLive']) { seedPlan(h.home, id, ['read', 'fix', 'test'], mut); seedStray(h.home, id, [stallEntry]); }
+    writeSummary(h.home, { wsDormant: {}, wsLive: {} });
+    const render = (sid) => ctxOf(testHook('devswarm-parent-inbox.js', { hook_event_name: 'UserPromptSubmit', session_id: sid, prompt: 'hi', cwd: REPO_CWD },
+      { home: h.home, env: PRIMARY_ENV, expectJson: true }));
+    const a = render('d1');
+    const b = render('d2');
+    const stable = (c, id) => tableRow(c, id).replace(/\|[^|]*\|\s*$/, '|'); // drop the relative "last" cell
+    assert.match(tableRow(a, 'wsDormant'), /\|\s*dormant\s*\|/, tableRow(a, 'wsDormant'));
+    assert.ok(!/STRAYING/.test(tableRow(a, 'wsDormant')), 'dormant row must not show STRAYING: ' + tableRow(a, 'wsDormant'));
+    assert.strictEqual(stable(a, 'wsDormant'), stable(b, 'wsDormant'), 'same state -> same row across renders');
+    assert.ok(/STRAYING: stall/.test(tableRow(a, 'wsLive')), 'a live row keeps its STRAYING hint: ' + tableRow(a, 'wsLive'));
+  } finally { h.cleanup(); }
+});
+
 function seedIdleWorkspace(home, id) {
   const root = path.join(home, '.anti-hall', 'devswarm');
   const inboxPath = path.join(root, 'inbox', id + '.ndjson');

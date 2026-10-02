@@ -2091,9 +2091,11 @@ function main() {
             } catch (_) { /* no token figure */ }
             const extras = Array.isArray(found.plan.extras) ? found.plan.extras.length : 0;
             if (extras) planLabel += ' · +' + extras + ' extra' + (extras === 1 ? '' : 's');
+            // dormant rows never show STRAYING (stale persisted state; the
+            // label already says dormant) — same `dormant` the label used.
             const stray = planLib.readStray(home, found.key);
             const active = stray && Array.isArray(stray.active) ? stray.active : [];
-            if (active.length) planLabel += ' · STRAYING: ' + Array.from(new Set(active.map((a) => a.signal))).join('+');
+            if (active.length && !dormant) planLabel += ' · STRAYING: ' + Array.from(new Set(active.map((a) => a.signal))).join('+');
             finishCell = planLabel;
           }
         }

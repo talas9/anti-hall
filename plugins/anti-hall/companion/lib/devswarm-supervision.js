@@ -58,14 +58,18 @@ function offScopeFiles(plan, worktreePath, deps) {
 
 // deterministicSignals(plan, verdict, ctx) -> [{signal, step, key, reason, files?}]
 function deterministicSignals(plan, verdict, ctx) {
-  const { now, stallMs, worktreePath, deps, usage, burnWarn } = ctx;
+  const { now, stallMs, worktreePath, deps, usage, burnWarn, dormant } = ctx;
   const cur = planLib.currentStep(plan);
   if (!cur) return [];
   const out = [];
   // A child whose latest report is a done-report (`devswarm.js done`) is
   // awaiting its parent, not stalled: no idle/stall/burn signals until a new
   // step report lifts plan.done_reported_at (planLib.applyStep).
-  const awaitingParent = Number.isFinite(plan.done_reported_at);
+  // A DORMANT workspace (session not alive: no live process, activity past the
+  // window — liveness.js rowLivenessState) is surfaced as `dormant` in the
+  // roster; flagging it as stalled/idle/burning too is contradictory noise, so
+  // those three signals are suppressed (off-scope is about files, kept).
+  const awaitingParent = Number.isFinite(plan.done_reported_at) || dormant === true;
   const status = verdict && verdict.status;
   const lastProgress = Math.max(
     Number.isFinite(plan.step_ts) ? plan.step_ts : (Number.isFinite(plan.created_at) ? plan.created_at : now),
@@ -119,8 +123,15 @@ function evaluateChild(d, verdict, opts) {
   if (usage && usage.closed && usage.closed.tokens > 0) {
     metrics.record(home, 'tokens', { now, id: d.id, key: found.key, tokens: usage.closed.tokens, stepsDone: planLib.stepsDone(plan) });
   }
+  // Same rule the roster label uses (one derivation, so they cannot disagree).
+  let dormant = false;
+  try {
+    const rowState = deps.rowLivenessState || require('./liveness.js').rowLivenessState;
+    dormant = rowState({ id: d.id, worktreePath: d.worktreePath || plan.worktreePath, sessionId: d.sessionId }, home,
+      { now, env, lastOutboundTs: verdict && verdict.lastOutboundTs }) === 'dormant';
+  } catch (_) { dormant = false; }
   let signals = deterministicSignals(plan, verdict, { now, stallMs, worktreePath: d.worktreePath || plan.worktreePath, deps,
-    usage, burnWarn: tokenUsage.burnTokensWarn(sOpts) });
+    usage, dormant, burnWarn: tokenUsage.burnTokensWarn(sOpts) });
   // Jev integrations (companion/lib/devswarm-supervision-jev.js, all default
   // shadow) may drop a deterministic signal or add one — only when promoted
   // to "on". Never anything else. deps.jevAdjust = false skips them (tests).

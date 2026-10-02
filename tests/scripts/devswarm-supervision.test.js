@@ -95,6 +95,25 @@ test('stall: a busy child with no step progress for stepStallMin warns exactly o
   } finally { rm(home); }
 });
 
+test('dormant workspace: stall/idle/burn signals are suppressed (and cleared); a live one still stalls', () => {
+  const home = tmpHome();
+  try {
+    seed(home, 'ch-dorm', ['read', 'fix', 'test'], (p, now) => { planLib.applyStep(p, 1, 'doing', now - 45 * MIN); });
+    const d = { id: 'ch-dorm', worktreePath: null };
+    const now = Date.now();
+    const live = sup.evaluateChild(d, { status: 'alive' }, { home, env: ENV, now, deps: noJev });
+    assert.deepStrictEqual(live.signals.map((s) => s.signal), ['stall']);
+    const dormantDeps = Object.assign({ rowLivenessState: () => 'dormant' }, noJev);
+    const a = sup.evaluateChild(d, { status: 'alive' }, { home, env: ENV, now, deps: dormantDeps });
+    const b = sup.evaluateChild(d, { status: 'alive' }, { home, env: ENV, now, deps: dormantDeps });
+    assert.deepStrictEqual(a.signals, []);
+    assert.deepStrictEqual(a.signals, b.signals, 'deterministic for the same state');
+    assert.deepStrictEqual(planLib.readStray(home, 'ch-dorm').active, [], 'stale STRAYING state cleared');
+    const stale = sup.evaluateChild(d, { status: 'stale', staleSince: now - 20 * MIN }, { home, env: ENV, now, deps: dormantDeps });
+    assert.deepStrictEqual(stale.signals, [], 'idle suppressed too');
+  } finally { rm(home); }
+});
+
 test('stall: a new episode on the same step repeats, capped at strayWarnMax', () => {
   const home = tmpHome();
   try {
