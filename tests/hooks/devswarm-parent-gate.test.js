@@ -1828,7 +1828,7 @@ test('ARCHIVED-BUT-LIVE SENDER: a question from a sender archived but still live
 // otherwise-unmatched sender, since the reader cannot tell "genuinely
 // retired" apart from "archived-but-live, just not folded in on this stale
 // summary".
-test('LEGACY SUMMARY (no archivedRegistryRows field): an unmatched sender stays BLOCKING, not informational (fail-open)', () => {
+test('LEGACY SUMMARY (no archivedRegistryRows field): a sender with no row anywhere is no proof of a live asker -> does not block (eligibility unknown)', () => {
   const h = makeHome();
   try {
     const ts = Date.now() - 5 * 60000;
@@ -1837,10 +1837,7 @@ test('LEGACY SUMMARY (no archivedRegistryRows field): an unmatched sender stays 
       omitArchivedField: true,
     });
     const r = run(h.home, stopPayload('legacy-summary-sess', true));
-    assert.strictEqual(r.json && r.json.decision, 'block', 'a legacy summary must fail open toward blocking, never silently informational');
-    assert.match(r.json.reason, /UNANSWERED QUESTION/);
-    assert.match(r.json.reason, /ghost-sender/);
-    assert.doesNotMatch(r.json.reason, /INFORMATIONAL/i);
+    assert.ok(!(r.json && r.json.decision === 'block'), 'a block needs positive proof the sender is live; no row anywhere = unknown = no block: ' + JSON.stringify(r.json));
   } finally { h.cleanup(); }
 });
 

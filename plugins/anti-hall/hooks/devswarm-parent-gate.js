@@ -1016,6 +1016,23 @@ function main() {
     unansweredInformational = partitioned.informational;
   } catch (_) { unansweredInformational = []; }
 
+  // A question from an ARCHIVED / HELD / ARCHIVE-IGNORED sender (row-eligibility.js,
+  // the same `archived || held || ignored` = skip policy as the children scan
+  // below) must not BLOCK this Stop, and a sender whose row cannot be found is
+  // not proof the asker is live, so it does not block either. ONE filter shared
+  // with hooks/devswarm-parent-inbox.js. Runs BEFORE qSig/the ceiling are derived,
+  // so both see only the live set: when a sender is archived mid-loop the
+  // signature changes, the counters restart for the remaining live set (never
+  // for a set that did not shrink), and an empty set clears the loop state.
+  {
+    const askerRows = (own.registryRows || []).concat(descriptors.map((d) => ({ id: d.id, worktreePath: d.worktreePath || null, sessionId: d.sessionId || null })));
+    const askerElig = rowEligibilityLib.createContext({
+      home, env: process.env, now: Date.now(), xcache: true,
+      cache: () => { try { return readActiveCache({ home, env: process.env, now: Date.now() }); } catch (_) { return null; } },
+    });
+    unanswered = require('../companion/lib/devswarm-reply-state.js').filterLiveAskers(unanswered, askerRows, askerElig.of, selfKey);
+  }
+
   // TRUNCATED pendingQuestions (P2 fix — see readOwnUnread's header). This is
   // a THIRD, independent blocking axis alongside unread/unanswered: even a
   // CORRECTLY-computed `unanswered` above is unanswered over an INCOMPLETE

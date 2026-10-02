@@ -1070,11 +1070,9 @@ function buildAwaitingLine(unansweredList, titleFor, now, previews) {
   return line + '\n';
 }
 
-// `awaiting` (optional) = the sender-eligibility-filtered subset the lead line
-// lists; omitted -> the line uses `unanswered` as before.
-function buildOwnUnreadSegment(count, id, urgencyMax, unanswered, informational, titleFor, previews, awaiting) {
-  const awaitingList = Array.isArray(awaiting) ? awaiting : (Array.isArray(unanswered) ? unanswered : []);
-  return buildAwaitingLine(awaitingList, titleFor, Date.now(), previews) + buildOwnUnreadSegmentBody(count, id, urgencyMax, unanswered, informational);
+function buildOwnUnreadSegment(count, id, urgencyMax, unanswered, informational, titleFor, previews) {
+  const unansweredList = Array.isArray(unanswered) ? unanswered : [];
+  return buildAwaitingLine(unansweredList, titleFor, Date.now(), previews) + buildOwnUnreadSegmentBody(count, id, urgencyMax, unanswered, informational);
 }
 
 function buildOwnUnreadSegmentBody(count, id, urgencyMax, unanswered, informational) {
@@ -2250,6 +2248,9 @@ function main() {
   // out of ownUnanswered below. Never counted toward the blocking figure;
   // rendered once, informationally, by buildOwnUnreadSegment.
   let ownUnansweredInformational = [];
+  // Sender rows for the eligibility filter below (set inside the try; stays []
+  // if the registry could not be read -> nothing is nagged on doubt).
+  let askerRows = [];
   try {
     const replyStateMod = require('../companion/lib/devswarm-reply-state.js');
     const replyState = replyStateMod.readReplyState(repoKey, home);
@@ -2322,6 +2323,7 @@ function main() {
         }
       }
     } catch (_) { registryRows = []; archivedKnown = false; }
+    askerRows = registryRows;
     ownUnanswered = replyStateMod.familyAwareUnanswered({
       pendingQuestions: ownPendingQuestions, replyState, descriptors, resolveMeshId, registryRows,
       // The recipient of these questions — its own row and its twins can never
@@ -2344,6 +2346,12 @@ function main() {
   } catch (_) {
     ownUnanswered = ownPendingQuestions.slice();
   }
+  // QUESTIONS FROM ARCHIVED / HELD / ARCHIVE-IGNORED (or unknown-row) SENDERS
+  // never count toward the nag below or the awaiting-reply line: blocking and
+  // nagging hooks skip those rows (0.109.3/0.109.4). One shared filter with the
+  // Stop gate. Applied after the try so the fail-open fallback above cannot
+  // bypass it.
+  ownUnanswered = require('../companion/lib/devswarm-reply-state.js').filterLiveAskers(ownUnanswered, askerRows, elig.of, repoKey);
 
   // Daemon-LIVENESS staleness banner (fail-open). Gated on `rows.length>0` (an
   // active workspace exists, i.e. a daemon is EXPECTED to be running) OR
@@ -2653,27 +2661,7 @@ function main() {
         return (row && row.label) || names.readName(home, wid);
       } catch (_) { return null; }
     };
-    // The "QUESTIONS AWAITING YOUR REPLY" line lists only questions whose
-    // sender row is NOT archived, held or archive-ignored (the parent gate's
-    // `archived || held || ignored` = skip policy, via row-eligibility.js).
-    // Silent on doubt: a sender that is not in the summary, or whose
-    // eligibility cannot be projected, is left OUT. Computed here from the
-    // summary (not inside the reply-state try above) so the fail-open
-    // `ownPendingQuestions.slice()` fallback cannot bypass the filter.
-    const awaiting = ownUnanswered.filter((q) => {
-      try {
-        if (!q || q.from == null) return false;
-        const from = String(q.from);
-        const ws = (summary && summary.workspaces && summary.workspaces[from]) || null;
-        const arch = Array.isArray(summary && summary.archivedRegistryRows)
-          ? summary.archivedRegistryRows.find((r) => r && r.id != null && String(r.id) === from) : null;
-        const row = ws || arch;
-        if (!row) return false;
-        const e = elig.of({ id: from, worktreePath: row.worktreePath || null, sessionId: row.sessionId || null, repoKey });
-        return !!e && !e.archived && !e.held && !e.ignored;
-      } catch (_) { return false; }
-    });
-    segments.push(buildOwnUnreadSegment(ownUnread, primaryId, ownUrgencyMax, ownUnanswered, ownUnansweredInformational, titleFor, ownQuestionPreviews, awaiting));
+    segments.push(buildOwnUnreadSegment(ownUnread, primaryId, ownUrgencyMax, ownUnanswered, ownUnansweredInformational, titleFor, ownQuestionPreviews));
   }
   // Escalation notices the supervisor could NOT deliver to this Primary (not
   // registered in the mesh store, or its lock busy) are parked — surfaced here

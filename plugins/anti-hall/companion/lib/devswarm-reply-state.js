@@ -447,6 +447,33 @@ function partitionUnanswered(unanswered, descriptors, registryRows, opts) {
   return { blocking, informational };
 }
 
+// filterLiveAskers(unanswered, rows, eligOf, repoKey) -> the subset whose sender
+// is POSITIVELY a live row: found in `rows` ({id, worktreePath, sessionId}) AND
+// not archived, held or archive-ignored per row-eligibility.js (`eligOf` =
+// createContext(...).of). Archived/held/ignored rows are the project's "never
+// nag, never block" set; a sender with no row, or whose eligibility cannot be
+// projected, is also left out (a nag is advisory and a block needs positive
+// proof the asker is live). The ONE implementation for the Primary's every-turn
+// notice (hooks/devswarm-parent-inbox.js) and the Stop gate
+// (hooks/devswarm-parent-gate.js).
+function filterLiveAskers(unanswered, rows, eligOf, repoKey) {
+  const list = Array.isArray(unanswered) ? unanswered : [];
+  const byId = new Map();
+  for (const r of (Array.isArray(rows) ? rows : [])) {
+    if (r && r.id != null && !byId.has(String(r.id))) byId.set(String(r.id), r);
+  }
+  return list.filter((q) => {
+    try {
+      if (!q || q.from == null) return true; // malformed: no sender to judge -> kept unchanged, as partitionUnanswered does
+      const from = String(q.from);
+      const row = byId.get(from);
+      if (!row) return false;
+      const e = eligOf({ id: from, worktreePath: row.worktreePath || null, sessionId: row.sessionId || null, repoKey: repoKey || null });
+      return !!e && !e.archived && !e.held && !e.ignored;
+    } catch (_) { return false; }
+  });
+}
+
 // --- forward migration (persisted-shape discipline) -------------------------
 // migrateReplyState(home, { dryRun }) — normalizes every existing reply-state
 // file under ~/.anti-hall/devswarm/parent-gate/*-replies.json from the LEGACY
@@ -612,6 +639,7 @@ module.exports = {
   unansweredQuestions,
   familyAwareUnanswered,
   partitionUnanswered,
+  filterLiveAskers,
   migrateReplyState,
   // exported for direct unit coverage of the fold/dedup + append-record
   // discriminator logic (not part of the consumer-facing contract).
