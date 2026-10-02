@@ -133,15 +133,28 @@ function mutate(devswarmPath, oldStr, newStr) {
 
 // mutateWith: same contract as mutate(), but takes a transform(source)
 // function instead of a single oldStr/newStr pair — for mutants that need
-// more than one coordinated replacement in a single write (e.g. removing a
-// guard AND appending to module.exports).
+// more than one coordinated replacement (e.g. removing a guard AND appending
+// to module.exports). The transform is applied to EVERY source file of the
+// scratch copy (devswarm.js + devswarm-lib/*), so a replacement lands in
+// whichever file now holds the guarded code. A file the transform leaves
+// unchanged is not rewritten, and a transform that THROWS for a file (the
+// usual "marker not found verbatim" guard) just means "not in this file".
+// If NO file ends up changed the call fails loudly, carrying those messages —
+// a transform whose markers vanished must never mutate nothing.
 function mutateWith(devswarmPath, transform) {
-  const before = fs.readFileSync(devswarmPath, 'utf8');
-  const after = transform(before);
-  if (after === before) {
-    throw new Error('mutant produced no change');
+  let changed = 0;
+  const errors = [];
+  for (const file of copiedSourceFiles(devswarmPath)) {
+    const before = fs.readFileSync(file, 'utf8');
+    let after;
+    try { after = transform(before); } catch (e) { errors.push(path.basename(file) + ': ' + ((e && e.message) || e)); continue; }
+    if (after === before) continue;
+    fs.writeFileSync(file, after);
+    changed++;
   }
-  fs.writeFileSync(devswarmPath, after);
+  if (changed === 0) {
+    throw new Error('mutant produced no change' + (errors.length ? ' (transform errors: ' + errors.join('; ') + ')' : ''));
+  }
 }
 
 // requireFresh: bust the module cache entry for this exact scratch path and
