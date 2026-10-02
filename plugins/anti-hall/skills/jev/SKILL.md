@@ -16,14 +16,14 @@ semantics" section. This skill is the activation/config/status front door;
 The key must reach `set-key` over **STDIN only** — never as a chat message the
 model repeats, never as a CLI argument (visible in `ps`/shell history), never
 logged. Whichever path below is used, once `set-key` reports
-`key saved (N chars)`, **never repeat the key back, log it, or write it anywhere
+`key saved for <transport>`, **never repeat the key back, log it, or write it anywhere
 else.**
 
 ## Primary flow: "activate jev" / "enable jev" / "set up jev"
 
 1. Run `node "${CLAUDE_PLUGIN_ROOT}/scripts/jev-setup.js" status` first.
 2. **If a key is already present** (`key present: yes`, or the user says they
-   already stored one via `/plugin config`): skip straight to step 5
+   already stored one through the plugin options): skip straight to step 5
    (enable) — don't ask for a key again.
 3. **If no key is present:** ask which provider the key is for — there is no way
    to guess this from the key's shape, so always ask, never infer:
@@ -33,13 +33,20 @@ else.**
      **not** independently live-verified in this build (TypeSafe's own console has
      closed sign-ups as of this writing — see `https://github.com/talas9/anti-hall/blob/main/docs/KB-jev-classifier.md` §8). Say
      this plainly if they pick it.
-4. **Preferred: the plugin option.** Ask the user to store the key themselves with
-   `/plugin config` (anti-hall -> `jev_vercel_api_key` for Vercel, or
+4. **Preferred: the plugin option.** Ask the user to store the key themselves in
+   the plugin's options screen (Claude Code prompts for these options when the plugin is enabled; they can be changed later from the plugin's configuration) (anti-hall -> `jev_vercel_api_key` for Vercel, or
    `jev_typesafe_api_key` for TypeSafe; the value is kept in the OS credential
    store and sent only to that vendor). The key never appears in this chat and
    you never read it. Note that `status` and `test` run from a shell and cannot
    see a key stored this way (they print "no Jev key visible to this process");
    the hooks do see it.
+
+   A key stored through the plugin options is kept in the OS credential store and is
+   visible only to hook processes. A shell command you run (including `jev-setup.js
+   status`) cannot see it and will report no key, so do not treat that as proof it is
+   missing. Confirm it afterwards from the hooks' own evidence: after the first
+   classified hook call, read the per-transport rows of the `jev-report` output
+   (calls / errors, where a failed call's reason can be `no-key`).
 
    **Legacy alternative (opt-in):** the key file written by `set-key` is read
    by the hooks only when `jev.allowLegacyKeyRead` is on (home settings only,
@@ -68,7 +75,7 @@ else.**
 6. Test: `node "${CLAUDE_PLUGIN_ROOT}/scripts/jev-setup.js" test` — this makes
    **one** real classification call with a fixed harmless question and prints
    `ok`/latency/confidence, or a failure reason. It never prints the key. With a
-   key stored through `/plugin config` it cannot run (a shell sees no plugin
+   key stored through the plugin options it cannot run (a shell sees no plugin
    option); skip it and confirm via `jev-report` after the first hook call.
    - **If it fails with `http-401`/`http-403`** (key rejected): say so plainly,
      ask them to double check they picked the right provider (a Vercel key won't
@@ -555,10 +562,10 @@ with hook/event/API details.
 - Never print, log, echo, or commit the key — not in this chat, not in a file,
   not in a script argument.
 - Never guess which provider a key belongs to from its shape — always ask.
-- Where a stored key is visible: a key saved via `/plugin config` reaches hooks and the workers they spawn
+- Where a stored key is visible: a key saved through the plugin options reaches hooks and the workers they spawn
   only. `jev-setup test`/`status`, `jev-report` and `finding-dedup` run from a shell see no plugin option and
   print a one-line "no Jev key visible to this process" reason; enabling `jev.allowLegacyKeyRead`
   (home settings only, `--confirmed`; env cannot set it) with a key file makes the key available to them.
-- Preferred: the user stores the key via `/plugin config` (anti-hall -> `jev_vercel_api_key` or `jev_typesafe_api_key`, one per vendor). The key file
+- Preferred: the user stores the key in the plugin's options screen (Claude Code prompts for these options when the plugin is enabled; they can be changed later from the plugin's configuration) (anti-hall -> `jev_vercel_api_key` or `jev_typesafe_api_key`, one per vendor). The key file
   that the jev-setup script's set-key command writes is read only when
   `jev.allowLegacyKeyRead` is on; never store the key anywhere else.

@@ -383,7 +383,7 @@ zero network activity — it is as if it were not registered at all.
 export ANTIHALL_SEMANTIC_JUDGE=1
 ```
 
-Then store the key via `/plugin config` (anti-hall -> `anthropic_api_key`, kept in the OS
+Then store the key in the plugin's options screen (anti-hall -> `anthropic_api_key`, kept in the OS
 credential store; the judge is fail-open if it is absent). anti-hall no longer reads
 `ANTHROPIC_API_KEY` from your environment unless you enable `guards.allowAnthropicEnvKey` in
 `~/.anti-hall/settings.json` (the Codex port, which has no plugin options, needs that setting).
@@ -399,7 +399,7 @@ unverified factual claims.
 **Fail-open:** any error (absent `anthropic_api_key`, API unavailable, timeout, bad
 JSON response) exits 0 without blocking. A failure here never wedges a session.
 
-**Where a stored key is visible.** A key stored via `/plugin config` (`jev_vercel_api_key`,
+**Where a stored key is visible.** A key stored through the plugin options (`jev_vercel_api_key`,
 `jev_typesafe_api_key`, legacy `jev_api_key`, `anthropic_api_key`) reaches **hook processes and the workers they spawn** only; Claude
 Code does not hand it to the Bash tool, the statusline, monitors or the companion daemons.
 So `jev-setup test`/`status`, `jev-report` (credit balance) and `finding-dedup` print a

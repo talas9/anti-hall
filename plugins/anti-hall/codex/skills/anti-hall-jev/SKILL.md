@@ -22,7 +22,7 @@ All commands below run as `node "$ANTI_HALL_ROOT/scripts/jev-setup.js" <verb>`.
 
 `set-key` reads the key from **STDIN only**. Never pass it as a CLI argument, never
 have the model repeat it in a reply, never log it. Once `set-key` prints
-`key saved (N chars)`, that's the only confirmation you ever give — never the key
+`key saved for <transport>`, that's the only confirmation you ever give — never the key
 itself.
 
 ## Primary flow: activate / enable / set up jev
