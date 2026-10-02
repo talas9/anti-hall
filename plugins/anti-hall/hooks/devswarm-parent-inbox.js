@@ -2348,7 +2348,8 @@ function main() {
           transcriptPath: payload && typeof payload.transcript_path === 'string' ? payload.transcript_path : null,
         });
         if (health.status === 'failed') {
-          try { staleBanner = faultOnce(); } catch (_) { staleBanner = ingestHealthMod.buildMonitorFaultBanner(health.monitorFault, now); }        } else {
+          try { staleBanner = faultOnce(); } catch (_) { staleBanner = ingestHealthMod.buildMonitorFaultBanner(health.monitorFault, now); }
+        } else {
           try { faultOnce(); } catch (_) { /* fail-open */ }
           if (health.status === 'stale') staleRaw = { beatTs };
         }
