@@ -6,6 +6,24 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.120.13 (2026-10-02)
+
+### Security
+
+- **Jev test-endpoint override is loopback-only.** The Jev classifier's test-endpoint override (`ANTIHALL_JEV_TEST_ENDPOINT`) is now honoured only for loopback addresses. Previously, an environment value could redirect the request carrying the gateway API key to an arbitrary host. Users with a Jev key configured should update.
+
+### Fixed
+
+- **spawn submodule repair.** Reports a bare 40-hex sha; byte-identical set-aside files are no longer reported as conflicts (the duplicate copy is removed); differing files state which copy is in place; a leftover set-aside dir holding env or credential files produces a warning.
+
+### Docs
+
+- **Release policy.** `RELEASING.md` now states that rc tags are pruned after the release is published.
+
+### Tests
+
+- **Defect history.** Added a single-tag test for the defect-history backfill.
+
 ## 0.120.12 (2026-10-02)
 
 ### Added
