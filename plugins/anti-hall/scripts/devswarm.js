@@ -13696,6 +13696,8 @@ function appBuilderGate(id, ctx) {
 // `archived:false`. EXIT 0 IS NOT PROOF the app archived anything — callers
 // verify through verifyAppArchived before reporting success.
 function hcArchiveCall(ident, base) {
+  // hivecontrol defaults an absent ref to the CURRENT workspace: never spawn it without an explicit ref.
+  if (typeof ident !== 'string' || !ident.trim()) return { ok: false, raw: '', error: 'refusing to call hivecontrol with an empty ref' };
   const spec = Object.assign({}, base, { args: ['workspace', 'archive', String(ident)] });
   const once = () => {
     let r;
@@ -13731,6 +13733,22 @@ function verifyAppArchived(id, ctx, resp) {
   return { verified: false, why: 'the app DB could not confirm the workspace and hivecontrol did not report archived:true' };
 }
 
+// appSideSnapshot(id, ctx) -> { target, rows:Map(id -> {st:'open'|'closed'|'archived', branch}) } | null. Fresh read of
+// the app DB: the target row plus every builder sharing its branchName or worktreePath.
+function appSideSnapshot(id, ctx) {
+  let snap = null;
+  try { snap = require('../companion/lib/devswarm-app-db.js').snapshot({ home: ctx.home, env: ctx.env, now: ctx.now, fresh: true }); } catch (_) { snap = null; }
+  if (!snap || !Array.isArray(snap.workspaces)) return null;
+  const t = snap.workspaces.find((w) => w.id === String(id));
+  if (!t) return null;
+  const st = (w) => (w.archived === true ? 'archived' : w.active ? 'open' : 'closed');
+  const rows = new Map();
+  for (const w of snap.workspaces) {
+    if (w.id === t.id || (t.branchName && w.branchName === t.branchName) || (t.worktreePath && w.worktreePath === t.worktreePath)) rows.set(w.id, { st: st(w), branch: w.branchName || null });
+  }
+  return { target: t, rows };
+}
+
 function attemptAppArchive(id, desc, ctx) {
   const home = ctx.home;
   const target = appBuilderGate(id, ctx);
@@ -13741,27 +13759,48 @@ function attemptAppArchive(id, desc, ctx) {
   if (!cap || !cap.ok) return { attempted: false, reason: (cap && cap.reason) || 'dormant' };
   const cwd = (desc && desc.worktreePath) || ctx.cwd || process.cwd();
   const base = { env: ctx.env, cwd, timeout: APP_ARCHIVE_TIMEOUT_MS };
+  const before = appSideSnapshot(id, ctx);
   const branch = target.branch || (desc && desc.branch) || null;
+  // BRANCH FALLBACK GATE: a branch ref may name a different (re-spawned, open) builder, so it is used
+  // only when exactly ONE non-archived app builder holds this branchName and it is the target itself.
+  let branchOk = false; let branchWhy = null;
+  if (!branch || typeof branch !== 'string') branchWhy = 'no branch name';
+  else if (!before) branchWhy = 'app DB unreadable';
+  else {
+    const holders = [...before.rows.entries()].filter(([, r]) => r.branch === branch && r.st !== 'archived').map(([rid]) => rid);
+    if (holders.length === 1 && holders[0] === before.target.id) branchOk = true;
+    else branchWhy = 'branch name is shared by ' + holders.length + ' builders';
+  }
+  const done = (res) => {
+    const after = before ? appSideSnapshot(id, ctx) : null;
+    if (after) {
+      const changed = [];
+      for (const [rid, stt] of before.rows) { const a = after.rows.get(rid); if (rid !== before.target.id && (!a || a.st !== stt.st)) changed.push({ id: rid, before: stt.st, after: a ? a.st : 'gone' }); }
+      if (changed.length) res.sideEffect = { message: 'hivecontrol changed OTHER app builders while archiving ' + id + ' — NOT undone, check the app', changed };
+    }
+    return res;
+  };
   const first = hcArchiveCall(String(id), base);
   let v = first.ok ? verifyAppArchived(id, ctx, first) : null;
   const retried = !!first.retried;
-  if (first.ok && v.verified) return Object.assign({ attempted: true, ok: true, verified: true, via: 'id' }, retried ? { retried: true } : {});
+  if (first.ok && v.verified) return done(Object.assign({ attempted: true, ok: true, verified: true, via: 'id' }, retried ? { retried: true } : {}));
   // Exit 0 but the app is unchanged (field report): the id was accepted as a no-op.
-  // The CLI also accepts the BRANCH name — try that once, then re-verify.
+  // The CLI also accepts the BRANCH name — try that once, then re-verify (only when branchOk).
   let second = null;
-  if (first.ok && branch) {
+  if (first.ok && branchOk) {
     second = hcArchiveCall(branch, base);
     if (second.ok) {
       v = verifyAppArchived(id, ctx, second);
-      if (v.verified) return { attempted: true, ok: true, verified: true, via: 'branch', retried: retried || !!second.retried };
+      if (v.verified) return done({ attempted: true, ok: true, verified: true, via: 'branch', retried: retried || !!second.retried });
     }
   }
   const error = !first.ok ? first.error
-    : (second && !second.ok ? second.error : 'hivecontrol exited 0 but ' + ((v && v.why) || 'the archive could not be verified'));
-  return {
+    : (second && !second.ok ? second.error : 'hivecontrol exited 0 but ' + ((v && v.why) || 'the archive could not be verified'))
+      + (first.ok && !branchOk && branchWhy ? ' (branch fallback skipped: ' + branchWhy + ')' : '');
+  return done({
     attempted: true, ok: false, verified: false, retried: retried || !!(second && second.retried) || undefined, error,
-    manualCommand: 'hivecontrol workspace archive ' + (branch || id),
-  };
+    manualCommand: 'hivecontrol workspace archive ' + (branchOk ? branch : id),
+  });
 }
 
 // localArchivedAppLive(home, ctx) -> { appDb, rows:[{ id, appId, branch, label, worktreePath, repoKey, cmd }] }.
@@ -13793,7 +13832,8 @@ function localArchivedAppLive(home, ctx) {
     const wt = wtKey(d.worktreePath);
     if (wt && activeWts.has(wt)) continue;
     if (c.repoKey && descriptorPhysicalOwnerKey(d) !== c.repoKey) continue;
-    const w = appDb.workspaceFor(snap, { id, worktreePath: d.worktreePath || null });
+    // EXACT id only: workspaceFor's worktree fallback could name a re-spawned LIVE builder.
+    const w = snap.workspaces.find((x) => x.id === id) || null;
     if (!w || w.archived === true || String(w.builderType || '').toLowerCase() === 'primary' || !w.builderType || seen.has(w.id)) continue;
     seen.add(w.id);
     out.rows.push({
@@ -13864,6 +13904,7 @@ function appOnlyArchive(raw, ctx) {
   const r = hit[0];
   const appArchive = attemptAppArchive(r.appId, { id: r.id, worktreePath: r.worktreePath, branch: r.branch }, { home, cwd: ctx.cwd, env, now: ctx.now });
   const res = { ok: true, action: 'archive', id: r.id, descriptorArchived: false, alreadyArchived: true, appOnly: true, appArchive };
+  if (appArchive.sideEffect) res.warnings = ['APP SIDE EFFECT: ' + appArchive.sideEffect.message + ' ' + JSON.stringify(appArchive.sideEffect.changed)];
   if (!appArchive.ok) {
     res.partial = true;
     res.manualStep = 'run `' + (appArchive.manualCommand || r.cmd) + '` — the app archive was NOT verified' + (appArchive.error ? ' [' + appArchive.error + ']' : '');
@@ -14210,6 +14251,7 @@ function cmdArchive(id, ctx, opts) {
     ? { attempted: false, reason: 'local-only caller (appArchive:false)' }
     : attemptAppArchive(id, desc, ctx);
   archived.appArchive = appArchive;
+  if (appArchive.sideEffect) archived.warnings = (archived.warnings || []).concat('APP SIDE EFFECT: ' + appArchive.sideEffect.message + ' ' + JSON.stringify(appArchive.sideEffect.changed));
   if (appArchive.ok) {
     archived.manualStep = 'archived in the DevSwarm app too (isActive=0/isHidden=1, verified)'
       + (appArchive.retried ? ' — succeeded on retry' : '') + '.';
@@ -21230,7 +21272,7 @@ module.exports = {
   deriveInstanceNonce,
   // mesh redesign B5 / Phase 3 — THE nonce every production site uses, plus the
   // reader_cursors adapters:
-  deriveReaderNonce, callerReaderKey, commitNdAck, floorCursor, importReaderCursorsAllStores, repairReaderFloorsAllStores, markAppArchivedDescriptors, retireStaleArchivedMarkers, localArchivedAppLive, appLiveArchivedRows, appOnlyArchive, attemptAppArchive, deriveTitleFromBrief, appSessionOnWorktree, refreshNamesFromApp, syncAppState, messageGaps, appStatePath, cmdAppState, cmdSyncUi, repairChildSenderLabelsAllStores,
+  hcArchiveCall, deriveReaderNonce, callerReaderKey, commitNdAck, floorCursor, importReaderCursorsAllStores, repairReaderFloorsAllStores, markAppArchivedDescriptors, retireStaleArchivedMarkers, localArchivedAppLive, appLiveArchivedRows, appOnlyArchive, attemptAppArchive, deriveTitleFromBrief, appSessionOnWorktree, refreshNamesFromApp, syncAppState, messageGaps, appStatePath, cmdAppState, cmdSyncUi, repairChildSenderLabelsAllStores,
   // spawn speed + submodule-failure reporting (0.109.0) — exported for direct unit testing:
   spawnSourceFreshness, remoteRefAgeSec, gitCommonDirFor, parseSubmoduleWorktreeFailures, repairSubmoduleWorktrees,
   senderIdentityDetailed, childSenderId, isPrimaryCheckout,

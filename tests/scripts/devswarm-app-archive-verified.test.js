@@ -217,6 +217,97 @@ test('CLOSED builders: an AMBIGUOUS prefix matching two closed workspaces archiv
   } finally { rm(t.W); rm(t.home); }
 });
 
+const ID_Y = 'a1b2c3d4-9999-4000-8000-abcdef000001';
+function addBuilder(t, row) {
+  const { DatabaseSync } = require('node:sqlite');
+  const db = new DatabaseSync(t.dbPath);
+  db.prepare("INSERT INTO builders (id, isActive, isHidden, builderType, worktreePath, label, branchName, repositoryId) VALUES (?, ?, 0, 'standard', ?, 'y', ?, 'repo-1')").run(row.id, row.isActive, row.worktreePath || null, row.branchName || null);
+  db.close();
+}
+function setBuilder(t, id, sql) {
+  const { DatabaseSync } = require('node:sqlite');
+  const db = new DatabaseSync(t.dbPath); db.prepare('UPDATE builders SET ' + sql + ' WHERE id = ?').run(id); db.close();
+}
+
+test('P1: closed X + OPEN Y sharing the branch, id call is a no-op -> hivecontrol NEVER receives the branch; Y stays open; manualStep kept with the ID command', () => {
+  const t = setup('sharedbranch', { effectDb: true, effectBranchOnly: true });
+  try {
+    setBuilder(t, ID_A, 'isActive = 0');
+    addBuilder(t, { id: ID_Y, isActive: 1, branchName: BRANCH });
+    const r = cli.run(['archive', ID_A], t.ctx);
+    assert.strictEqual(r.result.appArchive.ok, false, JSON.stringify(r.result));
+    assert.match(r.result.appArchive.error, /branch name is shared by 2 builders/);
+    assert.deepStrictEqual(archiveCalls(t.fake).map((c) => c.argv[2]), [ID_A], 'no call may carry the branch name');
+    assert.deepStrictEqual(dbRow(t.dbPath, ID_Y), { isActive: 1, isHidden: 0 });
+    assert.strictEqual(r.result.appArchive.manualCommand, 'hivecontrol workspace archive ' + ID_A);
+    assert.match(r.result.manualStep, /NOT verified/);
+  } finally { rm(t.W); rm(t.home); }
+});
+
+test('P1: closed X with a UNIQUE branch, id call a no-op -> branch fallback runs and verifies', () => {
+  const t = setup('uniquebranch', { effectDb: true, effectBranchOnly: true });
+  try {
+    setBuilder(t, ID_A, 'isActive = 0');
+    const r = cli.run(['archive', ID_A], t.ctx);
+    assert.strictEqual(r.result.appArchive.verified, true, JSON.stringify(r.result));
+    assert.strictEqual(r.result.appArchive.via, 'branch');
+    assert.deepStrictEqual(archiveCalls(t.fake).map((c) => c.argv[2]), [ID_A, BRANCH]);
+  } finally { rm(t.W); rm(t.home); }
+});
+
+test('P1: an undefined / empty / blank ref never reaches hivecontrol', () => {
+  const t = setup('emptyref', { effectDb: true });
+  try {
+    for (const bad of [undefined, null, '', '   ']) {
+      const r = cli.hcArchiveCall(bad, { env: t.ctx.env, cwd: t.W, timeout: 5000 });
+      assert.strictEqual(r.ok, false);
+      assert.match(r.error, /empty ref/);
+    }
+    assert.strictEqual(archiveCalls(t.fake).length, 0);
+  } finally { rm(t.W); rm(t.home); }
+});
+
+test('P1: a call that also archives ANOTHER builder on the same worktree is reported loudly as appArchive.sideEffect + warnings (not undone)', () => {
+  const t = setup('sideeffect');
+  try {
+    setBuilder(t, ID_A, 'isActive = 0');
+    addBuilder(t, { id: ID_Y, isActive: 1, worktreePath: t.top, branchName: 'qa/other' });
+    const bin = path.join(t.home, 'bin-se');
+    fs.mkdirSync(bin, { recursive: true });
+    const src = '#!' + process.execPath + '\n'
+      + "const fs=require('fs');const a=process.argv.slice(2);\n"
+      + "if(a[0]==='--version'){console.log('2.5.3');process.exit(0);}\n"
+      + "if(a[0]==='workspace'&&a[1]==='--help'){process.stdout.write(fs.readFileSync(" + JSON.stringify(HELP_253) + ",'utf8'));process.exit(0);}\n"
+      + "if(a[0]==='workspace'&&a[2]==='--help'){process.stdout.write(fs.readFileSync(" + JSON.stringify(ARCHIVE_253) + ",'utf8'));process.exit(0);}\n"
+      + "if(a[0]==='workspace'&&a[1]==='archive'){const {DatabaseSync}=require('node:sqlite');const d=new DatabaseSync(" + JSON.stringify(t.dbPath) + ");d.prepare('UPDATE builders SET isActive=0,isHidden=1').run();d.close();console.log(JSON.stringify({archived:true}));process.exit(0);}\n"
+      + 'process.exit(2);\n';
+    fs.writeFileSync(path.join(bin, 'hivecontrol'), src, { mode: 0o755 });
+    capsLib.resetCache();
+    const ctx = { home: t.home, cwd: t.W, env: { HOME: t.home, PATH: bin, ANTIHALL_DEVSWARM_APP_DB: t.dbPath }, backend: BACKEND };
+    const r = cli.run(['archive', ID_A], ctx);
+    assert.strictEqual(r.result.appArchive.ok, true, JSON.stringify(r.result));
+    assert.ok(r.result.appArchive.sideEffect, JSON.stringify(r.result.appArchive));
+    assert.deepStrictEqual(r.result.appArchive.sideEffect.changed, [{ id: ID_Y, before: 'open', after: 'archived' }]);
+    assert.match(r.result.warnings.join('\n'), /APP SIDE EFFECT/);
+  } finally { rm(t.W); rm(t.home); }
+});
+
+test('P2: tombstone id has NO app row but a re-spawned LIVE builder holds the worktree -> no repair candidate, no hivecontrol call', () => {
+  const t = setup('norowid', { effectDb: true });
+  try {
+    cli.cmdArchive(ID_A, t.ctx, { appArchive: false });
+    const { DatabaseSync } = require('node:sqlite');
+    const db = new DatabaseSync(t.dbPath); db.prepare('DELETE FROM builders WHERE id = ?').run(ID_A); db.close();
+    addBuilder(t, { id: ID_Y, isActive: 1, worktreePath: t.top, branchName: BRANCH });
+    const found = cli.localArchivedAppLive(t.home, { env: t.ctx.env, repoKey: t.repoKey });
+    assert.deepStrictEqual(found.rows, []);
+    const rep = cli.appLiveArchivedRows(t.home, { repair: true, cwd: t.W, env: t.ctx.env });
+    assert.strictEqual(rep.archived, 0);
+    assert.strictEqual(archiveCalls(t.fake).length, 0);
+    assert.deepStrictEqual(dbRow(t.dbPath, ID_Y), { isActive: 1, isHidden: 0 });
+  } finally { rm(t.W); rm(t.home); }
+});
+
 test('(b) the mesh id (primary-<hash>) and an id prefix resolve the same app-only archive; an unknown name archives nothing', () => {
   const t = setup('apponly2', { effectDb: true });
   try {
