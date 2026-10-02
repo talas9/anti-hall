@@ -205,11 +205,18 @@ function defaultKeyFilePath(transport) {
 // env var / keyFile (explicit or default for the transport) are read ONLY when
 // jev.allowLegacyKeyRead is on (see credentials.js). Returns the trimmed key
 // string or null. Never logs.
+let keyFileRejectionReported = false;
 function resolveCredential(cfg) {
-  return require('./credentials.js').resolveKey('jev', {
+  const cred = require('./credentials.js');
+  const r = cred.resolveKey('jev', {
     transport: cfg.transport,
     keyFile: cfg.keyFile || defaultKeyFilePath(cfg.transport),
-  }).key;
+  });
+  if (r.rejected && !keyFileRejectionReported) {
+    keyFileRejectionReported = true; // one line per process, never the content
+    try { process.stderr.write('anti-hall: ' + cred.rejectedNotice(r.rejected) + '\n'); } catch (_) { /* best-effort */ }
+  }
+  return r.key;
 }
 
 // jevDecide({question, state, timeoutMs}) -> Promise<Result>

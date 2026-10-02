@@ -219,6 +219,11 @@ async function cmdStatus() {
   console.log(`key present: ${present ? 'yes' : 'no'}`);
   if (!present) console.log('  ' + require('../hooks/lib/credentials.js').backgroundNoKeyNotice());
   try {
+    const cr = require('../hooks/lib/credentials.js');
+    const rr = cr.resolveKey('jev', { transport, keyFile: resolveKeyFilePath(cfg, transport) });
+    if (rr.rejected) console.log('  ' + cr.rejectedNotice(rr.rejected));
+  } catch (_) { /* best-effort */ }
+  try {
     for (const n of require('../hooks/lib/credentials.js').legacyNotices({
       kinds: ['jev'], transport, keyFile: resolveKeyFilePath(cfg, transport),
     })) console.log('notice: ' + n);

@@ -20,6 +20,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const MAX_KEY_FILE_BYTES = 4096;
 
 const OPTION_ENV = {
   jev: 'CLAUDE_PLUGIN_OPTION_JEV_API_KEY',
@@ -50,8 +51,39 @@ function allowLegacyKeyRead(kind, opts) {
   }
 }
 
+// readKeyFile(keyPath, home) -> {key, rejected}. The key file is only read when
+// ALL hold: the real path (symlinks resolved) is inside <home>/.config or
+// <home>/.anti-hall, it is a regular file, <= 4096 bytes, and its trimmed
+// content is ONE line with no whitespace. A missing file is a plain "no key"
+// ({key:null, rejected:null}); a present-but-unacceptable file is
+// {key:null, rejected:'<why>'} — the reason never contains file content.
+function insideDir(real, dir) {
+  const rel = path.relative(dir, real);
+  return !!rel && !rel.startsWith('..') && !path.isAbsolute(rel);
+}
+function readKeyFile(keyPath, home) {
+  let real;
+  try { real = fs.realpathSync(keyPath); } catch (_) { return { key: null, rejected: null }; }
+  try {
+    const roots = ['.config', '.anti-hall'].map((d) => {
+      try { return fs.realpathSync(path.join(home, d)); } catch (_) { return path.join(home, d); }
+    });
+    if (!roots.some((r) => insideDir(real, r))) return { key: null, rejected: 'path is outside ~/.config and ~/.anti-hall' };
+    const st = fs.lstatSync(real);
+    if (!st.isFile()) return { key: null, rejected: 'not a regular file' };
+    if (st.size > MAX_KEY_FILE_BYTES) return { key: null, rejected: 'larger than ' + MAX_KEY_FILE_BYTES + ' bytes' };
+    const content = fs.readFileSync(real, 'utf8').trim();
+    if (!content) return { key: null, rejected: null };
+    if (/\s/.test(content)) return { key: null, rejected: 'content is not a single line without whitespace' };
+    return { key: content, rejected: null };
+  } catch (_) {
+    return { key: null, rejected: 'unreadable' };
+  }
+}
+
 // resolveKey(kind, {transport, keyFile, env, allowLegacy}) ->
-//   {key: string|null, source: 'plugin-option'|'legacy-env'|'legacy-file'|null}
+//   {key: string|null, source: 'plugin-option'|'legacy-env'|'legacy-file'|null,
+//    rejected?: why a present key file was refused (see readKeyFile)}
 // kind: 'jev' | 'anthropic'. keyFile: absolute path (jev only), already
 // expanded by the caller. allowLegacy: tests/callers may pass a boolean;
 // default reads the settings key.
@@ -67,10 +99,9 @@ function resolveKey(kind, o) {
   const fromEnv = nonEmpty(env[legacyEnvName(kind, opts.transport)]);
   if (fromEnv) return { key: fromEnv, source: 'legacy-env' };
   if (kind === 'jev' && opts.keyFile) {
-    try {
-      const fromFile = nonEmpty(fs.readFileSync(opts.keyFile, 'utf8'));
-      if (fromFile) return { key: fromFile, source: 'legacy-file' };
-    } catch (_) { /* absent/unreadable -> no key */ }
+    const f = readKeyFile(opts.keyFile, opts.home || require('../../companion/lib/test-home-guard.js').resolveHome(undefined, opts.env));
+    if (f.key) return { key: f.key, source: 'legacy-file' };
+    if (f.rejected) return { key: null, source: null, rejected: f.rejected };
   }
   return { key: null, source: null };
 }
@@ -97,6 +128,11 @@ function migrationNotice(kind) {
   return 'a legacy ' + (kind === 'anthropic' ? 'ANTHROPIC_API_KEY env var' : 'Jev key file/env var')
     + ' exists but anti-hall no longer reads credentials from this machine: re-enter your key via /plugin config (anti-hall -> '
     + OPTION_NAME[kind] + '), or enable ' + OPT_IN_SETTING[kind] + ' to keep using the existing key.';
+}
+
+// rejectedNotice(why) -> one line; names the reason, never file content.
+function rejectedNotice(why) {
+  return 'Jev key file rejected (' + why + '): it must be a regular file under ~/.config or ~/.anti-hall, at most 4096 bytes, one line with no whitespace.';
 }
 
 // backgroundNoKeyNotice() -> the one-line reason a NON-hook process (CLI,
@@ -169,6 +205,6 @@ function sessionNotice(o) {
 }
 
 module.exports = {
-  OPTION_ENV, OPTION_NAME, OPT_IN_SETTING,
+  OPTION_ENV, OPTION_NAME, OPT_IN_SETTING, readKeyFile, rejectedNotice,
   allowLegacyKeyRead, resolveKey, legacyKeyPresent, migrationNotice, backgroundNoKeyNotice, legacyNotices, sessionNotice,
 };

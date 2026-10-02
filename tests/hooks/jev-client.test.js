@@ -510,7 +510,8 @@ test('loadJevConfig: no explicit timeoutMs -> default 1500 (unclamped default un
 test('jevDecide: credential from jev.json keyFile when env var absent', async () => {
   const h = makeHome();
   try {
-    const keyPath = path.join(h.home, 'my-jev-key');
+    const keyPath = path.join(h.home, '.config', 'my-jev-key');
+    fs.mkdirSync(path.dirname(keyPath), { recursive: true });
     fs.writeFileSync(keyPath, 'secret-from-keyfile\n', 'utf8');
     h.writeState('jev.json', { enabled: true, keyFile: keyPath });
     h.writeState('settings.json', { jev: { allowLegacyKeyRead: true } });

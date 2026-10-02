@@ -186,7 +186,7 @@ function coerceValue(entry, raw) {
 }
 
 function readEnvOverride(entry, opts) {
-  if (!entry.env) return undefined;
+  if (!entry.env || entry.homeOnly) return undefined; // homeOnly: never from env
   const env = (opts && opts.env) || process.env;
   return coerceValue(entry, env[entry.env]);
 }
@@ -222,7 +222,7 @@ function pluginManifestDefault(entry, opts) {
 // that actually DIFFERS from the manifest default counts as a real /config
 // choice.
 function readPluginOption(entry, opts) {
-  if (!entry.pluginOption) return undefined;
+  if (!entry.pluginOption || entry.homeOnly) return undefined; // homeOnly: never from /config
   const env = (opts && opts.env) || process.env;
   const envName = 'CLAUDE_PLUGIN_OPTION_' + entry.pluginOption.toUpperCase();
   const manifestDefault = pluginManifestDefault(entry, opts);
@@ -280,7 +280,7 @@ function lookup(obj, key) {
 }
 
 function readLegacy(entry, opts) {
-  if (!entry.legacy || !entry.legacy.file) return undefined;
+  if (!entry.legacy || !entry.legacy.file || entry.homeOnly) return undefined; // homeOnly: never from a legacy file
   try {
     const p = path.join(homeDir(opts), '.anti-hall', entry.legacy.file);
     const raw = JSON.parse(fs.readFileSync(p, 'utf8'));
@@ -366,8 +366,7 @@ function get(section, key, dflt, opts) {
   const entry = schema.findSetting(section, key);
   if (!entry) return dflt;
 
-  // homeOnly: skip the env tier — see settings-schema.js `homeOnly`.
-  const envVal = entry.homeOnly ? undefined : readEnvOverride(entry, opts);
+  const envVal = readEnvOverride(entry, opts);
   if (envVal !== undefined) return envVal;
 
   const store = load(opts);
