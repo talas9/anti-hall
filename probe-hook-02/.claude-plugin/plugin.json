@@ -1,0 +1,8 @@
+{
+  "name": "probe-hook-02",
+  "version": "0.0.1",
+  "description": "Validator probe 02 for hook output shapes; not a real plugin.",
+  "author": {
+    "name": "Mohammed Talas"
+  }
+}
