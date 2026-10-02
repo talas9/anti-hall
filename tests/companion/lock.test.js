@@ -261,6 +261,35 @@ test('refresh: restamps ts and extra fields atomically, keeps the token', () => 
   } finally { t.cleanup(); }
 });
 
+test('refresh: a stealer cannot publish its lock between our token check and our rename', () => {
+  const t = tmp();
+  try {
+    // The fs seen by the holder fires a stealer the moment refresh() has read
+    // the on-disk record (the read-then-rename window). Before the fix the
+    // stealer reclaimed + published there and our rename then overwrote its
+    // lock: both processes held. Now the stealer is held off by the sidecar.
+    let armed = false;
+    let stealer = 'not-run';
+    const hooked = Object.assign({}, fs, {
+      readFileSync(f, ...rest) {
+        const out = fs.readFileSync(f, ...rest);
+        if (armed && f === t.p) {
+          armed = false;
+          stealer = L.acquire(t.p, { decide: () => 'steal', maxTries: 2 });
+        }
+        return out;
+      },
+    });
+    const h = L.acquire(t.p, { fs: hooked });
+    armed = true;
+    const r = h.refresh();
+    assert.strictEqual(stealer, null, 'the stealer must not get a lock while we refresh');
+    assert.strictEqual(r, true);
+    assert.strictEqual(JSON.parse(fs.readFileSync(t.p, 'utf8')).token, h.token);
+    assert.deepStrictEqual(fs.readdirSync(path.dirname(t.p)).filter((n) => /\.(tmp|reap|reclaim|hb)[-.]?/.test(n)), []);
+  } finally { t.cleanup(); }
+});
+
 test('foreign host: a holder on another host is never "dead" by pid — only staleness reclaims it', () => {
   const t = tmp();
   try {

@@ -398,10 +398,21 @@ function release(handle) {
 // refresh(handle, fields?) -> true | false | 'error'. Re-stamps `ts` (and any
 // `fields`, e.g. a re-pointed pid) with an atomic tmp+rename while the lock is
 // still ours. false = DEFINITIVE loss (file gone, or another token); 'error' =
-// transient (unreadable/torn read, write failure) — not proof of loss.
+// transient (unreadable/torn read, write failure, a reclaimer at work) — not
+// proof of loss.
+// The read-token-then-rename pair is NOT atomic, so it runs under the reclaim
+// sidecar — the same guard every rename/remove of `p` by a stealer holds. A
+// stealer therefore cannot reclaim + publish its own lock between our token
+// check and our rename (which would silently overwrite it: two holders).
 function refresh(handle, fields) {
   if (!handle || !handle.path) return false;
   const F = handle.fs || fs;
+  const side = takeSidecar(F, handle.path, 'link');
+  if (!side) return 'error'; // a reclaimer is at work: retry next beat
+  try { return refreshLocked(handle, F, fields); } finally { release(side); }
+}
+
+function refreshLocked(handle, F, fields) {
   let raw;
   try { raw = F.readFileSync(handle.path, 'utf8'); }
   catch (e) { return (e && e.code === 'ENOENT') ? false : 'error'; }
