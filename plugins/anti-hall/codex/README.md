@@ -21,6 +21,8 @@ Dry-run:
 node plugins/anti-hall/codex/install-codex.js --dry-run
 ```
 
+anti-hall writes per-project session notes under `.anti-hall/`. Add `.anti-hall/` to your project's `.gitignore` so a `git add .` can't commit them (or run `doctor --repair`, which appends it to the untracked `.git/info/exclude`). Doctor warns while it is not ignored.
+
 ## Parity Notes
 
 Codex hooks are not a 1:1 Claude Code hook runtime. Current official Codex docs

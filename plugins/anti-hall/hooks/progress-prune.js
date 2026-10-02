@@ -115,12 +115,37 @@ function pruneProject(cwd, now) {
   }
 }
 
+// gitignoreHint(cwd) -- one short SessionStart advisory when `.anti-hall/` exists
+// in this git project and is NOT ignored: per-project, at most once per 7 days
+// (state: ~/.anti-hall/gitignore-hint-state.json), switch guards.gitignoreHint.
+// Carried here (not a new hook registration) so SessionStart output stays small.
+// Fail-open; the one git probe is capped at 100 ms.
+function gitignoreHint(cwd) {
+  try {
+    if (!require('./lib/settings.js').enabled('guards', 'gitignoreHint')) return;
+    const hint = require('./lib/gitignore-hint.js');
+    const s = hint.status(cwd, { timeoutMs: 100 });
+    if (s.status !== 'not-ignored') return;
+    const file = path.join(os.homedir(), '.anti-hall', 'gitignore-hint-state.json');
+    let state = {};
+    try { const j = JSON.parse(fs.readFileSync(file, 'utf8')); if (j && typeof j === 'object' && !Array.isArray(j)) state = j; } catch (_) { /* fresh */ }
+    const now = Date.now();
+    const last = Number.isFinite(state[s.root]) ? state[s.root] : 0;
+    if (now - last >= 0 && now - last < hint.REMINDER_EVERY_MS) return;
+    state[s.root] = now;
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify(state), 'utf8');
+    fs.writeSync(1, JSON.stringify({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: hint.REMINDER_LINE } }) + '\n');
+  } catch (_) { /* fail-open */ }
+}
+
 function main() {
-  // Settings switch maintenance.progressPrune (0.108.4): off -> no-op. Fail-open: any error runs the hook.
-  try { if (!require('./lib/settings.js').enabled('maintenance', 'progressPrune')) return; } catch (_) { /* run */ }
   const payload = readPayload();
   const cwd = payload && typeof payload.cwd === 'string' ? payload.cwd : '';
   if (!cwd) return;
+  gitignoreHint(cwd); // independent of the prune switch below
+  // Settings switch maintenance.progressPrune (0.108.4): off -> no-op. Fail-open: any error runs the hook.
+  try { if (!require('./lib/settings.js').enabled('maintenance', 'progressPrune')) return; } catch (_) { /* run */ }
 
   const now = Date.now();
   const key = cwdKey(cwd);

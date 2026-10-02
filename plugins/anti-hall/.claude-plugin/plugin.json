@@ -45,6 +45,7 @@
     "guards_shipit_gate": { "type": "boolean", "title": "Guards · Ship-it gate", "description": "Enable the ship-it workflow gate.", "default": false },
     "guards_output_verify_guard": { "type": "boolean", "title": "Guards · Output-verify guard", "description": "Output-verification guard (blocks unverified completion claims).", "default": true },
     "guards_failure_root_cause_nudge": { "type": "boolean", "title": "Guards · Failure root-cause nudge", "description": "Nudge toward root-cause analysis after a failure.", "default": true },
+    "guards_gitignore_hint": { "type": "boolean", "title": "Guards · .gitignore reminder", "description": "One-time reminder to git-ignore .anti-hall/ in your project when it is not ignored.", "default": true },
     "guards_repo_self_drift": { "type": "boolean", "title": "Guards · Repo self-drift check", "description": "Anti-hall's own repo-drift self-check hook.", "default": true },
     "guards_stash_guard": { "type": "boolean", "title": "Guards · Stash guard", "description": "Arm the git-stash guard in command-guard: block mutating git stash (also armed per-repo via .anti-hall/protected-stashes). Safety guard: only you can disarm it (here or via env); agents cannot.", "default": false },
     "guards_emit_dedupe": { "type": "boolean", "title": "Guards · Emit dedupe", "description": "Deduplicate repeated hook-emit output.", "default": true },

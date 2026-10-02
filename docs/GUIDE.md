@@ -125,7 +125,10 @@ documented boundaries, not silent gaps.
   collision-free across concurrent sessions on the same project, replacing the old
   single shared `.anti-hall-progress.md`. Writes that land only under the session's own scratchpad (inter-agent message files, temp scripts that write nowhere else) do not count as work, and a write to the progress file seen in the transcript counts as fresh even before its mtime is visible (v0.107.0). It coexists with `task-guard` (which drains
   declared tasks) and keeps an **independent block cap** (`MAX_BLOCKS=3` cumulative/session)
-  so the two never compound. The progress file is gitignored, never created by the hook, and
+  so the two never compound. The progress file lives under `.anti-hall/`, which is NOT git-ignored
+  automatically in your project: add `.anti-hall/` to your `.gitignore` (or run `doctor --repair`,
+  which appends it to the repo-local `.git/info/exclude`; `doctor` warns and a once-a-week
+  SessionStart reminder fires while it is not ignored — `guards.gitignoreHint`). The hook never creates the file, and it
   must be updated this session (default 30 min freshness window) to count. A running
   `.anti-hall/progress/INDEX.md` (and the history-side equivalent) is maintained via
   atomic single-line appends only — never a read-modify-rewrite. Fully fail-open.
@@ -882,6 +885,7 @@ Generated from `hooks/lib/settings-schema.js` (a hygiene test keeps this table a
 | `guards.failureRootCauseNudge` | `true` | `ANTIHALL_FAILURE_ROOT_CAUSE_NUDGE` | Nudge toward root-cause analysis after a failure. |
 | `guards.repoSelfDrift` | `true` | `ANTIHALL_REPO_SELF_DRIFT` | anti-hall's own repo-drift self-check hook. |
 | `guards.stashGuard` safety | `false` | `ANTIHALL_STASH_GUARD` | SAFETY (confirm to change — see settings.js set/reset). Arm the git-stash guard in command-guard: block mutating `git stash` (also armed per-repo via .anti-hall/protected-stashes). |
+| `guards.gitignoreHint` | `true` | `ANTIHALL_GITIGNORE_HINT` | One-time (per project, every 7 days) SessionStart reminder to git-ignore `.anti-hall/` when it exists in a git repo and is not ignored; doctor always reports it. |
 | `guards.emitDedupe` | `true` | `ANTIHALL_EMIT_DEDUPE` | Deduplicate repeated hook-emit output. |
 | `guards.editGuardAllow` adv safety | — | `ANTIHALL_EDIT_GUARD_ALLOW` | SAFETY (confirm to change — see settings.js set/reset). Extra allowed file globs for edit-guard (comma/colon separated). |
 | `guards.allowSubagentMailbox` adv safety | `false` | `ANTIHALL_ALLOW_SUBAGENT_MAILBOX` | SAFETY (confirm to change — see settings.js set/reset). One-off allow for the subagent-mailbox command pattern. |

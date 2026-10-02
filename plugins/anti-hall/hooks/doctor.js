@@ -1532,6 +1532,19 @@ if (REPAIR_INGEST_ORPHANS) {
   }
 })();
 
+// --- 5m0. `.anti-hall/` git-ignore hygiene (WARN only, check mode included) ---
+// Silent when cwd is not a git work tree, has no .anti-hall/, git is missing, or the
+// dir is ignored. Never touches pass/fail beyond a warning; the fix is the explicit
+// `doctor --repair` (appends to <git-dir>/info/exclude, never the tracked .gitignore).
+(function gitignoreHintSection() {
+  let s = null;
+  try { s = require('./lib/gitignore-hint.js').status(process.cwd()); } catch (_) { s = null; }
+  if (!s || s.status !== 'not-ignored') return;
+  head('.anti-hall/ git-ignore hygiene');
+  warnl('.anti-hall/ is NOT git-ignored in ' + s.root + ' - a `git add .` could commit private session notes');
+  infol('fix: add `.anti-hall/` to .gitignore, or run `doctor --repair` (appends it to .git/info/exclude; .gitignore is never edited)');
+})();
+
 // --- 5m. identity-rekey-candidates (REPORT-ONLY, CONDITIONAL, check mode
 // included) ---------------------------------------------------------------------
 // Mesh redesign Phase 2 B1: stores written under a submodule's legacy repoKey

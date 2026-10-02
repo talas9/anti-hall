@@ -77,6 +77,8 @@ node plugins/anti-hall/codex/install-codex.js --global   # or user-wide: writes 
 
 Add `--dry-run` to preview. The installer merges into an existing `hooks.json`, backs up any file it changes (`.bak-<timestamp>`), and enables `[features] hooks = true` in the matching `config.toml`.
 
+**Git-ignore the state directory:** anti-hall writes per-project session notes (progress, history, handovers, reports) under `.anti-hall/` in your repo, and never edits your tracked files. Add `.anti-hall/` to your project's `.gitignore` so a `git add .` can't commit them (or run `/anti-hall:doctor --repair`, which appends it to the untracked `.git/info/exclude`).
+
 **Verify it worked:** in Claude Code, ask "is anti-hall working" (runs the `doctor` skill: live self-tests on every guard), or run `/anti-hall:settings` to see the active settings. From a clone you can also run `node plugins/anti-hall/hooks/doctor.js --check`.
 
 The Claude plugin is the authoritative package; the Codex port

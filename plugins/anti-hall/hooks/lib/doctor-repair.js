@@ -1966,6 +1966,15 @@ function runRepairs(opts) {
   } catch (e) {
     push('app-live-archived', 'app-archive', 'skipped', 'app-live-archived check raised (fail-open): ' + errMsg(e));
   }
+  // `.anti-hall/` not git-ignored: explicit `doctor --repair` ONLY (inside !migrationsOnly).
+  // Appends `.anti-hall/` to the repo-local, untracked <git-dir>/info/exclude; NEVER the
+  // tracked .gitignore; idempotent; no deletion.
+  try {
+    const r = require('./gitignore-hint.js').repairExclude(cwd, { dryRun });
+    push('gitignore-hint', 'append-info-exclude', r.status, r.msg);
+  } catch (e) {
+    push('gitignore-hint', 'append-info-exclude', 'skipped', 'gitignore-hint check raised (fail-open): ' + errMsg(e));
+  }
   } // end !migrationsOnly
   // --- R13 item 2: WIRE THE FOUR STANDALONE SWEEPS ------------------------
   //
