@@ -1100,11 +1100,19 @@ function main() {
   // (which hits the same dead native channel) could not be satisfied. Warn ONCE
   // (own kind, cap 1), inbound text only, with an exit that does not need the
   // native channel.
-  const outboundSatisfied = !!(reported || dropAttempt || tickMarkerFreshZero(process.env, testHomeGuard.resolveHome(null, process.env), now));
+  // heartbeatSatisfied: a REAL report this episode, or a fresh known-zero tick, already
+  // proved liveness — so when this block is only about INBOUND state (known/unknown
+  // unread), it must not ALSO demand another heartbeat (field: 16:55:28 heartbeat ok,
+  // 16:55:31 Stop re-demanded one alongside the inbox pull). A drop attempt still
+  // gets its own drop-reason/remedy text, so it is not counted here.
+  const tickFresh = tickMarkerFreshZero(process.env, testHomeGuard.resolveHome(null, process.env), now);
+  const heartbeatSatisfied = !!(reported || tickFresh);
+  const outboundSatisfied = !!(reported || dropAttempt || tickFresh);
   const nativeOnlyUnknown = outboundSatisfied && unreadPendingPre === 'unknown' && !durablePre.unknown;
-  const kinds = nativeOnlyUnknown ? [] : ['heartbeat-report'];
+  const kinds = (nativeOnlyUnknown || heartbeatSatisfied) ? [] : ['heartbeat-report'];
   if (unreadPendingPre === true) kinds.push('inbox');
   else if (durablePre.unknown || unreadPendingPre === 'unknown') kinds.push('inbox-unknown');
+  if (kinds.length === 0) { writeState(stateFile, state); return; } // nothing owed (inbound cleared between probes) -> allow
   const decision = stopPolicy.consume(os.homedir(), sessionId, 'child-gate', kinds, nativeOnlyUnknown ? 1 : MAX_BLOCKS, now);
   if (!decision.block) {
     if (decision.persisted && !state.lifetimeCapLogged) {
@@ -1167,7 +1175,9 @@ function main() {
       '"blocked on X", or "idle — reassign or archive me"), THEN stop. This keeps the ' +
       'parent\'s task list honest instead of leaving you unnoticed.';
 
-  const reason = nativeOnlyUnknown ? inboundPrefix.trim() : inboundPrefix + outboundLine + wakeLine;
+  const reason = nativeOnlyUnknown ? inboundPrefix.trim()
+    : heartbeatSatisfied ? inboundPrefix + wakeLine
+    : inboundPrefix + outboundLine + wakeLine;
 
   emitBlock(reason);
 }

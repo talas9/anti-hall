@@ -182,3 +182,38 @@ test('L34: cache says 1 unread, LIVE says 1 -> still blocks', () => {
     assert.match(r.json.reason, /\b1 unread\b/);
   } finally { h.cleanup(); }
 });
+
+// Field (tmp demo project, 2026-10-02): a Primary whose OWN descriptor has no
+// inboxPath (its mailbox is the store partition, not an NDJSON inbox) was nagged
+// about itself: "primary-… (you) (descriptor has no inboxPath, cached)". The own
+// descriptor is only re-evaluated for the cached-0 case (ownRawWasZero), and the
+// no-inboxPath "unknown" is a malformed-CHILD-descriptor signal, not a fact about
+// the Primary's mailbox (the store count below is the real answer).
+function seedOwnNoInbox(home, { total, ownReaderValue }) {
+  seedOwn(home, { total, floor: 0, ownReaderValue });
+  const p = path.join(home, '.anti-hall', 'devswarm', 'workspaces', OWN_ID + '.json');
+  fs.writeFileSync(p, JSON.stringify({ id: OWN_ID, worktreePath: REPO_CWD, sessionId: 'sess-primary-own', repoKey: REPO_KEY }));
+}
+
+test('own descriptor with NO inboxPath + this reader caught up -> never nagged about itself', () => {
+  const h = makeHome();
+  try {
+    writeGateSession(h.home, REPO_CWD, STARTED_AT);
+    seedOwnNoInbox(h.home, { total: 7, ownReaderValue: 7 });
+    const r = testHookRaw(HOOK, JSON.stringify({ hook_event_name: 'Stop', session_id: 'sess-own-noinbox' }), { home: h.home, env: PRIMARY_ENV });
+    assert.strictEqual(r.status, 0);
+    assert.strictEqual(r.json, null, `own descriptor without inboxPath must not block; stdout=${r.stdout}`);
+  } finally { h.cleanup(); }
+});
+
+test('own descriptor with NO inboxPath + this reader genuinely behind -> still blocks on the real store count', () => {
+  const h = makeHome();
+  try {
+    writeGateSession(h.home, REPO_CWD, STARTED_AT);
+    seedOwnNoInbox(h.home, { total: 7, ownReaderValue: 5 });
+    const r = testHookRaw(HOOK, JSON.stringify({ hook_event_name: 'Stop', session_id: 'sess-own-noinbox-behind' }), { home: h.home, env: PRIMARY_ENV });
+    assert.ok(r.json && r.json.decision === 'block', `real unread must still block; stdout=${r.stdout}`);
+    assert.match(r.json.reason, /\b2 unread\b/);
+    assert.doesNotMatch(r.json.reason, /no inboxPath/);
+  } finally { h.cleanup(); }
+});

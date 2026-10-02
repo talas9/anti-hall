@@ -622,6 +622,40 @@ test('ALREADY-REPORTED + KNOWN durable unread pending -> STILL blocks (inbound h
   }
 });
 
+// Field (2026-10-02 web-fix-cells): heartbeat ok at 16:55:28, new parent mail landed, Stop at
+// 16:55:31 blocked with the inbox pull AND a second "emit a heartbeat" demand. A report this
+// episode already proved liveness; only the inbound half is owed.
+test('ALREADY-REPORTED + known unread: block names ONLY the inbox pull, never a second heartbeat demand', () => {
+  const h = makeHome();
+  seedAllTestDescriptors(h.home);
+  try {
+    seedOutboundReport(h.home, 'child-ar', Date.now());
+    seedDurableUnread(h.home, 'child-ar', ['from parent: rebase now'], 0);
+    const r = testHook(HOOK, stopPayload({ cwd: REPO_CWD }), { home: h.home, expectJson: true, env: REPORTED_ENV });
+    assert.strictEqual(r.json && r.json.decision, 'block', 'known unread still blocks');
+    assert.match(r.json.reason, /inbox pull/);
+    assert.doesNotMatch(r.json.reason, /emit a heartbeat/, 'a reported child must not be re-asked for a heartbeat');
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('FRESH ZERO TICK + known durable unread: block names ONLY the inbox pull, no heartbeat demand', () => {
+  const h = makeHome();
+  seedAllTestDescriptors(h.home);
+  try {
+    seedDurableUnread(h.home, 'b-1', ['from parent: rebase now'], 0);
+    const env = Object.assign({}, CHILD_ENV, { DEVSWARM_BUILDER_ID: 'b-1' });
+    writeWakeTick(h.home, 'b-1', { ts: Date.now(), unreadTotal: 0, meshGapWithheld: false, known: true });
+    const r = testHook(HOOK, stopPayload(), { home: h.home, expectJson: true, env });
+    assert.strictEqual(r.json && r.json.decision, 'block');
+    assert.match(r.json.reason, /inbox pull/);
+    assert.doesNotMatch(r.json.reason, /emit a heartbeat/);
+  } finally {
+    h.cleanup();
+  }
+});
+
 test('ALREADY-REPORTED window: an outbound row OLDER than this stop episode does NOT satisfy -> normal capped forced-ack', () => {
   const h = makeHome();
   seedAllTestDescriptors(h.home);

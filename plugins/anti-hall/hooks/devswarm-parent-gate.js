@@ -1353,7 +1353,13 @@ function main() {
         // gone worktree = a dead descriptor, not neglect: do not raise the
         // unknown axis. Every other axis (unionUnread, staleOrEscalated) is
         // untouched, so nothing is silently hidden.
-        if (reason === 'inbox-missing' && worktreeIsGone(d.worktreePath)) {
+        if (isOwnDescriptor && reason === 'no-inbox-path') {
+          // The Primary's OWN descriptor carries no NDJSON inbox (its mailbox is the
+          // store partition), so "no inboxPath" is not an unreadable mailbox: leave
+          // unknown false and let the store UNION below (keyed to this reader) answer.
+          // Never nag the Primary about itself (field: "primary-… (you) (descriptor
+          // has no inboxPath, cached)").
+        } else if (reason === 'inbox-missing' && worktreeIsGone(d.worktreePath)) {
           deadDescriptor = true;
           // realUnread stays 0 and unreadUnknown stays false; the row survives
           // into the family reduce and still blocks if another axis fires.
