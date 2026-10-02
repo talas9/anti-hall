@@ -6,6 +6,17 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.121.2 (2026-10-02)
+
+### Changed
+
+- **Docs:** the README is cut to about 70 lines. All the detail moved to `docs/GUIDE.md`; `docs/README.md` is now the single documentation start page, and the README links to it in one place. The plugin README and the Codex README are slimmed in the same way.
+- **Demo:** the README GIF is now a real Claude Code session. A force-push attempt is blocked by git-guard, and the agent falls back to a normal push. `assets/demo/README.md` documents how it was recorded.
+
+### Tests
+
+- Every doc must be reachable from the docs start page; the Jev recommendation's full text is pinned in the KB doc.
+
 ## 0.121.1 (2026-10-02)
 
 ### Added
