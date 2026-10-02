@@ -313,6 +313,22 @@ test('questionAgentsNote: unknown (no / unreadable transcript) -> silent', () =>
   } finally { h.cleanup(); }
 });
 
+test('questionAgentsNote: a pending-message teammate row (pendingMessage marker) renders in the note and never throws', () => {
+  const tm = require('../helpers/teammate-fixtures.js');
+  const shift = Date.now() - tm.ms(14); // re-base the fixture clock so the send is "now"
+  const rebase = (l) => l.replace(/2026-10-03T12:\d\d:\d\d(\.\d{3})?Z/g, (t) => new Date(Date.parse(t) + shift).toISOString());
+  const h = noteHome(null);
+  try {
+    const ls = tm.lines(tm.spawn('rel-worker', tm.T(0), 'ship the release'), tm.idle('rel-worker', tm.T(8), tm.T(9)), tm.send('rel-worker', tm.T(14))).map(rebase);
+    const tp = path.join(h.home, 'transcript.jsonl');
+    fs.writeFileSync(tp, ls.join('\n') + '\n');
+    const r = run(h, withTp(tp));
+    assert.strictEqual(r.status, 0);
+    assert.match(ctxOf(r), /1 background agent is still in flight \(ship the release\)/);
+    assert.ok(!('decision' in r.json));
+  } finally { h.cleanup(); }
+});
+
 test('questionAgentsNote: setting off -> silent even with an agent in flight', () => {
   const h = noteHome({ guards: { questionAgentsNote: false } });
   try {
