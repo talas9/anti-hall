@@ -41,8 +41,6 @@
       "Use anti-hall to verify this change before claiming it is done"
     ],
     "brandColor": "#111827",
-    "composerIcon": "./.claude-plugin/icon.png",
-    "logo": "./.claude-plugin/icon.png",
     "screenshots": []
   },
   "hooks": "./codex/hooks/hooks.json"

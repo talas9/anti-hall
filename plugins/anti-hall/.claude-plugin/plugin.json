@@ -11,7 +11,6 @@
   "homepage": "https://github.com/talas9/anti-hall",
   "repository": "https://github.com/talas9/anti-hall",
   "license": "MIT",
-  "icon": "./.claude-plugin/icon.png",
   "documentationUrl": "https://github.com/talas9/anti-hall/blob/main/docs/GUIDE.md",
   "supportUrl": "https://github.com/talas9/anti-hall/issues",
   "privacyPolicyUrl": "https://github.com/talas9/anti-hall/blob/main/PRIVACY.md",
