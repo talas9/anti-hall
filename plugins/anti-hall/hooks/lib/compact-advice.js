@@ -122,6 +122,31 @@ function stripQuoted(text) {
   return t;
 }
 
+// isMarkerLine(t, index) -> bool. True when the line holding the match is ONLY
+// the declaration marker: optional decoration (✅ 🟢 ⏳ bullets, ** _ `), an
+// optional "HANDOVER COMPLETE —" lead-in, SAFE TO COMPACT|/CLEAR, an optional
+// "OR CLEAR|COMPACT|NEW" and/or "NOW", optional closing decoration/punctuation.
+// (stripQuoted already blanked quotes, code and blockquotes.)
+const MARKER_LINE_RE = /^[ \t]*(?:#{1,6}[ \t]+)?(?:[-*+•][ \t]+)?[*_`✅🟢⏳ \t]*(?:HANDOVER[ \t]+COMPLETE[ \t]*[—–-]+[ \t]*)?[*_`]*SAFE[ \t]+TO[ \t]+(?:\/?COMPACT|\/CLEAR)(?:[ \t]+(?:OR|AND)[ \t]+\/?(?:CLEAR|COMPACT|NEW))?(?:[ \t]+NOW)?[*_`]*[ \t]*[.!]?[ \t]*$/u;
+function isMarkerLine(t, index) {
+  const start = t.lastIndexOf('\n', index - 1) + 1;
+  let end = t.indexOf('\n', index);
+  if (end === -1) end = t.length;
+  return MARKER_LINE_RE.test(t.slice(start, end));
+}
+
+// isTableRow(t, index) -> bool. The match sits on a markdown table row (line
+// starts with `|`, or the phrase is between `|` separators): a cell, not a
+// declaration.
+function isTableRow(t, index) {
+  const start = t.lastIndexOf('\n', index - 1) + 1;
+  let end = t.indexOf('\n', index);
+  if (end === -1) end = t.length;
+  const line = t.slice(start, end);
+  const rel = index - start;
+  return /^\s*\|/.test(line) || (line.slice(0, rel).includes('|') && line.slice(rel).includes('|'));
+}
+
 // A short leading interjection/adverb that can genuinely open a sentence
 // before a comma-prefixed declaration ("Yes, safe to compact now.",
 // "Overall, safe to compact now."). Deliberately small and mundane — this is
@@ -208,8 +233,13 @@ function findAdvice(text, opts) {
       const questioned = isQuestionSentence(t, m.index);
       const isBareSafePhrase = reIndex === 0;
       const isCommandForm = reIndex === 3;
-      const isAllCapsSafeToCompact = isBareSafePhrase && /^SAFE\s+TO\s+(?:\/?COMPACT|\/CLEAR)$/.test(m[0].trim());
-      const positioned = (!isBareSafePhrase && !isCommandForm) || isAllCapsSafeToCompact || isAtSentenceOrLineStart(t, m.index);
+      const isAllCaps = isBareSafePhrase && /^SAFE\s+TO\s+(?:\/?COMPACT|\/CLEAR)$/.test(m[0].trim());
+      // ALL-CAPS keeps its old "wherever it sits" coverage (headings, labels,
+      // mid-sentence, bold, prose) and ONLY drops a markdown table cell (a
+      // word-list cannot tell a mention from a declaration; a false block is the
+      // lesser harm). A standalone marker line always counts.
+      const positioned = isAllCaps ? (isMarkerLine(t, m.index) || !isTableRow(t, m.index))
+        : ((!isBareSafePhrase && !isCommandForm) || isAtSentenceOrLineStart(t, m.index));
       if (!negated && !questioned && positioned) out.push({ index: m.index, phrase: m[0].trim() });
       if (m[0].length === 0) re.lastIndex++;
     }

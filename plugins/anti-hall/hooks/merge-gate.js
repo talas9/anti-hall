@@ -16,8 +16,9 @@
 // HONEST LIMITS (read before trusting this):
 //   1. KEYWORD HEURISTIC — it matches a fixed phrase list ("pending review",
 //      "first-pass", "do not merge", …). It cannot understand the output; a hedge
-//      worded differently slips through, and an innocent quote of one of those
-//      phrases could false-block (mitigated by the resolution-token allowance).
+//      worded differently slips through. Hedges inside quotes/code/blockquotes
+//      are masked (not a self-hedge). RESOLUTION is structural: only a real
+//      user prompt typed after the hedge can clear it — the assistant never can.
 //   2. BYPASSABLE — it only inspects the parsed Bash command. An alternate merge
 //      syntax, a heredoc, an API call, or merging from the GitHub UI is not seen.
 //      It is a speed-bump on the honest path, not a sandbox.
@@ -63,18 +64,30 @@ const HEDGES = [
   'built, pending',
 ];
 
-// Resolution tokens — if one of these appears in the tail, the hedge is treated
-// as RESOLVED (the agent verified it / got sign-off) and the merge is allowed.
-const RESOLUTIONS = [
+// Resolution tokens. ONLY THE USER can sign off: a hedge is RESOLVED solely by a
+// REAL user prompt typed AFTER the hedge that contains one of these phrases (a
+// user-role record with no peer/non-human origin, not meta/sidechain/hook-
+// injected, not a tool_result, not a task-notification / system-reminder /
+// cross-session-message body). The assistant can never clear its own hedge —
+// not by quoting a phrase, and not by writing one after a tool_result (a blocked
+// merge attempt is itself a tool_result). There is no ack/override file in this
+// hook; the documented skip-hatch is isSkipped('merge-gate').
+const USER_RESOLUTIONS = [
   'owner approved',
   'owner signed off',
+  'sign-off received',
   'fidelity verified',
   'verified against',
   'resolved:',
-  'sign-off received',
 ];
 
 function lc(s) { return String(s || '').toLowerCase(); }
+
+// Quoted-text mask: hedge/resolution phrases inside quotes, inline code, code
+// fences or blockquotes are not the session's own words. lib/quote-mask.js is a
+// verbatim copy of speculation-guard.js's maskQuotedText; a test asserts the two
+// give identical output so they cannot diverge.
+const { maskQuotedText } = require('./lib/quote-mask.js');
 
 // firstHedge(text): return the human-readable phrase of the FIRST hedge found in
 // `text`, or null. RegExp entries report their source pattern in a readable form.
@@ -149,27 +162,24 @@ function lastHedgeIndex(text) {
   return maxIdx;
 }
 
-// lastResolutionIndex(text): return the index of the LAST (rightmost) resolution
-// token occurrence in text, or -1 if none found. Order-sensitive: hedge must be
-// AFTER (have a higher index than) this to block.
-function lastResolutionIndex(text) {
+function hasAny(text, phrases) {
   const t = lc(text);
-  let maxIdx = -1;
-  for (const r of RESOLUTIONS) {
-    const idx = t.lastIndexOf(r);
-    if (idx > maxIdx) maxIdx = idx;
-  }
-  return maxIdx;
+  return phrases.some((p) => t.indexOf(p) !== -1);
 }
 
-// isHedgeUnresolved(text): true if there is an unresolved hedge = the LAST hedge
-// index is greater than the LAST resolution index (a hedge appeared after the most
-// recent resolution token).
-function isHedgeUnresolved(text) {
-  const lastHedge = lastHedgeIndex(text);
-  if (lastHedge === -1) return false; // no hedge
-  const lastRes = lastResolutionIndex(text);
-  return lastHedge > lastRes; // hedge is unresolved if it comes AFTER resolution
+// isHedgeUnresolved(records): `records` is the chronological list from
+// readRecords(). The hedge is the LAST assistant record carrying a hedge; it is
+// resolved only by a later real user prompt with a USER_RESOLUTIONS phrase.
+function isHedgeUnresolved(records) {
+  let hedgeAt = -1;
+  for (let i = 0; i < records.length; i++) {
+    if (records[i].kind === 'assistant' && lastHedgeIndex(records[i].text) !== -1) hedgeAt = i;
+  }
+  if (hedgeAt === -1) return false;
+  for (let j = hedgeAt + 1; j < records.length; j++) {
+    if (records[j].kind === 'user' && hasAny(records[j].text, USER_RESOLUTIONS)) return false;
+  }
+  return true;
 }
 
 // Bounded tail read (mirror task-tracker readTail): read only the last
@@ -192,13 +202,24 @@ function readTail(transcriptPath, windowBytes) {
   }
 }
 
-// recentAssistantText(transcriptPath): concatenate the TEXT of recent assistant
-// turns in the tail window. JSONL transcript; each line is one event. We only
-// look at assistant text blocks (the agent's OWN output — a hedge in a user
-// message or tool result is not the agent hedging). Fail-open to '' on error.
-function recentAssistantText(transcriptPath) {
+// Injected user-role bodies that are not a human typing.
+const INJECTED_USER_RE = /^\s*(<(task-notification|system-reminder|command-name|command-message|local-command|user-prompt-submit-hook|cross-session-message)\b|Stop hook feedback:)|Another Claude session sent a message|<cross-session-message\b/i;
+
+// maskedMaybe(text): quote-masked text, falling back to the raw text if masking
+// blanked every visible character.
+function maskedMaybe(text) {
+  const m = maskQuotedText(text);
+  return m.trim() === '' && text.trim() !== '' ? text : m;
+}
+
+// readRecords(transcriptPath): chronological [{kind, text}] from the tail
+// window. kind: 'assistant' (own text blocks, quote-masked), 'user' (a REAL typed
+// prompt: user-role, not meta/sidechain/compact-summary, no tool_result, not an
+// injected task-notification/system-reminder body; quote-masked), 'toolresult'
+// (a user-role record carrying a tool_result), 'other' (ignored). Fail-open to [].
+function readRecords(transcriptPath) {
   const tail = readTail(transcriptPath, SCAN_WINDOW);
-  if (!tail || !tail.data) return '';
+  if (!tail || !tail.data) return [];
   const lines = tail.data.split(/\r?\n/);
   // Drop the first (likely partial) line ONLY when we truncated the head; a
   // whole, untruncated transcript's first line is a complete event we must keep.
@@ -209,19 +230,27 @@ function recentAssistantText(transcriptPath) {
     if (!t) continue;
     let entry;
     try { entry = JSON.parse(t); } catch (_) { continue; }
-    if (!entry || entry.type !== 'assistant') continue;
+    if (!entry) continue;
     const content = entry.message && entry.message.content;
-    if (Array.isArray(content)) {
-      for (const block of content) {
-        if (block && block.type === 'text' && typeof block.text === 'string') {
-          out.push(block.text);
-        }
+    const blocks = Array.isArray(content) ? content : (typeof content === 'string' ? [{ type: 'text', text: content }] : []);
+    const textOf = () => blocks.filter((b) => b && b.type === 'text' && typeof b.text === 'string').map((b) => b.text).join('\n');
+    if (entry.type === 'assistant') {
+      out.push({ kind: 'assistant', text: maskedMaybe(textOf()) });
+    } else if (entry.type === 'user') {
+      // A typed prompt has no `origin` (null/absent); a peer/system-originated
+      // record carries origin.kind (e.g. "peer") even when isMeta is missing.
+      const nonHuman = entry.origin && !['human', 'user'].includes(String(entry.origin.kind));
+      if (entry.isMeta || entry.isSidechain || entry.isCompactSummary || nonHuman) { out.push({ kind: 'other', text: '' }); continue; }
+      if (entry.toolUseResult !== undefined || blocks.some((b) => b && b.type === 'tool_result')) {
+        out.push({ kind: 'toolresult', text: '' });
+        continue;
       }
-    } else if (typeof content === 'string') {
-      out.push(content);
+      const raw = textOf().replace(/<system-reminder>[\s\S]*?<\/system-reminder>/gi, '');
+      if (!raw.trim() || INJECTED_USER_RE.test(raw)) { out.push({ kind: 'other', text: '' }); continue; }
+      out.push({ kind: 'user', text: maskedMaybe(raw) });
     }
   }
-  return out.join('\n');
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -297,12 +326,13 @@ function main() {
   // 5. Scan the recent assistant output for an UNRESOLVED hedge.
   const tp = payload && payload.transcript_path;
   if (!tp || typeof tp !== 'string') process.exit(0); // no transcript -> fail-open allow
-  const text = recentAssistantText(tp);
+  const records = readRecords(tp);
+  const text = records.filter((r) => r.kind === 'assistant').map((r) => r.text).join('\n');
   if (!text) process.exit(0);
 
   const hedge = firstHedge(text);
   if (!hedge) process.exit(0);           // no hedge -> allow
-  const unresolved = isHedgeUnresolved(text);
+  const unresolved = isHedgeUnresolved(records);
 
   // JEV SHADOW (mergeGateHedge, default mode "shadow"): only on merge
   // commands (already this gate's scope, reached above). baseline = the

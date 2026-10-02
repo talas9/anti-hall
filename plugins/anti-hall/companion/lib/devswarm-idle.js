@@ -289,7 +289,14 @@ function classifyTranscript(text, opts) {
       // belongs to the next META prompt only: a non-meta prompt (a human, or a
       // notification) consumes it and is judged on its own text, so a human
       // prompt is never classified as a wake.
-      if (p !== null && !e.isMeta) { cronFired = false; open(wakeTrigger(p, false), ts); continue; }
+      // A non-meta prompt is a human turn (always real work) UNLESS it is the
+      // <task-notification> shape; "Stop hook feedback:" / "mailbox wake" text
+      // typed by a human must never classify the turn as a ping.
+      if (p !== null && !e.isMeta) {
+        cronFired = false;
+        open(String(p).trimStart().startsWith('<task-notification>') && wakeTrigger(p, false), ts);
+        continue;
+      }
       if (p !== null && (cronFired || wakeTrigger(p, false))) {
         open(wakeTrigger(p, cronFired), ts); cronFired = false; continue;
       }

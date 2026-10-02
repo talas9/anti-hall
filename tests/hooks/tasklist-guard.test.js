@@ -267,6 +267,22 @@ test('BLOCK wording: a TaskGet "Task not found" result explains a reset task sto
   } finally { h.cleanup(); }
 });
 
+test('quoted-text audit: a TaskGet result that merely QUOTES "Task not found" mid-text is NOT reset-store evidence', () => {
+  const h = makeHome();
+  try {
+    const tuId = 'toolu_tlq';
+    const tp = h.writeTranscript([
+      { type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', name: 'TaskGet', id: tuId, input: { taskId: '7' } }] } },
+      { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: tuId, content: 'Task #7: fix the bug. Description: handle the "Task not found" error path in the loader.' }] } },
+      ...edits(4),
+    ]);
+    const r = testHook(HOOK, stopPayload(tp, h.home), { home: h.home });
+    assert.ok(isBlock(r), `expected block; stdout: ${r.stdout}`);
+    assert.ok(!/task store was reset/i.test(r.json.reason), `quoted phrase must not claim a reset; reason: ${r.json.reason}`);
+    assert.match(r.json.reason, /tracked\s+NO\s+tasks\./i);
+  } finally { h.cleanup(); }
+});
+
 test('BLOCK wording: unchanged (generic "tracked NO tasks") when there is no reset-store evidence', () => {
   const h = makeHome();
   try {

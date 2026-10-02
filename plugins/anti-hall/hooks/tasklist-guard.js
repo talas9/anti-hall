@@ -900,7 +900,10 @@ function scanTranscript(filePath, opts) {
           // T4(a): a TaskUpdate/TaskGet result reporting "Task not found" is
           // direct evidence the task store was reset out from under this
           // session (a stale id it already knew about no longer exists).
-          if (taskLookupIds.has(item.tool_use_id) && /task\s+not\s+found/i.test(resultText)) {
+          // Anchored (DD.isTaskNotFoundText, the same helper task-guard /
+          // task-state use): a TaskGet result that merely QUOTES the phrase
+          // mid-text is not a reset.
+          if (taskLookupIds.has(item.tool_use_id) && require('./lib/dispatch-demand.js').isTaskNotFoundText(resultText)) {
             taskStoreReset = true;
           }
         }

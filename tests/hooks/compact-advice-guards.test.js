@@ -65,8 +65,59 @@ test('findAdvice: own recommendations match; negated / quoted / retracted do not
   assert.strictEqual(advice.findAdvice('You typed "/compact focus: foo" earlier — noted.').length, 0);
   assert.strictEqual(advice.findAdvice('> /compact focus: foo').length, 0);
   assert.strictEqual(advice.activeDeclaration('✅ SAFE TO COMPACT NOW\n\nRETRACT SAFE TO COMPACT — context is 20%'), null);
-  assert.ok(advice.activeDeclaration('RETRACT SAFE TO COMPACT\n\nlater: ✅ SAFE TO COMPACT NOW'));
+  assert.ok(advice.activeDeclaration('RETRACT SAFE TO COMPACT\n\n✅ SAFE TO COMPACT NOW'));
 });
+
+// Quoted-text audit: the ALL-CAPS phrase counts only as the standalone marker
+// LINE, not as a table cell / bold run / prose.
+test('findAdvice: ALL-CAPS SAFE TO COMPACT in a markdown table cell is NOT a declaration', () => {
+  for (const opts of [undefined, { declarationsOnly: true }]) {
+    assert.strictEqual(advice.findAdvice('| Marker | Meaning |\n| SAFE TO COMPACT | handover is final |', opts).length, 0);
+  }
+  assert.ok(advice.findAdvice('✅ **SAFE TO COMPACT NOW**', { declarationsOnly: true }).length);
+  assert.ok(advice.findAdvice('✅ HANDOVER COMPLETE — SAFE TO COMPACT OR CLEAR NOW', { declarationsOnly: true }).length);
+});
+
+// The ALL-CAPS path never LOSES coverage the old code had: every shape below is
+// a real declaration and must be caught (caps and lowercase), only table cells
+// and mentions being talked about are rejected.
+test('findAdvice: ALL-CAPS declaration shapes are all accepted; lowercase equivalents unchanged; false positives rejected', () => {
+  const real = [
+    '## SAFE TO COMPACT', '### ✅ SAFE TO COMPACT', 'Status: SAFE TO COMPACT', '**Status:** SAFE TO COMPACT',
+    'Verdict: **SAFE TO COMPACT**', 'Handover written. SAFE TO COMPACT.', 'SAFE TO COMPACT — handover is at X',
+    'SAFE TO COMPACT, handover saved', 'SAFE TO COMPACT NOW (handover written)', '1. SAFE TO COMPACT',
+    '**SAFE TO COMPACT** — handover at X', 'You are SAFE TO COMPACT now', 'Context is SAFE TO COMPACT',
+    '✅ SAFE TO COMPACT NOW', 'SAFE TO COMPACT',
+    // prose forms the 739e46f8 code accepted (no word-list may reject them)
+    'Never write code after this point — SAFE TO COMPACT NOW', 'This is the marker: SAFE TO COMPACT',
+    'Not blocked on anything, we are SAFE TO COMPACT', 'Only the handover remains, so we are SAFE TO COMPACT',
+    'I wrote the handover; status: SAFE TO COMPACT', 'Handover text saved, SAFE TO COMPACT',
+    'If you say compact, SAFE TO COMPACT', 'SAFE TO COMPACT is what I emit when done',
+  ];
+  for (const s of real) {
+    for (const opts of [undefined, { declarationsOnly: true }]) {
+      assert.ok(advice.findAdvice(s, opts).length, 'caps: ' + s);
+    }
+  }
+  // lowercase equivalents: whatever the old code did (unchanged path) — only assert the line-start ones it always caught
+  for (const s of ['Handover written. Safe to compact.', 'safe to compact — handover is at X', '1. safe to compact', '**Status:** safe to compact']) {
+    assert.ok(advice.findAdvice(s).length, 'lower: ' + s);
+  }
+  const fp = [
+    '| SAFE TO COMPACT | handover is final |', '| Marker | SAFE TO COMPACT |', 'a | SAFE TO COMPACT | b',
+    'The phrase `SAFE TO COMPACT` is a declaration.', 'The phrase "SAFE TO COMPACT" is a declaration.',
+    'Example:\n```\nSAFE TO COMPACT\n```\ndone',
+  ];
+  for (const s of fp) assert.strictEqual(advice.findAdvice(s, { declarationsOnly: true }).length, 0, 'fp: ' + s);
+});
+
+test('PreToolUse: table-row mention of SAFE TO COMPACT does not arm the guard; a real declaration + plain follow-up still does', () => withHome((h) => {
+  const bash = (tp) => blocked(testHook(PRE, prePayload(tp, 'Bash', BASH_WORK), { home: h.home }));
+  assert.strictEqual(bash(h.writeTranscript([user('explain'), say('| Marker | Use |\n| SAFE TO COMPACT | final line |')])), null);
+  // scope unchanged: a declaration in an EARLIER message of the turn, then a plain follow-up, still arms the guard
+  assert.ok(bash(h.writeTranscript([user('wrap up'), say('✅ SAFE TO COMPACT NOW'), say('Continuing with the next step.')])));
+  assert.ok(bash(h.writeTranscript([user('wrap up'), say('Idle.\n\n✅ SAFE TO COMPACT NOW')])));
+}));
 
 test('readTurn: task-notifications count toward turnsSinceCompact but do not reset the turn', () => {
   const lines = [user('go'), boundary('auto'), summary(), say('a'), user('<task-notification>x</task-notification>'), say('b'),

@@ -440,6 +440,22 @@ test('childBusyState: latest turn is a ping-only wake (fresh mtime) -> not busy'
   } finally { h.cleanup(); }
 });
 
+test('quoted-text audit: a typed (non-meta) prompt starting "Stop hook feedback:" or "Mailbox wake" is real work, not a ping', () => {
+  for (const typed of ['Stop hook feedback: please look at why my build fails', 'Mailbox wake word? what does that mean']) {
+    const t = tr().prompt(T0, 'Fix it.').stop(T0 + MIN, 0);
+    t.prompt(T0 + 30 * MIN, typed)
+      .tool(T0 + 30 * MIN + 1000, 'Bash', { command: 'node ' + CLI + ' inbox tick c1 --child' }).stop(T0 + 31 * MIN, 0);
+    const r = I.classifyTranscript(t.text());
+    assert.strictEqual(r.pingTurns, 0, typed + ' ' + JSON.stringify(r));
+    assert.strictEqual(r.realTurns, 2, typed + ' ' + JSON.stringify(r));
+  }
+  // the genuine META-injected hook feedback is still a ping
+  const m = tr().prompt(T0, 'Fix it.').stop(T0 + MIN, 0);
+  m.prompt(T0 + 30 * MIN, 'Stop hook feedback:\nDEVSWARM CHILD INBOX', { isMeta: true })
+    .tool(T0 + 30 * MIN + 1000, 'Bash', { command: 'node ' + CLI + ' inbox tick c1 --child' }).stop(T0 + 31 * MIN, 0);
+  assert.strictEqual(I.classifyTranscript(m.text()).pingTurns, 1);
+});
+
 test('childBusyState: no transcript -> not busy, not waiting (unknown never counts as busy)', () => {
   const h = isoHome();
   try {
