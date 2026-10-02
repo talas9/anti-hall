@@ -10,11 +10,27 @@
 
 </div>
 
+<p align="center">
+  <img src="assets/demo/anti-hall.gif" alt="Terminal demo: the doctor reports anti-hall active, then git-guard blocks a force-push and an AI self-credit trailer (exit 2), command-guard sends a build to a subagent, and the two-line statusline renders." width="720">
+</p>
+
+## What it does
+
+- Stops your coding assistant from stating things it has not checked: invented library functions, "it works" without running anything, "done" with tasks still open.
+- Blocks risky git actions outright: force-pushes, and AI credit lines in commit messages and GitHub PR/issue/release text.
+- Keeps the main conversation responsive by pushing heavy commands and file edits to helper agents, and caps runaway agent spawning.
+- Adds skills you can call by name for debugging to a proven root cause, reviewing risky changes, and writing a session handover.
+- Works with Claude Code (plugin) and Codex (separate port). Pure Node, nothing else to install.
+
+**Before and after.** An assistant, mid-task, runs a force-push to `main`. Without anti-hall, the published history is rewritten. With it, the command never runs and the assistant is told:
+
+> anti-hall git-guard: BLOCKED. Force push detected. Rewriting published history is a deliberate human action - do it manually with explicit owner confirmation, never from an automated push.
+
 anti-hall is a Claude Code **marketplace + plugin**, plus a separate Codex-native port,
 that keeps coding assistants from acting before they verify. It ships always-on Node
 hooks (mechanical guards no prompt can talk around), a set of evidence-driven workflow
 skills, and a live two-line statusline. Pure Node.js, no dependencies, **macOS · Linux**
-(Node ≥ 22 on `PATH` is the only prerequisite; Windows is untested).
+(Node ≥ 22 on `PATH` is the only prerequisite; Windows is not supported).
 
 It targets four predictable failure modes: **eagerness** (acting before investigating),
 **hallucination** (stating unverified facts as truth), **fix-before-diagnosis** (patching
@@ -22,7 +38,26 @@ a symptom before proving the cause), and **fake completion** ("done" without run
 check). See [why it exists, and what's proven vs. not](docs/GUIDE.md#hook-reference-detailed)
 for the eval behind that claim.
 
+## What it blocks, and how to turn it off
+
+The main guards. Every one can be switched off with its setting (`/anti-hall:settings`, the `/config` panel, or `node plugins/anti-hall/scripts/settings.js set <key> false`). The four `safety.*` keys are locked: changing them needs `--confirmed`. Separately, you can tell the assistant to skip a guard for a short time; it records that in `~/.anti-hall/skip.json` (per guard name, expires after 15 minutes by default; `"all"` never covers `git-guard`, which must be named).
+
+| Guard | What it stops | Why | Turn off |
+|---|---|---|---|
+| `git-guard` | Force-push and AI self-credit in commits and `gh` PR/issue/release text | Rewriting published history and AI co-author trailers are human decisions | `safety.gitGuard`; skip name `git-guard` |
+| `command-guard` | The main session running heavy commands (build, test, deploy, push) itself | Keeps the main conversation free; helpers do the long work | `safety.commandGuard`; skip name `command-guard` |
+| `edit-guard` | The main session editing files outside its own plan/state/handover files | Edits go through a helper that can be checked | `safety.editGuard`; skip name `edit-guard` |
+| `swarm-guard` | Agent spawns past the spawn-rate cap or under critical memory pressure | Prevents a fork-bomb of agents overloading the machine | `safety.swarmGuard`; skip name `swarm-guard` |
+| `api-guard` | Written code that calls a standard-library or built-in API that does not exist | Catches invented functions before they land | `guards.apiGuard`; skip name `api-guard` |
+| `speculation-guard` | A turn that ends on unverified, hedged claims | Claims need evidence, not "probably" | `guards.speculationGuard`; skip name `speculation-guard` |
+| `output-verify-guard` | Unverified completion claims | "Done" needs a check that was actually run | `guards.outputVerifyGuard` |
+| `task-guard` / `tasklist-guard` | Stopping while tracked tasks are open; multi-step work with no task list or progress file | Stops half-finished work being reported as finished | `guards.taskGuard` / `guards.tasklistGuard`; skip names `task-guard` / `tasklist-guard` |
+
+Everything else, with the exact behaviour of each hook: [docs/GUIDE.md](docs/GUIDE.md#hook-reference--plugin-features-table-detailed-per-hook).
+
 ## Install
+
+Prerequisite: **Node.js >= 22** on `PATH` (check with `node --version`).
 
 **Claude Code:**
 
@@ -31,17 +66,46 @@ for the eval behind that claim.
 /plugin install anti-hall@anti-hall
 ```
 
-**Codex** (project-local or `--global`):
+**Codex** (from scratch; the installer lives in the repo, so clone it first):
 
 ```bash
-node plugins/anti-hall/codex/install-codex.js
-node plugins/anti-hall/codex/install-codex.js --global
+git clone https://github.com/talas9/anti-hall.git
+cd anti-hall
+node plugins/anti-hall/codex/install-codex.js            # project-local: writes ./.codex/hooks.json
+node plugins/anti-hall/codex/install-codex.js --global   # or user-wide: writes ~/.codex/hooks.json
 ```
+
+Add `--dry-run` to preview. The installer merges into an existing `hooks.json`, backs up any file it changes (`.bak-<timestamp>`), and enables `[features] hooks = true` in the matching `config.toml`.
+
+**Verify it worked:** in Claude Code, ask "is anti-hall working" (runs the `doctor` skill: live self-tests on every guard), or run `/anti-hall:settings` to see the active settings. From a clone you can also run `node plugins/anti-hall/hooks/doctor.js --check`.
 
 The Claude plugin is the authoritative package; the Codex port
 (`plugins/anti-hall/codex/`) is a separate, intentionally non-1:1 mirror — see
 [plugins/anti-hall/codex/README.md](plugins/anti-hall/codex/README.md) for hook parity
 and [docs/GUIDE.md](docs/GUIDE.md) for the full Codex/OMX detail.
+
+## Uninstall
+
+**Claude Code:**
+
+```bash
+claude plugin uninstall anti-hall@anti-hall
+claude plugin marketplace remove anti-hall   # optional: also drop the marketplace
+```
+
+If you installed the statusline, remove it first with the `install-statusline` skill's uninstall, or run `node statusline/uninstall-statusline.js` from the plugin directory (it restores your previous `statusLine`).
+
+**Codex:** the installer has no uninstall flag. Open `.codex/hooks.json` (project) or `~/.codex/hooks.json` (global) and delete the hook groups whose command path contains `/plugins/anti-hall/hooks/`; the installer's `.bak-<timestamp>` copies hold your prior file. The `[features] hooks = true` line it added to `config.toml` is left alone.
+
+**Optional companions** (only if you installed them; run from `plugins/anti-hall/companion/` in a clone or the plugin directory):
+
+```bash
+node install-reaper.js --uninstall                # MCP orphan reaper (macOS LaunchAgent com.anti-hall.mcp-reaper / Linux systemd --user timer)
+node install-devswarm-supervisor.js --uninstall   # DevSwarm liveness supervisor (com.anti-hall.devswarm-supervisor)
+node install-devswarm-ingest.js --uninstall       # DevSwarm ingest daemon (com.anti-hall.devswarm-ingest)
+```
+
+`~/.anti-hall/` holds your settings, skip file and logs; it is not removed automatically. Delete it yourself only if you want that state gone.
 
 ## Requirements
 
@@ -57,6 +121,8 @@ loading on older versions), so every version can load the plugin; enum settings 
 as a plain string field describing the allowed values instead of a picker.
 
 ## Capabilities
+
+Terms used below: **DevSwarm** is a multi-workspace orchestration app with a `hivecontrol` CLI; anti-hall's integration is optional and dormant unless you use it. **Jev** is TypeSafe's "System One" decision model, used as an opt-in classifier. **deadly-loop** is a parallel Reviewer + Auditor + Critic debate with fix waves, run before merging risky changes.
 
 | Area | What it does |
 |---|---|
@@ -201,5 +267,7 @@ Repo layout, the `AGENTS.md` cross-tool mirror, the `node --test` suite, and the
 `/anti-hall:update` flow are documented in [docs/GUIDE.md](docs/GUIDE.md). Full
 component reference, configuration, and local testing:
 [plugins/anti-hall/README.md](plugins/anti-hall/README.md).
+
+Release notes and what is new in each version: [CHANGELOG.md](CHANGELOG.md). Contributing: [CONTRIBUTING.md](CONTRIBUTING.md). Reporting a vulnerability: [SECURITY.md](SECURITY.md).
 
 MIT © Mohammed Talas. See [LICENSE](LICENSE).

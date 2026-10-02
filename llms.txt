@@ -15,37 +15,50 @@ anti-hall targets four failure modes of coding agents: eagerness (acting before
 investigating), hallucination (unverified facts stated as truth), fix-before-diagnosis, and
 fake completion (claiming done without running the check). The always-on protocol text
 itself (Iron Law, rationalization table, positive rules, orchestration rules) is mirrored
-in [AGENTS.md](AGENTS.md). This file is the condensed catalog of every component; history
-is in [CHANGELOG.md](CHANGELOG.md).
-
-**New in 0.108.0:** automatic handover at 85% context (`auto-handover.js` +
-`auto-handover-pause-nag.js`); one settings store for everything
-(`~/.anti-hall/settings.json`, `/anti-hall:settings`, `scripts/settings.js`); repairs on
-every plugin reload/new version (`repair-on-reload.js`); version alerts that tell you to
-update or just reload; Jev real cost tracking, precision labels, budget watch, credit
-balance and opt-in audit snippets; DevSwarm: the app database as ground truth, a capability
-gate (version + runtime detection) on every DevSwarm surface, auto-archive of proven-done
-workspaces (DevSwarm >= 2.5.3), owner-approved prune, message retention, screenshot sync.
+in [AGENTS.md](https://github.com/talas9/anti-hall/blob/main/AGENTS.md). This file is the condensed catalog of every component; history
+is in [CHANGELOG.md](https://github.com/talas9/anti-hall/blob/main/CHANGELOG.md).
 
 ## Install
+
+Prerequisite: Node.js >= 22 on PATH (hooks silently no-op without it; Windows is not supported).
 
 ```
 /plugin marketplace add talas9/anti-hall
 /plugin install anti-hall@anti-hall
 ```
 
-Codex: `node plugins/anti-hall/codex/install-codex.js` (project) or `--global`. Update with
-`/anti-hall:update` (Claude) or the `anti-hall-update` skill (Codex), then `/reload-plugins` (Claude Code; restart only if a hook or skill path still shows the old version).
+Verify: ask Claude "is anti-hall working" (the `doctor` skill), or run `node plugins/anti-hall/hooks/doctor.js --check` from a clone.
+
+Codex (from a clone; project-local, or add `--global`):
+
+```
+git clone https://github.com/talas9/anti-hall.git
+cd anti-hall
+node plugins/anti-hall/codex/install-codex.js
+```
+
+Update with `/anti-hall:update` (Claude) or the `anti-hall-update` skill (Codex), then `/reload-plugins` (Claude Code; restart only if a hook or skill path still shows the old version).
 
 ## Docs
 
-- [README.md](README.md) — overview, the four failure modes, quickstart.
-- [plugins/anti-hall/README.md](plugins/anti-hall/README.md) — component reference, configuration, troubleshooting.
-- [plugins/anti-hall/codex/README.md](plugins/anti-hall/codex/README.md) — the Codex port: hook subset, skills, OMX mapping.
-- [docs/README.md](docs/README.md) — index of every doc; [docs/KB.md](docs/KB.md) — knowledge-base ground truth; [docs/GUIDE.md](docs/GUIDE.md) — extended guide and per-hook reference.
-- DevSwarm: [docs/KB-devswarm-hivecontrol.md](docs/KB-devswarm-hivecontrol.md) (hivecontrol + the mesh), [docs/KB-devswarm-app-db.md](docs/KB-devswarm-app-db.md) (the app database).
-- Handover: [docs/KB-session-handover.md](docs/KB-session-handover.md), [docs/KB-handover-research.md](docs/KB-handover-research.md). Jev: [docs/KB-jev-classifier.md](docs/KB-jev-classifier.md). Hooks platform: [docs/KB-claude-code-hooks.md](docs/KB-claude-code-hooks.md), [docs/KB-codex-platform-hooks-plugins.md](docs/KB-codex-platform-hooks-plugins.md).
-- [RELEASING.md](RELEASING.md) — release checklist. [AGENTS.md](AGENTS.md) — the protocol for Codex / cross-tool agents.
+- [README.md](https://github.com/talas9/anti-hall/blob/main/README.md): overview, the four failure modes, quickstart.
+- [plugins/anti-hall/README.md](https://github.com/talas9/anti-hall/blob/main/plugins/anti-hall/README.md): component reference, configuration, troubleshooting.
+- [plugins/anti-hall/codex/README.md](https://github.com/talas9/anti-hall/blob/main/plugins/anti-hall/codex/README.md): the Codex port, hook subset, skills, OMX mapping.
+- [docs/README.md](https://github.com/talas9/anti-hall/blob/main/docs/README.md): index of every doc.
+- [docs/KB.md](https://github.com/talas9/anti-hall/blob/main/docs/KB.md): knowledge-base ground truth.
+- [docs/GUIDE.md](https://github.com/talas9/anti-hall/blob/main/docs/GUIDE.md): extended guide and per-hook reference.
+- [docs/KB-devswarm-hivecontrol.md](https://github.com/talas9/anti-hall/blob/main/docs/KB-devswarm-hivecontrol.md): DevSwarm hivecontrol CLI and the mesh.
+- [docs/KB-devswarm-app-db.md](https://github.com/talas9/anti-hall/blob/main/docs/KB-devswarm-app-db.md): the DevSwarm app database.
+- [docs/KB-session-handover.md](https://github.com/talas9/anti-hall/blob/main/docs/KB-session-handover.md): session handover design.
+- [docs/KB-handover-research.md](https://github.com/talas9/anti-hall/blob/main/docs/KB-handover-research.md): handover research (compaction, triggers).
+- [docs/KB-jev-classifier.md](https://github.com/talas9/anti-hall/blob/main/docs/KB-jev-classifier.md): the Jev classifier (opt-in), integrations, metrics.
+- [docs/KB-claude-code-hooks.md](https://github.com/talas9/anti-hall/blob/main/docs/KB-claude-code-hooks.md): Claude Code hooks reference.
+- [docs/KB-codex-platform-hooks-plugins.md](https://github.com/talas9/anti-hall/blob/main/docs/KB-codex-platform-hooks-plugins.md): Codex platform hooks and plugins.
+- [RELEASING.md](https://github.com/talas9/anti-hall/blob/main/RELEASING.md): release checklist.
+- [AGENTS.md](https://github.com/talas9/anti-hall/blob/main/AGENTS.md): the protocol for Codex and cross-tool agents.
+- [CHANGELOG.md](https://github.com/talas9/anti-hall/blob/main/CHANGELOG.md): version history.
+- [CONTRIBUTING.md](https://github.com/talas9/anti-hall/blob/main/CONTRIBUTING.md): how to contribute and run the tests.
+- [SECURITY.md](https://github.com/talas9/anti-hall/blob/main/SECURITY.md): how to report a vulnerability.
 
 ## Hooks (plugins/anti-hall/hooks/, registered in hooks.json)
 
@@ -276,11 +289,14 @@ Auto-archive (default on, DevSwarm >= 2.5.3) archives only workspaces proven don
 clean, drained, unfocused and idle, always by explicit workspace id; deleting archived
 workspaces needs the owner's approval of an exact list. Message retention archives old
 message bodies to gzip, then prunes them. Full reference:
-[docs/KB-devswarm-hivecontrol.md](docs/KB-devswarm-hivecontrol.md),
-[docs/KB-devswarm-app-db.md](docs/KB-devswarm-app-db.md).
+[docs/KB-devswarm-hivecontrol.md](https://github.com/talas9/anti-hall/blob/main/docs/KB-devswarm-hivecontrol.md),
+[docs/KB-devswarm-app-db.md](https://github.com/talas9/anti-hall/blob/main/docs/KB-devswarm-app-db.md).
 
 ## Manifests, tests, release
 
-- [plugins/anti-hall/.claude-plugin/plugin.json](plugins/anti-hall/.claude-plugin/plugin.json) — the only version authority (also `plugins/anti-hall/.codex-plugin/plugin.json`, bumped together); [.claude-plugin/marketplace.json](.claude-plugin/marketplace.json).
-- [tests/](tests/) — zero-dependency `node --test`; v0.108.0 end-to-end scenarios in `tests/e2e/v0108/`. CI: ubuntu + macOS × Node 22/24 ([.github/workflows/test.yml](.github/workflows/test.yml)).
-- [RELEASING.md](RELEASING.md) — bump both manifests + CHANGELOG, commit, tag, GitHub Release.
+- [plugins/anti-hall/.claude-plugin/plugin.json](https://github.com/talas9/anti-hall/blob/main/plugins/anti-hall/.claude-plugin/plugin.json): the only version authority.
+- [plugins/anti-hall/.codex-plugin/plugin.json](https://github.com/talas9/anti-hall/blob/main/plugins/anti-hall/.codex-plugin/plugin.json): the Codex manifest, bumped together with the Claude one.
+- [.claude-plugin/marketplace.json](https://github.com/talas9/anti-hall/blob/main/.claude-plugin/marketplace.json): the marketplace entry (carries no version).
+- [tests/](https://github.com/talas9/anti-hall/tree/main/tests/): zero-dependency `node --test`; v0.108.0 end-to-end scenarios in `tests/e2e/v0108/`.
+- [.github/workflows/test.yml](https://github.com/talas9/anti-hall/blob/main/.github/workflows/test.yml): CI, ubuntu + macOS x Node 22/24.
+- [RELEASING.md](https://github.com/talas9/anti-hall/blob/main/RELEASING.md): bump both manifests + CHANGELOG, commit, tag, GitHub Release.
