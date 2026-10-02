@@ -21,3 +21,9 @@ test('plugin.json icon exists inside the plugin folder and is <= 256 KiB', () =>
   assert.ok(st.isFile(), 'icon path is not a file');
   assert.ok(st.size <= MAX_BYTES, `icon is ${st.size} bytes, max ${MAX_BYTES}`);
 });
+
+test('plugin icon lives at the plugin root, not inside .claude-plugin/', () => {
+  const manifest = JSON.parse(fs.readFileSync(MANIFEST, 'utf8'));
+  const resolved = path.resolve(PLUGIN_DIR, manifest.icon);
+  assert.ok(!resolved.startsWith(path.join(PLUGIN_DIR, '.claude-plugin') + path.sep), 'only the manifest belongs in .claude-plugin/');
+});

@@ -26,7 +26,7 @@ Other `git` requests happen only when you run them: `/anti-hall:update` pulls fr
 
 ## What it runs and writes
 
-Beyond the network requests above, anti-hall runs and writes these things locally:
+These are the notable things anti-hall runs and writes outside the project. Hook state lives under `~/.anti-hall/` and `<project>/.anti-hall/`.
 
 | What | When | Where |
 |---|---|---|

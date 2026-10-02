@@ -62,6 +62,8 @@ No telemetry or analytics. One request is on by default: an update check to GitH
 
 ### What it runs and writes
 
+These are the notable things it runs and writes outside the project. Hook state lives under `~/.anti-hall/` and `<project>/.anti-hall/`.
+
 | What | When | Where |
 |---|---|---|
 | Background units (launchd agent / systemd user unit / cron entry) for the optional DevSwarm ingest daemon, liveness supervisor and MCP reaper | Only if you run the matching `install-*` script | `~/Library/LaunchAgents/`, `~/.config/systemd/user/` or your crontab |
