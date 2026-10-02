@@ -45,7 +45,7 @@ test -f .codex/hooks.json && sed -n '1,220p' .codex/hooks.json
 4. Write sentinel:
 
 ```bash
-node -e "const fs=require('fs'),os=require('os'),path=require('path');const d=path.join(os.homedir(),'.anti-hall');fs.mkdirSync(d,{recursive:true});fs.writeFileSync(path.join(d,'codex-activated.json'),JSON.stringify({activatedAt:new Date().toISOString(),scope:process.cwd()},null,2)+'\n')"
+node "$ANTI_HALL_ROOT/codex/scripts/write-activation-sentinel.js"
 ```
 
 Codex limitations after activation:
