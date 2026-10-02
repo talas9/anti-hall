@@ -59,6 +59,7 @@ Update with `/anti-hall:update` (Claude) or the `anti-hall-update` skill (Codex)
 - [CHANGELOG.md](https://github.com/talas9/anti-hall/blob/main/CHANGELOG.md): version history.
 - [CONTRIBUTING.md](https://github.com/talas9/anti-hall/blob/main/CONTRIBUTING.md): how to contribute and run the tests.
 - [SECURITY.md](https://github.com/talas9/anti-hall/blob/main/SECURITY.md): how to report a vulnerability.
+- [CODE_OF_CONDUCT.md](https://github.com/talas9/anti-hall/blob/main/CODE_OF_CONDUCT.md): expected behaviour and how to report a conduct problem.
 
 ## Hooks (plugins/anti-hall/hooks/, registered in hooks.json)
 

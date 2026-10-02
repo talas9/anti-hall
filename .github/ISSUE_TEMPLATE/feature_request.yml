@@ -1,0 +1,34 @@
+name: Feature request
+description: Suggest a new guard, skill, setting or behaviour
+title: "feature: "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What goes wrong or is missing today? Include a concrete example.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behaviour
+    validations:
+      required: true
+  - type: dropdown
+    id: port
+    attributes:
+      label: Which port
+      description: anti-hall ships a Claude Code plugin and a Codex port; changes normally land on both.
+      options:
+        - Claude Code
+        - Codex
+        - Both
+        - Not sure
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered

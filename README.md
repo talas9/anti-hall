@@ -270,6 +270,13 @@ Repo layout, the `AGENTS.md` cross-tool mirror, the `node --test` suite, and the
 component reference, configuration, and local testing:
 [plugins/anti-hall/README.md](plugins/anti-hall/README.md).
 
-Release notes and what is new in each version: [CHANGELOG.md](CHANGELOG.md). Contributing: [CONTRIBUTING.md](CONTRIBUTING.md). Reporting a vulnerability: [SECURITY.md](SECURITY.md).
+Release notes and what is new in each version: [CHANGELOG.md](CHANGELOG.md).
+
+## Contributing
+
+- [CONTRIBUTING.md](CONTRIBUTING.md): project layout, running the tests, adding a guard.
+- [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md): expected behaviour and how to report a conduct problem.
+- [SECURITY.md](SECURITY.md): report a vulnerability privately, not in a public issue.
+- [Open an issue](https://github.com/talas9/anti-hall/issues/new/choose): bug report, false positive, or feature request.
 
 MIT © Mohammed Talas. See [LICENSE](LICENSE).
