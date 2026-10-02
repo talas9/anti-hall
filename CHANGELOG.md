@@ -16,6 +16,8 @@ the update.
 - Read-only filters before a bounded last stage (`... | grep -E x | head`) are treated as bounded.
 - Codex rate limits that surface only in background job logs are detected and recorded, so the Critic seat falls back and the Codex nudge stays quiet.
 - The stale-version notice says /reload-plugins.
+- A pipeline filter stage with any output redirect is never treated as read-only (fixes a Linux-only allowance).
+- Dormant roster rows no longer show STRAYING, and supervision skips stall/burn nudges for them.
 
 ## 0.120.9 (2026-10-01)
 
