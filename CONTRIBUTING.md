@@ -76,3 +76,7 @@ Maintainers follow [RELEASING.md](RELEASING.md): the version lives in `plugins/a
 
 - Ask questions, report bugs and false positives, or propose features through the [issue chooser](https://github.com/talas9/anti-hall/issues/new/choose) for now.
 - Security issues: [SECURITY.md](SECURITY.md); never a public issue.
+
+## Issue triage bot
+
+A new issue gets one automated first-pass comment and labels from `.github/workflows/issue-triage.yml`. It only reads the issue, adds labels and posts that single comment; a maintainer always follows up. Maintainers enable it by setting the `CLAUDE_CODE_OAUTH_TOKEN` (or `ANTHROPIC_API_KEY`) repository secret; without one it does nothing.
