@@ -38,6 +38,7 @@ the update.
 
 - **"QUESTIONS AWAITING YOUR REPLY" no longer names archived, held or ignored children:** the line now lists only questions whose sender row is not archived, held or archive-ignored (the parent gate's policy, via `row-eligibility.js`); a sender whose eligibility cannot be determined is left out. The rest of the per-prompt notice is unchanged.
 - **Cron tick prompt wording:** the prompt now says to decide on the FIRST printed line only and treats any lines after it (the optional `devswarm.tickRosterEvery` roster) as informational.
+- **Edit-guard and command-guard advice in no-workspace repos:** the block message shown to a DevSwarm Primary no longer recommends spawning a child workspace when the repo forbids workspaces for real work (or `devswarm.dispatchTierText` is off); it goes through the same `primary-tier.js` gate as the other Primary tier text. Advice text only: the same edits and commands are blocked.
 
 ## 0.121.8 (2026-10-03)
 

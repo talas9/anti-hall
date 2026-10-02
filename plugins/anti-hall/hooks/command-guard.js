@@ -3532,7 +3532,21 @@ function main() {
       cdJoinHint = ' If the check is meant to run inline: use `cd <dir> &&`, not `;`.';
     }
   } catch (_) { /* hint is best-effort */ }
-  const reason = devswarmPrimary
+  // Workspace recommendation shared with the other Primary tier text
+  // (lib/primary-tier.js): suppressed in a repo that forbids workspaces for real
+  // work. Advice text only; the block decision above is unchanged. Fail-open
+  // to the subagent-only text.
+  let tierText = false;
+  try { tierText = devswarmPrimary && require('./lib/primary-tier.js').primaryTierTextOn(process.env, (payload && payload.cwd) || process.cwd()); } catch (_) { tierText = false; }
+  const reason = devswarmPrimary && !tierText
+    ? ('DEVSWARM COMMAND-DELEGATION RULE: the primary/main orchestrator never runs ' +
+       'heavy/long/state-changing commands inline — raw output floods the main thread. ' +
+       SCRATCHPAD_SCRIPT_HINT +
+       'DELEGATE to a subagent (cheap model: Haiku or similar) that runs it and returns ' +
+       'only a tight summary. ' + detected + (detail ? ' ' + detail : '') +
+       ' — delegate to a subagent. ' +
+       INLINE_ALLOWED_HINT + cdJoinHint)
+    : devswarmPrimary
     ? ('DEVSWARM COMMAND-DELEGATION RULE: the primary/main orchestrator never runs ' +
        'heavy/long/state-changing commands inline — raw output floods the main thread. ' +
        SCRATCHPAD_SCRIPT_HINT +

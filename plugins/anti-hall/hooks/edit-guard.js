@@ -884,10 +884,20 @@ function main() {
     // false positive would break legitimate subagent use) — the reason states the
     // CHOICE and lets the model classify. The CHILD wording is unchanged, and the
     // BLOCK DECISION is identical for both roles (only the redirect text differs).
+    // The workspace recommendation is shared with the other Primary tier text
+    // (lib/primary-tier.js): a repo that forbids workspaces for real work (or
+    // devswarm.dispatchTierText off) gets the subagent-only advice. Fail-open
+    // to the subagent-only text. Advice text only; the block is unchanged.
+    let tierText = false;
+    try { tierText = !childWorkspace && require('./lib/primary-tier.js').primaryTierTextOn(process.env, cwd); } catch (_) { tierText = false; }
     reason = childWorkspace
       ? ('DEVSWARM EDIT-DELEGATION RULE: the sub-orchestrator does not touch files ' +
          'directly in its workspace — spawn a subagent to make this edit and have it ' +
          'report a tight summary.' + NOTES_HINT + SKIP_HINT + ' (tool: ' + toolName + ')')
+      : !tierText
+      ? ('DEVSWARM EDIT-DELEGATION RULE: the primary/main orchestrator does not touch ' +
+         'files directly — spawn a subagent to make this edit and have it report a tight ' +
+         'summary.' + NOTES_HINT + SKIP_HINT + ' (tool: ' + toolName + ')')
       : ('DEVSWARM EDIT-DELEGATION RULE: the primary/main orchestrator does not touch ' +
          'files directly. CHOOSE THE TIER: if this edit belongs to a workspace-scale ' +
          'MATTER (a feature/fix/deploy — multi-step, own branch, own review), spin a ' +
