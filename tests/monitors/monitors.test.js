@@ -99,5 +99,11 @@ test('the watcher script the entry points at is require()-loadable and side-effe
 
 test('the devswarm-wake-watch command passes --auto so harness-started refusals stay silent on stdout', () => {
   const entry = JSON.parse(RAW).find((m) => m.name === 'devswarm-wake-watch');
-  assert.match(entry.command, /devswarm-wake-watch\.js --auto$/);
+  assert.match(entry.command, /devswarm-wake-watch\.js" --auto$/);
+});
+
+test('every monitor command quotes ${CLAUDE_PLUGIN_ROOT} (a path with spaces must not split)', () => {
+  for (const m of JSON.parse(RAW)) {
+    assert.match(m.command, /"\$\{CLAUDE_PLUGIN_ROOT\}[^"]*"/, 'unquoted ${CLAUDE_PLUGIN_ROOT} in: ' + m.command);
+  }
 });
