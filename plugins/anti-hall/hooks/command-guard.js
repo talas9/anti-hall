@@ -3540,7 +3540,7 @@ function main() {
        ' — delegate to a subagent. ' +
        INLINE_ALLOWED_HINT + cdJoinHint);
 
-  process.stdout.write(JSON.stringify({ decision: 'block', reason }) + '\n');
+  fs.writeSync(1, JSON.stringify({ decision: 'block', reason }) + '\n');
   process.exit(2);
 }
 

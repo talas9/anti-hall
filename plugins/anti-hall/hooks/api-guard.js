@@ -486,7 +486,7 @@ function main() {
     'If you are intentionally targeting a NEWER version where this exists, ' +
     'override once: write ~/.anti-hall/skip.json {"api-guard": <unix-ms-expiry>}.';
 
-  process.stdout.write(JSON.stringify({ decision: 'block', reason }) + '\n');
+  fs.writeSync(1, JSON.stringify({ decision: 'block', reason }) + '\n');
   process.exit(2);
 }
 

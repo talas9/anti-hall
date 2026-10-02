@@ -297,7 +297,7 @@ function main() {
     'Advisory only — if this is trivial, already reviewed, or Codex is unavailable, just ' +
     'continue (set ANTIHALL_CODEX_NUDGE=off to silence).';
 
-  process.stdout.write(JSON.stringify({ decision: 'block', reason }) + '\n');
+  fs.writeSync(1, JSON.stringify({ decision: 'block', reason }) + '\n');
   process.exit(0);
 }
 

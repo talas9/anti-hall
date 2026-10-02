@@ -685,7 +685,7 @@ function main() {
   // under a trusted name on the next invocation. Checked before the
   // isCoordinator gate on purpose (R3A1-3).
   if (resolvesIntoLauncherBinDir(filePath, cwd)) {
-    process.stdout.write(JSON.stringify({
+    fs.writeSync(1, JSON.stringify({
       decision: 'block',
       reason:
         'anti-hall edit-guard: BLOCKED. This ' + toolName + ' targets ' +
@@ -709,7 +709,7 @@ function main() {
   // '.anti-hall/**' would otherwise let it through). Only while the feature is on.
   const projectEditAllow = projectEditAllowOn();
   if (projectEditAllow && isEditAllowFileTarget(filePath, cwd)) {
-    process.stdout.write(JSON.stringify({
+    fs.writeSync(1, JSON.stringify({
       decision: 'block',
       reason:
         'EDIT-ALLOW SELF-EDIT: .anti-hall/edit-allow.json decides which files the main thread ' +
@@ -782,7 +782,7 @@ function main() {
     if (alreadyExists) {
       process.exit(0); // legacy file at its existing location -> unaffected
     }
-    process.stdout.write(JSON.stringify({
+    fs.writeSync(1, JSON.stringify({
       decision: 'block',
       reason:
         'HANDOVER-LOCATION RULE: a NEW session-handover doc belongs under ' +
@@ -881,7 +881,7 @@ function main() {
       'thread.' + SKIP_HINT + ' (tool: ' + toolName + ')';
   }
 
-  process.stdout.write(JSON.stringify({ decision: 'block', reason }) + '\n');
+  fs.writeSync(1, JSON.stringify({ decision: 'block', reason }) + '\n');
   process.exit(2);
 }
 
