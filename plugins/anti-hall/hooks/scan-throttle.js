@@ -7,8 +7,8 @@
 //   pattern, emits `hookSpecificOutput.additionalContext` recommending the
 //   background-throttled form (macOS: `taskpolicy -c utility nice -n 19 <cmd>`;
 //   Linux: `nice -n 19 <cmd>`, optionally preceded by `ionice -c 3 ` when
-//   available). It NEVER rewrites tool input (no `updatedInput`) and never
-//   grants or denies permission (no `permissionDecision`): the model decides
+//   available). It NEVER rewrites the command and never
+//   returns a permission decision: the model decides
 //   whether to re-run the command throttled.
 //
 // SCOPE (generic — NO built-in patterns; entirely user-configured)
@@ -40,7 +40,7 @@
 //      disables this hook entirely.
 //
 // COMPOSITION WITH OTHER PreToolUse:Bash HOOKS: because this hook emits only
-// `additionalContext` (never `updatedInput` or a permission decision), it
+// `additionalContext` (it never rewrites the command or returns a permission decision), it
 // cannot conflict with, override or mask a block from git-guard/command-guard/
 // merge-gate, however parallel hook outputs are merged.
 //
