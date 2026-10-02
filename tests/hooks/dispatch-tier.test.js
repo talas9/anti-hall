@@ -221,3 +221,63 @@ test('JEV OFF (no jev.json): PostToolUse makes no call and logs nothing', () => 
     assert.strictEqual(jevRows(h).length, 0);
   } finally { h.cleanup(); fs.rmSync(cwd, { recursive: true, force: true }); }
 });
+
+// Calibration (2026-10-03 field report): a small P2 UI-text task was shown as
+// "→ workspace (0.52)" and a single-file P1 fix as "→ workflow". A workspace/
+// workflow verdict below CONF_FLOOR is shown as subagent; confident multi-step
+// verdicts are untouched.
+const P2_TEXT = 'P2 Settings screen: reword the empty-state UI text';
+const P1_BRICK = "P1 Brick modal: SOC 'Not read' + raw BLE value shown";
+const MULTI = {
+  'Release 0.122.0: bump both manifests, changelog, tag, marketplace propagate, GitHub release': ['workspace', 0.9],
+  'Build the dispatch metrics dashboard end to end: schema, ingest, report, settings, docs, tests': ['workspace', 0.74],
+  'Sweep all 40 hook tests for HOME isolation and fix each one': ['workflow', 0.8],
+};
+
+test('CALIBRATION: low-confidence workspace/workflow verdicts are shown as subagent (before: workspace 0.52 / workflow)', () => {
+  const h = makeHome(); const cwd = neutralCwd();
+  try {
+    seed(h, { [P2_TEXT]: ['workspace', 0.52], [P1_BRICK]: ['workflow', 0.55] });
+    const tp = h.writeTranscript(tasks([P2_TEXT, P1_BRICK]));
+    const c = ctx(testHook(TRACKER, payload(tp, cwd), { home: h.home, env: NO_DEDUPE }));
+    assert.match(c, /#1 "P2 Settings[^"]*" → subagent \(0\.52\)/, c);
+    assert.match(c, /#2 "P1 Brick modal[^"]*" → subagent \(0\.55\)/, c);
+    assert.doesNotMatch(c, /→ (workspace|workflow)/, c);
+    assert.ok(jevRows(h).some((r) => r.type === 'outcome' && r.outcome === 'low-confidence-subagent'));
+  } finally { h.cleanup(); fs.rmSync(cwd, { recursive: true, force: true }); }
+});
+
+test('CALIBRATION: confident multi-step feature / release / sweep verdicts still map to workspace / workflow', () => {
+  const h = makeHome(); const cwd = neutralCwd();
+  try {
+    seed(h, MULTI);
+    const subjects = Object.keys(MULTI);
+    const tp = h.writeTranscript(tasks(subjects));
+    const c = ctx(testHook(TRACKER, payload(tp, cwd), { home: h.home, env: NO_DEDUPE }));
+    assert.match(c, /#1 "Release 0\.122\.0[^"]*" → workspace \(0\.90\)/, c);
+    assert.match(c, /#2 "Build the dispatch[^"]*" → workspace \(0\.74\)/, c);
+    assert.match(c, /#3 "Sweep all 40[^"]*" → workflow \(0\.80\)/, c);
+  } finally { h.cleanup(); fs.rmSync(cwd, { recursive: true, force: true }); }
+});
+
+test('CALIBRATION: floor boundary and unknown confidence', () => {
+  const h = makeHome();
+  try {
+    seed(h, { a1: ['workspace', 0.6], a2: ['workspace', 0.59], a3: ['subagent', 0.1] });
+    const v = (t) => dispatchTier.verdict({ subject: t }, { home: h.home, cwd: h.home });
+    assert.strictEqual(v('a1').tier, 'workspace');
+    assert.strictEqual(v('a2').tier, 'subagent');
+    assert.strictEqual(v('a2').raw, 'workspace');
+    assert.strictEqual(v('a3').tier, 'subagent');
+    assert.ok(!v('a3').lowConf);
+  } finally { h.cleanup(); }
+});
+
+test('CALIBRATION: the question steers single-file / UI-text / priority-labelled work to subagent', () => {
+  const q = dispatchTier.QUESTION.criteria;
+  assert.match(q.subagent, /DEFAULT/);
+  assert.match(q.subagent, /UI text/);
+  assert.match(q.subagent, /P0, P1, P2/);
+  assert.match(q.workspace, /NOT a bug fix, UI text/);
+  assert.match(q.workflow, /NOT a single-file/);
+});

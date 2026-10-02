@@ -29,6 +29,7 @@ the update.
   direct mail showed e.g. `34` while `inbox tick` / `read-primary` said 0. It now shows direct
   unread only (the tick's definition) and appends `(+N bcast)` only when broadcasts are unseen.
   `--json` is unchanged (`directUnread` stays direct-only; `broadcastUnread` stays separate).
+- **Dispatch-tier hints are calibrated toward `subagent`:** a `workspace` or `workflow` recommendation with Jev confidence below 0.6 is now shown as `subagent` (logged as `low-confidence-subagent`), and the classification question now says that a bug fix, a UI text change, any single-file or single-component task, and a priority label (P0/P1/P2) do not make a task a workspace or workflow task. Confident multi-step feature, release and sweep verdicts are unchanged. Verdicts already cached keep their stored answer, but the confidence floor applies to them too.
 
 ## 0.122.0 (2026-10-03)
 

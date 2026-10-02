@@ -51,13 +51,17 @@ const QUESTION = {
   type: 'choice',
   instructions: 'Classify how an orchestrating agent should dispatch this task.',
   criteria: {
-    workspace: 'a multi-step feature, fix or deploy that should own its own branch and its own review (a separate child workspace)',
-    workflow: 'breadth-first or parallelisable work: 3 or more independent or nested agent spawns, or a review fan-out, best lifted into one deterministic workflow',
-    subagent: 'a lookup, one scoped fix, a single command, or a single review pass that one background agent can finish',
+    workspace: 'a large multi-step feature, migration or release spanning several files or components over a long stretch of work, that needs its own branch and its own review (a separate child workspace). NOT a bug fix, UI text or copy change, or any task confined to one file or one component',
+    workflow: 'breadth-first or parallelisable work: 3 or more clearly independent or nested agent spawns, or a review fan-out over many targets, best lifted into one deterministic workflow. NOT a single-file or single-component change, however important its priority label',
+    subagent: 'the DEFAULT when unsure: a lookup, a bug fix, a UI text or copy change, any change confined to one file or one component, a single command, or a single review pass that one background agent can finish. A priority label (P0, P1, P2) says nothing about size',
   },
 };
 const STATE_FILE = 'dispatch-tier-state.json';
 const REQUEST_TTL_MS = 10 * 60 * 1000;
+// A workspace/workflow verdict below this confidence is shown as `subagent`
+// (the cheapest tier; the advisory only speaks when it is reasonably sure).
+// Measured 2026-10-03 over 377 real workspace/workflow verdicts: 244 sat below 0.6.
+const CONF_FLOOR = 0.6;
 const NO_WS_RE = /no\s+workspaces?\s+for\s+real\s+work/i;
 
 function jev() { return require('./jev-assist.js'); }
@@ -156,7 +160,10 @@ function verdict(task, opts) {
     let tier = e.answer;
     let repoOverride = false;
     if (tier === 'workspace' && noWorkspaceRepo(opts && opts.cwd, home)) { tier = 'subagent'; repoOverride = true; }
-    return { tier, raw: e.answer, conf: Number.isFinite(e.confidence) ? e.confidence : null, h, repoOverride };
+    const conf = Number.isFinite(e.confidence) ? e.confidence : null;
+    const lowConf = tier !== 'subagent' && conf !== null && conf < CONF_FLOOR;
+    if (lowConf) tier = 'subagent';
+    return { tier, raw: e.answer, conf, h, repoOverride, lowConf };
   } catch (_) { return null; }
 }
 
@@ -229,7 +236,7 @@ function annotator(opts) {
       if (!home || m === 'off') return '';
       const v = verdict(task, { home, cwd: opts && opts.cwd });
       if (!v) { request(task, opts); return ''; }
-      recs.push({ id: String(task.id), h: v.h, tier: v.tier, raw: v.raw, conf: v.conf, repoOverride: v.repoOverride });
+      recs.push({ id: String(task.id), h: v.h, tier: v.tier, raw: v.raw, conf: v.conf, repoOverride: v.repoOverride, lowConf: v.lowConf });
       if (m !== 'on') return '';
       shown++;
       return '→ ' + v.tier + fmtConf(v.conf);
@@ -267,7 +274,7 @@ function remember(home, sessionId, recs, m) {
   for (const r of recs) {
     const cur = sess.tasks[r.id];
     if (cur && cur.h === r.h) continue;
-    sess.tasks[r.id] = { h: r.h, tier: r.tier, raw: r.raw, conf: r.conf, mode: m, repoOverride: !!r.repoOverride };
+    sess.tasks[r.id] = { h: r.h, tier: r.tier, raw: r.raw, conf: r.conf, mode: m, repoOverride: !!r.repoOverride, lowConf: !!r.lowConf };
     fresh.push(r);
   }
   writeState(home, st);
@@ -276,6 +283,8 @@ function remember(home, sessionId, recs, m) {
     for (const r of fresh) {
       if (r.repoOverride) {
         try { jev().recordOutcome({ id: ID, h: r.h, outcome: 'repo-override-subagent', home }); } catch (_) {}
+      } else if (r.lowConf) {
+        try { jev().recordOutcome({ id: ID, h: r.h, outcome: 'low-confidence-subagent', home }); } catch (_) {}
       }
     }
   }
@@ -370,6 +379,6 @@ function summary(home) {
 }
 
 module.exports = {
-  ID, QUESTION, TIERS, TEXT_CAP, taskText, mode, verdict, request, annotator,
+  ID, QUESTION, TIERS, CONF_FLOOR, TEXT_CAP, taskText, mode, verdict, request, annotator,
   noWorkspaceRepo, repoDocsMatch, dispatchEvidence, trackOutcomes, summary, hashFor, statePath,
 };
