@@ -160,10 +160,12 @@ function acquireExclLock(lockPath, io, staleMs) {
   // restamp() — re-write `ts` (and version/sessionId) atomically, same
   // pid/token, so a healthy long-lived holder's lock never reads as stale to a
   // steal-check even though the process itself never releases between ticks.
-  // false once another holder owns the token (e.g. after this process's own
-  // lock was reclaimed while it was hung) or on any write failure.
+  // TRI-STATE: true = refreshed, still ours; false = DEFINITIVE loss (the file
+  // is gone or another holder owns the token, e.g. after this process's own
+  // lock was reclaimed while it was hung); 'error' = transient (torn read,
+  // write failure, a reclaimer holding the sidecar) — NOT proof of loss.
   release.restamp = function restamp() {
-    return h.refresh({ pid: process.pid, version, sessionId }) === true;
+    return h.refresh({ pid: process.pid, version, sessionId });
   };
   return release;
 }

@@ -292,7 +292,7 @@ function reclaimGuarded(F, p, o, stillStealable) {
     try { ok = !!stillStealable(fresh); } catch (_) { ok = false; }
     if (!ok) return 'caught';
     return reclaim(F, p, fresh);
-  } finally { release(side); }
+  } finally { releaseUnguarded(side); }
 }
 
 function sameHolder(a, b) {
@@ -383,16 +383,44 @@ function makeHandle(F, p, token, record, now) {
   return handle;
 }
 
-// release(handle) -> true iff OUR lock was removed. A lock whose on-disk token
-// is no longer ours (reclaimed by someone else) or unreadable is left alone.
-function release(handle) {
-  if (!handle || !handle.path) return false;
+// releaseUnguarded(handle) -> true iff the on-disk token is ours and we removed
+// it. The read-then-unlink pair is not atomic by itself; release() runs it under
+// the reclaim sidecar. The sidecar's OWN release uses this path (no recursion).
+function releaseUnguarded(handle) {
   const F = handle.fs || fs;
   try {
     const cur = parseRecord(F.readFileSync(handle.path, 'utf8'));
     if (cur && cur.token === handle.token) { F.unlinkSync(handle.path); return true; }
   } catch (_) { /* gone / unreadable: not ours to remove */ }
   return false;
+}
+
+// Bound on waiting for a busy sidecar inside release(): RELEASE_SIDECAR_TRIES
+// attempts, RELEASE_SIDECAR_STEP_MS apart => at most ~(tries-1)*step = 40 ms of
+// sleep, safe inside a hook path. A crashed reclaimer can hold the sidecar for
+// RECLAIM_STALE_MS, so after the bound release falls back to the unguarded
+// read-then-unlink rather than leaking the lock.
+const RELEASE_SIDECAR_TRIES = 5;
+const RELEASE_SIDECAR_STEP_MS = 10;
+
+// release(handle) -> true iff OUR lock was removed. A lock whose on-disk token
+// is no longer ours (reclaimed by someone else) or unreadable is left alone.
+// The owner check and the unlink run under the reclaim sidecar, so a stealer
+// cannot reclaim + publish between our read and our unlink (which would delete
+// ITS lock).
+function release(handle) {
+  if (!handle || !handle.path) return false;
+  const F = handle.fs || fs;
+  let exists = true;
+  try { exists = F.existsSync(handle.path); } catch (_) {}
+  if (!exists) return false; // nothing of ours to remove: skip the sidecar
+  let side = null;
+  for (let i = 0; i < RELEASE_SIDECAR_TRIES && !side; i++) {
+    if (i > 0) sleepSync(RELEASE_SIDECAR_STEP_MS);
+    side = takeSidecar(F, handle.path, 'link');
+  }
+  if (!side) return releaseUnguarded(handle); // bounded fallback: pre-sidecar behaviour
+  try { return releaseUnguarded(handle); } finally { releaseUnguarded(side); }
 }
 
 // refresh(handle, fields?) -> true | false | 'error'. Re-stamps `ts` (and any
@@ -409,7 +437,7 @@ function refresh(handle, fields) {
   const F = handle.fs || fs;
   const side = takeSidecar(F, handle.path, 'link');
   if (!side) return 'error'; // a reclaimer is at work: retry next beat
-  try { return refreshLocked(handle, F, fields); } finally { release(side); }
+  try { return refreshLocked(handle, F, fields); } finally { releaseUnguarded(side); }
 }
 
 function refreshLocked(handle, F, fields) {

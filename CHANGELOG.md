@@ -12,6 +12,8 @@ the update.
 
 - A DevSwarm Primary that has live workspaces but no way to be woken by their messages (its session cron died with a restart and its watcher exited when no child was live) is now told so. Each prompt shows a `NO MAILBOX WAKE PATH` line (or a shorter one naming just the missing watcher or tick), `spawn` adds the same instruction to its `warnings`, and the Stop gate blocks once per cap when both are missing. Session crons do not survive a restart; the line says what to re-arm.
 - The wake watcher's idle-skip line no longer says the cron covers you. It reports how long ago the mailbox tick last ran, or says no recent tick was seen and to check `CronList`.
+- A transient lock-heartbeat failure (the lock's reclaim sidecar briefly busy) no longer makes a healthy wake watcher exit. The watcher skips that restamp and retries next tick; it exits as lost only on a genuine lost lock, or when transient failures outlast the lock's 2-minute stale threshold (with a log line).
+- Releasing a lock now checks ownership and unlinks under the reclaim sidecar (waiting at most ~40 ms for a busy one, then the old behaviour), so a stealer that publishes at that moment cannot have its lock deleted.
 
 ## 0.121.8 (2026-10-03)
 

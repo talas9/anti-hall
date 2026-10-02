@@ -1761,6 +1761,8 @@ function main() {
   let archivedCheckedAt = 0;
   let ownArchived = false;
 
+  let lastRestampOkAt = Date.now();
+  let restampErrLogged = false;
   let cleaned = false;
   // fl-wave3 fix (item 7): `skipSave` — set true ONLY by the lock-lost exit
   // path below. `st` at that point is THIS process's own (now-stale) view of
@@ -1824,11 +1826,32 @@ function main() {
     // of the new holder, no delete of anything (release() below is already a
     // safe no-op once the token no longer matches, so cleanup() cannot ever
     // unlink the new holder's lock file).
+    // restamp() is TRI-STATE: true | false (definitive loss) | 'error'
+    // (transient: torn read, write failure, a reclaimer holding the lock's
+    // sidecar — a crashed reclaimer can leave it for up to ~5 s). A transient
+    // result is NOT a lost lock: skip the restamp this tick and retry on the
+    // next one. Persisting longer than the lock's own stale threshold means
+    // another watcher may now legitimately steal it, so fall back to the
+    // lost-lock exit below (with a log line).
+    const restampOnce = () => { try { return release.restamp(); } catch (_) { return 'error'; } };
     let restamped = false;
-    try { restamped = !!release.restamp(); } catch (_) { restamped = false; }
-    if (!restamped) {
-      try { restamped = !!release.restamp(); } catch (_) { restamped = false; }
+    let r = restampOnce();
+    if (r === false) r = restampOnce(); // one re-check of a definitive loss
+    if (r === true) {
+      restamped = true;
+      lastRestampOkAt = Date.now();
+    } else if (r === 'error') {
+      if (Date.now() - lastRestampOkAt <= WATCH_LOCK_STALE_MS) {
+        restamped = true; // transient: keep running, retry next tick
+        if (!restampErrLogged) {
+          restampErrLogged = true;
+          try { fs.writeSync(2, '[wake-watch] lock restamp failed transiently (not lock loss) - retrying next tick\n'); } catch (_) {}
+        }
+      } else {
+        try { fs.writeSync(2, '[wake-watch] lock restamp failed transiently for longer than the lock stale threshold - treating the lock as lost\n'); } catch (_) {}
+      }
     }
+    if (r === true) restampErrLogged = false;
     if (!restamped) {
       try { fs.writeSync(2, formatLockLostLine(REFUSAL_REASONS.LOCK_HELD) + '\n'); } catch (_) {}
       // fl-wave3 fix (item 7): skip the seen-state write on a lock-lost exit
