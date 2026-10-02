@@ -195,11 +195,13 @@ function replaceSteps(plan, steps, scope, now) {
   if (same && scopeSame) return false;
   if (!same) {
     const old = plan.steps;
+    const doneBefore = stepsDone(plan);
     plan.steps = steps.slice(0, MAX_STEPS).map((text, i) => {
       const prev = old[i] && old[i].text === text ? old[i] : null;
       return prev ? prev : { n: i + 1, text: String(text).slice(0, MAX_STEP_TEXT), status: 'todo', ts: null, started_at: null };
     });
     plan.replaced_at = now;
+    noteDoneDrop(plan, doneBefore);
     delete plan.done_reported_at;
   }
   if (scope !== null) plan.scope_globs = scope.slice(0, MAX_SCOPE_GLOBS);
@@ -216,7 +218,9 @@ function applyStep(plan, n, status, now) {
   if (!STEP_STATUSES.includes(status)) return { error: '--status must be one of ' + STEP_STATUSES.join('|') };
   const step = plan.steps[num - 1];
   if (step.status === status) return { changed: false };
+  const doneBefore = stepsDone(plan);
   step.status = status;
+  noteDoneDrop(plan, doneBefore);
   step.ts = now;
   if (!Number.isFinite(step.started_at)) step.started_at = now;
   plan.step_ts = now;
@@ -227,17 +231,17 @@ function applyStep(plan, n, status, now) {
   return { changed: true };
 }
 
-// currentStep(plan) -> the step being worked on, MONOTONIC in the reported
-// progress: steps at or below the highest `done` step are never current again
-// (a stale `doing`/`blocked` left on an earlier step must not pull the display
-// back, e.g. 6/6 -> 3/6). Among later steps: the most recently touched
-// doing/blocked one, else the first not done; null when nothing is left.
-// `plan set` (replaceSteps) is the explicit reset.
+// currentStep(plan) -> the FOCUS step: the most recently touched doing/blocked
+// step, else the first step not done; null only when every step is done. It
+// is an identifier for supervision keys, the correction text and the child's
+// own reminder, NOT a progress measure: a parallel child touches steps out of
+// order, so this index legitimately jumps. Progress is the COUNT of done steps
+// (stepsDone) and is what the roster label shows. (0.120.14: the earlier
+// "monotonic" version hid steps at or below the highest done step, so done
+// {1,2,4,9,12} read as 12/12 done and a stall detector saw no open step.)
 function currentStep(plan) {
   if (!plan || !Array.isArray(plan.steps) || !plan.steps.length) return null;
-  let maxDone = 0;
-  for (const s of plan.steps) if (s.status === 'done' && s.n > maxDone) maxDone = s.n;
-  const open = plan.steps.filter((s) => s.n > maxDone && s.status !== 'done');
+  const open = plan.steps.filter((s) => s.status !== 'done');
   let best = null;
   for (const s of open) {
     if (s.status !== 'doing' && s.status !== 'blocked') continue;
@@ -248,6 +252,16 @@ function currentStep(plan) {
 
 function stepsDone(plan) {
   return plan && Array.isArray(plan.steps) ? plan.steps.filter((s) => s.status === 'done').length : 0;
+}
+
+// noteDoneDrop(plan, doneBefore) — the done COUNT fell (a done step re-opened,
+// or `plan set` replaced steps that were done). Records the old count so the
+// label can say "(plan changed)" until the count is back; the label itself
+// always shows the true count, never a stored maximum.
+function noteDoneDrop(plan, doneBefore) {
+  const now = stepsDone(plan);
+  if (now < doneBefore) plan.regressed_from = Math.max(doneBefore, Number(plan.regressed_from) || 0);
+  else if (Number(plan.regressed_from) <= now) delete plan.regressed_from;
 }
 
 // addExtra(plan, glob, note, now) -> changed. Same glob + same note = no-op.
@@ -306,30 +320,44 @@ function dur(ms) {
   return Math.floor(h / 24) + 'd';
 }
 
-// finishLabel(plan, now) -> 'step 3/7 · 42m · progress 18m ago'. The middle
-// value is the time on the current step (since it started, or since the
-// plan was written if it has not started); the last is the time since the
-// child last reported a step change. `inferred` (a Jev devswarmStepMap answer
-// promoted to "on") is shown as `~N` and only when no step was ever reported.
+// finishLabel(plan, now) -> '5/12 done · 3 doing · 42m · progress 18m ago'.
+// The headline is the COUNT of done steps (monotonic unless a step is
+// re-opened or the plan replaced; then the true lower count shows with
+// '(plan changed)'). In-progress steps are counted, or named when exactly one
+// ('doing #7'); never a "step i/N" index, which reads as progress but only
+// tracks the last-touched step of a parallel child. The duration is the time
+// the oldest in-progress step has run (else since the plan was written); the
+// last value is the time since the child last reported. `inferred` (a Jev
+// devswarmStepMap answer promoted to "on") shows as `~#N`, only when no step
+// was ever reported.
 function finishLabel(plan, now) {
   if (!plan || !Array.isArray(plan.steps) || !plan.steps.length) return null;
   const total = plan.steps.length;
   const lastTs = lastProgressTs(plan);
   const progress = lastTs !== null ? 'progress ' + dur(now - lastTs) + ' ago' : 'no progress yet';
-  const cur = currentStep(plan);
-  if (!cur) {
+  const done = stepsDone(plan);
+  if (done >= total) {
     return 'steps ' + total + '/' + total + ' done · '
       + (Number.isFinite(plan.done_reported_at) ? 'done-reported, awaiting Primary' : progress);
   }
+  const doing = plan.steps.filter((s) => s.status === 'doing');
+  const blocked = plan.steps.filter((s) => s.status === 'blocked');
+  const parts = [done + '/' + total + ' done' + (Number(plan.regressed_from) > done ? ' (plan changed)' : '')];
+  if (doing.length === 1) parts.push('doing #' + doing[0].n);
+  else if (doing.length > 1) parts.push(doing.length + ' doing');
+  if (blocked.length === 1) parts.push('#' + blocked[0].n + ' blocked');
+  else if (blocked.length > 1) parts.push(blocked.length + ' blocked');
   const inferred = !Number.isFinite(plan.step_ts) && Number.isInteger(plan.inferred_step)
     && plan.inferred_step >= 1 && plan.inferred_step <= total;
-  const num = inferred ? '~' + plan.inferred_step : String(cur.n);
-  const since = Number.isFinite(cur.started_at) ? cur.started_at : plan.created_at;
+  if (inferred) parts.push('~#' + plan.inferred_step);
   if (Number.isFinite(plan.done_reported_at)) {
-    return 'step ' + num + '/' + total + ' · done-reported ' + dur(now - plan.done_reported_at) + ' ago, awaiting Primary';
+    parts.push('done-reported ' + dur(now - plan.done_reported_at) + ' ago, awaiting Primary');
+    return parts.join(' · ');
   }
-  return 'step ' + num + '/' + total + (cur.status === 'blocked' ? ' blocked' : '')
-    + ' · ' + dur(now - since) + ' · ' + progress;
+  const starts = doing.concat(blocked).map((s) => s.started_at).filter(Number.isFinite);
+  const since = starts.length ? Math.min.apply(null, starts) : plan.created_at;
+  parts.push(dur(now - since), progress);
+  return parts.join(' · ');
 }
 
 function readStray(home, key) {

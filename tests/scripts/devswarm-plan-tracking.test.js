@@ -55,17 +55,17 @@ test('parseSteps: first 1..N numbered list, common forms, needs two items', () =
   assert.deepStrictEqual(planLib.parseScope('no scope line'), []);
 });
 
-test('finishLabel: "step 3/7 · 42m · progress 18m ago", blocked, all-done, no-progress', () => {
+test('finishLabel: "2/7 done · doing #3 · 42m · progress 18m ago", blocked, all-done, no-progress', () => {
   const now = 10 * 3600000;
   const plan = planLib.newPlan({ key: 'k', id: 'k', steps: ['a', 'b', 'c', 'd', 'e', 'f', 'g'], now: now - 5 * 3600000 });
-  assert.strictEqual(planLib.finishLabel(plan, now), 'step 1/7 · 5h · no progress yet');
+  assert.strictEqual(planLib.finishLabel(plan, now), '0/7 done · 5h · no progress yet');
   planLib.applyStep(plan, 1, 'done', now - 90 * 60000);
   planLib.applyStep(plan, 2, 'done', now - 60 * 60000);
   planLib.applyStep(plan, 3, 'doing', now - 42 * 60000);
   plan.step_ts = now - 18 * 60000;
-  assert.strictEqual(planLib.finishLabel(plan, now), 'step 3/7 · 42m · progress 18m ago');
+  assert.strictEqual(planLib.finishLabel(plan, now), '2/7 done · doing #3 · 42m · progress 18m ago');
   planLib.applyStep(plan, 3, 'blocked', now - 60000);
-  assert.strictEqual(planLib.finishLabel(plan, now), 'step 3/7 blocked · 42m · progress 1m ago');
+  assert.strictEqual(planLib.finishLabel(plan, now), '2/7 done · #3 blocked · 42m · progress 1m ago');
   for (let n = 3; n <= 7; n++) planLib.applyStep(plan, n, 'done', now);
   assert.strictEqual(planLib.finishLabel(plan, now), 'steps 7/7 done · progress 0m ago');
   assert.strictEqual(planLib.finishLabel(null, now), null);
@@ -110,7 +110,7 @@ test('plan set is idempotent; heartbeat --step records progress idempotently; ba
     const noList = cli.run(['plan', 'set', 'child-c', '--steps', 'just prose'], c);
     assert.strictEqual(noList.code, 2);
     const show = cli.run(['plan', 'show', 'child-a'], Object.assign({}, c, { now: 3000 + 18 * 60000 }));
-    assert.strictEqual(show.result.label, 'step 2/3 · 18m · progress 18m ago');
+    assert.strictEqual(show.result.label, '0/3 done · doing #2 · 18m · progress 18m ago');
   } finally { rm(home); }
 });
 
@@ -176,29 +176,74 @@ test('no-plan rows are byte-identical: table normalizer and doneStateLabel uncha
   ].join('\n');
   const legacy = (t) => String(t).split('\n').map((l) => (/^\|.*\|\s*$/.test(l) ? l.replace(/\|[^|]*\|\s*$/, '| |') : l)).join('\n');
   assert.strictEqual(inbox.normalizeTableAges(noPlan), legacy(noPlan));
-  const a = '| wsP | active | step 3/7 · 42m · progress 18m ago | 0 | 3m |';
-  const b = '| wsP | active | step 3/7 · 43m · progress 19m ago | 0 | 4m |';
+  const a = '| wsP | active | 3/7 done · doing #4 · 42m · progress 18m ago | 0 | 3m |';
+  const b = '| wsP | active | 3/7 done · doing #4 · 43m · progress 19m ago | 0 | 4m |';
   assert.strictEqual(inbox.normalizeTableAges(a), inbox.normalizeTableAges(b), 'a ticking clock alone never re-sends the table');
-  const c = '| wsP | active | step 4/7 · 0m · progress 0m ago | 0 | 4m |';
+  const c = '| wsP | active | 4/7 done · doing #5 · 0m · progress 0m ago | 0 | 4m |';
   assert.notStrictEqual(inbox.normalizeTableAges(a), inbox.normalizeTableAges(c), 'a step change still re-sends it');
   assert.strictEqual(inbox.doneStateLabel({ workspaces: { w: { gates: {} } } }, 'w', { progress_pct: 40 }), 'working (40%)');
 });
 
-test('regression: the displayed step is monotonic (a stale earlier doing never pulls 6/6 back to 3/6)', () => {
+test('regression: parallel waves never make the roster step go backwards (done COUNT, not last-touched index)', () => {
+  const T0 = 10 * 3600000;
+  const plan = planLib.newPlan({ key: 'k', id: 'k', steps: Array.from({ length: 12 }, (_, i) => 'item ' + (i + 1)), now: T0 });
+  const at = (m) => T0 + m * 60000;
+  const seq = [];
+  const step = (n, st, m) => { planLib.applyStep(plan, n, st, at(m)); seq.push(planLib.finishLabel(plan, at(m))); };
+  // The reported child: wave A touches 1, 9, 4, 2, 12 out of order; wave B later.
+  step(1, 'doing', 1);
+  step(3, 'doing', 2);
+  step(7, 'doing', 3);
+  step(6, 'doing', 4);
+  step(1, 'done', 5);
+  step(2, 'doing', 6);
+  const dones = seq.map((l) => Number(/^(\d+)\/12 done/.exec(l)[1]));
+  assert.ok(dones.every((d, i) => i === 0 || d >= dones[i - 1]), 'done count never decreases: ' + seq.join(' | '));
+  for (const l of seq) assert.doesNotMatch(l, /^step \d+\//, 'no "step i/N" index that reads as progress: ' + l);
+  assert.match(seq[0], /^0\/12 done · doing #1 · /);
+  assert.match(seq[3], /^0\/12 done · 4 doing · /, 'several in progress are counted, not indexed');
+  assert.match(seq[5], /^1\/12 done · 4 doing · /);
+  // Out-of-order completion: 9, 4, 2, 12 done with 1 -> 5 done (the old maxDone logic said 12/12 done).
+  for (const n of [9, 4, 2, 12]) planLib.applyStep(plan, n, 'done', at(10 + n));
+  const l = planLib.finishLabel(plan, at(40));
+  assert.match(l, /^5\/12 done · 3 doing · /, l);
+  assert.doesNotMatch(l, /^steps 12\/12/);
+  assert.strictEqual(planLib.currentStep(plan) && planLib.currentStep(plan).n !== undefined, true, 'a stall/straying detector still sees an open step (no false all-done)');
+});
+
+test('finishLabel: sequential plan keeps its meaning; a re-opened step or replaced plan shows the true lower count with "(plan changed)"', () => {
   const now = 10 * 3600000;
-  const plan = planLib.newPlan({ key: 'k', id: 'k', steps: ['a', 'b', 'c', 'd', 'e', 'f'], now: now - 5 * 3600000 });
-  planLib.applyStep(plan, 1, 'done', now - 300 * 60000);
-  planLib.applyStep(plan, 2, 'done', now - 290 * 60000);
-  planLib.applyStep(plan, 3, 'doing', now - 240 * 60000); // never closed
-  planLib.applyStep(plan, 4, 'done', now - 120 * 60000);
-  planLib.applyStep(plan, 5, 'done', now - 100 * 60000);
-  planLib.applyStep(plan, 6, 'blocked', now - 60 * 60000);
-  assert.match(planLib.finishLabel(plan, now), /^step 6\/6 blocked/);
-  planLib.applyStep(plan, 6, 'done', now - 30 * 60000);
-  assert.strictEqual(planLib.currentStep(plan), null, 'step 3 (stale doing) must not become current again');
-  assert.doesNotMatch(planLib.finishLabel(plan, now), /step 3\//);
-  assert.match(planLib.finishLabel(plan, now), /^steps 6\/6 done/);
-  // An explicit `plan set` with a new list is the reset.
-  planLib.replaceSteps(plan, ['x', 'y'], null, now);
-  assert.strictEqual(planLib.currentStep(plan).n, 1);
+  const plan = planLib.newPlan({ key: 'k', id: 'k', steps: ['a', 'b', 'c', 'd'], now: now - 3600000 });
+  planLib.applyStep(plan, 1, 'done', now - 50 * 60000);
+  planLib.applyStep(plan, 2, 'done', now - 40 * 60000);
+  planLib.applyStep(plan, 3, 'doing', now - 30 * 60000);
+  assert.strictEqual(planLib.finishLabel(plan, now), '2/4 done · doing #3 · 30m · progress 30m ago');
+  assert.strictEqual(plan.regressed_from, undefined);
+  // A done step re-opened: the count really drops.
+  planLib.applyStep(plan, 2, 'doing', now - 10 * 60000);
+  assert.match(planLib.finishLabel(plan, now), /^1\/4 done \(plan changed\) · 2 doing · /);
+  // Back to the old count: the marker clears.
+  planLib.applyStep(plan, 2, 'done', now - 5 * 60000);
+  planLib.applyStep(plan, 3, 'done', now - 4 * 60000);
+  assert.doesNotMatch(planLib.finishLabel(plan, now), /plan changed/);
+  assert.match(planLib.finishLabel(plan, now), /^3\/4 done · /);
+  // Re-plan with the same texts at the same numbers keeps statuses; a different list drops done steps.
+  planLib.replaceSteps(plan, ['a', 'X', 'Y', 'Z', 'W'], null, now);
+  assert.match(planLib.finishLabel(plan, now), /^1\/5 done \(plan changed\) · /);
+  assert.strictEqual(planLib.currentStep(plan).n, 2);
+});
+
+test('hook roster injection and the CLI roster/plan show render the same step label', () => {
+  const home = tmpHome();
+  try {
+    const now = 20000;
+    const plan = planLib.newPlan({ key: 'child-r', id: 'child-r', steps: ['a', 'b', 'c'], now });
+    planLib.applyStep(plan, 3, 'doing', now + 1000);
+    planLib.applyStep(plan, 1, 'doing', now + 2000);
+    planLib.savePlan(home, 'child-r', plan);
+    const c = { home, env: Object.assign({}, ENV), now: now + 60000 };
+    const show = cli.run(['plan', 'show', 'child-r'], c);
+    assert.strictEqual(show.result.label, planLib.finishLabel(planLib.findPlan(home, { id: 'child-r' }).plan, now + 60000));
+    assert.strictEqual(show.result.label, '0/3 done · 2 doing · 0m · progress 0m ago');
+  } finally { rm(home); }
 });

@@ -79,9 +79,9 @@ test('parent-inbox: extras and straying ride on the plan cell; a plain plan row 
       { home: h.home, env: PRIMARY_ENV, expectJson: true });
     assert.strictEqual(r.status, 0);
     const c = ctxOf(r);
-    assert.ok(/\|\s*step 2\/3 · 20m · progress 20m ago\s*\|/.test(tableRow(c, 'wsPlain')), 'plain plan row = P1 label: ' + tableRow(c, 'wsPlain'));
-    assert.ok(/\|\s*step 2\/3 · 20m · progress 20m ago · \+1 extra\s*\|/.test(tableRow(c, 'wsExtra')), tableRow(c, 'wsExtra'));
-    assert.ok(/\|\s*step 2\/3 · 20m · progress 20m ago · 1.8M tok · STRAYING: stall\s*\|/.test(tableRow(c, 'wsStray')), tableRow(c, 'wsStray'));
+    assert.ok(/\|\s*1\/3 done · doing #2 · 20m · progress 20m ago\s*\|/.test(tableRow(c, 'wsPlain')), 'plain plan row = plan label: ' + tableRow(c, 'wsPlain'));
+    assert.ok(/\|\s*1\/3 done · doing #2 · 20m · progress 20m ago · \+1 extra\s*\|/.test(tableRow(c, 'wsExtra')), tableRow(c, 'wsExtra'));
+    assert.ok(/\|\s*1\/3 done · doing #2 · 20m · progress 20m ago · 1.8M tok · STRAYING: stall\s*\|/.test(tableRow(c, 'wsStray')), tableRow(c, 'wsStray'));
     assert.ok(/\|\s*working \(40%\)\s*\|/.test(tableRow(c, 'wsBare')), 'no-plan row keeps its old cell: ' + tableRow(c, 'wsBare'));
   } finally { h.cleanup(); }
 });

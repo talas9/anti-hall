@@ -437,7 +437,7 @@ function logNotDrainingSuppressed(home) {
 // "42s"/"3m"/"—") so a turn where only ages advanced hashes the same as the last
 // emitted table. Status/unread/finish/risk changes still change the hash.
 function normalizeTableAges(t) {
-  // The step-plan finish label (Meeseeks P1: 'step 3/7 · 42m · progress 18m ago')
+  // The step-plan finish label (Meeseeks P1: '3/7 done · doing #4 · 42m · progress 18m ago')
   // carries ages too — dropped here so a ticking clock never re-sends the table.
   // A row without a plan never contains this text, so its line is unchanged.
   // The P2 token figure (' · 1.8M tok') rises every sweep and is dropped too.
@@ -2073,7 +2073,7 @@ function main() {
       // rank as a tiebreak, and pinned / on-screen / brief-delivery markers.
       let finishCell = doneStateLabel(summary, id, heartbeat);
       // Plan tracking (Meeseeks P1): an in-progress row whose workspace has a
-      // step plan shows 'step 3/7 · 42m · progress 18m ago' in place of
+      // step plan shows '3/7 done · doing #4 · 42m · progress 18m ago' in place of
       // 'working (N%)'. A row without a plan keeps its old cell exactly.
       try {
         if (planLib && /^working\b/.test(finishCell) && planLib.planTrackingEnabled({ env: process.env, home })) {

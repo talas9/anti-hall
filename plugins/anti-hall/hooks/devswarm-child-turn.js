@@ -218,7 +218,7 @@ function buildPlanSegment(id, home, worktree, env) {
     const plan = found.plan;
     const cur = planLib.currentStep(plan);
     const head = cur
-      ? 'DEVSWARM PLAN: step ' + cur.n + '/' + plan.steps.length + (cur.status === 'blocked' ? ' (blocked)' : '') + ' — "' + cur.text + '".'
+      ? 'DEVSWARM PLAN: ' + planLib.stepsDone(plan) + '/' + plan.steps.length + ' steps done; latest touched step ' + cur.n + (cur.status === 'blocked' ? ' (blocked)' : '') + ' — "' + cur.text + '".'
       : 'DEVSWARM PLAN: all ' + plan.steps.length + ' steps are done — report it with `node ' + CLI + ' done`.';
     return head + ' Report step progress as it happens: `node ' + CLI + ' heartbeat ' + id
       + ' --step N --status doing|done|blocked` (it is what the Primary\'s roster shows).'

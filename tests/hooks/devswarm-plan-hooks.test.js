@@ -64,7 +64,7 @@ test('parent-inbox: a plan row shows its step label; rows without a plan are unc
       { home: h.home, env: PRIMARY_ENV, expectJson: true });
     assert.strictEqual(r.status, 0);
     const c = ctxOf(r);
-    assert.ok(/\|\s*step 2\/3 · 20m · progress 20m ago\s*\|/.test(tableRow(c, 'wsPlan')), 'plan row: ' + tableRow(c, 'wsPlan'));
+    assert.ok(/\|\s*1\/3 done · doing #2 · 20m · progress 20m ago\s*\|/.test(tableRow(c, 'wsPlan')), 'plan row: ' + tableRow(c, 'wsPlan'));
     assert.ok(/\|\s*working \(40%\)\s*\|/.test(tableRow(c, 'wsPct')), 'no-plan row keeps its old cell: ' + tableRow(c, 'wsPct'));
     assert.ok(/\|\s*working\s*\|/.test(tableRow(c, 'wsBare')), 'no-plan row keeps its old cell: ' + tableRow(c, 'wsBare'));
 
@@ -90,7 +90,30 @@ test('child-turn: plan segment names the current step and the heartbeat --step c
     seedPlan(h.home, 'child-p', ['read', 'fix'], (p, now) => planLib.applyStep(p, 1, 'doing', now));
     const withPlan = testHook('devswarm-child-turn.js', Object.assign({}, payload, { session_id: 's3' }), { home: h.home, env: CHILD_ENV, expectJson: true });
     const c = ctxOf(withPlan);
-    assert.ok(c.includes('DEVSWARM PLAN: step 1/2 — "read".'), c);
+    assert.ok(c.includes('DEVSWARM PLAN: 0/2 steps done; latest touched step 1 — "read".'), c);
     assert.ok(c.includes('heartbeat child-p --step N --status doing|done|blocked'), c);
+  } finally { h.cleanup(); }
+});
+
+test('parent-inbox: successive roster renders of an out-of-order parallel wave never show a falling done count or a "step i/N" index', () => {
+  const h = makeHome();
+  try {
+    writeHeartbeat(h.home, 'wsWave', { id: 'wsWave', ts: Date.now(), progress_pct: 10 });
+    writeSummary(h.home, { wsWave: {} });
+    const steps = Array.from({ length: 12 }, (_, i) => 'item ' + (i + 1));
+    const touches = [[1, 'doing'], [3, 'doing'], [7, 'doing'], [6, 'doing'], [1, 'done'], [9, 'done'], [2, 'doing'], [4, 'done'], [2, 'done'], [12, 'done']];
+    const plan = planLib.newPlan({ key: 'wsWave', id: 'wsWave', steps, now: Date.now() - 60 * 60000 });
+    const rows = [];
+    touches.forEach(([n, st], i) => {
+      planLib.applyStep(plan, n, st, Date.now() - (30 - i) * 60000);
+      planLib.savePlan(h.home, 'wsWave', plan);
+      const r = testHook('devswarm-parent-inbox.js', { hook_event_name: 'UserPromptSubmit', session_id: 'wave' + i, prompt: 'hi', cwd: REPO_CWD },
+        { home: h.home, env: PRIMARY_ENV, expectJson: true });
+      rows.push(tableRow(ctxOf(r), 'wsWave'));
+    });
+    const done = rows.map((row) => { const m = /\|\s*(\d+)\/12 done/.exec(row); assert.ok(m, 'row has an N/12 done headline: ' + row); return Number(m[1]); });
+    assert.deepStrictEqual(done, [0, 0, 0, 0, 1, 2, 2, 3, 4, 5]);
+    for (const row of rows) assert.doesNotMatch(row, /\|\s*step \d+\//, row);
+    assert.match(rows[3], /0\/12 done · 4 doing/);
   } finally { h.cleanup(); }
 });

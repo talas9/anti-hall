@@ -211,7 +211,7 @@ function jevAdjust(ctx) {
       reaskMs: reaskMs(ctx.env, ctx.home), jevState: readState(ctx.home, ctx.key), dirty: false,
     };
     const summaries = (Array.isArray(plan.summaries) ? plan.summaries : []).map((s) => s.text).filter(Boolean);
-    const stepLine = 'current step ' + cur.n + '/' + plan.steps.length + ': ' + cur.text + (cur.status === 'blocked' ? ' (blocked)' : '');
+    const stepLine = 'latest touched step ' + cur.n + ' (' + planLib.stepsDone(plan) + '/' + plan.steps.length + ' done): ' + cur.text + (cur.status === 'blocked' ? ' (blocked)' : '');
     const git = (c.deps.gitRecent || gitRecent)(ctx.d.worktreePath || plan.worktreePath);
     const has = (sig) => signals.some((s) => s.signal === sig);
 
