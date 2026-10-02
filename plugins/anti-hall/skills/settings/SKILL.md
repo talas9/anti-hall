@@ -150,9 +150,10 @@ quota/rate-limit exhaustion seen in a `codex:codex-rescue` result so other
 sessions stop rediscovering it independently, default on),
 and `devswarm.*` (parentGate, childGate, parentInbox, childTurn, childRole, childDrain,
 parentReplyTracker, commsGuard, inboxReadGuard, wakeWatch, appSync, screenshotSync, spawnFromOrigin;
-`dispatchTierText` turns the Primary dispatch-tier text off everywhere, `inlineWorkNudge` the once-per-session
+`dispatchTierText` turns the Primary dispatch-tier text off everywhere, `inlineWorkNudge` (independent of it) the once-per-session
 nudge to spin a child workspace after `inlineWorkNudgeThreshold` inline edits; `tickRosterEvery` N>0 appends the
-roster to every Nth `inbox tick --quiet`, default 0 = off).
+roster to every Nth `inbox tick --quiet`, default 0 = off). The new question/dispatch/nudge/roster keys have no
+/config row (settings file or env only).
 Settings are read when each hook runs, so a change applies from the next hook call.
 
 ## `show` only when asked

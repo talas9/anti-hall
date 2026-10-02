@@ -131,6 +131,7 @@ test('schema / manifest parity for the inline-work settings', () => {
   const b = schema.findSetting('devswarm', 'inlineWorkNudgeThreshold');
   assert.deepStrictEqual([a.default, a.env], [true, 'ANTIHALL_DEVSWARM_INLINE_WORK_NUDGE']);
   assert.deepStrictEqual([b.default, b.env], [5, 'ANTIHALL_DEVSWARM_INLINE_WORK_NUDGE_THRESHOLD']);
-  assert.strictEqual(m.userConfig[a.pluginOption].default, true);
-  assert.strictEqual(m.userConfig[b.pluginOption].default, 5);
+  assert.deepStrictEqual([a.pluginOption, b.pluginOption, a.advanced, b.advanced], [undefined, undefined, true, true]);
+  assert.strictEqual(m.userConfig.devswarm_inline_work_nudge, undefined, 'no manifest row');
+  assert.strictEqual(m.userConfig.devswarm_inline_work_nudge_threshold, undefined, 'no manifest row');
 });

@@ -66,5 +66,6 @@ test('schema / manifest parity for devswarm.dispatchTierText', () => {
   assert.strictEqual(e.default, true);
   assert.strictEqual(e.env, 'ANTIHALL_DEVSWARM_DISPATCH_TIER_TEXT');
   const m = JSON.parse(fs.readFileSync(path.join(plugin, '.claude-plugin', 'plugin.json'), 'utf8'));
-  assert.strictEqual(m.userConfig[e.pluginOption].default, true);
+  assert.deepStrictEqual([e.pluginOption, e.advanced], [undefined, true]);
+  assert.strictEqual(m.userConfig.devswarm_dispatch_tier_text, undefined, 'no manifest row');
 });

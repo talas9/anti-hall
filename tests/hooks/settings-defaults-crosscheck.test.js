@@ -276,9 +276,8 @@ test('devswarm: every advanced tuning knob is marked advanced; headline knobs ar
     // 0.117.0
     'maintainerNotice.post', 'maintainerNotice.show', 'startupSampling',
     // 0.117.0 archived-child-stop (design B)
-    'archivedChildStop',
-    // dispatch-tier text + inline-work nudge on/off switches
-    'dispatchTierText', 'inlineWorkNudge'];
+    'archivedChildStop'];
+  // dispatchTierText / inlineWorkNudge are advanced: the manifest's /config rows are being reduced, so they are settings-file/env only.
   const sec = SCHEMA.findSection('devswarm');
   for (const s of sec.settings) {
     if (headline.includes(s.key)) assert.ok(!s.advanced, s.key + ' should be headline, not advanced');

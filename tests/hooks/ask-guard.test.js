@@ -233,11 +233,11 @@ test('schema / manifest / docs parity for guards.noBlockingQuestions', () => {
   assert.deepStrictEqual(e.values, ['off', 'advise', 'block']);
   assert.strictEqual(e.default, 'off');
   assert.strictEqual(e.env, 'ANTIHALL_NO_BLOCKING_QUESTIONS');
-  assert.strictEqual(e.pluginOption, 'guards_no_blocking_questions');
-  assert.ok(!e.homeOnly, 'env and /config option must stay usable');
+  assert.strictEqual(e.pluginOption, undefined, 'settings file + env only: no /config row');
+  assert.strictEqual(e.advanced, true);
+  assert.ok(!e.homeOnly, 'env must stay usable');
   const manifest = JSON.parse(fs.readFileSync(path.join(PLUGIN, '.claude-plugin', 'plugin.json'), 'utf8'));
-  assert.strictEqual(manifest.userConfig.guards_no_blocking_questions.default, 'off');
-  assert.match(manifest.userConfig.guards_no_blocking_questions.description, /off \| advise \| block/);
+  assert.strictEqual(manifest.userConfig.guards_no_blocking_questions, undefined, 'no manifest row');
   for (const f of ['docs/GUIDE.md', 'llms.txt']) {
     const t = fs.readFileSync(path.join(ROOT, f), 'utf8');
     assert.ok(t.includes('guards.noBlockingQuestions'), f);
@@ -350,9 +350,10 @@ test('schema / manifest parity for guards.questionAgentsNote', () => {
   assert.strictEqual(e.type, 'boolean');
   assert.strictEqual(e.default, true);
   assert.strictEqual(e.env, 'ANTIHALL_QUESTION_AGENTS_NOTE');
-  assert.strictEqual(e.pluginOption, 'guards_question_agents_note');
+  assert.strictEqual(e.pluginOption, undefined, 'settings file + env only: no /config row');
+  assert.strictEqual(e.advanced, true);
   const manifest = JSON.parse(fs.readFileSync(path.join(PLUGIN, '.claude-plugin', 'plugin.json'), 'utf8'));
-  assert.strictEqual(manifest.userConfig.guards_question_agents_note.default, true);
+  assert.strictEqual(manifest.userConfig.guards_question_agents_note, undefined, 'no manifest row');
   for (const f of ['docs/GUIDE.md', 'llms.txt']) {
     const t = fs.readFileSync(path.join(ROOT, f), 'utf8');
     assert.ok(t.includes('guards.questionAgentsNote') && t.includes('ANTIHALL_QUESTION_AGENTS_NOTE'), f);
