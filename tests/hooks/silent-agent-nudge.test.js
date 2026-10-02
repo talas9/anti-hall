@@ -1170,6 +1170,97 @@ test('RESUME: killed -> real SendMessage resume tool_result (resumedAgentId) -> 
   } finally { h.cleanup(); }
 });
 
+// ---------------------------------------------------------------------------
+// Slow-run diagnostics: a slow boundary (or a huge transcript) leaves a line in
+// the central anti-hall log; a fast run leaves nothing; logging never changes
+// the hook's output. Slowness is injected through the test-only clock hook
+// ANTIHALL_TEST_SLOW_PHASE="<phase>:<ms>" (no sleeping).
+// ---------------------------------------------------------------------------
+
+function diagLines(logDir) {
+  try {
+    return fs.readFileSync(path.join(logDir, 'devswarm.jsonl'), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l))
+      .filter((e) => e.component === 'silent-agent-nudge');
+  } catch (_) { return []; }
+}
+
+function staleTranscript(h) {
+  const out = writeOutputFile(h, 'diag.output', THRESHOLD_MS + 5 * 60 * 1000);
+  return h.writeTranscript([
+    agentToolUseLine('toolu_d', 'Diag agent', isoMinutesAgo(30)),
+    agentLaunchResultLine('d1111111111111111', out, 'toolu_d', isoMinutesAgo(30)),
+  ]);
+}
+
+test('DIAG: a fast run writes nothing to the log', () => {
+  const h = makeHome();
+  try {
+    const logDir = path.join(h.home, 'diag-log');
+    const r = testHook(HOOK, stopPayload(staleTranscript(h)), { home: h.home, env: { ANTI_HALL_LOG_DIR: logDir } });
+    assert.ok(isBlock(r), 'the nudge itself is unchanged');
+    assert.deepStrictEqual(diagLines(logDir), []);
+  } finally { h.cleanup(); }
+});
+
+test('DIAG: a slow boundary writes exactly one line carrying hook, session, size, phases and node version', () => {
+  const h = makeHome();
+  try {
+    const logDir = path.join(h.home, 'diag-log');
+    const tp = h.writeTranscript([agentToolUseLine('toolu_x', 'nothing launched', isoMinutesAgo(1))]);
+    const r = testHook(HOOK, stopPayload(tp), { home: h.home, env: { ANTI_HALL_LOG_DIR: logDir, ANTIHALL_TEST_SLOW_PHASE: 'decision:2500' } });
+    assert.strictEqual(r.status, 0);
+    assert.strictEqual(r.stdout, '');
+    const lines = diagLines(logDir);
+    assert.strictEqual(lines.length, 1, 'exactly one slow line: ' + JSON.stringify(lines));
+    assert.strictEqual(lines[0].op, 'slow');
+    assert.strictEqual(lines[0].ctx.hook, 'silent-agent-nudge');
+    assert.strictEqual(lines[0].ctx.sessionId, 't');
+    assert.strictEqual(lines[0].ctx.transcriptBytes, fs.statSync(tp).size);
+    assert.strictEqual(lines[0].ctx.node, process.version);
+    assert.deepStrictEqual(lines[0].ctx.phases.map((p) => p.phase),
+      ['start', 'stdin-read', 'settings-skip', 'transcript-scan', 'sidechain-heartbeat', 'decision']);
+    assert.ok(lines[0].ctx.phases[5].ms > 2000, 'the slow boundary is past 2000 ms');
+    assert.ok(lines[0].ctx.phases.slice(0, 5).every((p) => p.ms < 2000), 'earlier phases were fast');
+  } finally { h.cleanup(); }
+});
+
+test('DIAG: a transcript over 8 MB writes one "started" line before the scan', () => {
+  const h = makeHome();
+  try {
+    const logDir = path.join(h.home, 'diag-log');
+    const tp = h.writeTranscript([agentToolUseLine('toolu_x', 'nothing launched', isoMinutesAgo(1))]);
+    fs.appendFileSync(tp, 'x'.repeat(9 * 1024 * 1024) + '\n');
+    const r = testHook(HOOK, stopPayload(tp), { home: h.home, env: { ANTI_HALL_LOG_DIR: logDir } });
+    assert.strictEqual(r.status, 0);
+    const lines = diagLines(logDir);
+    assert.strictEqual(lines.length, 1);
+    assert.strictEqual(lines[0].op, 'started');
+    assert.ok(lines[0].ctx.transcriptBytes > 8 * 1024 * 1024);
+    assert.deepStrictEqual(lines[0].ctx.phases.map((p) => p.phase), ['start', 'stdin-read', 'settings-skip']);
+  } finally { h.cleanup(); }
+});
+
+test('DIAG: a logging failure changes neither the hook output nor its exit code', () => {
+  const h = makeHome();
+  try {
+    const tp = staleTranscript(h);
+    const blocker = path.join(h.home, 'not-a-dir');
+    fs.writeFileSync(blocker, 'file');
+    const base = testHook(HOOK, stopPayload(tp), { home: h.home, env: { ANTI_HALL_LOG_DIR: path.join(h.home, 'ok-log') } });
+    assert.ok(isBlock(base), 'baseline nudges');
+    // the baseline persisted its once-only state; clear it so the second run is comparable
+    fs.rmSync(path.join(h.home, '.anti-hall', 'silent-agent-nudge-state.json'), { force: true });
+    const broken = testHook(HOOK, stopPayload(tp), {
+      home: h.home,
+      env: { ANTI_HALL_LOG_DIR: path.join(blocker, 'sub'), ANTIHALL_TEST_SLOW_PHASE: 'state-read:2500' },
+    });
+    assert.strictEqual(broken.status, base.status);
+    // the ack hint embeds the wall-clock time; mask only that 13-digit timestamp
+    const mask = (s) => s.replace(/": \d{13}\}/, '": <ts>}');
+    assert.strictEqual(mask(broken.stdout), mask(base.stdout), 'identical block output despite the failed log write');
+  } finally { h.cleanup(); }
+});
+
 test('TERMINAL SHAPES: killed via user-string, queued attachment, and system-reminder-in-later-user-message are all terminal', () => {
   const id = 'abab111122223333b';
   const shapes = {

@@ -68,6 +68,15 @@
 //
 // FAIL-OPEN: any error -> exit 0, no block, no stderr noise.
 //
+// SLOW-RUN DIAGNOSTICS (diagnosis only, no behaviour change): this hook once hit the
+// harness's 30 s Stop limit twice in a real session whose reproductions all take tens
+// of ms; the cause is unknown. mark(phase) keeps an in-memory [{phase, ms}] list and,
+// whenever a boundary lands past SLOW_MS, writes ONE synchronous line to the central
+// anti-hall log (companion/lib/anti-hall-log.js, rotation-capped) BEFORE continuing,
+// so a later kill still leaves the last phase reached on disk. A transcript over
+// BIG_TRANSCRIPT_BYTES also writes one "started" line up front. Any logging error is
+// swallowed. Governed by guards.silentAgentNudge (off = the hook does not run at all).
+//
 // Contract (Claude Code Stop hook):
 //   stdin  : JSON { hook_event_name: 'Stop', session_id?, transcript_path?, cwd?, ... }
 //   stdout : JSON {"decision":"block","reason":"..."} to nudge, or nothing
@@ -83,6 +92,36 @@ const DEFAULT_MIN = 20; // minutes — mirrors agent-watchdog.js's 20-min defaul
 // one of these free-form terminal values (agent-watchdog.js documents status
 // as free-form: "running", "done", "error", etc.).
 const FINISHED_HEARTBEAT_STATUS = /^(done|complete|completed|finished|stopped|success|succeeded|error|failed)$/i;
+
+const SLOW_MS = 2000;
+const BIG_TRANSCRIPT_BYTES = 8 * 1024 * 1024;
+const diag = { t0: Date.now(), offset: 0, phases: [], sessionId: '', transcriptBytes: null };
+
+// diagWrite(kind) -> one synchronous line in the central anti-hall log. Never throws.
+function diagWrite(kind) {
+  try {
+    require('../companion/lib/anti-hall-log.js').logEvent('silent-agent-nudge', kind, 'warn',
+      kind === 'started' ? 'large transcript, run started' : 'slow run',
+      { hook: 'silent-agent-nudge', sessionId: diag.sessionId, transcriptBytes: diag.transcriptBytes,
+        phases: diag.phases.slice(), node: process.version });
+  } catch (_) { /* diagnostics must never affect the hook */ }
+}
+
+// mark(phase) -> record the phase boundary; a boundary past SLOW_MS logs immediately.
+// ANTIHALL_TEST_SLOW_PHASE="<phase>:<ms>" (tests only) advances this clock by <ms>
+// when that phase is marked, so slowness is injected without sleeping.
+function mark(phase) {
+  try {
+    const inj = process.env.ANTIHALL_TEST_SLOW_PHASE;
+    if (inj) {
+      const i = inj.lastIndexOf(':');
+      if (inj.slice(0, i) === phase && Number(inj.slice(i + 1)) > 0) diag.offset += Number(inj.slice(i + 1));
+    }
+    const ms = Date.now() + diag.offset - diag.t0;
+    diag.phases.push({ phase, ms });
+    if (ms > SLOW_MS) diagWrite('slow');
+  } catch (_) { /* diagnostics must never affect the hook */ }
+}
 
 function settingsGet(section, key, dflt) {
   try { return require('./lib/settings.js').get(section, key, dflt); } catch (_) { return dflt; }
@@ -129,6 +168,7 @@ function transcriptCandidates(transcriptPath, now, thresholdMs) {
     const { readTail } = require('./lib/transcript-tail.js');
     scan = scanTranscript(transcriptPath, readTail(transcriptPath, NUDGE_SCAN_BYTES) || undefined);
   }
+  mark('transcript-scan');
   if (!scan) return [];
   const out = [];
   for (const [id, rec] of scan.launched) {
@@ -252,11 +292,13 @@ function heartbeatCandidates(home, now, thresholdMs, sessionId) {
 }
 
 function main() {
+  mark('start');
   // Settings switch guards.silentAgentNudge: off -> no-op. Fail-open: any error runs the hook.
   try { if (!require('./lib/settings.js').enabled('guards', 'silentAgentNudge')) return; } catch (_) { /* run */ }
 
   let raw = '';
   try { raw = fs.readFileSync(0, 'utf8'); } catch (_) { raw = ''; }
+  mark('stdin-read');
 
   // Escape hatch: shared user-consented skip.
   try {
@@ -279,12 +321,20 @@ function main() {
 
   const now = Date.now();
   const transcriptPath = typeof payload.transcript_path === 'string' ? payload.transcript_path : '';
+  mark('settings-skip');
+
+  diag.sessionId = sessionId;
+  try {
+    diag.transcriptBytes = transcriptPath ? fs.statSync(transcriptPath).size : null;
+    if (diag.transcriptBytes > BIG_TRANSCRIPT_BYTES) diagWrite('started');
+  } catch (_) { /* diagnostics only */ }
 
   let candidates = [];
   try { candidates = candidates.concat(transcriptCandidates(transcriptPath, now, thresholdMs)); } catch (_) { /* fail-open: skip this source */ }
   try { candidates = candidates.concat(heartbeatCandidates(home, now, thresholdMs, sessionId)); } catch (_) { /* fail-open: skip this source */ }
+  mark('sidechain-heartbeat');
 
-  if (candidates.length === 0) process.exit(0);
+  if (candidates.length === 0) { mark('decision'); process.exit(0); }
 
   const stateFile = path.join(home, '.anti-hall', 'silent-agent-nudge-state.json');
   let prevNudged = {};
@@ -296,6 +346,7 @@ function main() {
       if (parsed.everNudged && typeof parsed.everNudged === 'object') everNudged = parsed.everNudged;
     }
   } catch (_) { prevNudged = {}; everNudged = {}; }
+  mark('state-read');
 
   const liveKeys = new Set(candidates.map((c) => c.key));
   const stale = candidates.filter((c) => prevNudged[c.key] !== c.snapshot);
@@ -342,6 +393,7 @@ function main() {
     // suppressed by the hard cap, so it does not look "not yet nudged" next
     // time and keep re-entering `stale` above for no reason.
     for (const c of stale) nextNudged[c.key] = c.snapshot;
+    mark('decision');
     persist();
     process.exit(0);
   }
@@ -404,6 +456,7 @@ function main() {
     process.exit(0);
   }
 
+  mark('decision');
   const reason =
     'anti-hall silent-agent-nudge: ' + shownCandidates.length +
     ' of your own background subagent(s) have gone silent past the ' + minMinutes +
