@@ -176,7 +176,7 @@ scans the last assistant message for hedge-word markers and blocks once if none 
 evidence/uncertainty acknowledgments are present.
 
 **Tier 3 — Semantic judge (OPT-IN, LLM cost):** `speculation-judge.js` (Stop) calls an LLM
-judge to catch confident inference-as-fact with no hedge word. Off by default; requires `ANTIHALL_SEMANTIC_JUDGE=1` and `ANTHROPIC_API_KEY`.
+judge to catch confident inference-as-fact with no hedge word. Off by default; enabled by the `jev.semanticJudge` setting or `ANTIHALL_SEMANTIC_JUDGE=1`, and requires `ANTHROPIC_API_KEY`.
 
 **Tier 2.5 — Claim ledger (deterministic, LEDGER-ONLY):** `claim-ledger.js` (Stop) cross-checks
 checkable tokens in the last message (counts, SHAs, `task N of`, `N days ago`, no-tool "still

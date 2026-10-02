@@ -82,7 +82,7 @@ The short form is in the README; the full table is [PRIVACY.md](../PRIVACY.md). 
 here goes beyond it: no telemetry; one default-on update check (a tag-list request to
 `github.com/talas9/anti-hall`, no project data; off via `versionAlerts.antiHall` or
 `ANTIHALL_VERSION_ALERT=off`); the Jev classifier, the semantic judge
-(`ANTIHALL_SEMANTIC_JUDGE=1`) and mesh message triage are off by default and send the
+(`jev.semanticJudge` or `ANTIHALL_SEMANTIC_JUDGE=1`) and mesh message triage are off by default and send the
 text they judge only to the provider you configure. API keys come from sensitive plugin
 options; reading a key from the environment or a key file is opt-in
 (`jev.allowLegacyKeyRead`, `guards.allowAnthropicEnvKey`), and the Jev endpoint override
@@ -326,7 +326,7 @@ safety guard is never left silently disabled.
 > blocks once per distinct message hash; `tasklist-guard` has its own independent block cap
 > — `MAX_BLOCKS=3` cumulative per session — so it never compounds with `task-guard`), so the
 > others surface on subsequent Stops.
-> `speculation-judge` is a no-op unless `ANTIHALL_SEMANTIC_JUDGE=1` — it never blocks in
+> `speculation-judge` is a no-op unless `jev.semanticJudge` is true or `ANTIHALL_SEMANTIC_JUDGE=1` — it never blocks in
 > the default configuration.
 
 ### speculation-guard
@@ -371,11 +371,12 @@ opt-in **Tier 3 semantic judge** described below.
 
 ### speculation-judge (Tier 3, OPT-IN)
 
-`speculation-judge.js` is registered in `hooks.json` but **exits 0 immediately** unless
-`ANTIHALL_SEMANTIC_JUDGE=1` is set. When unset (the default), it has zero cost, zero
-latency, and zero network activity — it is as if it were not registered at all.
+`speculation-judge.js` is registered in `hooks.json` but **exits 0 immediately** unless it is
+enabled: off by default; enabled by the `jev.semanticJudge` setting or `ANTIHALL_SEMANTIC_JUDGE=1`
+(the env var wins when set to an on/off value). When off, it has zero cost, zero latency, and
+zero network activity — it is as if it were not registered at all.
 
-**To enable:**
+**To enable:** either set `jev.semanticJudge` to `true` (`/anti-hall:settings`), or:
 
 ```bash
 # Add to ~/.zshrc / ~/.bashrc / ~/.profile, then restart Claude Code:
@@ -387,7 +388,7 @@ credential store; the judge is fail-open if it is absent). anti-hall no longer r
 `ANTHROPIC_API_KEY` from your environment unless you enable `guards.allowAnthropicEnvKey` in
 `~/.anti-hall/settings.json` (the Codex port, which has no plugin options, needs that setting).
 
-**To disable:** unset `ANTIHALL_SEMANTIC_JUDGE` (or set it to any value other than `"1"`).
+**To disable:** set `jev.semanticJudge` to `false` and unset `ANTIHALL_SEMANTIC_JUDGE` (an explicit `ANTIHALL_SEMANTIC_JUDGE=0` overrides a `true` setting).
 
 **What it catches:** confidently-stated inference-as-fact with no hedge word — e.g.,
 "The cause is the old build artifact." with no tool verification and no uncertainty
@@ -414,7 +415,7 @@ already blocked, skips — the model was nudged once and had a chance to respond
 **Misfire caveat:** LLM judges are not perfect. The conservative judge prompt reduces
 false positives, but some misfires will occur — particularly on messages that describe
 what code does based on reading it (which IS verified by inspection). If misfires are
-frequent in your workflow, disable `ANTIHALL_SEMANTIC_JUDGE` and rely on Tiers 1 + 2.
+frequent in your workflow, turn the semantic judge off (`jev.semanticJudge` false, `ANTIHALL_SEMANTIC_JUDGE` unset) and rely on Tiers 1 + 2.
 
 **Cost and latency detail:** one `claude-haiku-4-5` call per Stop event when enabled
 (env-overridable via `ANTIHALL_JUDGE_MODEL`; the one hardcoded model id in this codebase,
@@ -860,7 +861,7 @@ Moved from plugins/anti-hall/README.md "Features" (v0.107.0 doc sweep).
 | `emit-dedupe-reset.js` | SessionStart | **New in 0.103.0.** Writes a per-session reset marker on every SessionStart source (startup/resume/`/clear`/compaction) so `hooks/lib/emit-dedupe.js`'s UserPromptSubmit suppression re-emits blocks the fresh context lost, instead of treating them as already-seen. State-only, no context injected, fail-open. Registered on both the Claude plugin and the Codex port. |
 | `task-lifecycle-log.js` | TaskCreated + TaskCompleted | Log-only: appends one line per task-lifecycle event to `.anti-hall/history/<date>/<session-id>.md` and maintains `.anti-hall/history/INDEX.md`, reusing `session-history-index.js`'s idempotent append helper (the same one `tasklist-guard.js` calls). No matcher, no evidence gate, never blocks, no context injected, fail-open. Claude-only — Codex's hook runtime does not expose these events (see `codex/README.md`). |
 | `speculation-guard.js` | Stop | Blocks once when the reply being stopped (payload `last_assistant_message`, transcript tail as fallback) contains hedge-word speculation without an evidence/uncertainty acknowledgment. Always-on (lexical, Tier 2). |
-| `speculation-judge.js` | Stop | OPT-IN semantic judge (judges the reply being stopped: payload `last_assistant_message`, transcript tail as fallback): calls an LLM to catch confident inference-as-fact with no hedge word. Off by default; enabled by `ANTIHALL_SEMANTIC_JUDGE=1`. |
+| `speculation-judge.js` | Stop | OPT-IN semantic judge (judges the reply being stopped: payload `last_assistant_message`, transcript tail as fallback): calls an LLM to catch confident inference-as-fact with no hedge word. Off by default; enabled by the `jev.semanticJudge` setting or `ANTIHALL_SEMANTIC_JUDGE=1`. |
 | `claim-ledger.js` | Stop | **new in 0.100.0.** LEDGER-ONLY deterministic cross-check: records checkable tokens in the reply being stopped (payload `last_assistant_message`; when the transcript lags behind it, the transcript's last message counts as evidence; transcript tail as fallback) (counts, SHAs, `task N of`, `N days ago`, no-tool "still running") that never appeared in the session's tool output / hook context, to `~/.anti-hall/claim-ledger/<session>.jsonl`. Never blocks; measures the false-positive rate before any blocking tier is enabled. |
 | `codex-nudge.js` | Stop (advisory) | Nudges once/session for an independent Codex second-opinion review when substantial code shipped with no Codex review; off-switch ANTIHALL_CODEX_NUDGE=off. |
 | `silent-agent-nudge.js` | Stop (advisory) | **New in 0.109.0.** Orchestration rule I already tells the coordinator to poll for a stuck background subagent and `TaskStop`+re-dispatch it after ~20 min of silence — nothing mechanically reminded it to. PRIMARY signal (the harness always produces it): scans a bounded tail of the main transcript (`hooks/lib/transcript-tail.js`, capped 1.5MB) for background-Agent launches (`"Async agent launched successfully"` tool_results carrying `agentId:`/`output_file:`) with no LATER terminal `<task-notification>` (`<status>completed\|failed\|stopped</status>`) — "silent" = that agent's `output_file` mtime (or its launch time, if the file is missing — missing counts as dead too) is older than `guards.silentAgentNudgeMin` (default 20 min). SECONDARY signal (additive, kept): the `~/.anti-hall/agents/<id>.json` self-reported heartbeat convention. Nudges once, naming the agent's launch description (or id) and how long it's been silent. Never kills/stops anything itself — advisory text only, capped one nudge per stale snapshot (output_file mtime, or heartbeat ts) — a later change or a new staleness period can nudge again. Off-switch `ANTIHALL_SILENT_AGENT_NUDGE=off`; skip-guard hatch `silent-agent-nudge`. **New (Unreleased):** honors a per-signature session ack (`hooks/lib/stop-ack.js`, see below) and downgrades to advisory when a newer build is already registered but not yet loaded (`hooks/lib/stop-version-gate.js`, see below). Shared verbatim with the Codex port. |

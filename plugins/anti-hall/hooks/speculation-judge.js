@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 // anti-hall :: speculation-judge (Stop hook, OPT-IN semantic tier)
 //
-// ENABLED ONLY when the environment variable ANTIHALL_SEMANTIC_JUDGE=1 is set.
-// When unset (the default), this hook exits 0 immediately without reading
+// ENABLED ONLY when the jev.semanticJudge setting is true or the environment
+// variable ANTIHALL_SEMANTIC_JUDGE=1 is set (env wins when it is a recognised
+// on/off value). When off (the default), this hook exits 0 immediately without reading
 // anything, spending any cost, or calling any API. It is safe to register in
 // hooks.json for everyone — it only activates for users who explicitly opt in.
 //
@@ -25,9 +26,10 @@
 //   Enable only if the cost/latency tradeoff is acceptable to you.
 //
 // OPT-IN
-//   Set ANTIHALL_SEMANTIC_JUDGE=1 in your shell profile, .env, or
-//   ~/.claude/settings.json env block, then restart Claude Code.
-//   To disable: unset the variable (or set it to anything other than "1").
+//   Set the jev.semanticJudge setting to true, or set ANTIHALL_SEMANTIC_JUDGE=1
+//   in your shell profile, .env, or ~/.claude/settings.json env block.
+//   To disable: set the setting to false and unset the variable (an explicit
+//   ANTIHALL_SEMANTIC_JUDGE=0 overrides a true setting).
 //
 // LOOP-SAFE
 //   Hashes the last assistant message text + "judge" suffix. Stores the
@@ -63,7 +65,11 @@ const { scrubSecrets } = require('./lib/secret-scrub.js');
 // ---------------------------------------------------------------------------
 // Guard: bail immediately (zero cost) unless explicitly opted in.
 // ---------------------------------------------------------------------------
-if (process.env.ANTIHALL_SEMANTIC_JUDGE !== '1') {
+// The jev.semanticJudge setting (schema env: ANTIHALL_SEMANTIC_JUDGE, env wins
+// over settings.json) enables it; default OFF; any lookup error -> OFF.
+let judgeEnabled = false;
+try { judgeEnabled = require('./lib/settings.js').get('jev', 'semanticJudge') === true; } catch (_) { /* stay off */ }
+if (!judgeEnabled) {
   process.exit(0);
 }
 

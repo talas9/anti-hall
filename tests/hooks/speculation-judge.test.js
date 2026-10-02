@@ -185,6 +185,64 @@ test('LAM judge: hedge in the payload -> request carries it and the canned block
   }
 });
 
+// ---------------------------------------------------------------------------
+// Enable gate: the jev.semanticJudge setting OR ANTIHALL_SEMANTIC_JUDGE=1
+// enables the judge (the schema maps the env var onto the setting; env wins
+// when set to a recognised on/off token). Default stays OFF. Stubbed https.
+// ---------------------------------------------------------------------------
+function gateRun(opts) {
+  const h = makeHome();
+  try {
+    if (opts.settings) {
+      fs.mkdirSync(path.join(h.home, '.anti-hall'), { recursive: true });
+      fs.writeFileSync(path.join(h.home, '.anti-hall', 'settings.json'), JSON.stringify(opts.settings));
+    }
+    const tp = h.writeTranscript([assistantMessage(OLD_HEDGE)]);
+    const logFile = path.join(h.home, 'judge-requests.ndjson');
+    const env = {
+      CLAUDE_PLUGIN_OPTION_ANTHROPIC_API_KEY: 'sk-ant-stubbed',
+      NODE_OPTIONS: `--require "${STUB}"`,
+      ANTIHALL_TEST_JUDGE_LOG: logFile,
+      ANTIHALL_TEST_JUDGE_REPLY: ALLOW,
+    };
+    if (opts.env !== undefined) env.ANTIHALL_SEMANTIC_JUDGE = opts.env;
+    const r = testHook(HOOK, stopPayload(tp), { home: h.home, env });
+    let bodies = [];
+    try { bodies = fs.readFileSync(logFile, 'utf8').split('\n').filter(Boolean); } catch (_) { /* none */ }
+    return { r, calls: bodies.length };
+  } finally {
+    h.cleanup();
+  }
+}
+
+test('GATE: jev.semanticJudge=true in settings, no env -> judge called', () => {
+  const { r, calls } = gateRun({ settings: { jev: { semanticJudge: true } } });
+  assert.strictEqual(r.status, 0);
+  assert.strictEqual(calls, 1, 'the setting alone must enable the judge');
+});
+
+test('GATE: default (no setting, no env) -> judge not called', () => {
+  const { r, calls } = gateRun({});
+  assert.strictEqual(r.status, 0);
+  assert.strictEqual(calls, 0);
+});
+
+test('GATE: env ANTIHALL_SEMANTIC_JUDGE=1 -> judge called', () => {
+  const { calls } = gateRun({ env: '1' });
+  assert.strictEqual(calls, 1);
+});
+
+test('GATE precedence: env 0 beats setting true (env > settings.json)', () => {
+  const { r, calls } = gateRun({ env: '0', settings: { jev: { semanticJudge: true } } });
+  assert.strictEqual(r.status, 0);
+  assert.strictEqual(calls, 0);
+});
+
+test('GATE precedence: env 1 beats setting false', () => {
+  const { calls } = gateRun({ env: '1', settings: { jev: { semanticJudge: false } } });
+  assert.strictEqual(calls, 1);
+});
+
 test('LAM judge: payload absent -> old behaviour (transcript text is judged)', () => {
   const h = makeHome();
   try {
