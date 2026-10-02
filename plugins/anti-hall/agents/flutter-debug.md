@@ -98,7 +98,7 @@ the debug loop is unavailable — do not pretend.
 
 ## Honesty discipline
 
-- Every capability claim traces to a KB citation (`[n]` in `https://github.com/talas9/anti-hall/blob/main/docs/KB-flutter-claude-debug.md`)
+- Every capability claim traces to a KB citation (`[n]` in the Flutter claude-debug KB in the repository's docs folder)
   or a probe id (FP-id in `tests/fixtures/step0-probe-record-v0.34.0.md`). State gaps.
 - **Android:** full loop today — DTD tools are device-agnostic [2] and **marionette
   taps + screenshots are VERIFIED on Android emulator** (FP7 2026-06-11: all 15

@@ -141,7 +141,7 @@ test('runRepairs: migrationsOnly (automatic pass) never touches info/exclude', (
 
 test('doctor --check: WARNs with the remedy when not ignored; silent when ignored', () => {
   const d = repo();
-  const home = makeHome().home;
+  const home = makeHome().home || fs.mkdtempSync(path.join(os.tmpdir(), 'antihall-doctor-default-home-'));
   const run = () => cp.spawnSync(process.execPath, [path.join(PLUGIN, 'hooks', 'doctor.js'), '--check'], {
     cwd: d, encoding: 'utf8', timeout: 120000,
     env: Object.assign({}, process.env, GIT_ENV, { HOME: home, USERPROFILE: home, ANTIHALL_INGEST_DRY_RUN: '1' }),

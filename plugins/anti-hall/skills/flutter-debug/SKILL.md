@@ -234,4 +234,4 @@ These are binding lessons from the validated run; the agent loop enforces them.
   marionette path; the KB staleness ledger Android-MCP-sweep item is superseded.
 - `mcp_flutter` is excluded until its untested-merge warning lifts in a stable tag (**FP3**
   gate, KB.md staleness ledger).
-- Citations: `[n]` → `https://github.com/talas9/anti-hall/blob/main/docs/KB-flutter-claude-debug.md`; FP-ids → `tests/fixtures/step0-probe-record-v0.34.0.md`.
+- Citations: `[n]` → the Flutter claude-debug KB in the repository's docs folder; FP-ids → the step-0 probe record under the repository's tests/fixtures.
