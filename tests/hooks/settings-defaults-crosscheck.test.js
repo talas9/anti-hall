@@ -36,7 +36,10 @@ function find(section, key) {
 // a missing constant means the schema's citation is stale, which this test
 // must fail loudly on, not silently skip.
 function constFromSource(file, name) {
-  const src = fs.readFileSync(P(...file), 'utf8');
+  // scripts/devswarm.js + scripts/devswarm-lib/* are one logical source unit.
+  const src = file.join('/') === 'scripts/devswarm.js'
+    ? require('../scripts/lib/devswarm-source.js').readAll(P())
+    : fs.readFileSync(P(...file), 'utf8');
   const re = new RegExp('const\\s+' + name + '\\s*=\\s*([^;]+);');
   const m = src.match(re);
   assert.ok(m, name + ' not found as a const in ' + file.join('/'));

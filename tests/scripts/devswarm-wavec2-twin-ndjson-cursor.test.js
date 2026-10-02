@@ -34,6 +34,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const devswarmSource = require('./lib/devswarm-source.js');
 const cp = require('node:child_process');
 
 const DEVSWARM_PATH = path.join(__dirname, '../../plugins/anti-hall/scripts/devswarm.js');
@@ -172,7 +173,7 @@ test('item 7 FIX: a fully drained read keeps its previous shape — no hint, no 
 });
 
 test('item 7 MUTATION: dropping the hint block restores the silence the field report is made of', () => {
-  const src = fs.readFileSync(DEVSWARM_PATH, 'utf8');
+  const src = devswarmSource.readAll();
   // Pin the guard that makes the hint conditional AND the command it names. If
   // either is edited away, this test fails rather than the silence returning
   // unnoticed.

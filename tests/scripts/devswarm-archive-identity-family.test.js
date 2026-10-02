@@ -741,7 +741,8 @@ test('P1 WRITER: an ALREADY-absolute --worktree is passed through byte-for-byte,
 // caught it, and catches the next one.
 // ---------------------------------------------------------------------------
 test('scripts/devswarm.js declares no top-level function name twice (a later duplicate SILENTLY replaces the earlier)', () => {
-  const src = fs.readFileSync(path.join(__dirname, '..', '..', 'plugins', 'anti-hall', 'scripts', 'devswarm.js'), 'utf8');
+  // every source file (dispatcher + devswarm-lib/*): a name declared in two modules is a drifting duplicate too
+  const src = require('./lib/devswarm-source.js').readAll();
   const seen = new Map();
   const dupes = [];
   const re = /^function\s+([A-Za-z_$][\w$]*)\s*\(/gm; // column 0 => top-level scope

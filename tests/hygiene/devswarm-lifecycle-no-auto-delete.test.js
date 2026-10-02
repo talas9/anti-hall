@@ -22,6 +22,8 @@ const REPO = path.join(__dirname, '..', '..');
 const PLUGIN = 'plugins/anti-hall/';
 const LIFECYCLE = PLUGIN + 'companion/lib/devswarm-lifecycle.js';
 const CLI = PLUGIN + 'scripts/devswarm.js';
+// devswarm.js + scripts/devswarm-lib/* are one logical unit.
+const isCli = (x) => x.startsWith(CLI + ':') || x.startsWith(PLUGIN + 'scripts/devswarm-lib/');
 
 function productionFiles() {
   const r = cp.spawnSync('git', ['ls-files', '-co', '--exclude-standard', PLUGIN], { cwd: REPO, encoding: 'utf8' });
@@ -44,9 +46,9 @@ function hits(re, filter) {
 
 test('executePrune: defined in the lifecycle lib, called ONLY by the prune-archived dispatch', () => {
   const h = hits(/\bexecutePrune\b/);
-  const outside = h.filter((x) => !x.startsWith(LIFECYCLE + ':') && !x.startsWith(CLI + ':'));
+  const outside = h.filter((x) => !x.startsWith(LIFECYCLE + ':') && !isCli(x));
   assert.deepStrictEqual(outside, [], 'executePrune referenced outside the allowed files');
-  const cliCalls = h.filter((x) => x.startsWith(CLI + ':'));
+  const cliCalls = h.filter(isCli);
   assert.strictEqual(cliCalls.length, 1, cliCalls.join('\n'));
   const src = fs.readFileSync(path.join(REPO, CLI), 'utf8');
   const caseAt = src.indexOf("case 'prune-archived':");

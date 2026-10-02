@@ -172,7 +172,10 @@ test('DRIFT: each mapped switch exists in the schema and each 0.108.4 hook sourc
   }
   for (const [file, k] of Object.entries(COMPANION_SWITCHES)) {
     const [sec, key] = split(k);
-    const src = fs.readFileSync(path.join(PLUGIN, file), 'utf8');
+    // scripts/devswarm.js + scripts/devswarm-lib/* are one logical source unit.
+    const src = file === 'scripts/devswarm.js'
+      ? require('../scripts/lib/devswarm-source.js').readAll(PLUGIN)
+      : fs.readFileSync(path.join(PLUGIN, file), 'utf8');
     assert.ok(src.includes("'" + sec + "', '" + key + "'"), file + ' never reads its switch ' + k);
   }
 });

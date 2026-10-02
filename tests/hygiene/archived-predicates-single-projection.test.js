@@ -19,6 +19,7 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
+const devswarmSource = require('../scripts/lib/devswarm-source.js');
 
 const PLUGIN_ROOT = path.join(__dirname, '..', '..', 'plugins', 'anti-hall');
 // The projection and the helper modules it wraps (the predicates' own homes).
@@ -135,8 +136,13 @@ function scan() {
   for (const abs of walk(PLUGIN_ROOT, [])) {
     const rel = path.relative(PLUGIN_ROOT, abs).split(path.sep).join('/');
     if (EXEMPT.has(rel)) continue;
+    // scripts/devswarm-lib/* is one logical unit with scripts/devswarm.js.
+    const key = devswarmSource.logicalUnit(rel);
     const f = scanText(fs.readFileSync(abs, 'utf8'));
-    if (Object.keys(f).length) found[rel] = f;
+    for (const [name, n] of Object.entries(f)) {
+      found[key] = found[key] || {};
+      found[key][name] = (found[key][name] || 0) + n;
+    }
   }
   return found;
 }

@@ -55,7 +55,7 @@ test('no production code writes the legacy #inst/#nd/#base files', () => {
   const legacyWriters = /\b(seedInstanceCursor|resolveNdCursorPath|projectNdDescriptorCursor|raiseAllInstanceCursors|raiseInstanceBaseline|readInstanceBaseline|instanceFloor)\s*\(/;
   // Their own (legacy, test-only) definitions and each other's bodies inside
   // scripts/devswarm.js's legacy block are the only allowed occurrences.
-  const v = violations(legacyWriters, (f, t) => f.endsWith('scripts/devswarm.js')
+  const v = violations(legacyWriters, (f, t) => /scripts\/devswarm(?:-lib\/[^/]+)?\.js$/.test(f)
     && (/^\s*function (raiseInstanceBaseline|readInstanceBaseline|instanceFloor)\(/.test(t)
       || /baseline = readInstanceBaseline\(storeHandle, home, id\);|const baseline = readInstanceBaseline\(storeHandle, home, id\);/.test(t)));
   assert.deepStrictEqual(v, []);

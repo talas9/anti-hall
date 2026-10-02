@@ -13,6 +13,7 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
+const devswarmSource = require('../scripts/lib/devswarm-source.js');
 
 const PLUGIN_ROOT = path.join(__dirname, '..', '..', 'plugins', 'anti-hall');
 const EXEMPT = new Set(['companion/lib/identity.js', 'companion/lib/reader-identity.js']);
@@ -61,14 +62,16 @@ function scan() {
     const rel = path.relative(PLUGIN_ROOT, abs).split(path.sep).join('/');
     if (EXEMPT.has(rel)) continue;
     const lines = fs.readFileSync(abs, 'utf8').split('\n');
+    // scripts/devswarm-lib/* is one logical unit with scripts/devswarm.js.
+    const key = devswarmSource.logicalUnit(rel);
     for (const line of lines) {
       const t = line.trim();
       if (t.startsWith('//') || t.startsWith('/*') || t.startsWith('*')) continue;
       for (const [name, re] of Object.entries(PATTERNS)) {
         const m = line.match(re);
         if (!m) continue;
-        found[rel] = found[rel] || {};
-        found[rel][name] = (found[rel][name] || 0) + m.length;
+        found[key] = found[key] || {};
+        found[key][name] = (found[key][name] || 0) + m.length;
       }
     }
   }

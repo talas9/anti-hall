@@ -14,6 +14,7 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
+const devswarmSource = require('../scripts/lib/devswarm-source.js');
 const cp = require('node:child_process');
 
 const REPO = path.join(__dirname, '..', '..');
@@ -64,7 +65,7 @@ function mdViolations(files) {
 }
 
 test('every hook / CLI instruction naming read-primary also names the ack step', () => {
-  const files = tracked('plugins/anti-hall/hooks/', '.js').concat(['plugins/anti-hall/scripts/devswarm.js']);
+  const files = tracked('plugins/anti-hall/hooks/', '.js').concat(devswarmSource.sourceFiles().map((f) => path.relative(REPO, f)));
   const v = jsViolations(files);
   assert.deepStrictEqual(v, [], 'read-primary without its ack step:\n' + v.join('\n'));
 });

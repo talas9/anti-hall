@@ -92,6 +92,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const devswarmSource = require('./lib/devswarm-source.js');
 const cp = require('node:child_process');
 
 const DEVSWARM_PATH = path.join(__dirname, '../../plugins/anti-hall/scripts/devswarm.js');
@@ -173,7 +174,7 @@ function readCursorFile(home, repo, id) {
 // RED/GREEN pair (not merely narrated). The scratch copy is discarded when
 // `fn` returns; the live source is proven untouched afterward.
 function withMutant(oldStr, newStr, fn) {
-  const liveBefore = fs.readFileSync(DEVSWARM_PATH, 'utf8');
+  const liveBefore = devswarmSource.readAll();
   mutantKit.withMutant(oldStr, newStr, fn, { prefix: 'anti-hall-fixwave2' });
   mutantKit.assertLiveUntouched(liveBefore, assert);
 }
@@ -215,7 +216,7 @@ test('F1 RED/GREEN: `inbox ack` never advances a sibling cursor past a gap-withh
 });
 
 test('F1 mutation check: the OLD Wave-1 non-suffix fold DOES lose F1row permanently (proves the RED half is real, not narrated)', () => {
-  const oldSrc = fs.readFileSync(DEVSWARM_PATH, 'utf8');
+  const oldSrc = devswarmSource.readAll();
   // Signature gained the optional `seenLogical` set in v0.90.0 (defect
   // 64861a623503); the mutant below deliberately keeps the 2-arg form, which
   // JS accepts unchanged from the 3-arg call sites.
@@ -312,7 +313,7 @@ test('F2 RED/GREEN: `inbox count --limit` reports the REAL uncapped unreadTotal,
 
 test('F2 mutation check: reverting to the POST-cap formula reproduces the undercount', () => {
   const oldStr = 'meshAddedUnreadCount = meshSiblingPartitions.reduce((n, p) => n + (p.deliveredRows ? p.deliveredRows.length : 0), 0);';
-  assert.ok(fs.readFileSync(DEVSWARM_PATH, 'utf8').includes(oldStr), 'fix line not found verbatim');
+  assert.ok(devswarmSource.readAll().includes(oldStr), 'fix line not found verbatim');
   const buggyStr = 'meshAddedUnreadCount = storeOnlyUnreadRows.length - ownKeptCount;';
   withMutant(oldStr, buggyStr, (mutatedCli) => {
     const home = tmpHome();
@@ -386,7 +387,7 @@ test('F3 mutation check: reverting cmdInboxMessages to hash-dedup-only reproduce
     + '        part.consumedThrough = folded.consumedThrough;\n'
     + '        part.consumedCount = folded.consumedCount;\n'
     + '      }';
-  assert.ok(fs.readFileSync(DEVSWARM_PATH, 'utf8').includes(oldStr), 'fix block not found verbatim');
+  assert.ok(devswarmSource.readAll().includes(oldStr), 'fix block not found verbatim');
   const buggyStr = 'for (const part of meshSiblingPartitions) {\n'
     + '        let delivered = 0;\n'
     + '        for (const row of part.messages) {\n'
@@ -457,7 +458,7 @@ test('F4: `--limit 0.5` does not disable the cap on `read-primary` (cmdInboxMess
 });
 
 test('F4 mutation check: reverting to plain Math.floor(n) reproduces the disabled-cap bug', () => {
-  const liveBefore = fs.readFileSync(DEVSWARM_PATH, 'utf8');
+  const liveBefore = devswarmSource.readAll();
   const fixed1 = 'if (Number.isFinite(n) && n > 0) inboxReadLimit = Math.max(1, Math.floor(n)); // F4: a fractional --limit (e.g. 0.5) must not floor to 0 and disable the cap';
   const fixed2 = 'if (Number.isFinite(n) && n > 0) inboxCapLimit = Math.max(1, Math.floor(n)); // F4: same fix, same reasoning as inboxReadLimit above';
   assert.ok(liveBefore.includes(fixed1) && liveBefore.includes(fixed2), 'both F4 fix sites must be present verbatim');
@@ -507,7 +508,7 @@ test('F4 mutation check: reverting to plain Math.floor(n) reproduces the disable
 // real contract — `rows` containing a genuine `null`/`undefined` element —
 // rather than through a CLI path that happens to sanitize it first.
 function withExportedFold(fn) {
-  const liveBefore = fs.readFileSync(DEVSWARM_PATH, 'utf8');
+  const liveBefore = devswarmSource.readAll();
   const anchor = 'run, parseArgs, one, many, csvList,';
   assert.ok(liveBefore.includes(anchor), 'module.exports anchor not found verbatim');
   const copy = mutantKit.createCopy('anti-hall-fixwave2-f5-export');
@@ -550,7 +551,7 @@ test('F5 mutation check: removing the null-guard reproduces a thrown exception r
     + '      if (!wasGapSeen) consumedCount++; // G1: unrecoverable either way — consume it so the ack cursor can pass it forever\n'
     + '      continue;\n'
     + '    }\n';
-  const liveBefore = fs.readFileSync(DEVSWARM_PATH, 'utf8');
+  const liveBefore = devswarmSource.readAll();
   assert.ok(liveBefore.includes(oldStr), 'F5 guard not found verbatim');
   const buggyStr = '';
   const anchor = 'run, parseArgs, one, many, csvList,';
@@ -635,7 +636,7 @@ test('cap priority mutation check: reversing own/sibling cap order flips which s
     + '            : (consumedThrough && Number.isFinite(consumedThrough[keep - 1]) ? consumedThrough[keep - 1] : keep));\n'
     + '        if (keep) storeOnlyUnreadRows = storeOnlyUnreadRows.concat(rows.slice(0, keep));\n'
     + '      }';
-  assert.ok(fs.readFileSync(DEVSWARM_PATH, 'utf8').includes(oldStr), 'cap-priority block not found verbatim');
+  assert.ok(devswarmSource.readAll().includes(oldStr), 'cap-priority block not found verbatim');
   // Mutant: siblings get priority BEFORE own rows.
   const buggyStr = 'let __ownKeep = 0;\n'
     + '      storeOnlyUnreadRows = [];\n'

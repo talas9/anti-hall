@@ -142,6 +142,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const devswarmSource = require('./lib/devswarm-source.js');
 const cp = require('node:child_process');
 
 const DEVSWARM_PATH = path.join(__dirname, '../../plugins/anti-hall/scripts/devswarm.js');
@@ -268,7 +269,7 @@ function readCursorFile(home, repo, id) {
 // same copy (see the "G1 mutation check" test below, nested inside
 // withNullPreservingMaps).
 function withMutant(oldStr, newStr, fn) {
-  const liveBefore = fs.readFileSync(DEVSWARM_PATH, 'utf8');
+  const liveBefore = devswarmSource.readAll();
   mutantKit.withMutant(oldStr, newStr, fn, { prefix: 'anti-hall-fixwave3' });
   mutantKit.assertLiveUntouched(liveBefore, assert);
 }
@@ -330,7 +331,7 @@ function withInjectedHole(id, fn) {
 // function's own `finally`, composing further mutations onto it needs no
 // restore step of its own.
 function withNullPreservingMaps(fn) {
-  const liveBefore = fs.readFileSync(DEVSWARM_PATH, 'utf8');
+  const liveBefore = devswarmSource.readAll();
   const site1Old = ".map((r, i) => Object.assign({ partitionId: pid }, r, { __srcId: 'sibling:' + pid, __srcIdx: i }));";
   const site1New = ".map((r, i) => (r == null ? null : Object.assign({ partitionId: pid }, r, { __srcId: 'sibling:' + pid, __srcIdx: i })));";
   const site2Old = '.map((r) => Object.assign({ partitionId: pid }, r));';
@@ -447,7 +448,7 @@ test('G1 mutation check: reverting the ack target to plain deliveredCount reprod
 // ---------------------------------------------------------------------------
 
 test('G2 unit: foldSiblingGapRows consumedCount/consumedThrough correctly account for a dedup-skipped physical row', () => {
-  const liveBefore = fs.readFileSync(DEVSWARM_PATH, 'utf8');
+  const liveBefore = devswarmSource.readAll();
   const anchor = 'run, parseArgs, one, many, csvList,';
   assert.ok(liveBefore.includes(anchor), 'module.exports anchor not found verbatim');
   const copy = mutantKit.createCopy('anti-hall-fixwave3-g2-export');
@@ -589,7 +590,7 @@ test('G3 mutation check (variant 1): subtracting a flat "1" from deliveredCount 
     + '              : deliveredCount));\n'
     + '        const ackAnchor = Number.isFinite(part.sinceCursor) ? Math.max(part.cursor, part.sinceCursor) : part.cursor;\n'
     + '        const ackTarget = ackAnchor + physicalConsumed;';
-  assert.ok(fs.readFileSync(DEVSWARM_PATH, 'utf8').includes(oldStr), 'G1/G3 fix block not found verbatim');
+  assert.ok(devswarmSource.readAll().includes(oldStr), 'G1/G3 fix block not found verbatim');
   const buggyStr = 'const physicalConsumed = deliveredCount - (meshGapWithheldCount > 0 ? 1 : 0);\n'
     + '        const ackAnchor = Number.isFinite(part.sinceCursor) ? Math.max(part.cursor, part.sinceCursor) : part.cursor;\n'
     + '        const ackTarget = ackAnchor + physicalConsumed;';
@@ -612,7 +613,7 @@ test('G3 mutation check (variant 2): dropping the trigger row from the payload w
   const oldStr = 'for (const row of folded.deliveredRows) {\n'
     + '          dedupedSiblingRows.push(row);\n'
     + '        }';
-  assert.ok(fs.readFileSync(DEVSWARM_PATH, 'utf8').includes(oldStr), 'sibling payload-assembly loop not found verbatim');
+  assert.ok(devswarmSource.readAll().includes(oldStr), 'sibling payload-assembly loop not found verbatim');
   const buggyStr = 'for (let __i = 0; __i < folded.deliveredRows.length; __i++) {\n'
     + '          if (__i === 0) continue; // BUG: drop the trigger row from the payload\n'
     + '          dedupedSiblingRows.push(folded.deliveredRows[__i]);\n'
@@ -645,7 +646,7 @@ test('G3 mutation check (variant 3): reverting the ack target to plain delivered
     + '              : deliveredCount));\n'
     + '        const ackAnchor = Number.isFinite(part.sinceCursor) ? Math.max(part.cursor, part.sinceCursor) : part.cursor;\n'
     + '        const ackTarget = ackAnchor + physicalConsumed;';
-  assert.ok(fs.readFileSync(DEVSWARM_PATH, 'utf8').includes(oldStr), 'G1/G3 fix block not found verbatim');
+  assert.ok(devswarmSource.readAll().includes(oldStr), 'G1/G3 fix block not found verbatim');
   // physicalConsumed stays defined (the ack op's seenTarget reads it) so the
   // mutant fails on the reverted TARGET, never on a ReferenceError.
   const buggyStr = 'const physicalConsumed = deliveredCount;\n        const ackTarget = part.cursor + deliveredCount;';
@@ -755,7 +756,7 @@ test('Wave 6 RED/GREEN: a LIVE sibling\'s cursor is unchanged after a foreign ca
 const LIVE_GATE_OLD = "        const notAckable = siblingAckGate(s, id, part.id, home, ctx.now, { cwd: ctx && ctx.cwd, env: ctx && ctx.env });\n        if (notAckable) liveSiblingsSkipped.push(part.id);\n";
 
 test('Wave 6 mutation check (variant 1): deleting the live-sibling gate reproduces the cross-partition clobber', () => {
-  const liveBefore = fs.readFileSync(DEVSWARM_PATH, 'utf8');
+  const liveBefore = devswarmSource.readAll();
   assert.ok(liveBefore.includes(LIVE_GATE_OLD), 'Wave 6 gate block not found verbatim in the sibling-ack loop');
   // "Delete the gate" == the sibling is always treated as ackable.
   withMutant(LIVE_GATE_OLD, '        const notAckable = false;\n', (mutatedCli) => {
@@ -775,7 +776,7 @@ test('Wave 6 mutation check (variant 1): deleting the live-sibling gate reproduc
 });
 
 test('Wave 6 mutation check (variant 2): inverting the gate\'s sense protects live siblings\' cursors from ANY ack while wrongly clobbering them too (flipped condition)', () => {
-  const liveBefore = fs.readFileSync(DEVSWARM_PATH, 'utf8');
+  const liveBefore = devswarmSource.readAll();
   assert.ok(liveBefore.includes(LIVE_GATE_OLD), 'Wave 6 gate block not found verbatim in the sibling-ack loop');
   const invertedGate = "        const notAckable = !siblingAckGate(s, id, part.id, home, ctx.now);\n        if (notAckable) liveSiblingsSkipped.push(part.id);\n";
   withMutant(LIVE_GATE_OLD, invertedGate, (mutatedCli) => {

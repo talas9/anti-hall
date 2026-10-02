@@ -56,11 +56,38 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
+const devswarmSource = require('./devswarm-source.js');
+
 const PLUGIN_ROOT = path.join(__dirname, '..', '..', '..', 'plugins', 'anti-hall');
 const LIVE_DEVSWARM_PATH = path.join(PLUGIN_ROOT, 'scripts', 'devswarm.js');
+const LIVE_DEVSWARM_LIB = path.join(PLUGIN_ROOT, 'scripts', 'devswarm-lib');
+
+// copyDirFiles: copy every regular file of `src` into `dest` (recursive,
+// preserving the relative layout). devswarm-lib/ holds plain .js modules.
+function copyDirFiles(src, dest) {
+  fs.mkdirSync(dest, { recursive: true });
+  for (const e of fs.readdirSync(src, { withFileTypes: true })) {
+    const from = path.join(src, e.name);
+    const to = path.join(dest, e.name);
+    if (e.isDirectory()) copyDirFiles(from, to);
+    else if (e.isFile()) fs.copyFileSync(from, to);
+  }
+}
+
+// copiedSourceFiles: the scratch copy's devswarm.js plus every *.js under its
+// devswarm-lib/ (the same set devswarm-source.js reads from the live tree).
+// mutate()/requireFresh() are also called by other kits (e.g. liveness.test.js)
+// on a scratch copy of some OTHER single file; for any path that is not a
+// scripts/devswarm.js, the unit is just that file.
+function copiedSourceFiles(devswarmPath) {
+  if (path.basename(devswarmPath) !== 'devswarm.js' || path.basename(path.dirname(devswarmPath)) !== 'scripts') return [devswarmPath];
+  return devswarmSource.sourceFiles(path.join(path.dirname(devswarmPath), '..'));
+}
 
 // createCopy: fresh scratch dir with a real (mutable) copy of
-// scripts/devswarm.js and read-only SYMLINKS for companion/ and hooks/
+// scripts/devswarm.js (plus scripts/devswarm-lib/, when it exists, with its
+// relative layout preserved — modules `require('./devswarm-lib/x.js')` from
+// the copy, so each scratch copy is self-contained) and read-only SYMLINKS for companion/ and hooks/
 // (module-identity-preserving — see header comment). Returns
 // { dir, devswarmPath }.
 function createCopy(prefix) {
@@ -69,6 +96,7 @@ function createCopy(prefix) {
   fs.mkdirSync(scriptsDir);
   const devswarmPath = path.join(scriptsDir, 'devswarm.js');
   fs.copyFileSync(LIVE_DEVSWARM_PATH, devswarmPath);
+  if (fs.existsSync(LIVE_DEVSWARM_LIB)) copyDirFiles(LIVE_DEVSWARM_LIB, path.join(scriptsDir, 'devswarm-lib'));
   fs.symlinkSync(path.join(PLUGIN_ROOT, 'companion'), path.join(dir, 'companion'), 'dir');
   fs.symlinkSync(path.join(PLUGIN_ROOT, 'hooks'), path.join(dir, 'hooks'), 'dir');
   return { dir, devswarmPath };
@@ -80,19 +108,27 @@ function discardCopy(copy) {
   try { fs.rmSync(copy.dir, { recursive: true, force: true }); } catch (_) { /* best-effort */ }
 }
 
-// mutate: byte-exact string-replace against a scratch copy's devswarm.js.
-// Throws (fails the test) if `oldStr` isn't present verbatim, or if the
-// replace is a no-op — same guarantees the old in-place version gave.
+// mutate: byte-exact string-replace against a scratch copy's source files
+// (devswarm.js + devswarm-lib/*). Throws (fails the test) if `oldStr` isn't
+// present verbatim in any of them, if it is present in MORE THAN ONE file
+// (ambiguous target), or if the replace is a no-op — same guarantees the old
+// in-place version gave.
 function mutate(devswarmPath, oldStr, newStr) {
-  const before = fs.readFileSync(devswarmPath, 'utf8');
-  if (!before.includes(oldStr)) {
+  const withTarget = copiedSourceFiles(devswarmPath)
+    .map((file) => ({ file, before: fs.readFileSync(file, 'utf8') }))
+    .filter((e) => e.before.includes(oldStr));
+  if (withTarget.length === 0) {
     throw new Error('mutant target string not found verbatim — cannot apply: ' + JSON.stringify(oldStr.slice(0, 120)));
   }
+  if (withTarget.length > 1) {
+    throw new Error('mutant target string found in more than one source file — ambiguous: ' + JSON.stringify(oldStr.slice(0, 120)) + ' in ' + withTarget.map((e) => path.basename(e.file)).join(', '));
+  }
+  const { file, before } = withTarget[0];
   const after = before.replace(oldStr, newStr);
   if (after === before) {
     throw new Error('mutant produced no change');
   }
-  fs.writeFileSync(devswarmPath, after);
+  fs.writeFileSync(file, after);
 }
 
 // mutateWith: same contract as mutate(), but takes a transform(source)
@@ -113,7 +149,11 @@ function mutateWith(devswarmPath, transform) {
 // never collides with (or evicts) the cache entry for the LIVE devswarm.js
 // or for any OTHER scratch copy.
 function requireFresh(devswarmPath) {
-  delete require.cache[require.resolve(devswarmPath)];
+  // Also evict the copy's devswarm-lib modules, so a mutation applied to one
+  // is picked up (they live under this scratch dir only; never the live tree).
+  for (const file of copiedSourceFiles(devswarmPath)) {
+    try { delete require.cache[require.resolve(file)]; } catch (_) { /* not loaded / absent */ }
+  }
   return require(devswarmPath);
 }
 
@@ -148,7 +188,7 @@ function withMutantTransform(transform, fn, opts) {
 // snapshot taken before a mutation test ran. Call with the snapshot from
 // BEFORE any createCopy()/mutate() calls in the test.
 function assertLiveUntouched(liveBefore, assert) {
-  assert.equal(fs.readFileSync(LIVE_DEVSWARM_PATH, 'utf8'), liveBefore, 'live plugins/anti-hall/scripts/devswarm.js must never be modified by a mutation test');
+  assert.equal(devswarmSource.readAll(), liveBefore, 'live plugins/anti-hall/scripts/devswarm.js (and devswarm-lib/*) must never be modified by a mutation test');
 }
 
 module.exports = {

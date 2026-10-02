@@ -16,13 +16,14 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
+const devswarmSource = require('./lib/devswarm-source.js');
 
 const ROOT = process.env.ANTIHALL_TEST_PLUGIN_ROOT
   || path.join(__dirname, '..', '..', 'plugins', 'anti-hall');
 const DEVSWARM_PATH = path.join(ROOT, 'scripts', 'devswarm.js');
 
 test('item 3: the sibling ack target is arithmetic over physicalConsumed, not the delivered rows', () => {
-  const src = fs.readFileSync(DEVSWARM_PATH, 'utf8');
+  const src = devswarmSource.readAll(ROOT);
   // The mechanism, pinned to the source: the sibling path adds a COUNT to the
   // partition cursor rather than deriving the target from a row that was
   // actually returned.
@@ -33,7 +34,7 @@ test('item 3: the sibling ack target is arithmetic over physicalConsumed, not th
 });
 
 test('item 3: physicalConsumed derives from a COUNT, so the suppressed rows are not retained', () => {
-  const src = fs.readFileSync(DEVSWARM_PATH, 'utf8');
+  const src = devswarmSource.readAll(ROOT);
   assert.ok(src.includes('part.physicalConsumed = Number.isFinite(part.consumedCount)'),
     'physicalConsumed comes from part.consumedCount — a number, not a row set');
   assert.ok(!src.includes('part.suppressedRows'),
@@ -42,7 +43,7 @@ test('item 3: physicalConsumed derives from a COUNT, so the suppressed rows are 
 });
 
 test('item 3: the two ack paths are ASYMMETRIC — read-primary is guarded, inbox ack is not', () => {
-  const src = fs.readFileSync(DEVSWARM_PATH, 'utf8');
+  const src = devswarmSource.readAll(ROOT);
   // read-primary only falls back to consumedCount when nothing was tail-capped.
   assert.ok(src.includes('const physicalConsumed = (deliveredCount >= fullDeliveredCount && Number.isFinite(part.consumedCount))'),
     'read-primary guards its fallback on the un-capped case');
@@ -52,14 +53,14 @@ test('item 3: the two ack paths are ASYMMETRIC — read-primary is guarded, inbo
 });
 
 test('item 3: the own-partition path is already delivered-derived (the contrast that proves the asymmetry)', () => {
-  const src = fs.readFileSync(DEVSWARM_PATH, 'utf8');
+  const src = devswarmSource.readAll(ROOT);
   assert.ok(src.includes('const totalNow = ownMaxIndex !== null ? Math.max(storeCursorVal, ownMaxIndex) : storeCursorVal;'),
     'the caller\'s OWN partition derives its target from the max index of a row actually delivered — '
     + 'structurally unable to pass an undelivered row. The sibling path does not do this, and that is the whole of item 3.');
 });
 
 test('item 3: the journal makes a zero-delivery advance mechanically detectable', () => {
-  const src = fs.readFileSync(DEVSWARM_PATH, 'utf8');
+  const src = devswarmSource.readAll(ROOT);
   // Until the behavioural fix lands, the instrument is what names a recurrence.
   assert.ok(src.includes('delivered: Number.isFinite(rec.delivered) ? rec.delivered : null'),
     'every cursor record carries the delivered count, so `delivered:0` on an advance is visible without re-derivation');

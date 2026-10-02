@@ -14,6 +14,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
 const cp = require('node:child_process');
+const devswarmSource = require('../scripts/lib/devswarm-source.js');
 
 const REPO = path.join(__dirname, '..', '..');
 const PLUGIN = 'plugins/anti-hall/';
@@ -35,6 +36,10 @@ const ALLOWED = {
     '*': { claim: 'one-time migration: same-id copy — rows land in the partition they came from', proof: ['tests/companion/devswarm-migrate.test.js', 'tests/companion/devswarm-migrate-repokey.test.js'] },
   },
 };
+// scripts/devswarm.js and scripts/devswarm-lib/*.js are ONE logical unit: the
+// devswarm.js allowlist entry covers the lib modules too.
+const DEVSWARM_JS = 'plugins/anti-hall/scripts/devswarm.js';
+const readUnit = (f) => (f === DEVSWARM_JS ? devswarmSource.readAll() : fs.readFileSync(path.join(REPO, f), 'utf8'));
 const CALL = /\b(appendMeshMessage|appendMeshRow|appendMessage)\s*\(/;
 
 function productionFiles() {
@@ -53,7 +58,7 @@ test('no direct partition write outside appendIntoPartition or a PROVEN allowlis
       const m = /^\s*(?:async\s+)?function\s+([A-Za-z0-9_$]+)\s*\(/.exec(t);
       if (m) fn = m[1];
       if (/^\s*(\/\/|\*|\/\*)/.test(t) || !CALL.test(t)) continue;
-      const allow = ALLOWED[f];
+      const allow = ALLOWED[devswarmSource.logicalUnit(f)];
       if (allow && (allow['*'] || (fn && allow[fn]))) continue;
       v.push(f + ':' + (i + 1) + ' in ' + (fn || '<top>') + ': ' + t.trim().slice(0, 110));
     }
@@ -84,7 +89,7 @@ test('every allowlist entry is PROVEN by a named test carrying its `proves:` mar
 });
 
 test('appendIntoPartition: verified lock (never a caller claim), registration recheck, archived only on request', () => {
-  const src = fs.readFileSync(path.join(REPO, 'plugins/anti-hall/scripts/devswarm.js'), 'utf8');
+  const src = devswarmSource.readAll();
   const at = src.indexOf('function appendIntoPartition(');
   const body = src.slice(at, src.indexOf('\n}\n', at));
   assert.match(body, /withIdLockHeld\(dest, home,/);
@@ -101,7 +106,7 @@ test('appendIntoPartition: verified lock (never a caller claim), registration re
     ['plugins/anti-hall/companion/lib/recovery.js', 'deliverEscalation'],
     ['plugins/anti-hall/companion/devswarm-ingest.js', 'ingestPayload'],
   ]) {
-    const s = fs.readFileSync(path.join(REPO, file), 'utf8');
+    const s = readUnit(file);
     const i = s.indexOf('function ' + fn + '(');
     assert.ok(i >= 0, fn + ' exists');
     const next = s.indexOf('\nfunction ', i + 1);

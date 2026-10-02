@@ -68,6 +68,7 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
+const devswarmSource = require('./lib/devswarm-source.js');
 
 const DEVSWARM_PATH = path.join(__dirname, '../../plugins/anti-hall/scripts/devswarm.js');
 const mutantKit = require('./lib/devswarm-mutant-kit.js');
@@ -109,7 +110,7 @@ function buildWindow() {
 }
 
 function withExportedFold(fn) {
-  const liveBefore = fs.readFileSync(DEVSWARM_PATH, 'utf8');
+  const liveBefore = devswarmSource.readAll();
   assert.ok(liveBefore.includes(EXPORT_ANCHOR), 'module.exports anchor not found verbatim in live devswarm.js');
   assert.ok(liveBefore.includes(GUARD_OLD), 'hole-branch !wasGapSeen guard not found verbatim at its expected shape in live devswarm.js (devswarm.js:1492 region)');
   const copy = mutantKit.createCopy('anti-hall-fixwave4-fold-hole');
@@ -200,7 +201,7 @@ test('RED (mutation V3, killed): dropping the hole branch\'s !wasGapSeen guard m
 // consumedCount++ on a row after wasGapSeen was already true) is identical
 // to the hole-branch case already proven RED/GREEN above.
 test('sanity: the dedup branch (devswarm.js:1496) guards consumedCount the same way — same mechanism as the hole branch under test', () => {
-  const src = fs.readFileSync(DEVSWARM_PATH, 'utf8');
+  const src = devswarmSource.readAll();
   // The condition widened in v0.90.0 (defect 64861a623503) to ALSO match a
   // forwarded copy's `origHash`; the GUARD this test exists to pin — the
   // `!wasGapSeen`-conditioned consumedCount++ — is unchanged, and is what is

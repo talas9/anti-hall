@@ -32,6 +32,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const devswarmSource = require('./lib/devswarm-source.js');
 const cp = require('node:child_process');
 
 const DEVSWARM_PATH = path.join(__dirname, '../../plugins/anti-hall/scripts/devswarm.js');
@@ -124,7 +125,7 @@ function writeHeartbeatFile(home, id, ts) {
 function markLive(home, id, now) { writeHeartbeatFile(home, id, now || Date.now()); }
 
 function withMutant(oldStr, newStr, fn) {
-  const liveBefore = fs.readFileSync(DEVSWARM_PATH, 'utf8');
+  const liveBefore = devswarmSource.readAll();
   mutantKit.withMutant(oldStr, newStr, fn, { prefix: 'anti-hall-cursor-integrity' });
   mutantKit.assertLiveUntouched(liveBefore, assert);
 }
@@ -191,7 +192,7 @@ test('(A) mutation check: removing the NEVER_READ_SIBLING_CAP slice reproduces t
   // devswarm-wave9-neverread-cap.test.js. Disabling the gate is still the
   // mutation that reproduces the unbounded dump.
   const oldStr = '        if (unreadOnly && pMessages.length > NEVER_READ_SIBLING_CAP) {\n';
-  const liveBefore = fs.readFileSync(DEVSWARM_PATH, 'utf8');
+  const liveBefore = devswarmSource.readAll();
   assert.ok(liveBefore.includes(oldStr), 'NEVER_READ_SIBLING_CAP gate not found verbatim');
   withMutant(oldStr, '        if (false) {\n', (mutatedCli) => {
     const home = tmpHome();
@@ -371,7 +372,7 @@ test('(C) mutation check: removing the SELF cross-link check restores the twin\'
     + "      }\n"
     + "    } catch (_) { /* fall through to the plain liveness check below */ }\n"
     + "  }\n";
-  const liveBefore = fs.readFileSync(DEVSWARM_PATH, 'utf8');
+  const liveBefore = devswarmSource.readAll();
   assert.ok(liveBefore.includes(oldStr), 'SELF cross-link check not found verbatim in siblingAckGate');
   withMutant(oldStr, '', (mutatedCli) => {
     const home = tmpHome();
@@ -421,7 +422,7 @@ test('(C) mutation check: removing the TWIN-OF-LIVE check reproduces the misread
     + "    } catch (_) { /* fall through — partId's own (not-live) verdict stands */ }\n"
     + "  }\n"
     + "  return false;\n";
-  const liveBefore = fs.readFileSync(DEVSWARM_PATH, 'utf8');
+  const liveBefore = devswarmSource.readAll();
   assert.ok(liveBefore.includes(oldStr), 'TWIN-OF-LIVE check not found verbatim in siblingAckGate');
   withMutant(oldStr, '  return false;\n', (mutatedCli) => {
     const home = tmpHome();

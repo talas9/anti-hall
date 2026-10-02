@@ -29,6 +29,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const devswarmSource = require('./lib/devswarm-source.js');
 const cp = require('node:child_process');
 
 const PLUGIN = path.join(__dirname, '../../plugins/anti-hall');
@@ -544,7 +545,7 @@ test('R13 item 11: the supervisor sweep and update.js both call the SAME exporte
   assert.ok(upd.includes('devswarm.foldMeshDuplicates(home, { cwd, env })'),
     'update.js\'s in-process fold must delegate to the same export');
   // And there is exactly ONE implementation to inherit from.
-  const src = fs.readFileSync(path.join(PLUGIN, 'scripts/devswarm.js'), 'utf8');
+  const src = devswarmSource.readAll(PLUGIN);
   assert.equal((src.match(/^function foldMeshDuplicates\(/gm) || []).length, 1,
     'exactly one foldMeshDuplicates implementation exists');
 });

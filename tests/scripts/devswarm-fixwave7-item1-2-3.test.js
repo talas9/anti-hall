@@ -48,6 +48,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const devswarmSource = require('./lib/devswarm-source.js');
 const cp = require('node:child_process');
 
 const DEVSWARM_PATH = path.join(__dirname, '../../plugins/anti-hall/scripts/devswarm.js');
@@ -122,7 +123,7 @@ function markSiblingLive(home, id, now) {
 }
 
 function withMutant(oldStr, newStr, fn) {
-  const liveBefore = fs.readFileSync(DEVSWARM_PATH, 'utf8');
+  const liveBefore = devswarmSource.readAll();
   mutantKit.withMutant(oldStr, newStr, fn, { prefix: 'anti-hall-fixwave7' });
   mutantKit.assertLiveUntouched(liveBefore, assert);
 }
@@ -160,7 +161,7 @@ test('Item 1 RED/GREEN: a plain `inbox ack <sibling>` must not clobber a DIFFERE
 
 test('Item 1 mutation check: deleting `inbox ack`\'s sibling-loop gate reproduces the cross-partition clobber', () => {
   const oldStr = "              if (siblingAckGate(storeHandle, id, part.id, home, ctx.now, { cwd: ctx && ctx.cwd, env: ctx && ctx.env })) { liveSiblingsSkipped.push(part.id); continue; }\n";
-  const liveBefore = fs.readFileSync(DEVSWARM_PATH, 'utf8');
+  const liveBefore = devswarmSource.readAll();
   assert.ok(liveBefore.includes(oldStr), 'inbox ack sibling-loop gate not found verbatim');
   withMutant(oldStr, '', (mutatedCli) => {
     const home = tmpHome();
@@ -219,7 +220,7 @@ test('Item 2 RED/GREEN: a genuinely live but never-heartbeated sibling must not 
 
 test('Item 2 mutation check: reverting the gate to hasFreshHeartbeat-only reproduces the never-heartbeated misread', () => {
   const oldStr = '    live = isSiblingPartitionLive({ id: partId, worktreePath: row.worktreePath, sessionId: row.sessionId }, home, { now });\n';
-  const liveBefore = fs.readFileSync(DEVSWARM_PATH, 'utf8');
+  const liveBefore = devswarmSource.readAll();
   assert.ok(liveBefore.includes(oldStr), 'siblingAckGate\'s isSiblingPartitionLive call not found verbatim');
   const buggyStr = '    let hb = false;\n'
     + '    try { hb = hasFreshHeartbeat(partId, home, { now }); } catch (_) { hb = true; }\n'
@@ -312,7 +313,7 @@ test('Item 3 mutation check: reverting to a live `messageCount(id)` recount repr
     + '              if (row && Number.isFinite(row.index) && (ownMaxIndex === null || row.index > ownMaxIndex)) ownMaxIndex = row.index;\n'
     + '            }\n'
     + '            const totalNow = ownMaxIndex !== null ? Math.max(storeCursorVal, ownMaxIndex) : storeCursorVal;\n';
-  const liveBefore = fs.readFileSync(DEVSWARM_PATH, 'utf8');
+  const liveBefore = devswarmSource.readAll();
   assert.ok(liveBefore.includes(oldStr), 'Item 3 fix block not found verbatim');
   const buggyStr = '            const totalNow = storeHandle.messageCount(id);\n';
   withMutant(oldStr, buggyStr, (mutatedCli) => {

@@ -30,6 +30,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const devswarmSource = require('./lib/devswarm-source.js');
 const cp = require('node:child_process');
 
 const DEVSWARM_PATH = path.join(__dirname, '../../plugins/anti-hall/scripts/devswarm.js');
@@ -132,7 +133,7 @@ test('Item 2 RED/GREEN (end-to-end): a message arriving between read and ack mus
 });
 
 test('Item 2 mutation check: reverting the ack-all target to advanceCursor() reproduces the live-recount loss', () => {
-  const liveBefore = fs.readFileSync(DEVSWARM_PATH, 'utf8');
+  const liveBefore = devswarmSource.readAll();
   // Phase 3: the ack-all target feeds commitNdAck (reader_cursors 'nd'); the
   // mutant re-introduces the LIVE recount as that target.
   const oldStr = 'cursor = commitNdAck(storeHandle, home, id, callerReader, union.cursor + union.ndjsonUnreadLines.length, descCursorPath, inboxPath, {';

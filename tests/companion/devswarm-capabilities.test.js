@@ -211,7 +211,10 @@ test('every hivecontrol invocation in the shipped code maps to a registered capa
   const files = ['scripts/devswarm.js', 'companion/lib/devswarm-pull.js', 'companion/lib/devswarm-lifecycle.js'];
   const shapes = new Set();
   for (const f of files) {
-    const src = fsx.readFileSync(path.join(ROOTP, f), 'utf8');
+    // scripts/devswarm.js + scripts/devswarm-lib/* are one logical source unit.
+    const src = f === 'scripts/devswarm.js'
+      ? require('../scripts/lib/devswarm-source.js').readAll(ROOTP)
+      : fsx.readFileSync(path.join(ROOTP, f), 'utf8');
     src.replace(/\[\s*'workspace',\s*'([a-z-]+)'/g, (m, v) => { shapes.add(v); return m; });
   }
   assert.ok(shapes.size >= 6, [...shapes].join(','));
