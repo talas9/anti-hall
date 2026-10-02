@@ -3238,6 +3238,7 @@ addressed in the next phases of the mesh redesign.
   still expands, so substitutions there are still checked. The guard also now sees heavy
   commands behind the `taskpolicy` and `xargs` wrappers.
 
+
 ## 0.103.0 (2026-09-23)
 
 - **Fixed: UserPromptSubmit context repeated up to 27× in one delivered turn.** Claude Code
