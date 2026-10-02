@@ -563,9 +563,15 @@ test('0.109: every drain text (cron tick, child, Primary, Codex turn-native) say
   assert.match(codex, /no pipes\/filters/i, codex);
 });
 
-test('tick prompt: decides on the FIRST printed line only; later lines are an informational roster', () => {
-  const out = wakeDirective({ DEVSWARM_AI_AGENT: 'claude', DEVSWARM_BUILDER_ID: 'child-abc123' }, true, CLI, '');
-  assert.match(out, /FIRST printed line/, out);
-  assert.match(out, /informational roster/, out);
-  assert.ok(!/if the printed line reads/.test(out), 'the ambiguous single-line wording is gone');
+test('tick prompt: the Primary decides on the FIRST printed line (later lines are a roster); the child prompt has no roster note', () => {
+  const primary = wakeDirective({ DEVSWARM_AI_AGENT: 'claude', DEVSWARM_BUILDER_ID: 'primary-abc123' }, false, CLI, '');
+  assert.match(primary, /FIRST printed line/, primary);
+  assert.match(primary, /informational roster/, primary);
+  assert.ok(!/if the printed line reads/.test(primary), 'the ambiguous single-line wording is gone from the Primary prompt');
+  // A --child tick never prints the roster, so the child prompt keeps the
+  // short wording (its injected payload is size-capped).
+  const child = wakeDirective({ DEVSWARM_AI_AGENT: 'claude', DEVSWARM_BUILDER_ID: 'child-abc123' }, true, CLI, '');
+  assert.match(child, /if the printed line reads/, child);
+  assert.ok(!/FIRST printed line/.test(child), child);
+  assert.ok(!/informational roster/.test(child), child);
 });
