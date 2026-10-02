@@ -80,7 +80,7 @@
     "UserPromptSubmit": [
       {
         "hooks": [
-          { "type": "command", "command": "node \"${PLUGIN_ROOT}/hooks/verify-first.js\"", "timeout": 10 }
+          { "type": "command", "command": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/hooks/verify-first.js\"", "timeout": 10 }
         ]
       },
       {
@@ -90,17 +90,17 @@
       },
       {
         "hooks": [
-          { "type": "command", "command": "node \"${PLUGIN_ROOT}/hooks/limit-conserve-inject.js\"", "timeout": 10 }
+          { "type": "command", "command": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/hooks/limit-conserve-inject.js\"", "timeout": 10 }
         ]
       },
       {
         "hooks": [
-          { "type": "command", "command": "node \"${PLUGIN_ROOT}/hooks/devswarm-parent-inbox.js\"", "timeout": 10 }
+          { "type": "command", "command": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/hooks/devswarm-parent-inbox.js\"", "timeout": 10 }
         ]
       },
       {
         "hooks": [
-          { "type": "command", "command": "node \"${PLUGIN_ROOT}/hooks/devswarm-child-turn.js\"", "timeout": 10 }
+          { "type": "command", "command": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/hooks/devswarm-child-turn.js\"", "timeout": 10 }
         ]
       },
       {

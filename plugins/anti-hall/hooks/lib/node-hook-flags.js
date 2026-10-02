@@ -18,9 +18,11 @@
 // (v8.setFlagsFromString) does NOT work: the compile dispatchers are fixed when
 // the isolate starts, so they must be on the command line.
 //
-// SCOPE: only hooks that parse a large slice of the session transcript before
-// exiting get the flags: the 1.5 MB transcript-tail.js window (directly or via
-// agent-scan, context-pct, dispatch-demand, inline-work-nudge) or a wider one.
+// SCOPE: only hooks that may parse 1.5 MB or more of the session transcript
+// before exiting get the flags: the 1.5 MB transcript-tail.js window (directly
+// or via agent-scan, context-pct, dispatch-demand, inline-work-nudge), the
+// emit-dedupe shouldEmit scan (256 KB, widened to a 4 MB tail on a miss), or a
+// wider window.
 // Hooks that read at most 512 KB (speculation-guard, speculation-judge), 128 KB
 // (merge-gate) or the 64 KB Jev turn reference keep the plain `node` command.
 // The rate is unmeasured below the 1.5 MB window.
@@ -35,14 +37,18 @@ const EXPOSED_HOOKS = {
   'codex-nudge.js': 'agent-scan scanTranscript, 1.5 MB tail',
   'compact-advice-guard.js': 'readTail + context-pct, 1.5 MB',
   'compact-declaration-guard.js': 'readTail, 1.5 MB',
+  'devswarm-child-turn.js': 'emit-dedupe shouldEmit, up to a 4 MB tail',
+  'devswarm-parent-inbox.js': 'emit-dedupe shouldEmit, up to a 4 MB tail',
   'dispatch-tier.js': 'readTail, 1.5 MB',
+  'limit-conserve-inject.js': 'emit-dedupe shouldEmit, up to a 4 MB tail',
   'edit-guard.js': 'inline-work-nudge readTail, 1.5 MB (DevSwarm Primary past its edit threshold)',
   'precompact-snapshot.js': 'readTail, 1.5 MB',
   'silent-agent-nudge.js': 'agent-scan over a 64 MB window',
   'stale-agent-stop-note.js': 'agent-scan over a 64 MB window',
   'task-guard.js': '1.5 MB tail + dispatch-demand + agent-scan',
-  'task-tracker.js': 'readTail, 1.5 MB, several passes',
+  'task-tracker.js': 'readTail, 1.5 MB, several passes; emit-dedupe up to 4 MB',
   'tasklist-guard.js': '512 KB tail with a 16 MB fallback + agent-scan',
+  'verify-first.js': 'emit-dedupe shouldEmit, up to a 4 MB tail (every prompt)',
 };
 
 // hooks/hooks.json and codex/hooks/hooks.json carry the flags as literal text
