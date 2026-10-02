@@ -60,6 +60,17 @@ Add `.anti-hall/` to your project's `.gitignore`: anti-hall keeps per-project se
 
 No telemetry or analytics. One request is on by default: an update check to GitHub (a tag-list request, no project data; turn it off with `versionAlerts.antiHall`). The optional classifier features (Jev, semantic judge, mesh triage) are off by default and send the text they judge only to the provider you configure. Everything else stays in `~/.anti-hall/` and `<repo>/.anti-hall/`. Full table: [PRIVACY.md](PRIVACY.md).
 
+### What it runs and writes
+
+| What | When | Where |
+|---|---|---|
+| Background units (launchd agent / systemd user unit / cron entry) for the optional DevSwarm ingest daemon, liveness supervisor and MCP reaper | Only if you run the matching `install-*` script | `~/Library/LaunchAgents/`, `~/.config/systemd/user/` or your crontab |
+| `claude plugin update anti-hall@anti-hall` | When you run `/anti-hall:update` and the harness registration is older than the latest release | the `claude` CLI |
+| `claude -p --resume <session> --dangerously-skip-permissions` | Only when you run the on-demand `devswarm-recover` CLI for one workspace | the `claude` CLI |
+| statusLine entry in `~/.claude/settings.json` | Only when you install the statusline (`/anti-hall:install-statusline`) | `~/.claude/settings.json` |
+| Launcher scripts that find the current plugin version | Written by the DevSwarm hooks in DevSwarm sessions | `~/.anti-hall/bin/` |
+| Local reads of `~/.claude.json` (`userID`, Fable availability) and the OMC usage cache | By the limit-conservation and model-availability hooks; never sent anywhere | `~/.claude.json`, `~/.claude/plugins/oh-my-claudecode/.usage-cache-anthropic.json` |
+
 ## Documentation
 
 **[Documentation start page](docs/README.md)**: install and uninstall, what each guard blocks and how to turn it off, settings, Jev, DevSwarm, troubleshooting, contributing, security and the changelog.

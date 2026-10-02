@@ -24,6 +24,19 @@ Other `git` requests happen only when you run them: `/anti-hall:update` pulls fr
 - `<repo>/.anti-hall/`: progress notes, history ledgers and handovers, which can quote your session.
 - Your account email: the optional statusline reads it from Claude Code's own `~/.claude.json` to show it in the status bar. It is displayed only, never sent anywhere. Hide it with `statusline.noEmail` (`ANTIHALL_STATUSLINE_NO_EMAIL=1`).
 
+## What it runs and writes
+
+Beyond the network requests above, anti-hall runs and writes these things locally:
+
+| What | When | Where |
+|---|---|---|
+| Background units (launchd agent / systemd user unit / cron entry) for the optional DevSwarm ingest daemon, liveness supervisor and MCP reaper | Only if you run the matching `install-*` script | `~/Library/LaunchAgents/`, `~/.config/systemd/user/` or your crontab |
+| `claude plugin update anti-hall@anti-hall` | When you run `/anti-hall:update` and the harness registration is older than the latest release | the `claude` CLI |
+| `claude -p --resume <session> --dangerously-skip-permissions` | Only when you run the on-demand `devswarm-recover` CLI for one workspace | the `claude` CLI |
+| statusLine entry in `~/.claude/settings.json` | Only when you install the statusline (`/anti-hall:install-statusline`) | `~/.claude/settings.json` |
+| Launcher scripts that find the current plugin version | Written by the DevSwarm hooks in DevSwarm sessions | `~/.anti-hall/bin/` |
+| Local reads of `~/.claude.json` (`userID`, Fable availability) and the OMC usage cache | By the limit-conservation and model-availability hooks; never sent anywhere | `~/.claude.json`, `~/.claude/plugins/oh-my-claudecode/.usage-cache-anthropic.json` |
+
 ## Jev fallback transport
 
 If you set `jev.fallbackTransport`, a Jev call that fails on the primary vendor (timeout, network error, 5xx, 402, 429) is retried once on the second vendor (`ai-gateway.vercel.sh` or `api.typesafe.ai`). The same secret-scrubbed text then goes to that second vendor under its own terms. Default off.
