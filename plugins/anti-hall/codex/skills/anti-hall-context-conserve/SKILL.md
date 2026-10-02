@@ -43,7 +43,7 @@ export ANTIHALL_LIMIT_THRESHOLD=85   # default threshold
 Status check:
 
 ```bash
-node -e "const {isConserving}=require('$ANTI_HALL_ROOT/hooks/limit-conserve.js'); console.log(JSON.stringify(isConserving(), null, 2))"
+node "$ANTI_HALL_ROOT/codex/scripts/limit-conserve-status.js"
 ```
 
 ## Main-model downshift (flagship preservation)
