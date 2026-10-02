@@ -1,6 +1,6 @@
 'use strict';
-// node-hook-flags: every hook command runs node with --no-concurrent-recompilation
-// --no-concurrent-sparkplug. Without them Node 24+ can deadlock in process.exit()
+// node-hook-flags: the transcript-heavy hook commands run node with
+// --no-concurrent-recompilation --no-concurrent-sparkplug. Without them Node 24+ can deadlock in process.exit()
 // (a background Maglev/Sparkplug compile waits for a main-thread GC while the main
 // thread waits to join it; nodejs/node#54918, #64274) and the hook hangs until the
 // harness timeout. See plugins/anti-hall/hooks/lib/node-hook-flags.js.
@@ -18,7 +18,7 @@ const { spawnSync } = require('node:child_process');
 const REPO = path.resolve(__dirname, '..', '..');
 const PLUGIN = path.join(REPO, 'plugins', 'anti-hall');
 const HOOKS = path.join(PLUGIN, 'hooks');
-const { NODE_HOOK_FLAGS } = require(path.join(HOOKS, 'lib', 'node-hook-flags.js'));
+const { NODE_HOOK_FLAGS, EXPOSED_HOOKS } = require(path.join(HOOKS, 'lib', 'node-hook-flags.js'));
 const PREFIX = 'node ' + NODE_HOOK_FLAGS.join(' ') + ' ';
 
 function commands(file) {
@@ -40,21 +40,47 @@ function run(flags, hook, payload, home, extraEnv, timeout) {
   });
 }
 
-test('every Claude and Codex hook command runs node with the shared flags', () => {
-  const claude = commands(path.join(HOOKS, 'hooks.json'));
-  const codex = commands(path.join(PLUGIN, 'codex', 'hooks', 'hooks.json'));
-  assert.ok(claude.length > 50 && codex.length > 30, `expected the full hook sets, got ${claude.length}/${codex.length}`);
-  const re = (root) => new RegExp('^' + PREFIX.replace(/[-]/g, '\\-') + '"\\$\\{' + root + '\\}/hooks/[\\w-]+\\.js"( --audit)?$');
-  assert.deepStrictEqual(claude.filter((c) => !re('CLAUDE_PLUGIN_ROOT').test(c)), []);
-  assert.deepStrictEqual(codex.filter((c) => !re('PLUGIN_ROOT').test(c)), []);
+// Each command is either the plain 0.122.0 form or, for a script in EXPOSED_HOOKS
+// only, the same form with the flags inserted after `node`.
+function check(cmds, root) {
+  const plain = new RegExp('^node "\\$\\{' + root + '\\}/hooks/([\\w-]+\\.js)"( --audit)?$');
+  const bad = [];
+  const flagged = new Set();
+  for (const c of cmds) {
+    const isFlagged = c.startsWith(PREFIX);
+    const m = (isFlagged ? 'node ' + c.slice(PREFIX.length) : c).match(plain);
+    if (!m) { bad.push(c); continue; }
+    const exposed = Object.prototype.hasOwnProperty.call(EXPOSED_HOOKS, m[1]);
+    if (exposed !== isFlagged) bad.push(c);
+    if (isFlagged) flagged.add(m[1]);
+  }
+  return { bad, flagged };
+}
+
+test('exactly the EXPOSED_HOOKS entries carry the flags; every other command keeps the plain form', () => {
+  const claudeCmds = commands(path.join(HOOKS, 'hooks.json'));
+  const codexCmds = commands(path.join(PLUGIN, 'codex', 'hooks', 'hooks.json'));
+  assert.ok(claudeCmds.length > 50 && codexCmds.length > 30, `expected the full hook sets, got ${claudeCmds.length}/${codexCmds.length}`);
+  const claude = check(claudeCmds, 'CLAUDE_PLUGIN_ROOT');
+  const codex = check(codexCmds, 'PLUGIN_ROOT');
+  assert.deepStrictEqual(claude.bad, []);
+  assert.deepStrictEqual(codex.bad, []);
+  // every exposed script is registered for Claude and flagged there
+  assert.deepStrictEqual([...claude.flagged].sort(), Object.keys(EXPOSED_HOOKS).sort());
+  assert.ok(claude.flagged.has('silent-agent-nudge.js') && codex.flagged.has('silent-agent-nudge.js'));
+  for (const f of Object.keys(EXPOSED_HOOKS)) assert.ok(fs.existsSync(path.join(HOOKS, f)), f);
 });
 
-test('install-codex writes the same flags into a user Codex hooks.json', () => {
+test('install-codex flags the same scripts and nothing else', () => {
   const { ANTI_HALL_HOOKS } = require(path.join(PLUGIN, 'codex', 'install-codex.js'));
   const cmds = [];
   for (const groups of Object.values(ANTI_HALL_HOOKS)) for (const g of groups) for (const h of g.hooks) cmds.push(h.command);
   assert.ok(cmds.length > 30);
-  assert.deepStrictEqual(cmds.filter((c) => !c.startsWith(PREFIX + '"')), []);
+  const bad = cmds.filter((c) => {
+    const file = path.basename(JSON.parse(c.slice(c.indexOf('"'))));
+    return c.startsWith(PREFIX + '"') !== Object.prototype.hasOwnProperty.call(EXPOSED_HOOKS, file);
+  });
+  assert.deepStrictEqual(bad, []);
 });
 
 test('this Node accepts the flags (an unknown V8 flag makes node refuse to start)', () => {

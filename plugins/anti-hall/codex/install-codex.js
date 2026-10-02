@@ -15,11 +15,12 @@ const targetRoot = globalInstall ? path.join(os.homedir(), '.codex') : path.join
 const hooksPath = path.join(targetRoot, 'hooks.json');
 const configPath = globalInstall ? path.join(os.homedir(), '.codex', 'config.toml') : path.join(targetRoot, 'config.toml');
 
-// Same flags as every shipped hooks.json command (exit-time deadlock; see hooks/lib/node-hook-flags.js).
-const { NODE_HOOK_FLAGS } = require('../hooks/lib/node-hook-flags.js');
+// Transcript-heavy hooks get the same V8 flags as in hooks.json (exit-time deadlock; see hooks/lib/node-hook-flags.js).
+const { NODE_HOOK_FLAGS, EXPOSED_HOOKS } = require('../hooks/lib/node-hook-flags.js');
 
 function hook(file) {
-  return `node ${NODE_HOOK_FLAGS.join(' ')} ${JSON.stringify(path.join(HOOK_ROOT, file))}`;
+  const flags = Object.prototype.hasOwnProperty.call(EXPOSED_HOOKS, file) ? NODE_HOOK_FLAGS.join(' ') + ' ' : '';
+  return `node ${flags}${JSON.stringify(path.join(HOOK_ROOT, file))}`;
 }
 
 function group(matcher, files, timeout) {
