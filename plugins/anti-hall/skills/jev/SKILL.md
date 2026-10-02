@@ -93,6 +93,8 @@ transport — never invented.
 per-session alternative: `ANTIHALL_JEV=0` force-disables for one session without
 touching `jev.json`.
 
+Text sent to the gateway (prompt, last assistant message, commit/PR text, test output) is passed through a best-effort redactor first: text matching known token shapes (API keys, Bearer tokens, `password=` style assignments, PEM blocks, JWTs, URL credentials, emails, long token-like runs) is replaced with `[REDACTED...]` placeholders. Redaction is best-effort, not a guarantee.
+
 ## Costs
 
 Jev is billed per call by the gateway/provider (Vercel AI Gateway passthrough

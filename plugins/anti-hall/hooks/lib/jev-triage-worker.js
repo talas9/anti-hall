@@ -25,6 +25,7 @@
 'use strict';
 
 const https = require('https');
+const { scrubSecrets } = require('./secret-scrub.js');
 
 const KIND_QUESTION = {
   type: 'choice',
@@ -138,7 +139,9 @@ const VALID_KINDS = new Set([
   'question-needs-answer', 'blocker', 'status-report', 'done-report', 'fyi',
 ]);
 
-async function classifyOne(text, deadline, jevCfg, urgentThreshold, jevDecideMulti) {
+async function classifyOne(rawText, deadline, jevCfg, urgentThreshold, jevDecideMulti) {
+  // Single outbound scrub: both the Jev and the Haiku request below send this.
+  const text = scrubSecrets(String(rawText));
   const out = {};
   let backendUsed = null;
 

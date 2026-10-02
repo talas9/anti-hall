@@ -263,6 +263,8 @@ itself.
   <hash>` prints it if one exists. Deletion is manual-only:
   `jev-report.js prune-audit --days N` -- never automatic.
 
+Text sent to the gateway (prompt, last assistant message, commit/PR text, test output) is passed through a best-effort redactor first: text matching known token shapes (API keys, Bearer tokens, `password=` style assignments, PEM blocks, JWTs, URL credentials, emails, long token-like runs) is replaced with `[REDACTED...]` placeholders. Redaction is best-effort, not a guarantee.
+
 ## Never
 
 Never print/log/commit the key. Never guess the provider. Never store the key

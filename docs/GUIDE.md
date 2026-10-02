@@ -269,6 +269,8 @@ typed yes/no classifier, not a reasoning model) first. **Default OFF.** Enable w
 { "enabled": true, "transport": "vercel", "confidenceThreshold": 0.85 }
 ```
 
+Text sent to the gateway (prompt, last assistant message, commit/PR text, test output) is passed through a best-effort redactor first: text matching known token shapes (API keys, Bearer tokens, `password=` style assignments, PEM blocks, JWTs, URL credentials, emails, long token-like runs) is replaced with `[REDACTED...]` placeholders. Redaction is best-effort, not a guarantee.
+
 or `ANTIHALL_JEV=1` (env). `ANTIHALL_JEV=0` always force-disables. Only a confident
 "speculative" answer blocks on Jev's word alone; a "grounded" answer, low confidence, or
 any Jev failure (no key, timeout, HTTP error, bad response) falls back to the regex check

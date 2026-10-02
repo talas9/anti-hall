@@ -58,6 +58,7 @@ const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
 const https = require('https');
+const { scrubSecrets } = require('./lib/secret-scrub.js');
 
 // ---------------------------------------------------------------------------
 // Guard: bail immediately (zero cost) unless explicitly opted in.
@@ -206,7 +207,7 @@ function callAnthropicAPI(messageText, apiKey, timeoutMs) {
       messages: [
         {
           role: 'user',
-          content: 'Evaluate this assistant message:\n\n' + messageText.slice(0, 8000)
+          content: 'Evaluate this assistant message:\n\n' + scrubSecrets(messageText.slice(0, 8000))
         }
       ]
     });
