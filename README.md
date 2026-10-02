@@ -271,3 +271,5 @@ component reference, configuration, and local testing:
 Release notes and what is new in each version: [CHANGELOG.md](CHANGELOG.md). Contributing: [CONTRIBUTING.md](CONTRIBUTING.md). Reporting a vulnerability: [SECURITY.md](SECURITY.md).
 
 MIT © Mohammed Talas. See [LICENSE](LICENSE).
+
+<!-- validator probe C -->
