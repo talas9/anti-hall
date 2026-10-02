@@ -58,17 +58,18 @@ test('roster unread equals the tick unread with broadcasts present; broadcast-on
     const json0 = JSON.parse(run(fx, ['roster', '--json']));
     const row0 = json0.workspaces.find((w) => w.id === 'ws-live');
     assert.strictEqual(row0.directUnread, 0);
-    assert.ok(row0.broadcastUnread >= 3, JSON.stringify(row0));
+    assert.strictEqual(row0.broadcastUnread, 3, JSON.stringify(row0));
     const text0 = run(fx, ['roster']);
-    assert.match(text0, /ws-live[^\n]*\| 0 \(\+\d+ bcast\) \|/, text0);
+    assert.match(text0, /ws-live[^\n]*\| 0 \(\+3 bcast\) \|/, text0);
     // two unread direct messages: tick and roster agree on 2
     for (let i = 0; i < 2; i++) run(fx, ['send', '--to', 'ws-live', '--message', 'direct ' + i]);
     const tick2 = run(fx, ['inbox', 'tick', 'ws-live', '--quiet']);
     const m = tick2.match(/unread (\d+),/);
     assert.ok(m, tick2);
+    assert.strictEqual(m[1], '2', tick2);
     const row2 = JSON.parse(run(fx, ['roster', '--json'])).workspaces.find((w) => w.id === 'ws-live');
     assert.strictEqual(row2.directUnread, Number(m[1]));
-    assert.match(run(fx, ['roster']), new RegExp('ws-live[^\\n]*\\| ' + m[1] + ' \\(\\+\\d+ bcast\\) \\|'));
+    assert.match(run(fx, ['roster']), /ws-live[^\n]*\| 2 \(\+3 bcast\) \|/);
   } finally { rm(fx.home); rm(fx.repo); }
 });
 
