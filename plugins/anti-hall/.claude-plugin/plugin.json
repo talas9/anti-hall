@@ -2,7 +2,7 @@
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "anti-hall",
   "displayName": "Anti-Hall",
-  "version": "0.122.0",
+  "version": "0.122.1",
   "description": "Verify-first guardrails for Claude Code: hooks that block made-up APIs, force-push, AI commit credit and unverified \"done\" claims.",
   "author": {
     "name": "Mohammed Talas",
