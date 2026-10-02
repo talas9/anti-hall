@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# anti-hall demo — run from the repo root. Record + render (see assets/demo/README.md):
-#   asciinema rec --window-size 88x17 -c "bash assets/demo/demo.sh" assets/demo/anti-hall.cast --overwrite
-#   agg --font-size 22 --theme github-dark --last-frame-duration 3 assets/demo/anti-hall.cast assets/demo/anti-hall.gif
+# anti-hall shell-only demo (NOT the source of the README GIF; see assets/demo/README.md).
+# Run from the repo root. Optional recording to a scratch cast + GIF that do not replace anti-hall.gif:
+#   asciinema rec --window-size 88x17 -c "bash assets/demo/demo.sh" assets/demo/shell-demo.cast --overwrite
+#   agg --font-size 22 --theme github-dark --last-frame-duration 3 assets/demo/shell-demo.cast assets/demo/shell-demo.gif
 #
 # Every "BLOCKED" message below is the REAL stderr of the real hook, captured live:
 # a PreToolUse JSON payload is piped into plugins/anti-hall/hooks/git-guard.js run
