@@ -329,7 +329,7 @@ function drainCmd(cli, isChild, useTick, id, watcher) {
     // stop condition below is worded against THAT line, not the JSON field
     // names. `--json` still forces the full object back if ever needed.
     const tickCmd = '`node ' + cli + ' inbox tick ' + id + (isChild ? ' --child' : '') + ' --quiet`';
-    const tickStopCond = 'if the printed line reads `unread 0` AND `meshGap false` AND `known` is NOT `false`';
+    const tickStopCond = 'if the FIRST printed line (any lines after it are an informational roster: ignore them here) reads `unread 0` AND `meshGap false` AND `known` is NOT `false`';
     const tickOtherwise = 'either `unread` is greater than 0, or `meshGap` is `true`, or `known` is `false`';
     const childNote = isChild
       ? ' — this is the cursor-advancing verb, matching devswarm-child-turn.js\'s own ' +
@@ -360,7 +360,7 @@ function drainCmd(cli, isChild, useTick, id, watcher) {
         'if supported, else max timeout_ms).'
       : '';
     return 'run ' + tickCmd + plainNote + ' (with `--child` it first imports anything waiting in your ' +
-      'native queue, then prints one line with the SAME unread/meshGap/known signal `inbox ' +
+      'native queue, then prints a status line with the SAME unread/meshGap/known signal `inbox ' +
       'count` reports, and writes a liveness marker + refreshes your heartbeat — one ' +
       'command instead of pull+count);' + rearmClause + ' ' + tickStopCond + ', say so and stop — do NOT spawn a ' +
       'subagent; otherwise (' + tickOtherwise + '), run `node ' + cli +

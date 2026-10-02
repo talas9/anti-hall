@@ -562,3 +562,10 @@ test('0.109: every drain text (cron tick, child, Primary, Codex turn-native) say
   const codex = wakeDirective({ DEVSWARM_AI_AGENT: 'codex', DEVSWARM_BUILDER_ID: 'child-abc123' }, true, CLI, '');
   assert.match(codex, /no pipes\/filters/i, codex);
 });
+
+test('tick prompt: decides on the FIRST printed line only; later lines are an informational roster', () => {
+  const out = wakeDirective({ DEVSWARM_AI_AGENT: 'claude', DEVSWARM_BUILDER_ID: 'child-abc123' }, true, CLI, '');
+  assert.match(out, /FIRST printed line/, out);
+  assert.match(out, /informational roster/, out);
+  assert.ok(!/if the printed line reads/.test(out), 'the ambiguous single-line wording is gone');
+});
