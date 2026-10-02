@@ -66,6 +66,43 @@ function taskRefs(text) {
   return out;
 }
 
+// ---- description <-> task-subject matching --------------------------------
+// An agent often starts BEFORE its TaskCreate row exists (so it cannot name
+// "#N"). Rule (deterministic, conservative): lowercase alphanumeric words of
+// >=3 chars minus stopwords/priority tags; a running agent's description
+// matches a task when they share >=2 words AND shared/min(|task|,|agent|)
+// >= 0.5. Each agent attends AT MOST ONE task: its best match (most shared
+// words, then highest ratio, then the earliest task in `actionable` order).
+const STOPWORDS = new Set(['the', 'and', 'for', 'with', 'from', 'into', 'not', 'are', 'was', 'its', 'agent', 'task', 'lane', 'fix', 'run', 'add', 'new']);
+function words(text) {
+  const out = new Set();
+  if (typeof text !== 'string') return out;
+  for (const w of text.toLowerCase().split(/[^a-z0-9]+/)) {
+    if (w.length >= 3 && !STOPWORDS.has(w) && !/^p\d$/.test(w)) out.add(w);
+  }
+  return out;
+}
+// bestTaskFor(agentDescription, tasks) -> the task id the agent covers, or null.
+function bestTaskFor(desc, tasks) {
+  const a = words(desc);
+  if (a.size === 0) return null;
+  let best = null;
+  let bestShared = 0;
+  let bestRatio = 0;
+  for (const t of tasks) {
+    const tw = words(String((t && (t.content || t.subject)) || ''));
+    if (tw.size === 0) continue;
+    let shared = 0;
+    for (const w of tw) if (a.has(w)) shared++;
+    const ratio = shared / Math.min(tw.size, a.size);
+    if (shared < 2 || ratio < 0.5) continue;
+    if (shared > bestShared || (shared === bestShared && ratio > bestRatio)) {
+      best = String(t.id); bestShared = shared; bestRatio = ratio;
+    }
+  }
+  return best;
+}
+
 // evaluate({ actionable, knownIds, inProgressIds, running, cap }) ->
 //   { fire, dispatch: [task], covered: [id], unmapped, running, cap }
 // running: [{ description }] from agent-scan.runningAgentsOrNull. null = the
@@ -82,7 +119,10 @@ function evaluate(opts) {
   let unmapped = 0;
   for (const a of running) {
     const refs = [...taskRefs(a && a.description)].filter((id) => known.has(id));
-    if (refs.length === 0) unmapped++;
+    if (refs.length === 0) {
+      const byName = bestTaskFor(a && a.description, actionable);
+      if (byName === null) unmapped++; else covered.add(byName);
+    }
     for (const id of refs) covered.add(id);
   }
   // An agent that names no task is most likely on an in_progress task (that is
@@ -126,7 +166,8 @@ function demandLine(res, opts) {
   return 'DISPATCH NOW in parallel — one background agent EACH, this turn (' +
     res.running + ' running, cap ' + res.cap + '): ' + shown.join(', ') + more +
     '. Pending, unblocked, unowned, and no in-flight agent names them. Hold one only if it ' +
-    'truly needs the user (then mark it metadata.blockedOn:\'owner\').';
+    'truly needs the user (then mark it metadata.blockedOn:\'owner\'). If a running agent ' +
+    'already covers a task, set the task\'s owner to it (TaskUpdate owner) and it counts as attended.';
 }
 
 // ---- metrics ---------------------------------------------------------------

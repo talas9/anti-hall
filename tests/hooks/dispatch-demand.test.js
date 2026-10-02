@@ -389,3 +389,84 @@ test('L34: transcript unreadable by the scan -> evaluate() reports unknown, neve
   assert.strictEqual(res.fire, false);
   assert.strictEqual(res.unknown, true);
 });
+
+// ---- description <-> task-subject matching (agent launched BEFORE its task row) ----
+const P1 = { priority: 'P1' };
+const BRICK = 'P1 Brick modal: SOC Not read + raw BLE';
+const PYRO = 'P1 Pyro colour from health signal';
+const MATCH_ENV = Object.assign({}, HIGH_CAP);
+
+test('NAME MATCH: agent launched BEFORE its task with a matching description -> no demand, no IDLE NEGLECT', () => {
+  const h = makeHome();
+  try {
+    const tp = h.writeTranscript([
+      ...agentLaunch('toolu_a1', 'eeeeeeeeeeeeeeee1', 'Brick modal SOC not read raw BLE', iso(40)),
+      ...agentLaunch('toolu_a2', 'eeeeeeeeeeeeeeee2', 'Pyro colour from health signal', iso(40)),
+      ...createTasks([BRICK, PYRO, 'P1 Release candidate'], 1, [P1, P1, P1]),
+      // #3 in_progress would absorb one unmapped agent; name matching must not rely on that
+      taskUpdate('toolu_u3', { taskId: '3', status: 'in_progress' }),
+    ]);
+    assert.doesNotMatch(ctx(testHook(TRACKER, trackerPayload(tp), { home: h.home, env: MATCH_ENV })), /DISPATCH NOW/);
+    assert.ok(!isIdleNeglect(testHook(GUARD, stopPayload(tp), { home: h.home, env: MATCH_ENV })));
+  } finally { h.cleanup(); }
+});
+
+test('NAME MATCH: unrelated running agent -> still demands both tasks', () => {
+  const h = makeHome();
+  try {
+    const tp = h.writeTranscript([
+      ...agentLaunch('toolu_a1', 'ffffffffffffffff1', 'Refactor billing invoice exporter', iso(40)),
+      ...createTasks([BRICK, PYRO], 1, [P1, P1]),
+    ]);
+    const line = demandLine(ctx(testHook(TRACKER, trackerPayload(tp), { home: h.home, env: MATCH_ENV })));
+    assert.match(line, /#1 /, line);
+    assert.match(line, /#2 /, line);
+    assert.ok(isIdleNeglect(testHook(GUARD, stopPayload(tp), { home: h.home, env: MATCH_ENV })));
+  } finally { h.cleanup(); }
+});
+
+test('NAME MATCH: one agent vs two similar tasks -> only the best-matching one is covered', () => {
+  const h = makeHome();
+  try {
+    const tp = h.writeTranscript([
+      ...agentLaunch('toolu_a1', 'abababababababab1', 'Brick modal SOC not read raw BLE', iso(40)),
+      ...createTasks([BRICK, 'P1 Brick modal layout polish'], 1, [P1, P1]),
+    ]);
+    const line = demandLine(ctx(testHook(TRACKER, trackerPayload(tp), { home: h.home, env: MATCH_ENV })));
+    assert.match(line, /#2 "P1 Brick modal layout polish"/, line);
+    assert.ok(!/#1 /.test(line), 'best match #1 must be attended: ' + line);
+  } finally { h.cleanup(); }
+});
+
+test('NAME MATCH: matched agent finished -> the task is demanded again', () => {
+  const h = makeHome();
+  try {
+    const tp = h.writeTranscript([
+      ...agentLaunch('toolu_a1', 'cdcdcdcdcdcdcdcd1', 'Brick modal SOC not read raw BLE', iso(40)),
+      ...createTasks([BRICK, PYRO], 1, [P1, P1]),
+      agentDone('cdcdcdcdcdcdcdcd1'),
+    ]);
+    const line = demandLine(ctx(testHook(TRACKER, trackerPayload(tp), { home: h.home, env: MATCH_ENV })));
+    assert.match(line, /#1 /, line);
+  } finally { h.cleanup(); }
+});
+
+test('NAME MATCH: owner set -> attended (unchanged); both messages carry the owner hint', () => {
+  const h = makeHome();
+  try {
+    const tp = h.writeTranscript([
+      ...createTasks([BRICK, PYRO], 1, [P1, P1]),
+      taskUpdate('toolu_u1', { taskId: '1', owner: 'agent-x' }),
+      taskUpdate('toolu_u2', { taskId: '2', owner: 'agent-y' }),
+    ]);
+    assert.doesNotMatch(ctx(testHook(TRACKER, trackerPayload(tp), { home: h.home, env: MATCH_ENV })), /DISPATCH NOW/);
+  } finally { h.cleanup(); }
+  const h2 = makeHome();
+  try {
+    const tp = h2.writeTranscript(createTasks([BRICK, PYRO], 1, [P1, P1]));
+    assert.match(ctx(testHook(TRACKER, trackerPayload(tp), { home: h2.home, env: MATCH_ENV })), /set the task's owner to it \(TaskUpdate owner\)/);
+    const r = testHook(GUARD, stopPayload(tp), { home: h2.home, env: MATCH_ENV });
+    assert.ok(isIdleNeglect(r));
+    assert.match(r.json.reason, /set the task's owner to it \(TaskUpdate owner\)/);
+  } finally { h2.cleanup(); }
+});

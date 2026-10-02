@@ -339,7 +339,8 @@ function main() {
       'decision only a human can make), mark it non-dispatchable honestly — ' +
       'metadata.blockedOn:\'owner\' (or \'user\'/\'human\'/\'external\'), or an "OWNER:" / ' +
       '"OWNER DECISION" subject prefix — never a fake blockedBy dependency. ' +
-      'If a task waits on an in-flight task, set its blockedBy (TaskUpdate addBlockedBy) instead of dispatching it.' +
+      'If a task waits on an in-flight task, set its blockedBy (TaskUpdate addBlockedBy) instead of dispatching it. ' +
+      'If a running agent already covers a task, set the task\'s owner to it (TaskUpdate owner) and it counts as attended.' +
       (anyLiveDevswarmChildren()
         ? ' If this task is delegated to a DevSwarm workspace, set its owner to the ' +
           'workspace id, branch or title (TaskUpdate owner) and it counts as attended.'
