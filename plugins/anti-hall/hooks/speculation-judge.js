@@ -348,8 +348,17 @@ async function main() {
   const stateDir = path.join(os.homedir(), '.anti-hall');
   const stateFile = path.join(stateDir, 'judge-state-' + safeSession + '.json');
 
-  // Extract last assistant message.
-  const lastText = extractLastAssistantText(transcriptPath);
+  // The reply being stopped: the Stop payload's `last_assistant_message` wins
+  // (the transcript tail can still end at the PREVIOUS turn at Stop time);
+  // the transcript extractor is only the fallback (lib/reply-text.js). If the
+  // helper cannot load, use the transcript extractor as before.
+  let lastText;
+  try {
+    lastText = require('./lib/reply-text.js').selectReplyText(
+      payload, () => extractLastAssistantText(transcriptPath));
+  } catch (_) {
+    lastText = extractLastAssistantText(transcriptPath);
+  }
   if (!lastText || !lastText.trim()) {
     process.exit(0);
   }

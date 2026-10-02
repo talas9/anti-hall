@@ -122,3 +122,78 @@ test('FAIL-OPEN: malformed JSON -> exit 0', () => {
     h.cleanup();
   }
 });
+
+// ---------------------------------------------------------------------------
+// last_assistant_message: the judge evaluates the reply being stopped (Stop
+// payload), not the previous transcript message. No network: a NODE_OPTIONS
+// preload stub replaces https.request, records the request body under the temp
+// home and answers with a canned allow/block.
+// ---------------------------------------------------------------------------
+const fs = require('node:fs');
+const path = require('node:path');
+const STUB = path.join(__dirname, '..', 'helpers', 'stub-judge-https.js').replace(/\\/g, '/');
+
+function judgeRun(h, payload, reply) {
+  const logFile = path.join(h.home, 'judge-requests.ndjson');
+  const r = testHook(HOOK, payload, {
+    home: h.home,
+    env: {
+      ANTIHALL_SEMANTIC_JUDGE: '1',
+      CLAUDE_PLUGIN_OPTION_ANTHROPIC_API_KEY: 'sk-ant-stubbed',
+      NODE_OPTIONS: `--require "${STUB}"`,
+      ANTIHALL_TEST_JUDGE_LOG: logFile,
+      ANTIHALL_TEST_JUDGE_REPLY: reply,
+    },
+  });
+  let bodies = [];
+  try { bodies = fs.readFileSync(logFile, 'utf8').split('\n').filter(Boolean); } catch (_) { /* no request made */ }
+  return { r, bodies };
+}
+
+const OLD_HEDGE = 'The cause is the stale build artifact, so rebuilding fixes it.';
+const PAYLOAD_CLEAN = 'Rebuilt and ran node --test: 12 pass, 0 fail.';
+const BLOCK = '{"decision":"block","claim":"cause asserted without evidence"}';
+const ALLOW = '{"decision":"allow"}';
+
+test('LAM judge: stale transcript + clean payload -> request carries the payload text, result allow', () => {
+  const h = makeHome();
+  try {
+    const tp = h.writeTranscript([assistantMessage(OLD_HEDGE)]);
+    const { r, bodies } = judgeRun(h, Object.assign(stopPayload(tp), { last_assistant_message: PAYLOAD_CLEAN }), ALLOW);
+    assert.strictEqual(r.status, 0);
+    assert.ok(!(r.json && r.json.decision === 'block'), `expected allow; stdout: ${r.stdout}`);
+    assert.strictEqual(bodies.length, 1, 'the stubbed API must have been called once');
+    assert.ok(bodies[0].includes('12 pass, 0 fail'), 'request must carry the payload text');
+    assert.ok(!bodies[0].includes('stale build artifact'), 'request must not carry the older transcript text');
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('LAM judge: hedge in the payload -> request carries it and the canned block is honoured', () => {
+  const h = makeHome();
+  try {
+    const tp = h.writeTranscript([assistantMessage('Earlier: all good.')]);
+    const { r, bodies } = judgeRun(h, Object.assign(stopPayload(tp), { last_assistant_message: OLD_HEDGE }), BLOCK);
+    assert.strictEqual(r.status, 0);
+    assert.ok(r.json && r.json.decision === 'block', `expected block; stdout: ${r.stdout}`);
+    assert.strictEqual(bodies.length, 1);
+    assert.ok(bodies[0].includes('stale build artifact'));
+    assert.ok(!bodies[0].includes('Earlier: all good'));
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('LAM judge: payload absent -> old behaviour (transcript text is judged)', () => {
+  const h = makeHome();
+  try {
+    const tp = h.writeTranscript([assistantMessage(OLD_HEDGE)]);
+    const { r, bodies } = judgeRun(h, stopPayload(tp), BLOCK);
+    assert.ok(r.json && r.json.decision === 'block', `expected block; stdout: ${r.stdout}`);
+    assert.strictEqual(bodies.length, 1);
+    assert.ok(bodies[0].includes('stale build artifact'));
+  } finally {
+    h.cleanup();
+  }
+});

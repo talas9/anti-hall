@@ -311,6 +311,331 @@ test('FAIL-OPEN: unwritable ledger dir still exits 0 silently', () => {
   }
 });
 
+// ---------------------------------------------------------------------------
+// last_assistant_message: at Stop time the transcript may not yet hold the
+// reply being stopped. The payload text is then the reply; the transcript's own
+// last assistant text becomes evidence; tools_this_turn is the running count.
+// ---------------------------------------------------------------------------
+const crypto = require('node:crypto');
+const sha1 = (s) => crypto.createHash('sha1').update(s).digest('hex');
+const CLAIM = 'There are 7 files changed in the repo.';
+// Pinned: sha1 of CLAIM, i.e. the hash the unfixed hook records for this text.
+const CLAIM_HASH = '4cae11f408ef52e9e4931618e238429af46059ac';
+
+function withLam(tp, lam) {
+  return Object.assign(stopPayload(tp), { last_assistant_message: lam });
+}
+
+test('LAM: stale transcript + payload claim -> flag under the payload hash with this turn tool count', () => {
+  const h = makeHome();
+  try {
+    const tp = h.writeTranscript([
+      userPrompt('go'),
+      toolUse('Bash', { command: 'ls' }),
+      toolResult('a b'),
+      assistantMessage('Looking at it.'),
+      toolUse('Bash', { command: 'git status' }),
+      toolResult('clean'),
+    ]);
+    const r = testHook(HOOK, withLam(tp, CLAIM), { home: h.home });
+    assert.ok(silentAllow(r), `expected silent exit 0; stdout: ${r.stdout}`);
+    const recs = readLedger(h);
+    assert.strictEqual(recs.length, 1);
+    assert.strictEqual(recs[0].hash, CLAIM_HASH);
+    assert.strictEqual(recs[0].tools_this_turn, 2);
+    assert.strictEqual(recs[0].msg_chars, CLAIM.length);
+    assert.deepStrictEqual(recs[0].flags.map((f) => [f.cls, f.kind, f.token]), [['hard', 'count', '7 files']]);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('LAM: stale transcript - the previous message is EVIDENCE for the payload reply', () => {
+  const h = makeHome();
+  try {
+    const tp = h.writeTranscript([
+      userPrompt('go'),
+      assistantMessage('The count is 7 files so far.'),
+    ]);
+    const r = testHook(HOOK, withLam(tp, CLAIM), { home: h.home });
+    assert.ok(silentAllow(r));
+    assert.deepStrictEqual(readLedger(h), [], 'a number the previous message stated is a legitimate referent');
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('LAM: a claim in the PREVIOUS message is not treated as the reply at this Stop', () => {
+  const h = makeHome();
+  try {
+    const tp = h.writeTranscript([
+      userPrompt('go'),
+      assistantMessage(CLAIM),
+    ]);
+    const r = testHook(HOOK, withLam(tp, 'Done.'), { home: h.home });
+    assert.ok(silentAllow(r));
+    assert.deepStrictEqual(readLedger(h), [], 'the older flaggable message must not be recorded');
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('LAM: up-to-date transcript + same text (whitespace differs) in payload -> one record, hash unchanged from the unfixed hook', () => {
+  const h = makeHome();
+  try {
+    const items = [
+      userPrompt('status?'),
+      toolUse('Bash', { command: 'git status' }),
+      toolResult('clean'),
+      assistantMessage(CLAIM),
+    ];
+    const tp = h.writeTranscript(items);
+    const r = testHook(HOOK, withLam(tp, CLAIM.replace('7 files', '7\n files') + '\n'), { home: h.home });
+    assert.ok(silentAllow(r));
+    const recs = readLedger(h);
+    assert.strictEqual(recs.length, 1);
+    assert.strictEqual(recs[0].hash, CLAIM_HASH);
+    assert.strictEqual(recs[0].hash, sha1(CLAIM));
+    assert.strictEqual(recs[0].tools_this_turn, 1);
+    assert.strictEqual(recs[0].msg_chars, CLAIM.length);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('LAM: payload absent / blank -> today\'s transcript-only record, same hash', () => {
+  for (const lam of [undefined, '', '   \n']) {
+    const h = makeHome();
+    try {
+      const tp = h.writeTranscript([
+        userPrompt('status?'),
+        toolUse('Bash', { command: 'git status' }),
+        toolResult('clean'),
+        assistantMessage(CLAIM),
+      ]);
+      const payload = lam === undefined ? stopPayload(tp) : withLam(tp, lam);
+      const r = testHook(HOOK, payload, { home: h.home });
+      assert.ok(silentAllow(r));
+      const recs = readLedger(h);
+      assert.strictEqual(recs.length, 1);
+      assert.strictEqual(recs[0].hash, CLAIM_HASH);
+      assert.strictEqual(recs[0].tools_this_turn, 1);
+    } finally {
+      h.cleanup();
+    }
+  }
+});
+
+test('LAM: repeated Stop with the same payload is recorded once', () => {
+  const h = makeHome();
+  try {
+    const tp = h.writeTranscript([userPrompt('go'), assistantMessage('Looking.')]);
+    testHook(HOOK, withLam(tp, CLAIM), { home: h.home });
+    testHook(HOOK, withLam(tp, CLAIM), { home: h.home });
+    assert.strictEqual(readLedger(h).length, 1);
+  } finally {
+    h.cleanup();
+  }
+});
+
+// One assistant message can span several transcript lines (same message.id):
+// text, tool_use, text. The payload joins its text blocks with "\n". Text that
+// is part of the reply being judged must never be evidence for that reply.
+function asstLine(id, content) {
+  const m = { role: 'assistant', content };
+  if (id) m.id = id;
+  return { type: 'assistant', message: m };
+}
+const PART1 = 'Part one: Fixed in commit abcdef1 and 47 tests pass.';
+const PART2 = 'Part two done.';
+
+function flagKinds(rec) { return rec.flags.map((f) => f.kind + ':' + f.token).sort(); }
+
+for (const withIds of [true, false]) {
+  test(`LAM: multi-text-block reply is not vouched for by itself (${withIds ? 'message.id' : 'no ids, containment safety net'})`, () => {
+    const h = makeHome();
+    try {
+      const id = withIds ? 'msg_1' : null;
+      const tp = h.writeTranscript([
+        userPrompt('go'),
+        asstLine(id, [{ type: 'text', text: PART1 }]),
+        asstLine(id, [{ type: 'tool_use', id: 'toolu_9', name: 'Bash', input: { command: 'true' } }]),
+        asstLine(id, [{ type: 'text', text: PART2 }]),
+      ]);
+      const r = testHook(HOOK, withLam(tp, PART1 + '\n' + PART2), { home: h.home });
+      assert.ok(silentAllow(r));
+      const recs = readLedger(h);
+      assert.strictEqual(recs.length, 1, 'the count and sha must be recorded');
+      assert.deepStrictEqual(flagKinds(recs[0]), ['count:47 tests', 'sha:abcdef1']);
+    } finally {
+      h.cleanup();
+    }
+  });
+}
+
+test('LAM: payload that merely contains the transcript last text (suffix) -> transcript up to date, payload judged, own text not evidence', () => {
+  const h = makeHome();
+  try {
+    const tp = h.writeTranscript([
+      userPrompt('go'),
+      toolUse('Bash', { command: 'true' }),
+      toolResult('ok'),
+      assistantMessage(PART2),
+    ]);
+    const full = 'Intro: 47 tests pass. ' + PART2;
+    const r = testHook(HOOK, withLam(tp, full), { home: h.home });
+    assert.ok(silentAllow(r));
+    const recs = readLedger(h);
+    assert.strictEqual(recs.length, 1);
+    assert.strictEqual(recs[0].hash, sha1(full));
+    assert.strictEqual(recs[0].tools_this_turn, 1, 'transcript is up to date: count as of its last text');
+    assert.deepStrictEqual(flagKinds(recs[0]), ['count:47 tests']);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('LAM: NFC vs NFD spelling of the same reply is treated as equal (hash stays the transcript raw text)', () => {
+  const h = makeHome();
+  try {
+    const nfc = 'Café has 7 files changed.';
+    const nfd = nfc.normalize('NFD');
+    assert.notStrictEqual(nfc, nfd);
+    const tp = h.writeTranscript([
+      userPrompt('go'),
+      toolUse('Bash', { command: 'true' }),
+      toolResult('ok'),
+      assistantMessage(nfc),
+    ]);
+    const r = testHook(HOOK, withLam(tp, nfd), { home: h.home });
+    assert.ok(silentAllow(r));
+    const recs = readLedger(h);
+    assert.strictEqual(recs.length, 1);
+    assert.strictEqual(recs[0].hash, sha1(nfc));
+    assert.strictEqual(recs[0].tools_this_turn, 1);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('LAM: payload present but NO assistant text in the transcript window -> recorded against the payload, silent', () => {
+  const h = makeHome();
+  try {
+    const tp = h.writeTranscript([
+      userPrompt('go'),
+      toolUse('Bash', { command: 'true' }),
+      toolResult('ok'),
+    ]);
+    const r = testHook(HOOK, withLam(tp, CLAIM), { home: h.home });
+    assert.ok(silentAllow(r));
+    const recs = readLedger(h);
+    assert.strictEqual(recs.length, 1);
+    assert.strictEqual(recs[0].hash, CLAIM_HASH);
+    assert.strictEqual(recs[0].tools_this_turn, 1);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('LAM: Jev turnRef is omitted when the reply came from the payload (transcript may be a turn behind)', async () => {
+  const http = require('node:http');
+  const { spawn } = require('node:child_process');
+  const { HOOKS_DIR } = require('../helpers/spawn-hook.js');
+  const h = makeHome();
+  const server = http.createServer((req, res) => {
+    req.resume();
+    req.on('end', () => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ answers: { decision: { noul: 0.9 } } }));
+    });
+  });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  try {
+    h.writeState('jev.json', { enabled: true, integrations: { claimLedger: 'shadow' } });
+    const stamp = (m) => Object.assign({ timestamp: '2026-09-25T10:00:00.000Z' }, m);
+    const run = (tp, payload) => new Promise((resolve, reject) => {
+      const child = spawn(process.execPath, [path.join(HOOKS_DIR, HOOK)], {
+        env: {
+          PATH: process.env.PATH, HOME: h.home, USERPROFILE: h.home, ANTIHALL_TEST_ISOLATION: '1',
+          CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: `http://127.0.0.1:${server.address().port}/mock`,
+        },
+      });
+      child.on('error', reject);
+      child.on('close', resolve);
+      child.stdin.end(JSON.stringify(payload));
+    });
+    const logFile = path.join(h.home, '.anti-hall', 'logs', 'jev-assist.ndjson');
+    const rows = async () => {
+      for (let i = 0; i < 100; i++) {
+        try {
+          const got = fs.readFileSync(logFile, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l))
+            .filter((r) => r.id === 'claimLedger' && r.type !== 'outcome');
+          if (got.length) return got;
+        } catch (_) { /* not yet */ }
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      return [];
+    };
+
+    // Payload differs from the transcript's last text -> no turnRef.
+    const tp1 = h.writeTranscript([stamp(userPrompt('go')), stamp(assistantMessage('Looking.'))]);
+    await run(tp1, withLam(tp1, CLAIM));
+    const fromPayload = await rows();
+    assert.ok(fromPayload.length >= 1, 'expected a claimLedger decision row');
+    assert.strictEqual(fromPayload[0].turnRef, undefined, 'payload-sourced reply must not carry a transcript turnRef');
+  } finally {
+    await new Promise((r) => { server.closeAllConnections?.(); server.close(() => r()); });
+    h.cleanup();
+  }
+});
+
+test('LAM: Jev turnRef is kept when the transcript is up to date (payload equals its last text)', async () => {
+  const http = require('node:http');
+  const { spawn } = require('node:child_process');
+  const { HOOKS_DIR } = require('../helpers/spawn-hook.js');
+  const h = makeHome();
+  const server = http.createServer((req, res) => {
+    req.resume();
+    req.on('end', () => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ answers: { decision: { noul: 0.9 } } }));
+    });
+  });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  try {
+    h.writeState('jev.json', { enabled: true, integrations: { claimLedger: 'shadow' } });
+    const tp = h.writeTranscript([
+      { timestamp: '2026-09-25T10:00:00.000Z', type: 'user', message: { role: 'user', content: 'go' } },
+      { timestamp: '2026-09-25T10:00:05.000Z', type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: CLAIM }] } },
+    ]);
+    await new Promise((resolve, reject) => {
+      const child = spawn(process.execPath, [path.join(HOOKS_DIR, HOOK)], {
+        env: {
+          PATH: process.env.PATH, HOME: h.home, USERPROFILE: h.home, ANTIHALL_TEST_ISOLATION: '1',
+          CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: `http://127.0.0.1:${server.address().port}/mock`,
+        },
+      });
+      child.on('error', reject);
+      child.on('close', resolve);
+      child.stdin.end(JSON.stringify(withLam(tp, CLAIM)));
+    });
+    const logFile = path.join(h.home, '.anti-hall', 'logs', 'jev-assist.ndjson');
+    let row = null;
+    for (let i = 0; i < 100 && !row; i++) {
+      try {
+        row = fs.readFileSync(logFile, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l))
+          .find((r) => r.id === 'claimLedger' && r.type !== 'outcome') || null;
+      } catch (_) { /* not yet */ }
+      if (!row) await new Promise((r) => setTimeout(r, 100));
+    }
+    assert.ok(row, 'expected a claimLedger decision row');
+    assert.strictEqual(row.turnRef, '2026-09-25T10:00:05.000Z');
+  } finally {
+    await new Promise((r) => { server.closeAllConnections?.(); server.close(() => r()); });
+    h.cleanup();
+  }
+});
+
 test('unit: numberInEvidence matches by value at the claim precision', () => {
   const { numberInEvidence, collectNumbers } = require('../../plugins/anti-hall/hooks/claim-ledger.js');
   const ev = 'cpu 34.887 total; 28.706 total; 1326 messages; 0.3421s';

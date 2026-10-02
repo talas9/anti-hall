@@ -787,7 +787,10 @@ async function main() {
         // 'on' can add a block here), so every logged row must be joinable
         // back to the transcript it decided on -- see jev-assist.js header.
         sessionId,
-        turnRef: require('./lib/jev-assist.js').turnRefFromTranscript(transcriptPath),
+        // Omitted when the judged text came from the Stop payload: the
+        // transcript's last line may then be the PREVIOUS turn, and a wrong
+        // pointer is worse than none.
+        turnRef: payloadText !== null ? undefined : require('./lib/jev-assist.js').turnRefFromTranscript(transcriptPath),
       });
       if (result.jev === null) {
         // Either the 'speculation' integration is switched off via jev.json's
@@ -866,7 +869,7 @@ async function main() {
           trust: 'relax-block',
           baseline: true,
           sessionId,
-          turnRef: turnRefFromTranscript(transcriptPath),
+          turnRef: payloadText !== null ? undefined : turnRefFromTranscript(transcriptPath),
         });
         if (framedResult.final === false) finish('allow');
       }

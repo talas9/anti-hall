@@ -48,7 +48,9 @@
 //   silently. The hook has no upside that justifies wedging a session.
 //
 // Contract (Claude Code / Codex Stop hook):
-//   stdin  : JSON { transcript_path, session_id?, ... }
+//   stdin  : JSON { transcript_path, session_id?, last_assistant_message?, ... }
+//            (last_assistant_message, when present, is the reply judged; the
+//            transcript's own last assistant text is then evidence if it differs)
 //   stdout : nothing, ever
 //   exit 0 : always
 
@@ -99,10 +101,29 @@ function textBlocks(content) {
   return out.join(' ');
 }
 
+// Comparison-only normalisation (never feeds a stored hash): NFC + collapsed whitespace.
+function collapseText(s) {
+  return s.normalize('NFC').replace(/\s+/g, ' ').trim();
+}
+
+// Add an assistant text to the evidence list unless the payload reply contains it.
+function pushEvidenceText(ev, text, payloadNorm) {
+  if (payloadNorm !== null) {
+    const n = collapseText(text);
+    if (n !== '' && payloadNorm.includes(n)) return;
+  }
+  ev.push(text);
+}
+
 // walk(lines) -> { lastText, evidence, toolsThisTurn } or null.
 // Evidence is everything in the window EXCEPT the final assistant text itself.
 // Turn boundary = a user entry that carries no tool_result block.
-function walk(lines) {
+// payloadText: the Stop payload's reply, when the caller has one. Then an
+// (empty-reply) result is returned even when the window has no assistant text,
+// and no transcript assistant text contained in the payload becomes evidence.
+function walk(lines, payloadText) {
+  const allowNoReply = typeof payloadText === 'string';
+  const payloadNorm = allowNoReply ? collapseText(payloadText) : null;
   const ev = [];
   let toolsThisTurn = 0;
   let last = null; // { text, evLen, tools }
@@ -138,15 +159,36 @@ function walk(lines) {
       }
       const text = textBlocks(content);
       if (text.trim()) {
-        // Previous assistant text becomes evidence only once a NEWER one exists
-        // (the message under test must not vouch for itself).
-        if (last) ev.push(last.text);
-        last = { text, tools: toolsThisTurn };
+        const id = e.message && typeof e.message.id === 'string' ? e.message.id : null;
+        if (last && id !== null && last.id === id) {
+          // Same message.id = another transcript line of the SAME assistant
+          // message (text, tool_use, text ...): one reply, texts joined by "\n"
+          // exactly as the Stop payload joins them.
+          last.text += '\n' + text;
+          last.tools = toolsThisTurn;
+        } else {
+          // Previous assistant text becomes evidence only once a NEWER one exists
+          // (the message under test must not vouch for itself). Older-turn texts
+          // staying evidence is long-standing behaviour, kept as is. A text the
+          // payload contains is part of the reply being judged, never evidence.
+          if (last) pushEvidenceText(ev, last.text, payloadNorm);
+          last = { id, text, tools: toolsThisTurn };
+        }
       }
     }
   }
-  if (!last) return null;
-  return { lastText: last.text, evidence: ev.join('\n'), toolsThisTurn: last.tools };
+  // evidenceWithLast / toolsAtEnd serve the "transcript is behind the Stop
+  // payload" case: the transcript's last assistant text is then an EARLIER
+  // message (so it is evidence), and the tool count is the running one at EOF.
+  if (!last) {
+    if (!allowNoReply) return null;
+    return { lastText: '', evidence: ev.join('\n'), toolsThisTurn: toolsThisTurn, evidenceWithLast: ev.join('\n'), toolsAtEnd: toolsThisTurn };
+  }
+  const evidence = ev.join('\n');
+  return {
+    lastText: last.text, evidence, toolsThisTurn: last.tools,
+    evidenceWithLast: evidence + '\n' + last.text, toolsAtEnd: toolsThisTurn,
+  };
 }
 
 // --- numeric matching by value at the claim's precision ---
@@ -252,22 +294,53 @@ function main() {
   const lines = tail.data.split(/\r?\n/);
   if (tail.truncated && lines.length) lines.shift(); // drop the partial first line
 
-  const walked = walk(lines);
+  // The Stop payload's `last_assistant_message` is the reply being stopped; the
+  // transcript tail can still end at the PREVIOUS message (lib/reply-text.js).
+  // Helper load error => null => today's transcript-only path.
+  let payloadText = null;
+  try { payloadText = require('./lib/reply-text.js').payloadReplyText(payload); } catch (_) { payloadText = null; }
+
+  const walked = walk(lines, payloadText === null ? undefined : payloadText);
   if (!walked) return;
+
+  // reply/evidence/tools default to today's transcript-only result. The
+  // transcript is up to date when the payload equals its last assistant message
+  // (NFC + whitespace collapsed; same raw-text hash, no double counting) or
+  // merely CONTAINS it (the transcript holds a trailing part of this very reply;
+  // the payload is then the fuller reply). Only when the payload does not
+  // contain the transcript's last text is the transcript behind: that text
+  // becomes evidence and the payload is judged, with the running tool count
+  // since the last real user entry.
+  let replyText = walked.lastText;
+  let evidence = walked.evidence;
+  let toolsThisTurn = walked.toolsThisTurn;
+  let fromPayload = false;
+  if (payloadText !== null) {
+    const nPay = collapseText(payloadText);
+    const nLast = collapseText(walked.lastText);
+    if (nLast === '' || !nPay.includes(nLast)) {
+      replyText = payloadText;
+      evidence = walked.evidenceWithLast;
+      toolsThisTurn = walked.toolsAtEnd;
+      fromPayload = true;
+    } else if (nPay !== nLast) {
+      replyText = payloadText;
+    }
+  }
 
   const sessionId = (payload.session_id && String(payload.session_id)) ||
     crypto.createHash('sha1').update(transcriptPath).digest('hex').slice(0, 16);
   const safeSession = sessionId.replace(/[^A-Za-z0-9_.-]/g, '_');
   const ledgerDir = path.join(os.homedir(), '.anti-hall', 'claim-ledger');
   const lastFile = path.join(ledgerDir, safeSession + '.last');
-  const hash = crypto.createHash('sha1').update(walked.lastText).digest('hex');
+  const hash = crypto.createHash('sha1').update(replyText).digest('hex');
 
   // Record each distinct message once, even if Stop fires repeatedly for it.
   try {
     if (fs.readFileSync(lastFile, 'utf8').trim() === hash) return;
   } catch (_) { /* no prior record */ }
 
-  const flags = extractFlags(walked.lastText, walked.evidence, walked.toolsThisTurn);
+  const flags = extractFlags(replyText, evidence, toolsThisTurn);
 
   // Ledger write FIRST: this hook runs inside a bounded (~30s) Stop hook, and
   // must never lose the ledger record to a slow downstream call. Only after
@@ -281,9 +354,9 @@ function main() {
         ts: new Date().toISOString(),
         session: safeSession,
         hash,
-        tools_this_turn: walked.toolsThisTurn,
-        msg_chars: walked.lastText.length,
-        evidence_chars: walked.evidence.length,
+        tools_this_turn: toolsThisTurn,
+        msg_chars: replyText.length,
+        evidence_chars: evidence.length,
         window_truncated: tail.truncated,
         flags,
       };
@@ -305,7 +378,9 @@ function main() {
   // ran; askDetached costs this hook nothing.
   try {
     const jevAssist = require('./lib/jev-assist.js');
-    const turnRef = jevAssist.turnRefFromTranscript(transcriptPath);
+    // Omitted when the reply came from the payload: the transcript's last line
+    // may then be the previous message, and a wrong pointer is worse than none.
+    const turnRef = fromPayload ? undefined : jevAssist.turnRefFromTranscript(transcriptPath);
     for (const flag of flags) {
       jevAssist.askDetached({
         id: 'claimLedger',

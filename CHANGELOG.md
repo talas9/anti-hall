@@ -6,6 +6,14 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## Unreleased
+
+### Fixed
+
+- **speculation-judge reads the reply being stopped:** the opt-in judge now sends the Stop payload's `last_assistant_message` to the model, not the previous transcript message. The transcript is only the fallback.
+- **claim-ledger judges the right message:** when the transcript is one message behind the Stop payload, the payload text is the reply, the transcript's last message counts as evidence, and `tools_this_turn` is the running tool count for this turn. The last message of a session is now judged too. When the transcript is up to date the record and its hash are unchanged.
+- **Jev turn pointer:** `speculation-guard` and `claim-ledger` no longer log a `turnRef` when the judged text came from the Stop payload, because the transcript's last line may be the previous turn. Nothing reads `turnRef` programmatically.
+
 ## 0.121.4 (2026-10-02)
 
 ### Fixed

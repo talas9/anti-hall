@@ -278,6 +278,44 @@ async function jevCase({ reply, respond, jevCfg = { enabled: true }, env = {}, s
   }
 }
 
+// turnRef: a Jev row's turnRef points at the transcript's last line. When the
+// judged text came from the Stop payload that line may be the PREVIOUS turn, so
+// the row must omit it; the transcript-fallback path keeps it.
+function readAssistRows(home) {
+  try {
+    return fs.readFileSync(path.join(home, '.anti-hall', 'logs', 'jev-assist.ndjson'), 'utf8')
+      .trim().split('\n').filter(Boolean).map((l) => JSON.parse(l))
+      .filter((r) => r.id === 'speculation' && r.type !== 'outcome');
+  } catch (_) {
+    return [];
+  }
+}
+
+for (const [label, withPayload] of [['payload', true], ['transcript fallback', false]]) {
+  test(`JEV turnRef (${label}): ${withPayload ? 'omitted' : 'the transcript last-line timestamp'}`, async () => {
+    const h = makeHome();
+    const mock = await mockJev(noul(0.97));
+    try {
+      h.writeState('jev.json', { enabled: true });
+      const stamp = '2026-09-25T10:00:00.000Z';
+      const tp = h.writeTranscript([
+        Object.assign({ timestamp: stamp }, assistantMessage(withPayload ? 'Looking into it.' : NO_HEDGE_SPEC)),
+      ]);
+      const payload = withPayload ? withLam(tp, NO_HEDGE_SPEC) : stopPayload(tp);
+      await runAsync(payload, {
+        home: h.home,
+        env: { CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'jev-test-key-never-logged', ANTIHALL_JEV_TEST_ENDPOINT: mock.endpoint },
+      });
+      const rows = readAssistRows(h.home);
+      assert.strictEqual(rows.length, 1, `expected one speculation row; got ${JSON.stringify(rows)}`);
+      assert.strictEqual(rows[0].turnRef, withPayload ? undefined : stamp);
+    } finally {
+      await mock.close();
+      h.cleanup();
+    }
+  });
+}
+
 test('JEV off (no jev.json): regex behavior unchanged, Jev never called, nothing logged', async () => {
   const c = await jevCase({ reply: HEDGE_SPEC, jevCfg: null, respond: noul(0.02) });
   try {
