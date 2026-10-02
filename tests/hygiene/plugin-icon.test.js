@@ -1,6 +1,7 @@
 'use strict';
-// plugin-no-image: the plugin ships no image or font file and the Claude manifest has no
-// `icon` key (the directory listing icon is uploaded in the portal instead).
+// plugin-icon: the plugin ships exactly one image, the icon at the directory's default path
+// `.claude-plugin/icon.png`, and the Claude manifest has no `icon` key (an `icon` key is held
+// by the directory validator). No other image or font is shipped.
 
 const { test } = require('node:test');
 const assert = require('node:assert');
@@ -36,14 +37,27 @@ test('Claude manifest declares no icon key', () => {
   assert.ok(!('icon' in manifest), 'plugin.json must not declare icon');
 });
 
-test('no image or font file is tracked under plugins/anti-hall (by extension or magic bytes)', () => {
-  const bad = [];
+const ICON = 'plugins/anti-hall/.claude-plugin/icon.png';
+
+test('exactly one image/font file is tracked under plugins/anti-hall: .claude-plugin/icon.png', () => {
+  const found = [];
   for (const rel of trackedPluginFiles()) {
-    if (EXT.test(rel)) { bad.push(rel); continue; }
+    if (EXT.test(rel)) { found.push(rel); continue; }
     const abs = path.join(ROOT, rel);
     if (!fs.existsSync(abs)) continue;
     const kind = magic(fs.readFileSync(abs));
-    if (kind) bad.push(`${rel} (${kind})`);
+    if (kind) found.push(rel);
   }
-  assert.deepStrictEqual(bad, []);
+  assert.deepStrictEqual(found, [ICON]);
+});
+
+test('the icon is a square PNG, 512-2048 px per side, under 2 MB', () => {
+  const buf = fs.readFileSync(path.join(ROOT, ICON));
+  assert.strictEqual(magic(buf), 'png');
+  assert.strictEqual(buf.subarray(12, 16).toString('latin1'), 'IHDR');
+  const w = buf.readUInt32BE(16);
+  const h = buf.readUInt32BE(20);
+  assert.strictEqual(w, h, `icon must be square, got ${w}x${h}`);
+  assert.ok(w >= 512 && w <= 2048, `icon side ${w} must be 512-2048`);
+  assert.ok(buf.length < 2 * 1024 * 1024, `icon is ${buf.length} bytes`);
 });

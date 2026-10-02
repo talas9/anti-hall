@@ -6,6 +6,12 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## Unreleased
+
+### Changed
+
+- The plugin icon is back in the plugin at the directory's default path, `plugins/anti-hall/.claude-plugin/icon.png` (512x512 PNG, found without an `icon` key in the manifest, which the directory holds). The listing icon is whatever was uploaded in the directory portal; the repository copy is read only at first submission. `tests/hygiene/plugin-icon.test.js` replaces the no-image test.
+
 ## 0.122.0 (2026-10-03)
 
 ### Added
