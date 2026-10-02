@@ -1,6 +1,6 @@
 ---
 name: orchestration
-description: Swarm orchestration with a non-blocking main thread. Use whenever work is heavy, long-running, or parallelizable - builds, tests, deploys, data dumps, research, codebase sweeps, multi-part features, or any operation that would otherwise make the user wait. The main conversation stays a coordinator: it decomposes work, launches background and parallel subagents for anything that can run without conflict, keeps itself free to talk to the user, then collects and synthesizes results. Trigger on multi-step tasks, 2+ independent subtasks, anything expected to take more than ~30s or produce verbose output, or any time the user signals the main thread feels blocked/slow.
+description: "Swarm orchestration with a non-blocking main thread. Use whenever work is heavy, long-running, or parallelizable - builds, tests, deploys, data dumps, research, codebase sweeps, multi-part features, or any operation that would otherwise make the user wait. The main conversation stays a coordinator: it decomposes work, launches background and parallel subagents for anything that can run without conflict, keeps itself free to talk to the user, then collects and synthesizes results. Trigger on multi-step tasks, 2+ independent subtasks, anything expected to take more than ~30s or produce verbose output, or any time the user signals the main thread feels blocked/slow."
 ---
 
 # Orchestration

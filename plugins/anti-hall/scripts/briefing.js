@@ -104,6 +104,8 @@ function skillMeta(skillMd) {
   const body = m ? m[1] : '';
   const name = (body.match(/^name:\s*(.+)$/m) || [])[1];
   let desc = (body.match(/^description:\s*(.+)$/m) || [])[1] || '';
+  // A double-quoted YAML scalar (our escapes are JSON-compatible: \" and \\).
+  if (/^".*"\s*$/.test(desc)) { try { desc = JSON.parse(desc.trim()); } catch (_) { /* keep raw */ } }
   desc = desc.replace(/\s+/g, ' ').trim();
   if (desc.length > 200) desc = desc.slice(0, 197) + '…';
   return { name: (name || '').trim(), description: desc };

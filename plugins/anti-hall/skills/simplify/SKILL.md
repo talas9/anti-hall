@@ -1,6 +1,6 @@
 ---
 name: simplify
-description: Harvest and apply code simplifications on recently-changed (or named) code — dead code, reinvented stdlib/builtins, premature generality, verbose patterns, and AI-slop filler — each tagged by category, with a single MEASURED `net: -N lines` score (the real post-apply diff delta, never a projected estimate). Use when the user says "simplify this", "deslop", "anti-slop", "trim the fat", "this is over-engineered", or "shrink this". Behavior-preserving by contract — verify tests before and after.
+description: "Harvest and apply code simplifications on recently-changed (or named) code — dead code, reinvented stdlib/builtins, premature generality, verbose patterns, and AI-slop filler — each tagged by category, with a single MEASURED `net: -N lines` score (the real post-apply diff delta, never a projected estimate). Use when the user says \"simplify this\", \"deslop\", \"anti-slop\", \"trim the fat\", \"this is over-engineered\", or \"shrink this\". Behavior-preserving by contract — verify tests before and after."
 ---
 
 # anti-hall:simplify

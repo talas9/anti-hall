@@ -1,6 +1,6 @@
 ---
 name: debt
-description: Register and audit DELIBERATE technical debt via `// anti-hall: <ceiling>,<when>` markers — a budgeted, harvestable alternative to vague TODOs. Greps the tree for markers, parses each ceiling + payback trigger, and flags rot-risk (markers with no trigger, or in code untouched past a staleness threshold). Use when the user says "track this debt", "audit our debt", "what shortcuts did we take", "show the anti-hall markers", or "is this debt rotting". NOT a license to leave work undone — see boundaries.
+description: "Register and audit DELIBERATE technical debt via `// anti-hall: <ceiling>,<when>` markers — a budgeted, harvestable alternative to vague TODOs. Greps the tree for markers, parses each ceiling + payback trigger, and flags rot-risk (markers with no trigger, or in code untouched past a staleness threshold). Use when the user says \"track this debt\", \"audit our debt\", \"what shortcuts did we take\", \"show the anti-hall markers\", or \"is this debt rotting\". NOT a license to leave work undone — see boundaries."
 ---
 
 # anti-hall:debt
