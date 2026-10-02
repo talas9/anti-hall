@@ -8,17 +8,17 @@ the update.
 
 ## Unreleased
 
-### Fixed (doc/code mismatches from the 1.0 contract)
-
-- Canonical `ANTIHALL_SCAN_THROTTLE` and `ANTIHALL_SESSION_END_REAPER` env names (old `ANTI_HALL_*` names still read as deprecated aliases via schema `envAliases`; canonical wins); `devswarm.js help` now covers `inbox tick`, `primary`, `ready-check` and describes `ensure` as idempotent; settings-schema wording for `reset` confirmation and `fable-availability`/`codex-availability`; `KB-claude-code-hooks.md` and GUIDE now match the official hooks doc (over-cap hook output spills to a file with a 2,000-char preview, it is not truncated).
-
 ### Changed
 
 - Contributing: day-to-day work lands on dev; main changes only through a pull request from dev.
 - Docs: `docs/CONTRACT-1.0.md` drafts the 1.0 contract, the settings, CLI verbs, hooks and state paths that semver will freeze.
+- **The plugin options screen is down to 14 options:** the manifest `userConfig` goes from 129 to 14: the 10 headline switches (the four `safety.*` guards, auto-handover on and threshold, `jev.enabled`, `devswarm.supervisorMode`, `guards.modelRouting`, `limitConserve.mode`) and the four API keys. Every other setting is reached through `/anti-hall:settings`, grouped by category (`settings.js show`, then `show --section <category>`).
+- **Values you already set keep working:** the stored values were copied into `~/.anti-hall/settings.json` by 0.122.0, and every removed option stays a read-only source below the settings file (a stored plugin option or a still-exported `CLAUDE_PLUGIN_OPTION_*` resolves exactly as before; a value equal to the schema default counts as unset). Defaults are unchanged. An older plugin version resolves the same values, because the settings-file value wins.
+- The settings skills, the system-briefing skills, the guide, `llms.txt`, `AGENTS.md`, `CONTRIBUTING.md` and the Codex README describe the grouped `show` flow and say that `/config` only has the headline switches, the safety guards and the keys.
 
 ### Fixed
 
+- Canonical `ANTIHALL_SCAN_THROTTLE` and `ANTIHALL_SESSION_END_REAPER` env names (old `ANTI_HALL_*` names still read as deprecated aliases via schema `envAliases`; canonical wins); `devswarm.js help` now covers `inbox tick`, `primary`, `ready-check` and describes `ensure` as idempotent; settings-schema wording for `reset` confirmation and `fable-availability`/`codex-availability`; `KB-claude-code-hooks.md` and GUIDE now match the official hooks doc (over-cap hook output spills to a file with a 2,000-char preview, it is not truncated).
 - **A failed unread-summary refresh after an ack is now recorded.** `applyReadAckOps` swallowed a `summaries/<hash>.json` refresh failure; it stays fail-open but now logs `op: 'summary-refresh'` with the path and error to the bounded `cursor-log`.
 - **limit-conserve threshold now resolves at call time.** `isConserving()` read the module-load value when called without `home`, so a settings.json or env change after `require()` was ignored; it now always reads the unified settings store (the Codex status script shares this module).
 - **update/doctor no longer tell an idle Primary to arm a wake watcher that would exit at once.** `update.js` (`wakeMonitorPostUpdate`) and doctor's wake-monitor check advised "NOT live — arm it" while the watcher itself idle-skipped (no live non-held/non-ignored child), so the agent armed it, it exited, and every `inbox tick` kept saying `idle-skip`. All three now use one shared decision (`idleSkipApplies` in `companion/lib/devswarm-live-children.js`): when it applies they report "wake watcher not needed now (no live child workspaces; the mailbox tick covers you)" and add `idleSkip: true` to the status (existing fields unchanged); unknown liveness or `devswarm.wakeWatchIdleSkip` off keeps the arm advice.

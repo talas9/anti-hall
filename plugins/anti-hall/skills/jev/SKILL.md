@@ -498,8 +498,8 @@ other integration defaults to `shadow` until promoted.
 `jevIntegrations` settings-schema section (`jevIntegrations.<id>`, e.g.
 `jevIntegrations.modelRouting`) — its own table in `/anti-hall:settings`
 (`node "${CLAUDE_PLUGIN_ROOT}/scripts/settings.js" show --section jevIntegrations`)
-and its own row in Claude Code's native `/config` panel, titled
-"Jev integration · <name>". `jev-setup.js mode` writes the canonical
+(it has no row in Claude Code's native `/config` panel, which carries only
+the headline switches). `jev-setup.js mode` writes the canonical
 `jevIntegrations.<id>` settings.json key (as well as `~/.anti-hall/jev.json` for
 back-compat); a pre-existing `jev.json integrations.<id>` value, or a pre-0.108.4
 settings.json `jev["integrations.<id>"]` value, keeps working and forward-migrates

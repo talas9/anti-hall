@@ -31,7 +31,7 @@ files on disk. Codex has no `/config` panel and no statusline hook; skills are n
 | Tier 1 / 2 / 2.5 / 3 | Anti-speculation layers: protocol injection; hedge-word `speculation-guard`; `claim-ledger` (confident claims with no evidence, ledger-only); opt-in LLM `speculation-judge`. |
 | handover | A self-written, lossless session record in `.anti-hall/handovers/` so a fresh session resumes cold. Auto-handover asks for one at 85% context or 170k tokens (UserPromptSubmit, or once at a Stop). `precompact-snapshot.js` (PreCompact) also writes a mechanical `PRECOMPACT-<n>.md` safety-net snapshot before every compaction and never blocks it. |
 | known / unknown window | Whether the context window size is known (statusline figure, Codex rollout, env, sticky, inferred 1M). Unknown → a soft advisory only, never the mandatory handover directive. |
-| settings store | `~/.anti-hall/settings.json`; precedence env > file > `/config` > legacy file > default. `*` below = advanced (hidden unless `show --all`). |
+| settings store | `~/.anti-hall/settings.json`; precedence env > file > stored plugin option > legacy file > default; grouped by category (`settings.js show`, then `show --section <category>`); Claude Code's `/config` only has the headline switches, the safety guards and the keys. `*` below = advanced (hidden unless `show --all`). |
 | repair / migration marker | Idempotent data repairs (`companion/lib/migrations.js`) stamped per version in `~/.anti-hall/update-sweep-state.json`; run by update, `doctor --repair`, and on reload. |
 | Jev | Optional LLM classifier ("System One") consulted by some hooks. |
 | on / shadow / off | Jev per-integration mode: on = may change the outcome; shadow = asked and logged, outcome unchanged; off = not consulted. |

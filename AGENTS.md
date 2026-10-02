@@ -19,7 +19,7 @@ available or already installed, tell the user (update via the `anti-hall-update`
 then restart Codex). Repairs run by themselves after an update (`repair-on-reload.js`).
 Every setting lives in `~/.anti-hall/settings.json`; change it only through the
 `anti-hall-settings` skill / `scripts/settings.js`, never by hand (Codex has no
-`/config` settings UI; Claude Code shows non-advanced settings as `/config` rows, advanced ones live only in `/anti-hall:settings`; values set in Claude Code's plugin options are copied into `~/.anti-hall/settings.json` on update, and `/anti-hall:settings` is the place to see and change every setting).
+`/config` settings UI). Every feature has a settings key in ~/.anti-hall/settings.json, reachable through /anti-hall:settings and grouped by category. Claude Code's plugin options show only the headline switches and the safety guards.
 
 In the Claude Code plugin, the **root-cause** and **orchestration** disciplines below
 are enforced always-on via the hook layer (they fire every session/turn). **deadly-loop**
@@ -295,7 +295,7 @@ Codex `anti-hall-<name>`: activate, context-conserve, deadly-loop, debt, defects
 - `scripts/jev-setup.js`: `status`, `enable`, `disable`, `set-key`, `bind-generic-key`, `test`, `mode`, `review-due`, `reviewed`, `snooze`; `scripts/jev-report.js`: report (default), `label`, `prune-audit`; `scripts/defect.js`: `report`, `list`, `show`, `rule`, `archive`, `backfill`, `recurring`, `similar`.
 - `hooks/doctor.js [--repair]`; `skills/update/scripts/update.js [--check]`; `companion/devswarm-recover.js <id>` (the only kill path).
 
-**Settings** (`~/.anti-hall/settings.json`; env > file > /config > legacy > default; bare key = default true, else key=default; advanced keys after `|`, defaults via `settings.js show --all`):
+**Settings** (`~/.anti-hall/settings.json`; env > file > plugin option > legacy > default; bare key = default true, else key=default; advanced keys after `|`, defaults via `settings.js show --all`):
 - autoHandover: enabled, pct=85, maxTokens=0, nag, nagStepPct=5, nagQuietMin=15, gateNewWork, gateBudgetPct=5, decisivePrompt | gateHousekeepingMarkers
 - guards: mergeGate=false, shipitGate=false, outputVerifyGuard, failureRootCauseNudge, repoSelfDrift, stashGuard=false, handoverCommitGuard, gitignoreHint, emitDedupe, codexQuotaDetect, allowReadOnlyVerify, allowReadOnlyVerifyScripts, projectCommandAllow, projectEditAllow, allowPlainPush, allowGcloudReads, allowBackgroundScratchScripts, modelRouting=strict, updateInSession, modelRoutingDeployFloor=sonnet, apiGuard, speculationGuard, claimLedger, taskGuard, tasklistGuard, scanThrottle, silentAgentNudge, compactAdviceGuard, compactAdviceRecentTurns=10, compactDeclarationGuard | allowAnthropicEnvKey, injectionRepeatEvery, editGuardAllow, allowSubagentMailbox, reaperMatch, reaperExclude, reaperCodexBroker, reaperCodexBrokerMinAgeS, tasklistWorkThreshold, pruneCompletedTasksAfter, progressFreshMs, apiGuardThirdparty, noBlockingQuestions, questionAgentsNote, sharedTreeAgentNote, taskGuardOwnerBlockedMarker, dispatchDemand, idleNeglectMinPriority, maxParallelDispatch, silentAgentNudgeMin, staleAgentStopNote, compactAdviceMarginPct, stopHookVersionDowngrade, stopAck
 - safety: gitGuard, commandGuard, editGuard, swarmGuard
