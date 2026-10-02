@@ -232,3 +232,76 @@ test('repair: include-copied file colliding with a TRACKED file is never overwri
     assert.match(path.basename(path.dirname(c[0].kept)), /\.pre-wt-/);
   } finally { rm(f); }
 });
+
+// Commit a tracked `.env` inside the skyflutter submodule and bump the superproject pin.
+function trackEnv(f, content) {
+  const sub = path.join(f.parent, 'skyflutter');
+  fs.writeFileSync(path.join(sub, '.env'), content);
+  git(sub, ['add', '.env']);
+  git(sub, ['commit', '-q', '-m', 'track env']);
+  git(f.parent, ['add', 'skyflutter']);
+  git(f.parent, ['commit', '-q', '-m', 'bump skyflutter']);
+}
+
+test('sha: a create-text where the sha is followed by a JSON-escaped newline + more text yields the bare 40-hex sha', () => {
+  const f = fixture();
+  try {
+    const wt = path.join(f.root, 'wt-s');
+    git(f.parent, ['worktree', 'add', '-q', '-b', 'fix/s', wt]);
+    const p = path.join(wt, 'skyflutter');
+    fs.mkdirSync(p, { recursive: true });
+    fs.writeFileSync(path.join(p, '.env'), 'SECRET=1\n');
+    // The app reports the failed command inside a JSON string, so the separator is a literal backslash-n.
+    const text = 'Command failed: git worktree add -b fix/s ' + p + ' ' + f.sha + '\\nCommand output: fatal: already exists';
+    const out = cli.repairSubmoduleWorktrees([{ path: p, error: 'already exists' }], text, 'fix/s', f.parent);
+    assert.strictEqual(out.remaining.length, 0, JSON.stringify(out));
+    assert.match(out.repaired[0].sha, /^[0-9a-f]{40}$/);
+    assert.strictEqual(out.repaired[0].sha, f.sha);
+  } finally { rm(f); }
+});
+
+test('identical: aside copy byte-identical to the checked-out file is NOT a conflict -- reported under identical, duplicate + empty aside dir removed', () => {
+  const f = fixture();
+  try {
+    trackEnv(f, 'SECRET=1\n');
+    const wt = path.join(f.root, 'wt-i');
+    git(f.parent, ['worktree', 'add', '-q', '-b', 'fix/i', wt]);
+    const p = path.join(wt, 'skyflutter');
+    fs.mkdirSync(p, { recursive: true });
+    fs.writeFileSync(path.join(p, '.env'), 'SECRET=1\n'); // same bytes as the tracked .env
+    const out = cli.repairSubmoduleWorktrees([{ path: p, error: 'already exists' }], '', 'fix/i', f.parent);
+    assert.strictEqual(out.remaining.length, 0, JSON.stringify(out));
+    const r = out.repaired[0];
+    assert.strictEqual(r.conflicts, undefined);
+    assert.deepStrictEqual(r.identical, ['.env']);
+    assert.strictEqual(r.leftoverAside, undefined);
+    assert.strictEqual(r.warnings, undefined);
+    assert.strictEqual(fs.readFileSync(path.join(p, '.env'), 'utf8'), 'SECRET=1\n');
+    assert.deepStrictEqual(fs.readdirSync(wt).filter((e) => e.includes('.pre-wt-')), [], 'aside dir gone');
+  } finally { rm(f); }
+});
+
+test('differing: aside .env differs from the checked-out one -- both kept, report says which is in place, leftover warning names the path', () => {
+  const f = fixture();
+  try {
+    trackEnv(f, 'TRACKED=1\n');
+    const wt = path.join(f.root, 'wt-x');
+    git(f.parent, ['worktree', 'add', '-q', '-b', 'fix/x', wt]);
+    const p = path.join(wt, 'skyflutter');
+    fs.mkdirSync(p, { recursive: true });
+    fs.writeFileSync(path.join(p, '.env'), 'SECRET=real\n');
+    const out = cli.repairSubmoduleWorktrees([{ path: p, error: 'already exists' }], '', 'fix/x', f.parent);
+    assert.strictEqual(out.remaining.length, 0, JSON.stringify(out));
+    const r = out.repaired[0];
+    assert.strictEqual(r.identical, undefined);
+    assert.strictEqual(r.conflicts.length, 1);
+    const c = r.conflicts[0];
+    assert.strictEqual(c.file, '.env');
+    assert.strictEqual(c.inPlace, path.join(p, '.env'));
+    assert.strictEqual(fs.readFileSync(c.inPlace, 'utf8'), 'TRACKED=1\n');
+    assert.strictEqual(fs.readFileSync(c.kept, 'utf8'), 'SECRET=real\n', 'differing copy kept, never deleted');
+    assert.match(c.note, /in place/);
+    assert.strictEqual(r.leftoverAside, path.dirname(c.kept));
+    assert.ok(r.warnings.some((w) => w.includes(r.leftoverAside)), JSON.stringify(r.warnings));
+  } finally { rm(f); }
+});

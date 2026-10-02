@@ -19704,10 +19704,12 @@ function repairSubmoduleWorktrees(failures, text, branch, cwd) {
       let b = branch;
       let sha = null;
       const esc = P.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      const cm = new RegExp('git worktree add -b (\\S+) ' + esc + ' (\\S+)').exec(text || '');
+      // The create text can be JSON-escaped (a literal backslash-n follows the sha), so `\S+` would
+      // swallow "<sha>\nCommand ..." into the sha: capture exactly 40 hex and nothing else.
+      const cm = new RegExp('git worktree add -b (\\S+) ' + esc + ' ([0-9a-f]{40})(?![0-9a-f])').exec(text || '');
       if (cm) { b = cm[1]; sha = cm[2]; }
       if (!b) { remaining.push(f); continue; }
-      if (!sha) { const r = g(wt, ['rev-parse', 'HEAD:' + S]); if (r.status === 0) sha = r.stdout.trim(); }
+      if (!sha) { const r = g(wt, ['rev-parse', 'HEAD:' + S]); if (r.status === 0 && /^[0-9a-f]{40}$/.test(r.stdout.trim())) sha = r.stdout.trim(); }
       const movedBack = [];
       let st = null;
       try { st = fs.lstatSync(P); } catch (_) { st = null; }
@@ -19737,19 +19739,51 @@ function repairSubmoduleWorktrees(failures, text, branch, cwd) {
       if (add.status !== 0 || !fs.existsSync(linkFile)) throw new Error(String(add.stderr || 'worktree add failed').trim().split('\n').pop());
       let leftover = null;
       const conflicts = [];
+      const identical = [];
+      const warnings = [];
       if (aside) {
         // Move back ONLY into free slots: never overwrite or merge into anything the checkout made.
         for (const e of fs.readdirSync(aside)) {
+          const src = path.join(aside, e);
           const dest = path.join(P, e);
           let taken = true;
           try { fs.lstatSync(dest); } catch (_) { taken = false; }
-          if (!taken) { fs.renameSync(path.join(aside, e), dest); movedBack.push(e); }
-          else conflicts.push({ file: e, kept: path.join(aside, e) });
+          if (!taken) { fs.renameSync(src, dest); movedBack.push(e); continue; }
+          // Byte-identical regular files are not a conflict. The aside copy is one THIS tool moved
+          // aside, so dropping the duplicate loses nothing; anything that differs is kept.
+          let same = false;
+          try {
+            const a = fs.lstatSync(src);
+            const d = fs.lstatSync(dest);
+            same = a.isFile() && d.isFile() && fs.readFileSync(src).equals(fs.readFileSync(dest));
+          } catch (_) { same = false; }
+          if (same) { fs.unlinkSync(src); identical.push(e); continue; }
+          conflicts.push({
+            file: e,
+            inPlace: dest,
+            kept: src,
+            note: 'the checked-out copy at ' + dest + ' is in place; the differing copy was kept at ' + src,
+          });
         }
         try { fs.rmdirSync(aside); } catch (_) { leftover = aside; } // non-recursive: only when empty
+        if (leftover) {
+          let names = [];
+          try { names = fs.readdirSync(leftover); } catch (_) { names = []; }
+          const secretLike = names.filter((n) => /^\.env/.test(n) || /\.pem$/i.test(n) || /^credentials/i.test(n));
+          if (secretLike.length) {
+            warnings.push('A leftover directory ' + leftover + ' holds secret-like file(s) (' + secretLike.join(', ')
+              + ') in the workspace root; review it and remove it yourself, spawn never deletes it.');
+          }
+        }
         aside = null;
       }
-      repaired.push({ path: P, branch: b, sha, reusedBranch: exists, movedBack, conflicts: conflicts.length ? conflicts : undefined, leftoverAside: leftover || undefined });
+      repaired.push({
+        path: P, branch: b, sha, reusedBranch: exists, movedBack,
+        identical: identical.length ? identical : undefined,
+        conflicts: conflicts.length ? conflicts : undefined,
+        leftoverAside: leftover || undefined,
+        warnings: warnings.length ? warnings : undefined,
+      });
     } catch (e) {
       // Put a moved-aside dir back so nothing is lost, then report the failure.
       if (aside) { try { if (!fs.existsSync(P)) fs.renameSync(aside, P); } catch (_) { /* left aside on disk */ } }
@@ -20046,6 +20080,7 @@ function cmdSpawn(rest, ctx) {
         submoduleRepaired.length + ' submodule worktree(s) failed at create (a pre-copied worktreeInclude file made the path '
         + 'non-empty) and were repaired by spawn — see submoduleRepaired.',
       ] : [],
+      ...submoduleRepaired.reduce((acc, x) => acc.concat(x.warnings || []), []),
       submoduleFailures.length ? [
         submoduleFailures.length + ' of the workspace\'s submodule worktree(s) failed to create — see '
         + 'submoduleFailures. The workspace may still be usable for the primary repo but broken for the '
