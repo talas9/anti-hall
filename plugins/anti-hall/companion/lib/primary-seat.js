@@ -77,9 +77,27 @@ function holderLiveness(sid, o) {
 // newestWorktreeHandover(worktree) -> { path, sessionId, mtimeMs } | null — the
 // newest HANDOVER*.md under <worktree>/.anti-hall/handovers/<date>/<session>/,
 // ACROSS sessions (not only the current one).
-function newestWorktreeHandover(worktree) {
+//
+// opts.flatSinceMs (finite number, optional): ALSO accept a FLAT
+// <worktree>/.anti-hall/handovers/*.md file (agents sometimes write
+// `handovers/<date>-<topic>.md`) whose mtime is at or after that time. The
+// nested scan has no freshness rule; a flat file gets one because the root
+// holds arbitrary old notes — callers pass the archive time. Without the
+// option the flat form is ignored, so the Primary-seat callers are unchanged.
+function newestWorktreeHandover(worktree, opts) {
   const root = path.join(String(worktree), '.anti-hall', 'handovers');
   let best = null;
+  const sinceMs = opts && Number.isFinite(opts.flatSinceMs) ? opts.flatSinceMs : null;
+  if (sinceMs != null) {
+    let rootFiles = [];
+    try { rootFiles = fs.readdirSync(root, { withFileTypes: true }).filter((e) => e.isFile() && /\.md$/i.test(e.name)).map((e) => e.name); } catch (_) { rootFiles = []; }
+    for (const f of rootFiles) {
+      const p = path.join(root, f);
+      let st;
+      try { st = fs.statSync(p); } catch (_) { continue; }
+      if (st.isFile() && st.mtimeMs >= sinceMs && (!best || st.mtimeMs > best.mtimeMs)) best = { path: p, sessionId: null, mtimeMs: st.mtimeMs };
+    }
+  }
   const dirs = (p) => { try { return fs.readdirSync(p, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name); } catch (_) { return []; } };
   for (const date of dirs(root)) {
     for (const sid of dirs(path.join(root, date))) {
@@ -95,6 +113,24 @@ function newestWorktreeHandover(worktree) {
     }
   }
   return best;
+}
+
+// archivedChildHandover(worktree, home, id) -> newestWorktreeHandover's result
+// for an ARCHIVED child: nested handovers as always, plus a flat handovers/*.md
+// written at or after (archive time − FLAT_HANDOVER_LOOKBACK_MS). The usual
+// order is "write the handover, THEN get archived", so the floor sits a day
+// BEFORE the archive; archive time = the marker's archivedAt, else its ctime
+// (the hardlink/unlink at archive). Shared by the archived-child Stop gate and
+// turn hook so both record the same `handoverWritten`.
+const FLAT_HANDOVER_LOOKBACK_MS = 24 * 60 * 60 * 1000;
+function archivedChildHandover(worktree, home, id) {
+  let sinceMs = null;
+  try {
+    const mp = path.join(devswarmRoot(home), 'archived', String(id) + '.json');
+    const marker = readJson(mp);
+    sinceMs = marker && Number.isFinite(marker.archivedAt) ? marker.archivedAt : fs.statSync(mp).ctimeMs;
+  } catch (_) { sinceMs = null; }
+  return newestWorktreeHandover(worktree, sinceMs != null ? { flatSinceMs: sinceMs - FLAT_HANDOVER_LOOKBACK_MS } : undefined);
 }
 
 // staleResume({ worktree, home, currentSessionId, handover }) -> { sessionId, activeUntilMs } | null.
@@ -205,4 +241,4 @@ function seatNotices(v, o) {
   return out;
 }
 
-module.exports = { seatVerdict, seatNotices, conflictText, newestWorktreeHandover, staleResume, holderLiveness, primaryCheckout, SEAT_HEARTBEAT_STALE_MS };
+module.exports = { seatVerdict, seatNotices, conflictText, newestWorktreeHandover, archivedChildHandover, staleResume, holderLiveness, primaryCheckout, SEAT_HEARTBEAT_STALE_MS };

@@ -365,6 +365,29 @@ function cmdInboxTick(id, flags, ctx) {
     }
   } catch (_) { watcherArmed = false; }
 
+  // ARCHIVED-SKIP: a `--child` caller whose own workspace is ARCHIVED (the
+  // row-eligibility.js projection — the one archived predicate) must never be
+  // told to re-arm its Monitor: its wake-watch deliberately stays silent for an
+  // archived child (devswarm-wake-watch.js isOwnChildArchived), so a bare
+  // `false` here would only send it into a re-arm loop. `watcherArmed` becomes
+  // the STRING `'archived-skip'` (never `false`, so the cron prompt's
+  // "re-arm only if `false`" stays inert). unread/meshGap are untouched, so
+  // real mail is still reported. Gated by the existing
+  // devswarm.archivedChildStop switch (off = pre-fix). Fail-open.
+  let archivedSkipped = false;
+  if (!watcherArmed && isChildFlag && isSafeId(id)) {
+    try {
+      // ONE shared decision with the watcher (switch, active-descriptor/twin
+      // and unregistered-child guards live in isOwnChildArchived).
+      if (require('../../companion/lib/devswarm-wake-watch.js').isOwnChildArchived(
+        { role: 'child', id, home, cwd: ctx.cwd || process.cwd() }, ctx.env,
+      )) {
+        watcherArmed = 'archived-skip';
+        archivedSkipped = true;
+      }
+    } catch (_) { /* fail-open: keep watcherArmed exactly as the lock check computed it */ }
+  }
+
   // IDLE-SKIP (#39, devswarm.wakeWatchIdleSkip, default true): a Primary
   // (never a `--child` caller — a child's watcher covers ITS OWN mail, not a
   // roster) with 0 LIVE (non-archived) child workspaces gains nothing from an
@@ -439,7 +462,8 @@ function cmdInboxTick(id, flags, ctx) {
   // no-arm decision, not a lapse — each gets its own trigger bucket so
   // doctor's idle-skip/limit-skip counts and the legacy re-arm-cue count
   // never conflate them.
-  if (idleSkipped) recordRearmCue(home, id, 'idle-skip');
+  if (archivedSkipped) recordRearmCue(home, id, 'archived-skip');
+  else if (idleSkipped) recordRearmCue(home, id, 'idle-skip');
   else if (limitSkipped) recordRearmCue(home, id, 'limit-skip');
   else if (!watcherArmed && isSafeId(id)) recordRearmCue(home, id, 'tick');
 
@@ -1678,7 +1702,7 @@ function inboxTickQuietLine(result) {
     // report: each is a deliberate no-arm decision, distinct from both true
     // and false) — every other value (boolean or anything else) keeps the
     // pre-#39 true/false rendering.
-    const watcherArmedStr = (result.watcherArmed === 'idle-skip' || result.watcherArmed === 'limit-skip')
+    const watcherArmedStr = (result.watcherArmed === 'idle-skip' || result.watcherArmed === 'limit-skip' || result.watcherArmed === 'archived-skip')
       ? result.watcherArmed
       : (result.watcherArmed ? 'true' : 'false');
     return 'tick ' + id + ': unread ' + unread

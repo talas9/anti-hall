@@ -11,6 +11,8 @@ the update.
 ### Fixed
 
 - `doctor --repair` no longer reports `fold-archived-family-descriptors` as FAILED on every run when leftover twin descriptors are deliberately left alone for safety (their worktree still exists, or an archived copy already exists and differs). The row now lists each such twin once (short id + reason), says it was left untouched on purpose and what to check, and nothing is retired, moved or deleted.
+- **An archived DevSwarm child no longer keeps waking itself.** Its mailbox wake-watch stays silent while its descriptor is archived (resumes if restored), and `inbox tick --child` reports `watcherArmed archived-skip` instead of `false` so the cron prompt never re-arms the Monitor. Under the existing `devswarm.archivedChildStop` switch; no process is killed.
+- **A flat `.anti-hall/handovers/*.md` now counts as an archived child's handover** (doctor "handover NOT written" false alarm), when written at/after 24 h before the archive time; older flat files do not count. The archived banner/Stop text now also tells the child to delete its own `inbox tick` cron. Twin state (archived marker beside an active descriptor) and a new unregistered child never go silent.
 
 ## 0.121.3 (2026-10-02)
 

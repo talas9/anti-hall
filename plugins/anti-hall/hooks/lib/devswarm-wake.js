@@ -351,7 +351,9 @@ function drainCmd(cli, isChild, useTick, id, watcher) {
     // `idle-skip` nor `limit-skip` matches it, so this instruction stays
     // inert for both cases without any extra branch — do NOT broaden this to
     // "any falsy-looking value", or either skip would wrongly trigger a
-    // re-arm the feature exists to avoid.
+    // re-arm the feature exists to avoid. (`archived-skip`, an archived
+    // `--child` caller, is inert here the same way; it is not named in the
+    // prompt text only to stay under the injection cap.)
     const rearmClause = (typeof watcher === 'string' && watcher)
       ? ' If its `watcherArmed` reads `false` (your Monitor lapsed at its 30-min cap; not ' +
         '`idle-skip`/`limit-skip`), re-arm: `Monitor` with `node ' + watcher + '` (persistent: true ' +

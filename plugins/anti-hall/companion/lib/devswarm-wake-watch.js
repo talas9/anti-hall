@@ -971,6 +971,69 @@ function resolveIdentity(env, cwd, io) {
   }
 }
 
+// ARCHIVED_RECHECK_MS — how often the running watcher re-asks "is my own child
+// workspace archived?" (the answer reads archived/<id>.json and the app DB, too
+// heavy for the ~2s poll cadence — it opens the app SQLite DB). A restore is
+// therefore noticed within this. The check never writes to stdout/stderr:
+// isOwnChildArchived swallows every error and the loop only reads its boolean.
+// ARCHIVED_RECHECK_ENV_VAR overrides it (test knob, same shape as the poll env).
+const ARCHIVED_RECHECK_MS = 120 * 1000;
+const ARCHIVED_RECHECK_ENV_VAR = 'ANTIHALL_DEVSWARM_WAKE_WATCH_ARCHIVED_RECHECK_MS';
+function archivedRecheckMsFromEnv(env) {
+  const n = parseInt(String((env || {})[ARCHIVED_RECHECK_ENV_VAR] || ''), 10);
+  return Number.isFinite(n) && n >= 100 ? n : ARCHIVED_RECHECK_MS;
+}
+
+// isOwnChildArchived(identity, env, io) -> boolean. True ONLY for a CHILD whose
+// descriptor is archived, through row-eligibility.js — THE one archived
+// projection (tests/hygiene/archived-predicates-single-projection.test.js).
+// An archived child can never act on mail (its Stop gate already told it once
+// to save a handover and stop; nothing kills it), so every wake line this
+// watcher printed only made it burn a turn answering "workspace is archived".
+// Same worktree resolution the archived Stop gate uses: the ACTIVE descriptor's
+// worktreePath when one exists, else cwd's git toplevel. Gated by the existing
+// devswarm.archivedChildStop switch (off = pre-fix behaviour). Fail-open: any
+// error or doubt -> false (watch exactly as before). Pure reads.
+function isOwnChildArchived(identity, env, io) {
+  try {
+    if (!identity || identity.role !== 'child') return false;
+    const e = env || process.env;
+    if (require('../../hooks/lib/settings.js').getWithEnv('devswarm', 'archivedChildStop', true, e) === false) return false;
+    const ioo = io || {};
+    const F = ioo.fs || fs;
+    const home = identity.home;
+    const id = identity.id;
+    let worktreePath = null;
+    let activeDescriptor = false;
+    const activePath = path.join(devswarmRoot(home), 'workspaces', id + '.json');
+    try { activeDescriptor = F.existsSync(activePath); } catch (_) { activeDescriptor = false; }
+    if (activeDescriptor) {
+      try {
+        const d = JSON.parse(F.readFileSync(activePath, 'utf8'));
+        if (d && typeof d.worktreePath === 'string' && d.worktreePath) worktreePath = d.worktreePath;
+      } catch (_) { worktreePath = null; }
+    }
+    if (!worktreePath) {
+      try { worktreePath = require('./identity.js').resolveContext(identity.cwd, { home, missingPath: 'ancestor' }).toplevel || null; } catch (_) { worktreePath = null; }
+    }
+    if (!worktreePath) return false;
+    const projected = require('./row-eligibility.js').rowEligibility(
+      { id, worktreePath }, { home, env: e, fsi: F },
+    );
+    if (!projected) return false;
+    // TWIN / NEW-CHILD GUARDS (the projection alone over-reports archived):
+    //  - an ACTIVE workspaces/<id>.json exists (a live row that merely shares
+    //    an archived/<id>.json marker, or an id reuse): silent only when the
+    //    app DB positively says archived BY ID — never on the marker alone;
+    //  - no active descriptor: needs this id's OWN archived/<id>.json marker
+    //    (a brand-new, not-yet-registered child on a worktree that only has
+    //    archived builders is judged archived by the app-DB by-worktree rule,
+    //    and must keep emitting) and the app DB must not say it is active.
+    if (activeDescriptor) return !!(projected.appArchived && projected.archivedBy.indexOf('app-db') !== -1);
+    return !!(projected.markerArchived && !projected.appActive);
+  } catch (_) { return false; }
+}
+
 // resolvePrimaryHashes(cwd, io) -> { repoKey, fallbackHash, primaryId } | null.
 // TWO-PROBE, replicating scripts/devswarm.js cmdRoster's own fold (repoKey
 // bucket first, legacy primary-<8hex> hash bucket as fallback) — NOT optional.
@@ -1669,6 +1732,10 @@ function main() {
   // most once per distinct newestVersion, not every ~2s forever.
   let notifiedUpdateVersion = null;
 
+  const archivedRecheckMs = archivedRecheckMsFromEnv(env);
+  let archivedCheckedAt = 0;
+  let ownArchived = false;
+
   let cleaned = false;
   // fl-wave3 fix (item 7): `skipSave` — set true ONLY by the lock-lost exit
   // path below. `st` at that point is THIS process's own (now-stale) view of
@@ -1745,6 +1812,25 @@ function main() {
       // more current state.
       cleanup({ skipSave: true });
       return;
+    }
+
+    // ARCHIVED CHILD: stay alive but SILENT. Every stdout line is a wake event,
+    // and an archived child has nothing to act on (it was told once to save a
+    // handover and stop). Staying alive (not exiting) is deliberate: the lock
+    // stays fresh so nothing re-arms a second watcher, and on a restore the
+    // very next recheck resumes normal polling/wakes with no re-arm. No
+    // snapshot, tick, seen-state write or stale-build line happens meanwhile,
+    // so mail that arrives while archived is delivered after a restore.
+    if (watchedRole === 'child') {
+      const nowMs = Date.now();
+      if (nowMs - archivedCheckedAt >= archivedRecheckMs) {
+        archivedCheckedAt = nowMs;
+        ownArchived = isOwnChildArchived(identity, env, {});
+      }
+      if (ownArchived) {
+        setTimeout(loop, pollMs);
+        return;
+      }
     }
 
     // Stale-build check (item 4c) — every poll, so there is never a silent
@@ -1852,6 +1938,8 @@ module.exports = {
   pollMsFromEnv,
   realFormsOf,
   resolveIdentity,
+  isOwnChildArchived,
+  ARCHIVED_RECHECK_MS,
   resolveOwnSessionId,
   resolvePrimaryHashes,
   resolveChildHashes,

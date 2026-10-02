@@ -433,7 +433,7 @@ function buildArchiveRequestSegment(id) {
 const ARCHIVED_BANNER =
   'DEVSWARM CHILD ARCHIVED: this workspace was archived. Finish or abandon the '
   + 'current step, write a handover (`/anti-hall:handover`), then stop — take no '
-  + 'new work.';
+  + 'new work. Delete your own `inbox tick` cron (CronList, CronDelete); the mailbox watcher is already silent.';
 
 // resolveArchivedChildContext(env, sessionId, cwd, home) -> { id, worktreePath } |
 // null. A READ-ONLY twin of registerChildDescriptor's own id/worktreePath
@@ -948,7 +948,7 @@ function main() {
     try {
       const metrics = require('../companion/lib/archived-child-metrics.js');
       let handoverWritten = false;
-      try { handoverWritten = !!require('../companion/lib/primary-seat.js').newestWorktreeHandover(archivedTurn.worktreePath); } catch (_) { handoverWritten = false; }
+      try { handoverWritten = !!require('../companion/lib/primary-seat.js').archivedChildHandover(archivedTurn.worktreePath, home, archivedTurn.id); } catch (_) { handoverWritten = false; }
       metrics.recordEvent(home, archivedTurn.id, 'reregistration-refused', { handoverWritten });
       metrics.recordEvent(home, archivedTurn.id, 'turn-after-archive', {});
     } catch (_) { /* fail-open: metrics must never block a turn */ }

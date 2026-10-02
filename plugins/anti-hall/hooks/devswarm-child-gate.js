@@ -894,7 +894,7 @@ function main() {
     if (archivedStop && archivedStop.archived) {
       const decision = stopPolicy.consume(archivedGateHome, sessionId, 'child-gate', [ARCHIVED_STOP_KIND], ARCHIVED_STOP_CAP, now);
       let handoverWritten = false;
-      try { handoverWritten = !!require('../companion/lib/primary-seat.js').newestWorktreeHandover(archivedStop.worktreePath); } catch (_) { handoverWritten = false; }
+      try { handoverWritten = !!require('../companion/lib/primary-seat.js').archivedChildHandover(archivedStop.worktreePath, archivedGateHome, archivedStop.id); } catch (_) { handoverWritten = false; }
       try {
         const metrics = require('../companion/lib/archived-child-metrics.js');
         metrics.recordEvent(archivedGateHome, archivedStop.id, decision.block ? 'stop-blocked' : 'stop-cleared', { now, handoverWritten });
@@ -902,7 +902,8 @@ function main() {
       if (decision.block) {
         emitBlock('DEVSWARM CHILD ARCHIVED: this workspace was archived. Save a handover '
           + '(`/anti-hall:handover`) if you have not already, THEN stop — this workspace is '
-          + 'no longer tracked and you will not be asked again.');
+          + 'no longer tracked and you will not be asked again. Delete your own `inbox tick` '
+          + 'cron (CronList, CronDelete); the mailbox watcher is already silent.');
       }
       return;
     }

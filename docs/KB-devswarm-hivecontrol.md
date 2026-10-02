@@ -1705,6 +1705,18 @@ attributable from the journal. The separator is `#`, which `isSafeId` forbids, s
 filenames; the parser additionally requires a six-hex nonce. Both namespaces are swept. Shipped in BOTH `update.js` (one-time per
 version) and doctor (report-only unless repairing).
 
+### An archived child's wake-watch stays silent (v0.121.4)
+
+An archived CHILD (descriptor only under `archived/`, per `row-eligibility.js`) keeps taking
+turns if its mailbox Monitor prints anything — every stdout line is a wake event. Its
+`devswarm-wake-watch.js` therefore stays alive but prints nothing while archived (rechecked
+every 120 s; only when the own id has no active descriptor plus its own `archived/` marker, or an active descriptor the app DB positively archives by id — twin state and a new unregistered child keep emitting; resumes on restore; lock stays fresh so nothing re-arms a second watcher), and
+`inbox tick --child` reports `watcherArmed archived-skip` (alongside `idle-skip` /
+`limit-skip`; never `false`, so the cron prompt's "re-arm only if `false`" is inert).
+Gated by `devswarm.archivedChildStop`. The archived Stop gate's `handoverWritten` also accepts
+a flat `.anti-hall/handovers/*.md` whose mtime is at/after 24 h before the archive time
+(marker `archivedAt`, else its ctime — handovers are usually written just before archive); nested `<date>/<session>/HANDOVER*.md` is unchanged.
+
 ### The migration must never resurrect an archived id (v0.99.1, defect df54edf54804)
 
 **The defect.** The store migration (`devswarm-migrate.js`'s `migrateToStore`/`migrateOne`) called
