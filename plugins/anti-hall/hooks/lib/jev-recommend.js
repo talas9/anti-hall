@@ -76,7 +76,8 @@ function noticeText() {
 }
 
 // shortNotice() -> the SessionStart version (at most 4 lines, no measured
-// figure; the README "Enable Jev" section and doctor carry the full text).
+// figure). The README has the short block; the full text, with the measured
+// figure, is in docs/KB-jev-classifier.md under "Enable Jev".
 const SHORT = [
   HEADLINE,
   'Without it the guards rely on pattern matching alone; with it they also get a model\'s second opinion ' +
