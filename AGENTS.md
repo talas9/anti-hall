@@ -70,7 +70,8 @@ reproduce/validate/lint steps and run them before claiming success.
 - Do not delete data (files, branches, DB rows, remote state) without explicit
   confirmation.
 - Commit/push only when the human asks.
-- **Releases:** follow the [RELEASING.md](RELEASING.md) checklist for every shipped version.
+- **Branch flow:** day-to-day work is committed and pushed to `dev` (pushes to `dev` run no CI, so run the full `node --test` first). `main` changes only through a pull request from `dev`; direct pushes, force pushes and deletion of `main` are blocked by a ruleset, and the required `dev-only` check fails for any other source branch. Merge with a merge commit or fast-forward, never squash.
+- **Releases:** follow the [RELEASING.md](RELEASING.md) checklist for every shipped version (bump on `dev`, pull request `dev` → `main`, then tag).
 
 ## Orchestration + task-list discipline (always apply)
 
