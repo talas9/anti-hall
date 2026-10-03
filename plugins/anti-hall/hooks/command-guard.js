@@ -137,6 +137,7 @@ function anchoredAntiHallCli(dir, script, tailSrc) {
 // for the full anchoring rationale: which home-anchor forms are accepted,
 // and why the anchoring stays as narrow as anchoredAntiHallCli above).
 const { anchoredAntiHallStableLauncher } = require('./lib/stable-launcher.js');
+const { emitBlock } = require('./lib/emit-block.js');
 
 // Commands that look heavy by verb but are actually lightweight inspection commands.
 // We allow these even if the verb matches HEAVY_VERBS.
@@ -4061,15 +4062,13 @@ function main() {
       const kind = detectHivectlDestructiveRead(command);
       if (kind) {
         const reason = buildDevswarmReason(kind, process.env);
-        fs.writeSync(1, JSON.stringify({ decision: 'block', reason }) + '\n');
-        process.exit(2);
+        emitBlock(reason);
       }
       const cwd = (payload && payload.cwd) || '';
       const fileKind = detectProtectedFileRead(command, os.homedir(), cwd);
       if (fileKind) {
         const reason = buildRawFileReadReason(fileKind);
-        fs.writeSync(1, JSON.stringify({ decision: 'block', reason }) + '\n');
-        process.exit(2);
+        emitBlock(reason);
       }
     }
   } catch (_) {
@@ -4100,8 +4099,7 @@ function main() {
       const sendKind = detectHivectlMessageSend(command);
       if (sendKind) {
         const reason = buildDevswarmSendReason(sendKind);
-        fs.writeSync(1, JSON.stringify({ decision: 'block', reason }) + '\n');
-        process.exit(2);
+        emitBlock(reason);
       }
     }
   } catch (_) {
@@ -4122,8 +4120,7 @@ function main() {
       && settingsGet('guards', 'allowSubagentMailbox') !== true
       && !isSkipped('devswarm-subagent-mailbox-guard')
       && detectSubagentMailboxTouch(command)) {
-      fs.writeSync(1, JSON.stringify({ decision: 'block', reason: buildSubagentMailboxReason() }) + '\n');
-      process.exit(2);
+      emitBlock(buildSubagentMailboxReason());
     }
   } catch (_) {
     // fail-open: never block a turn on a devswarm-subagent-mailbox-guard bug.
@@ -4158,8 +4155,7 @@ function main() {
         if (armed) {
           const { isSubagentByPayload } = require('./coordinator-detect.js');
           const subagent = isSubagentByPayload(payload);
-          fs.writeSync(1, JSON.stringify({ decision: 'block', reason: buildGitStashReason(stashSub, subagent) }) + '\n');
-          process.exit(2);
+          emitBlock(buildGitStashReason(stashSub, subagent));
         }
       }
     }
@@ -4364,8 +4360,7 @@ function main() {
        'run and return only a tight summary. ' + detected + (detail ? ' ' + detail : '') + ' — ' +
        INLINE_ALLOWED_HINT + cdJoinHint);
 
-  fs.writeSync(1, JSON.stringify({ decision: 'block', reason }) + '\n');
-  process.exit(2);
+  emitBlock(reason);
 }
 
 if (require.main === module) {

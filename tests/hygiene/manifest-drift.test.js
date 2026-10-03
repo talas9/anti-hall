@@ -67,13 +67,12 @@ const CLAUDE_ONLY_ALLOWLIST = [
   // PostToolUse TaskCreate|TaskUpdate: Jev dispatchTier classifies Claude Code
   // Task-tool tasks; Codex has no TaskCreate/TaskUpdate tools to match.
   { event: 'PostToolUse', file: 'dispatch-tier.js', reason: 'classifies Claude Code TaskCreate/TaskUpdate tasks; Codex has no Task tools to match' },
-  // Task-tool / subagent lifecycle events. Codex's harness has no
-  // TaskCreated/TaskCompleted/SubagentStart event hooks at all (codex/hooks/
-  // hooks.json registers neither event) — these are Claude Code Task-tool
-  // concepts with no Codex equivalent today.
+  // Task-tool / subagent lifecycle events. Codex has no TaskCreated/TaskCompleted
+  // event. It does fire SubagentStart (captured codex-cli 0.160.0 payload), but
+  // verify-first-subagent is not registered there until its Codex payload is tested.
   { event: 'TaskCreated', file: 'task-lifecycle-log.js', reason: 'Claude Code Task-tool event; no Codex equivalent event exists' },
   { event: 'TaskCompleted', file: 'task-lifecycle-log.js', reason: 'Claude Code Task-tool event; no Codex equivalent event exists' },
-  { event: 'SubagentStart', file: 'verify-first-subagent.js', reason: 'Claude Code Task-tool event; no Codex equivalent event exists' },
+  { event: 'SubagentStart', file: 'verify-first-subagent.js', reason: 'Codex fires SubagentStart (codex-cli 0.160.0) but the hook has no Codex payload tests yet' },
   // SessionStart: Fable model-cache probe is Claude-specific by design.
   { event: 'SessionStart', file: 'fable-availability.js', reason: "probes Claude Code's own ~/.claude.json model cache; irrelevant to gpt-5.x Codex sessions (install-codex.js's own header)" },
   // Stop: codex-nudge tells a CLAUDE session to get a Codex second opinion —

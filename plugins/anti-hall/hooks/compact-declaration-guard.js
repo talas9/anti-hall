@@ -83,14 +83,10 @@ function main() {
   const decl = advice.activeDeclaration(advice.readTurn(lines).turnText, { declarationsOnly: true });
   if (!decl) return;
 
-  fs.writeSync(1, JSON.stringify({
-    decision: 'block',
-    reason: 'anti-hall compact-declaration-guard: you declared SAFE TO COMPACT this turn ("' + decl.phrase +
+  require('./lib/emit-block.js').emitBlock('anti-hall compact-declaration-guard: you declared SAFE TO COMPACT this turn ("' + decl.phrase +
       '") — stop, or retract the declaration and refresh the handover. The declaration must be the last act of the turn; ' +
       'new work (' + (payload.tool_name || 'this tool') + ') after it makes the handover stale. To continue working, first write a line ' +
-      '"RETRACT SAFE TO COMPACT — <why>", then refresh the handover before declaring again. Read-only tools stay allowed.',
-  }) + '\n');
-  process.exit(2);
+      '"RETRACT SAFE TO COMPACT — <why>", then refresh the handover before declaring again. Read-only tools stay allowed.');
 }
 
 try { main(); } catch (_) { /* fail-open */ }

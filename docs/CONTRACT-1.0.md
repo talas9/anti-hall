@@ -318,7 +318,7 @@ scripts** (`codex/hooks/hooks.json` points at `${PLUGIN_ROOT}/hooks/*.js`).
 
 | Difference | Reason |
 |---|---|
-| 18 hooks are Claude-only (the "no" rows in section 3) | Codex has no `TaskCreated`/`TaskCompleted`/`SubagentStart`/`SessionEnd`/`PostToolUseFailure` event, reports file edits only as `apply_patch` (edit-guard, api-guard and ship-it-guard's existence gate run there; shell writes bypass them), and has no `Agent`, `Task`, `Read`, `SendMessage`, `AskUserQuestion` or `TaskStop` matcher |
+| 18 hooks are Claude-only (the "no" rows in section 3) | Codex has no `TaskCreated`/`TaskCompleted`/`SessionEnd`/`PostToolUseFailure` event (it does fire `SubagentStart`, with `agent_id`/`agent_type`: a captured codex-cli 0.160.0 payload and `codex-rs/hooks/src/events/session_start.rs` at rust-v0.160.0; `verify-first-subagent` is not registered there yet because its Codex payload has no tests), reports file edits only as `apply_patch` (edit-guard, api-guard and ship-it-guard's existence gate run there; shell writes bypass them), and has no `Agent`, `Task`, `Read`, `SendMessage`, `AskUserQuestion` or `TaskStop` matcher |
 | No `/config` on Codex | locked keys use `--confirmed` or the env var |
 | `deadly-loop-multi` is Claude-only | it multiplies the Claude trio |
 | Codex-only skills: `anti-hall-context-conserve`, `anti-hall-model-policy`, `anti-hall-omc`, `anti-hall-omx` | Codex-side orchestration and routing guidance |
