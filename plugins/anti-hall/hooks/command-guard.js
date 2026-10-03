@@ -3423,15 +3423,32 @@ function readRedirectTarget(s, i) {
 
 // blankTestOperators(text) -> text with every `<`/`>` inside `[[ … ]]`,
 // `(( … ))` and `$(( … ))` replaced by a space (same length). There they are
-// string/number comparisons, not redirects. A `$( … )` nested inside is a
-// command context again and is left alone. Quotes, `$'…'`, backslash escapes
-// and heredoc bodies are copied unchanged.
+// string/number comparisons, not redirects. `[[`/`((` open a context only at
+// command position (input start, after ; & | ( ! or a newline, or after
+// if/while/until/then/do/elif/else); `]]` closes before < > blanks ; & | ) or
+// the end. An unclosed `[[`/`((` is dropped at ; or a newline (`[[` also at a
+// single & or |), so it never outlives its command. A `$( … )` nested inside
+// is a command context again and is left alone. Quotes, `$'…'`, backslash
+// escapes and heredoc bodies are copied unchanged.
+const TEST_KEYWORDS = new Set(['if', 'while', 'until', 'then', 'do', 'elif', 'else']);
 function blankTestOperators(text) {
   if (!/[<>]/.test(text) || !/\(\(|\[\[/.test(text)) return text;
   const n = text.length;
-  const stack = []; // 'a' arithmetic, 'b' [[ ]], 'g' group inside a/b, 'p' command
-  const testCtx = () => { const t = stack[stack.length - 1]; return t === 'a' || t === 'b' || t === 'g'; };
-  const wordStart = (i) => i === 0 || /[\s;&|(!]/.test(text[i - 1]);
+  // 'A' $(( )), 'a' (( )), 'b' [[ ]], 'g' group inside a test, 'p' command
+  const stack = [];
+  const top = () => stack[stack.length - 1];
+  const testCtx = () => { const t = top(); return t === 'A' || t === 'a' || t === 'b' || t === 'g'; };
+  const cmdPos = (i) => {
+    let j = i - 1;
+    while (j >= 0 && (text[j] === ' ' || text[j] === '\t')) j--;
+    if (j < 0 || /[;&|(!\n]/.test(text[j])) return true;
+    let k = j;
+    while (k >= 0 && /[A-Za-z]/.test(text[k])) k--;
+    if (!TEST_KEYWORDS.has(text.slice(k + 1, j + 1))) return false;
+    while (k >= 0 && (text[k] === ' ' || text[k] === '\t')) k--;
+    return k < 0 || /[;&|(!\n]/.test(text[k]);
+  };
+  const drop = (kinds) => { while (stack.length && kinds.includes(top())) stack.pop(); };
   let out = '';
   let i = 0;
   let q = '';
@@ -3454,17 +3471,19 @@ function blankTestOperators(text) {
       const h = parseHeredocAt(text, i);
       if (h) { out += text.slice(i, h.end); i = h.end; continue; }
     }
-    if (c === '$' && c2 === '(' && text[i + 2] === '(') { stack.push('a'); out += '$(('; i += 3; continue; }
+    if (c === ';' || c === '\n') drop(['a', 'b', 'g']);
+    else if ((c === '&' || c === '|') && c2 !== c && text[i - 1] !== c) drop(['b', 'g']);
+    if (c === '$' && c2 === '(' && text[i + 2] === '(') { stack.push('A'); out += '$(('; i += 3; continue; }
     if (c === '$' && c2 === '(') { stack.push('p'); out += '$('; i += 2; continue; }
-    if (c === '(' && c2 === '(' && !testCtx() && wordStart(i)) { stack.push('a'); out += '(('; i += 2; continue; }
+    if (c === '(' && c2 === '(' && !testCtx() && cmdPos(i)) { stack.push('a'); out += '(('; i += 2; continue; }
     if (c === '(') { stack.push(testCtx() ? 'g' : 'p'); out += c; i++; continue; }
     if (c === ')') {
-      if (stack[stack.length - 1] === 'a' && c2 === ')') { stack.pop(); out += '))'; i += 2; continue; }
+      if ((top() === 'a' || top() === 'A') && c2 === ')') { stack.pop(); out += '))'; i += 2; continue; }
       if (stack.length) stack.pop();
       out += c; i++; continue;
     }
-    if (c === '[' && c2 === '[' && !testCtx() && wordStart(i) && /\s/.test(text[i + 2] || '')) { stack.push('b'); out += '[['; i += 2; continue; }
-    if (c === ']' && c2 === ']' && stack[stack.length - 1] === 'b' && /[\s;&|)]|^$/.test(text[i + 2] || '')) { stack.pop(); out += ']]'; i += 2; continue; }
+    if (c === '[' && c2 === '[' && !testCtx() && cmdPos(i) && /\s/.test(text[i + 2] || '')) { stack.push('b'); out += '[['; i += 2; continue; }
+    if (c === ']' && c2 === ']' && top() === 'b' && /[\s;&|)<>]|^$/.test(text[i + 2] || '')) { stack.pop(); out += ']]'; i += 2; continue; }
     out += (c === '<' || c === '>') && testCtx() ? ' ' : c;
     i++;
   }

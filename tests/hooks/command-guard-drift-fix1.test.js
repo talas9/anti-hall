@@ -140,3 +140,20 @@ test('the heredoc body is still skipped', () => {
   assert.deepStrictEqual(one, { segments: ["cat > src/a.js <<'EOF'"], delims: ['heredoc'] });
   assert.deepStrictEqual(cls("cat > src/a.js <<'EOF'\nx > y\nEOF").editBlocks, [path.join(REPO, 'src', 'a.js')]);
 });
+
+// ---- fix wave 2: a test context opens only at command position and never
+// outlives its command ----
+
+for (const c of ['[[ a ]]>src/a.js', 'echo [[ x; echo hi > src/a.js', 'true [[ x\necho hi > src/a.js',
+  '(( n > 5 )) && make > src/a.js', '[[ $a == b ]] >src/a.js', '((x++)); echo x > src/a.js', 'echo "[[" > src/a.js']) {
+  test('a real write after/next to a test context is WORK, exit 2: ' + JSON.stringify(c), () => {
+    const r = cls(c);
+    assert.strictEqual(r.work, true);
+    assert.deepStrictEqual(r.editBlocks, [path.join(REPO, 'src', 'a.js')]);
+    assert.strictEqual(run(c).status, 2);
+  });
+}
+
+test('(( n > 5 )) && make > out.log: the write target is out.log, not 5', () => {
+  assert.deepStrictEqual(cls('(( n > 5 )) && make > out.log').editBlocks, [path.join(REPO, 'out.log')]);
+});
