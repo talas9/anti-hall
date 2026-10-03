@@ -1,7 +1,9 @@
 'use strict';
-// plugin-icon: the plugin ships exactly one image, the icon at the directory's default path
-// `.claude-plugin/icon.png`, and the Claude manifest has no `icon` key (an `icon` key is held
-// by the directory validator). No other image or font is shipped.
+// plugin-icon: the plugin ships only an explicit allow-list of images (the icon at the directory's
+// default path `.claude-plugin/icon.png`, plus the Codex manifest's icon and screenshots under
+// assets/), and the Claude manifest has no `icon` key (an `icon` key is held by the directory
+// validator). Any new image or font must be added to the list on purpose. The Codex manifest
+// names images, so no hook/script/companion/monitor/statusline file may name it.
 
 const { test } = require('node:test');
 const assert = require('node:assert');
@@ -39,7 +41,14 @@ test('Claude manifest declares no icon key', () => {
 
 const ICON = 'plugins/anti-hall/.claude-plugin/icon.png';
 
-test('exactly one image/font file is tracked under plugins/anti-hall: .claude-plugin/icon.png', () => {
+const ALLOWED_IMAGES = [
+  'plugins/anti-hall/.claude-plugin/icon.png',
+  'plugins/anti-hall/assets/icon.png',
+  'plugins/anti-hall/assets/screenshot-claude-code-session.png',
+  'plugins/anti-hall/assets/screenshot-git-guard-blocks.png',
+];
+
+test('only the allow-listed image/font files are tracked under plugins/anti-hall', () => {
   const found = [];
   for (const rel of trackedPluginFiles()) {
     if (EXT.test(rel)) { found.push(rel); continue; }
@@ -48,7 +57,7 @@ test('exactly one image/font file is tracked under plugins/anti-hall: .claude-pl
     const kind = magic(fs.readFileSync(abs));
     if (kind) found.push(rel);
   }
-  assert.deepStrictEqual(found, [ICON]);
+  assert.deepStrictEqual(found.sort(), [...ALLOWED_IMAGES].sort());
 });
 
 test('the icon is a square PNG, 512-2048 px per side, under 2 MB', () => {
@@ -60,4 +69,24 @@ test('the icon is a square PNG, 512-2048 px per side, under 2 MB', () => {
   assert.strictEqual(w, h, `icon must be square, got ${w}x${h}`);
   assert.ok(w >= 512 && w <= 2048, `icon side ${w} must be 512-2048`);
   assert.ok(buf.length < 2 * 1024 * 1024, `icon is ${buf.length} bytes`);
+});
+
+const CODEX_MANIFEST_NAME = 'codex-plugin/plugin.json';
+const HOOK_DIRS = ['hooks', 'scripts', 'companion', 'monitors', 'statusline'].map((d) => `plugins/anti-hall/${d}/`);
+
+// Returns the tracked files under the hook dirs that contain the Codex manifest path.
+function filesNamingCodexManifest(files, read) {
+  return files.filter((rel) => HOOK_DIRS.some((d) => rel.startsWith(d)) && read(rel).includes(CODEX_MANIFEST_NAME));
+}
+
+test('no hook/script/companion/monitor/statusline file names the Codex manifest', () => {
+  const read = (rel) => fs.readFileSync(path.join(ROOT, rel), 'latin1');
+  const files = trackedPluginFiles().filter((rel) => fs.existsSync(path.join(ROOT, rel)));
+  assert.deepStrictEqual(filesNamingCodexManifest(files, read), []);
+});
+
+test('the Codex-manifest-name check bites on a file that names it', () => {
+  const files = ['plugins/anti-hall/hooks/x.js', 'plugins/anti-hall/skills/y.md'];
+  const read = () => `// reads ${CODEX_MANIFEST_NAME}`;
+  assert.deepStrictEqual(filesNamingCodexManifest(files, read), ['plugins/anti-hall/hooks/x.js']);
 });
