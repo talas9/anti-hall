@@ -71,7 +71,7 @@
 //         ts-node, tsx, `next dev`, webpack) for defense against a file
 //         merely NAMED *mcp-server* being misread as a real MCP process.
 // Capped at ANTI_HALL_SESSION_END_REAPER_MAX (default 16). Kill-switch:
-// ANTI_HALL_SESSION_END_REAPER=0 (or setting maintenance.sessionEndReaper=false)
+// ANTIHALL_SESSION_END_REAPER=0 (deprecated alias ANTI_HALL_SESSION_END_REAPER) (or setting maintenance.sessionEndReaper=false)
 // -> no-op, exit 0 immediately.
 //
 // === TWO ADDITIVE NARROWINGS (2026-09-05, final review round) — false
@@ -468,7 +468,7 @@ function main(opts) {
   const logFile = o.logFile || path.join(logDir, 'session-end-reaper.log');
 
   try {
-    // Setting maintenance.sessionEndReaper (env ANTI_HALL_SESSION_END_REAPER=0
+    // Setting maintenance.sessionEndReaper (env ANTIHALL_SESSION_END_REAPER=0 (deprecated alias ANTI_HALL_SESSION_END_REAPER)
     // still wins). Fail-open: any error runs the sweep.
     let reaperOn = true;
     try { reaperOn = require('./lib/settings.js').enabled('maintenance', 'sessionEndReaper'); } catch (_) { reaperOn = true; }

@@ -8,6 +8,10 @@ the update.
 
 ## Unreleased
 
+### Fixed (doc/code mismatches from the 1.0 contract)
+
+- Canonical `ANTIHALL_SCAN_THROTTLE` and `ANTIHALL_SESSION_END_REAPER` env names (old `ANTI_HALL_*` names still read as deprecated aliases via schema `envAliases`; canonical wins); `devswarm.js help` now covers `inbox tick`, `primary`, `ready-check` and describes `ensure` as idempotent; settings-schema wording for `reset` confirmation and `fable-availability`/`codex-availability`; `KB-claude-code-hooks.md` and GUIDE now match the official hooks doc (over-cap hook output spills to a file with a 2,000-char preview, it is not truncated).
+
 ### Changed
 
 - Contributing: day-to-day work lands on dev; main changes only through a pull request from dev.

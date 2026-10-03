@@ -129,7 +129,7 @@ and getting a yes); re-arming a guard never does. /config, env and a `settings.j
 | Stop | devswarm-parent-gate.js | DevSwarm Primary: blocks ending the turn with child unread/stale/escalated or own unread (capped). | ✓ | devswarm.parentGate |
 | Stop | devswarm-child-gate.js | DevSwarm child: must heartbeat/self-report before idling (capped). | ✓ | devswarm.childGate |
 | PreCompact | precompact-snapshot.js | Before every compaction writes a mechanical `PRECOMPACT-<n>.md` (git state, task list, last 10 user messages, newest handover pointer); never blocks. | ✓ | maintenance.precompactSnapshot |
-| SessionEnd | session-end-mcp-reaper.js | On clean exit, reaps MCP servers orphaned by earlier crashed sessions (audit-logged). | — | maintenance.sessionEndReaper (`ANTI_HALL_SESSION_END_REAPER=0`) |
+| SessionEnd | session-end-mcp-reaper.js | On clean exit, reaps MCP servers orphaned by earlier crashed sessions (audit-logged). | — | maintenance.sessionEndReaper (`ANTIHALL_SESSION_END_REAPER=0`) |
 
 Shared libraries (not hooks): `verify-first-core.js`, `coordinator-detect.js`, `skip-guard.js`,
 `omc-detect.js`, `limit-conserve.js`; `hooks/lib/`: `settings.js` + `settings-schema.js`
@@ -235,11 +235,11 @@ the schema's non-advanced set plus the sensitive credential keys. Codex: no `/co
 | guards.noBlockingQuestions | off (off/advise/block) | `ANTIHALL_NO_BLOCKING_QUESTIONS` |
 | guards.questionAgentsNote | true | `ANTIHALL_QUESTION_AGENTS_NOTE` |
 | guards.sharedTreeAgentNote | true | `ANTIHALL_SHARED_TREE_AGENT_NOTE` |
-| guards.apiGuard / speculationGuard / claimLedger / taskGuard / tasklistGuard / scanThrottle | true | `ANTI_HALL_SCAN_THROTTLE` (scanThrottle) |
+| guards.apiGuard / speculationGuard / claimLedger / taskGuard / tasklistGuard / scanThrottle | true | `ANTIHALL_SCAN_THROTTLE` (scanThrottle; deprecated alias `ANTI_HALL_SCAN_THROTTLE`) |
 | safety.gitGuard / commandGuard / editGuard / swarmGuard (safety: risky `set`/`reset` need `--confirmed`; normal precedence applies, settings.json values count) | true | `ANTIHALL_GIT_GUARD`, `ANTIHALL_COMMAND_GUARD`, `ANTIHALL_EDIT_GUARD`, `ANTIHALL_SWARM_GUARD` |
 | guards.editGuardAllow / allowSubagentMailbox (advanced, safety: --confirmed) | "" / false | `ANTIHALL_EDIT_GUARD_ALLOW`, `ANTIHALL_ALLOW_SUBAGENT_MAILBOX` |
 | context.verifyFirstSession / verifyFirstOrchestration / verifyFirstTurn / verifyFirstSubagent / taskTracker / handoverResume / defectNudge | true | — |
-| maintenance.repairOnReload / progressPrune / precompactSnapshot / taskLifecycleLog / sessionEndReaper | true | `ANTIHALL_REPAIR_ON_RELOAD`, `ANTI_HALL_SESSION_END_REAPER` |
+| maintenance.repairOnReload / progressPrune / precompactSnapshot / taskLifecycleLog / sessionEndReaper | true | `ANTIHALL_REPAIR_ON_RELOAD`, `ANTIHALL_SESSION_END_REAPER` (deprecated alias `ANTI_HALL_SESSION_END_REAPER`) |
 | versionAlerts.antiHall / claudeCli / devswarm | true | `ANTIHALL_VERSION_ALERT`, `ANTIHALL_CLAUDE_CLI_VERSION_ALERT`, `ANTIHALL_DEVSWARM_VERSION_ALERT` |
 | updates.quiet | false | `ANTIHALL_UPDATE_QUIET` |
 | limitConserve.mode / threshold | auto / 85 | `ANTIHALL_LIMIT_CONSERVE`, `ANTIHALL_LIMIT_THRESHOLD` |

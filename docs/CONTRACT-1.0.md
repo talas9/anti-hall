@@ -49,7 +49,7 @@ defaults is [GUIDE.md, "Every setting"](./GUIDE.md#every-setting);
 **Precedence** (`plugins/anti-hall/hooks/lib/settings.js`, `get()` and `resolveBelowFile()`),
 highest first:
 
-1. **env**: the key's own env var (`entry.env`), when its value parses for the key's type.
+1. **env**: the key's own env var (`entry.env`), then any deprecated `envAliases` (the canonical `ANTIHALL_*` name wins when both are set), when the value parses for the key's type. `guards.scanThrottle` and `maintenance.sessionEndReaper` keep their old `ANTI_HALL_SCAN_THROTTLE` / `ANTI_HALL_SESSION_END_REAPER` names as aliases.
    Booleans accept `1/on/true/yes` and `0/off/false/no`, case-insensitive; anything else
    falls through.
 2. **user settings file**: `~/.anti-hall/settings.json`, `[section][key]` (a dotted key may
@@ -236,7 +236,7 @@ Hooks marked "none (not toggleable)" are listed in `NOT_TOGGLEABLE`
   tests empty and malformed stdin per hook (`docs/E2E-TESTING.md`).
 - **Output cap.** Claude Code caps a hook's model-facing text (`additionalContext`,
   `systemMessage`, Stop `reason`) at 10,000 characters; past that it spills to a file and
-  only the head arrives inline. anti-hall keeps every injecting hook at or under 10,000
+  only a preview (the first 2,000 characters) plus the file path arrives inline, and Claude is not asked to read the file (https://code.claude.com/docs/en/hooks, "Output limits"). anti-hall keeps every injecting hook at or under 10,000
   characters (`tests/hooks/injection-cap.test.js`), and an over-cap payload is split across
   hooks, never silently shortened.
 - **Loop-safe Stop gates.** A blocking Stop hook never wedges a session: each dedupes

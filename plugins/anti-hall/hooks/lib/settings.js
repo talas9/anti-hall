@@ -192,7 +192,16 @@ function coerceValue(entry, raw) {
 function readEnvOverride(entry, opts) {
   if (!entry.env || entry.homeOnly) return undefined; // homeOnly: never from env
   const env = (opts && opts.env) || process.env;
-  return coerceValue(entry, env[entry.env]);
+  let v = coerceValue(entry, env[entry.env]);
+  // Deprecated aliases (schema envAliases): consulted only when the canonical
+  // name yields nothing, so the canonical ANTIHALL_* name always wins.
+  if (v === undefined && Array.isArray(entry.envAliases)) {
+    for (const alias of entry.envAliases) {
+      v = coerceValue(entry, env[alias]);
+      if (v !== undefined) break;
+    }
+  }
+  return v;
 }
 
 // pluginManifestDefault(entry, opts) -> plugin.json userConfig[key].default,

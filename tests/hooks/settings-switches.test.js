@@ -218,6 +218,27 @@ test('DEFAULTS: pre-existing env kill switches still work through the schema', (
   } finally { fs.rmSync(home, { recursive: true, force: true }); }
 });
 
+test('DEFAULTS: canonical ANTIHALL_* names for scanThrottle / sessionEndReaper, old ANTI_HALL_* names stay deprecated aliases, canonical wins', () => {
+  const home = tmpHome();
+  try {
+    const cases = [
+      ['guards', 'scanThrottle', 'ANTIHALL_SCAN_THROTTLE', 'ANTI_HALL_SCAN_THROTTLE'],
+      ['maintenance', 'sessionEndReaper', 'ANTIHALL_SESSION_END_REAPER', 'ANTI_HALL_SESSION_END_REAPER'],
+    ];
+    for (const [sec, key, canon, alias] of cases) {
+      const e = schema.findSetting(sec, key);
+      assert.strictEqual(e.env, canon);
+      assert.deepStrictEqual(e.envAliases, [alias]);
+      const on = (env) => settings.enabled(sec, key, { home, env });
+      assert.strictEqual(on({}), true, key + ' default');
+      assert.strictEqual(on({ [canon]: '0' }), false, canon);
+      assert.strictEqual(on({ [alias]: '0' }), false, alias + ' (deprecated alias)');
+      assert.strictEqual(on({ [canon]: '1', [alias]: '0' }), true, 'canonical on beats alias off');
+      assert.strictEqual(on({ [canon]: '0', [alias]: '1' }), false, 'canonical off beats alias on');
+    }
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
 // ------------------------------------------------------------ (3) behaviour
 // Each case: the fixture fires with default settings (on) and is silent with
 // the switch off in settings.json. `fired(r, ctx)` decides "it did its job".
