@@ -13,7 +13,7 @@
   "tool": "Bash",
   "bg": false,
   "posted": true,
-  "command": "echo \"resume-verified: $(date -u +%FT%TZ) -- main clean at b0c2f8d1 (v0.122.2), main CI success\" >> .anti-hall/handovers/2026-10-03/44895798-b33a-4d8f-a8af-b0af9a9c1ecc/HANDOVER-2.md"
+  "command": "echo \"resume-verified: $(date -u +%FT%TZ) -- main clean at b0c2f8d1 (v0.122.2), main CI success\" >> .anti-hall/handovers/2026-10-03/@ID@/HANDOVER-2.md"
  },
  {
   "n": 3,
@@ -183,7 +183,7 @@
   "tool": "Bash",
   "bg": false,
   "posted": true,
-  "command": "cd @HOME@/.claude/projects/-@HOME_SLUG@-Projects-anti-hall/memory && echo '- [Dev branch while in review](dev-branch-while-in-review.md) — owner 2026-10-03: push new work to `dev` (CI on), never main; main moves only by fast-forward on a release' >> MEMORY.md && echo \"- 2026-10-03: owner moved new work to branch dev (a5dfe637, CI on dev). main frozen at v0.122.2 during the review; release = fast-forward main to dev.\" >> @REPO@/.anti-hall/handovers/2026-10-03/44895798-b33a-4d8f-a8af-b0af9a9c1ecc/HANDOVER-2.md"
+  "command": "cd @HOME@/.claude/projects/-@HOME_SLUG@-Projects-anti-hall/memory && echo '- [Dev branch while in review](dev-branch-while-in-review.md) — owner 2026-10-03: push new work to `dev` (CI on), never main; main moves only by fast-forward on a release' >> MEMORY.md && echo \"- 2026-10-03: owner moved new work to branch dev (a5dfe637, CI on dev). main frozen at v0.122.2 during the review; release = fast-forward main to dev.\" >> @REPO@/.anti-hall/handovers/2026-10-03/@ID@/HANDOVER-2.md"
  },
  {
   "n": 25,
@@ -616,7 +616,7 @@
   "tool": "Bash",
   "bg": false,
   "posted": true,
-  "command": "cat >> .anti-hall/plans/2026-10-02-v1.0-soak-gate.md <<'EOF'\n- L41 roster flip: CLOSED, not a bug. The one dormant->active transition (SkyCrew 2026-10-02 05:16Z, d0ee4470) was the child really resuming (SessionStart:resume 05:15:39Z); liveness.js:561-586 is correct. Only one transition was found, so \"alternating\" is unsupported.\n- tf3 never-archived workspaces: anti-hall side CLOSED (fixed in 0.120.6 when appArchive.ok was verified, and 0.120.15 when the closed-builder refusal was removed; archive.js:114-133/:223-245 verifies against the app DB with a branch-name fallback). Remaining: DevSwarm's `workspace archive <uuid>` exits 0 and does nothing. That is a DevSwarm bug to report (owner item).\n- L34 (A) \"0 running\" after reload: CLOSED, fixed in 0.121.1 (agent-scan isQueuedMessageResult). The recorded \"launch outside tail window\" cause was wrong, as a controlled repro on tf3's transcript showed.\n- L34 (B) stale cached unread: CANNOT DETERMINE. 0.120.9 live re-check mitigates it. Action: log a failed summary refresh (cursors.js:716) instead of swallowing it, then wait for a recurrence.\nEOF"
+  "command": "cat >> .anti-hall/plans/2026-10-02-v1.0-soak-gate.md <<'EOF'\n- L41 roster flip: CLOSED, not a bug. The one dormant->active transition (@PROJECT@ 2026-10-02 05:16Z, @ID@) was the child really resuming (SessionStart:resume 05:15:39Z); liveness.js:561-586 is correct. Only one transition was found, so \"alternating\" is unsupported.\n- @PROJECT@ never-archived workspaces: anti-hall side CLOSED (fixed in 0.120.6 when appArchive.ok was verified, and 0.120.15 when the closed-builder refusal was removed; archive.js:114-133/:223-245 verifies against the app DB with a branch-name fallback). Remaining: DevSwarm's `workspace archive <uuid>` exits 0 and does nothing. That is a DevSwarm bug to report (owner item).\n- L34 (A) \"0 running\" after reload: CLOSED, fixed in 0.121.1 (agent-scan isQueuedMessageResult). The recorded \"launch outside tail window\" cause was wrong, as a controlled repro on @PROJECT@'s transcript showed.\n- L34 (B) stale cached unread: CANNOT DETERMINE. 0.120.9 live re-check mitigates it. Action: log a failed summary refresh (cursors.js:716) instead of swallowing it, then wait for a recurrence.\nEOF"
  },
  {
   "n": 83,

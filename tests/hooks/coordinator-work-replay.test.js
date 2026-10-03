@@ -2,7 +2,7 @@
 // Coordinator-drift Phase 5: the full post-compact log replayed through the
 // shipped classifier (command-guard classifyBashWork) and the F1 window
 // (lib/coordinator-work.js replay). The fixture is the real 181-call log,
-// sanitised (@REPO@, @SCRATCH@, @HOME@ placeholders). Expectations are
+// sanitised (@REPO@, @SCRATCH@, @HOME@, @PROJECT@, @ID@ placeholders). Expectations are
 // DETECTION POINTS: after a block, later rows still replay as logged, because
 // the recorded session ran unguarded. Defaults: 10-min window, nudge 4, block 7.
 require('../helpers/isolate-home.js');
@@ -60,7 +60,7 @@ test('fixture: 181 rows, 97 Bash, sanitised', () => {
   assert.strictEqual(FIXTURE.filter((r) => r.tool === 'Bash').length, 97);
   assert.strictEqual(FIXTURE[0].ts, '2026-10-03T10:35:59.697Z');
   const raw = fs.readFileSync(path.join(ROOT, 'tests', 'fixtures', 'coordinator-drift-replay.json'), 'utf8');
-  assert.doesNotMatch(raw, /davila7|hesreallyhim|hashgraph-online|curviate|primary-d7a18d81|@gmail|\/Users\/talas9|talas9|claude-501/i);
+  assert.doesNotMatch(raw, /davila7|hesreallyhim|hashgraph-online|curviate|primary-d7a18d81|@gmail|\/Users\/talas9|talas9|claude-501|skycrew|tf3|toolfox|d0ee4470|44895798/i);
 });
 
 test('replay labels: posted and unposted WORK rows', () => {
