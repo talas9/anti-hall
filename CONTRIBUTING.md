@@ -61,7 +61,7 @@ A change to a hook, skill or model-routing doc lands on the Claude side and the 
 - **No AI credit.** No `Co-Authored-By` trailers, "Generated with" lines or assistant-attribution links in commits or in PR, issue or release text. `git-guard` blocks them. See [AGENTS.md](AGENTS.md) and [RELEASING.md](RELEASING.md).
 - Never force-push; do not delete branches or data without the maintainer's say-so.
 - Keep shipped files project-agnostic and user-agnostic: no private names, paths or emails, other than the author credit.
-- A pull request template lists the checklist.
+- A pull request template lists the checklist. main accepts pull requests from dev only; the pr-source workflow enforces it.
 
 ## Before you open a pull request
 
