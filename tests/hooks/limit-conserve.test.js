@@ -601,3 +601,34 @@ test('INJECTOR ACCOUNT GUARD: account switched + stale cache -> additionalContex
     assert.strictEqual(additionalContext(r), '', 'no directive: cache is stale for the new account');
   } finally { h.cleanup(); }
 });
+
+// ── threshold resolves at call time, not module load ─────────────────────────
+// The module is required ONCE with threshold 85 and weekly usage 80% (inactive);
+// the setting is then changed (env, then ~/.anti-hall/settings.json) WITHOUT
+// re-requiring. A module-load THRESHOLD would keep returning inactive.
+test('threshold change after require() takes effect (env and settings.json)', () => {
+  const h = makeHome();
+  try {
+    writeCacheFile(h.home, makeCache({ weekly: 80 }));
+    const script = `
+      const fs = require('fs'), path = require('path');
+      const { isConserving } = require(${JSON.stringify(path.join(HOOKS_DIR, 'limit-conserve.js'))});
+      const out = {};
+      out.base = isConserving().active;
+      process.env.ANTIHALL_LIMIT_THRESHOLD = '70';
+      out.env = isConserving().active;
+      delete process.env.ANTIHALL_LIMIT_THRESHOLD;
+      out.reset = isConserving().active;
+      fs.mkdirSync(path.join(process.env.HOME, '.anti-hall'), { recursive: true });
+      fs.writeFileSync(path.join(process.env.HOME, '.anti-hall', 'settings.json'),
+        JSON.stringify({ limitConserve: { threshold: 70 } }));
+      out.file = isConserving().active;
+      fs.writeSync(1, JSON.stringify(out));
+    `;
+    const res = spawnSync(process.execPath, ['-e', script], {
+      encoding: 'utf8', env: isolatedEnv(h.home), timeout: 60000,
+    });
+    const o = JSON.parse(res.stdout);
+    assert.deepStrictEqual(o, { base: false, env: true, reset: false, file: true });
+  } finally { h.cleanup(); }
+});
