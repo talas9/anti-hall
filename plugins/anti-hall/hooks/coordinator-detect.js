@@ -58,19 +58,38 @@ function isSubagentByPayload(payload) {
   return idPresent || typePresent;
 }
 
+// isCodexPayload(payload) -> bool. True for a hook payload sent by Codex.
+// Discriminator: a non-empty string `turn_id` AND a non-empty string `model`.
+// Codex serialises both as required String fields on every turn-scoped event
+// (PreToolUse/PostToolUse/UserPromptSubmit/Stop request structs in
+// codex-rs/hooks/src/events/*.rs, rust-v0.160.0; present on every PreToolUse
+// payload captured from codex-cli 0.160.0, main thread and subagent alike).
+// Claude Code sends `model` only on SessionStart ("Only SessionStart hooks can
+// receive a model field") and documents no `turn_id` on any tool event
+// (code.claude.com/docs/en/hooks, fetched 2026-10-03), so requiring the pair
+// keeps every Claude payload on the entrypoint path below.
+// `tool_name: "apply_patch"` is Codex-only too (no Claude tool has that name).
+// Anything partial or mistyped is not Codex -> the Claude path -> fail open.
+function isCodexPayload(payload) {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return false;
+  if (payload.tool_name === 'apply_patch') return true;
+  return typeof payload.turn_id === 'string' && payload.turn_id !== ''
+    && typeof payload.model === 'string' && payload.model !== '';
+}
+
 // Coordinator = NOT a subagent, running under a recognized interactive entrypoint.
 // Takes the parsed hook payload so it can use the payload's agent markers.
 function isCoordinator(payload) {
-  // CODEX apply_patch: only Codex sends tool_name "apply_patch", and it stamps
-  // agent_id/agent_type on a hook payload ONLY inside a spawned subagent
-  // (captured from codex-cli 0.160.0: main-thread payload has neither key, a
-  // spawn_agent child's has both; source: codex-rs/core/src/hook_runtime.rs
+  // CODEX (any tool/event): Codex stamps agent_id/agent_type on a hook payload
+  // ONLY inside a spawned subagent (captured from codex-cli 0.160.0: the
+  // main-thread payload has neither key, a spawn_agent child's has both;
+  // source: codex-rs/core/src/hook_runtime.rs
   // thread_spawn_subagent_hook_context, first stable rust-v0.134.0). Codex sets
   // no CLAUDE_CODE_ENTRYPOINT, so the env checks below would always fail open
   // there. A Codex process that DOES carry CLAUDE_CODE_ENTRYPOINT was launched
   // from inside a Claude Code session (e.g. a Claude-side Codex rescue worker)
   // and is that session's delegated worker, not a coordinator -> allow.
-  if (payload && payload.tool_name === 'apply_patch') {
+  if (isCodexPayload(payload)) {
     if (isSubagentByPayload(payload)) return false;
     if (process.env.CLAUDE_CODE_ENTRYPOINT) return false;
     return true;
@@ -91,4 +110,4 @@ function isCoordinator(payload) {
   return false;
 }
 
-module.exports = { isSubagent, isSubagentByPayload, isCoordinator };
+module.exports = { isSubagent, isSubagentByPayload, isCodexPayload, isCoordinator };

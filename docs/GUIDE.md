@@ -800,7 +800,11 @@ into their own repo root manually.
 
 On Codex 0.134 or later, `edit-guard`, `api-guard` and `ship-it-guard`'s existence gate
 run on `apply_patch` edits. Shell writes bypass them; see the
-[Codex parity notes](../plugins/anti-hall/codex/README.md).
+[Codex parity notes](../plugins/anti-hall/codex/README.md). Main thread vs subagent
+is detected from the Codex payload itself (`turn_id` + `model`, no `agent_id`), so
+`command-guard`'s main-thread heavy-command gate also applies on the Codex main
+thread. A Codex started from inside a Claude Code session inherits
+`CLAUDE_CODE_ENTRYPOINT` and is treated as a worker.
 
 ## Hook reference — plugin "Features" table (detailed, per-hook)
 
