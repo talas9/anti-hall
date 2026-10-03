@@ -163,7 +163,7 @@ Sources: [config-reference](https://developers.openai.com/codex/config-reference
 
 ### 5.1 config.toml
 - `approval_policy`: `untrusted` | `on-request` | `never` | `granular`. `on-failure` deprecated.
-- `sandbox`: `:read-only` | `:workspace` | `:danger-full-access`.
+- `sandbox`: `:read-only` | `:workspace` | the unrestricted full-access value (its name starts with `danger-`; WARNING: removes the sandbox, never use it as a default or recommendation).
 - `model_reasoning_effort`: minimal/low/medium(default)/high/xhigh. **`xhigh` not available on all Codex variants; some Bedrock deployments cap at high.** xhigh is "noticeably slower and more expensive" — async/proof-bound work only.
 - **Project-local config cannot override machine-owned settings** (auth, telemetry, notifications) — enforced boundary; attempts silently ignored.
 - Protected paths `.git`, `.agents`, `.codex` stay read-only even in writable modes.
@@ -182,7 +182,7 @@ Discovery (first match wins): `~/.codex/AGENTS.override.md` → `~/.codex/AGENTS
 Explicit spawning only ("Codex only spawns a new agent when you explicitly ask"). Built-ins: `default`, `worker`, `explorer`. `max_threads` default 6, `max_depth` default 1 (prevents costly nesting), `job_max_runtime_seconds`. Subagent workflows cost **more** tokens than single-agent — use only for true parallelism.
 
 ### 5.5 Non-interactive & prompting
-`codex exec "task"` (progress→stderr, output→stdout); `--json` JSON Lines; `--output-schema` for structured output. CI-safe combo: `approval_policy: "never"` + explicit `--sandbox`. **Never** set `OPENAI_API_KEY` as job env var (issue #5038: VS Code extension can ignore `never` and prompt). Codex prompting: "produces higher-quality outputs when it can verify its work" — include reproduce/validate/lint steps; decompose; goal mode with measurable outcomes. The latest OpenAI Codex `phase` field ("commentary"/"final_answer") must be preserved in history.
+`codex exec "task"` (progress→stderr, output→stdout); `--json` JSON Lines; `--output-schema` for structured output. CI-safe combo: the `never` approval policy (set via `approval_policy` in config.toml) paired with an explicit restrictive `--sandbox`; WARNING: `never` with an unrestricted sandbox is not CI-safe. **Never** set `OPENAI_API_KEY` as job env var (issue #5038: VS Code extension can ignore `never` and prompt). Codex prompting: "produces higher-quality outputs when it can verify its work" — include reproduce/validate/lint steps; decompose; goal mode with measurable outcomes. The latest OpenAI Codex `phase` field ("commentary"/"final_answer") must be preserved in history.
 
 > **Cross-tool consensus:** Both Claude and Codex official docs independently state verification-driven work produces higher quality, and both make `PreToolUse` the primary preventive enforcement point. Strong convergence.
 
