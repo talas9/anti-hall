@@ -4,6 +4,7 @@
 // unknown (no row anywhere). A LIVE asker's question nags and blocks exactly as
 // before, alone or mixed with the ineligible ones. All runs use an isolated HOME.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const { spawnSync } = require('node:child_process');
 const assert = require('node:assert');

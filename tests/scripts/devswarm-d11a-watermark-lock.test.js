@@ -19,6 +19,7 @@
 // route through — rather than asserting on a real cross-process race, which
 // a single Node process cannot reproduce deterministically.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

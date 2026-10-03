@@ -2,6 +2,7 @@
 // row-state — THE one read-side row-state derivation (mesh redesign Phase 4).
 // Isolated tmp HOME per test; pure reads under test, fixtures written directly.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

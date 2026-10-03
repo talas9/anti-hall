@@ -5,6 +5,7 @@
 // the outermost superproject). A genuine collision (different worktree) must stay
 // refused. Real `git submodule add` fixture under a tmp HOME.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

@@ -16,6 +16,7 @@
 // data passes `cwd: REPO_CWD` (via withCwd) and writes to the ONE shared
 // summary file at REPO_KEY.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

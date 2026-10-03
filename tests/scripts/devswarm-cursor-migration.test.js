@@ -6,6 +6,7 @@
 // forms. Here: the baseline seed (upgrade continuity), the hygiene pass in both
 // entry points, and a 0.98-style caller reading alongside a 0.99 one.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

@@ -23,6 +23,7 @@
 // their own index space (no reindexing bug there) under the same combined
 // scenario.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

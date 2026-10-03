@@ -26,6 +26,7 @@
 // Real git worktrees as cwd (repoKeyForWorktree/canonicalMeshId spawn git).
 // Mirrors devswarm-diagnose.test.js / devswarm-send.test.js / devswarm-fold-mesh.test.js.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

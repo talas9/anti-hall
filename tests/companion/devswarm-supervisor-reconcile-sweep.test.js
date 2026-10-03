@@ -12,6 +12,7 @@
 // prove the wiring (and the module.exports/require.main circular-require
 // fix) is real, not just exercised via a stub.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

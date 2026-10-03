@@ -20,6 +20,7 @@
 //       original's hash is RECONSTRUCTED from the forwarded row itself: the
 //       envelope changes exactly two hashed fields and both are invertible.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

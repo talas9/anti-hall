@@ -5,6 +5,7 @@
 // and (2) injects a short report-progress/listen-to-parent reminder. Primary,
 // non-DevSwarm sessions, and malformed stdin are silent no-ops (no output, exit 0).
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

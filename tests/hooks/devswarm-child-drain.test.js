@@ -4,6 +4,7 @@
 // --to`, invisible to an NDJSON-only reader) must surface on a Bash tool
 // call, not just once per UserPromptSubmit.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

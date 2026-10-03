@@ -4,6 +4,7 @@
 // stands in for scripts/devswarm.js so each case controls pending/errors
 // exactly; the marker file lives in an isolated tmp HOME.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

@@ -21,6 +21,7 @@
 // devswarm-sender-attribution.test.js and are re-affirmed narrowly here (4/5)
 // only where D8's change touches them.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

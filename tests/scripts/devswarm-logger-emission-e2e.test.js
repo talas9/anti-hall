@@ -24,6 +24,7 @@
 // ctx.env = {} (no ambient DEVSWARM_* leaking in), and a REAL git-init'd temp
 // repo for cwd (repoKey/callerIdentity derivation needs a real worktree).
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

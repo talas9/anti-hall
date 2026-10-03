@@ -30,6 +30,7 @@
 // process — only process.kill(pid, 0) liveness probes (used, indirectly, by
 // the module under test) and NEVER a destructive signal from this test file.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

@@ -30,6 +30,7 @@
 // worktree genuinely has no sibling rows" — so a caller saw ok:true and a
 // total that LOOKED complete while sibling mail was actually omitted.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

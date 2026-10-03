@@ -6,6 +6,7 @@
 // Every fixture lives under an isolated tmp HOME; the doctor subprocess gets
 // HOME/USERPROFILE pinned to it and ANTIHALL_INGEST_DRY_RUN=1.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

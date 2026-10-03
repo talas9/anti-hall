@@ -11,6 +11,7 @@
 // Hermetic: fully injected deps, no real subprocess spawned, no real HOME
 // touched.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

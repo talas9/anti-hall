@@ -55,6 +55,7 @@
 //       and by the new runFold-cooldown test added to that file for part
 //       (a) of this fix.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

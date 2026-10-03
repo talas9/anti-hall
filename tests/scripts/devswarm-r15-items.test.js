@@ -15,6 +15,7 @@
 //         into `siblingWatermarkCovered`, gated on a FRESHLY read watermark
 //         value rather than the in-memory `sinceCursor`.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

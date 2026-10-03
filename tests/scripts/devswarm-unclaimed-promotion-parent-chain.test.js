@@ -25,6 +25,7 @@
 // other side's EXISTING real value, in both directions, without ever
 // inventing a third value.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

@@ -43,6 +43,7 @@
 // reproduce the exact regression (both mesh-sibling ack loops share this one
 // function) without ever writing to a live companion/ file.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

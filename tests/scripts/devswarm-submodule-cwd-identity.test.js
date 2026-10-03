@@ -5,6 +5,7 @@
 // (the submodule's own toplevel; its `.git` is a FILE) and minted a phantom
 // `primary-<submodule-hash>` id. Real submodule fixture, tmp HOME, subprocess CLI.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test, before, after } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

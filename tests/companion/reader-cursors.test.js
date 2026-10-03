@@ -11,6 +11,7 @@
 //   - journal lock fails CLOSED (no ack written);
 //   - dual-write is upward-only and never touches #inst/#nd/#base.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

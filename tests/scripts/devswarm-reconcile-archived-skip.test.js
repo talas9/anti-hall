@@ -20,6 +20,7 @@
 // missing-worktree/git-root skips) must turn the first two tests below RED —
 // an archived-but-present row would spawn `inbox pull` for real.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

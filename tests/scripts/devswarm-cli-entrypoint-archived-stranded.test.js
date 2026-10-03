@@ -26,6 +26,7 @@
 // `orphans[]` (it is provably `unhealable/archived-no-family`, not a plain
 // orphan — see devswarm-orphan-policy.js and healOrphanPartitions).
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

@@ -3,6 +3,7 @@
 // a spilled batch (WAL unwritable -> reads blocked), surfaces as an alert in
 // `inbox tick` and `doctor` — and is never dropped.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

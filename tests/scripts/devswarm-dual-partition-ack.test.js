@@ -15,6 +15,7 @@
 // + the ownership leg). The migration cases pin the forward repair of state
 // already written by the defect.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

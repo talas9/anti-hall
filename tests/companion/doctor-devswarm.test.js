@@ -3,6 +3,7 @@
 // function (mirrors the flutter-debug preflight -> doctor pattern). Real temp HOME
 // with fake timestamps; no real process touched.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

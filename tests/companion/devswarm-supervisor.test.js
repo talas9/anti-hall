@@ -7,6 +7,7 @@
 // pokeOrEscalate. Also covers descriptor sanitization (unsafe id / missing
 // sessionId dropped) and the single-flight sweep lock.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

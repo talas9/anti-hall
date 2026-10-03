@@ -7,6 +7,7 @@
 // spawning the real CLI; `sendQuietLine` itself also gets direct unit
 // coverage since it is exported.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

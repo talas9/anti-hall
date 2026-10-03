@@ -14,6 +14,7 @@
 //   (6) no app DB -> app-state.json records ok:false, nothing else happens
 //   (7) roster: app title, sidebar-rank order, `app` fields; no app DB -> unchanged
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

@@ -13,6 +13,7 @@
 // said unread 0. The fix keys the persisted cursor by COUNTER (meshTotal /
 // ndjsonTotal), not by role-dependent field position.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

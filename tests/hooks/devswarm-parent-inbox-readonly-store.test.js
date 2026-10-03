@@ -5,6 +5,7 @@
 // provision an empty store directory; a project that HAS one still gets its
 // summary refreshed from it.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

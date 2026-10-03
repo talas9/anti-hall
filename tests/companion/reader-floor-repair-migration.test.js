@@ -8,6 +8,7 @@
 //       a local reader with unread keeps it, second run = no-op
 //   (f) fail-open on a malformed store (counted, never thrown, never stamped)
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

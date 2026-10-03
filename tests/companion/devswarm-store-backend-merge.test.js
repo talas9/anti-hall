@@ -9,6 +9,7 @@
 //      the non-chosen side's messages/registry/cursors folded into the
 //      chosen side — idempotent, no-delete.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

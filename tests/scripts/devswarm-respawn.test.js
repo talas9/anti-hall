@@ -13,6 +13,7 @@
 // hivecontrol and the mesh send are stubs; the git remote is a local bare
 // repo. Isolated HOME everywhere.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

@@ -4,6 +4,7 @@
 // title and drop the brief silently. The refusal happens before any fetch or
 // `hivecontrol workspace create` call.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

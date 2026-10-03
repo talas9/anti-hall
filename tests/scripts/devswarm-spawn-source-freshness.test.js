@@ -10,6 +10,7 @@
 // does what the real app does with the branch NAME it is given — `git worktree
 // add -b <child> <path> <sourceBranch>` — so the child's base commit is real.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

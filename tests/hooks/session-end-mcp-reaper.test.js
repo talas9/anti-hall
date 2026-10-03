@@ -39,6 +39,7 @@
 // M4 (F1): drop the `filterManagedServices` call (or its darwin branch).
 //     Caught by "a launchd-managed candidate is never selected" below.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const path = require('node:path');

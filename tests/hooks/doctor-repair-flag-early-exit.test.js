@@ -20,6 +20,7 @@
 // early exit at all) and assert the 6n text IS present — proving the
 // fixture genuinely reaches and trips that section when nothing stops it.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

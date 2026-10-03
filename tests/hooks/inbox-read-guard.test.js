@@ -6,6 +6,7 @@
 // the Read tool. Fail-open on every ambiguity. Store deny is self-healing: it only
 // arms when the Primary read-CLI (devswarm-store.js listMessages) is present.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const path = require('node:path');

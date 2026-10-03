@@ -6,6 +6,7 @@
 // still reported. Active child and Primary ticks are unchanged; the existing
 // devswarm.archivedChildStop switch turns it off. Home is isolated via ctx.home.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

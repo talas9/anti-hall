@@ -17,6 +17,7 @@
 //         the sibling's own (still-0) cursor.
 //  item 6 (R14 F3, P3): watermark filename/parse hygiene.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

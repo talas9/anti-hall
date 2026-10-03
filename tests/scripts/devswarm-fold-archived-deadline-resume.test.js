@@ -20,6 +20,7 @@
 // MUTATION CHECK: removing the deadline check must turn the first test below
 // RED — both archived rows would retire in one pass instead of only one.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

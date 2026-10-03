@@ -5,6 +5,7 @@
 // --quiet is the cron-prompt rendering of tick (one line); the roster is part of that
 // human rendering only, so no --quiet (JSON) and --child ticks never carry it.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

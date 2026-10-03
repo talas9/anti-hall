@@ -13,6 +13,7 @@
 //       touches descriptors, dry-run writes nothing, second run is a no-op
 //   (d) the parent-inbox hook never nags about an app-archived row or its twin
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

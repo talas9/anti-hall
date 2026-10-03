@@ -16,6 +16,7 @@
 // classifies the result as fully drained. If the mirrored prefix ever
 // diverges from the real one, this goes red.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

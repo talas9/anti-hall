@@ -14,6 +14,7 @@
 // and the installer would run, without registering a real LaunchAgent/timer. The
 // gate-CLOSED case is a real --fix and asserts NO unit artifact is written.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

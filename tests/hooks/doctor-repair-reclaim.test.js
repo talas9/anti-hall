@@ -24,6 +24,7 @@
 // calls process.kill or inspects a real pid; all "pids" here are synthetic
 // numbers whose fate is entirely decided by the injected probes.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

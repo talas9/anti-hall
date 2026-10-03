@@ -3,6 +3,7 @@
 // worktree (e.g. the session scratchpad), projectCwdFor falls back to
 // CLAUDE_PROJECT_DIR — fail-closed: absolute, exists, resolves to a worktree.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

@@ -6,6 +6,7 @@
 // provider_metadata.gateway.{cost (string), generationId, routing}. Neither
 // returns a confidence field (client derives it from noul).
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const http = require('node:http');

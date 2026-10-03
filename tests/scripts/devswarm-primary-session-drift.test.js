@@ -5,6 +5,7 @@
 // drift detector + notice, the parent-inbox injection, and the anchor refresh
 // on the running session's tick/heartbeat (never while the old one is alive).
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

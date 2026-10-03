@@ -11,6 +11,7 @@
 // home) — autoArchivedStateMigratePostUpdate takes `home`/`cwd` explicitly
 // and never falls back to os.homedir()/process.cwd() when passed.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

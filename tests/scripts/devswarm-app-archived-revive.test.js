@@ -17,6 +17,7 @@
 //   (b) an app DB that can't be read -> old behavior (register/heartbeat
 //       succeed normally, exactly as before this fix).
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

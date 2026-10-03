@@ -11,6 +11,7 @@
 // Uses a TEMP home only — never the real store. heal runs with dryRun:true, which
 // still opens the store in write mode, hence the fixture-only rule.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

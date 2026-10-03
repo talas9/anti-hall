@@ -27,6 +27,7 @@
 // never spawns a real `hivecontrol` (that would destructively pop the real
 // native queue) — every monitor run is injected.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

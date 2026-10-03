@@ -27,6 +27,7 @@
 // already-fixed working tree without duplication. Defaults to the real repo
 // tree (the current, already-patched working copy).
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const assert = require('node:assert');
 const test = require('node:test');
 const fs = require('node:fs');

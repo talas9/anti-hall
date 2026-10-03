@@ -6,6 +6,7 @@
 // read must BLOCK with a reason naming the unknown state — before Phase 3 the
 // store-side failure was swallowed and the row read as drained.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');

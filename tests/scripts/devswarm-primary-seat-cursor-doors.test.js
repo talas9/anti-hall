@@ -9,6 +9,7 @@
 // reach one and proves (a) refusal or (b) no cursor movement, then that the
 // holder still drains normally.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

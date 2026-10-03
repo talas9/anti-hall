@@ -11,6 +11,7 @@
 // UNCONDITIONALLY present in every Claude-branch output, regardless of whether
 // `watcher` is supplied — Monitor layers ON TOP, it never replaces or gates Cron.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const path = require('node:path');

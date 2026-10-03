@@ -14,6 +14,7 @@
 // list (companion/lib/devswarm-ignore.js) additionally suppresses the same
 // nag for any explicitly-listed id, while keeping it in the roster table.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

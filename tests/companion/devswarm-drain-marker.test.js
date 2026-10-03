@@ -3,6 +3,7 @@
 // in-flight-drain TTL marker (defect 13dedc334eb6). Pure fs, isolated fixture
 // HOME per test (never the real machine's ~/.anti-hall).
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

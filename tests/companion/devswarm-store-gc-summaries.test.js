@@ -10,6 +10,7 @@
 // own hash. A repoKey with a live `store/<hash>/` dir must NEVER be GC'd
 // regardless of its summary's age.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

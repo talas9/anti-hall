@@ -7,6 +7,7 @@
 // N, single-writer with dead-holder steal, Windows never kills, a timed-out resume
 // is never falsely marked alive. Workaround for #39755.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

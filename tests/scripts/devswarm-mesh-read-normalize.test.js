@@ -4,6 +4,7 @@
 // the declared DevSwarm workspace (DEVSWARM_BUILDER_ID descriptor) when the cwd
 // is not a git worktree. In-process via cli.run with a tmp HOME + journal backend.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const fs0 = require('node:fs'), os0 = require('node:os'), path0 = require('node:path');
 process.env.ANTI_HALL_LOG_DIR = fs0.mkdtempSync(path0.join(os0.tmpdir(), 'anti-hall-l17-log-'));
 

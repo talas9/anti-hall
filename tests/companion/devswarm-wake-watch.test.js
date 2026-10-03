@@ -5,6 +5,7 @@
 // (`node --test tests/companion/devswarm-wake-watch.test.js`), not the full
 // suite (another agent owns that run).
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

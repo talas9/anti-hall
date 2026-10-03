@@ -7,6 +7,7 @@
 // pure path hash — see devswarm-repokey.test.js for the injectable-io unit tests
 // of that primitive in isolation).
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

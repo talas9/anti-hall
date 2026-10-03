@@ -26,6 +26,7 @@
 //    positive evidence only, and is never `false` (absence inside a short
 //    window is not proof of failure).
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

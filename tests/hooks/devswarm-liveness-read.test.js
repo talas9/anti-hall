@@ -23,6 +23,7 @@
 // escalated/stale/archive-ready, and isDormantRow selects the correct window
 // per-row based on transcript resolvability.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');

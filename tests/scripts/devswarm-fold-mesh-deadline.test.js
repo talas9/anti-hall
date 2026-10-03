@@ -11,6 +11,7 @@
 // MUTATION CHECK: removing the deadline check from the group loop must turn
 // the first test below RED — both groups would fold instead of only the first.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

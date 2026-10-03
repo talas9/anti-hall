@@ -2,6 +2,7 @@
 // spec item 1b (A1-INSTRUMENT) + item 5b/D (peek-primary) — exercised
 // in-process via run(argv, ctx), mirroring devswarm-cli.test.js's harness.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

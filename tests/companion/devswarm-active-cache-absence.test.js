@@ -20,6 +20,7 @@
 //   M4: let writeActiveCache write an empty snapshot
 //       -> "an EMPTY active list writes nothing" fails.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('fs');

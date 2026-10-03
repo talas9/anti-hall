@@ -10,6 +10,7 @@
 // and NEVER calls process.kill (scheduler-based teardown only, proven by
 // asserting every scheduler call is one of launchctl/systemctl/crontab).
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

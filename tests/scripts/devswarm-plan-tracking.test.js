@@ -5,6 +5,7 @@
 // ADDITIVE contract — a workspace without a plan renders exactly as before
 // (roster row shape, table normalizer, child-turn output). Isolated HOME.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
