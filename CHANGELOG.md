@@ -6,6 +6,12 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## Unreleased
+
+### Changed
+
+- Contributing: day-to-day work lands on dev; main changes only through a pull request from dev.
+
 ## 0.122.2 (2026-10-03)
 
 ### Fixed

@@ -40,7 +40,7 @@ maintained knowledge base (ground truth, staleness ledger, topic map).
 | [`../CONTRIBUTING.md`](../CONTRIBUTING.md) | Project layout, running the tests, adding a guard. |
 | [`../SECURITY.md`](../SECURITY.md) | Report a vulnerability privately, not in a public issue. |
 | [`../CODE_OF_CONDUCT.md`](../CODE_OF_CONDUCT.md) | Expected behaviour and how to report a conduct problem. |
-| [`../RELEASING.md`](../RELEASING.md) | The release checklist. |
+| [`../RELEASING.md`](../RELEASING.md) | The release checklist and the `dev` → `main` branch flow. |
 | [`../AGENTS.md`](../AGENTS.md) | The protocol for Codex and cross-tool agents. |
 | [`../plugins/anti-hall/README.md`](../plugins/anti-hall/README.md) | The plugin directory page (ships inside the plugin). |
 | [`../plugins/anti-hall/codex/README.md`](../plugins/anti-hall/codex/README.md) | The Codex port: hook parity, install, skills. |

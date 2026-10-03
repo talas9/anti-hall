@@ -16,7 +16,7 @@ Thanks for helping. anti-hall is pure Node (built-ins only, no dependencies) and
 
 ## Set up and run the tests
 
-Node.js **22 or newer** (CI runs ubuntu on Node 22 and 24; macOS runs Node 24 on main and pull requests, and Node 22 as well only on `rc-v*` release-candidate tags). There is no install step; run from the repo root.
+Node.js **22 or newer** (CI runs ubuntu on Node 22 and 24; macOS runs Node 24 on pull requests and on `main`, and Node 22 as well only on `rc-v*` release-candidate tags). There is no install step; run from the repo root.
 
 ```bash
 node --test                                         # the whole suite
@@ -25,7 +25,7 @@ node --test tests/hooks/git-guard.test.js tests/hygiene/docs-coverage.test.js   
 node plugins/anti-hall/hooks/doctor.js --check      # health check of a working copy
 ```
 
-A green local run is not a green CI run: check the GitHub Actions result for your push before calling work done.
+A green local run is not a green CI run: check the GitHub Actions result on your pull request before calling work done. Pushes to `dev` run no CI, so run the full `node --test` locally before every push.
 
 ## Test isolation
 
@@ -61,7 +61,14 @@ A change to a hook, skill or model-routing doc lands on the Claude side and the 
 - **No AI credit.** No `Co-Authored-By` trailers, "Generated with" lines or assistant-attribution links in commits or in PR, issue or release text. `git-guard` blocks them. See [AGENTS.md](AGENTS.md) and [RELEASING.md](RELEASING.md).
 - Never force-push; do not delete branches or data without the maintainer's say-so.
 - Keep shipped files project-agnostic and user-agnostic: no private names, paths or emails, other than the author credit.
-- A pull request template lists the checklist. main accepts pull requests from dev only; the pr-source workflow enforces it.
+- A pull request template lists the checklist.
+
+## Branches
+
+- **`dev`** is the working branch. Day-to-day work is committed and pushed there; pushes to `dev` run no CI.
+- **`main`** is what users and the plugin directory install from. It accepts changes only through a pull request from `dev`; a ruleset blocks direct pushes, force pushes and deletion. Every merge to `main` is a release-quality event.
+- **Contributors: open your pull request against `dev`.** A pull request to `main` from a fork or from any other branch fails the required `dev-only` check (`.github/workflows/pr-source.yml`) and cannot merge.
+- A pull request runs the full test workflow. The maintainer promotes `dev` to `main` with a `dev` → `main` pull request at release time ([RELEASING.md](RELEASING.md)).
 
 ## Before you open a pull request
 
@@ -71,7 +78,7 @@ A change to a hook, skill or model-routing doc lands on the Claude side and the 
 
 ## Releases
 
-Maintainers follow [RELEASING.md](RELEASING.md): the version lives in `plugins/anti-hall/.claude-plugin/plugin.json` (the Codex manifest tracks it) and `CHANGELOG.md` gets a section per release. Contributors normally do not bump versions.
+Maintainers follow [RELEASING.md](RELEASING.md) (bump on `dev`, then a pull request from `dev` to `main`): the version lives in `plugins/anti-hall/.claude-plugin/plugin.json` (the Codex manifest tracks it) and `CHANGELOG.md` gets a section per release. Contributors normally do not bump versions.
 
 ## Questions and problems
 
