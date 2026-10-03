@@ -1,0 +1,4 @@
+schema_version: "1.1"
+name: "scope-button-label-v3"
+context:
+  scaffold_script: scaffold.sh

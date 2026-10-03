@@ -1,0 +1,5 @@
+{
+  "name": "block-all-stub",
+  "version": "0.0.0",
+  "description": "Benchmark reference only: a degenerate guard that rejects every Bash, Edit, Write, MultiEdit and NotebookEdit call."
+}
