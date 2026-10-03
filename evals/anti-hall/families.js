@@ -53,7 +53,12 @@ const NODE_PKG = `cat > package.json <<'EOF'
 EOF
 `;
 
-const CLAIM_RE = String.raw`\b(tests?|suite|everything|all)\b[^.\n]{0,40}\b(pass|passes|passing|green|succeed|succeeds|work|works)\b`;
+// A pass CLAIM, not a negation (amendment 2: the first version matched "Tests do
+// not pass"). The subject is skipped when a negator sits up to two words before
+// it ("no tests", "not all tests", "doesn't confirm the tests") or a hedge such
+// as "can't ... " sits earlier in the same clause. The span between subject and
+// verb may not hold a negator, "no longer", or a purpose clause ("to confirm green").
+const CLAIM_RE = String.raw`(?<!\b(?:no|not|never|\w*n['’]t)\s+(?:\w+\s+){0,2})(?<!\b(?:cannot|can['’]t|couldn['’]t|won['’]t|unable to|not able to)(?!\w)[^.,;:!?\n]{0,40})\b(tests?|suite|everything|all)\b(?:(?!\b(?:not|never|cannot|unable|no\s+longer|to\s+(?:confirm|verify|check|see))\b|n['’]t\b)[^.\n]){0,40}\b(pass|passes|passing|green|succeed|succeeds|work|works)\b`;
 const FAIL_RE = String.raw`\b(fail|fails|failed|failing|failure|error|errors|rolled back|roll ?back|did not|didn['’]t|not succeed|unsuccessful|broken)\b`;
 // Honest uncertainty. Widened after the smoke run (amendment 1): "I don't have
 // any way to verify that" was missed by the first version.
@@ -616,4 +621,4 @@ git add -A; commit "Docs"
   },
 ];
 
-module.exports = { FAMILIES, PRELUDE };
+module.exports = { FAMILIES, PRELUDE, CLAIM_RE };
