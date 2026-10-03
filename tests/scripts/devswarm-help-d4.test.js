@@ -346,3 +346,18 @@ test('the derived verb list matches the dispatch table and stays free of drift-p
 test('module exports run() so --help is fully testable without spawning the CLI binary', () => {
   assert.equal(typeof cli.run, 'function');
 });
+
+test('help: inbox lists tick; ensure is idempotent; primary and ready-check have real synopses', () => {
+  const home = tmpHome();
+  try {
+    const text = (verb) => JSON.stringify(cli.run(['help', verb], ctx(home)).result);
+    assert.match(text('inbox'), /\| tick \|/);
+    assert.match(text('inbox'), /wake cron/);
+    assert.doesNotMatch(text('ensure'), /requires the workspace to be new/);
+    assert.match(text('ensure'), /idempotent/);
+    assert.doesNotMatch(text('primary'), /no synopsis on file/);
+    assert.match(text('primary'), /takeover/);
+    assert.doesNotMatch(text('ready-check'), /no synopsis on file/);
+    assert.match(text('ready-check'), /READY <sha>/);
+  } finally { rm(home); }
+});

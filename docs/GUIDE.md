@@ -203,7 +203,7 @@ Moved from plugins/anti-hall/README.md "How it works" (v0.107.0 doc sweep).
   SessionStart) carries the always-on orchestration ruleset (rules A–N + the
   DevSwarm-Primary workspace-tier rule W) — split out in 0.60.0 so both halves
   clear the ~10k per-hook injection cap and land 100% inline instead of one
-  spilling to a file past ~2k chars.
+  spilling to a file (Claude Code leaves a 2,000-char preview inline and does not ask Claude to read the rest).
 - **Surviving compaction** — SessionStart re-fires after a compaction with
   `source="compact"`. The no-matcher SessionStart registration therefore re-injects
   the protocol across the compaction boundary, exactly when context is largest and
@@ -1080,7 +1080,7 @@ Generated from `hooks/lib/settings-schema.js` (a hygiene test keeps this table a
 | `guards.claimLedger` | `true` | — | claim-ledger (Stop, never blocks): record claims in the last reply that nothing in the session backs. |
 | `guards.taskGuard` | `true` | — | task-guard (Stop): block stopping while tracked tasks are still open. |
 | `guards.tasklistGuard` | `true` | — | tasklist-guard (Stop): require a task list / progress file for multi-step work. |
-| `guards.scanThrottle` | `true` | `ANTI_HALL_SCAN_THROTTLE` | scan-throttle (PreToolUse Bash): advise running heavy repo-wide scans at background priority (nice/taskpolicy); never rewrites the command. |
+| `guards.scanThrottle` | `true` | `ANTIHALL_SCAN_THROTTLE` (deprecated alias `ANTI_HALL_SCAN_THROTTLE`; canonical wins) | scan-throttle (PreToolUse Bash): advise running heavy repo-wide scans at background priority (nice/taskpolicy); never rewrites the command. |
 | `guards.silentAgentNudge` | `true` | `ANTIHALL_SILENT_AGENT_NUDGE` | silent-agent-nudge (Stop): nudge once, advisory-only, when a background Agent launch has no terminal notification and a stale/missing output_file past `silentAgentNudgeMin`. Never kills anything. |
 | `guards.silentAgentNudgeMin` adv | `20` | `ANTIHALL_SILENT_AGENT_NUDGE_MIN` | Minutes of silence before silent-agent-nudge fires. |
 | `guards.staleAgentStopNote` adv | `true` | `ANTIHALL_STALE_AGENT_STOP_NOTE` | stale-agent-stop-note (PreToolUse TaskStop, never blocks): one advisory line when TaskStop names an agent that was sent a message, or resumed, after its last report and has not reported since. Settings file + env only. |
@@ -1119,7 +1119,7 @@ Generated from `hooks/lib/settings-schema.js` (a hygiene test keeps this table a
 | `maintenance.progressPrune` | `true` | — | progress-prune (SessionStart): archive stale per-session progress files into the history ledger. |
 | `maintenance.precompactSnapshot` | `true` | — | precompact-snapshot (PreCompact): write a mechanical continuation snapshot before compaction. |
 | `maintenance.taskLifecycleLog` | `true` | — | task-lifecycle-log (TaskCreated/TaskCompleted): append task events to the per-session history ledger. |
-| `maintenance.sessionEndReaper` | `true` | `ANTI_HALL_SESSION_END_REAPER` | session-end-mcp-reaper (SessionEnd): kill orphaned MCP-server processes this session left behind. |
+| `maintenance.sessionEndReaper` | `true` | `ANTIHALL_SESSION_END_REAPER` (deprecated alias `ANTI_HALL_SESSION_END_REAPER`; canonical wins) | session-end-mcp-reaper (SessionEnd): kill orphaned MCP-server processes this session left behind. |
 | `versionAlerts.antiHall` | `true` | `ANTIHALL_VERSION_ALERT` | Alert when a newer anti-hall version is available. |
 | `versionAlerts.claudeCli` | `true` | `ANTIHALL_CLAUDE_CLI_VERSION_ALERT` | Alert when a newer Claude CLI version is available. |
 | `versionAlerts.devswarm` | `true` | `ANTIHALL_DEVSWARM_VERSION_ALERT` | Alert when a newer DevSwarm/hivecontrol version is available. |

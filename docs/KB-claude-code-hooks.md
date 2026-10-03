@@ -182,37 +182,24 @@ consequential finding in this section.
 | `agent` | 60s | Same per-event overrides apply where relevant |
 | `SessionEnd` (any handler type) | Shared 1.5s budget across all `SessionEnd` hooks | Raised up to 60s total if any configured per-hook `timeout` exceeds the 1.5s budget |
 
-**Injected-output size cap:** NOT IN OFFICIAL DOCS. Neither the hooks reference nor the
-hooks guide states a documented byte/character cap on `additionalContext` or other
-hook-injected output. Do not assume a specific number — **and per the MEASURED finding
-below, "no documented cap" does not mean "no cap."**
+**Injected-output size cap (official, re-checked 2026-10-03 at https://code.claude.com/docs/en/hooks):**
+a hook's `additionalContext`, `systemMessage` and `initialUserMessage` strings, and its plain
+stdout, are each capped at 10,000 characters (each string measured on its own, even when
+several hooks run for the same event). **Over the limit, Claude Code does NOT truncate:** it
+saves the output to a file in the session directory and replaces it with the file path plus a
+preview of up to the first 2,000 characters. It does not ask Claude to read the file, so
+anything Claude must always see has to fit within the cap. The cap has no setting or env var.
 
-**MEASURED — injected-context cap is exactly 10,000 chars, and truncation is silent:**
+**Superseded earlier note:** an older version of this file recorded a sentinel measurement
+(10,000-char payload: tail sentinel visible; 10,001+: tail sentinel lost) and concluded the
+payload was "silently truncated from the tail". The 10,000 boundary matches the official
+doc; the "silent truncation" conclusion is superseded by the documented spill-to-file behavior.
 
-- **Method:** a `SessionStart` hook in an isolated scratch environment emitted
-  `hookSpecificOutput.additionalContext` containing a sentinel string at the very start
-  and another at the very end of an N-character payload, for several values of N.
-- **Result:**
-
-  | N (payload length) | Start sentinel | End sentinel |
-  |---|---|---|
-  | 10,000 | visible | visible |
-  | 10,001 | visible | **LOST** |
-  | 10,020–12,000 | visible | **LOST** |
-
-- The cap sits at exactly 10,000 characters of injected context. Above that, the payload
-  is truncated from the tail — the start sentinel always survives, the end sentinel
-  never does past the boundary.
-- **Truncation is silent**: no error surfaced to Claude, nothing appeared in `--debug`
-  output, and nothing was logged to the debug-file log. A hook author has no signal that
-  their payload was cut.
-- **Consequence for this plugin:** the ~15.3k-char doctrine payload this plugin injects
-  at session start is split across two separate `SessionStart` registrations
-  (`plugins/anti-hall/hooks/verify-first-full.js:13-19` and
-  `plugins/anti-hall/hooks/verify-first-orch.js:11-16`) specifically to stay under this
-  cap per hook. That split is **justified by this measurement and should stay** — a
-  single combined registration would silently lose roughly the back third of the
-  doctrine text with no error anywhere.
+**Consequence for this plugin:** anti-hall keeps every injecting hook at or under 10,000 chars
+(`tests/hooks/injection-cap.test.js`). The ~15.3k-char doctrine payload is split across two
+`SessionStart` registrations (`plugins/anti-hall/hooks/verify-first-full.js` and
+`verify-first-orch.js`) so each lands 100% inline instead of spilling to a file with only a
+2,000-char preview. The split stays.
 
 ---
 

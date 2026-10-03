@@ -40,6 +40,8 @@
 //                // jev.enabled, devswarm.supervisorMode, guards.modelRouting,
 //                // limitConserve.mode). Every other pluginOption setting is
 //                // migrated into settings.json and is slated to leave the manifest.
+//   envAliases,  // optional deprecated env names read AFTER `env` (the canonical
+//                // ANTIHALL_* name wins when both are set)
 //   advanced,    // true = hidden from the default `show` table (use --all)
 //   homeOnly,    // true = read ONLY from ~/.anti-hall/settings.json (then the
 //                // default): no env override, no /config plugin option, no legacy
@@ -51,9 +53,10 @@
 //                // (see safetyDirection) — without it nothing changes and a
 //                // one-line factual warning (built from `safetyNote`) is
 //                // returned instead; normal precedence (env > file > /config
-//                // > legacy > default) applies once confirmed. reset() never
-//                // needs confirmation — removing an override is always the
-//                // safe direction. The confirmation is the protection, not
+//                // > legacy > default) applies once confirmed. reset() needs
+//                // --confirmed only when the value it falls back to (env, /config,
+//                // legacy or default once the settings.json override is gone) is
+//                // the risky one; a reset back to a safe value never does. The confirmation is the protection, not
 //                // a refusal.
 //   safetyDirection, // locked only: which new value is RISKY —
 //                // 'off' (default when omitted) = risky when set to false
@@ -145,7 +148,7 @@ const SECTIONS = [
       { key: 'idleNeglectMinPriority', type: 'enum', values: ['p0', 'p1', 'p2', 'p3'], default: 'p1', env: 'ANTIHALL_IDLE_NEGLECT_MIN_PRIORITY', advanced: true, description: 'task-guard IDLE NEGLECT urgency floor: a pending/unowned/unblocked task nags only when its priority is at or above (numerically ≤) this rank; anything below it (e.g. P2/P3 when the floor is P1, or "low"/"deferred") is non-nagging backlog. Missing/unrecognized priority is always treated as P1 (fail-open). Consistent across every rank — was previously hard-coded to skip only the literal "P2". [verified: hooks/task-guard.js isActionablePriority/priorityRank/idleNeglectMinPriorityRank]' },
       { key: 'maxParallelDispatch', type: 'number', min: 0, default: 0, env: 'ANTIHALL_MAX_PARALLEL_DISPATCH', advanced: true, description: 'Hard cap on concurrently-running background agents the DISPATCH NOW line / task-guard IDLE NEGLECT will demand up to. 0 (default) = the existing dynamic cap (min(16, cores-2)). Some owners run exactly ONE implementation agent per workspace at a time — setting this to 1 makes the demand ask for the next task only once nothing is running, instead of piling on parallel dispatch pressure. [verified: hooks/lib/dispatch-demand.js configuredCap]' },
       { key: 'tasklistGuard', type: 'boolean', default: true, pluginOption: 'guards_tasklist_guard', description: 'tasklist-guard (Stop): require a task list / progress file for multi-step work.' },
-      { key: 'scanThrottle', type: 'boolean', default: true, env: 'ANTI_HALL_SCAN_THROTTLE', pluginOption: 'guards_scan_throttle', description: 'scan-throttle (PreToolUse Bash): advise running heavy repo-wide scans at background priority (nice/taskpolicy); never rewrites the command.' },
+      { key: 'scanThrottle', type: 'boolean', default: true, env: 'ANTIHALL_SCAN_THROTTLE', envAliases: ['ANTI_HALL_SCAN_THROTTLE'], pluginOption: 'guards_scan_throttle', description: 'scan-throttle (PreToolUse Bash): advise running heavy repo-wide scans at background priority (nice/taskpolicy); never rewrites the command.' },
       { key: 'silentAgentNudge', type: 'boolean', default: true, env: 'ANTIHALL_SILENT_AGENT_NUDGE', pluginOption: 'guards_silent_agent_nudge', description: 'silent-agent-nudge (Stop): nudge once, advisory-only, when a background Agent launch in the transcript has no terminal notification and a stale/missing output_file (plus the ~/.anti-hall/agents/<id>.json heartbeat as an extra signal), past silentAgentNudgeMin. Never kills anything. [verified: hooks/silent-agent-nudge.js — default on, =off disables]' },
       { key: 'silentAgentNudgeMin', type: 'number', min: 1, default: 20, env: 'ANTIHALL_SILENT_AGENT_NUDGE_MIN', pluginOption: 'guards_silent_agent_nudge_min', advanced: true, pluginOptionLegacy: true, description: 'Minutes of silence (no terminal task-notification + stale/missing output_file, or a stale heartbeat) before silent-agent-nudge fires. [verified: hooks/silent-agent-nudge.js DEFAULT_MIN = 20, mirrors agent-watchdog.js]' },
       { key: 'staleAgentStopNote', type: 'boolean', default: true, env: 'ANTIHALL_STALE_AGENT_STOP_NOTE', advanced: true, description: 'stale-agent-stop-note (PreToolUse TaskStop, never blocks): one advisory line when TaskStop names an agent that was sent a message, or resumed, after its last report and has not reported since (it may be working). Settings file + env only; no plugin option. [read by: hooks/stale-agent-stop-note.js]' },
@@ -192,7 +195,7 @@ const SECTIONS = [
       { key: 'progressPrune', type: 'boolean', default: true, pluginOption: 'maintenance_progress_prune', description: 'progress-prune (SessionStart): archive stale per-session progress files into the history ledger.' },
       { key: 'precompactSnapshot', type: 'boolean', default: true, pluginOption: 'maintenance_precompact_snapshot', description: 'precompact-snapshot (PreCompact): write a mechanical continuation snapshot before compaction.' },
       { key: 'taskLifecycleLog', type: 'boolean', default: true, pluginOption: 'maintenance_task_lifecycle_log', description: 'task-lifecycle-log (TaskCreated/TaskCompleted): append task events to the per-session history ledger.' },
-      { key: 'sessionEndReaper', type: 'boolean', default: true, env: 'ANTI_HALL_SESSION_END_REAPER', pluginOption: 'maintenance_session_end_reaper', description: 'session-end-mcp-reaper (SessionEnd): kill orphaned MCP-server processes this session left behind.' },
+      { key: 'sessionEndReaper', type: 'boolean', default: true, env: 'ANTIHALL_SESSION_END_REAPER', envAliases: ['ANTI_HALL_SESSION_END_REAPER'], pluginOption: 'maintenance_session_end_reaper', description: 'session-end-mcp-reaper (SessionEnd): kill orphaned MCP-server processes this session left behind.' },
     ],
   },
   {
@@ -449,8 +452,8 @@ const NOT_TOGGLEABLE = [
   { name: 'coordinator-detect', reason: 'shared library that tells coordinator from subagent for command-guard / edit-guard; not a hook.' },
   { name: 'omc-detect', reason: 'shared library that lets task-guard / tasklist-guard defer to an active OMC loop; turning it off would deadlock those guards against the loop.' },
   { name: 'phase-tracker', reason: 'never blocks or injects; records spawns that the statusline phase bar reads. Off would only break the statusline.' },
-  { name: 'fable-availability', reason: 'records whether a Fable model exists for model routing and skills; no output of its own.' },
-  { name: 'codex-availability', reason: 'records whether the codex CLI is on PATH for routing and skills; no output of its own.' },
+  { name: 'fable-availability', reason: 'records whether a Fable model exists for model routing and skills; injects a SessionStart context note and has no other output.' },
+  { name: 'codex-availability', reason: 'records whether the codex CLI is on PATH for routing and skills; injects a SessionStart context note and has no other output.' },
   { name: 'emit-dedupe-reset', reason: 'resets the emit-dedupe state after a context loss; off would hide DevSwarm blocks the model no longer holds. Use guards.emitDedupe instead.' },
   { name: 'agent-watchdog', reason: 'a manual helper script, not a registered hook; it only runs when you call it.' },
   { name: 'command-guard data-safety sub-guards', reason: 'DevSwarm read/send/subagent-mailbox guards prevent inbox cursor loss; they keep their own per-guard skip.json names. The stash guard is armed by guards.stashGuard.' },

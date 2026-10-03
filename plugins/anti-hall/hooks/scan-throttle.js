@@ -36,7 +36,7 @@
 //      segment splitter below skips heredoc bodies as opaque data and is
 //      quote-aware), so a scan-looking command that only appears as literal
 //      text/data is never matched.
-//   5. Kill switch: ANTI_HALL_SCAN_THROTTLE=0, or setting guards.scanThrottle=false,
+//   5. Kill switch: ANTIHALL_SCAN_THROTTLE=0 (deprecated alias ANTI_HALL_SCAN_THROTTLE), or setting guards.scanThrottle=false,
 //      disables this hook entirely.
 //
 // COMPOSITION WITH OTHER PreToolUse:Bash HOOKS: because this hook emits only
@@ -269,7 +269,7 @@ function emit(hookSpecificOutputExtra) {
 }
 
 function main() {
-  // Setting guards.scanThrottle (env ANTI_HALL_SCAN_THROTTLE=0 still wins).
+  // Setting guards.scanThrottle (env ANTIHALL_SCAN_THROTTLE=0 (deprecated alias ANTI_HALL_SCAN_THROTTLE) still wins).
   // Fail-open: any error runs the hook.
   try { if (!require('./lib/settings.js').enabled('guards', 'scanThrottle')) return; } catch (_) { /* run */ }
 
