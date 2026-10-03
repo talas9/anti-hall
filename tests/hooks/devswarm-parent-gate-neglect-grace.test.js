@@ -16,6 +16,7 @@
 // axis handled earlier in main()), a corroborated stale/escalated verdict,
 // or unread mail older than the grace window.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

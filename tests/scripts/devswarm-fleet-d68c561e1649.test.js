@@ -13,6 +13,7 @@
 //   DEVSWARM_ANTIHALL_DIR=<path>/repo-orig             node --test d68c561e1649.test.js
 //   DEVSWARM_ANTIHALL_DIR=<path>/repo-d68c561e1649     node --test d68c561e1649.test.js
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

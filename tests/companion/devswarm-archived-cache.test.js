@@ -16,6 +16,7 @@
 //   M2: make writeActiveCache MERGE instead of replace -> "a newer sweep REPLACES".
 //   M3: accept a record with no id -> "malformed records are dropped".
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('fs');

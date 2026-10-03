@@ -16,6 +16,7 @@
 // `repoKey` is the real, correctly-keyed value — the nudge reads the SAME
 // modern summaries/<repoKey>.json file a normal (non-deleted) cwd would.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

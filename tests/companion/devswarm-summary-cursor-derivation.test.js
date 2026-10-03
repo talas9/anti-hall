@@ -23,6 +23,7 @@
 // instant. total is NOT sourced from any cursor — it is an independent count
 // that keeps growing regardless of which reader is asking.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

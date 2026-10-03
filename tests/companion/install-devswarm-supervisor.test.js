@@ -2,6 +2,7 @@
 // install-devswarm-supervisor pure-builder tests. No real launchctl/systemctl/fs
 // writes — only the text builders + the interval clamp, with a nasty path.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const path = require('node:path');

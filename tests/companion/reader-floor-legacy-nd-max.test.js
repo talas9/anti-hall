@@ -14,6 +14,7 @@
 //       position (it holds store-namespace values)
 //   (d) update.js's reader-floor-repair stage runs WITHOUT a DevSwarm env
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

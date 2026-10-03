@@ -24,6 +24,7 @@
 // (tests/helpers/fake-hivecontrol.js, or a small inline stand-in for the
 // retry case) injected via PATH — the real hivecontrol is NEVER spawned.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

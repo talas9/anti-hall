@@ -7,6 +7,7 @@
 // (the DevSwarm CLI's OWN version vs anti-hall's integration baseline) —
 // unrelated axis, this compares anti-hall's OWN build across machines/sessions.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

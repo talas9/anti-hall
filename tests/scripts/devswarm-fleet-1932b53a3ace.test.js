@@ -23,6 +23,7 @@
 // one-hop-redirect resolution (via resolveSendTarget, ambiguity refusal
 // included) is unchanged for every non-exact arg.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const assert = require('node:assert');
 const test = require('node:test');
 const fs = require('node:fs');

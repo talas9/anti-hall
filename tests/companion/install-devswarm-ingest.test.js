@@ -5,6 +5,7 @@
 // same fixed target) and a capability-scan-reports-it check. The subprocess runs
 // with an isolated HOME so no real scheduler/unit is ever touched.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

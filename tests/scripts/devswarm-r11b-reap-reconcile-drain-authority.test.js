@@ -44,6 +44,7 @@
 //    heartbeat as this spawn's launch evidence, and `spawnLaunchWaitMs` had no
 //    upper bound (a synchronous Atomics.wait for as long as the env said).
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

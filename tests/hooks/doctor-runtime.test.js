@@ -6,6 +6,7 @@
 // enumeration/scheduler checks are stubbed. sqlite-specific cases are gated on
 // store.sqliteAvailable() (skipped on node < 22.5-ish where node:sqlite is absent).
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

@@ -17,6 +17,7 @@
 // This file is scoped to ONLY the write_seq residual — the P1a/P1b/P2 fixes it
 // builds on are already covered by devswarm-fold-race.test.js.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

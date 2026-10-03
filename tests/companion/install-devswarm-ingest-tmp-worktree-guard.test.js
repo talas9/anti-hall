@@ -14,6 +14,7 @@
 //       already-installed unit whose WorkingDirectory is under a tmp root, using a
 //       fake LaunchAgents dir under an isolated HOME — never the real launchctl.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

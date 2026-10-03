@@ -6,6 +6,7 @@
 // replies nobody read. Pins: the child label, the Primary label, the fail-open
 // fallback, the display alias, and the seeded-bad-state repair migration.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

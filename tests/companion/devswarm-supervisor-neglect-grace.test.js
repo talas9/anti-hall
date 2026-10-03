@@ -41,6 +41,7 @@
 //       insufficient, which is why the negative control below asserts
 //       pokeOrEscalate WAS called with archive_ready explicitly false.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

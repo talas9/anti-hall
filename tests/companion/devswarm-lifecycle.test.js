@@ -7,6 +7,7 @@
 //   fresh, exact plan, refuses an automated caller, re-verifies each row, logs,
 //   tombstones. The hivecontrol binary is ALWAYS a PATH-injected fake.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test, after } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

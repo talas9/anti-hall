@@ -4,6 +4,7 @@
 // carries the NO MAILBOX ... instruction in `warnings`. Healthy coverage, a
 // child caller and a non-Claude agent get no warning; existing keys unchanged.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

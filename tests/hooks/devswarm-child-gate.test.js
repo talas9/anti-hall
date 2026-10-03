@@ -4,6 +4,7 @@
 // Primary sessions, non-DevSwarm sessions, and malformed stdin must all be silent
 // no-ops (fail-open, exit 0). The cap must never hard-loop the child.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

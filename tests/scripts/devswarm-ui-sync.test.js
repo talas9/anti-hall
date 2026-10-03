@@ -10,6 +10,7 @@
 //   parent-inbox: the ask appears once per session per set, only on conflict /
 //   unreadable app DB
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

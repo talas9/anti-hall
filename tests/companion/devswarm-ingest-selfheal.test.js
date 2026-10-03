@@ -23,6 +23,7 @@
 // as a real child process (spawn-hook.js) since its own top-level `main();
 // process.exit(0);` runs unconditionally on require().
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

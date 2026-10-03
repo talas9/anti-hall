@@ -3,6 +3,7 @@
 // old message BODIES; rows/positions/hashes stay). Every test seeds a store in an
 // isolated tmp HOME; nothing here touches the real ~/.anti-hall.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

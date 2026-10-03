@@ -6,6 +6,7 @@
 // (warning + send/ack/spawn refused until `primary takeover`); unknown liveness
 // warns and does not adopt; a stale resume is named.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

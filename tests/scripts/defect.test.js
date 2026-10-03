@@ -2,6 +2,7 @@
 // anti-hall :: defect channel tests — hooks/lib/defect-store.js,
 // scripts/defect.js (CLI), hooks/defect-nudge.js (SessionStart nudge).
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

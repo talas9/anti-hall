@@ -11,6 +11,7 @@
 // verification-step ERROR (as opposed to a positive absence) degrades to
 // "unverified", never to a false failure.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

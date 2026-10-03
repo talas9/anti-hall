@@ -16,6 +16,7 @@
 // (see tests/hooks/jev-triage.test.js's header comment for the same
 // documented deadlock and its fix).
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const http = require('node:http');

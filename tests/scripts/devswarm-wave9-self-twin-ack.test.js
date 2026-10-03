@@ -27,6 +27,7 @@
 // This test is RED on the pre-fix source (row re-delivered on call #2, twin
 // cursor still 0) and GREEN after.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

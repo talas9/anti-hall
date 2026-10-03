@@ -6,6 +6,7 @@
 // real store API, and assert the new row parses and is counted while the torn
 // row stays skipped (it was already lost at crash time — no salvage).
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

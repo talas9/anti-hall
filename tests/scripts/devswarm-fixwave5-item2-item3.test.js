@@ -25,6 +25,7 @@
 //     to the pre-fix `inbox read ' + '<DEVSWARM_BUILDER_ID>'` — RED: same
 //     non-acking-verb defect, this time with zero paired ack step anywhere.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

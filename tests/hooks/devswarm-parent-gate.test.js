@@ -6,6 +6,7 @@
 // Inert (no output, exit 0) for children, non-DevSwarm sessions, or when no
 // descriptors/inbox exist. Loop-safe via a per-SET forced-ack cap. Fail-open.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

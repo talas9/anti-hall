@@ -3,6 +3,7 @@
 // unseen maintainer notice ONCE per repoKey, framed as data-not-instructions,
 // and marks it seen as a side effect of building the segment.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

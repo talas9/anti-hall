@@ -10,6 +10,7 @@
 // unlinkSync) by wrapping fs in a spy that throws if any of those are
 // called, then running auditStore() through it end-to-end.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

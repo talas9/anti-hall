@@ -6,6 +6,7 @@
 //   (d) after a sync: drift, conflict, message gaps, pending app deletions; stale sync WARN
 //   (e) never writes
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

@@ -4,6 +4,7 @@
 // STALE requires BOTH signals idle AND a pending unread backlog. Liveness is
 // uuid-SCOPED (only the target's own <sessionId>.jsonl). Workaround for #39755.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

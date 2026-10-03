@@ -14,6 +14,7 @@
 //   (3) a child on the Primary's worktree still never acks the anchor while the
 //       Primary's recorded session is alive
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

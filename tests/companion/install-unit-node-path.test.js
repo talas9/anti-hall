@@ -54,6 +54,7 @@
 //                                         is still never emitted'
 // ---------------------------------------------------------------------------
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const path = require('node:path');

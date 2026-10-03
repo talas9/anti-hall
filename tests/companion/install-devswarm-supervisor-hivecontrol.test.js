@@ -25,6 +25,7 @@
 // explicit args, and the one resolver test injects io.lookupRun so no real shell
 // is spawned either.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const path = require('node:path');

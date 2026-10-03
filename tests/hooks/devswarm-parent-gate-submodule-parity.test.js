@@ -38,6 +38,7 @@
 // clone, and for any other developer — never only during the fix author's
 // own verification run with a full local clone.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { execFileSync } = require('node:child_process');

@@ -5,6 +5,7 @@
 // (PLAN.md Phase 2: unit tests for BOTH backends, force the journal path); sqlite
 // is only exercised when node:sqlite is actually present (skipped on 18/20).
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

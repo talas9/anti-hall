@@ -8,6 +8,7 @@
 // side only; roster/app-state/doctor/--repair surface and repair the mismatch.
 // Every hivecontrol call goes through a FAKE binary on PATH; HOME is a tmp dir.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

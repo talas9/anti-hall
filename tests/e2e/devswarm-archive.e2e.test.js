@@ -30,6 +30,7 @@
 // Isolation: every test uses a fresh tmp HOME (tests/e2e/helpers.js's
 // makeHome()) and rm()'s it in a finally, mirroring the sibling suite.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

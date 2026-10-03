@@ -33,6 +33,7 @@
 // per-project store — the D24 mesh path, not the non-git per-id legacy
 // fallback) with TWO registry rows sharing ONE worktree.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

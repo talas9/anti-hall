@@ -14,6 +14,7 @@
 // the old shape must never erase keys it does not own, and interleaved
 // old/new writes must never produce a wake on (re)arm.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

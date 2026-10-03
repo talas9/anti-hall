@@ -4,6 +4,7 @@
 // is a branch name, so the id-keyed archive predicates never match it; the
 // roster joins it to the archived descriptor by worktreePath / meshId instead.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

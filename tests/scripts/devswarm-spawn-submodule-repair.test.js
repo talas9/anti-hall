@@ -6,6 +6,7 @@
 // `worktree add` runs, so git sees a NON-EMPTY path. These tests reproduce that
 // ordering with real git + real submodules and pin the loss-free repair.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

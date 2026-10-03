@@ -15,6 +15,7 @@
 //   - no plan -> evaluateChild/superviseStraying return null.
 // Isolated HOME everywhere (every home is a temp dir).
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

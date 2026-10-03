@@ -19,6 +19,7 @@
 // The store handle below is a STUB that COUNTS body reads — the assertion is a
 // measured call count, not a timing.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

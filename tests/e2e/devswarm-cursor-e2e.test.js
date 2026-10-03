@@ -9,6 +9,7 @@
 //   - a `read-primary` count of 0 is trustworthy for that instance, which is
 //     what retires the interim fleet rule ("count 0 is not proof of empty").
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

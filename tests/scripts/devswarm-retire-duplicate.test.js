@@ -17,6 +17,7 @@
 // journal backend (deterministic on every node version), and REAL git worktrees as
 // ctx.cwd (repoKeyForWorktree spawns a real git). Mirrors devswarm-send.test.js.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

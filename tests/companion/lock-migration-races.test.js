@@ -12,6 +12,7 @@
 // call's read of the holder), tighter than two real processes can guarantee.
 // All homes are fresh tmpdirs.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

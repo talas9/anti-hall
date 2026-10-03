@@ -58,6 +58,7 @@
 //       the ATTRIBUTION emission in buildReason)
 //       -> kills "ATTRIBUTION line names every contributing sibling...".
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

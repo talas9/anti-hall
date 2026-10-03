@@ -11,6 +11,7 @@
 // resolver every key path goes through) so paths under the registered worktree
 // resolve to nothing, exactly as a failed git lookup did.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

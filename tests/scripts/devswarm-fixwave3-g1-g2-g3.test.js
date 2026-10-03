@@ -137,6 +137,7 @@
 // delivers it completely — then proves each of the three variants above is
 // killed by mutating the real source and confirming this test goes RED.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

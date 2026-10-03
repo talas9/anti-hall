@@ -2,6 +2,7 @@
 // jev-report.js — pure-function aggregation tests against a fixture log
 // (in-process, no fs/network — buildReport() takes rows directly).
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

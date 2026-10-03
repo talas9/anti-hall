@@ -17,6 +17,7 @@
 // negative and an unknown were indistinguishable, even though git ancestry
 // may already prove the merge once mergedVerified is populated.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 

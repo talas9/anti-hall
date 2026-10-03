@@ -24,6 +24,7 @@
 // the native message queue) — every monitor run and every binary lookup is
 // injected. No ambient ~/.anti-hall or DEVSWARM_* reliance.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

@@ -15,6 +15,7 @@
 // Fixture style mirrors devswarm-archive-group.test.js (real git worktrees as cwd —
 // repoKeyForWorktree spawns git).
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

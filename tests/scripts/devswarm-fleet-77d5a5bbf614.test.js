@@ -21,6 +21,7 @@
 // `known:false`, `storeUnavailable:true`, `storeUnavailableReason:<code>`
 // instead of reporting a clean empty/ok result.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const assert = require('node:assert');
 const test = require('node:test');
 const fs = require('node:fs');

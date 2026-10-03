@@ -12,6 +12,7 @@
 // that still has a live identity family, a live-workspace orphan, and the broadcast
 // partition are all unaffected.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

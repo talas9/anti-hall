@@ -9,6 +9,7 @@
 // `inbox read-primary --format text`. The JSON default (no --quiet) stays
 // byte-identical — this is a strictly additive rendering.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

@@ -22,6 +22,7 @@
 // for this hook's actual per-turn cadence, plus two correctness bugs) — this
 // file no longer tests any caching behavior.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test, after } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

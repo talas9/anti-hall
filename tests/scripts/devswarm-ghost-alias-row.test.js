@@ -9,6 +9,7 @@
 // label to the canonical id, the roster shows one row, the repair folds a label
 // stamped with a foreign live session, and messages under the alias survive.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

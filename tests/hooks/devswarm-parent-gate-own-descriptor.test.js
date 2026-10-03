@@ -21,6 +21,7 @@
 // still guards against (a live, fully-caught-up reader whose sibling readers'
 // floor legitimately lags behind it).
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

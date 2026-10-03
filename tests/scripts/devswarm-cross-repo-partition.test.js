@@ -27,6 +27,7 @@
 // open / cursor write), and `inbox count`/`read` report the store side as
 // UNKNOWN (`known:false` + `storeUnavailable`) instead of 0.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

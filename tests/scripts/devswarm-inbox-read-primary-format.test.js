@@ -10,6 +10,7 @@
 // that branch lives in main(), not in run(); `--ack-after-print` is
 // exercised in-process via cli.run since it is a dispatch-layer behavior.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

@@ -3,6 +3,7 @@
 // broadcast channel. Every test seeds an isolated tmp HOME; nothing here
 // touches the real ~/.anti-hall or a real checkout's plugin.json.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

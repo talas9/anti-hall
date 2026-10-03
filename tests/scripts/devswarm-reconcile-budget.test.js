@@ -9,6 +9,7 @@
 // via cli.run(argv, ctx) with an injected tmp HOME + forced journal backend,
 // same posture as devswarm-lifecycle.test.js.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

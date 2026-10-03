@@ -11,6 +11,7 @@
 //
 // HERMETIC: every fixture HOME is a tmp dir; HOME/USERPROFILE are isolated.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

@@ -29,6 +29,7 @@
 // naming the read-primary scoping rule that makes a TWIN's channel need an
 // explicit per-id ack in the first place.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

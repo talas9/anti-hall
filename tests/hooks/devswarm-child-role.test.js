@@ -5,6 +5,7 @@
 // (devswarm-detect). A child additionally gets an idle-self-report nudge. Only a
 // non-DevSwarm session or malformed stdin is a silent no-op (fail-open, exit 0).
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

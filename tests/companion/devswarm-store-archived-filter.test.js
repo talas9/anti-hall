@@ -6,6 +6,7 @@
 // foldArchivedRegistryRows (devswarm.js, invoked only from doctor/update), and that
 // this can never blind a still-live workspace.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

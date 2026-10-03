@@ -87,6 +87,7 @@
 //       KILLED by "F5" below (the call throws reading `.hash` off `null`,
 //       or a null literal appears in `meshMessages`).
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

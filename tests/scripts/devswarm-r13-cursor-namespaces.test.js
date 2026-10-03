@@ -24,6 +24,7 @@
 //       live session onto the twin, making the twin read as live and blocking
 //       the ack gate permanently.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

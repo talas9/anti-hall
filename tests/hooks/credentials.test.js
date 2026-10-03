@@ -3,6 +3,7 @@
 // notice. Every case injects env/allowLegacy explicitly; HOME is a tmp dir so
 // nothing reads the real machine's key files or settings.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

@@ -20,6 +20,7 @@
 //      "S's max-effTs question is unanswered". The property test below is the real
 //      statement of that claim; a naive tail-slice would fail it.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

@@ -20,6 +20,7 @@
 //   M4: drop the repos-root conjunct -> kills "a row outside `.devswarm/repos/`".
 //   M5: drop the grace conjunct -> kills "a row registered AFTER the snapshot".
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

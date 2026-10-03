@@ -8,6 +8,7 @@
 //       forever. Every eviction is journaled.
 // Plus the filename parser's six-hex requirement and all prior cursor forms.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

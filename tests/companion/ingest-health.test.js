@@ -8,6 +8,7 @@
 // wrapper in scripts/devswarm.js (a REAL git repo, since repoKeyForWorktree
 // spawns `git rev-parse --git-common-dir` — mirrors tests/scripts/devswarm-send.test.js).
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

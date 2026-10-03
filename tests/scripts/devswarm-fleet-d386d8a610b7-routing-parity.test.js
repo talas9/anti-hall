@@ -17,6 +17,7 @@
 // on-disk archived/<id>.json + workspaces/<id>.json pair — no CLI subprocess
 // needed. Isolates HOME to a scratch temp dir.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');

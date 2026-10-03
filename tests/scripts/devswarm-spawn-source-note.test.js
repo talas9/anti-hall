@@ -4,6 +4,7 @@
 // DevSwarm app (active or archived). Silent for the default branch, for a source
 // with no workspace, and when the lookup throws.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

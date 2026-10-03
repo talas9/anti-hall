@@ -3,6 +3,7 @@
 // archive-ignore, liveness). Isolated tmp HOME per test; the app DB is
 // disabled ('off') unless a test builds its own fixture DB.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

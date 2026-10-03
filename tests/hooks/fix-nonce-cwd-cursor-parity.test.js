@@ -35,6 +35,7 @@
 // proves the test is live, and that was done once, out-of-band, exactly as
 // the task required.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');

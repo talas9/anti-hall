@@ -3,6 +3,7 @@
 // children but no watcher and/or no recent inbox tick is told, per prompt, with
 // the shared emit-dedupe keepalive. Real spawned hook, isolated HOME, temp repo.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

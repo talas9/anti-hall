@@ -21,6 +21,7 @@
 // is covered instead by their own existing hook-level test suites (which
 // already spawn them as subprocesses with an isolated HOME env).
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const { test } = require('node:test');
 const assert = require('node:assert');
 const os = require('node:os');

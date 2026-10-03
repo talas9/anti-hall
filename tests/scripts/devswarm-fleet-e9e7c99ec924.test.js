@@ -9,6 +9,7 @@
 // MODULE_UNDER_TEST selects HEAD vs the patched copy (see d56bfaac2da0.test.js
 // for the same convention). Isolates HOME to a scratch temp dir.
 
+require('../helpers/isolate-home.js'); // HOME -> empty temp dir: this file reads home-dir state
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
