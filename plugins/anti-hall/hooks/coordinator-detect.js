@@ -61,6 +61,21 @@ function isSubagentByPayload(payload) {
 // Coordinator = NOT a subagent, running under a recognized interactive entrypoint.
 // Takes the parsed hook payload so it can use the payload's agent markers.
 function isCoordinator(payload) {
+  // CODEX apply_patch: only Codex sends tool_name "apply_patch", and it stamps
+  // agent_id/agent_type on a hook payload ONLY inside a spawned subagent
+  // (captured from codex-cli 0.160.0: main-thread payload has neither key, a
+  // spawn_agent child's has both; source: codex-rs/core/src/hook_runtime.rs
+  // thread_spawn_subagent_hook_context, first stable rust-v0.134.0). Codex sets
+  // no CLAUDE_CODE_ENTRYPOINT, so the env checks below would always fail open
+  // there. A Codex process that DOES carry CLAUDE_CODE_ENTRYPOINT was launched
+  // from inside a Claude Code session (e.g. a Claude-side Codex rescue worker)
+  // and is that session's delegated worker, not a coordinator -> allow.
+  if (payload && payload.tool_name === 'apply_patch') {
+    if (isSubagentByPayload(payload)) return false;
+    if (process.env.CLAUDE_CODE_ENTRYPOINT) return false;
+    return true;
+  }
+
   // Subagents are never the coordinator — allow them (the whole point of the guard
   // is to keep the MAIN thread clean by pushing heavy work down to subagents).
   if (isSubagent(payload)) return false;

@@ -57,8 +57,15 @@ test('install-codex: writes supported Codex hook subset and enables hooks featur
     const preCommands = hooks.PreToolUse.flatMap(g => g.hooks || []).map(h => h.command).join('\n');
     assert.match(preCommands, /git-guard\.js/);
     assert.match(preCommands, /command-guard\.js/);
-    assert.doesNotMatch(preCommands, /api-guard\.js/);
-    assert.doesNotMatch(preCommands, /ship-it-guard\.js/);
+    // Codex apply_patch edit guards (codex-cli >= 0.134: apply_patch PreToolUse +
+    // agent_id on subagent payloads), registered on matcher "apply_patch".
+    const patchGroups = hooks.PreToolUse.filter(g => g.matcher === 'apply_patch');
+    const patchCommands = patchGroups.flatMap(g => g.hooks || []).map(h => h.command).join('\n');
+    assert.match(patchCommands, /edit-guard\.js/);
+    assert.match(patchCommands, /api-guard\.js/);
+    assert.match(patchCommands, /ship-it-guard\.js/);
+    const bashCommands = hooks.PreToolUse.filter(g => g.matcher === 'Bash').flatMap(g => g.hooks || []).map(h => h.command).join('\n');
+    assert.doesNotMatch(bashCommands, /(edit|api|ship-it)-guard\.js/);
 
     const startCommands = hooks.SessionStart.flatMap(g => g.hooks || []).map(h => h.command).join('\n');
     assert.match(startCommands, /handover-resume\.js/, 'handover-resume must be registered on Codex SessionStart');

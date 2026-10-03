@@ -49,8 +49,11 @@
 //   primitive: `ln -s hooks/command-guard.js CONTINUE-HERE.md` turns an allowed
 //   name into a write-through to any file on disk.
 //
-// Contract (Claude Code PreToolUse hook):
+// Contract (Claude Code PreToolUse hook; also Codex PreToolUse matcher apply_patch):
 //   stdin  : JSON { tool_name, tool_input: { file_path | notebook_path, ... } }
+//            Codex: { tool_name: "apply_patch", tool_input: { command: <patch> } } —
+//            every patch target is checked (lib/codex-apply-patch.js); an
+//            unparseable patch is BLOCKED on the main thread (fail closed).
 //   stdout : JSON { decision: "block", reason: "..." } | nothing
 //   exit 2 : to block (decision field); exit 0: allow
 //   Fail-open on ANY error (exit 0).
@@ -873,13 +876,35 @@ function main() {
   }
 
   const toolName = payload && payload.tool_name;
-  if (!EDIT_TOOLS.has(toolName)) process.exit(0);
+  // Codex file edits arrive as tool_name "apply_patch" with the raw patch text in
+  // tool_input.command (see lib/codex-apply-patch.js). Claude never sends it.
+  const codexPatch = toolName === 'apply_patch';
+  if (!EDIT_TOOLS.has(toolName) && !codexPatch) process.exit(0);
+  // Codex honors exit 2 only with the reason on STDERR; it reads stdout JSON on
+  // exit 0 only (codex-rs/hooks/src/events/pre_tool_use.rs, rust-v0.160.0), so a
+  // stdout-only block is ignored there. Claude output is unchanged.
+  const block = (reason) => {
+    fs.writeSync(1, JSON.stringify({ decision: 'block', reason }) + '\n');
+    if (codexPatch) fs.writeSync(2, reason + '\n');
+    process.exit(2);
+  };
 
   const toolInput = (payload && payload.tool_input) || {};
-  const filePath = toolName === 'NotebookEdit'
-    ? (toolInput.notebook_path || '')
-    : (toolInput.file_path || '');
   const cwd = (payload && payload.cwd) || '';
+  // One target for Claude tools; every Add/Update/Delete path and Move-to
+  // destination for a Codex patch, resolved against cwd the way Codex does.
+  let filePaths;
+  let patchError = null;
+  if (codexPatch) {
+    const { parseApplyPatch, patchTargetPaths } = require('./lib/codex-apply-patch.js');
+    const parsed = parseApplyPatch(toolInput.command);
+    filePaths = parsed.ok ? patchTargetPaths(parsed.files, cwd) : [];
+    if (!parsed.ok) patchError = parsed.error;
+  } else {
+    filePaths = [toolName === 'NotebookEdit'
+      ? (toolInput.notebook_path || '')
+      : (toolInput.file_path || '')];
+  }
 
   // LAUNCHER DIR DENY — applies in BOTH coordinator AND subagent context
   // (unlike everything else below, which is coordinator-only), because
@@ -887,23 +912,32 @@ function main() {
   // itself (update / doctor --repair); overwriting one runs arbitrary code
   // under a trusted name on the next invocation. Checked before the
   // isCoordinator gate on purpose (R3A1-3).
-  if (resolvesIntoLauncherBinDir(filePath, cwd)) {
-    fs.writeSync(1, JSON.stringify({
-      decision: 'block',
-      reason:
-        'anti-hall edit-guard: BLOCKED. This ' + toolName + ' targets ' +
-        '~/.anti-hall/bin/, the stable launcher directory anti-hall installs ' +
-        'and manages itself (update / doctor --repair). Overwriting a launcher ' +
-        'file here would run arbitrary code under a trusted name on the next ' +
-        'invocation. Leave that directory alone; the rest of .anti-hall/** ' +
-        '(handovers, progress, history, state) stays writable as usual.',
-    }) + '\n');
-    process.exit(2);
+  if (filePaths.some((p) => resolvesIntoLauncherBinDir(p, cwd))) {
+    block(
+      'anti-hall edit-guard: BLOCKED. This ' + toolName + ' targets ' +
+      '~/.anti-hall/bin/, the stable launcher directory anti-hall installs ' +
+      'and manages itself (update / doctor --repair). Overwriting a launcher ' +
+      'file here would run arbitrary code under a trusted name on the next ' +
+      'invocation. Leave that directory alone; the rest of .anti-hall/** ' +
+      '(handovers, progress, history, state) stays writable as usual.'
+    );
   }
 
   // Only block in coordinator context (subagents pass through) past this point.
   const { isCoordinator } = require('./coordinator-detect.js');
   if (!isCoordinator(payload)) process.exit(0);
+
+  // A Codex patch this parser rejects fails CLOSED on the main thread: its
+  // targets cannot be checked, and Codex's own parser (which this one ports)
+  // rejects the same text, so the block costs nothing.
+  if (patchError !== null) {
+    block(
+      'anti-hall edit-guard: could not parse this apply_patch (' + patchError + '), so its ' +
+      'target files cannot be checked against the edit-delegation rule. Send a well-formed ' +
+      'patch (*** Begin Patch ... *** End Patch), or delegate the edit to a subagent. (tool: ' +
+      toolName + ')'
+    );
+  }
 
   // Advisory inline-work nudge (devswarm.inlineWorkNudge, Primary only, once per
   // session). Emitted only on an ALLOWED call (exit 0): a blocked call already
@@ -921,23 +955,19 @@ function main() {
     }
   } catch (_) { /* fail-open */ }
 
-  const verdict = editVerdict(filePath, cwd, payload);
-  if (verdict === 'allow') process.exit(0);
-  if (verdict === 'block-self-edit') {
-    fs.writeSync(1, JSON.stringify({
-      decision: 'block',
-      reason:
+  for (const filePath of filePaths) {
+    const verdict = editVerdict(filePath, cwd, payload);
+    if (verdict === 'allow') continue;
+    if (verdict === 'block-self-edit') {
+      block(
         'EDIT-ALLOW SELF-EDIT: .anti-hall/edit-allow.json decides which files the main thread ' +
         'may edit directly, so the main thread never edits it. Ask the user to change it (or ' +
         'delegate the change to a subagent), then the user re-trusts it with `node ' +
-        '<plugin-root>/scripts/settings.js trust-edit-allow <repo> --confirmed`. (tool: ' + toolName + ')',
-    }) + '\n');
-    process.exit(2);
-  }
-  if (verdict === 'block-handover') {
-    fs.writeSync(1, JSON.stringify({
-      decision: 'block',
-      reason:
+        '<plugin-root>/scripts/settings.js trust-edit-allow <repo> --confirmed`. (tool: ' + toolName + ')'
+      );
+    }
+    if (verdict === 'block-handover') {
+      block(
         'HANDOVER-LOCATION RULE: a NEW session-handover doc belongs under ' +
         '.anti-hall/handovers/<YYYY-MM-DD>/<session-id>/HANDOVER.md (see the `handover` skill, ' +
         'which computes <date>/<session-id> for you) — not at this path. Write ' +
@@ -945,12 +975,12 @@ function main() {
         'if the project wants one. If this is an intentional exception, honor it via ' +
         "the existing skip mechanism — run " + skipCommand('edit-guard') + " " +
         '(~/.anti-hall/skip.json, 15-min TTL), then retry. Never skip on your own ' +
-        'initiative. (tool: ' + toolName + ')',
-    }) + '\n');
-    process.exit(2);
+        'initiative. (tool: ' + toolName + ')'
+      );
+    }
+    block(delegationReason(toolName, cwd));
   }
-  fs.writeSync(1, JSON.stringify({ decision: 'block', reason: delegationReason(toolName, cwd) }) + '\n');
-  process.exit(2);
+  process.exit(0);
 }
 
 if (require.main === module) {

@@ -194,9 +194,9 @@ output). "Setting" is the key that turns the hook off (section 1). "Skip" is the
 | `merge-gate` | PreToolUse(Bash) | block | `guards.mergeGate` (opt-in) | `merge-gate` | yes |
 | `coordinator-work-guard` | PreToolUse(Bash), PostToolUse(Bash) | block, context | `guards.coordinatorWorkWindowMinutes` (0 = off) | `coordinator-work-guard` | no |
 | `scan-throttle` | PreToolUse(Bash) | context | `guards.scanThrottle` | — | no |
-| `api-guard` | PreToolUse(Write/Edit/MultiEdit) | block | `guards.apiGuard` | `api-guard` | no |
-| `ship-it-guard` | PreToolUse(Write/Edit/MultiEdit) | block, context | `guards.shipitGate` (opt-in) | `ship-it-guard` | no |
-| `edit-guard` | PreToolUse(Write/Edit/MultiEdit/NotebookEdit) | block, context | `safety.editGuard` | `edit-guard` | no |
+| `api-guard` | PreToolUse(Write/Edit/MultiEdit; Codex: apply_patch) | block | `guards.apiGuard` | `api-guard` | yes (apply_patch) |
+| `ship-it-guard` | PreToolUse(Write/Edit/MultiEdit; Codex: apply_patch) | block, context | `guards.shipitGate` (opt-in) | `ship-it-guard` | yes (apply_patch; existence gate only) |
+| `edit-guard` | PreToolUse(Write/Edit/MultiEdit/NotebookEdit; Codex: apply_patch) | block, context | `safety.editGuard` | `edit-guard` | yes (apply_patch) |
 | `inbox-read-guard` | PreToolUse(Read) | block | `devswarm.inboxReadGuard` | `devswarm-read-guard` | no |
 | `model-routing-guard` | PreToolUse(Agent), PreToolUse(Task) | block, context | `guards.modelRouting` | `model-routing-guard` | no |
 | `swarm-guard` | PreToolUse(Agent), PreToolUse(Task) | block, context | `safety.swarmGuard` | `swarm-guard` | no |
@@ -318,7 +318,7 @@ scripts** (`codex/hooks/hooks.json` points at `${PLUGIN_ROOT}/hooks/*.js`).
 
 | Difference | Reason |
 |---|---|
-| 21 hooks are Claude-only (the "no" rows in section 3) | Codex has no `TaskCreated`/`TaskCompleted`/`SubagentStart`/`SessionEnd`/`PostToolUseFailure` event, does not hard-run PreToolUse for edits, and has no `Agent`, `Task`, `Read`, `SendMessage`, `AskUserQuestion` or `TaskStop` matcher |
+| 18 hooks are Claude-only (the "no" rows in section 3) | Codex has no `TaskCreated`/`TaskCompleted`/`SubagentStart`/`SessionEnd`/`PostToolUseFailure` event, reports file edits only as `apply_patch` (edit-guard, api-guard and ship-it-guard's existence gate run there; shell writes bypass them), and has no `Agent`, `Task`, `Read`, `SendMessage`, `AskUserQuestion` or `TaskStop` matcher |
 | No `/config` on Codex | locked keys use `--confirmed` or the env var |
 | `deadly-loop-multi` is Claude-only | it multiplies the Claude trio |
 | Codex-only skills: `anti-hall-context-conserve`, `anti-hall-model-policy`, `anti-hall-omc`, `anti-hall-omx` | Codex-side orchestration and routing guidance |

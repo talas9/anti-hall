@@ -89,12 +89,8 @@ const CLAUDE_ONLY_ALLOWLIST = [
   // Codex PostToolUse payload contract and Codex coordinator detection are verified.
   { event: 'PreToolUse', file: 'coordinator-work-guard.js', reason: 'Codex PostToolUse payload contract and Codex coordinator detection are unverified (codex/README.md Parity Notes)' },
   { event: 'PostToolUse', file: 'coordinator-work-guard.js', reason: 'Codex PostToolUse payload contract and Codex coordinator detection are unverified (codex/README.md Parity Notes)' },
-  // PreToolUse edit-family matchers (Write/Edit/MultiEdit/NotebookEdit):
-  // install-codex.js's own header states the current Codex hook runtime does
-  // not hard-run PreToolUse for edit-family tools at all.
-  { event: 'PreToolUse', file: 'api-guard.js', reason: 'Write/Edit/MultiEdit matcher — Codex hook runtime does not hard-run PreToolUse for edits (install-codex.js header)' },
-  { event: 'PreToolUse', file: 'ship-it-guard.js', reason: 'Write/Edit/MultiEdit matcher — Codex hook runtime does not hard-run PreToolUse for edits (install-codex.js header)' },
-  { event: 'PreToolUse', file: 'edit-guard.js', reason: 'Write/Edit/MultiEdit/NotebookEdit matcher — Codex hook runtime does not hard-run PreToolUse for edits (install-codex.js header)' },
+  // (edit-guard / api-guard / ship-it-guard are no longer Claude-only: Codex
+  // runs them on its apply_patch matcher — see install-codex.js's header.)
   // PreToolUse Read: Read is a Claude Code tool name; Codex has no equivalent
   // matcher wired.
   { event: 'PreToolUse', file: 'ask-guard.js', reason: 'AskUserQuestion matcher — Codex has no ask tool, so there is no PreToolUse event to match' },

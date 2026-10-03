@@ -272,8 +272,8 @@ feature/KB touches this area:
 - PreToolUse(Agent|Task|Write|Edit|MultiEdit|NotebookEdit|Bash) — compact-declaration-guard [C]
 - PreToolUse(Bash)+PostToolUse(Bash) — git-guard [C], coordinator-work-guard
 - PreToolUse(Bash) — command-guard [C], merge-gate [C], scan-throttle
-- PreToolUse(Write|Edit|MultiEdit) — api-guard, ship-it-guard
-- PreToolUse(Write|Edit|MultiEdit|NotebookEdit) — edit-guard
+- PreToolUse(Write|Edit|MultiEdit) — api-guard [C], ship-it-guard [C]
+- PreToolUse(Write|Edit|MultiEdit|NotebookEdit) — edit-guard [C]
 - PreToolUse(Read) — inbox-read-guard
 - PreToolUse(Agent)+PreToolUse(Task) — model-routing-guard, swarm-guard, phase-tracker
 - PreToolUse(SendMessage) — devswarm-comms-guard

@@ -171,7 +171,7 @@ Sources: [config-reference](https://developers.openai.com/codex/config-reference
 ### 5.2 Hooks — Codex vs Claude (key divergence)
 - `PreToolUse` intercepts Bash, `apply_patch`, MCP **before** execution; can deny/rewrite/inject. Returns `"permissionDecision": "deny"` to block.
 - `PostToolUse` observes only; `"decision": "block"` replaces output. [Note 2026-08-22: this row describes Codex's own `PostToolUse`, not Claude Code's — not retested this session. For Claude Code's `PostToolUse` advisory-`additionalContext` delivery, see the `[CORRECTION 2026-08-22]` at §1.4 (`:47`).]
-- **DIVERGENCE FROM CLAUDE**: Codex `PreToolUse` currently **rejects `additionalContext`** (the Claude-style pattern is not yet supported) ([Codex hooks](https://developers.openai.com/codex/hooks), GitHub #19385).
+- **[CORRECTION 2026-10-03]** Codex `PreToolUse` **supports `hookSpecificOutput.additionalContext`** since rust-v0.129.0 (commit `af86be529` "Support PreToolUse additionalContext (#20692)"; field present in `codex-rs/hooks/schema/generated/pre-tool-use.command.output.schema.json` at rust-v0.160.0; [Codex hooks](https://developers.openai.com/codex/hooks): "To add model-visible context without blocking, return hookSpecificOutput.additionalContext"). The earlier "rejects `additionalContext`" note (GitHub #19385) predates that release. File edits reach PreToolUse as `tool_name: "apply_patch"` with the raw patch in `tool_input.command` (since rust-v0.124.0, #18391); subagent payloads carry `agent_id`/`agent_type` (since rust-v0.134.0, #22882).
 - **Important caveat**: "doesn't intercept all shell calls yet, only simpler ones" — complex piped commands may slip through. PreToolUse is a guardrail, **not airtight**.
 - Community confirms the harness-realization value: hooks turn governance from conversational ("remember the rule") to operational ("technically unavoidable at execution") ([Blake Crosley](https://blakecrosley.com/blog/codex-hooks-make-the-harness-real); [GitHub #14882](https://github.com/openai/codex/issues/14882)).
 
@@ -282,7 +282,7 @@ Compliance: **format > content > stylistic**. Compound multi-clause rules underp
 - **Disabling/timeout-ing a failing safety check** (leaks enforcement; fix the prerequisite).
 - **Trusting high token-probability** as factual confidence.
 
-**Cross-tool note:** Claude `PreToolUse` supports `additionalContext`; Codex `PreToolUse` currently does **not**, and Codex doesn't intercept all shell calls — design context-injection to be Claude-only and treat Codex hooks as guardrails, not airtight gates.
+**Cross-tool note:** both Claude and Codex `PreToolUse` support `additionalContext` (Codex since rust-v0.129.0, see §5.2), but Codex doesn't intercept all shell calls, and its edit hooks see only `apply_patch` (shell writes bypass them) — treat Codex hooks as guardrails, not airtight gates.
 
 ---
 

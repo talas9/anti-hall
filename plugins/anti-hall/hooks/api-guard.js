@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 'use strict';
-// api-guard.js — PreToolUse hook on Write/Edit/MultiEdit.
+// api-guard.js — PreToolUse hook on Write/Edit/MultiEdit (Claude) and
+// apply_patch (Codex; only the patch's added lines are checked, so an import that
+// sits outside the changed hunk is not seen — same fragment limit as an Edit's
+// new_string).
 //
 // THE MECHANICAL ANSWER TO API HALLUCINATION. The benchmark in the eval/ directory showed the
 // verify-first *prompt* does not reliably stop a model inventing non-existent
@@ -124,6 +127,18 @@ function newCodeChunks(payload) {
     const edits = Array.isArray(ti.edits) ? ti.edits : [];
     for (const e of edits) {
       if (e && typeof e.new_string === 'string') out.push({ file_path: fp, code: e.new_string });
+    }
+  } else if (tn === 'apply_patch') {
+    // Codex: one chunk per added/updated file = its "+" lines only (context and
+    // removed lines are existing code, not what the model is writing now). The
+    // language follows the Move-to destination when present. A patch the parser
+    // rejects yields no chunks -> fail open (Codex rejects that patch too).
+    const parsed = require('./lib/codex-apply-patch.js').parseApplyPatch(ti.command);
+    if (parsed.ok) {
+      for (const f of parsed.files) {
+        if (f.op === 'delete' || !f.addedLines.length) continue;
+        out.push({ file_path: f.moveTo !== null ? f.moveTo : f.path, code: f.addedLines.join('\n') + '\n' });
+      }
     }
   }
   return out;
@@ -487,6 +502,9 @@ function main() {
     'override once: write ~/.anti-hall/skip.json {"api-guard": <unix-ms-expiry>}.';
 
   fs.writeSync(1, JSON.stringify({ decision: 'block', reason }) + '\n');
+  // Codex honors exit 2 only with the reason on stderr (it reads stdout JSON on
+  // exit 0 only); Claude output is unchanged.
+  if (payload.tool_name === 'apply_patch') fs.writeSync(2, reason + '\n');
   process.exit(2);
 }
 

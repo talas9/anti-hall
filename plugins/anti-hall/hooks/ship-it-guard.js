@@ -31,7 +31,9 @@
 //      CLAUDE-ONLY BY DESIGN: PLAN.md's `## Phases` / `files:` structure is a
 //      Workflow-tool-era (Claude Code) artifact shape. The Codex port has no
 //      equivalent structured plan file, so this conformance-advisory mechanism
-//      is intentionally NOT mirrored to the Codex side in this change.
+//      is intentionally NOT mirrored to the Codex side. On Codex (tool_name
+//      "apply_patch", see lib/codex-apply-patch.js) only the EXISTENCE GATE runs,
+//      over every path the patch touches.
 //
 // HONEST LIMITS (read before trusting this):
 //   1. ENFORCES ARTIFACT-EXISTENCE ONLY (existence gate) — it checks that *a*
@@ -259,7 +261,17 @@ function main() {
   try { payload = JSON.parse(raw); } catch (_) { process.exit(0); }
 
   const cwd = (payload && typeof payload.cwd === 'string') ? payload.cwd : process.cwd();
-  const files = targetPaths(payload && payload.tool_input);
+  // Codex apply_patch: every Add/Update/Delete path + Move-to destination. A
+  // patch the parser rejects yields no paths -> fail open (Codex rejects it too).
+  const codexPatch = !!payload && payload.tool_name === 'apply_patch';
+  let files;
+  if (codexPatch) {
+    const { parseApplyPatch, patchTargetPaths } = require('./lib/codex-apply-patch.js');
+    const parsed = parseApplyPatch(payload.tool_input && payload.tool_input.command);
+    files = parsed.ok ? patchTargetPaths(parsed.files, cwd) : [];
+  } else {
+    files = targetPaths(payload && payload.tool_input);
+  }
   if (!files.length) process.exit(0);
 
   // 4. CODE files only — docs/tests/PLAN.md itself are never gated, by either
@@ -293,7 +305,7 @@ function main() {
   //    `# Plan` (as used by the existence-gate tests) has nothing to compare
   //    against, so it's skipped (fail-open), not treated as "everything is out
   //    of scope."
-  if (planPath) {
+  if (planPath && !codexPatch) { // conformance is Claude-only by design (header)
     let planContent = '';
     try { planContent = fs.readFileSync(planPath, 'utf8'); } catch (_) { planContent = ''; }
     const declared = parsePlanDeclaredFiles(planContent);

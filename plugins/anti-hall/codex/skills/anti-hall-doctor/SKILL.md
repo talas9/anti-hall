@@ -105,7 +105,7 @@ Interpretation:
 
 - `SessionStart`, `UserPromptSubmit`, `PreToolUse`, and `Stop` anti-hall entries in `.codex/hooks.json` mean the Codex hook subset is installed.
 - `[features].hooks = true` in Codex config means the current Codex runtime should load hooks.
-- Missing edit-time `api-guard` / `ship-it-guard` hard blocks are expected in Codex; current Codex hook runtime does not provide Claude-equivalent `PreToolUse` for edits.
+- `edit-guard`, `api-guard` and `ship-it-guard` run on Codex `apply_patch` edits only (Codex 0.134+); writes made through the shell never reach them, so a missing block on a shell write is expected.
 - Missing subagent lifecycle hooks are expected; Codex has no direct `SubagentStart` / `TaskCreated` / `TaskCompleted` equivalents.
 
 If hooks are missing, install them:

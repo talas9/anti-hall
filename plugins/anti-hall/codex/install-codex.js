@@ -36,12 +36,16 @@ function group(matcher, files, timeout) {
 }
 
 // Codex hook parity is intentionally explicit:
-// - PreToolUse is registered only for Bash/shell command guards
+// - PreToolUse "Bash" carries the shell command guards
 //   (compact-declaration-guard.js included: on Codex it blocks state-changing
 //   shell after a SAFE TO COMPACT declaration; its Agent/Write/Edit arms are
-//   Claude-only for the same edit-time reason as below).
-// - Edit-time Claude guards (api-guard, ship-it-guard) are not registered here
-//   because current Codex hook runtime does not hard-run PreToolUse for edits.
+//   Claude-only).
+// - PreToolUse "apply_patch" carries the edit-time guards: edit-guard, api-guard
+//   (blocking path) and ship-it-guard (existence gate only). Codex runs
+//   PreToolUse for apply_patch edits since rust-v0.124.0 and stamps agent_id on
+//   subagent payloads since rust-v0.134.0; the payload is tool_input.command =
+//   the raw patch, parsed by hooks/lib/codex-apply-patch.js. Codex shell writes
+//   (cat >, sed -i, tee) never reach these guards.
 // - fable-availability.js is deliberately omitted: it probes ~/.claude.json for a
 //   Claude Fable model entitlement (Claude Reviewer-seat fallback only), which is
 //   irrelevant to gpt-5.x Codex/OMX sessions.
@@ -109,6 +113,9 @@ const ANTI_HALL_HOOKS = {
     group('Bash', ['command-guard.js'], 10),
     group('Bash', ['merge-gate.js'], 10),
     group('Bash', ['compact-declaration-guard.js'], 10),
+    group('apply_patch', ['api-guard.js'], 45),
+    group('apply_patch', ['ship-it-guard.js'], 10),
+    group('apply_patch', ['edit-guard.js'], 10),
   ],
   Stop: [
     group(null, ['task-guard.js'], 30),
@@ -242,7 +249,7 @@ function main() {
   process.stdout.write(`anti-hall Codex install (${scope}): ${status}\n`);
   process.stdout.write(`- hooks: ${hooksPath} ${hooksChanged ? 'changed' : 'unchanged'}\n`);
   process.stdout.write(`- config: ${configPath} ${configChanged ? 'changed' : 'unchanged'}\n`);
-  process.stdout.write('- note: edit-time api-guard/ship-it-guard and subagent lifecycle hooks are Codex skill/workflow protocols, not hard hooks.\n');
+  process.stdout.write('- note: edit guards run on apply_patch only (Codex >= 0.134); shell writes bypass them, and subagent lifecycle hooks are Codex skill/workflow protocols, not hard hooks.\n');
   process.stdout.write('- note: Codex/OMX status_line uses built-in IDs only; anti-hall does not inject an unsupported AH version footer item.\n');
 }
 

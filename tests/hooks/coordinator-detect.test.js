@@ -103,3 +103,44 @@ test('isSubagent (unchanged): CLAUDE_CODE_ENTRYPOINT=agent_tool alone -> true (g
     assert.strictEqual(isSubagent({}), true);
   });
 });
+
+// Codex apply_patch (payload shape captured from codex-cli 0.160.0): the main
+// thread has no agent_id/agent_type; a spawn_agent child has both. Codex sets no
+// CLAUDE_CODE_ENTRYPOINT, so these run with it removed from the env.
+function withoutEntrypoint(fn) {
+  const prev = process.env.CLAUDE_CODE_ENTRYPOINT;
+  delete process.env.CLAUDE_CODE_ENTRYPOINT;
+  try { return fn(); } finally { if (prev !== undefined) process.env.CLAUDE_CODE_ENTRYPOINT = prev; }
+}
+
+test('isCoordinator: Codex apply_patch main thread (no agent keys, no entrypoint) -> true', () => {
+  delete require.cache[require.resolve(MOD)];
+  const { isCoordinator } = require(MOD);
+  withoutEntrypoint(() => {
+    assert.strictEqual(isCoordinator({ tool_name: 'apply_patch', turn_id: 't', tool_input: { command: '' } }), true);
+  });
+});
+
+test('isCoordinator: Codex apply_patch subagent (agent_id/agent_type) -> false', () => {
+  delete require.cache[require.resolve(MOD)];
+  const { isCoordinator } = require(MOD);
+  withoutEntrypoint(() => {
+    assert.strictEqual(isCoordinator({ tool_name: 'apply_patch', agent_id: 'a', agent_type: 'executor' }), false);
+  });
+});
+
+test('isCoordinator: Codex apply_patch launched under Claude Code (entrypoint inherited) -> false', () => {
+  delete require.cache[require.resolve(MOD)];
+  const { isCoordinator } = require(MOD);
+  withEnv({ CLAUDE_CODE_ENTRYPOINT: 'cli' }, () => {
+    assert.strictEqual(isCoordinator({ tool_name: 'apply_patch' }), false);
+  });
+});
+
+test('isCoordinator (unchanged for Claude tools): Edit with no entrypoint -> false (fail-open)', () => {
+  delete require.cache[require.resolve(MOD)];
+  const { isCoordinator } = require(MOD);
+  withoutEntrypoint(() => {
+    assert.strictEqual(isCoordinator({ tool_name: 'Edit' }), false);
+  });
+});

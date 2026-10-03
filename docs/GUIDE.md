@@ -793,11 +793,14 @@ clamped 1–60) is the SIGTERM→SIGKILL grace window. **Windows is not supporte
 ### Codex / cross-tool
 
 `AGENTS.md` is a prose mirror of the verify-first Iron Law + commit hygiene + task
-discipline, so Codex agents inherit the same discipline (Codex `PreToolUse` cannot
-inject context the way Claude's hooks do). It lives at the **marketplace repo root**,
+discipline, so Codex agents inherit the same discipline. It lives at the **marketplace repo root**,
 NOT inside `plugins/anti-hall/`, so it ships only to people who clone this repo — a
 `/plugin install` does not bundle it. Installed users who also run Codex must copy it
 into their own repo root manually.
+
+On Codex 0.134 or later, `edit-guard`, `api-guard` and `ship-it-guard`'s existence gate
+run on `apply_patch` edits. Shell writes bypass them; see the
+[Codex parity notes](../plugins/anti-hall/codex/README.md).
 
 ## Hook reference — plugin "Features" table (detailed, per-hook)
 
