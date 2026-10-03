@@ -2083,9 +2083,10 @@ const SCRIPT_CHECK_REFUSED_FLAG_RE =
 
 // isInsideAntiHallPlugin(realPath) -> true when realPath lies under THIS
 // plugin's root (hooks/..) or under any ancestor directory whose
-// .claude-plugin/plugin.json or .codex-plugin/plugin.json names "anti-hall"
-// (a second install, a cache copy, a dev checkout). Fail-closed: an error
-// reading a manifest that exists counts as anti-hall.
+// .claude-plugin/plugin.json names "anti-hall" (a second install, a cache
+// copy, a dev checkout). Every anti-hall copy ships that manifest, the Codex
+// install included (it runs these same hooks from the same plugin dir).
+// Fail-closed: an error reading a manifest that exists counts as anti-hall.
 function isInsideAntiHallPlugin(realPath) {
   let ownRoot;
   try { ownRoot = fs.realpathSync(path.resolve(__dirname, '..')); } catch (_) { ownRoot = path.resolve(__dirname, '..'); }
@@ -2093,9 +2094,8 @@ function isInsideAntiHallPlugin(realPath) {
   if (relOwn && !relOwn.startsWith('..') && !path.isAbsolute(relOwn)) return true;
   let dir = path.dirname(realPath);
   for (let i = 0; i < 16; i++) {
-    for (const m of ['.claude-plugin', '.codex-plugin']) {
-      const manifest = path.join(dir, m, 'plugin.json');
-      if (!fs.existsSync(manifest)) continue;
+    const manifest = path.join(dir, '.claude-plugin', 'plugin.json');
+    if (fs.existsSync(manifest)) {
       try {
         if (String(JSON.parse(fs.readFileSync(manifest, 'utf8')).name) === 'anti-hall') return true;
       } catch (_) { return true; }

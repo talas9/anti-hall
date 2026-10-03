@@ -13,7 +13,7 @@ it from the path Codex shows you for this SKILL.md (see
 
 ```bash
 ANTI_HALL_ROOT="$(cd "$(dirname "$SKILL_FILE")/../../.." && pwd)"
-test -f "$ANTI_HALL_ROOT/.codex-plugin/plugin.json" || { echo "anti-hall plugin root not found relative to $SKILL_FILE — aborting" >&2; exit 1; }
+test -d "$ANTI_HALL_ROOT/.codex-plugin" || { echo "anti-hall plugin root not found relative to $SKILL_FILE — aborting" >&2; exit 1; }
 ```
 
 All commands below run as `node "$ANTI_HALL_ROOT/scripts/jev-setup.js" <verb>`.
