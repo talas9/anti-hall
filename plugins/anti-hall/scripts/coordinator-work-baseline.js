@@ -13,7 +13,8 @@
 // call is the session start (script freshness). Known limits: $VAR paths
 // resolve from THIS process's environment, a direct-exec script that no
 // longer exists is not counted, and freshness uses current mtimes.
-// Output: {calls, work, share, attemptedShare, wouldNudge, wouldBlock}.
+// Output: {calls, work, share, attemptedShare, wouldNudge, wouldBlock}. share is as
+// recorded (no enforcement); attemptedShare is with enforcement (blocked rows not posted).
 const fs = require('node:fs');
 const path = require('node:path');
 const readline = require('node:readline');
@@ -70,7 +71,8 @@ async function run(argv) {
 function render(r) {
   const pct = (x) => (x == null ? 'n/a' : (Math.round(x * 1000) / 10) + '%');
   return 'coordinator work baseline: calls ' + r.calls + ' · work ' + r.work + ' · share ' + pct(r.share) +
-    ' (attempted ' + pct(r.attemptedShare) + ') · would nudge ' + r.wouldNudge + ' · would block ' + r.wouldBlock;
+    ' as recorded (no enforcement) · attempted share ' + pct(r.attemptedShare) + ' with enforcement · would nudge ' + r.wouldNudge +
+    ' · would block ' + r.wouldBlock;
 }
 
 if (require.main === module) {

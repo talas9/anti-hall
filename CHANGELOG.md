@@ -10,12 +10,12 @@ the update.
 
 ### Added
 
-- **Coordinator work window (`coordinator-work-guard`).** The main thread keeps doing state-changing work inline instead of delegating it. A new hook counts successful state-changing Bash calls (WORK) over a 10-minute window. It adds one advisory note when the count reaches 4, and blocks the 7th WORK call in the window. The block is the enforcement. Whether the advisory note reaches the model is unverified (`docs/KB-claude-codex.md` records a PostToolUse `additionalContext` gap).
+- **Coordinator work window (`coordinator-work-guard`).** The main thread keeps doing state-changing work inline instead of delegating it. A new hook counts successful state-changing Bash calls (WORK) over a 10-minute window. It adds one advisory note when the count reaches 4, and blocks the 7th WORK call in the window. Nudge delivery: PostToolUse `additionalContext` was live-observed delivering on Claude Code CLI 2.1.238 and is not doc-confirmed (`docs/KB-claude-codex.md` §1.4); re-verify after a CLI upgrade; blocks are the enforcement.
   - WORK is: state-changing git, a gh mutation, a Bash write into a repo file that is not a notes file, a script-file run, and inline `-c`/`-e` code that writes files or runs state-changing git/gh.
   - Recovery commands (`git am|rebase|cherry-pick|revert --abort|--quit`, `git merge --abort`, `git stash pop|apply`) and loosely matched inline code are counted but never blocked. Precise inline git/gh/repo-write code is blockable.
   - Script runs: scripts in the session scratchpad, a tmp dir outside any git work tree, or `.anti-hall` always count. A script written or modified this session counts, unless it sits in a package-manager or system location. A tracked, clean project script never counts. In a non-git project only a fresh or coordinator-writable script counts; an old one does not.
   - Observe-only mode: set `guards.coordinatorWorkNudgeAt` and `guards.coordinatorWorkBlockAt` to 0 and the guard only records state. `guards.coordinatorWorkWindowMinutes` 0 turns it off. Four new settings: `guards.coordinatorWorkWindowMinutes`, `guards.coordinatorWorkNudgeAt`, `guards.coordinatorWorkBlockAt`, `guards.coordinatorWorkMaxEntries`.
-  - Skip key `coordinator-work-guard` (covered by the `all` skip). Claude host only: Codex PostToolUse behaviour and Codex coordinator detection are unverified, so the hook is not registered on Codex.
+  - Skip key `coordinator-work-guard` (covered by the `all` skip). The guard is also off when `safety.commandGuard` is off or command-guard is skipped. Claude host only: Codex PostToolUse behaviour and Codex coordinator detection are unverified, so the hook is not registered on Codex.
   - Metrics: per plugin version, the posted share `work / calls` and the attempted share `(work + blocks) / (calls + blocks)`, blocks, and a separate skipped-would-block counter. Counts survive pruning of old session files through a locked fold. `dispatch-report` and `doctor` show them.
   - `scripts/coordinator-work-baseline.js <transcript.jsonl> [--from-line N] [--cwd DIR] [--json]` replays a session transcript through the classifier and window, to get a "before" number.
   - Known gaps, all documented in `docs/GUIDE.md`:
@@ -30,8 +30,13 @@ the update.
     - text scripts under `~/Library` or `~/.claude/plugins` count if they are updated mid-session (an SDK install or plugin update);
     - `just` and `task` runs, `git stash pop|apply` landing edits, and `cd "$X" && ...` with an unknown cwd are not counted;
     - a trusted `./gen.sh > docs/api.md` stays blocked by the Bash edit parity check;
-    - the baseline resolves `$VAR` paths from its own environment, cannot classify direct-exec scripts that no longer exist, and judges freshness against current mtimes.
-- **Bash edit parity (`guards.bashEditParity`, default on).** In the main thread, command-guard applies edit-guard's verdict to Bash writes (`sed -i`, `perl -i`, `tee`, `cp`, `mv`, `>`/`>>` redirects) into repo files. Notes files the coordinator may edit stay allowed. Claude host only: Codex coordinator detection is unverified.
+    - the baseline resolves `$VAR` paths from its own environment, cannot classify direct-exec scripts that no longer exist, and judges freshness against current mtimes;
+    - scripts fed on stdin are not counted: `python3 - <<EOF`, `node <<EOF`, `sh <<EOF`, `echo … | sh`, `bash -s <<<`;
+    - wrapper forms hide the git/gh verb: `time -p git`, `env -C d git`, `gh -R o/r pr merge`, `gh api -XDELETE`;
+    - writes via `>|`, a clustered `cp -rt` (wrong target read), `install`, `dd of=`, `truncate`, `ln -sf` and `rm` are not judged as repo writes;
+    - `git checkout .` and `git checkout <file>` are not counted;
+    - with a plugin path containing `'`, the printed skip command itself counts as WORK.
+- **Bash edit parity (`guards.bashEditParity`, default on).** In the main thread, command-guard applies edit-guard's verdict to Bash writes (`sed -i`, `perl -i`, `tee`, `cp`, `mv`, `>`/`>>` redirects) into repo files. Notes files the coordinator may edit stay allowed. Bash writes are judged like the Edit tool: a repo file the Edit tool may not write (including gitignored outputs like build/ or .env) is blocked; write under .anti-hall/ or the scratchpad, or delegate. Claude host only: Codex coordinator detection is unverified.
 
 - Docs: a GitHub Pages site built from `README.md` and `docs/*.md` by the dependency-free `tools/build-site.js`; `.github/workflows/pages.yml` deploys it on pushes to `main` only (needs Settings → Pages → Source: GitHub Actions once). The site root also serves `llms.txt`, `sitemap.xml` and `robots.txt`.
 

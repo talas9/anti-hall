@@ -271,6 +271,7 @@ Frozen per hook: its script name, event, matcher, the setting and skip name, and
 | `~/.anti-hall/devswarm/` | mesh root: `workspaces/`, `archived/`, `heartbeats/`, `store/<hash>/devswarm.db`, `summaries/`, `ignore.json`, `maintainer-notices.jsonl` | `companion/lib/liveness.js`, `companion/lib/devswarm-store.js` |
 | `~/.anti-hall/update-sweep-state.json` | per-version migration markers | `companion/lib/migrations.js` |
 | `~/.anti-hall/jev.json` | legacy Jev config, read-only fallback | `settings-schema.js` `legacy` |
+| `~/.anti-hall/coordinator-work-session-<id>.json` (+ `.lock`), `coordinator-work-metrics.json` (+ `.lock`), `coordinator-work-trips.log` (JSONL, rotated to `.1` at 1 MiB), `.coordinator-work-fold-stamp.json` | the main-thread work window: per-session state, folded per-version metrics, nudge/block trips | `hooks/lib/coordinator-work.js` |
 | `<repo>/.anti-hall/progress/` | `INDEX.md` + `<YYYY-MM-DD>/<session>.md` | `hooks/tasklist-guard.js` |
 | `<repo>/.anti-hall/history/` | `INDEX.md` + `<YYYY-MM-DD>/<session>.md`; `legacy/` | `hooks/task-lifecycle-log.js`, `scripts/migrate-state.js` |
 | `<repo>/.anti-hall/handovers/` | `INDEX.md` + `<date>/<session>/<name>` | `hooks/lib/auto-handover-text.js`, `hooks/lib/handover-find.js` |

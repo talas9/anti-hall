@@ -30,6 +30,9 @@
 //                                (separate counter, not part of any share)
 //   versions.<v>.postedShare     work / calls (successful main-thread Bash calls)
 //   versions.<v>.attemptedShare  (work + blocks) / (calls + blocks)
+//   nudge delivery: PostToolUse additionalContext was live-observed delivering on
+//   Claude Code CLI 2.1.238 and is not doc-confirmed (docs/KB-claude-codex.md §1.4);
+//   re-verify after a CLI upgrade; blocks are the enforcement.
 
 const os = require('os');
 const path = require('path');
@@ -68,7 +71,8 @@ function renderCoordinatorWork(c) {
   for (const [v, e] of Object.entries(c.versions || {})) {
     lines.push('    ' + v + ': sessions ' + e.sessions + ' · work share ' + pct(e.postedShare) + ' (attempted ' + pct(e.attemptedShare) + ')');
   }
-  lines.push('    baseline: node scripts/coordinator-work-baseline.js <transcript.jsonl>');
+  lines.push('    baseline: node scripts/coordinator-work-baseline.js <transcript.jsonl> (share = as recorded (no enforcement), attempted = with enforcement)');
+  lines.push('    nudge delivery: live-observed on Claude Code CLI 2.1.238, not doc-confirmed; re-verify after a CLI upgrade; blocks are the enforcement');
   lines.push('    known gaps: obfuscated inline bodies, loose inline count-only, session-compiled binaries, mtime back-dating, ' +
     'managed-location scripts, gitignored build launchers and submodule scripts count, just/task, stash pop/apply (see GUIDE)');
   return lines;

@@ -279,7 +279,7 @@ treated as a feature launch.
 
     node plugins/anti-hall/scripts/coordinator-work-baseline.js ~/.claude/projects/<slug>/<session>.jsonl --json
 
-on pre-release sessions. It prints `{calls, work, share, attemptedShare, wouldNudge, wouldBlock}`. Compare `share` against the per-version shares in the dispatch-report. The baseline resolves `$VAR` script paths from its own environment, not the original session's, cannot count direct-exec scripts that no longer exist on disk, and judges freshness against current file mtimes.
+on pre-release sessions. It prints `{calls, work, share, attemptedShare, wouldNudge, wouldBlock}`. `share` is as recorded (no enforcement): every logged call is counted. `attemptedShare` is with enforcement: a call the window would have blocked is not posted. Compare `share` against the per-version shares in the dispatch-report. The baseline resolves `$VAR` script paths from its own environment, not the original session's, cannot count direct-exec scripts that no longer exist on disk, and judges freshness against current file mtimes.
 
 ---
 
