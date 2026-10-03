@@ -14,6 +14,7 @@ the update.
 
 ### Fixed
 
+- **A failed unread-summary refresh after an ack is now recorded.** `applyReadAckOps` swallowed a `summaries/<hash>.json` refresh failure; it stays fail-open but now logs `op: 'summary-refresh'` with the path and error to the bounded `cursor-log`.
 - **limit-conserve threshold now resolves at call time.** `isConserving()` read the module-load value when called without `home`, so a settings.json or env change after `require()` was ignored; it now always reads the unified settings store (the Codex status script shares this module).
 
 ## 0.122.2 (2026-10-03)

@@ -292,6 +292,8 @@ function logCursorWrite(home, rec) {
       cwd: rec.cwd != null ? String(rec.cwd) : null,
       ok: rec.ok === false ? false : true,
       err: rec.err != null ? String(rec.err) : undefined,
+      op: rec.op != null ? String(rec.op) : undefined,
+      path: rec.path != null ? String(rec.path) : undefined,
     });
     fs.mkdirSync(path.dirname(p), { recursive: true });
     fs.appendFileSync(p, line + '\n');
@@ -713,7 +715,19 @@ function applyReadAckOps(s, home, id, reader, ops, o) {
       } catch (e) { failures.push({ partitionId: ndPartitionId, channel: 'ndjson-cursor', error: String((e && e.message) || e) }); }
     }
   }
-  try { store.deriveSummary(s, { home, env: ctx.env, now: ctx.now }); } catch (_) { /* projection refresh is best-effort */ }
+  try { store.deriveSummary(s, { home, env: ctx.env, now: ctx.now }); } catch (e) {
+    // Best-effort (fail-open): the ack stands. But a silently stale unread
+    // summary once made the parent-gate block falsely with no trace, so record
+    // the failure in the bounded cursor-log (never throws).
+    try {
+      let sp = null;
+      try { sp = store.summaryPathForHash(home, s && s.hash); } catch (_) { /* path is advisory */ }
+      logCursorWrite(home, {
+        id, partition: id, callerId: id, ns: 'store', verb: meta.verb, cwd: meta.cwd, repoKey: meta.repoKey,
+        ok: false, err: String((e && e.message) || e), op: 'summary-refresh', path: sp,
+      });
+    } catch (_) { /* diagnostics must not break the ack */ }
+  }
   return { acked, failures };
 }
 
