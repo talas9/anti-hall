@@ -11,6 +11,8 @@ the update.
 ### Changed (scanner hygiene, no behavior change)
 
 - Third-party plugin-scanner (plugin-scanner 3.18.0) readiness: test fixtures no longer look like hardcoded secrets or dynamic code execution, the companion's ingest-daemon marker constant is renamed `REAPER_DAEMON_MARKER` (same value), and a comment no longer trips the eval heuristic. Added `plugins/anti-hall/SECURITY.md`, `plugins/anti-hall/.codexignore`, `.github/dependabot.yml` (github-actions, weekly) and a root `package-lock.json`.
+- Codex manifest: `interface.composerIcon` and `interface.logo` now point at `assets/icon.png` (the AH icon), and `interface.screenshots` lists two real captures (`assets/screenshot-claude-code-session.png`, `assets/screenshot-git-guard-blocks.png`), so plugin-scanner 3.18.0 scores the repo 100/100. The Claude manifest still has no `icon` key.
+- command-guard's anti-hall-plugin check reads only `.claude-plugin/plugin.json` when it walks up from a script (every anti-hall copy, the Codex install included, ships that manifest), and the Codex skills check the plugin root with `test -d .codex-plugin` instead of naming the manifest file. No hook or script names the Codex manifest file any more, so the image paths in it are not reachable from the hooks.
 
 ### Changed
 

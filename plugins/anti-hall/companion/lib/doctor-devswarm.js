@@ -320,7 +320,7 @@ function resolveMarketplaceDir(env, home) {
 // marketplace clone, and would otherwise flag as "diverged" on every machine
 // with anti-hall active, since a running pid never matches across roots. The
 // real plugin tree otherwise has neither .git nor node_modules under it
-// (verified: plugins/anti-hall/ contains only .claude-plugin, .codex-plugin,
+// (verified: plugins/anti-hall/ contains only the two plugin manifest dirs,
 // .in_use (installed side only), agents, codex, companion, hooks, monitors,
 // README.md, scripts, skills, statusline) — those two are a defensive
 // exclusion for any install/clone that happens to carry one, not an expected

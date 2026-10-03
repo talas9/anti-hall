@@ -17,7 +17,7 @@ root from that path before running anything below:
 ```bash
 # SKILL_FILE = the absolute path Codex showed you for this SKILL.md.
 ANTI_HALL_ROOT="$(cd "$(dirname "$SKILL_FILE")/../../.." && pwd)"
-test -f "$ANTI_HALL_ROOT/.codex-plugin/plugin.json" || { echo "anti-hall plugin root not found relative to $SKILL_FILE — aborting" >&2; exit 1; }
+test -d "$ANTI_HALL_ROOT/.codex-plugin" || { echo "anti-hall plugin root not found relative to $SKILL_FILE — aborting" >&2; exit 1; }
 ```
 
 The existing anti-hall statusline installer (`statusline/install-statusline.js`) targets
