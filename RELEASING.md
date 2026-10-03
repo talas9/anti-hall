@@ -11,7 +11,7 @@ Every behavioral or shipped-content change bumps the version and follows this ch
 
 ## Checklist (in order)
 
-1. - [ ] Bump `plugins/anti-hall/.claude-plugin/plugin.json` `version` (AND `plugins/anti-hall/.codex-plugin/plugin.json` to match — the two manifests track together; semver: patch=fix/doc, minor=new capability).
+1. - [ ] Bump `plugins/anti-hall/.claude-plugin/plugin.json` `version` (AND `plugins/anti-hall/.codex-plugin/plugin.json`, root `package.json` `version` and BOTH `version` fields in root `package-lock.json` to match — all four track together, pinned by `tests/hygiene/manifest-drift.test.js`; the root package is only the test harness, but agents read its version as the installed one; semver: patch=fix/doc, minor=new capability).
 2. - [ ] Add a `## <version>` section to `CHANGELOG.md` (top) describing the change. CHANGELOG is the authority; marketplace entry carries no version.
 3. - [ ] Update docs for ANY new/changed hook, skill, or discipline:
    - [ ] `docs/GUIDE.md` — the hooks and skills tables, disciplines, settings reference.

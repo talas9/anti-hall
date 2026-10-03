@@ -78,7 +78,7 @@ A change to a hook, skill or model-routing doc lands on the Claude side and the 
 
 ## Releases
 
-Maintainers follow [RELEASING.md](RELEASING.md) (bump on `dev`, then a pull request from `dev` to `main`): the version lives in `plugins/anti-hall/.claude-plugin/plugin.json` (the Codex manifest tracks it) and `CHANGELOG.md` gets a section per release. Contributors normally do not bump versions.
+Maintainers follow [RELEASING.md](RELEASING.md) (bump on `dev`, then a pull request from `dev` to `main`): the version lives in `plugins/anti-hall/.claude-plugin/plugin.json` (the Codex manifest, root `package.json` and `package-lock.json` track it) and `CHANGELOG.md` gets a section per release. Contributors normally do not bump versions.
 
 ## Questions and problems
 

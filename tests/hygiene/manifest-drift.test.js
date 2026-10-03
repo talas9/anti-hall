@@ -124,6 +124,16 @@ test('manifest-drift: Claude and Codex plugin.json versions match (CLAUDE.md ver
   );
 });
 
+test('manifest-drift: root package.json and package-lock.json versions match plugin.json (agents misread 0.0.0 as the installed version)', () => {
+  const claudeVersion = readJson(CLAUDE_PLUGIN_JSON).version;
+  const pkg = readJson(path.join(REPO, 'package.json'));
+  const lock = readJson(path.join(REPO, 'package-lock.json'));
+  const where = 'bump package.json, package-lock.json (both version fields) and both plugin manifests together (RELEASING.md)';
+  assert.strictEqual(pkg.version, claudeVersion, `package.json version (${pkg.version}) != plugin.json (${claudeVersion}) — ${where}`);
+  assert.strictEqual(lock.version, claudeVersion, `package-lock.json version (${lock.version}) != plugin.json (${claudeVersion}) — ${where}`);
+  assert.strictEqual(lock.packages[''].version, claudeVersion, `package-lock.json packages[""].version (${lock.packages[''].version}) != plugin.json (${claudeVersion}) — ${where}`);
+});
+
 test('manifest-drift: every platform-neutral Claude hook has a Codex hooks.json entry (or a reasoned allowlist entry)', () => {
   const claudeHooks = hookFilesByEvent(readJson(CLAUDE_HOOKS_JSON).hooks);
   const codexHooks = hookFilesByEvent(readJson(CODEX_HOOKS_JSON).hooks);
