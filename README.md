@@ -73,6 +73,16 @@ These are the notable things it runs and writes outside the project. Hook state 
 | Launcher scripts that find the current plugin version | Written by the DevSwarm hooks in DevSwarm sessions | `~/.anti-hall/bin/` |
 | Local reads of `~/.claude.json` (`userID`, Fable availability) and the OMC usage cache | By the limit-conservation and model-availability hooks; never sent anywhere | `~/.claude.json`, `~/.claude/plugins/oh-my-claudecode/.usage-cache-anthropic.json` |
 
+## Known tradeoffs and false positives
+
+Guards are pattern- and rule-based, so they sometimes block or nag when they should not. What the repo documents:
+
+- **Legitimate commands can be blocked.** Fixed in the [CHANGELOG](CHANGELOG.md): `command-guard` matched heredoc lines such as "make sure..." and grep/sed/awk search patterns as heavy commands; `output-verify-guard` flagged a clean `cargo test` line ("0 failed") as a mixed result; `model-routing-guard` had a measured 24% false-positive rate on mechanical haiku spawns (24.1% to 0% on that sample after the fix). Still open: text inside a heredoc is scanned as shell, so a note that merely mentions a push command can be blocked ([GUIDE](docs/GUIDE.md#git-guard)).
+- **Escape hatches.** Tell the assistant to skip a guard for a while (`~/.anti-hall/skip.json`, 15 minutes by default; `"all"` never covers `git-guard`), or turn it off with its setting: `safety.*` (`gitGuard`, `commandGuard`, `editGuard`, `swarmGuard`; changing them needs `--confirmed`) and `guards.*` (for example `guards.apiGuard`, `guards.speculationGuard`, `guards.modelRouting` = `advisory` or `off`). Table: [what it blocks and how to turn it off](docs/GUIDE.md#what-it-blocks-and-how-to-turn-it-off).
+- **Hook latency is not measured.** The repo has no end-to-end hook-overhead figure. Only the optional parts have numbers: the semantic judge is documented at about 1-3 s per Stop when enabled (off by default), and the Jev classifier benchmark reports a 379 ms p50 per call ([KB](docs/KB-jev-classifier.md)).
+- **Advisory messages can be noisy.** Silence them individually: `guards.failureRootCauseNudge`, `guards.silentAgentNudge`, `guards.scanThrottle`, `codexNudge.enabled`, `autoHandover.nag`, `limitConserve.mode` = `off`. After a confirmed false positive, `guards.stopAck` lets a session ack it for `silent-agent-nudge` and `tasklist-guard`. All keys: [settings](docs/GUIDE.md#settings-anti-hallsettings).
+- **What it does NOT protect against.** `speculation-guard` is lexical: it misses a confident inference with no hedge word (only the opt-in semantic judge targets that). `git-guard` does not cover `xargs`, aliases, or interactive-editor commits with no `-m`/`-F`. The verify-first eval found no net fabrication reduction from the prompt alone in its four runs ([eval/README.md](eval/README.md)); the guards' blocking is covered by unit tests, not that eval. On Codex, `edit-guard`, `api-guard` and `ship-it-guard` are not registered yet.
+
 ## Documentation
 
 **[Documentation start page](docs/README.md)**: install and uninstall, what each guard blocks and how to turn it off, settings, Jev, DevSwarm, troubleshooting, contributing, security and the changelog.
