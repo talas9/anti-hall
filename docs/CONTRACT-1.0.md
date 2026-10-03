@@ -27,7 +27,7 @@ addressed as `<section>.<key>` (for example `safety.gitGuard`, `devswarm.autoArc
 | Section | Label | Keys | Headline keys (keep a native `/config` row) |
 |---|---|---|---|
 | `autoHandover` | Auto Handover | 10 | `enabled`, `pct` |
-| `guards` | Guards | 54 | `modelRouting` |
+| `guards` | Guards | 59 | `modelRouting` |
 | `safety` | Safety Guards | 4 | `gitGuard`, `commandGuard`, `editGuard`, `swarmGuard` |
 | `context` | Context Injections | 8 | |
 | `maintenance` | Maintenance | 5 | |
@@ -133,6 +133,7 @@ so the help cannot drift from the dispatcher. 47 verbs:
 | `skills/update/scripts/update.js` | plain (full update), `--check` (no pull, no writes) | first stdout line is one JSON status object `{installed, latest, updated, cacheSynced, action, ingestHeal?, reconcile?, harnessRegistered?}`; exit 1 only on a hard STOP (dirty clone, non-fast-forward) |
 | `scripts/migrate-state.js` | `[dir]`, `--planning`, `--mark-read`, `--restore-planning [--dir <wt>]` | copy-only; originals never deleted |
 | `scripts/capability-scan.js` | plain (human), `--json` | `--json` prints only the JSON report |
+| `scripts/coordinator-work-baseline.js` | `<transcript.jsonl> [--from-line N] [--cwd DIR] [--json]` | `--json` prints `{calls, work, share, attemptedShare, wouldNudge, wouldBlock}` |
 
 `doctor.js` also has narrow, human-invoked repair flags (`--repair-ingest-orphans`,
 `--repair-test-stores`, `--repair-resurrected`, `--reclaim-ingest-lock`, `--prune-cache`,
@@ -189,8 +190,9 @@ output). "Setting" is the key that turns the hook off (section 1). "Skip" is the
 | `compact-advice-guard` | Stop | block | `guards.compactAdviceGuard` | `compact-advice-guard` | yes |
 | `compact-declaration-guard` | PreToolUse(Agent/Task/Write/Edit/MultiEdit/NotebookEdit/Bash) | block | `guards.compactDeclarationGuard` | `compact-declaration-guard` | yes |
 | `git-guard` | PreToolUse(Bash), PostToolUse(Bash) | block, context | `safety.gitGuard` | `git-guard` | yes |
-| `command-guard` | PreToolUse(Bash) | block | `safety.commandGuard` | `devswarm-read-guard`, `devswarm-send-guard`, `devswarm-subagent-mailbox-guard`, `git-stash-guard`, `command-guard` | yes |
+| `command-guard` | PreToolUse(Bash) | block | `safety.commandGuard` | `devswarm-read-guard`, `devswarm-send-guard`, `devswarm-subagent-mailbox-guard`, `git-stash-guard`, `command-guard`, `edit-guard` (Bash edit parity only) | yes |
 | `merge-gate` | PreToolUse(Bash) | block | `guards.mergeGate` (opt-in) | `merge-gate` | yes |
+| `coordinator-work-guard` | PreToolUse(Bash), PostToolUse(Bash) | block, context | `guards.coordinatorWorkWindowMinutes` (0 = off) | `coordinator-work-guard` | no |
 | `scan-throttle` | PreToolUse(Bash) | context | `guards.scanThrottle` | — | no |
 | `api-guard` | PreToolUse(Write/Edit/MultiEdit) | block | `guards.apiGuard` | `api-guard` | no |
 | `ship-it-guard` | PreToolUse(Write/Edit/MultiEdit) | block, context | `guards.shipitGate` (opt-in) | `ship-it-guard` | no |
@@ -315,7 +317,7 @@ scripts** (`codex/hooks/hooks.json` points at `${PLUGIN_ROOT}/hooks/*.js`).
 
 | Difference | Reason |
 |---|---|
-| 20 hooks are Claude-only (the "no" rows in section 3) | Codex has no `TaskCreated`/`TaskCompleted`/`SubagentStart`/`SessionEnd`/`PostToolUseFailure` event, does not hard-run PreToolUse for edits, and has no `Agent`, `Task`, `Read`, `SendMessage`, `AskUserQuestion` or `TaskStop` matcher |
+| 21 hooks are Claude-only (the "no" rows in section 3) | Codex has no `TaskCreated`/`TaskCompleted`/`SubagentStart`/`SessionEnd`/`PostToolUseFailure` event, does not hard-run PreToolUse for edits, and has no `Agent`, `Task`, `Read`, `SendMessage`, `AskUserQuestion` or `TaskStop` matcher |
 | No `/config` on Codex | locked keys use `--confirmed` or the env var |
 | `deadly-loop-multi` is Claude-only | it multiplies the Claude trio |
 | Codex-only skills: `anti-hall-context-conserve`, `anti-hall-model-policy`, `anti-hall-omc`, `anti-hall-omx` | Codex-side orchestration and routing guidance |

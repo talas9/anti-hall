@@ -263,6 +263,26 @@ treated as a feature launch.
 
 ---
 
+## Coordinator work window (report and baseline)
+
+`coordinator-work-guard` counts the main thread's state-changing Bash calls (WORK) in a time window. See the "Coordinator work window" section of `docs/GUIDE.md` for what counts.
+
+**Report.** `node plugins/anti-hall/scripts/dispatch-report.js` (and `doctor`) print one block:
+
+- shown nudges, blocks, mean and max blocks per session, and the skipped-would-block counter (a would-be block passed by an explicit skip; it is not part of any share);
+- per plugin version: sessions, the posted share `work / calls`, and the attempted share `(work + blocks) / (calls + blocks)`;
+- the known-gaps line.
+
+**Who applies patches.** Integration agents apply patches. The coordinator has no `git am` or `git apply` exemption, apart from the recovery commands (`--abort`/`--quit`, `stash pop|apply`), which are counted but never blocked.
+
+**Baseline.** To get a "before" number for sessions that ran without the guard, run
+
+    node plugins/anti-hall/scripts/coordinator-work-baseline.js ~/.claude/projects/<slug>/<session>.jsonl --json
+
+on pre-release sessions. It prints `{calls, work, share, attemptedShare, wouldNudge, wouldBlock}`. Compare `share` against the per-version shares in the dispatch-report. The baseline resolves `$VAR` script paths from its own environment, not the original session's, cannot count direct-exec scripts that no longer exist on disk, and judges freshness against current file mtimes.
+
+---
+
 ## Sources
 
 - [Todo Lists — Claude Agent SDK docs](https://code.claude.com/docs/en/agent-sdk/todo-tracking) — TodoWrite vs Task tools, exact input/result shapes, `{ task: { id, subject } }` result, migration table.

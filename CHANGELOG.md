@@ -10,6 +10,29 @@ the update.
 
 ### Added
 
+- **Coordinator work window (`coordinator-work-guard`).** The main thread keeps doing state-changing work inline instead of delegating it. A new hook counts successful state-changing Bash calls (WORK) over a 10-minute window. It adds one advisory note when the count reaches 4, and blocks the 7th WORK call in the window. The block is the enforcement. Whether the advisory note reaches the model is unverified (`docs/KB-claude-codex.md` records a PostToolUse `additionalContext` gap).
+  - WORK is: state-changing git, a gh mutation, a Bash write into a repo file that is not a notes file, a script-file run, and inline `-c`/`-e` code that writes files or runs state-changing git/gh.
+  - Recovery commands (`git am|rebase|cherry-pick|revert --abort|--quit`, `git merge --abort`, `git stash pop|apply`) and loosely matched inline code are counted but never blocked. Precise inline git/gh/repo-write code is blockable.
+  - Script runs: scripts in the session scratchpad, a tmp dir outside any git work tree, or `.anti-hall` always count. A script written or modified this session counts, unless it sits in a package-manager or system location. A tracked, clean project script never counts. In a non-git project only a fresh or coordinator-writable script counts; an old one does not.
+  - Observe-only mode: set `guards.coordinatorWorkNudgeAt` and `guards.coordinatorWorkBlockAt` to 0 and the guard only records state. `guards.coordinatorWorkWindowMinutes` 0 turns it off. Four new settings: `guards.coordinatorWorkWindowMinutes`, `guards.coordinatorWorkNudgeAt`, `guards.coordinatorWorkBlockAt`, `guards.coordinatorWorkMaxEntries`.
+  - Skip key `coordinator-work-guard` (covered by the `all` skip). Claude host only: Codex PostToolUse behaviour and Codex coordinator detection are unverified, so the hook is not registered on Codex.
+  - Metrics: per plugin version, the posted share `work / calls` and the attempted share `(work + blocks) / (calls + blocks)`, blocks, and a separate skipped-would-block counter. Counts survive pruning of old session files through a locked fold. `dispatch-report` and `doctor` show them.
+  - `scripts/coordinator-work-baseline.js <transcript.jsonl> [--from-line N] [--cwd DIR] [--json]` replays a session transcript through the classifier and window, to get a "before" number.
+  - Known gaps, all documented in `docs/GUIDE.md`:
+    - obfuscated or computed inline bodies are not detected, and loose inline matches are count-only;
+    - a binary compiled during the session (`go build -o /tmp/p`) is never counted;
+    - a script run counts when it is a tracked script you modified this session. That is by design;
+    - freshly generated, gitignored build launchers (`./build/install/app/bin/app`) count;
+    - a fresh script inside a git submodule counts, because `git status` from the parent fails on that path;
+    - deliberate mtime back-dating (`touch -t`, `touch -d`, `cp -p`) hides a fresh script;
+    - a fresh script dropped into a package-manager or system location is not counted, and neither is one in a fake managed directory made outside the repo (for example `~/x/node_modules/.bin/p.sh`);
+    - an old, untracked, non-coordinator-writable script inside a repo is not counted;
+    - text scripts under `~/Library` or `~/.claude/plugins` count if they are updated mid-session (an SDK install or plugin update);
+    - `just` and `task` runs, `git stash pop|apply` landing edits, and `cd "$X" && ...` with an unknown cwd are not counted;
+    - a trusted `./gen.sh > docs/api.md` stays blocked by the Bash edit parity check;
+    - the baseline resolves `$VAR` paths from its own environment, cannot classify direct-exec scripts that no longer exist, and judges freshness against current mtimes.
+- **Bash edit parity (`guards.bashEditParity`, default on).** In the main thread, command-guard applies edit-guard's verdict to Bash writes (`sed -i`, `perl -i`, `tee`, `cp`, `mv`, `>`/`>>` redirects) into repo files. Notes files the coordinator may edit stay allowed. Claude host only: Codex coordinator detection is unverified.
+
 - Docs: a GitHub Pages site built from `README.md` and `docs/*.md` by the dependency-free `tools/build-site.js`; `.github/workflows/pages.yml` deploys it on pushes to `main` only (needs Settings → Pages → Source: GitHub Actions once). The site root also serves `llms.txt`, `sitemap.xml` and `robots.txt`.
 
 ### Changed (scanner hygiene, no behavior change)
@@ -20,6 +43,7 @@ the update.
 
 ### Changed
 
+- Background scratch-script runs allowed by `guards.allowBackgroundScratchScripts`, scripts written during the session, modified tracked scripts, other text-script runs outside package-manager/system locations, and inline -c/-e code that writes files or runs state-changing git/gh now count toward the main-thread work window. Running a tracked script you modified this session counts by design (the verify loop belongs to the subagent). The scratch hint now reserves scripts for read-only output capture. Patch application is for integration agents: the coordinator gets no exemption for `git am` or `git apply`, apart from the recovery commands above.
 - Contributing: day-to-day work lands on dev; main changes only through a pull request from dev.
 - Docs: `docs/CONTRACT-1.0.md` drafts the 1.0 contract, the settings, CLI verbs, hooks and state paths that semver will freeze.
 - **The plugin options screen is down to 14 options:** the manifest `userConfig` goes from 129 to 14: the 10 headline switches (the four `safety.*` guards, auto-handover on and threshold, `jev.enabled`, `devswarm.supervisorMode`, `guards.modelRouting`, `limitConserve.mode`) and the four API keys. Every other setting is reached through `/anti-hall:settings`, grouped by category (`settings.js show`, then `show --section <category>`).
@@ -30,6 +54,8 @@ the update.
 
 ### Fixed
 
+- **A read-only `gh api graphql` call is no longer treated as a mutation.** A graphql call is heavy unless it is proven to be a read: one `query=` field with no `$`, backtick, leading `@` or `mutation`, and only read flags. The attached forms (`-fquery=...`, `--raw-field=query=...`, `-F<x>`, `--field=`) and `--input` now count as body flags on every endpoint; before, `-fquery=...`, `--raw-field=query=...` and `--input b.json` were not blocked.
+- **Block messages give an absolute, shell-quoted skip command.** The skip hint in edit-guard and the new guard is built from the plugin path, single-quoted, so a path with a space or `$` works. A relative path broke when the cwd was not the plugin root.
 - **AGENT-ROUTING no longer suggests Explore for prompts that tell the agent to write or mutate.** The `model-routing-guard` write-signal list missed instruction forms such as `save ... to <path>`, `clone <repo> into <path>`, `git format-patch`, `create new files` and `run the generator/tests/build`, while its ambiguous words (`build`, `release`, `tag`, `patch`, `fix`, `install`) also suppressed read-only prompts that only mention them as nouns. Those words now count only in instruction position, an explicit read-only statement ("report only", "do not edit", "read-only", "no edits") overrides the bare stems, and the instruction forms above always suppress.
 - **SHARED-TREE note no longer fires for spawns that work in a scratch dir.** `guards.sharedTreeAgentNote` now stays silent when the new spawn, or the running agent, establishes a scratch work location ("work in a scratch clone", or work in / cd into / cwd = a `/tmp`, `/private/tmp`, `/var/folders` or `scratchpad` path), since those spawns share no git tree. A bare mention of a scratch directory or tmp path, an in-place edit statement ("in the repo", "in place", "working copy", "checked-out files", "on main") or a negation ("not a scratch clone") still warns.
 - **The per-prompt task line no longer counts owner/external-blocked tasks.** `task-tracker` now reuses the Stop task-guard's `isOwnerBlocked` predicate: `open tasks: 2 (+1 blocked: external)`, and when only blocked tasks remain the "update or close them" instruction is dropped. Codex shares the same hook.
