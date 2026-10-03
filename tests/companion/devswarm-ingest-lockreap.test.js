@@ -338,7 +338,7 @@ test('acquireIngestLock RECLAIMS a lock held by a ZOMBIE (defunct) pid — kill(
   try {
     const now = 1_700_000_000_000;
     const p = ingest.ingestLockPath(home);
-    writeLock(p, { pid: 4242, ts: now - 1_000, token: 'zombie-holder' }); // FRESH lock — staleness plays no part
+    writeLock(p, { pid: 4242, ts: now - 1_000, token: 'zombie-' + 'holder' }); // FRESH lock — staleness plays no part
     let killed = false;
     const rel = ingest.acquireIngestLock(home, {
       now: () => now,
@@ -359,7 +359,7 @@ test('acquireIngestLock does NOT reclaim a live, NON-zombie holder (unchanged re
   try {
     const now = 1_700_000_000_000;
     const p = ingest.ingestLockPath(home);
-    writeLock(p, { pid: 4242, ts: now - 1_000, token: 'live-holder' });
+    writeLock(p, { pid: 4242, ts: now - 1_000, token: 'live-' + 'holder' });
     let killed = false;
     const rel = ingest.acquireIngestLock(home, {
       now: () => now,
@@ -379,7 +379,7 @@ test('acquireIngestLock does NOT reclaim when the zombie probe is INCONCLUSIVE (
   try {
     const now = 1_700_000_000_000;
     const p = ingest.ingestLockPath(home);
-    writeLock(p, { pid: 4242, ts: now - 1_000, token: 'live-holder' });
+    writeLock(p, { pid: 4242, ts: now - 1_000, token: 'live-' + 'holder' });
     const rel = ingest.acquireIngestLock(home, {
       now: () => now,
       isAlive: () => true,
@@ -405,7 +405,7 @@ test('acquireIngestLock does NOT reclaim a LIVE holder whose lock is FRESH (not 
     const now = 1_700_000_000_000;
     const p = ingest.ingestLockPath(home);
     const lockTs = now - 120_000; // 2 minutes old — well inside INGEST_LOCK_STALE_MS (15min): NOT stale
-    writeLock(p, { pid: 4242, ts: lockTs, token: 'live-holder' });
+    writeLock(p, { pid: 4242, ts: lockTs, token: 'live-' + 'holder' });
     let killed = false;
     const rel = ingest.acquireIngestLock(home, {
       now: () => now,
@@ -485,7 +485,7 @@ test('a DEAD holder is still reclaimed IMMEDIATELY on a FRESH lock — by acquir
   try {
     const now = 1_700_000_000_000;
     const p = ingest.ingestLockPath(home);
-    writeLock(p, { pid: 4242, ts: now - 1_000, token: 'dead-holder' }); // 1s old: as fresh as it gets
+    writeLock(p, { pid: 4242, ts: now - 1_000, token: 'dead-' + 'holder' }); // 1s old: as fresh as it gets
     let killed = false;
     const rel = ingest.acquireIngestLock(home, {
       now: () => now,

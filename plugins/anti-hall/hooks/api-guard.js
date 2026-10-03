@@ -2,7 +2,7 @@
 'use strict';
 // api-guard.js — PreToolUse hook on Write/Edit/MultiEdit.
 //
-// THE MECHANICAL ANSWER TO API HALLUCINATION. The eval (eval/) showed the
+// THE MECHANICAL ANSWER TO API HALLUCINATION. The benchmark in the eval/ directory showed the
 // verify-first *prompt* does not reliably stop a model inventing non-existent
 // APIs — the model ignores "go verify" ~95% of the time. So this guard does the
 // verification ITSELF, deterministically, on the code about to be written: it

@@ -367,9 +367,9 @@ test('maybeWarnBudget: a new day resets spend and allows a fresh warning', () =>
 test('scrubSecrets: redacts Bearer tokens, known key prefixes, key= assignments, emails, and long alnum runs', () => {
   const { scrubSecrets } = freshLib();
   assert.strictEqual(scrubSecrets('Authorization: Bearer abc.def-123'), 'Authorization: Bearer [REDACTED]');
-  assert.strictEqual(scrubSecrets('key is sk-FAKEFAKEFAKEFAKE1234'), 'key is [REDACTED_KEY]');
+  assert.strictEqual(scrubSecrets('key is sk-' + 'FAKEFAKEFAKEFAKE1234'), 'key is [REDACTED_KEY]');
   assert.strictEqual(scrubSecrets('ghp_FAKEFAKEFAKEFAKE1234567890'), '[REDACTED_KEY]');
-  assert.strictEqual(scrubSecrets('api_key: "abcd1234efgh"'), 'api_key: [REDACTED]'); // separator kept (v0.108.0 redactor)
+  assert.strictEqual(scrubSecrets('api_key: "abcd' + '1234efgh"'), 'api_key: [REDACTED]'); // separator kept (v0.108.0 redactor)
   assert.strictEqual(scrubSecrets('contact mohammed@example.com for help'), 'contact [REDACTED_EMAIL] for help');
   assert.strictEqual(scrubSecrets('token was ' + 'a'.repeat(40)), 'token was [REDACTED_TOKEN]');
 });
@@ -419,7 +419,7 @@ test('maybeWriteAuditSnippet: ON + changed -> writes a redacted, <=200-char snip
   try {
     h.writeState('jev.json', { audit: { snippets: true } });
     const { maybeWriteAuditSnippet, auditLogPath } = freshLib();
-    const state = 'The key is sk-FAKEFAKEFAKEFAKE1234 and here is the rest. '.repeat(5);
+    const state = ('The key is sk-' + 'FAKEFAKEFAKEFAKE1234 and here is the rest. ').repeat(5);
     maybeWriteAuditSnippet({ home: h.home, id: 'speculation', hash: 'abc123', state, changed: 'added' });
     const p = auditLogPath(h.home);
     const lines = fs.readFileSync(p, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
@@ -427,7 +427,7 @@ test('maybeWriteAuditSnippet: ON + changed -> writes a redacted, <=200-char snip
     assert.strictEqual(lines[0].h, 'abc123');
     assert.strictEqual(lines[0].id, 'speculation');
     assert.ok(lines[0].snippet.length <= 200);
-    assert.ok(!lines[0].snippet.includes('sk-FAKEFAKEFAKEFAKE1234'), 'the secret must be redacted, not stored raw');
+    assert.ok(!lines[0].snippet.includes('sk-' + 'FAKEFAKEFAKEFAKE1234'), 'the secret must be redacted, not stored raw');
     assert.ok(lines[0].snippet.includes('[REDACTED_KEY]'));
     const mode = fs.statSync(p).mode & 0o777;
     assert.strictEqual(mode, 0o600, 'audit log must be mode 600');

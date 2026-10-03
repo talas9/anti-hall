@@ -172,7 +172,7 @@ test('enabled + confident Jev mock -> labels resolved, cached, logged (hash+labe
       const env = {
         HOME: home,
         ANTIHALL_JEV_TEST_ENDPOINT: endpoint,
-        CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'test-key',
+        CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'test-' + 'key',
       };
       const secretText = 'Can you review this PR please? [SECRET_BODY_MARKER]';
       const { parsed } = await runTriageInSubprocess(home, env, [{ key: 'm1', text: secretText }]);

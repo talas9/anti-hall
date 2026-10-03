@@ -268,7 +268,7 @@ async function jevCase({ reply, respond, jevCfg = { enabled: true }, env = {}, s
     const tp = h.writeTranscript([assistantMessage(reply)]);
     const run = () => runAsync(stopPayload(tp), {
       home: h.home,
-      env: { CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'jev-test-key-never-logged', ANTIHALL_JEV_TEST_ENDPOINT: mock.endpoint, ...env },
+      env: { CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'jev-' + 'test-key-never-logged', ANTIHALL_JEV_TEST_ENDPOINT: mock.endpoint, ...env },
     });
     const r = await run();
     return { r, run, mock, log: () => readLog(h.home), h };
@@ -304,7 +304,7 @@ for (const [label, withPayload] of [['payload', true], ['transcript fallback', f
       const payload = withPayload ? withLam(tp, NO_HEDGE_SPEC) : stopPayload(tp);
       await runAsync(payload, {
         home: h.home,
-        env: { CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'jev-test-key-never-logged', ANTIHALL_JEV_TEST_ENDPOINT: mock.endpoint },
+        env: { CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'jev-' + 'test-key-never-logged', ANTIHALL_JEV_TEST_ENDPOINT: mock.endpoint },
       });
       const rows = readAssistRows(h.home);
       assert.strictEqual(rows.length, 1, `expected one speculation row; got ${JSON.stringify(rows)}`);

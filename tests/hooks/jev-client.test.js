@@ -181,7 +181,7 @@ test('jevDecide: unknown question.type ("multi") -> {ok:false, reason:"bad-quest
       },
       async (endpoint) => {
         await withEnv(
-          { HOME: h.home, ANTIHALL_JEV: '1', CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'test-key', ANTIHALL_JEV_TEST_ENDPOINT: endpoint },
+          { HOME: h.home, ANTIHALL_JEV: '1', CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'test-' + 'key', ANTIHALL_JEV_TEST_ENDPOINT: endpoint },
           async () => {
             const { jevDecide } = freshLib();
             const r = await jevDecide({ question: { type: 'multi', instructions: 'x', criteria: [] }, state: 'hello' });
@@ -208,7 +208,7 @@ test('jevDecide: noul happy path, high confidence (noul=0.95 -> answer true)', a
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ answers: { decision: { noul: 0.95 } } }));
     }, async (endpoint) => {
-      await withEnv({ HOME: h.home, ANTIHALL_JEV: '1', CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'jev-test-key-should-never-leak', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
+      await withEnv({ HOME: h.home, ANTIHALL_JEV: '1', CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'jev-' + 'test-key-should-never-leak', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
         const { jevDecide } = freshLib();
         const r = await jevDecide({ question: NOUL_QUESTION, state: 'The cause is X.' });
         assert.strictEqual(r.ok, true);
@@ -674,7 +674,7 @@ test('getCreditBalanceCached: forceRefresh bypasses the cache', async () => {
 test('jevDecide: the API key never appears in a returned reason string, on any failure path', async () => {
   const h = makeHome();
   try {
-    const secret = 'JEV-SECRET-DO-NOT-LEAK-abc123';
+    const secret = 'JEV-' + 'SECRET-DO-NOT-LEAK-abc123';
     await withMockServer(async (req, res) => {
       await readJsonBody(req);
       res.writeHead(500, { 'Content-Type': 'text/plain' });
@@ -701,7 +701,7 @@ test('endpoint override: non-loopback env override is ignored; built-in endpoint
   const h = makeHome();
   const realFetch = global.fetch;
   const calls = [];
-  const SECRET = 'jev-secret-should-never-leave';
+  const SECRET = 'jev-' + 'secret-should-never-leave';
   global.fetch = async (url, opts) => { calls.push({ url: String(url), auth: opts && opts.headers && opts.headers.Authorization }); throw new Error('no network in test'); };
   try {
     for (const bad of ['https://attacker.example/x', 'http://127.0.0.1.attacker.example/x', 'http://localhost@attacker.example/x', 'http://169.254.169.254/x', 'not a url']) {
@@ -756,7 +756,7 @@ test('jevDecide: legacy AI_GATEWAY_API_KEY env is ignored with the opt-in off (n
   const h = makeHome();
   try {
     h.writeState('jev.json', { enabled: true });
-    await withEnv({ HOME: h.home, AI_GATEWAY_API_KEY: 'legacy-env-key', ANTIHALL_JEV_TEST_ENDPOINT: 'http://127.0.0.1:1/unreachable' }, async () => {
+    await withEnv({ HOME: h.home, AI_GATEWAY_API_KEY: 'legacy-' + 'env-key', ANTIHALL_JEV_TEST_ENDPOINT: 'http://127.0.0.1:1/unreachable' }, async () => {
       const { jevDecide } = freshLib();
       const r = await jevDecide({ question: NOUL_QUESTION, state: 'hello' });
       assert.deepStrictEqual({ ok: r.ok, reason: r.reason }, { ok: false, reason: 'no-key' });

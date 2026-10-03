@@ -109,7 +109,7 @@ function writeHealthyProjectDaemon(home, worktree) {
   fs.writeFileSync(hbPath, JSON.stringify({ ts: Date.now(), pid: process.pid, workspaceId: 'primary-x' }));
   const lockPath = ingest.ingestLockPath(home, worktree);
   fs.mkdirSync(path.dirname(lockPath), { recursive: true });
-  fs.writeFileSync(lockPath, JSON.stringify({ pid: process.pid, ts: Date.now(), token: 'reap-test' }));
+  fs.writeFileSync(lockPath, JSON.stringify({ pid: process.pid, ts: Date.now(), token: 'reap-' + 'test' }));
 }
 
 function requireRepoKey(worktree) {

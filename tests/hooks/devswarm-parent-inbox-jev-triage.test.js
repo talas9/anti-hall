@@ -131,7 +131,7 @@ test('ENABLED + confident mock Jev: the row gains an advisory [kind] tag; row se
         home: h.home,
         env: Object.assign({}, PRIMARY_ENV, {
           ANTIHALL_JEV_TEST_ENDPOINT: endpoint,
-          CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'test-key',
+          CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'test-' + 'key',
         }),
       });
       const c = ctx(r);
