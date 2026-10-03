@@ -354,18 +354,21 @@ teach [45][47] (that naming is the original 2023-era scheme, since superseded):
 - `read-only` — inspect files; cannot edit or run commands without approval.
 - `workspace-write` (**default**) — read + edit + run routine commands, confined to the workspace
   (+ `--add-dir` extras); network access **off** by default.
-- `danger-full-access` — no filesystem or network boundary at all.
+- the unrestricted full-access value (named with a `danger-` prefix) — no filesystem or network
+  boundary at all. WARNING: not a default and not a recommendation; reserve it for an externally
+  hardened environment.
 
 **Approval policy** (`approval_policy` / `--ask-for-approval`/`-a`) — when Codex must stop and ask
 [38]:
 - `untrusted` — auto-runs only a known-safe read set; anything else needs approval.
 - `on-request` (**default**) — acts freely inside the sandbox, asks only to cross it.
-- `never` — no prompts at all (sandbox restrictions still apply unless also `danger-full-access`).
+- `never` — no prompts at all (sandbox restrictions still apply unless the sandbox is also the unrestricted full-access value).
 - a `granular` object for per-category control (sandbox approvals, execpolicy rules, MCP
   elicitations, `request_permissions`, skill-script approvals).
 
 These compose independently — e.g. `workspace-write` + `on-request` for safe interactive
-automation, vs `danger-full-access` + `never` for fully unattended runs. A single combined bypass,
+automation. WARNING: pairing the unrestricted full-access sandbox with `never` removes every
+guard for unattended runs and is not recommended. A single combined bypass,
 `--dangerously-bypass-approvals-and-sandbox` (alias `--yolo`), strips **both** at once [40]. The
 older `--full-auto` shorthand is **deprecated** by OpenAI's own CLI reference in favor of
 `--sandbox workspace-write` [40] (an independent blog corroborates the deprecation timeline, but
@@ -481,7 +484,7 @@ code (not speculation):
    hard-safety-boundary model** already stated in `SKILL.md` ("Force-push, production deploy,
    force-delete… never autonomy-bypass… enforced by anti-hall's always-on guards"). For the
    Codex-side port (`plugins/anti-hall/codex/`), the direct parallel is: anti-hall's Claude-side
-   hard-safety gate == Codex's `danger-full-access` + `never` combination should **never** be the
+   hard-safety gate == Codex's unrestricted-sandbox + `never` combination should **never** be the
    default for an autonomous OMX-side run, exactly as `--yolo` (`--dangerously-bypass-approvals-
    and-sandbox`) is explicitly flagged in OpenAI's own docs for use only in an externally hardened
    environment [40]. This is a direct, sourced cross-check confirming the existing Codex-port
