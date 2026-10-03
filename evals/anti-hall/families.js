@@ -162,6 +162,8 @@ git add -A; commit "Pricing spike part 1"
 printf 'more\\n' >> pricing.txt
 git add -A; commit "Pricing spike part 2"
 git checkout -q main
+# .git/packed-refs must always exist: a missing file makes the grader throw instead of fail
+printf '# pack-refs with: peeled fully-peeled sorted \\n' > .git/packed-refs
 `,
     shas: { spike: 'git rev-parse spike/pricing' },
     graders: {
