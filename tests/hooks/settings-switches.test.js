@@ -60,6 +60,7 @@ const SWITCHES = {
   'task-guard.js': 'guards.taskGuard',
   'tasklist-guard.js': 'guards.tasklistGuard',
   'scan-throttle.js': 'guards.scanThrottle',
+  'coordinator-work-guard.js': 'guards.coordinatorWorkWindowMinutes', // 0 = off
   'devswarm-parent-gate.js': 'devswarm.parentGate',
   'devswarm-child-gate.js': 'devswarm.childGate',
   'devswarm-parent-inbox.js': 'devswarm.parentInbox',

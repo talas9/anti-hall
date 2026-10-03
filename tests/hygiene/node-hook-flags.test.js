@@ -43,7 +43,7 @@ function run(flags, hook, payload, home, extraEnv, timeout) {
 // Each command is either the plain 0.122.0 form or, for a script in EXPOSED_HOOKS
 // only, the same form with the flags inserted after `node`.
 function check(cmds, root) {
-  const plain = new RegExp('^node "\\$\\{' + root + '\\}/hooks/([\\w-]+\\.js)"( --audit)?$');
+  const plain = new RegExp('^node "\\$\\{' + root + '\\}/hooks/([\\w-]+\\.js)"( --audit| --post)?$');
   const bad = [];
   const flagged = new Set();
   for (const c of cmds) {

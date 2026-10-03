@@ -98,6 +98,7 @@ and getting a yes); re-arming a guard never does. /config, env and a `settings.j
 | SubagentStart | verify-first-subagent.js | Re-injects the Iron Law and scope rules into every subagent (no orchestration block). | — | context.verifyFirstSubagent |
 | PreToolUse (Bash) | git-guard.js | Blocks AI self-credit in commits (inline, `-F`, whole-command scan for commit-creating verbs) and `gh` PR/issue/release/merge bodies; PostToolUse `--audit` flags recent commits whose trailer came from a git hook/template/editor; blocks force-push (`--force`, `-f`, `--force-with-lease`, `+refspec`) and remote branch/tag deletion (`--delete`, `-d`, `:ref`, `--prune`); blocks a `git commit` whose paths include a session handover (`guards.handoverCommitGuard`). | ✓ | safety.gitGuard (safety: --confirmed) + named skip only |
 | PreToolUse (Bash) | command-guard.js | Coordinator must delegate heavy commands; blocks DevSwarm destructive verbs and native hivecontrol messaging. | ✓ | safety.commandGuard (safety: --confirmed) |
+| PreToolUse + PostToolUse (Bash) | coordinator-work-guard.js | Main thread: counts successful state-changing Bash calls (git/gh mutations, repo-file writes, script runs, inline code) in a time window; one advisory note at the nudge count, blocks the Nth (recovery commands and loosely matched inline code are counted but never blocked). Claude only. | — | guards.coordinatorWorkWindowMinutes (`0` = off), guards.coordinatorWorkNudgeAt, guards.coordinatorWorkBlockAt |
 | PreToolUse (Bash) | merge-gate.js | Opt-in: blocks auto-merge without a recorded review. | ✓ | `ANTIHALL_MERGE_GATE=on` |
 | PreToolUse (Agent/Task/Write/Edit/MultiEdit/NotebookEdit/Bash) | compact-declaration-guard.js | Opt-in (default OFF): after a SAFE TO COMPACT declaration in the current turn, blocks new work (spawns, edits, state-changing shell) until the next user message or an explicit `RETRACT SAFE TO COMPACT` line; read-only tools pass. | ✓ (Bash only) | guards.compactDeclarationGuard (default false) |
 | PreToolUse (Bash) | scan-throttle.js | Advises (never rewrites) running user-listed heavy scan commands under `taskpolicy`/`nice` (no built-in patterns). | — | guards.scanThrottle; `ANTI_HALL_THROTTLE_PATTERNS` |
@@ -282,6 +283,10 @@ sub-guards.
 | codex-availability.json, phase-state.json, agents/ | availability cache; statusline phase; spawn heartbeats |
 | claim-ledger/, approvals/, defects/ | claim ledger; merge approvals; defect channel |
 | logs/ | hook/companion logs (jev-assist, jev-audit, devswarm-retention, devswarm-prune, repair-on-reload-*) |
+| coordinator-work-session-<session>.json | coordinator-work-guard per-session WORK window and counters (folded into the metrics after 7 days) |
+| coordinator-work-metrics.json | coordinator-work nudges, blocks and per-version folded session counts (dispatch-report, doctor) |
+| coordinator-work-trips.log | coordinator-work nudge/block/skip events (JSONL, rotated at 1 MiB) |
+| .coordinator-work-fold-stamp.json | last coordinator-work fold (at most once per 6 h) |
 | devswarm/ | mesh stores, summaries, heartbeats, capabilities.json, app-state.json, archive/ (retention) |
 
 Per-project: `.anti-hall/progress/`, `.anti-hall/history/`, `.anti-hall/handovers/`.

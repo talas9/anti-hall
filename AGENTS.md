@@ -270,7 +270,7 @@ feature/KB touches this area:
 - SessionStart — verify-first-full [C], verify-first-orch [C], devswarm-child-role [C], version-alert [C], fable-availability, codex-availability [C], devswarm-version [C], claude-cli-version [C], repo-self-drift [C], progress-prune [C], handover-resume [C], jev-weekly-scorecard [C], jev-review-reminder [C], emit-dedupe-reset [C], defect-nudge [C]
 - Stop — task-guard [C], tasklist-guard [C], speculation-guard [C], speculation-judge [C], claim-ledger [C], codex-nudge, devswarm-parent-gate [C], devswarm-child-gate [C], auto-handover-pause-nag [C], silent-agent-nudge [C], compact-advice-guard [C]
 - PreToolUse(Agent|Task|Write|Edit|MultiEdit|NotebookEdit|Bash) — compact-declaration-guard [C]
-- PreToolUse(Bash)+PostToolUse(Bash) — git-guard [C]
+- PreToolUse(Bash)+PostToolUse(Bash) — git-guard [C], coordinator-work-guard
 - PreToolUse(Bash) — command-guard [C], merge-gate [C], scan-throttle
 - PreToolUse(Write|Edit|MultiEdit) — api-guard, ship-it-guard
 - PreToolUse(Write|Edit|MultiEdit|NotebookEdit) — edit-guard
@@ -311,7 +311,7 @@ Codex `anti-hall-<name>`: activate, context-conserve, deadly-loop, debt, defects
 - codexNudge: enabled | min
 - defects: defaultProj=—
 
-**State** (`~/.anti-hall/`): settings.json; skip.json; jev.json; update-sweep-state.json; version-check.json, version-alert-reload.json; auto-handover/<session>.json, context-pct/<session>.json; codex-availability.json, phase-state.json, agents/; claim-ledger/, approvals/, defects/; logs/; devswarm/. Per project: `.anti-hall/progress/`, `history/`, `handovers/`.
+**State** (`~/.anti-hall/`): settings.json; skip.json; jev.json; update-sweep-state.json; version-check.json, version-alert-reload.json; auto-handover/<session>.json, context-pct/<session>.json; codex-availability.json, phase-state.json, agents/; claim-ledger/, approvals/, defects/; logs/; coordinator-work-session-<session>.json; coordinator-work-metrics.json; coordinator-work-trips.log; .coordinator-work-fold-stamp.json; devswarm/. Per project: `.anti-hall/progress/`, `history/`, `handovers/`.
 
 **Hard rules**: verify before claiming; no AI self-credit, no force-push; no data deletion without explicit user confirmation, never automated; DevSwarm via the mesh only; change settings via `/anti-hall:settings`; skips only on explicit user request.
 

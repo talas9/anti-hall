@@ -85,6 +85,10 @@ const CLAUDE_ONLY_ALLOWLIST = [
   // PreToolUse TaskStop: the note reads Claude Code teammate / background-agent
   // transcript records and fires on the Claude TaskStop tool.
   { event: 'PreToolUse', file: 'stale-agent-stop-note.js', reason: 'TaskStop matcher over Claude Code teammate/background-agent transcript records; no Codex TaskStop tool or record shape is known' },
+  // coordinator-work-guard (F1 main-thread WORK window): Claude-only until the
+  // Codex PostToolUse payload contract and Codex coordinator detection are verified.
+  { event: 'PreToolUse', file: 'coordinator-work-guard.js', reason: 'Codex PostToolUse payload contract and Codex coordinator detection are unverified (codex/README.md Parity Notes)' },
+  { event: 'PostToolUse', file: 'coordinator-work-guard.js', reason: 'Codex PostToolUse payload contract and Codex coordinator detection are unverified (codex/README.md Parity Notes)' },
   // PreToolUse edit-family matchers (Write/Edit/MultiEdit/NotebookEdit):
   // install-codex.js's own header states the current Codex hook runtime does
   // not hard-run PreToolUse for edit-family tools at all.

@@ -1820,6 +1820,16 @@ if (REPAIR_RESURRECTED) {
     infol('jev dispatchTier: verdicts ' + (t.verdicts.workspace + t.verdicts.workflow + t.verdicts.subagent) +
       ' · followed ' + t.followed + ' · overridden ' + t.overridden + ' (follow rate ' + fr + ')');
   } catch (_) { /* report-only */ }
+  try {
+    const c = require('./lib/coordinator-work.js').summary(require('../companion/lib/test-home-guard.js').resolveHome(undefined, process.env));
+    let calls = 0;
+    let work = 0;
+    let blocks = 0;
+    for (const e of Object.values(c.versions)) { calls += e.calls; work += e.work; blocks += e.blocks; }
+    const sh = (n, d) => (d > 0 ? (Math.round((n / d) * 1000) / 10) + '%' : 'n/a');
+    infol('coordinator work: nudges ' + c.nudges + ' · blocks ' + c.blocks + ' · work share ' + sh(work, calls) +
+      ' (attempted ' + sh(work + blocks, calls + blocks) + ') · skipped would-be blocks ' + c.skippedWouldBlock);
+  } catch (_) { /* report-only */ }
 })();
 
 // --- 5p. jev shadow-review due (REPORT-ONLY, CONDITIONAL) -------------------

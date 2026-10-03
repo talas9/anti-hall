@@ -245,3 +245,18 @@ test('a 70,000-char command is not classified: exit 0', () => {
 test('plan mode with notes.md: exit 0', () => {
   assert.strictEqual(run('echo x > notes.md', { payload: { permission_mode: 'plan' } }).status, 0);
 });
+
+// The coordinator's own auto-memory (~/.claude/projects/<slug>/memory/*.md) is a
+// notes write OUTSIDE the repo: never repo-write WORK, never F3-blocked — also
+// after a `cd` into that (non-git) dir, which must not become a project root.
+// The HOME is a non-tmp absolute path, so no tmp-root skip can mask the verdict.
+test('auto-memory write under a non-tmp HOME, cwd = repo: not WORK, exit 0', () => {
+  const mem = path.join('/nonexistent-cw-home-' + process.pid, '.claude', 'projects', 'p', 'memory');
+  for (const c of ['echo x >> ' + path.join(mem, 'MEMORY.md'), 'cd ' + mem + ' && echo x >> MEMORY.md',
+    'cd ' + mem + " && sed -i '' 's/a/b/' MEMORY.md"]) {
+    const r = cg.classifyBashWork(c, { cwd: REPO, session_id: 't' });
+    assert.strictEqual(r.work, false, c);
+    assert.deepStrictEqual(r.editBlocks, [], c);
+    assert.strictEqual(run(c).status, 0, c);
+  }
+});

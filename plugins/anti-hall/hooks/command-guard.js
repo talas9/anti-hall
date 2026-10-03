@@ -3831,12 +3831,19 @@ function classifyBashWork(command, payload, opts = {}, depth = 0, shared = null)
   const sp = require('./lib/scratchpad.js');
   const eg = require('./edit-guard.js');
   const roots = new Map();
+  const startCwd = sp.realpathOrSelf(path.resolve((typeof p.cwd === 'string' && p.cwd) || process.cwd()));
+  // base = the cwd's git toplevel; with none, the SESSION's project base (the
+  // payload cwd's toplevel, or the payload cwd itself). A `cd` into a non-git
+  // dir (e.g. ~/.claude/projects/<slug>/memory) does not make that dir a
+  // project root: its files are judged against the session project, as an
+  // Edit-tool write to the same file would be.
   const rootOf = (cwd) => {
     if (!roots.has(cwd)) {
       let toplevel = null;
       try { toplevel = require('../companion/lib/identity.js').resolveContext(cwd, { missingPath: 'ancestor' }).toplevel || null; } catch (_) { toplevel = null; }
       if (toplevel) toplevel = sp.realpathOrSelf(toplevel);
-      roots.set(cwd, { toplevel, base: toplevel || cwd });
+      const base = toplevel || (cwd === startCwd ? cwd : rootOf(startCwd).base);
+      roots.set(cwd, { toplevel, base });
     }
     return roots.get(cwd);
   };
